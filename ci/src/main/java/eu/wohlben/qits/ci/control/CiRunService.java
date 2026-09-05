@@ -845,6 +845,7 @@ public class CiRunService {
                     pin.binaryUrl(),
                     decl.timeoutSeconds() == null ? stepTimeoutSeconds : decl.timeoutSeconds(),
                     decl.docker(),
+                    decl.build(),
                     decl.user(),
                     env),
                 stamps);

@@ -97,6 +97,7 @@ public class RunCommissioningTest {
         "http://qits-artifacts:8080/artifacts/daemons/deadbeef",
         0,
         docker,
+        false,
         "",
         Map.of());
   }

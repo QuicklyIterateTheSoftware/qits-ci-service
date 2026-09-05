@@ -392,6 +392,13 @@ step image supplies the docker CLI; the platform supplies the socket and the two
 > like `$QITS_MAVEN_PROXY_URL` replace the edge vhosts), and hands its secrets in **file form** on
 > both sides. The committed `FROM` vhosts keep working: the builder's registry config rewrites them.
 >
+> **`build: true` is the converted declaration**, and it is `docker: true` minus the
+> root-equivalence: the same per-step, diff-visible opt-in, the same commissioned credential and
+> `$QITS_BUILD_REGISTRY`, the same `$BUILDKIT_HOST` (qits-containers hands it to every `ci-step`
+> container) — and **no socket**. Declaring both on one step is a parse error. An older qits-ci
+> ignores the key, hands the step neither socket nor build environment, and the recipe's
+> `${BUILDKIT_HOST:?}` guard stops it naming the cause.
+>
 > **The kill switch is `qits.ci.buildkit.enabled`** (`QITS_CI_BUILDKIT_ENABLED=false`), shipped ON.
 > Off, both variables arrive **empty** — empty-never-absent, the mirror pair's shape — and the empty
 > `BUILDKIT_HOST` also suppresses qits-containers' injection, so a converted recipe fails loudly at

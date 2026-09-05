@@ -526,6 +526,7 @@ public class CiDaemonLauncher {
       String daemonBinaryUrl,
       int stepTimeoutSeconds,
       boolean docker,
+      boolean build,
       String user,
       Map<String, String> env) {}
 
@@ -1052,15 +1053,22 @@ public class CiDaemonLauncher {
       env.put("QITS_GIT_AUTH_AUDIENCE", value(containerGitAudience));
       env.put("GIT_CONFIG_GLOBAL", "/tmp/qits-gitconfig");
     }
-    if (spec.docker()) {
-      // BuildKit, demanded rather than preferred. Every step image ships buildx as of qits-oci
-      // 2026.814.110556, so a legacy build here is a silent fallback rather than an image that has
-      // no choice — and a silent fallback is what quietly loses a --secret mount or a cache export.
-      // DOCKER_BUILDKIT=1 turns that into a loud error instead. The second flag keeps a push a
-      // single manifest: buildx attaches provenance and SBOM attestations by default, which makes
-      // the push an index the platform registry does not expect.
-      env.put("DOCKER_BUILDKIT", "1");
-      env.put("BUILDX_NO_DEFAULT_ATTESTATIONS", "1");
+    if (spec.docker() || spec.build()) {
+      // The two flags are the two generations of the same declaration — `docker: true` mounts the
+      // socket and `build: true` does not — and everything in this block is the BUILD-MODE
+      // environment both need. Only the socket differs, at the spec's hostDockerSocket below.
+      if (spec.docker()) {
+        // BuildKit, demanded rather than preferred, on the legacy socket arm only — a buildctl
+        // step has no docker CLI in the loop for either flag to steer. Every step image ships
+        // buildx as of qits-oci 2026.814.110556, so a legacy build here is a silent fallback
+        // rather than an image that has no choice — and a silent fallback is what quietly loses a
+        // --secret mount or a cache export. DOCKER_BUILDKIT=1 turns that into a loud error
+        // instead. The second flag keeps a push a single manifest: buildx attaches provenance and
+        // SBOM attestations by default, which makes the push an index the platform registry does
+        // not expect.
+        env.put("DOCKER_BUILDKIT", "1");
+        env.put("BUILDX_NO_DEFAULT_ATTESTATIONS", "1");
+      }
       // The platform-builder pair, and the kill switch's whole reach. ON, the step composes a
       // buildctl push ref from $QITS_BUILD_REGISTRY and $BUILDKIT_HOST arrives from
       // qits-containers, which owns the builder and its address — this service deliberately does
