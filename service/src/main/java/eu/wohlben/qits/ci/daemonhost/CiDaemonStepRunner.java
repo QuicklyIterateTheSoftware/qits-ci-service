@@ -139,6 +139,7 @@ public class CiDaemonStepRunner implements CiStepRunner {
                 // Carried through unchanged: the repository declared it, the orchestrator turns it
                 // into a socket, and nothing in between gets an opinion about it.
                 spec.docker(),
+                spec.build(),
                 // The same rule again: the repository declared who the step runs as, the
                 // orchestrator turns it into --user, and nothing in between gets an opinion.
                 spec.user(),

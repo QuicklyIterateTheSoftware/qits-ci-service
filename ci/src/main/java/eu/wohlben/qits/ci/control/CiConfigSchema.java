@@ -175,12 +175,14 @@ final class CiConfigSchema {
       }
       rejectBranches(step, i, configPath);
       boolean docker = optionalDocker(step, i);
+      boolean build = optionalBuild(step, i, docker);
       steps.add(
           new CiStepDecl(
               requireString(step, "image", i),
               requireString(step, "script", i),
               optionalTimeoutSeconds(step, i),
               docker,
+              build,
               optionalUser(step, i, docker),
               optionalStepGating(step, i)));
     }
@@ -229,6 +231,43 @@ final class CiConfigSchema {
           "Step " + index + ": 'docker' must be a boolean, got: " + typeOf(value));
     }
     return docker;
+  }
+
+  /**
+   * The optional per-step {@code build} flag: this step builds images through the PLATFORM builder
+   * and needs the build-mode environment — the run's commissioned credential, {@code
+   * $QITS_BUILD_REGISTRY}, and the {@code $BUILDKIT_HOST} qits-containers injects into every step
+   * container — and <b>no docker socket</b>. It is what a converted recipe declares instead of
+   * {@code docker: true}: the same per-step, diff-visible opt-in, minus the root-equivalence, which
+   * is the whole point of the migration (qits-buildkit-plan.md in the wrapper).
+   *
+   * <p>Held to {@code docker}'s boolean strictness for {@code docker}'s reasons. Declaring it
+   * BESIDE {@code docker: true} is refused rather than merged: the socket flag already implies the
+   * whole build-mode environment, so the pair is at best redundant and at worst a repo believing it
+   * dropped the socket when it did not — the direction that must fail loudly.
+   *
+   * <p>An older qits-ci ignores the key (unknown per-step keys are lenient), hands the step neither
+   * socket nor build environment, and the recipe's own {@code $\{BUILDKIT_HOST:?\}} guard stops it
+   * with a sentence naming the cause — loud, and exactly the fleet-compatibility shape the
+   * migration relies on.
+   */
+  private static boolean optionalBuild(Map<?, ?> step, int index, boolean docker) {
+    Object value = step.get("build");
+    if (value == null) {
+      return false;
+    }
+    if (!(value instanceof Boolean build)) {
+      throw new CiConfigException(
+          "Step " + index + ": 'build' must be a boolean, got: " + typeOf(value));
+    }
+    if (build && docker) {
+      throw new CiConfigException(
+          "Step "
+              + index
+              + ": declare 'build: true' or 'docker: true', not both — the socket flag already"
+              + " carries the whole build-mode environment");
+    }
+    return build;
   }
 
   /**

@@ -135,6 +135,7 @@ public class CiDaemonHandshakeIT {
                       binaryUrl,
                       0,
                       false,
+                      false,
                       "",
                       Map.of()));
           try {
@@ -199,6 +200,7 @@ public class CiDaemonHandshakeIT {
                       binaryUrl,
                       0,
                       false,
+                      false,
                       "",
                       Map.of()));
           try {
@@ -240,6 +242,7 @@ public class CiDaemonHandshakeIT {
                       credentials.secret(),
                       servedBinaryUrl + "-does-not-exist",
                       0,
+                      false,
                       false,
                       "",
                       Map.of()));

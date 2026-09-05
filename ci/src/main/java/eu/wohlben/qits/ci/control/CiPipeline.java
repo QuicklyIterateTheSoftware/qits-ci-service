@@ -67,6 +67,7 @@ public record CiPipeline(List<CiStepDecl> steps) {
       String script,
       Integer timeoutSeconds,
       boolean docker,
+      boolean build,
       String user,
       boolean gating) {}
 

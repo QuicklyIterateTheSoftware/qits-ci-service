@@ -49,6 +49,7 @@ public class CiDaemonLauncherContainersTest {
           "http://qits-artifacts:8080/artifacts/daemons/qits-ci-daemon/deadbeef",
           0,
           false,
+          false,
           "",
           Map.of());
 

@@ -67,6 +67,7 @@ public interface CiStepRunner {
       String daemonBinaryUrl,
       int timeoutSeconds,
       boolean docker,
+      boolean build,
       String user,
       Map<String, String> env) {}
 

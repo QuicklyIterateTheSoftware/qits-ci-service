@@ -374,6 +374,35 @@ public class CiEventTriggerParserTest {
         () -> parser.parse(PATH, "event: E\nsteps:\n  - image: a\n    script: x\n    docker: 1\n"));
   }
 
+  @Test
+  public void theBuildFlagParsesLikeDockersAndRefusesTheirCombination() throws Exception {
+    // build: true is the socketless generation of the same declaration; it parses to its own
+    // component, holds docker's boolean strictness, and beside docker: true it is refused — the
+    // socket flag already carries the whole build-mode environment, and "both" is at best
+    // redundant and at worst a repo believing it dropped the socket when it did not.
+    CiEventTrigger trigger =
+        parser.parse(
+            PATH,
+            """
+            event: E
+            steps:
+              - image: alpine:3
+                script: "true"
+                build: true
+            """);
+    assertTrue(trigger.pipeline().steps().get(0).build());
+    assertFalse(trigger.pipeline().steps().get(0).docker());
+    assertThrows(
+        CiConfigException.class,
+        () -> parser.parse(PATH, "event: E\nsteps:\n  - image: a\n    script: x\n    build: 1\n"));
+    assertThrows(
+        CiConfigException.class,
+        () ->
+            parser.parse(
+                PATH,
+                "event: E\nsteps:\n  - image: a\n    script: x\n    build: true\n    docker: true\n"));
+  }
+
   // --- artifacts: what a release pipeline declares it publishes ---
 
   @Test
