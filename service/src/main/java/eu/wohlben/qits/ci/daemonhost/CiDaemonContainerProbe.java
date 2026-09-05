@@ -116,7 +116,8 @@ public class CiDaemonContainerProbe implements DaemonProbe {
                   // is what bounds this container's lifetime, which is generous for a probe and is
                   // the point -- the reap below is what really ends it.
                   0,
-                  // A probe never publishes, so it never asks for the socket.
+                  // A probe never publishes, so it never asks for the socket — nor the builder.
+                  false,
                   false,
                   // And it runs no repository's script, so it takes the image's own user.
                   "",
