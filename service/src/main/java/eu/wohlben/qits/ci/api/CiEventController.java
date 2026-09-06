@@ -275,17 +275,24 @@ public class CiEventController {
   }
 
   /**
-   * The platform-tier roles, in the two spellings qits-platform-idp grants them.
+   * The two roles that admit a caller naming no project: the platform's machine role, and the
+   * administrator's.
    *
    * <p>They are what a credential that acts <em>for the platform</em> carries, as against one that
-   * acts for a project — the same distinction {@code qits-platform:admin} draws on the deployments
-   * read surface. Spelled here rather than taken from {@code QitsClaims}, like every other role on
-   * this service's annotations, because a role is a string qits-idp issues and this repository holds
-   * no vocabulary for it.
+   * acts for a project. The machine half keeps its {@code qits-platform:} tier, because a machine
+   * acting for the whole platform really is a different principal from one acting inside a project.
+   * The admin half is plain {@code qits:admin}: there is no platform-scoped administrator any more.
+   * That split was retired rather than completed — one person administering the platform and the
+   * same person administering a project was never two facts, and keeping two spellings of it only
+   * ever produced surfaces that accepted one and refused the other.
+   *
+   * <p>Spelled here rather than taken from {@code QitsClaims}, like every other role on this
+   * service's annotations, because a role is a string qits-idp issues and this repository holds no
+   * vocabulary for it.
    */
   private static final String PLATFORM_SYSTEM_ROLE = "qits-platform:system";
 
-  private static final String PLATFORM_ADMIN_ROLE = "qits-platform:admin";
+  private static final String ADMIN_ROLE = "qits:admin";
 
   /**
    * The guard, and the whole of it: what this caller may have the event evaluated against.
@@ -332,7 +339,7 @@ public class CiEventController {
     machineAuth.require();
     String project = MachineIdentity.claim(identity, QitsClaims.PROJECT).orElse(null);
     if (project == null) {
-      if (!identity.hasRole(PLATFORM_SYSTEM_ROLE) && !identity.hasRole(PLATFORM_ADMIN_ROLE)) {
+      if (!identity.hasRole(PLATFORM_SYSTEM_ROLE) && !identity.hasRole(ADMIN_ROLE)) {
         throw new ForbiddenException(
             "Token carries no "
                 + QitsClaims.PROJECT

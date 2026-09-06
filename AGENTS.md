@@ -1068,7 +1068,7 @@ names"), and what follows is what biting it feels like.
   one the live 403 actually landed on**: qits-idp mints its agent and operator credentials with no
   structured claims at all — measured, a commissioned workspace client's token carries only
   `groups` — so the door asks the other half of what qits-idp does issue and admits such a caller on
-  a **platform-tier role** (`qits-platform:system`/`qits-platform:admin`), refusing it without one.
+  a **platform-tier role** (`qits-platform:system`/`qits:admin`), refusing it without one.
   That is not "absent means wildcard": `MachineAuth.requireClaim` answers "does your claim cover THIS
   TARGET", and absence must never mean yes there; this door asks "what may I evaluate FOR you", a
   question a role can answer. `CiEventController.scopeOf`'s javadoc carries the argument in full. The guard sits on the **machine arm** the way

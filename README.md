@@ -1163,7 +1163,7 @@ listing. So:
   call is unaffected: a read failure never shrinks the candidate set.
 - **A token with no `project` claim at all** is not project-scoped, and the door then asks the other
   half of what qits-idp issues: a **platform-tier role** (`qits-platform:system` or
-  `qits-platform:admin`) evaluates every project, and a token without one is a 403 naming what it is
+  `qits:admin`) evaluates every project, and a token without one is a 403 naming what it is
   missing. That is not "absent means wildcard" — `MachineAuth.requireClaim` answers "does your claim
   cover *this target*", and for that question absence must never mean yes. This door asks "what may I
   evaluate *for* you", and the platform's answer, measured, is that its agent and operator

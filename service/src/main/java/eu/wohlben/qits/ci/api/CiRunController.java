@@ -116,13 +116,15 @@ public class CiRunController {
   @Inject CiCandidateRepos candidates;
 
   /**
-   * The platform-tier roles, in the two spellings qits-platform-idp grants them — {@code
-   * CiEventController}'s constants, spelled again here for the reason that class spells them: a role
-   * is a string qits-idp issues and this repository holds no vocabulary for it.
+   * The two roles that admit a caller naming no project — {@code CiEventController}'s constants,
+   * spelled again here for the reason that class spells them: a role is a string qits-idp issues and
+   * this repository holds no vocabulary for it. The machine half is platform-tier; the admin half is
+   * plain {@code qits:admin}, since there is no platform-scoped administrator any more. Read that
+   * class's javadoc for why the split was retired rather than finished.
    */
   private static final String PLATFORM_SYSTEM_ROLE = "qits-platform:system";
 
-  private static final String PLATFORM_ADMIN_ROLE = "qits-platform:admin";
+  private static final String ADMIN_ROLE = "qits:admin";
 
   public record ListRunsResponse(List<CiRunDto> runs) {}
 
@@ -470,7 +472,7 @@ public class CiRunController {
     machineAuth.require();
     String project = MachineIdentity.claim(identity, QitsClaims.PROJECT).orElse(null);
     if (project == null) {
-      if (!identity.hasRole(PLATFORM_SYSTEM_ROLE) && !identity.hasRole(PLATFORM_ADMIN_ROLE)) {
+      if (!identity.hasRole(PLATFORM_SYSTEM_ROLE) && !identity.hasRole(ADMIN_ROLE)) {
         throw new ForbiddenException(
             "Token carries no "
                 + QitsClaims.PROJECT
