@@ -135,7 +135,7 @@ public class ReleaseJoinTest extends CiTestSupport {
         "a green tag build alone is a restore, not a release");
     assertEquals(1, owedFor(repoId, VERSION).size(), "the announcement is owed, durably");
 
-    join.onScmRelease(repoId, repoId, VERSION, UUID.randomUUID().toString(), Instant.now());
+    releaseArrives(repoId, repoId, VERSION);
 
     assertEquals(1, releaseAnnouncer.published().size(), "the release closes the join");
     FakeReleaseAnnouncer.Published published = releaseAnnouncer.published().get(0);
@@ -154,7 +154,7 @@ public class ReleaseJoinTest extends CiTestSupport {
    */
   @Test
   public void aTagTriggeredRunAnnouncesAtGreenWhenTheReleaseArrivedFirst() throws Exception {
-    join.onScmRelease(repoId, repoId, VERSION, UUID.randomUUID().toString(), Instant.now());
+    releaseArrives(repoId, repoId, VERSION);
 
     tagRun();
 
@@ -175,9 +175,9 @@ public class ReleaseJoinTest extends CiTestSupport {
 
     // A release for the same repository at a DIFFERENT version must not close this one's join
     // either: the key is the pair, not the repository.
-    join.onScmRelease(repoId, repoId, "2026.101.010101", UUID.randomUUID().toString(), Instant.now());
+    releaseArrives(repoId, repoId, "2026.101.010101");
     // And a release of a different repository at this version must not either.
-    join.onScmRelease("somebody-else", null, VERSION, UUID.randomUUID().toString(), Instant.now());
+    releaseArrives("somebody-else", null, VERSION);
 
     assertEquals(List.of(), releaseAnnouncer.published());
     List<CiReleaseAnnouncement> owed = owedFor(repoId, VERSION);
@@ -192,6 +192,11 @@ public class ReleaseJoinTest extends CiTestSupport {
    * unblocked leaves an owed row and a fact row; the boot sweep is what pairs them again. It is
    * driven directly here because {@code onStart} skips test mode — the {@code sweepInterrupted}
    * arrangement, for the same reason.
+   *
+   * <p>The staged fact row states a priority, so this is also the third resolution path: the sweep
+   * knows the repository by the run's id alone (its keys come out of the owed rows) and still reads
+   * the value off the release. A process that died between the two facts must not cost the
+   * announcement anything it would have carried.
    */
   @Test
   public void theBootSweepAnnouncesWhatACrashLeftOwed() throws Exception {
@@ -203,6 +208,10 @@ public class ReleaseJoinTest extends CiTestSupport {
     join.sweepOwed();
 
     assertEquals(1, releaseAnnouncer.published().size());
+    assertEquals(
+        "HIGH",
+        releaseAnnouncer.published().get(0).priority(),
+        "the sweep reads the priority off the fact row it paired, like every other drive");
     assertTrue(owedFor(repoId, VERSION).isEmpty());
   }
 
@@ -214,10 +223,10 @@ public class ReleaseJoinTest extends CiTestSupport {
   @Test
   public void aSecondDriveOfAClosedJoinAnnouncesNothingMore() throws Exception {
     tagRun();
-    join.onScmRelease(repoId, repoId, VERSION, UUID.randomUUID().toString(), Instant.now());
+    releaseArrives(repoId, repoId, VERSION);
     assertEquals(1, releaseAnnouncer.published().size());
 
-    join.onScmRelease(repoId, repoId, VERSION, UUID.randomUUID().toString(), Instant.now());
+    releaseArrives(repoId, repoId, VERSION);
     join.sweepOwed();
 
     assertEquals(1, releaseAnnouncer.published().size(), "announced once, whatever drives the join");
@@ -233,7 +242,7 @@ public class ReleaseJoinTest extends CiTestSupport {
     fakeRunner.script(0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
     tagRun();
 
-    join.onScmRelease(repoId, repoId, VERSION, UUID.randomUUID().toString(), Instant.now());
+    releaseArrives(repoId, repoId, VERSION);
 
     assertEquals(List.of(), releaseAnnouncer.published());
     assertEquals(List.of(), owedFor(repoId, VERSION));
@@ -249,8 +258,7 @@ public class ReleaseJoinTest extends CiTestSupport {
   public void aReleaseNamingTheRepositoryOnlyByNameStillClosesTheJoin() throws Exception {
     tagRun();
 
-    join.onScmRelease(
-        "a-uuid-nobody-here-knows", repoId, VERSION, UUID.randomUUID().toString(), Instant.now());
+    releaseArrives("a-uuid-nobody-here-knows", repoId, VERSION);
 
     assertEquals(1, releaseAnnouncer.published().size());
   }
@@ -282,7 +290,7 @@ public class ReleaseJoinTest extends CiTestSupport {
   public void aGreenQaRunOfTheSameRepositoryOwesNothingForAReleaseToClose() throws Exception {
     qaRun();
 
-    join.onScmRelease(repoId, repoId, VERSION, UUID.randomUUID().toString(), Instant.now());
+    releaseArrives(repoId, repoId, VERSION);
 
     assertEquals(
         List.of(),
@@ -308,7 +316,7 @@ public class ReleaseJoinTest extends CiTestSupport {
 
     // The tag moment: qits-projects created the tag and published SCMRelease. Nothing has been
     // built yet, and nothing may be announced yet.
-    join.onScmRelease(repoId, repoId, VERSION, UUID.randomUUID().toString(), Instant.now());
+    releaseArrives(repoId, repoId, VERSION);
     assertEquals(
         List.of(), releaseAnnouncer.published(), "no artifact exists at tag time, so no announcement");
 
@@ -349,7 +357,7 @@ public class ReleaseJoinTest extends CiTestSupport {
     fakeCandidates.setRefs(CiRepoRef.of(repoId, "p-42", "qits-thing-service"));
 
     tagRun();
-    join.onScmRelease(repoId, repoId, VERSION, UUID.randomUUID().toString(), Instant.now());
+    releaseArrives(repoId, repoId, VERSION);
 
     assertEquals(1, releaseAnnouncer.published().size());
     FakeReleaseAnnouncer.Published published = releaseAnnouncer.published().get(0);
@@ -379,6 +387,125 @@ public class ReleaseJoinTest extends CiTestSupport {
     assertEquals(1, releaseAnnouncer.published().size());
     assertNull(releaseAnnouncer.published().get(0).projectId());
     assertNull(releaseAnnouncer.published().get(0).repoName());
+  }
+
+  // --- the priority, carried through and acted on nowhere ----------------------------------------
+
+  /**
+   * <b>Tag first: the priority the release states reaches the announcement made after it.</b>
+   *
+   * <p>This is the order that proves the value is resolved at ANNOUNCE time. The owed row is written
+   * when the run goes green — before any release exists — so nothing about the priority can be on it,
+   * and the {@code SCMRelease} arriving later is both what closes the join and what says what the
+   * release was worth. Had the value been carried on the obligation instead, this case would publish
+   * null and the release-first case below would still pass.
+   */
+  @Test
+  public void thePriorityAReleaseStatesReachesAnAnnouncementOwedBeforeIt() throws Exception {
+    tagRun();
+
+    join.onScmRelease(
+        repoId, repoId, VERSION, UUID.randomUUID().toString(), Instant.now(), "BLOCKING");
+
+    assertEquals(1, releaseAnnouncer.published().size());
+    assertEquals(
+        "BLOCKING",
+        releaseAnnouncer.published().get(0).priority(),
+        "the release said what it was worth, and the announcement it unblocked says the same");
+  }
+
+  /**
+   * Release first, and the same answer. The fact row is durable, so a run finishing minutes later
+   * announces at green with the priority read straight back off it — the arrival order is a race and
+   * neither side of it may change what the wire carries.
+   */
+  @Test
+  public void thePriorityIsCarriedWhenTheReleaseArrivedBeforeTheRun() throws Exception {
+    join.onScmRelease(repoId, repoId, VERSION, UUID.randomUUID().toString(), Instant.now(), "LOW");
+
+    tagRun();
+
+    assertEquals(1, releaseAnnouncer.published().size());
+    assertEquals("LOW", releaseAnnouncer.published().get(0).priority());
+  }
+
+  /**
+   * <b>No fact row, no priority — and that is the manual door's ordinary shape rather than a
+   * failure.</b>
+   *
+   * <p>A run whose own trigger IS the release closes the join by construction and takes no lookup at
+   * all (see the class javadoc), so a hand-supplied {@code SCMRelease} — which rides no bus and
+   * leaves no fact row — announces with nothing to read a priority off. Null is the honest answer,
+   * and {@code CanonicalJson}'s NON_NULL inclusion turns it into an absent key rather than a value a
+   * consumer could act on. The same is true of every release published before the field existed.
+   */
+  @Test
+  public void aRunWithNoReleaseFactBehindItAnnouncesNoPriority() throws Exception {
+    releaseRun(releasePayload());
+
+    assertEquals(1, releaseAnnouncer.published().size());
+    assertNull(
+        releaseAnnouncer.published().get(0).priority(),
+        "nothing recorded what this release was worth, so nothing may be invented for it");
+  }
+
+  /**
+   * A release that states no priority is an ordinary release, and the announcement says so by
+   * carrying none. The join's key is {@code (repository, version)} and the priority is no part of
+   * it — so an older publisher's event closes the join exactly as a new one's does.
+   */
+  @Test
+  public void aReleaseStatingNoPriorityAnnouncesNone() throws Exception {
+    tagRun();
+
+    releaseArrives(repoId, repoId, VERSION);
+
+    assertEquals(1, releaseAnnouncer.published().size());
+    assertNull(releaseAnnouncer.published().get(0).priority());
+  }
+
+  /**
+   * <b>The column's own rule, and the only judgement this service passes on the value.</b>
+   *
+   * <p>{@code ci_scm_release.priority} is 32 characters; a longer one is recorded as NONE with a
+   * WARN rather than truncated or thrown — {@code ci_run.release_request_id}'s rule verbatim. The
+   * release fact is the point: a release must not fail to be recorded, and therefore must not fail to
+   * be announced, over a field nothing here reads. Note what is NOT asserted: no value is rejected
+   * for being unknown, because the vocabulary is qits-projects' and this service holds no copy of it.
+   */
+  @Test
+  public void anOverlongPriorityIsRecordedAsNoneAndTheReleaseStillAnnounces() throws Exception {
+    tagRun();
+
+    join.onScmRelease(
+        repoId,
+        repoId,
+        VERSION,
+        UUID.randomUUID().toString(),
+        Instant.now(),
+        "B".repeat(ReleaseJoin.MAX_PRIORITY_LENGTH + 1));
+
+    assertEquals(
+        1, releaseAnnouncer.published().size(), "the release is recorded and the join still closes");
+    assertNull(
+        releaseAnnouncer.published().get(0).priority(),
+        "a value the column cannot hold is none, not a truncation somebody could act on");
+  }
+
+  /**
+   * A word this service has never heard of rides through untouched, which is the whole of "verbatim".
+   * qits-ci has no enum for the vocabulary and compares the value to nothing, so a priority added in
+   * qits-projects reaches a consumer the day it is published rather than the day this repository is
+   * released again.
+   */
+  @Test
+  public void anUnknownPriorityIsCarriedRatherThanJudged() throws Exception {
+    tagRun();
+
+    join.onScmRelease(
+        repoId, repoId, VERSION, UUID.randomUUID().toString(), Instant.now(), "CATASTROPHIC");
+
+    assertEquals("CATASTROPHIC", releaseAnnouncer.published().get(0).priority());
   }
 
   // --- fixtures ---------------------------------------------------------------------------------
@@ -452,6 +579,15 @@ public class ReleaseJoinTest extends CiTestSupport {
     return eventId;
   }
 
+  /**
+   * An {@code SCMRelease} arriving, stating no priority — the shape every case above but the priority
+   * ones is about, and the shape a publisher that predates the field produces.
+   */
+  private void releaseArrives(String repoId, String repoName, String version) {
+    join.onScmRelease(
+        repoId, repoName, version, UUID.randomUUID().toString(), Instant.now(), null);
+  }
+
   /** The release fact, written the way the listener writes it but with nothing driven off it — the
    *  state a crash between the two leaves behind. */
   private void recordReleaseWithoutDriving() {
@@ -466,6 +602,7 @@ public class ReleaseJoinTest extends CiTestSupport {
               release.eventId = UUID.randomUUID().toString();
               release.occurredAt = Instant.now();
               release.seenAt = Instant.now();
+              release.priority = "HIGH";
               scmReleases.persist(release);
             });
   }

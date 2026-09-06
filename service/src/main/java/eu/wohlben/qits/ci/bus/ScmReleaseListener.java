@@ -27,8 +27,8 @@ import org.jboss.logging.Logger;
  *
  * <h2>What it reads, and why by name</h2>
  *
- * <p>{@code repository}, {@code repositoryName} and {@code version} are read out of the payload with
- * a {@code readTree} walk, the trigger engine's own precedent — no binding, so no native-image
+ * <p>{@code repository}, {@code repositoryName}, {@code version} and {@code priority} are read out of
+ * the payload with a {@code readTree} walk, the trigger engine's own precedent — no binding, so no native-image
  * reflection metadata and no dependency on qits-workspaces' vocabulary jar, which is on neither
  * module's classpath here. That is also the one guard this path does not have: unlike {@code
  * SCMPublishTag}, whose field names {@code ScmPublishTagContractTest} resolves against the real
@@ -77,6 +77,17 @@ public class ScmReleaseListener implements QitsDurableEventListener {
   static final String REPOSITORY_NAME_FIELD = "repositoryName";
   static final String VERSION_FIELD = "version";
 
+  /**
+   * What the release said its priority was, read like the other three and judged like none of them.
+   *
+   * <p>It is no part of the join key and no part of any decision here: qits-ci carries the value onto
+   * {@code SoftwareRelease} verbatim and acts on it nowhere. So a payload that names none is an
+   * ordinary payload — the field is additive and every release published before it existed carries no
+   * such key — and a rename over there costs the transcription rather than the join. {@code
+   * ScmReleaseContractTest} is what keeps this string honest, beside the other three.
+   */
+  static final String PRIORITY_FIELD = "priority";
+
   @Inject ReleaseJoin join;
 
   @Override
@@ -116,7 +127,10 @@ public class ScmReleaseListener implements QitsDurableEventListener {
         frame.id(),
         // The event's own timestamp when it has one, this instance's clock otherwise. Nothing here
         // orders by it, so a missing one is a poorer row rather than an unusable one.
-        frame.occurredAt() == null ? java.time.Instant.now() : frame.occurredAt());
+        frame.occurredAt() == null ? java.time.Instant.now() : frame.occurredAt(),
+        // Verbatim, and null when the release named none — which is every release published before
+        // the field existed. Not poison and not a gate: nothing in this service reads the value.
+        text(payload, PRIORITY_FIELD));
   }
 
   /** One payload field as a non-blank string, or null. */

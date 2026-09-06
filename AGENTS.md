@@ -819,6 +819,15 @@ Four things about that second seam are worth having in front of you:
   <br>**Null is a supported value and reaches the wire as an ABSENT KEY**, because `CanonicalJson`
   includes `NON_NULL`. An id-addressed candidate has neither project nor name, so "qits-ci does not
   know" is spelled by the keys not being there; writing a null would have made absence a value.
+- **`priority` is carried verbatim and read by nobody here.** It is the release request's effective
+  priority, declared in qits-projects on its participating branches; `SCMRelease` carries it, the
+  release join records it on `ci_scm_release` and resolves it back at announce time, and it leaves on
+  this event. **qits-ci acts on it nowhere** — no local enum, no comparison, `ci_run` without the
+  column and the run queue still FIFO — so an unknown word rides through untouched rather than
+  costing a release its announcement. Null where no release fact stands behind the announcement (a
+  hand-supplied event through the manual door leaves no row) and where the release stated none, and
+  null is an ABSENT KEY for the same NON_NULL reason `projectId` and `repoName` are. The hand-kept
+  half is `ScmReleaseContractTest`'s transcription, as ever.
 - **The fan-out is `CiRunService`'s and the port takes one artifact.** N declarations are N calls, so
   a failure costs one announcement rather than the rest. The bus already supports siblings —
   the outbox enqueues one row per event in its own transaction and `CausationScope.current()` is a
@@ -1632,6 +1641,20 @@ returns — the eventstream outbox's shape, for a gap of the same kind: the dura
 run is the acceptance. Read its header for the cutover that bought it (2026-09-04, three release
 requests with no QA run) and "The trigger engine" for the sweeps that drain it. Keyed by the event
 id, so a redelivery finds its own row; one index, on `accepted_at`, which is the sweeps' only read.
+
+`V14__scm_release_priority.sql` is the release-priority campaign's whole schema cost, and it is V8's
+shape a fifth time: `ci_scm_release.priority`, `varchar(32)`, nullable, no default, no backfill, part
+of no constraint and no index. A release request's priority is declared in qits-projects on its
+participating branches, folded there into one effective value, and carried down on `SCMRelease`;
+qits-ci **transcribes** it onto `SoftwareRelease` and acts on it nowhere — `ci_run` gains no column,
+the FIFO queue is untouched, and no code path compares the value to anything. Queue ordering is the
+next feature and this is the inert data it will read. It lands on the release fact rather than on the
+owed announcement for V10's reason exactly reversed in time: the announcement is often made by
+whoever closes the join later, and the fact row is the half that knows what the release said, so
+`ReleaseJoin.announceOwed` resolves it there at announce time. No check constraint names the six
+values — the vocabulary is another context's and will grow there — and the only rule applied is the
+column's own width, a longer value recorded as **none** with a WARN, `ci_run.release_request_id`'s
+rule verbatim.
 
 `V1__init.sql` is the rest of the schema. The nine H2 migrations it replaces (V1-V8 plus a Java V9) are
 history in this repository's log and are not a prefix of this lineage: the move off H2 is a

@@ -70,6 +70,22 @@ import java.util.UUID;
  * {@code CanonicalJson} excludes everything {@link QitsEvent} declares, so no {@code @JsonIgnore} is
  * spelled here. It is the run's own terminal timestamp: what happened is the pipeline finishing, not
  * the announcement being made.
+ *
+ * <p><b>{@code priority} is the release's own priority, carried verbatim and acted on by nobody
+ * here.</b> It is declared on a release request's participating branches in qits-projects, folded
+ * there into one effective value, and rides {@code SCMRelease} down to qits-ci, which transcribes it
+ * onto this event and changes nothing about how it builds or queues — the queue-ordering feature is
+ * the next one, and this field is the inert data it will read. So it is a plain String rather than an
+ * enum: the vocabulary is qits-projects', a second copy of it here would be a second list to keep in
+ * step, and this service compares it to nothing.
+ *
+ * <p><b>Additive, exactly as {@code projectId} and {@code repoName} were</b> — appended last, with
+ * every earlier component keeping its name, its type and its position, and <b>nullable</b>: a release
+ * announced by a publisher that predates the field, a replay out of the durable log, and every run
+ * whose join closed with no recorded release fact all carry none. {@code CanonicalJson}'s {@code
+ * NON_NULL} inclusion then leaves the key out of the payload entirely rather than writing a null, so
+ * "the release stated no priority" is spelled by the key not being there and a consumer must never
+ * read absence as a value.
  */
 public record SoftwareRelease(
     UUID eventId,
@@ -80,7 +96,8 @@ public record SoftwareRelease(
     String version,
     String packageType,
     String packageName,
-    Instant occurredAt)
+    Instant occurredAt,
+    String priority)
     implements QitsEvent {
 
   public SoftwareRelease {
@@ -98,7 +115,8 @@ public record SoftwareRelease(
       String version,
       String packageType,
       String packageName,
-      Instant occurredAt) {
+      Instant occurredAt,
+      String priority) {
     this(
         null,
         repository,
@@ -108,6 +126,36 @@ public record SoftwareRelease(
         version,
         packageType,
         packageName,
-        occurredAt);
+        occurredAt,
+        priority);
+  }
+
+  /**
+   * The same, for a publisher that states no priority — which is every caller that predates the
+   * field, and the honest spelling of a release qits-ci recorded no priority for.
+   *
+   * <p>Kept beside the one above rather than replaced by it: a component added at the end must not
+   * make an existing construction site fail to compile, since that is precisely the property that
+   * makes the addition additive at the source as well as on the wire.
+   */
+  public SoftwareRelease(
+      String repository,
+      String projectId,
+      String repoId,
+      String repoName,
+      String version,
+      String packageType,
+      String packageName,
+      Instant occurredAt) {
+    this(
+        repository,
+        projectId,
+        repoId,
+        repoName,
+        version,
+        packageType,
+        packageName,
+        occurredAt,
+        null);
   }
 }

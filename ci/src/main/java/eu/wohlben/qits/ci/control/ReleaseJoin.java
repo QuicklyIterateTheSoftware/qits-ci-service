@@ -81,6 +81,23 @@ import org.jboss.logging.Logger;
  * sweep announces it again. Losing an announcement is the failure this class exists to prevent;
  * making one twice is a nuisance the other way round, and that is the trade taken.
  *
+ * <h2>The priority rides through here, and this class is the only reason it can</h2>
+ *
+ * <p>A release request carries a priority — declared on its participating branches in qits-projects,
+ * folded there into one effective value — and {@code SCMRelease} carries it down. qits-ci
+ * <b>transcribes</b> it onto {@code SoftwareRelease} and acts on it nowhere: the run queue is FIFO
+ * and stays FIFO, {@code ci_run} does not have the column, and no comparison anywhere in this service
+ * reads the value. Queue ordering is the next feature; this is the inert data it will read.
+ *
+ * <p>It lands on {@link CiScmRelease} rather than on the owed row, and it is <b>resolved at announce
+ * time</b> rather than carried in — which falls out of the arrival orders above. An owed row exists
+ * from the moment a run goes green, possibly long before any release does and in a process that no
+ * longer runs by the time one arrives; the fact row is the only half of the join that knows what the
+ * release said. So the tag-first order reads the priority off a row written after the obligation was,
+ * and the release-first order reads it off one written before — same lookup, same answer. A drive
+ * with no fact row behind it (a run whose own trigger was the release, which is the manual door's
+ * shape) resolves null, and null reaches the wire as an absent key.
+ *
  * <h2>What this class is NOT, and the deploy that looks like it is</h2>
  *
  * <p><b>Nothing here can announce before the run that published.</b> An owed row is written by a
@@ -118,6 +135,15 @@ public class ReleaseJoin {
    * why it is spelled once, here, and read from this constant everywhere.
    */
   public static final String RELEASE_EVENT_NAME = "SCMRelease";
+
+  /**
+   * What {@code ci_scm_release.priority} can hold; a longer value is recorded as none.
+   *
+   * <p>Generous several times over for the vocabulary that feeds it ({@code LOWEST} … {@code
+   * BLOCKING}), which is the point: the bound is a column's, not a validation of another context's
+   * words.
+   */
+  static final int MAX_PRIORITY_LENGTH = 32;
 
   @Inject CiReleaseAnnouncementRepository announcements;
   @Inject CiScmReleaseRepository releases;
@@ -167,7 +193,7 @@ public class ReleaseJoin {
   public void onGreenReleaseRun(Published run) {
     QuarkusTransaction.requiringNew().run(() -> owe(run));
     if (releasedAlready(run)) {
-      announceOwed(run.repoId(), run.version());
+      announceOwed(run.repoId(), run.repoName(), run.version());
       return;
     }
     LOG.infof(
@@ -261,20 +287,33 @@ public class ReleaseJoin {
    * @param version the release stamp — also the name of the tag the release push created
    * @param eventId the announcing event, kept so a row says which release made the claim
    * @param occurredAt when the release happened
+   * @param priority what the release said its priority was, or null when it said nothing — see
+   *     {@link #MAX_PRIORITY_LENGTH} for the one rule applied to it and {@link ReleaseAnnouncer} for
+   *     why there is no second one
    */
   public void onScmRelease(
-      String repoId, String repoName, String version, String eventId, Instant occurredAt) {
+      String repoId,
+      String repoName,
+      String version,
+      String eventId,
+      Instant occurredAt,
+      String priority) {
     QuarkusTransaction.requiringNew()
-        .run(() -> recordRelease(repoId, repoName, version, eventId, occurredAt));
-    announceOwed(repoId, version);
+        .run(() -> recordRelease(repoId, repoName, version, eventId, occurredAt, priority));
+    announceOwed(repoId, repoName, version);
     if (repoName != null && !repoName.isBlank() && !repoName.equals(repoId)) {
-      announceOwed(repoName, version);
+      announceOwed(repoName, repoId, version);
     }
   }
 
   /** The fact row, written once. The read is the guard; the unique constraint is the guarantee. */
   private void recordRelease(
-      String repoId, String repoName, String version, String eventId, Instant occurredAt) {
+      String repoId,
+      String repoName,
+      String version,
+      String eventId,
+      Instant occurredAt,
+      String priority) {
     if (releases.findRelease(repoId, version).isPresent()) {
       return;
     }
@@ -286,7 +325,36 @@ public class ReleaseJoin {
     release.eventId = eventId;
     release.occurredAt = occurredAt;
     release.seenAt = Instant.now();
+    release.priority = priorityToRecord(repoId, version, priority);
     releases.persist(release);
+  }
+
+  /**
+   * The release's stated priority as this row may hold it: the value verbatim, or none.
+   *
+   * <p><b>Nothing here judges the value</b>, which is the whole of qits-ci's relationship with it.
+   * There is no enum to parse it into and no list of accepted words: qits-projects owns the
+   * vocabulary, it will grow there, and a value this service had not heard of must ride through
+   * untouched rather than cost a release its announcement.
+   *
+   * <p>The one rule is the column's own width, and it is {@code ci_run.release_request_id}'s rule
+   * verbatim — <b>recorded as none, with a WARN, rather than truncated or thrown</b>. The release
+   * fact is the point of this row; a payload that cannot name a priority within {@link
+   * #MAX_PRIORITY_LENGTH} characters is not naming one this platform issued, and a truncated value
+   * would be a word nobody wrote travelling on as if somebody had.
+   */
+  private static String priorityToRecord(String repoId, String version, String priority) {
+    if (priority == null || priority.isBlank()) {
+      return null;
+    }
+    if (priority.length() > MAX_PRIORITY_LENGTH) {
+      LOG.warnf(
+          "%s of %s %s names a priority of %d characters — too long to record, the release keeps"
+              + " none",
+          RELEASE_EVENT_NAME, repoId, version, priority.length());
+      return null;
+    }
+    return priority;
   }
 
   /**
@@ -296,12 +364,43 @@ public class ReleaseJoin {
    *
    * <p>A failure of one announcer costs that announcement and not its siblings, the fan-out rule the
    * {@link ReleaseAnnouncer} port states: N declarations are N calls.
+   *
+   * <p>The one spelling the caller has, for the boot sweep — which reads its keys back out of the
+   * owed rows and therefore knows the repository by the run's id alone.
    */
   private void announceOwed(String repoId, String version) {
+    announceOwed(repoId, null, version);
+  }
+
+  /**
+   * The same, with the second spelling of the repository stated.
+   *
+   * <p>{@code repoId} is the spelling the <b>owed rows</b> are keyed by and is what selects them;
+   * {@code repoName} is the other one the caller happens to know, and it is used for one thing only —
+   * finding the release fact this announcement's priority is read off, with the matcher {@code
+   * released(…)} closes the join with. The two arguments are the run's pair in the green-run
+   * direction and the event's pair in the arriving-release direction, and either way the lookup has
+   * to be able to reach the row the gate already accepted.
+   *
+   * <p><b>The priority is resolved HERE, inside this transaction, and not carried in.</b> An owed row
+   * is written when a run goes green, which may be long before the release exists and in another
+   * process entirely — so the value cannot be on it, and reading it at the moment of announcing is
+   * what makes a late escalation reach the wire. It is looked up once per drive rather than once per
+   * row: N artifacts of one run are one question about one release, the shape {@link #sweepOwed}
+   * already takes.
+   */
+  private void announceOwed(String repoId, String repoName, String version) {
     QuarkusTransaction.requiringNew()
         .run(
             () -> {
               List<CiReleaseAnnouncement> owed = announcements.lockOwed(repoId, version);
+              if (owed.isEmpty()) {
+                return;
+              }
+              // Null when no release fact stands behind this drive — a run whose own trigger WAS the
+              // release (the manual door leaves no row), or a release that stated no priority. Both
+              // reach the wire as an absent key, which is the honest spelling of "none was stated".
+              String priority = releases.priorityOf(repoId, repoName, version).orElse(null);
               Instant now = Instant.now();
               for (CiReleaseAnnouncement row : owed) {
                 for (ReleaseAnnouncer announcer : releaseAnnouncers) {
@@ -315,7 +414,8 @@ public class ReleaseJoin {
                         row.packageType,
                         row.packageName,
                         row.finishedAt,
-                        row.triggerEventId);
+                        row.triggerEventId,
+                        priority);
                   } catch (RuntimeException e) {
                     LOG.warnf(
                         e, "Announcing artifact %s of run %s failed", row.packageName, row.runId);
