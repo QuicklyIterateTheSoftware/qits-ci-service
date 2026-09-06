@@ -233,7 +233,11 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
     // Verbatim, as the canonical JSON qits-events stored — no per-field flattening. A step that
     // wants one field uses jq, which the step images carry.
     assertEquals(PAYLOAD, env.get("QITS_EVENT_PAYLOAD"));
-    assertEquals(4, env.size(), "the four are the whole of it");
+    // EMPTY, NEVER ABSENT. A BuildSuccessful carries no version, and a step reading one shape
+    // whatever the event was is what lets a recipe put its own `set -u` guard where it means
+    // something. See CiRunServiceTest for the arm that has a version to seed.
+    assertEquals("", env.get("QITS_VERSION"));
+    assertEquals(5, env.size(), "the five are the whole of it");
   }
 
   // --- the causation stamp ---
