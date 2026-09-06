@@ -62,6 +62,14 @@ public interface ReleaseAnnouncer {
    * @param triggerEventId the event that caused this run, stamped as the published event's parent —
    *     a plain String for the reason {@link RunAnnouncer} argues in full. Never null in practice:
    *     only an event-triggered run can carry a declaration.
+   * @param priority the priority the release itself stated, read off the recorded {@code SCMRelease}
+   *     fact by {@link ReleaseJoin} and passed through <b>verbatim</b>. qits-ci acts on it nowhere —
+   *     it orders no queue by it, compares it to nothing and has no enum for it, because the
+   *     vocabulary is qits-projects' and a second copy of it here would be a second list to keep in
+   *     step. <b>Null</b> whenever no release fact stands behind the announcement: a run whose
+   *     trigger WAS the release (the manual door, a hand-supplied event, which rides no bus and
+   *     leaves no row), a release announced before the field existed, and a replay. Absent is a
+   *     supported value and reaches the wire as a missing key.
    */
   void onArtifactPublished(
       String runId,
@@ -72,5 +80,6 @@ public interface ReleaseAnnouncer {
       String packageType,
       String packageName,
       Instant finishedAt,
-      String triggerEventId);
+      String triggerEventId,
+      String priority);
 }

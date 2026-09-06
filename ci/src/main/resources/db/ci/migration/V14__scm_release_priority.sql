@@ -1,0 +1,27 @@
+-- What the release said its priority was, kept on the fact row so the announcement can carry it.
+--
+-- Priority is declared in qits-projects, on a release request's PARTICIPATING BRANCHES, and folded
+-- there into one effective value per request; `SCMRelease` carries it down and this column is where
+-- qits-ci puts it. It goes on ci_scm_release rather than on ci_release_announcement or ci_run
+-- because this is the row that knows what the release stated: an announcement is often made by
+-- whoever closes the join later — a later SCMRelease, or a boot sweep in another process — and the
+-- join resolves the value out of this row at that moment.
+--
+-- **qits-ci acts on it nowhere.** It is transcribed onto SoftwareRelease verbatim and read by
+-- nobody in between: the run queue is FIFO and stays FIFO, ci_run is untouched, and nothing compares
+-- this value to anything. Queue ordering is the next feature; this is the inert data it will read.
+-- That is also why the column is a plain varchar and no check constraint names the six values — the
+-- vocabulary is another context's, it will grow there, and a database that enumerated it would be a
+-- second list to keep in step (V1's header, and the standing rule).
+--
+-- Nullable, no default, no backfill and part of no constraint — V8's shape, and for V8's reason:
+-- null is the ORDINARY value rather than one to be filled in. A release published before the field
+-- existed, a replay out of the durable log and every historical row all carry none, and
+-- CanonicalJson's NON_NULL inclusion then leaves the key out of SoftwareRelease's payload entirely,
+-- so "the release stated no priority" is spelled by absence rather than by a value.
+--
+-- 32 characters is what the longest name in that vocabulary needs several times over. A longer value
+-- is recorded as NONE with a WARN rather than truncated or thrown — ReleaseJoin.priorityToRecord,
+-- the ci_run.release_request_id rule verbatim: the release fact is the point, and a payload that
+-- cannot name a priority within 32 characters is not naming one this platform issued.
+alter table ci_scm_release add column priority varchar(32);

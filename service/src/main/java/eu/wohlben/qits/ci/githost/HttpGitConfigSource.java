@@ -157,6 +157,41 @@ public class HttpGitConfigSource implements CiConfigSource {
   }
 
   /**
+   * One blob at a rev — the same route the trigger listing reads its files with, addressed directly.
+   *
+   * <p><b>A 404 is ABSENT and nothing else is.</b> Both callers read at a rev they have already had
+   * resolved (the trigger listing's own head, or the wrapper's {@code main} that the platform pass
+   * reads beside this one), so "the rev does not resolve" is not a live case — and if it ever became
+   * one, answering ABSENT for it would be the safe direction anyway: the caller falls back to the
+   * legacy trigger files rather than inventing a composition.
+   *
+   * <p>Past {@link #MAX_CONFIG_BYTES} the answer is UNREACHABLE rather than the bytes: a truncated
+   * slot file is a different slot file, and half a release recipe must never compile.
+   */
+  @Override
+  public FileLookup readFile(CiRepoRef repo, String rev, String path) {
+    CiIdentifiers.requireRepo(repo);
+    // A rev is a sha or a ref name and both live inside requireBranch's charset, which is what keeps
+    // this method's one free value out of a URL it was not checked for.
+    CiIdentifiers.requireBranch(rev);
+
+    Answer answer = get(blobUrl(repo, rev, path));
+    if (answer.notFound()) {
+      return FileLookup.absent();
+    }
+    if (!answer.ok()) {
+      LOG.debugf("ci could not read %s at %s in %s: HTTP %d", path, rev, repo.display(), answer.status());
+      return FileLookup.unreachable();
+    }
+    if (answer.body().length > MAX_CONFIG_BYTES) {
+      LOG.warnf(
+          "%s in %s is larger than %d bytes — not read", path, repo.display(), MAX_CONFIG_BYTES);
+      return FileLookup.unreachable();
+    }
+    return FileLookup.found(answer.text());
+  }
+
+  /**
    * The trigger listing: every {@code .config/qits/ci-event-*.yml} at the branch's current head,
    * with the head it read them at.
    *

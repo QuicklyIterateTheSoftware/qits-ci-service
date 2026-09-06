@@ -24,6 +24,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -151,8 +152,29 @@ public class CiEventTriggerService {
    */
   static final String PAYLOAD_REPOSITORY_FIELD = "repository";
 
+  /**
+   * The two events the release cycle is made of, and the whole of what makes {@code release.yml}
+   * visible at all: the extra blob read is gated on this pair, so an ordinary event costs exactly
+   * what it cost before this feature existed.
+   */
+  private static final Set<String> RELEASE_EVENTS =
+      Set.of(CiReleaseComposer.RELEASE_REQUEST_EVENT, CiReleaseComposer.RELEASE_EVENT);
+
+  /**
+   * The two trigger files a {@code release.yml} replaces. Matched by PATH rather than by declared
+   * event: these two names are the platform's own convention across all 47 repositories, and a
+   * repository that keeps a bespoke {@code ci-event-*.yml} for one of the release events is
+   * declaring a second pipeline on purpose — two files, two runs, exactly as the dedupe already says.
+   */
+  private static final Set<String> LEGACY_RELEASE_PATHS =
+      Set.of(
+          CiEventTriggerParser.CONFIG_DIR + "ci-event-release-request.yml",
+          CiEventTriggerParser.CONFIG_DIR + "ci-event-release.yml");
+
   @Inject CiConfigSource configSource;
   @Inject CiEventTriggerParser triggerParser;
+  @Inject CiReleaseSlotParser slotParser;
+  @Inject CiReleaseArchetypes archetypes;
   @Inject CiCandidateRepos candidateRepos;
   @Inject CiRunService runService;
   @Inject CiOwedEventRepository owed;
@@ -493,6 +515,10 @@ public class CiEventTriggerService {
     // against the repository the payload names, at the commit that repository's main was on for THIS
     // evaluation. Reading it again would be a second read of a branch that may have moved.
     Map<String, String> heads = new HashMap<>();
+    // Resolved once for the whole evaluation and used twice: the platform pass reads its trigger
+    // files out of it, and a candidate's release.yml reads its archetype recipe out of it. One
+    // catalogue lookup, no extra listing.
+    CiRepoRef platformRepo = platformRepo(candidates);
     for (CiRepoRef repo : candidates) {
       if (deadlineNanos != null && System.nanoTime() - deadlineNanos >= 0) {
         // Out of time rather than out of answers, and the two must not look alike to the caller —
@@ -501,7 +527,7 @@ public class CiEventTriggerService {
         continue;
       }
       try {
-        if (!evaluateRepo(repo, arrival, payload, runIds, heads)) {
+        if (!evaluateRepo(repo, arrival, payload, runIds, heads, platformRepo)) {
           skipped.add(repo.repoId());
         }
       } catch (RuntimeException e) {
@@ -513,7 +539,7 @@ public class CiEventTriggerService {
     }
     if (projectScope == null) {
       try {
-        evaluatePlatform(arrival, payload, candidates, heads, runIds);
+        evaluatePlatform(arrival, payload, candidates, platformRepo, heads, runIds);
       } catch (RuntimeException e) {
         // Never out of the evaluation: the candidates' own runs are already recorded and a platform
         // pipeline's failure is not theirs.
@@ -576,7 +602,8 @@ public class CiEventTriggerService {
       Arrival arrival,
       JsonNode payload,
       List<String> runIds,
-      Map<String, String> heads) {
+      Map<String, String> heads,
+      CiRepoRef platformRepo) {
     String repoId = repo.display();
     EventTriggerLookup lookup =
         configSource.readEventTriggers(repo, TRIGGER_BRANCH, CiTriggerScope.REPOSITORY);
@@ -587,7 +614,58 @@ public class CiEventTriggerService {
       return false;
     }
     heads.put(repo.repoId(), lookup.headSha());
+    ReleaseSlots slots = releaseSlots(repo, repoId, arrival, lookup.headSha(), platformRepo);
+    List<String> superseded = new ArrayList<>();
     for (EventTriggerFile file : lookup.files()) {
+      if (slots.present() && LEGACY_RELEASE_PATHS.contains(file.path())) {
+        superseded.add(file.path());
+        continue;
+      }
+      evaluateTrigger(repo, repoId, file.path(), file.content(), arrival, payload, lookup, runIds);
+    }
+    if (!superseded.isEmpty()) {
+      // WARN and never a parse error: a repository mid-migration legitimately carries both for one
+      // release, and the one thing that must not happen is the legacy file firing BESIDE the composed
+      // one — two runs for one release, only one of which anybody meant. Naming both paths is what
+      // makes the window readable from a log rather than from this source file.
+      LOG.warnf(
+          "%s: %s is the release pipeline for %s — the legacy trigger file(s) %s were not evaluated",
+          repoId, CiReleaseSlotParser.CONFIG_PATH, arrival.eventName(), superseded);
+    }
+    if (slots.document() != null) {
+      evaluateTrigger(
+          repo,
+          repoId,
+          CiReleaseSlotParser.CONFIG_PATH,
+          slots.document(),
+          arrival,
+          payload,
+          lookup,
+          runIds);
+    }
+    return true;
+  }
+
+  /**
+   * One trigger document — a file the repository committed, or one composed from its release slots —
+   * matched, selected, resolved and enqueued.
+   *
+   * <p>Extracted so a composed document goes through <b>exactly</b> the path a committed one does:
+   * the same parser, the same {@code when:} evaluation, the same checkout resolution with its
+   * validation and its optional-checkout fallback, the same run row. A composed pipeline that took a
+   * shortcut anywhere in here would be a second engine to keep in step with this one.
+   */
+  private void evaluateTrigger(
+      CiRepoRef repo,
+      String repoId,
+      String configPath,
+      String content,
+      Arrival arrival,
+      JsonNode payload,
+      EventTriggerLookup lookup,
+      List<String> runIds) {
+    EventTriggerFile file = new EventTriggerFile(configPath, content);
+    {
       CiEventTrigger trigger;
       try {
         trigger = triggerParser.parse(file.path(), file.content());
@@ -595,16 +673,16 @@ public class CiEventTriggerService {
         // Loud, naming repository and file — a trigger that cannot be parsed must not silently never
         // fire — and per file: the repository's OTHER trigger files are evaluated regardless.
         LOG.warnf("%s: %s is not a usable event trigger: %s", repoId, file.path(), e.getMessage());
-        continue;
+        return;
       }
       if (!trigger.eventName().equals(arrival.eventName())) {
-        continue;
+        return;
       }
       if (!CiEventSelectionEvaluator.matches(trigger.selection(), payload)) {
         LOG.debugf(
             "%s: %s declares %s but its selection did not match event %s",
             repoId, file.path(), trigger.eventName(), arrival.eventId());
-        continue;
+        return;
       }
       // Absent checkout: today's behavior byte-for-byte — the run builds main's head. Declared,
       // the ref and sha come out of the payload instead; the trigger DECIDED at main above.
@@ -632,7 +710,7 @@ public class CiEventTriggerService {
             LOG.warnf(
                 "%s: %s checkout refused for event %s: %s",
                 repoId, file.path(), arrival.eventId(), refused.getMessage());
-            continue;
+            return;
           }
           branch = declaredBranch;
           sha = declaredSha;
@@ -674,7 +752,7 @@ public class CiEventTriggerService {
               trigger.checkout().shaPath(),
               arrival.eventId(),
               arrival.eventName());
-          continue;
+          return;
         }
       }
       LOG.infof(
@@ -696,7 +774,106 @@ public class CiEventTriggerService {
         runIds.add(runId);
       }
     }
-    return true;
+  }
+
+  // --- the release slot file, and what it supersedes ----------------------------------------------
+
+  /**
+   * What {@code .config/qits/release.yml} means for ONE candidate and ONE arriving event.
+   *
+   * @param present the file is there, so the legacy release trigger files are superseded whatever
+   *     else happened. It is a separate fact from the document on purpose: a slot file that names an
+   *     unreadable archetype, or that will not parse, still supersedes — a repository that has
+   *     migrated must not silently fall back to files it has already stopped maintaining.
+   * @param document the composed trigger document for this event, or null when there is none to run
+   */
+  private record ReleaseSlots(boolean present, String document) {
+
+    static final ReleaseSlots NONE = new ReleaseSlots(false, null);
+
+    static final ReleaseSlots NO_RUN = new ReleaseSlots(true, null);
+  }
+
+  /**
+   * Reads, resolves and compiles a candidate's release slots.
+   *
+   * <p><b>Gated on the two release event names</b>, which is the whole of what this feature costs an
+   * ordinary event: nothing. A {@code BuildSuccessful} evaluates exactly the reads it always did.
+   *
+   * <p><b>Read at the head the trigger listing just resolved</b>, never at the branch again — the
+   * listing's own discipline, for the listing's own reason: a run must never be recorded against one
+   * commit with a declaration from another.
+   *
+   * <p><b>An unreadable read falls back to the legacy files, and a MISSING one is not the same
+   * thing.</b> {@code ABSENT} is a 404 at a rev the host has already resolved, so it is the honest
+   * "this repository has not migrated" and is every repository today. {@code UNREACHABLE} is a blip,
+   * and treating it as "release.yml exists" would cost a release request its QA verdict — the
+   * failure the owed-event ledger exists to end — whereas treating it as absent costs a migrated
+   * repository nothing at all, since it has no legacy file left for the fallback to find.
+   */
+  private ReleaseSlots releaseSlots(
+      CiRepoRef repo, String repoId, Arrival arrival, String headSha, CiRepoRef platformRepo) {
+    if (!RELEASE_EVENTS.contains(arrival.eventName())) {
+      return ReleaseSlots.NONE;
+    }
+    CiConfigSource.FileLookup found =
+        configSource.readFile(repo, headSha, CiReleaseSlotParser.CONFIG_PATH);
+    if (found.status() == CiConfigSource.FileLookup.Status.UNREACHABLE) {
+      LOG.warnf(
+          "%s: %s could not be read at %s — this evaluation falls back to the legacy release trigger"
+              + " files",
+          repoId, CiReleaseSlotParser.CONFIG_PATH, headSha);
+      return ReleaseSlots.NONE;
+    }
+    if (found.status() != CiConfigSource.FileLookup.Status.FOUND) {
+      return ReleaseSlots.NONE;
+    }
+    CiReleaseSlots slots;
+    try {
+      slots = slotParser.parse(CiReleaseSlotParser.CONFIG_PATH, found.content());
+    } catch (CiConfigException e) {
+      LOG.warnf(
+          "%s: %s is not a usable release slot file: %s — no release run",
+          repoId, CiReleaseSlotParser.CONFIG_PATH, e.getMessage());
+      return ReleaseSlots.NO_RUN;
+    }
+    CiReleaseSlots archetype = null;
+    if (slots.namesArchetype()) {
+      Optional<CiReleaseArchetypes.Archetype> recipe =
+          archetypes.read(platformRepo, TRIGGER_BRANCH, slots.archetype());
+      if (recipe.isEmpty()) {
+        // CiReleaseArchetypes has already said which of the four ways it failed; this line is what
+        // names the repository that asked, which that class deliberately does not hold.
+        LOG.warnf(
+            "%s: %s names release archetype '%s', which could not be read — no release run",
+            repoId, CiReleaseSlotParser.CONFIG_PATH, slots.archetype());
+        return ReleaseSlots.NO_RUN;
+      }
+      archetype = recipe.get().slots();
+    }
+    try {
+      CiReleaseComposer.Composed composed = CiReleaseComposer.compose(repo, slots, archetype);
+      return new ReleaseSlots(
+          true,
+          CiReleaseComposer.RELEASE_REQUEST_EVENT.equals(arrival.eventName())
+              ? composed.releaseRequestDocument()
+              : composed.releaseDocument());
+    } catch (CiConfigException e) {
+      LOG.warnf(
+          "%s: %s could not be composed into a release pipeline: %s — no release run",
+          repoId, CiReleaseSlotParser.CONFIG_PATH, e.getMessage());
+      return ReleaseSlots.NO_RUN;
+    }
+  }
+
+  /**
+   * The platform-pipelines repository as a candidate, or null when the feature is off or the
+   * catalogue does not hold it. No logging: both callers say what a null means in their own terms,
+   * and one of them (the archetype read) only cares when a repository actually asked for a recipe.
+   */
+  private CiRepoRef platformRepo(List<CiRepoRef> candidates) {
+    String configured = platformPipelinesRepository;
+    return configured.isEmpty() ? null : find(candidates, configured);
   }
 
   /** A checkout path resolved against the payload; null when the path leads nowhere or to blank. */
@@ -731,6 +908,7 @@ public class CiEventTriggerService {
       Arrival arrival,
       JsonNode payload,
       List<CiRepoRef> candidates,
+      CiRepoRef platformRepo,
       Map<String, String> heads,
       List<String> runIds) {
     String configured = platformPipelinesRepository;
@@ -738,7 +916,6 @@ public class CiEventTriggerService {
       // Off, and off means no read at all.
       return;
     }
-    CiRepoRef platformRepo = find(candidates, configured);
     if (platformRepo == null) {
       // WARN rather than DEBUG, unlike the per-candidate reads: this repository is named in this
       // deployment's own config, so a missing one is a misconfiguration that silently disables every
