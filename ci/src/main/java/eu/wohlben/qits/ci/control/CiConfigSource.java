@@ -73,6 +73,52 @@ public interface CiConfigSource {
   record EventTriggerFile(String path, String content) {}
 
   /**
+   * One file read by path, and the three answers a caller has to keep apart.
+   *
+   * <p>{@link Status#ABSENT} is "this repository declares no such file", which for {@code
+   * .config/qits/release.yml} is every repository that has not migrated and is the ordinary case.
+   * {@link Status#UNREACHABLE} is "nothing was learned", and collapsing the two would turn a git-host
+   * blip into a repository that suddenly declares nothing — the same rule {@link CommitHeld#UNKNOWN}
+   * states one method up.
+   */
+  record FileLookup(Status status, String content) {
+
+    public enum Status {
+      /** The file is there. {@code content} is its text. */
+      FOUND,
+      /** The repository holds the rev and does not hold that path. */
+      ABSENT,
+      /** The git host could not be asked, or answered something that is not an answer. */
+      UNREACHABLE
+    }
+
+    public static FileLookup found(String content) {
+      return new FileLookup(Status.FOUND, content);
+    }
+
+    public static FileLookup absent() {
+      return new FileLookup(Status.ABSENT, null);
+    }
+
+    public static FileLookup unreachable() {
+      return new FileLookup(Status.UNREACHABLE, null);
+    }
+  }
+
+  /**
+   * Reads one file at a rev — the blob route the trigger listing already uses, addressed directly
+   * rather than through a directory listing.
+   *
+   * <p>Two callers, and both read a path this engine spells rather than one a listing handed back:
+   * {@code CiEventTriggerService} reads {@code .config/qits/release.yml} at the head the trigger
+   * listing just resolved (one read, one commit — the listing's own discipline), and {@link
+   * CiReleaseArchetypes} reads a recipe out of the platform-pipelines repository at its {@code main}.
+   * The one repository-controlled part of either path is an archetype's name, which {@code
+   * CiReleaseSlotParser} bounds to a plain slug before it can reach a URL.
+   */
+  FileLookup readFile(CiRepoRef repo, String rev, String path);
+
+  /**
    * Does {@code repo} still hold {@code sha}? Asked in exactly one place — {@code
    * CiRunService.runSteps}, when a step container reports it could not check the commit out — and
    * the two causes it tells apart mean opposite things to the record. The commit force-pushed away

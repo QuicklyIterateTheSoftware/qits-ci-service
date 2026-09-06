@@ -45,6 +45,16 @@ public class FakeCiConfigSource implements CiConfigSource {
    */
   private final Map<String, EventTriggerLookup> triggersByBranch = new HashMap<>();
 
+  /**
+   * The by-path half, per (repoId, rev, path). An unseeded path is {@link FileLookup#absent()} —
+   * "this repository declares no such file", which for {@code .config/qits/release.yml} is every
+   * repository that has not migrated and is what keeps the legacy behaviour the default in the suite.
+   */
+  private final Map<String, FileLookup> filesByPath = new HashMap<>();
+
+  /** Every {@code readFile} this fake was asked, in order. */
+  private final List<String> fileReads = Collections.synchronizedList(new ArrayList<>());
+
   /** Every commit-held probe this fake was asked, in order. */
   private final List<String> commitProbes = Collections.synchronizedList(new ArrayList<>());
 
@@ -95,6 +105,24 @@ public class FakeCiConfigSource implements CiConfigSource {
     return repoId + "@" + branch + "#" + scope;
   }
 
+  /** Seeds one file readable by path at a rev. */
+  public void putFile(String repoId, String rev, String path, String content) {
+    filesByPath.put(fileKey(repoId, rev, path), FileLookup.found(content));
+  }
+
+  /** Seeds a path the git host could not answer for at all — the third answer, not the second. */
+  public void putFileUnreachable(String repoId, String rev, String path) {
+    filesByPath.put(fileKey(repoId, rev, path), FileLookup.unreachable());
+  }
+
+  private static String fileKey(String repoId, String rev, String path) {
+    return repoId + "@" + rev + "/" + path;
+  }
+
+  public List<String> fileReads() {
+    return List.copyOf(fileReads);
+  }
+
   public List<String> commitProbes() {
     return List.copyOf(commitProbes);
   }
@@ -110,9 +138,20 @@ public class FakeCiConfigSource implements CiConfigSource {
   public void reset() {
     byCommit.clear();
     triggersByBranch.clear();
+    filesByPath.clear();
     commitProbes.clear();
     triggerReads.clear();
+    fileReads.clear();
     addressed.clear();
+  }
+
+  @Override
+  public FileLookup readFile(CiRepoRef repo, String rev, String path) {
+    String repoId = repo.repoId();
+    addressed.add(repo);
+    fileReads.add(fileKey(repoId, rev, path));
+    FileLookup seeded = filesByPath.get(fileKey(repoId, rev, path));
+    return seeded == null ? FileLookup.absent() : seeded;
   }
 
   @Override

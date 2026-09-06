@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiTriggerScope;
+import eu.wohlben.qits.ci.control.CiConfigSource;
 import eu.wohlben.qits.ci.control.CiConfigSource.CommitHeld;
 import eu.wohlben.qits.ci.control.CiConfigSource.EventTriggerFile;
 import eu.wohlben.qits.ci.control.CiConfigSource.EventTriggerLookup;
@@ -275,6 +276,73 @@ public class HttpGitConfigSourceTest {
     assertEquals(EventTriggerLookup.Status.FOUND, lookup.status());
     assertEquals(sha, lookup.headSha());
     assertEquals(List.of(), lookup.files());
+  }
+
+  // --- reading one file by path: the release slots and the archetype recipes ---
+
+  @Test
+  public void aFileIsReadByPathAtTheShaTheListingResolved() throws Exception {
+    // The read the release-slot feature added. It is addressed by SHA rather than by branch on
+    // purpose: the caller has just listed the trigger directory at main's head, and a run must never
+    // be recorded against one commit with a declaration read from another.
+    String repoId = "repo-slots";
+    String sha =
+        seed(repoId, null, Map.of(".config/qits/release.yml", "archetype: spa-frontend\n"));
+
+    CiConfigSource.FileLookup found =
+        source.readFile(id(repoId), sha, ".config/qits/release.yml");
+
+    assertEquals(CiConfigSource.FileLookup.Status.FOUND, found.status());
+    assertEquals("archetype: spa-frontend\n", found.content());
+  }
+
+  @Test
+  public void anArchetypeRecipeIsReadOutOfTheWrapperAtItsBranch() throws Exception {
+    // The archetype half, at a REF rather than a sha: the wrapper's main is read per evaluation, so
+    // a release-cycle change is one wrapper commit and no deploy.
+    String repoId = "repo-wrapper";
+    seed(
+        repoId,
+        null,
+        Map.of(
+            ".config/qits/release-archetypes/spa-frontend.yml",
+            "release-request:\n  - {image: alpine:3, script: npm ci}\n"));
+
+    CiConfigSource.FileLookup found =
+        source.readFile(id(repoId), BRANCH, ".config/qits/release-archetypes/spa-frontend.yml");
+
+    assertEquals(CiConfigSource.FileLookup.Status.FOUND, found.status());
+    assertTrue(found.content().contains("npm ci"), found.content());
+  }
+
+  @Test
+  public void aMissingFileIsAbsentAndAnUnreachableHostIsNot() throws Exception {
+    // THE TWO ANSWERS THAT MUST NOT COLLAPSE. Absent is every repository that has not migrated —
+    // the ordinary case, and the one that falls through to the legacy trigger files. Unreachable is
+    // "nothing was learned", and reading it as absence would be the CommitHeld.UNKNOWN mistake one
+    // method over.
+    String repoId = "repo-no-slots";
+    String sha = seed(repoId, null);
+    assertEquals(
+        CiConfigSource.FileLookup.Status.ABSENT,
+        source.readFile(id(repoId), sha, ".config/qits/release.yml").status());
+
+    host.stop();
+    assertEquals(
+        CiConfigSource.FileLookup.Status.UNREACHABLE,
+        source.readFile(id(repoId), sha, ".config/qits/release.yml").status());
+  }
+
+  @Test
+  public void hostileRevsAreRejectedBeforeTheyReachAUrlOnThisReadToo() {
+    // The archetype NAME is repository content, so the path it builds is bounded by the slot parser;
+    // the rev is bounded here, by the same check every other read on this class makes.
+    assertThrows(
+        BadRequestException.class,
+        () -> source.readFile(id("repo-1"), "../../etc", ".config/qits/release.yml"));
+    assertThrows(
+        BadRequestException.class,
+        () -> source.readFile(id("a/../b"), BRANCH, ".config/qits/release.yml"));
   }
 
   @Test

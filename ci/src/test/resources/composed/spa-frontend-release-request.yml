@@ -1,0 +1,22 @@
+# Composed by qits-ci from .config/qits/release.yml and .config/qits/release-archetypes/spa-frontend.yml.
+# Generated: this text is never committed. Edit the slot file or the archetype recipe.
+event: ReleaseRequestChanged
+when:
+  - repoName: { exact: 'qits-observability-frontend' }
+checkout:
+  branch: backingBranch
+  sha: mergedSha
+steps:
+  - image: 'qits/build-images/node-base:latest'
+    timeout-seconds: 1800
+    script: |
+      set -eu
+      # --- platform prelude ---------------------------------------------------------
+      # --- the declared step, run as data -------------------------------------------
+      cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
+      npm ci --no-audit --no-fund
+      npm run lint
+      npm run test
+      npm run build
+      QITS_SLOT_EOF
+      bash -eu /tmp/qits-slot.sh
