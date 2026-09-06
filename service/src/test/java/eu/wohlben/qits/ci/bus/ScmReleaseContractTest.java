@@ -30,10 +30,11 @@ import org.junit.jupiter.api.Test;
  * <p>{@code SCMRelease} is published by <b>qits-projects</b> now, not by qits-workspaces: the release
  * flow's rearchitecture puts the release request — its sources, its backing branch, its tag — in
  * qits-projects, and the announcement belongs to whoever creates the tag. The event's shape did not
- * move with it. Same signature, same seven components, same five payload fields, so the transcription
- * below was unchanged and every consuming line in this service was unchanged with it.
+ * move with it. Same signature, same components, same payload fields, so the transcription below was
+ * unchanged and every consuming line in this service was unchanged with it. What has grown since is
+ * additive and is listed below.
  *
- * <h2>The one field that HAS been added since, and why this file is where you find out</h2>
+ * <h2>The fields that HAVE been added since, and why this file is where you find out</h2>
  *
  * <p><b>{@code commitSha}</b> — what the tag points at. It is the standing instruction below being
  * carried out for the first time: qits-projects grew the component, so this transcription grew it
@@ -42,6 +43,16 @@ import org.junit.jupiter.api.Test;
  * main}. Strictly additive — the five original fields keep their names, their types and their order,
  * and the new one is omitted from the payload when it is absent — so nothing that reads the old
  * shape had to change, and the pipeline that reads the new one has a fallback for the old.
+ *
+ * <p><b>{@code priority}</b> — the release request's effective priority, folded in qits-projects out
+ * of the priorities declared on its participating branches. The same instruction carried out a second
+ * time, appended last after {@code occurredAt} and nullable for the same reason, and it is the field
+ * this service is most nearly indifferent to: {@code ScmReleaseListener} reads it, {@code
+ * ReleaseJoin} records it on the fact row and hands it to {@code SoftwareRelease}, and <b>nothing in
+ * between compares it to anything</b> — no enum, no queue ordering, no gate. So a rename over there
+ * costs this transcription and the value on the outgoing event, and costs the join and the build
+ * nothing at all. It is transcribed anyway, because a field carried verbatim is still a field two
+ * repositories have to spell the same way.
  *
  * <p><b>That nothing had to change is the finding, and it is a property of how this consumer is
  * written rather than luck.</b> Nothing here keys on the producer: the durable seam subscribes by
@@ -119,7 +130,8 @@ public class ScmReleaseContractTest {
       String branch,
       String version,
       String commitSha,
-      Instant occurredAt)
+      Instant occurredAt,
+      String priority)
       implements QitsEvent {}
 
   /**
@@ -140,6 +152,23 @@ public class ScmReleaseContractTest {
   /** The same, with the commit stated — for the cases that are about the tag's own commit. */
   static SCMRelease release(
       String repository, String repositoryName, String version, String branch, String commitSha) {
+    return release(repository, repositoryName, version, branch, commitSha, null);
+  }
+
+  /**
+   * The same, with the priority stated — for the cases that are about it.
+   *
+   * <p>Null is the default here rather than a value, and that is deliberate: every case above was
+   * written before the field existed and must keep producing the bytes it produced then, which is
+   * what makes the addition additive in this file as well as on the wire.
+   */
+  static SCMRelease release(
+      String repository,
+      String repositoryName,
+      String version,
+      String branch,
+      String commitSha,
+      String priority) {
     return new SCMRelease(
         UUID.randomUUID(),
         "p-1",
@@ -148,7 +177,8 @@ public class ScmReleaseContractTest {
         branch,
         version,
         commitSha,
-        Instant.parse("2026-08-12T15:34:38Z"));
+        Instant.parse("2026-08-12T15:34:38Z"),
+        priority);
   }
 
   /**
@@ -167,6 +197,16 @@ public class ScmReleaseContractTest {
   /** The canonical payload of one release — the bytes a frame carries. */
   static String canonicalPayload(String repository, String repositoryName, String version) {
     return CanonicalJson.payload(release(repository, repositoryName, version));
+  }
+
+  /**
+   * The same, for a release that states a priority — the bytes {@code DurableBusConsumptionTest}
+   * drives through the real listener to prove the string below is read rather than merely written.
+   */
+  static String canonicalPayload(
+      String repository, String repositoryName, String version, String priority) {
+    return CanonicalJson.payload(
+        release(repository, repositoryName, version, BACKING_BRANCH, RELEASED_SHA, priority));
   }
 
   @Test
@@ -292,6 +332,64 @@ public class ScmReleaseContractTest {
           withSha.get(field),
           without.get(field),
           field + " moved with commitSha, so the addition was not additive after all");
+    }
+  }
+
+  /**
+   * <b>The ninth component, and the one this service carries without ever reading.</b>
+   *
+   * <p>{@code priority} is the release request's effective priority — the maximum over the
+   * priorities declared on its participating branches, folded in qits-projects. qits-ci transcribes
+   * it: {@code ScmReleaseListener} reads this field, {@code ReleaseJoin} records it on the fact row,
+   * and it leaves again on {@code SoftwareRelease} for a consumer that displays it. Nothing between
+   * those three points compares it, parses it or orders anything by it — the run queue is FIFO and
+   * stays FIFO — which is why the assertion here is about the STRING and not about a value: the field
+   * name is the whole of what the two repositories have to agree on.
+   */
+  @Test
+  public void thePriorityTheJoinCarriesThroughIsInTheCanonicalPayload() throws Exception {
+    JsonNode payload =
+        MAPPER.readTree(canonicalPayload("qits-ci", "qits-ci", "2026.812.153438", "BLOCKING"));
+
+    assertTrue(
+        payload.has(ScmReleaseListener.PRIORITY_FIELD),
+        "the canonical payload carries no " + ScmReleaseListener.PRIORITY_FIELD);
+    assertEquals("BLOCKING", payload.get(ScmReleaseListener.PRIORITY_FIELD).asText());
+  }
+
+  /**
+   * <b>The compatibility arm for it, which is the ordinary case rather than the exception.</b>
+   *
+   * <p>The field is additive, so a release published before it existed — a replay out of the durable
+   * log, an older publisher, a rolled-back one — carries no {@code priority} KEY at all rather than a
+   * null, {@code CanonicalJson}'s {@code NON_NULL} inclusion again. That absence has to be an
+   * ordinary payload here, not a poor one: the join's key is {@code (repository, version)} and the
+   * priority is no part of it, so a release naming none is recorded and announced exactly as it
+   * always was. The rest of the assertion is that every field this service DOES read is byte-identical
+   * either way — the same claim {@link #aReleaseFromBeforeTheCommitShaCarriesNoSuchKeyAndIsOtherwiseIdentical}
+   * makes about the field before it.
+   */
+  @Test
+  public void aReleaseStatingNoPriorityCarriesNoSuchKeyAndIsOtherwiseIdentical() throws Exception {
+    JsonNode prioritised =
+        MAPPER.readTree(canonicalPayload("qits-ci", "qits-ci", "2026.812.153438", "LOWEST"));
+    JsonNode without = MAPPER.readTree(canonicalPayload("qits-ci", "qits-ci", "2026.812.153438"));
+
+    assertFalse(
+        without.has(ScmReleaseListener.PRIORITY_FIELD),
+        "NON_NULL: a release that stated no priority states it by the key not being there, which is"
+            + " what makes 'none' unmistakable rather than a value somebody could act on");
+    for (String field :
+        List.of(
+            ScmReleaseListener.REPOSITORY_FIELD,
+            ScmReleaseListener.REPOSITORY_NAME_FIELD,
+            ScmReleaseListener.VERSION_FIELD,
+            "branch",
+            "commitSha")) {
+      assertEquals(
+          prioritised.get(field),
+          without.get(field),
+          field + " moved with priority, so the addition was not additive after all");
     }
   }
 
