@@ -2,11 +2,17 @@
 # RELEASE REQUESTS ALONE. It replaces ci-event-build.yml and ci-event-userflows.yml, both deleted in
 # the commit that added this file.
 #
-# THIS REPOSITORY IS THE ENGINE, so this file is also the worked instance of the reference template
-# that lives next to it: docs/ci-event-release-request.yml is the TEMPLATE the rollout stamped into
-# every repository, and this is qits-ci's own copy of it. The template carries the full argument —
-# why the event exists, why discovery reads main, why the halves are ordered — and is not repeated
-# here. The two are kept in step: a change to the shape belongs in the template first.
+# THERE IS NO TEMPLATE BESIDE THIS FILE ANY MORE. docs/ci-event-release-request.yml was one — a
+# whole pipeline with <THIS REPOSITORY'S NAME> holes that the rollout stamped into 47 repositories,
+# which is precisely what made a change to the release cycle a 47-repository sweep. It is deleted.
+# What replaced it is not another copy: `.config/qits/release.yml` names a wrapper archetype recipe
+# and the steps live once, in qits-qits' .config/qits/release-archetypes/. README.md's "The fourth
+# file" is the shape and the argument.
+#
+# THIS FILE IS NOT MIGRATED YET, deliberately: the engine ships before the repositories move, and
+# qits-ci is not one of the two pilots. When it migrates it will use `java-service` with its own
+# `release:` slot, because this repository publishes a docs bundle (@apidocs/qits-ci) beside the
+# image and that archetype pushes exactly one artifact.
 #
 # Per-push CI is retired platform-wide. Nothing builds a branch: cd deploys what a RELEASE
 # published, and the CalVer image comes out of ci-event-release.yml. qits-projects folds an open

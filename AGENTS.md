@@ -1243,8 +1243,10 @@ names"), and what follows is what biting it feels like.
 - **`ReleaseRequestChanged` is a trigger this engine needed no code to accept, and exactly one
   column to serve.** The platform runs no CI outside release requests: qits-projects folds a
   request's sources onto `release/<id>` and announces every successful re-fold, and a repository's
-  single QA pipeline (`ci-event-release-request.yml`; the reference file is
-  `docs/ci-event-release-request.yml` and `README.md` has the shape) selects it with
+  single QA pipeline (`ci-event-release-request.yml` on an unmigrated repository, or the composed
+  `release-request:` slot of `release.yml` on a migrated one; `README.md` has both shapes, and the
+  placeholder template `docs/ci-event-release-request.yml` is deleted rather than kept in step with
+  two of them) selects it with
   `checkout: { branch: backingBranch, sha: mergedSha }`. Matching, selection and checkout are the
   generic grammar — the branch that gets built is a branch nobody pushed, which is the whole reason
   the event has to exist, and "decide at main, build at the payload's commit" answers it unchanged.

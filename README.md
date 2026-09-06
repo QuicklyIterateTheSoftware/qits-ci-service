@@ -677,8 +677,13 @@ steps:
     script: ./publish-userflows.sh
 ```
 
-The full reference file, with the reasoning and the per-repository placeholders the rollout sweep
-fills in, is `docs/ci-event-release-request.yml`.
+**There is no reference template to copy any more, and that is the point of "The fourth file"
+below.** `docs/ci-event-release-request.yml` was one — a whole pipeline with
+`<THIS REPOSITORY'S NAME>` holes, a copy-paste macro pretending to be documentation, and the thing
+that made a change to the release cycle a 47-repository sweep. It is deleted. A repository that has
+migrated declares `.config/qits/release.yml` and the steps come from a wrapper archetype recipe
+(`qits-qits`' `.config/qits/release-archetypes/<name>.yml`); one that has not keeps the file it
+already has, unchanged and still read by the grammar above.
 
 - **The engine learns nothing new.** `event:` is matched against the frame's name as a string and
   `checkout:` resolves two dot-paths, so this is the existing grammar pointed at a new event —
