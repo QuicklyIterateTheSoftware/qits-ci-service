@@ -76,6 +76,11 @@ public class CiDaemonLauncherTest {
         java.util.Optional.of("http://mirror.dev.localhost:8080/mirror/maven/central");
     launcher.mavenCentralMirrorStepUrl = "http://qits-platform-mirror:8080/mirror/maven/central";
     launcher.artifactsDocsUrl = "http://qits-artifacts:8080/artifacts/docs/docs";
+    launcher.artifactsUrl = "http://qits-artifacts:8080";
+    launcher.artifactsCliUrlTemplate =
+        "http://qits-artifacts:8080/artifacts/daemons/qits-artifacts-cli/{version}";
+    // The shipped state until Phase 2 publishes one: no pin, so the variable ships EMPTY.
+    launcher.artifactsCliVersion = java.util.Optional.of("2026.906.120000");
     launcher.workspacesUrl = "http://qits-workspaces:8080";
     // The shipped state of the push credential: an oidc client that is off, so nothing is
     // commissioned and nothing is injected. Written out rather than left null, because "this
@@ -193,6 +198,11 @@ public class CiDaemonLauncherTest {
         "QITS_MAVEN_CENTRAL_MIRROR_URL", "http://mirror.dev.localhost:8080/mirror/maven/central");
     env.put("QITS_MAVEN_PROXY_URL", "http://qits-platform-mirror:8080/mirror/maven/central");
     env.put("QITS_DOCS_URL", "http://qits-artifacts:8080/artifacts/docs/docs");
+    // The store's root, and the pinned qits-publish a composed release prelude downloads.
+    env.put("QITS_ARTIFACTS_URL", "http://qits-artifacts:8080");
+    env.put(
+        "QITS_ARTIFACTS_CLI_URL",
+        "http://qits-artifacts:8080/artifacts/daemons/qits-artifacts-cli/2026.906.120000");
     env.put("QITS_WORKSPACES_URL", "http://qits-workspaces:8080");
     return env;
   }
@@ -533,6 +543,36 @@ public class CiDaemonLauncherTest {
           "http://qits-artifacts:8080/artifacts/docs/docs",
           launcher().buildWorkloadSpec(each).spec().env().get("QITS_DOCS_URL"));
     }
+  }
+
+  @Test
+  public void everyStepIsToldTheArtifactStoresRootAndWhereItsCliIs() {
+    // THE ROOT ENDS THREE STRING-CHOPPING DERIVATIONS. Every pipeline that publishes an SBOM, a
+    // daemon binary or a docs bundle today takes one of the package roots and cuts the path off with
+    // its own sed expression; there is one origin, and one variable says so. Same reading of
+    // "reachable from where" as the npm and maven roots — the step container dials it over qits-net.
+    for (LaunchSpec each : List.of(spec, publishing())) {
+      Map<String, String> env = launcher().buildWorkloadSpec(each).spec().env();
+      assertEquals("http://qits-artifacts:8080", env.get("QITS_ARTIFACTS_URL"));
+      assertEquals(
+          "http://qits-artifacts:8080/artifacts/daemons/qits-artifacts-cli/2026.906.120000",
+          env.get("QITS_ARTIFACTS_CLI_URL"));
+    }
+  }
+
+  @Test
+  public void anUnpinnedCliShipsTheVariableEmptyRatherThanAUrlWithAHoleInIt() {
+    // The shipped state until Phase 2 publishes a qits-publish: EMPTY, never absent and never a url
+    // ending in a slash. A composed release prelude skips the download on empty, and a composed
+    // postlude that really needs the CLI fails on its own `:?` guard naming the two config keys —
+    // which is a sentence about configuration rather than a 404 nobody can place.
+    CiDaemonLauncher unpinned = launcher();
+    unpinned.artifactsCliVersion = java.util.Optional.empty();
+    assertEquals("", unpinned.buildWorkloadSpec(spec).spec().env().get("QITS_ARTIFACTS_CLI_URL"));
+
+    CiDaemonLauncher blank = launcher();
+    blank.artifactsCliVersion = java.util.Optional.of("  ");
+    assertEquals("", blank.buildWorkloadSpec(spec).spec().env().get("QITS_ARTIFACTS_CLI_URL"));
   }
 
   @Test

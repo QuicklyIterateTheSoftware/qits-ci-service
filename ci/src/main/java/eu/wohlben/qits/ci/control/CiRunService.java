@@ -748,6 +748,19 @@ public class CiRunService {
    * <p>The payload goes in <b>verbatim</b>, as the canonical JSON qits-events stored — no per-field
    * flattening. Env names derived from payload paths invite collisions and quoting bugs, and {@code
    * jq} is already the platform's answer inside a step; a step that wants one field asks for it.
+   *
+   * <p><b>{@code QITS_VERSION} is the one exception, and it is a measured one.</b> Thirty files in
+   * the estate re-parse the released version out of {@code $QITS_EVENT_PAYLOAD}, in three mutually
+   * inconsistent grammars, to do the one thing every release pipeline has to do. That parse is
+   * {@link #releaseVersionOf} — the method the release join already depends on to be the single
+   * place the two spellings ({@code SCMRelease}'s {@code version}, {@code SCMPublishTag}'s {@code
+   * tagName}) are chosen between — so seeding it here makes the platform's own answer the one every
+   * step reads, and does it for legacy recipes and composed ones alike.
+   *
+   * <p><b>Empty, never absent</b>, the convention every other injected value here follows: an event
+   * that carries no version (which is most of them) leaves the variable set and blank, so a recipe
+   * reads one shape and a {@code set -u} guard fires where the recipe put it rather than at an
+   * unrelated line.
    */
   private static Map<String, String> eventEnv(EventRun request) {
     Map<String, String> env = new TreeMap<>();
@@ -757,6 +770,8 @@ public class CiRunService {
         "QITS_EVENT_OCCURRED_AT",
         request.occurredAt() == null ? "" : request.occurredAt().toString());
     env.put("QITS_EVENT_PAYLOAD", request.payload() == null ? "" : request.payload());
+    String version = releaseVersionOf(request.eventName(), request.payload());
+    env.put("QITS_VERSION", version == null ? "" : version);
     return Map.copyOf(env);
   }
 

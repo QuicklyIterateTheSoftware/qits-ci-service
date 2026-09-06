@@ -77,6 +77,12 @@ public class RunCommissioningTest {
     launcher.artifactsNpmProxyUrl = "http://qits-artifacts:8080/artifacts/npm/npmjs/";
     launcher.artifactsMavenRegistryUrl = "http://qits-artifacts:8080/artifacts/maven/maven";
     launcher.artifactsDocsUrl = "http://qits-artifacts:8080/artifacts/docs/docs";
+    launcher.artifactsUrl = "http://qits-artifacts:8080";
+    launcher.artifactsCliUrlTemplate =
+        "http://qits-artifacts:8080/artifacts/daemons/qits-artifacts-cli/{version}";
+    // Unpinned, which is the shipped state until Phase 2 publishes a qits-publish: the variable
+    // ships EMPTY. The pinned arm is CiDaemonLauncherTest's.
+    launcher.artifactsCliVersion = java.util.Optional.empty();
     launcher.workspacesUrl = "http://qits-workspaces:8080";
     launcher.launchPatience = Duration.ZERO;
     launcher.commissions = commissions;

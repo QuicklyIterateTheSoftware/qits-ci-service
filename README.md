@@ -677,8 +677,13 @@ steps:
     script: ./publish-userflows.sh
 ```
 
-The full reference file, with the reasoning and the per-repository placeholders the rollout sweep
-fills in, is `docs/ci-event-release-request.yml`.
+**There is no reference template to copy any more, and that is the point of "The fourth file"
+below.** `docs/ci-event-release-request.yml` was one — a whole pipeline with
+`<THIS REPOSITORY'S NAME>` holes, a copy-paste macro pretending to be documentation, and the thing
+that made a change to the release cycle a 47-repository sweep. It is deleted. A repository that has
+migrated declares `.config/qits/release.yml` and the steps come from a wrapper archetype recipe
+(`qits-qits`' `.config/qits/release-archetypes/<name>.yml`); one that has not keeps the file it
+already has, unchanged and still read by the grammar above.
 
 - **The engine learns nothing new.** `event:` is matched against the frame's name as a string and
   `checkout:` resolves two dot-paths, so this is the existing grammar pointed at a new event —
@@ -953,10 +958,20 @@ The four `QITS_EVENT_*` variables, alongside everything every step container alr
 | `QITS_EVENT_NAME` | The event's name, the same one `event:` matched |
 | `QITS_EVENT_OCCURRED_AT` | The event's own timestamp, ISO-8601 |
 | `QITS_EVENT_PAYLOAD` | The canonical JSON payload, **verbatim** |
+| `QITS_VERSION` | The released version this event is about, or **empty** when it names none |
 
 The payload is not flattened into per-field variables: env names derived from payload paths invite
 collisions and quoting bugs, and `jq` — which the step images carry — is already the platform's
 answer inside a step. A push-triggered run gets none of these.
+
+**`QITS_VERSION` is the one exception to that rule, and it is a measured one.** Thirty files in the
+estate re-derived the same value out of `$QITS_EVENT_PAYLOAD`, in three mutually inconsistent `jq`
+grammars, to do the one thing every release pipeline has to do. It is `CiRunService.releaseVersionOf`
+— the method the release join has always used to choose between `SCMRelease`'s `version` and
+`SCMPublishTag`'s `tagName` — so the value a step reads and the value its `SoftwareRelease` is
+announced under are now the *same* derivation rather than two that agree today. **Empty, never
+absent**: an event with no version leaves the variable set and blank, so a recipe reads one shape and
+its own `set -u` guard fires where the author put it.
 
 ### Which repositories are asked
 
@@ -975,6 +990,89 @@ no content route to read its trigger files from.
 
 The candidate unit is `(repoId, projectId, name)`, and the pair is what the trigger read is addressed
 by. A candidate qits-ci knows only from its own run rows carries no pair and is read id-addressed.
+
+### The fourth file: `.config/qits/release.yml`
+
+**A repository's release cycle as configuration rather than as two hand-written pipelines.** The
+measurement behind it: across 47 repositories and 78 pipeline files, after normalising repository
+and image names, the 19 Java-service release files collapse to a handful of hashes and 13 of 15 SPA
+QA files are byte-identical modulo one line. `event:`, `when:` and `checkout:` are identical in
+*all* of them. That is platform process wearing a per-repository costume, and this file is what takes
+the costume off.
+
+```yaml
+archetype: java-service        # optional; names a recipe in the platform-pipelines repository
+release-request:               # optional QA steps — the ordinary `steps:` schema
+  - image: qits/build-images/maven-base:latest
+    script: ./mvnw verify
+release:                       # optional release steps, same schema
+  - image: qits/build-images/ci-base:latest
+    build: true
+    script: buildctl build ...
+artifacts:                     # as a trigger file's, plus an optional per-entry `sbom:` path
+  - { type: docker, name: qits/qits-ci, sbom: out/sbom.json }
+userflows: true                # optional; true, or the site name the bundle publishes under
+```
+
+An SPA frontend's whole file is `archetype: spa-frontend`.
+
+**It is not a trigger file, and it must not become one.** qits-ci compiles it — at evaluation, at the
+repository's `main`, together with the archetype recipe — into **two ordinary trigger documents** in
+the format above, and *those* are what land in `trigger_config`:
+
+| | QA | release |
+|---|---|---|
+| `event:` | `ReleaseRequestChanged` | `SCMRelease` |
+| `when:` | `repoName: { exact: <this repository> }` | `repository: { exact: <this repository> }` |
+| `checkout:` | `{ branch: backingBranch, sha: mergedSha }` | `{ branch: version, sha: commitSha, optional: true }` |
+
+Nothing downstream knows the document was composed. `config_path` is `.config/qits/release.yml` for
+both derived runs — the dedupe is `(trigger_event_id, repo_id, config_path)` and the two runs come
+from two different events, so it still yields at most one run per event per file — and a restart
+reparses the composed text off the row exactly as it reparses a committed file.
+
+**The archetype recipes live in the wrapper**, at
+`.config/qits/release-archetypes/<name>.yml` in the repository
+`qits.ci.platform-pipelines-repository` names, read at its `main` per evaluation through the same
+content route the platform pipelines use. So **a change to the release cycle is one wrapper commit**:
+no qits-ci deploy, no 47-repository sweep. A recipe is this same document minus `archetype:` —
+recipes do not chain.
+
+**A repository slot replaces the archetype's entirely.** Whole slot, never per-step merging: a merge
+order is a thing nobody can read off a file. Parameterisation is environment only.
+
+**What the composer adds to every step** is a platform prelude and, on the release phase, a postlude.
+The repository's own script is written to `/tmp/qits-slot.sh` through a **quoted heredoc** and run as
+a child `bash -eu`, so it is data on its way in and cannot turn the wrapper's `set -eu` off; a script
+containing the delimiter is a parse error naming the file, never a corrupted wrapper. Running it as a
+child rather than sourcing it is what makes **SBOM-before-green structural**: a script that calls
+`exit 0` ends itself, and the postlude still runs before the step's own exit code.
+
+- always — `set -eu`
+- release phase — `${QITS_VERSION:?}`, the tag fetch and `git checkout --detach`, and `qits-publish`
+  onto `PATH` from `$QITS_ARTIFACTS_CLI_URL` when the deployment pins one
+- `build: true` — `${BUILDKIT_HOST:?}` and `${QITS_BUILD_REGISTRY:?}`, the kill switch's loud half
+- `build:`/`docker:` — the commissioned pair written to `/tmp/qits-client-*` under `umask 077`, in a
+  subshell so the umask bounds those two files and nothing after them
+- release phase, on the last building step — one `qits-publish sbom submit` per declared artifact
+  carrying an `sbom:` path
+
+**Composition-time interpolation is only ever an artifact's `type`, `name` and `sbom:` path.**
+Everything else reaches a script as environment. Those three are held at parse time to
+`[A-Za-z0-9._:/@+-]+` — an allow-list, so quotes, whitespace, `$` and backticks are refused rather
+than escaped — and single-quoted in the composed text anyway.
+
+**Precedence, and the migration window.** When `release.yml` is present at a candidate's `main`, the
+composed documents are the pipelines for those two events and a still-present
+`ci-event-release-request.yml` / `ci-event-release.yml` is **skipped with a WARN naming both paths** —
+never a parse error, never silent. Every other `ci-event-*.yml` evaluates exactly as before, so the
+generic mechanism survives as the escape hatch. An unknown archetype, an unreadable recipe or an
+unparseable slot file is a WARN and **no run**, and the legacy files stay superseded: a repository
+that has migrated must not silently start running files it has stopped maintaining.
+
+**Rollout safety is structural.** Discovery is prefix-based and `release.yml` matches neither prefix,
+so an engine that predates this feature never reads it — invisible, not a parse error. The extra blob
+read is gated on the two release event names, so every other event costs exactly what it always did.
 
 ### The third file: `.config/qits/ci-platform-event-*.yml`
 

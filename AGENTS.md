@@ -1252,8 +1252,10 @@ names"), and what follows is what biting it feels like.
 - **`ReleaseRequestChanged` is a trigger this engine needed no code to accept, and exactly one
   column to serve.** The platform runs no CI outside release requests: qits-projects folds a
   request's sources onto `release/<id>` and announces every successful re-fold, and a repository's
-  single QA pipeline (`ci-event-release-request.yml`; the reference file is
-  `docs/ci-event-release-request.yml` and `README.md` has the shape) selects it with
+  single QA pipeline (`ci-event-release-request.yml` on an unmigrated repository, or the composed
+  `release-request:` slot of `release.yml` on a migrated one; `README.md` has both shapes, and the
+  placeholder template `docs/ci-event-release-request.yml` is deleted rather than kept in step with
+  two of them) selects it with
   `checkout: { branch: backingBranch, sha: mergedSha }`. Matching, selection and checkout are the
   generic grammar — the branch that gets built is a branch nobody pushed, which is the whole reason
   the event has to exist, and "decide at main, build at the payload's commit" answers it unchanged.
@@ -1450,6 +1452,61 @@ is about*.
   `evaluate`, on `ci-trigger-worker` or on the manual trigger's own request thread, inside the same
   try/catch that keeps one failure from costing the others theirs, and never throws out of the
   evaluation.
+
+## Release slots: the release cycle as configuration
+
+A **third** source of pipelines, and unlike the two above it is not a trigger file at all.
+`.config/qits/release.yml` declares *slots*; `CiReleaseComposer` compiles them plus a wrapper recipe
+into two ordinary trigger documents at evaluation time, and everything downstream — the parser, the
+checkout resolution, the run row, the dedupe, restart-reparse — is the path a committed file already
+takes. `README.md` under "The fourth file" has the format and the rollout story; what follows is what
+biting it feels like.
+
+- **Four classes, and the split is the usual one.** `CiReleaseSlotParser` and `CiReleaseSlots` are
+  the document; `CiReleaseArchetypes` is the wrapper read, through the existing `CiConfigSource`
+  port; `CiReleaseComposer` is a **pure function** — three arguments in, two strings out, no clock,
+  no config, no lookup and no logging. That purity is what makes the golden-file tests worth having:
+  a change to the platform prelude is a change to 47 repositories' behaviour, and the only way it
+  stays reviewable is if the diff is the composed text itself. `ci/src/test/resources/composed/` is
+  where those live, and a missing golden writes the produced document to `target/composed/` and fails
+  naming both paths rather than offering an `-Dupdate.goldens` that would let the test agree with
+  itself.
+- **`CiConfigSource` grew a fourth answer, `readFile`, and its three statuses are load-bearing.**
+  `ABSENT` is a 404 at a rev the host has already resolved — "this repository has not migrated",
+  which is every repository today. `UNREACHABLE` is a blip. **The engine falls back to the legacy
+  trigger files on both**, and that direction is chosen rather than defaulted to: a migrated
+  repository has no legacy file for the fallback to find, so falling back is free, while reading a
+  blip as "release.yml exists" would cost an unmigrated repository's release request its QA verdict —
+  the exact failure the owed-event ledger exists to end.
+- **The extra read is gated on the two release event names.** `ReleaseRequestChanged` and
+  `SCMRelease` and nothing else, so a `BuildSuccessful` costs precisely what it cost before this
+  feature existed. `CiReleaseSlotTriggerTest` asserts the *absence* of the read for an ordinary event.
+- **The archetype repository is resolved ONCE per evaluation and handed down.** `CiEventTriggerService`
+  already resolves `qits.ci.platform-pipelines-repository` against the catalogue for the platform
+  pass; `CiReleaseArchetypes` takes the reference as an argument rather than injecting the key a
+  second time. A second injection point would be a second thing to arm in a test and a second thing
+  to keep in step.
+- **A slot file that is present but cannot be used still supersedes.** Unknown archetype, unreadable
+  recipe, unparseable slot file, uncomposable slots: WARN and **no run**, and the legacy files stay
+  skipped. Falling back there would mean a repository that has migrated silently resumes running
+  files it stopped maintaining, on the strength of the wrapper being briefly unreadable.
+- **`ci/` gained no HTTP and no new dependency.** The composer emits strings; the one read is the
+  port's. There is no migration, no bus change, no endpoint and nothing in `qits-ci-daemon`.
+- **The heredoc is the security-shaped part.** A repository's script is data: quoted heredoc to
+  `/tmp/qits-slot.sh`, run as a child `bash -eu`. The only way out of a quoted heredoc is a line
+  carrying the delimiter, so a script containing `QITS_SLOT_EOF` is a `CiConfigException` naming the
+  file the script came from — the repository's, or the archetype's, whichever really wrote it. Note
+  this is not a new execution path: qits-ci still executes nothing, and the composed text leaves this
+  process as the same `script` field of the same frame it always did.
+- **Interpolation is three values and they are charset-guarded at PARSE time.** An artifact's `type`
+  (an enum), its `name`, and its `sbom:` path, held to an allow-list rather than an escape. The
+  composer single-quotes them as well; the guard is what makes the quoting a second line of defence
+  rather than the only one.
+- **`userflows:` composes no step, deliberately.** It replaces qits-projects' substring grep for
+  `@userflows/<site>` in a QA recipe — a search inside a shell script, which stops working the moment
+  the script is composed — so it is a declaration for the reader on the other side of the release.
+  How a bundle is built and uploaded is the archetype's business, and inventing a step here would be
+  a guess the wrapper recipes have to undo.
 
 ## Adding a dependency on another context
 
