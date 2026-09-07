@@ -479,8 +479,15 @@ public class CiQueuedRunTest extends CiTestSupport {
 
   @Test
   public void theSweepRePutsQueuedRunsBackInTheOrderTheyWereAccepted() throws Exception {
-    // A restart must not reorder a backlog: the worker is FIFO and createdAt is what says what FIFO
-    // meant before the process died.
+    // The doctrine here used to be "a restart must not reorder a backlog: the worker is FIFO and
+    // createdAt is what says what FIFO meant before the process died". The worker is not FIFO any
+    // more — it claims out of the table in CiRunOrdering's order — and the guarantee that replaced
+    // it is stronger rather than weaker: **a restart re-derives the same suggested order**, from the
+    // same rows, with the same pure function, in whichever process happens to be running.
+    //
+    // These rows state nothing for it to derive from — no priorities, no closures, one kind — so the
+    // order it derives is the ordering's own last tie-break, (createdAt, id), which is exactly what
+    // FIFO meant. The sibling case below is the same claim where the rows DO state something.
     String first = seedRepo();
     String second = seedRepo();
     String third = seedRepo();
@@ -496,6 +503,29 @@ public class CiQueuedRunTest extends CiTestSupport {
         fakeRunner.executed().stream().map(spec -> spec.repo().repoId()).toList());
   }
 
+  @Test
+  public void aRestartReDerivesTheSuggestedOrderRatherThanReplayingAnAcceptanceOrder() throws Exception {
+    // The other half of the doctrine, and the reason the wording changed. A predecessor's backlog is
+    // rows and nothing else — no executor, no submission order, nothing about who accepted what
+    // first — so a successor's boot sweep does not "restore" an order, it DERIVES one. Here the
+    // oldest row is the least urgent, so the answer is the reverse of the acceptance order and could
+    // not have come from replaying it.
+    String urgent = seedRepo();
+    String ordinary = seedRepo();
+    String renovate = seedRepo();
+    insertQueuedEventRun(renovate, Instant.now().minusSeconds(30), "LOWEST");
+    insertQueuedEventRun(ordinary, Instant.now().minusSeconds(20), null);
+    insertQueuedEventRun(urgent, Instant.now().minusSeconds(10), "BLOCKING");
+
+    service.sweepInterrupted();
+    service.awaitIdle();
+
+    assertEquals(
+        List.of(urgent, ordinary, renovate),
+        fakeRunner.executed().stream().map(spec -> spec.repo().repoId()).toList(),
+        "the sweep hands the loop rows, and the loop ranks them");
+  }
+
   // --- rows a previous process would have left behind ---
 
   private String insertQueuedEventRun(String repoId) {
@@ -504,6 +534,13 @@ public class CiQueuedRunTest extends CiTestSupport {
 
   private String insertQueuedEventRun(String repoId, Instant createdAt) {
     return insertRow(repoId, shaOf(repoId), CiRunStatus.QUEUED, CiTriggerType.EVENT, createdAt);
+  }
+
+  /** The same, with the ordering input a predecessor would have recorded at accept time. */
+  private String insertQueuedEventRun(String repoId, Instant createdAt, String priority) {
+    String id = insertRow(repoId, shaOf(repoId), CiRunStatus.QUEUED, CiTriggerType.EVENT, createdAt);
+    QuarkusTransaction.requiringNew().run(() -> runs.findById(id).priority = priority);
+    return id;
   }
 
   private void insertStaleStep(String runId) {

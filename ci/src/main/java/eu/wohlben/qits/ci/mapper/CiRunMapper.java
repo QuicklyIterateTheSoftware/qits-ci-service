@@ -44,6 +44,7 @@ public interface CiRunMapper {
         bare.releaseRequestId(),
         bare.retryOfRunId(),
         bare.configPath(),
+        bare.priority(),
         steps.stream().map(this::toDto).toList(),
         live);
   }

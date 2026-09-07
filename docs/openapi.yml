@@ -79,6 +79,8 @@ components:
           type: string
         configPath:
           type: string
+        priority:
+          type: string
         steps:
           type: array
           items:
@@ -530,4 +532,4 @@ paths:
         - qits:admin
 info:
   title: qits-ci API
-  version: 2026.905.54128
+  version: 2026.906.175524

@@ -1,0 +1,45 @@
+-- The two inputs the run queue orders by, recorded on the run row at accept time.
+--
+-- V14 ended with "queue ordering is the next feature; this is the inert data it will read". This is
+-- that feature's whole schema cost, and it is V8's shape a sixth time: two columns on ci_run,
+-- nullable, no default, no backfill, part of no constraint and carrying no index.
+--
+-- priority is the release request's effective priority, declared in qits-projects on its
+-- participating branches and folded there into one value. It already reaches this service twice —
+-- on `ReleaseRequestChanged`, which triggers a repository's QA pipeline, and on `SCMRelease`, which
+-- triggers its release pipeline — and until now qits-ci read it from neither: ci_scm_release.priority
+-- (V14) is the RELEASE FACT's copy, resolved at announce time so SoftwareRelease can carry it
+-- onward. This column is a different thing on purpose. It is what the RUN was accepted knowing, read
+-- off the triggering event's own payload at accept, and it is the only copy any ordering decision is
+-- allowed to consult: an ordering that had to join the fact table would be an ordering that cannot
+-- rank a QA run at all, since a release request is not a release.
+--
+-- downstream_repos is qits-projects' answer to "what depends on this repository", carried on
+-- `ReleaseRequestChanged` as `downstreamTechnicalComponents` and stored here VERBATIM as the
+-- canonical JSON array text — trigger_event_payload's precedent, and for its reason: this module
+-- parses payloads rather than binding them, so the honest column type for a list of another
+-- context's words is the text it arrived as. It is parsed once per ordering pass and never per
+-- comparison. text rather than varchar for the same reason trigger_event_payload is text: the list's
+-- length is the platform's dependency graph, not a number this schema should pick.
+--
+-- **Nullable is the ordinary value, not a gap to fill in.** Every run not triggered by one of those
+-- two events has no priority, every run triggered before qits-projects shipped the closure has no
+-- downstream list, and CanonicalJson's NON_NULL inclusion means "the publisher stated none" and "the
+-- publisher predates the field" arrive as the same absent key. Both are therefore read as UNKNOWN by
+-- CiRunOrdering — unconstrained for the topology, MEDIUM for the priority — never as an error and
+-- never as a refusal. A platform where nothing states either orders exactly as it ordered before
+-- this migration: by (created_at, id).
+--
+-- No check constraint names the six priority words. The vocabulary is another context's and will
+-- grow there (V1's header, and the standing rule); the only rule applied is the column's own width,
+-- and a longer value is recorded as NONE with a WARN rather than truncated or thrown —
+-- CiRunService.priorityOf, ci_run.release_request_id's rule verbatim. 32 characters is what
+-- ci_scm_release.priority holds, and the two are kept equal deliberately: a value one row could hold
+-- and the other could not would make the same release read differently depending on which row was
+-- asked.
+--
+-- No index either. The only query that reads these columns is the claim loop's scan of the QUEUED
+-- rows, which is bounded by the accepted backlog and already ordered by (created_at, id); an index
+-- over two columns that are null on most rows would be a second copy of the table for no reader.
+alter table ci_run add column priority varchar(32);
+alter table ci_run add column downstream_repos text;
