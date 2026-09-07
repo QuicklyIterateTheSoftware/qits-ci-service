@@ -27,12 +27,14 @@
 # the local tag it carried was a tag on the host daemon, and the platform builder has no local image
 # store to leave one in.
 #
-# ONE FILE, TWO HALVES: the gating build first, the non-gating verify + docs publish last. That is
-# how "a red verify must not cost the image" survives the merge of two files that could not share a
-# verdict — ordering plus per-step classification, and `gating: false` is the whole of what the
-# second file was. A non-gating step that fails still fails the run and still shows red; it just
-# does not hold the fold for qits-projects' build gate. Keep it LAST: everything after a failing
-# step is SKIPPED.
+# ONE FILE, TWO HALVES, AND EVERY STEP GATES: the build first, the verify + docs publish last.
+# "A red verify must not cost the image" used to be bought with `gating: false` on the second half.
+# That flag is gone. It could not do the job it existed for: a run's announced verdict is the file's
+# flag ANDed with the FAILING step's, so a non-gating step going red ERASED the fact that the gating
+# half had passed — qits-projects was never told a gating build was green, and the release request
+# waited for a verdict nobody would ever publish. Measured 2026-09-06 on qits-workspaces: a
+# port-bind flake in one story stalled a request for fourteen hours, where a plain red settles it in
+# seconds. Keep the verify LAST anyway: everything after a failing step is SKIPPED.
 #
 # Loop review: this pipeline PUTs a docs bundle, pushes no commit, no tag and no image — nothing the
 # fold is made of changes, so it cannot re-trigger itself. Publish-if-absent: events redeliver and
@@ -191,9 +193,8 @@ steps:
         --secret id=qits-client-id,src=/tmp/qits-client-id \
         --secret id=qits-client-secret,src=/tmp/qits-client-secret
 
-  # --- the NON-GATING half: verify, and publish what the run observed -----------------------------
-  # ci-event-userflows.yml's step, unchanged but for `gating: false`, which is the whole of what that
-  # separate file was.
+  # --- the stories half: verify, and publish what the run observed --------------------------------
+  # ci-event-userflows.yml's step, which is the whole of what that separate file was.
   #
   # `mvn verify` at the fold — which regenerates service/target/userstories/ through the three story
   # IT classes named below — and the reports published as one docs bundle, site @userflows/qits-ci,
@@ -211,8 +212,7 @@ steps:
   #
   # THIS REPOSITORY IS ALSO THE ENGINE, so read the step that way: the run below is executed by a
   # qits-ci that this repository's own release pipeline replaces. Nothing here publishes an image or
-  # an event, so a redeploy landing mid-run costs this run and nothing else — which is another way
-  # of saying non-gating.
+  # an event, so a redeploy landing mid-run costs this run and nothing else.
   #
   # IT DOES NOT DISTURB ci-event-release.yml. That file publishes @apidocs/qits-ci at the released
   # VERSION off an SCMRelease; this one publishes @userflows/qits-ci at the merged SHA off a fold.
@@ -254,7 +254,6 @@ steps:
   # in whichever story drains first.
   - image: qits/build-images/maven-base:latest
     user: build
-    gating: false
     timeout-seconds: 2400
     script: |
       set -eu
