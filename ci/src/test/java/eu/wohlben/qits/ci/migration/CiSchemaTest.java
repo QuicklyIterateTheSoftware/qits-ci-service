@@ -124,6 +124,35 @@ public class CiSchemaTest {
     // V15's half of the same rule: the closure is a canonical JSON array whose length is the
     // platform's dependency graph, so it is text for trigger_event_payload's reason exactly.
     assertEquals("text", columnType("ci_run", "downstream_repos"));
+    // V16's half of it: the prediction is a JSON array whose length is the pipeline's, which is
+    // likewise not a number this schema should pick.
+    assertEquals("text", columnType("ci_run", "expected_step_durations"));
+  }
+
+  @Test
+  public void theExpectedStepDurationColumnIsNullableAndTakesBothArms() throws SQLException {
+    // V16. A prediction exists only when every planned step has history to predict from, so the
+    // ordinary value is NONE: a repository's first run, the first run after a pipeline grew a step
+    // or changed a step's image, and every row recorded before the migration all carry null — which
+    // is why there is no backfill and no not-null. Written and rolled back rather than described, so
+    // the lineage is proven to accept a run that predicts and a run that does not.
+    try (Connection connection = ci.getConnection()) {
+      connection.setAutoCommit(false);
+      try (PreparedStatement run =
+          connection.prepareStatement(
+              "insert into ci_run (id, repo_id, branch, commit_sha, gating, status, created_at,"
+                  + " trigger_type, config_path, expected_step_durations) values (?,"
+                  + " 'schema-probe', 'main', '0', true, 'QUEUED', current_timestamp, 'EVENT',"
+                  + " '.config/qits/ci-event-release-request.yml', ?)")) {
+        run.setString(1, "duration-probe-predicted");
+        run.setString(2, "[10000,90000]");
+        run.executeUpdate();
+        run.setString(1, "duration-probe-silent");
+        run.setString(2, null);
+        run.executeUpdate();
+      }
+      connection.rollback();
+    }
   }
 
   @Test

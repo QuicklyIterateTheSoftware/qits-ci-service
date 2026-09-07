@@ -341,6 +341,12 @@ Two more things live in this package and belong to it rather than to `ci/`:
   `live` object, polled — there is no SSE and no WebSocket) *and* the accumulator the persisted tail
   is read back out of at the step's end. One buffer, one budget: the bound is a security property
   and two implementations of it drift into one that is not applied.
+  <br>It holds **one** instant beside the text and no more: `started(runId, at)`, stamped where
+  `listener.onStarted()` is stamped — the hand-over — so a poll can say how far into the live step a
+  run is rather than only that it is running. Null until then, which is the setup window (the
+  container has still to be asked for, started and dialled back) and a real state rather than a gap.
+  Host-stamped like every other timestamp here, and the relay is deliberately not where a second
+  timeline starts to accumulate: what a run really took is `ci_step`'s two columns.
 - **Cancellation** is a flag plus a `Cancel` frame. A cancelled step still *finishes* — the daemon
   answers with a terminal frame — so the worker's await completes normally and cancelledness is read
   from `CiRunService`'s own flag, never inferred from how the call came back. Between the launch and
@@ -1869,6 +1875,31 @@ by the accepted backlog; an index over two columns that are null on most rows wo
 of the table for nobody. A platform where nothing states either orders exactly as it did before the
 migration, by `(created_at, id)`.
 
+`V16__run_expected_step_durations.sql` is the expected-duration feature's whole schema cost, and it
+is V8's shape a **seventh** time: `ci_run.expected_step_durations text`, nullable, no default, no
+backfill, part of no constraint and carrying no index. It holds a JSON array of millisecond longs,
+one entry per planned pipeline step — `downstream_repos`' storage decision for its reason, since the
+array's length is the pipeline's and the value is read whole and queried into by nothing.
+
+**It is a PREDICTION and `ci_step.started_at`/`finished_at` are the measurement**, which is the one
+confusion worth guarding against: this column is the p95 of those two, over the most recent 25
+`SUCCESS` rows of the same step index of the same `(repo_id, config_path)` with the same image,
+computed once at accept by `CiRunService.predictedStepDurations` and never revised. A run that
+overruns it is a slow run, not a row to correct. **Nullable is the ordinary value**: a prediction
+exists only when *every* planned step has history, so a repository's first run, the first run after
+a pipeline grew a step, the first run after a step changed its image and every historical row all
+carry null — and a partial prediction is deliberately not a thing, because the missing segment would
+be a guess wearing a measurement's clothes. The image is part of the sample predicate, and that is
+the whole of how a changed pipeline stops predicting: no invalidation and no version column, just
+samples that stop matching. The prediction is computed **outside** the insert's transaction on
+purpose — it is a read, a read that throws inside the insert bracket would poison the session and
+roll the accepted run back, and the standing rule is that a convenience never costs a build. A
+malformed stored value reads back as **no prediction** (`ExpectedStepDurations.decode`) rather than
+throwing, so a column nobody can fix costs one field and not every listing. A **retry** re-predicts
+rather than copying, unlike the `priority`/`downstream_repos` beside it: those say what the work is
+worth and a re-fire is worth what it re-fires, while this says how long it takes and the honest
+answer is the one the history gives now.
+
 `V1__init.sql` is the rest of the schema. The nine H2 migrations it replaces (V1-V8 plus a Java V9) are
 history in this repository's log and are not a prefix of this lineage: the move off H2 is a
 re-bootstrap rather than a data migration, so no postgres database anywhere ever ran them and no
@@ -2286,6 +2317,14 @@ contract, tested where it lives.
   and both states are then real at one instant the test controls. That is why the service module's
   copy grew the hook too: `RUNNING` and `QUEUED` had to be observable over HTTP, which is where the
   SPA sees them.
+  <br>**The service module's copy also feeds `CiStepRelay`, and that is not it performing a step.**
+  The relay is the *transport's* bookkeeping — which step, when it was handed over, what has come
+  back — and that fake stands in for the transport, so a suite whose fake left it empty could not
+  see the `live` object at all and every assertion about it would be made against a hand-wired relay
+  instead of against the read surface. It makes the four calls `CiDaemonStepRunner` makes around a
+  step, in its order (`begin`, `started`, `append` per chunk, `drop` on `runClosed`), and the
+  `during` hook runs *after* the stamp — what it stages is the middle of a step, and a step the host
+  has not handed over yet is the setup window rather than the state under test.
 - **The candidate list is proven at three levels, and each one can only say its own thing.**
   `HttpGitHostRepoListingTest` is plain JUnit against a real server on a real socket: the url shape,
   the id filter, the cache, and every way the read can fail answering the *empty* set rather than

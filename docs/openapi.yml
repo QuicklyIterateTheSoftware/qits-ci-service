@@ -34,6 +34,8 @@ components:
         stepIndex:
           type: integer
           format: int32
+        startedAt:
+          $ref: "#/components/schemas/Instant"
         output:
           type: string
     CiRunDto:
@@ -81,6 +83,11 @@ components:
           type: string
         priority:
           type: string
+        expectedStepDurationsMillis:
+          type: array
+          items:
+            type: integer
+            format: int64
         steps:
           type: array
           items:
@@ -532,4 +539,4 @@ paths:
         - qits:admin
 info:
   title: qits-ci API
-  version: 2026.906.175524
+  version: 2026.907.123357

@@ -7,6 +7,7 @@ import eu.wohlben.qits.cidaemon.protocol.InitFailed;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -181,6 +182,11 @@ public class CiDaemonStepRunner implements CiStepRunner {
     // The host initiates nothing toward a container: the step rides the reply to the daemon's own
     // Initialized, and this send is the step's started_at.
     listener.onStarted();
+    // The same fact the row's started_at is about, told to the live surface as well: a poll landing
+    // mid-step can then say how far along it is rather than only that it is running. Stamped here
+    // rather than passed down from the listener because this is the moment — the listener's own
+    // instant is taken on the line above, and the two are the same event.
+    relay.started(spec.runId(), Instant.now());
     registry.sendRunStep(daemonId, spec.script(), spec.timeoutSeconds());
 
     Duration backstop = Duration.ofSeconds(spec.timeoutSeconds() + stepTimeoutGraceSeconds);

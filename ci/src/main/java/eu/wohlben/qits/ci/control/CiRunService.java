@@ -10,6 +10,7 @@ import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiStep;
 import eu.wohlben.qits.ci.entity.CiStepStatus;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
+import eu.wohlben.qits.ci.entity.ExpectedStepDurations;
 import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.ConflictException;
 import eu.wohlben.qits.ci.error.NotFoundException;
@@ -33,6 +34,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
@@ -328,6 +330,27 @@ public class CiRunService {
    * read two ways depending on which row was asked.
    */
   static final int MAX_PRIORITY_LENGTH = ReleaseJoin.MAX_PRIORITY_LENGTH;
+
+  /**
+   * How many recent successful runs of a step the expected-duration prediction is taken over.
+   *
+   * <p>Small on purpose. What the prediction is for is a progress bar drawn while a run executes, so
+   * what it should reflect is how the pipeline behaves <em>now</em> — twenty-five runs is a few days
+   * of a busy repository and a couple of weeks of a quiet one, which is recent enough that a
+   * pipeline that got faster stops being predicted by the version that was slow, and long enough
+   * that one unlucky run does not move the answer on its own.
+   */
+  static final int DURATION_SAMPLE_SIZE = 25;
+
+  /**
+   * Which percentile of that window a step's expected duration is.
+   *
+   * <p><b>p95 rather than a median, and the asymmetry is the point.</b> A bar that finishes early is
+   * a bar that was right about the work and pessimistic about the machine; a bar that fills up and
+   * then sits at 100% while the step keeps running is a bar nobody trusts again. So the prediction
+   * is deliberately the slow end of what this step has really been doing.
+   */
+  static final double DURATION_PERCENTILE = 0.95;
 
   public static final String USER_CANCELLED = "USER_CANCELLED";
   public static final String DEDUPED = "DEDUPED";
@@ -1517,11 +1540,20 @@ public class CiRunService {
 
   private CiRun acceptEventRun(EventRun request) {
     String configPath = request.trigger().configPath();
+    // Computed BEFORE the insert bracket rather than inside it, and that placement is the whole of
+    // how "the prediction never costs a run" is made true. It is a read against ci_step, so a broken
+    // one throws a database exception — inside the insert's transaction that would poison the
+    // session and roll the accepted run back, however carefully it was caught.
+    String expected =
+        predictedStepDurations(
+            request.repo().repoId(), configPath, request.triggerConfig());
     CiRun run;
     try {
       run =
           DbRetry.inNewTx(
-              "event run accept", () -> insertEventRun(request, configPath), retryDeadline());
+              "event run accept",
+              () -> insertEventRun(request, configPath, expected),
+              retryDeadline());
     } catch (RuntimeException e) {
       if (!isUniqueViolation(e)) {
         throw e;
@@ -1555,7 +1587,7 @@ public class CiRunService {
    * the whole body. The trailing {@code flush} is the second half of that contract: it moves the
    * supersede's updates into the statement phase, where a lost connection is a certain no-commit.
    */
-  private CiRun insertEventRun(EventRun request, String configPath) {
+  private CiRun insertEventRun(EventRun request, String configPath, String expectedStepDurations) {
     if (runs.alreadyTriggered(request.eventId(), request.repo().repoId(), configPath)) {
       return null;
     }
@@ -1581,6 +1613,8 @@ public class CiRunService {
     // ordering's cost per pass instead of per run.
     run.priority = priorityOf(request);
     run.downstreamRepos = downstreamReposOf(request);
+    // Handed in already computed, and null far more often than not — see predictedStepDurations.
+    run.expectedStepDurations = expectedStepDurations;
     runs.persist(run);
     runs.flush();
     supersedeByVersion(run, request);
@@ -1840,6 +1874,74 @@ public class CiRunService {
       return null;
     }
     return downstream.toString();
+  }
+
+  /**
+   * How long this run's steps are expected to take, as the column text {@link
+   * ExpectedStepDurations} writes, or null when there is nothing to say.
+   *
+   * <p><b>It is a convenience and it is treated like one, which is the only rule here that matters.</b>
+   * Everything below is wrapped: an unparseable trigger config, a database that answers the sample
+   * query with an exception, an arithmetic surprise — all of it is one WARN and no prediction, and
+   * the run is accepted exactly as it would have been before this method existed. A prediction that
+   * cost a build would be worse than no prediction in every direction, and the only way to make that
+   * true rather than intended is to catch here and hand the caller a value it does not have to think
+   * about.
+   *
+   * <p><b>The whole run's prediction is all-or-nothing.</b> A pipeline where step 2 has history and
+   * step 3 does not is a pipeline that CHANGED — it grew a step, or a step changed image — and a
+   * partial answer would draw a progress bar whose remaining segment is a guess pretending to be a
+   * measurement. So one step with no sample is no prediction for the run, and the next successful
+   * run of the new shape is what starts predicting it again. Same for a pipeline declaring no steps
+   * at all: nothing to draw.
+   *
+   * <p><b>The parse is of the SNAPSHOT and the image is the RESOLVED one.</b> The trigger file on
+   * the row is what this run will execute, and {@link #stepImage} is the reference its containers
+   * will really be started from and the one {@code ci_step.image} records — so asking history about
+   * the resolved reference is asking about the same rows the run is about to write.
+   *
+   * <p>The read runs in its own transaction because the callers stand on threads that have none: the
+   * trigger worker has no request context at all, and a retry arrives on a request thread on the way
+   * to the queue. Its own bracket also means it commits and releases before the insert opens.
+   */
+  private String predictedStepDurations(String repoId, String configPath, String triggerConfig) {
+    if (triggerConfig == null) {
+      return null;
+    }
+    try {
+      return QuarkusTransaction.requiringNew()
+          .call(() -> predictFromHistory(repoId, configPath, triggerConfig));
+    } catch (Exception e) {
+      LOG.warnf(
+          e,
+          "Could not predict step durations for %s in %s — the run is accepted without one",
+          configPath,
+          repoId);
+      return null;
+    }
+  }
+
+  /** {@link #predictedStepDurations}' body, inside a transaction and free to throw. */
+  private String predictFromHistory(String repoId, String configPath, String triggerConfig) {
+    List<CiPipeline.CiStepDecl> declared =
+        triggerParser.parse(configPath, triggerConfig).pipeline().steps();
+    List<Long> millis = new ArrayList<>(declared.size());
+    for (int index = 0; index < declared.size(); index++) {
+      String image = stepImage(declared.get(index));
+      if (image == null || image.isBlank()) {
+        return null;
+      }
+      OptionalDouble seconds =
+          steps.percentileSuccessfulDurationSeconds(
+              repoId, configPath, index, image, DURATION_PERCENTILE, DURATION_SAMPLE_SIZE);
+      if (seconds.isEmpty()) {
+        return null;
+      }
+      // Rounded UP, and never below one millisecond: a step really does take some time, and a zero
+      // would be a segment of no width that a client cannot draw and would read as "already done".
+      millis.add(Math.max(1L, (long) Math.ceil(seconds.getAsDouble() * 1000.0)));
+    }
+    return ExpectedStepDurations.encode(millis);
   }
 
   /**
@@ -2162,8 +2264,15 @@ public class CiRunService {
       throw new ConflictException(
           "CI run " + runId + " has not finished (" + source.status + ") — nothing to retry yet");
     }
+    // Predicted rather than copied, unlike priority and the downstream closure beside it: those are
+    // what the run is WORTH and a re-fire must be worth what it re-fires, while this is how long the
+    // work TAKES and the honest answer is the one the history gives now. The source's own value may
+    // be months old, and every run it has had since is evidence the source row cannot carry.
+    String expected =
+        predictedStepDurations(source.repoId, source.configPath, source.triggerConfig);
     CiRun retry =
-        DbRetry.inNewTx("run retry accept", () -> insertRetry(source.id), retryDeadline());
+        DbRetry.inNewTx(
+            "run retry accept", () -> insertRetry(source.id, expected), retryDeadline());
     if (retry == null) {
       throw new NotFoundException("No such CI run: " + runId);
     }
@@ -2189,7 +2298,7 @@ public class CiRunService {
    * triggerConfig}, so the answer is one parse away; a historical push row carries none and is
    * gating, which is what every push run was.
    */
-  private CiRun insertRetry(String sourceRunId) {
+  private CiRun insertRetry(String sourceRunId, String expectedStepDurations) {
     CiRun source = runs.findById(sourceRunId);
     if (source == null) {
       return null;
@@ -2211,6 +2320,8 @@ public class CiRunService {
     // second decision nobody asked for.
     retry.priority = source.priority;
     retry.downstreamRepos = source.downstreamRepos;
+    // Handed in from a fresh read of the history rather than copied off the source — see retry().
+    retry.expectedStepDurations = expectedStepDurations;
     retry.retryOfRunId = source.id;
     retry.triggerType = source.triggerType;
     retry.configPath = source.configPath;

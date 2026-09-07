@@ -1,0 +1,40 @@
+-- What the run expects each of its steps to take, recorded on the run row at accept time.
+--
+-- This is the whole schema cost of the expected-duration feature, and it is V8's shape a SEVENTH
+-- time: one column on ci_run, nullable, no default, no backfill, part of no constraint and carrying
+-- no index. What it holds is a JSON array of millisecond longs, one entry per planned pipeline step,
+-- in declaration order — `[10000,90000]` for a two-step pipeline the history says takes ten seconds
+-- and then ninety. It is what lets a client draw a segmented progress bar for a run that is still
+-- executing, instead of a spinner that says only "something is happening".
+--
+-- **The value is a PREDICTION, not a measurement, and the column name says so.** ci_step.started_at
+-- and ci_step.finished_at are what really happened, host-stamped, written once at each step's end;
+-- this is the p95 of those two columns over the most recent successful runs of the same step of the
+-- same pipeline, computed once when the run is accepted. The two must never be confused: a
+-- prediction that turned out wrong is not a row to correct, it is a run that was slower or faster
+-- than the twenty-five before it, and nothing rewrites this column afterwards.
+--
+-- **Stored verbatim as JSON text, downstream_repos' precedent and its reason.** A list whose length
+-- is the pipeline's — a number this schema has no business picking — is a list, and the honest
+-- column for one that is read whole and never queried into is the text it was written as. There is
+-- no ci_run_expected_step table because nothing is a table here: no query ever asks for one entry,
+-- one index or one run's third step. The reader loads the value with the row it is on, through the
+-- entity, and hands the whole array to a DTO. `text` rather than varchar for downstream_repos'
+-- reason exactly.
+--
+-- **Nullable is the ordinary value rather than a gap to fill in.** A prediction exists only when
+-- every planned step of the pipeline has history to predict from, and the cases with none are the
+-- ordinary ones: the first run a repository ever records, the first run after a pipeline grew a
+-- step, the first run after a step changed its image, a run whose trigger config could not be parsed
+-- at accept, and every row recorded before this migration. All of them read the same and mean the
+-- same thing — "this service has nothing to say about how long this will take" — and a client draws
+-- what it drew before the feature existed. That is also why there is no backfill: a value computed
+-- now, against history a finished run never had, would be a claim about a moment that has passed.
+--
+-- **No check constraint and no index.** No constraint, because the shape rule (one positive entry
+-- per planned step) is a statement about a pipeline this schema cannot see — the invariant lives
+-- where the write is, in CiRunService, and a malformed stored value is read back as NO prediction
+-- rather than as an error. And no index, because there is no query: the column is selected with its
+-- row and filtered on by nothing, ever. An index over a column that is null on every historical row
+-- and is never a predicate would be a second copy of the table for nobody.
+alter table ci_run add column expected_step_durations text;
