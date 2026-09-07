@@ -255,9 +255,21 @@ subscribe frame is the union of all three, `"*"` collapsing it to `["*"]`.
 
 **Every qits-ci listener is durable**, because each of them acts on something a lost event would
 silently not do: a pipeline that never runs, a release train that stops triggering, a daemon release
-that is never adopted, a release nobody announces. Their consumer ids — the stable names their
-bookkeeping is keyed on — are `ci-event-triggers`, `ci-release-train`, `ci-daemon-adopt` and
-`ci-release-facts`.
+that is never adopted, a release nobody announces, a repository whose new name never reaches the rows
+a release is addressed by. Their consumer ids — the stable names their bookkeeping is keyed on — are
+`ci-event-triggers`, `ci-release-train`, `ci-daemon-adopt`, `ci-release-facts` and
+`ci-repository-rename`.
+
+**The last of them is a repair rather than an arrival, and it is the one consumer that starts at the
+beginning of the log.** A run and a release announcement record the repository's public address
+(`project_id`, `repo_name`) once, when they are written, and nothing re-derives it — so a repository
+renamed in qits-projects leaves both stale. `service/…/bus/RepositoryRenamedListener` consumes
+`RepositoryRenamed` and rewrites them, found by the storage id, which a rename does not move. The
+visible symptom is a stale name in `GET /ci/api/repositories/summary`; the expensive one is an
+announcement still owed at the moment of the rename, which would publish `SoftwareRelease` naming a
+repository the git host no longer answers to and leave the deployment holding a spec read that 404s.
+Because the renames it repairs are already on the log, this listener declares `replayFromEpoch` —
+bounded by its one signature — where the other four consume from wherever they are.
 
 **The trigger engine says `"*"` permanently**, so this service's
 subscribe frame *is* `["*"]`: the event names it cares about live in other repositories' files and

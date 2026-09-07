@@ -8,7 +8,13 @@ import eu.wohlben.qits.ci.control.CiDaemonPins;
 import eu.wohlben.qits.ci.control.ReleaseJoin;
 import eu.wohlben.qits.ci.control.DaemonProbe.Verdict;
 import eu.wohlben.qits.ci.control.FakeDaemonProbe;
+import eu.wohlben.qits.ci.entity.CiReleaseAnnouncement;
+import eu.wohlben.qits.ci.entity.CiRun;
+import eu.wohlben.qits.ci.entity.CiRunStatus;
+import eu.wohlben.qits.ci.entity.CiTriggerType;
 import eu.wohlben.qits.ci.persistence.CiDaemonPinRepository;
+import eu.wohlben.qits.ci.persistence.CiReleaseAnnouncementRepository;
+import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import eu.wohlben.qits.ci.persistence.CiScmReleaseRepository;
 import eu.wohlben.qits.eventstream.QitsRawEventListener;
 import eu.wohlben.qits.eventstream.control.DurableFunnel;
@@ -27,11 +33,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * The four bus listeners as <b>durable</b> consumers: what the claim ledger settles, what stays
+ * The five bus listeners as <b>durable</b> consumers: what the claim ledger settles, what stays
  * owed, and what a late arrival is allowed to do.
  *
- * <p>There were five until 2026-09-05. {@code ScmPublishCommitListener} — consumer {@code
- * ci-push-runs} — accepted one run per pushed branch ref, and its section here asserted the claim
+ * <p>The fifth, {@code RepositoryRenamedListener}, is the one whose section asserts rows rather than
+ * verdicts — it is a repair of durable state, so "handled" is only half of what has to be true.
+ *
+ * <p>There were five before that too, until 2026-09-05. {@code ScmPublishCommitListener} — consumer
+ * {@code ci-push-runs} — accepted one run per pushed branch ref, and its section here asserted the claim
  * that made a redelivered push one build rather than two. An ordinary push triggers nothing now, so
  * the listener is gone and so is the consumption: its {@code consumed_event} rows and its watermark
  * are simply left behind, the way {@code pd-build-succeeded} was in qits-platform-deployments.
@@ -68,6 +77,12 @@ public class DurableBusConsumptionTest {
   @Inject DaemonReleaseListener daemon;
 
   @Inject ScmReleaseListener scmReleases;
+
+  @Inject RepositoryRenamedListener renames;
+
+  @Inject CiRunRepository runs;
+
+  @Inject CiReleaseAnnouncementRepository announcements;
 
   @Inject CiDaemonPins pins;
 
@@ -407,6 +422,162 @@ public class DurableBusConsumptionTest {
             .call(() -> releases.released(repository, "2026.812.111500")));
   }
 
+  // --- RepositoryRenamedListener: ci-repository-rename ---
+
+  /**
+   * <b>The repair, end to end, on the two tables that hold a repository's public name.</b>
+   *
+   * <p>A run and a release announcement are staged carrying the address the repository had before the
+   * rename, the real canonical bytes are driven through the real listener, and both rows come back
+   * addressed by the name it answers to now. The announcement is the row that matters: it is staged
+   * still OWED, which is the case that publishes {@code SoftwareRelease} later and would otherwise
+   * name a repository the git host no longer serves under.
+   *
+   * <p>Offered twice it is handled once, and the second offer is also the idempotence assertion — the
+   * effect is a write of the event's own facts, so a claim that rolled back after the rows were
+   * written costs nothing.
+   */
+  @Test
+  public void aRepositoryRenameReAddressesTheRunsAndTheOwedAnnouncements() {
+    String repoId = "renamed-repo-" + anId().substring(0, 8);
+    String runId = stageRunAndOwedAnnouncement(repoId, "qits", "old-name");
+
+    EventFrame frame = renameFrame(anId(), "qits", repoId, "old-name", "new-name");
+
+    assertEquals(DurableFunnel.Result.HANDLED, funnel.offer(renames, frame));
+    assertEquals(
+        DurableFunnel.Result.SKIPPED,
+        funnel.offer(renames, frame),
+        "a catch-up sweep reaching a rename the stream already delivered applies it once");
+
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              CiRun run = runs.findById(runId);
+              assertEquals("new-name", run.repoName, "the summary would show the old name forever");
+              assertEquals("qits", run.projectId);
+
+              CiReleaseAnnouncement owed = announcements.listForRun(runId).get(0);
+              assertEquals(
+                  "new-name",
+                  owed.repoName,
+                  "an owed announcement made after a rename would publish an address that 404s");
+              assertEquals("qits", owed.projectId);
+            });
+  }
+
+  /**
+   * The signature and the predicate, pinned as the pair they are. One event, knowable at startup —
+   * and {@code selects} left at its default, because there is nothing to narrow within it and a
+   * predicate that could be undecidable would leave an event owed rather than settled.
+   */
+  @Test
+  public void theRenameListenerSubscribesToTheOneEventAndNarrowsNowhere() {
+    assertEquals(Set.of("RepositoryRenamed"), renames.signatures());
+    assertTrue(renames.selects(renameFrame(anId(), "qits", "any-repo", "was", "is")));
+  }
+
+  /**
+   * <b>The one listener here that asks to be initialized at the epoch.</b> The renames that made this
+   * service's rows stale are already on the log, so a consumer starting at its head would repair
+   * nothing — the failure with no symptom, since it subscribes, claims and settles correctly forever.
+   * Bounded by the signature: catch-up queries the log with that one name filter.
+   *
+   * <p>The neighbour is asserted here only as the contrast; that no OTHER listener carries the flag
+   * is {@code EventstreamDarknessTest}'s partition, where every registered bean is walked.
+   */
+  @Test
+  public void theRenameRepairReplaysTheHistoryItExistsToApply() {
+    assertTrue(renames.replayFromEpoch());
+    assertFalse(scmReleases.replayFromEpoch(), "an arrival-driven consumer must not");
+  }
+
+  /**
+   * Poison, and all of it swallowed. A payload that will not bind, one naming no repository, and one
+   * whose new name is not a value this service would put in a URL path segment: none can succeed on a
+   * later offer, and a throw would hold this consumer's watermark behind one bad event forever.
+   *
+   * <p>The last case is the interesting one — {@code CiIdentifiers} is what stands between an
+   * attacker-shaped payload and a clone URL, and a refusal there has to settle the event rather than
+   * retry it, because the same bytes are refused identically every time.
+   */
+  @Test
+  public void aRenameThisServiceCannotAddressIsSettledRatherThanOwed() {
+    assertEquals(
+        DurableFunnel.Result.HANDLED,
+        funnel.offer(
+            renames, new EventFrame(anId(), "RepositoryRenamed", T0, "not json", null, null, null)));
+    assertEquals(
+        DurableFunnel.Result.HANDLED,
+        funnel.offer(
+            renames,
+            new EventFrame(
+                anId(), "RepositoryRenamed", T0, "{\"newName\":\"n\"}", null, null, null)),
+        "no repository id, so there is nothing to find the stale rows by");
+    assertEquals(
+        DurableFunnel.Result.HANDLED,
+        funnel.offer(renames, renameFrame(anId(), "qits", "some-repo", "was", "  ")),
+        "a blank name would blank the address rather than correct it");
+    assertEquals(
+        DurableFunnel.Result.HANDLED,
+        funnel.offer(renames, renameFrame(anId(), "qits", "some-repo", "was", "../../etc")),
+        "a name that escapes a path segment is refused, and refusing it settles the event");
+  }
+
+  /**
+   * A rename of a repository this instance has never recorded a run for is handled and writes
+   * nothing. Not an error and not a skip: the listener wants every rename on the platform — asking
+   * the database which ones matter would put a read in front of the claim — so most of them are
+   * legitimately no rows.
+   */
+  @Test
+  public void aRenameOfARepositoryThisInstanceNeverRanIsHandledAndChangesNothing() {
+    assertEquals(
+        DurableFunnel.Result.HANDLED,
+        funnel.offer(
+            renames, renameFrame(anId(), "qits", "unknown-" + anId().substring(0, 8), "a", "b")));
+  }
+
+  /**
+   * One run and one still-owed announcement for a repository, addressed as it was before a rename.
+   *
+   * @return the run id, which is also what the announcement is keyed to
+   */
+  private String stageRunAndOwedAnnouncement(String repoId, String projectId, String repoName) {
+    String runId = UUID.randomUUID().toString();
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              CiRun run = new CiRun();
+              run.id = runId;
+              run.repoId = repoId;
+              run.projectId = projectId;
+              run.repoName = repoName;
+              run.branch = "main";
+              run.commitSha = "0".repeat(40);
+              run.status = CiRunStatus.SUCCESS;
+              run.triggerType = CiTriggerType.EVENT;
+              run.configPath = ".config/qits/ci-event-release.yml";
+              run.createdAt = T0;
+              runs.persist(run);
+
+              CiReleaseAnnouncement owed = new CiReleaseAnnouncement();
+              owed.id = UUID.randomUUID().toString();
+              owed.runId = runId;
+              owed.repoId = repoId;
+              owed.projectId = projectId;
+              owed.repoName = repoName;
+              owed.version = "2026.907.090000";
+              owed.packageType = "docker";
+              owed.packageName = "qits/" + repoName;
+              owed.artifactIndex = 0;
+              owed.finishedAt = T0;
+              owed.createdAt = T0;
+              announcements.persist(owed);
+            });
+    return runId;
+  }
+
   // --- frames, in the canonical alphabetical-key shape the wire uses ---
 
   private static String anId() {
@@ -461,6 +632,24 @@ public class DurableBusConsumptionTest {
         ScmReleaseContractTest.canonicalPayload(repository, repository, version),
         null,
         null, null);
+  }
+
+  /**
+   * The payload comes from {@link RepositoryRenamedContractTest}, which runs this repository's own
+   * transcription of qits-projects' record through the real canonical serializer — so the keys the
+   * listener binds are the keys the publisher writes, rather than a hand-typed string that could
+   * agree with the reader and disagree with the writer.
+   */
+  private static EventFrame renameFrame(
+      String eventId, String projectId, String repositoryId, String oldName, String newName) {
+    return new EventFrame(
+        eventId,
+        RepositoryRenamedListener.EVENT_NAME,
+        T0,
+        RepositoryRenamedContractTest.canonicalPayload(projectId, repositoryId, oldName, newName),
+        null,
+        null,
+        null);
   }
 
   private static EventFrame daemonFrame(String eventId, String version, Instant occurredAt) {

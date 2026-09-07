@@ -61,6 +61,16 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * un-registering one something binds costs every occurrence of that event. That is not a symmetric
  * trade.
  *
+ * <p><b>{@link RepositoryRenamed} is the entry that buys the binary something today</b>, and it is
+ * the ordinary case this list is for rather than an exception to any of the above. It is qits-projects'
+ * event, transcribed into a local record here because that service publishes no vocabulary jar, and
+ * {@code RepositoryRenamedListener} <em>binds</em> it with {@code CanonicalJson.payloadTo} — five
+ * fields, all of them read. Unregistered, the binary would fail that bind on every rename, WARN once
+ * and settle the event as poison, and this service's stale rows would stay stale with the repair
+ * silently never running. That the record is declared in this repository rather than arriving in a
+ * jar changes nothing: the registration is a statement about this image, exactly as it is for {@link
+ * SCMPublishCommit}.
+ *
  * <p><b>An event this service only publishes is exactly as dependent on this list</b>, which is
  * worth stating because "nothing binds it back" reads like a reason to skip it. The failure is on
  * the writing side: {@code CanonicalJson} finds a record's components by reflection, so an
@@ -106,6 +116,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       BuildFailed.class,
       SoftwareRelease.class,
       SCMPublishCommit.class,
+      RepositoryRenamed.class,
       EventEnvelope.class,
       EventFrame.class
     },

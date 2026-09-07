@@ -43,7 +43,14 @@ import org.junit.jupiter.api.Test;
  * reusing one hands a listener another's claims. A literal in this test is what makes either show up
  * as a red build rather than as a quiet gap in what was consumed.
  *
- * <p><b>There were five, and {@code ci-push-runs} retired with per-push CI on 2026-09-05.</b> Its
+ * <p><b>And one of the five asks to be initialized at the EPOCH</b>, which is the other half of the
+ * same storage fact and is asserted here beside the ids. {@code replayFromEpoch} is consulted once, at
+ * the moment a consumer id first gets a watermark, and never again — so it is not a setting that can
+ * be corrected later, and the difference between the two answers is the whole history of an event or
+ * none of it.
+ *
+ * <p><b>There were five before that, and {@code ci-push-runs} retired with per-push CI on
+ * 2026-09-05.</b> Its
  * {@code consumed_event} rows and its watermark are left where they are rather than migrated away —
  * a retired consumer id is abandoned, which is what qits-platform-deployments did with {@code
  * pd-build-succeeded} — and the id must never be handed to a new listener, which would inherit a
@@ -66,7 +73,7 @@ public class EventstreamDarknessTest {
   }
 
   @Test
-  public void allFourDurableListenersAreRegisteredBeans() {
+  public void allFiveDurableListenersAreRegisteredBeans() {
     Set<Class<?>> registered =
         StreamSupport.stream(listeners.spliterator(), false)
             .map(listener -> (Class<?>) ClientProxy.unwrap(listener).getClass())
@@ -77,7 +84,8 @@ public class EventstreamDarknessTest {
                 BuildSuccessfulListener.class,
                 CiEventTriggerListener.class,
                 DaemonReleaseListener.class,
-                ScmReleaseListener.class)),
+                ScmReleaseListener.class,
+                RepositoryRenamedListener.class)),
         "a listener removed as unused subscribes to nothing and is never swept: " + registered);
   }
 
@@ -87,8 +95,9 @@ public class EventstreamDarknessTest {
     assertEquals("ci-event-triggers", CiEventTriggerListener.CONSUMER_ID);
     assertEquals("ci-daemon-adopt", DaemonReleaseListener.CONSUMER_ID);
     assertEquals("ci-release-facts", ScmReleaseListener.CONSUMER_ID);
+    assertEquals("ci-repository-rename", RepositoryRenamedListener.CONSUMER_ID);
     assertEquals(
-        4,
+        5,
         StreamSupport.stream(listeners.spliterator(), false)
             .map(QitsDurableEventListener::consumerId)
             .distinct()
@@ -100,5 +109,29 @@ public class EventstreamDarknessTest {
             .noneMatch("ci-push-runs"::equals),
         "ci-push-runs is a RETIRED consumption: its watermark says every push ever announced was"
             + " handled, so a listener inheriting it would silently skip everything in between");
+  }
+
+  /**
+   * <b>Exactly one listener replays from the epoch, and it is the repair.</b>
+   *
+   * <p>{@code RepositoryRenamedListener} is a projection being built after the fact — the renames that
+   * made this service's rows stale are already on the log — so a consumer initialized at the head
+   * would subscribe correctly and repair nothing, which is the failure with no symptom. The other four
+   * act on arrivals and must not: a first deployment of any of them replaying the whole log would
+   * re-adopt every daemon release the platform ever published and re-evaluate every event any
+   * repository ever declared an interest in.
+   *
+   * <p>Asserted as a partition rather than as one flag, because the risk is a later listener copying
+   * this one's shape without its reason.
+   */
+  @Test
+  public void theOnlyConsumerThatStartsAtTheBeginningOfTheLogIsTheRenameRepair() {
+    for (QitsDurableEventListener listener : listeners) {
+      assertEquals(
+          RepositoryRenamedListener.CONSUMER_ID.equals(listener.consumerId()),
+          listener.replayFromEpoch(),
+          listener.getClass().getName()
+              + " disagrees with the ruling on which consumptions are backfills");
+    }
   }
 }

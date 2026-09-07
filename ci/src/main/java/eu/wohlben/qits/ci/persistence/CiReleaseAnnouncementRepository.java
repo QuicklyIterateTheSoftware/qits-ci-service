@@ -61,4 +61,28 @@ public class CiReleaseAnnouncementRepository
   public List<CiReleaseAnnouncement> listForRun(String runId) {
     return list("runId = ?1 order by artifactIndex, id", runId);
   }
+
+  /**
+   * Rewrites the public coordinate of every announcement recorded for one repository —
+   * {@code CiRunRepository.renameRepository}'s other half, and the half that is not merely cosmetic.
+   *
+   * <p>{@code (project_id, repo_name)} is carried on this row precisely because the announcement is
+   * often made later than the run that owes it, by an {@code SCMRelease} that has not arrived yet or
+   * by a boot sweep in another process — so nothing can go back and ask the run for it. That is also
+   * what makes a stale copy expensive: an <b>owed</b> announcement made after a rename publishes
+   * {@code SoftwareRelease} naming the old repository, and the deployer reads that released
+   * repository's spec name-addressed at {@code /git/<projectId>/<repoName>}, which 404s on a name
+   * nothing answers to any more. The id-addressed fallback is refused by qits-githost's
+   * storage-client guard for everyone but qits-projects, so the deployment simply stops.
+   *
+   * <p><b>Announced rows are rewritten too, and deliberately.</b> They are the readable account of
+   * what this service published, and an account addressed to a name that no longer resolves is not a
+   * more faithful record — the event that carried the old name is on the log, which is where the
+   * history of what was said belongs.
+   *
+   * @return how many rows were rewritten
+   */
+  public int renameRepository(String repoId, String projectId, String repoName) {
+    return update("set projectId = ?1, repoName = ?2 where repoId = ?3", projectId, repoName, repoId);
+  }
 }

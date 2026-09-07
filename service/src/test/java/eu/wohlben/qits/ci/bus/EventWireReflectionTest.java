@@ -59,6 +59,11 @@ public class EventWireReflectionTest {
    * classpath here — {@code ScmReleaseListener} reads three fields with {@code readTree} for exactly
    * that reason, which is the same reason the trigger engine reads every payload that way. A type
    * that ever starts being bound leaves this set in the same commit.
+   *
+   * <p>{@code RepositoryRenamed} is the counterexample and is deliberately NOT here: qits-projects
+   * publishes no vocabulary jar either, but this service transcribes that record locally and BINDS
+   * it, so it owes a registration like any bound type and {@link EventWireReflection} carries one.
+   * Which of the two shapes a foreign event gets is a choice per event, not a rule about jars.
    */
   private static final Set<String> WALKED = Set.of("SCMRelease");
 
@@ -75,10 +80,12 @@ public class EventWireReflectionTest {
             BuildFailed.class,
             SoftwareRelease.class,
             SCMPublishCommit.class,
+            RepositoryRenamed.class,
             EventEnvelope.class,
             EventFrame.class),
         Set.of(registration.targets()),
-        "the three events out, the push in, the PUT body, the frame — a seventh wire type is added here");
+        "the three events out, the push and the rename in, the PUT body, the frame — an eighth wire"
+            + " type is added here");
   }
 
   /**

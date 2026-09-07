@@ -761,14 +761,14 @@ native-image registration, which lives with the deployable rather than with the 
 
 ### How the deployable uses it
 
-`service/…/bus/` is the whole of qits-ci's wiring: two announcers publishing, and four listeners
+`service/…/bus/` is the whole of qits-ci's wiring: two announcers publishing, and five listeners
 consuming. The subscriber dials itself on `StartupEvent` because listener beans exist. Registering a
 listener really is "add a bean" — no channel name, no annotation — and no `@Unremovable` is needed,
 because `EventDispatcher`'s `Instance<QitsDurableEventListener>` is what ArC counts as a use.
 `EventstreamDarknessTest` asserts that rather than trusting it, since a removed listener subscribes
 to nothing, is swept for nothing, and says nothing about it.
 
-**All four consume DURABLY, and none of them is a typed or raw listener any more.** The library's
+**All five consume DURABLY, and none of them is a typed or raw listener any more.** The library's
 other two seams are live-only and at-most-once — a frame broadcast while this process is
 disconnected, restarting or mid-cutover is gone — and the 2026-08-10 rebootstrap campaign measured
 what that costs a platform whose release train rides the bus. `QitsDurableEventListener` is the
@@ -777,7 +777,7 @@ a watermark is paged forward from qits-events' log at startup and on a schedule,
 delay rather than a hole. `event-delivery-guarantees-plan.md` in the superproject is the design and
 `eventstream/AGENTS.md` is the contract; what follows is only what is qits-ci's to get right.
 
-**Each listener's `consumerId()` is STORAGE, not a label**, and the four shipped are literals in
+**Each listener's `consumerId()` is STORAGE, not a label**, and the five shipped are literals in
 `EventstreamDarknessTest` for that reason:
 
 | bean | `consumerId()` | `signatures()` | `selects` |
@@ -786,8 +786,51 @@ delay rather than a hole. `event-delivery-guarantees-plan.md` in the superprojec
 | `BuildSuccessfulListener` | `ci-release-train` | `BuildSuccessful` | default |
 | `DaemonReleaseListener` | `ci-daemon-adopt` | `SoftwareRelease` | the daemon's own releases |
 | `ScmReleaseListener` | `ci-release-facts` | `SCMRelease` | default |
+| `RepositoryRenamedListener` | `ci-repository-rename` | `RepositoryRenamed` | default |
 
-**There were five, and `ci-push-runs` retired on 2026-09-05.** `ScmPublishCommitListener` was the
+**The fifth is the only one that REPLAYS, and it is the only one that may.**
+`RepositoryRenamedListener.replayFromEpoch()` returns true, which is the library's reserved case —
+"a projection being built" — being taken up for the first time here. The rows it repairs
+(`ci_run.project_id`/`repo_name` V5, `ci_release_announcement.project_id`/`repo_name` V10/V11) are
+written once at accept time and re-derived by nothing, so the renames that made them stale are
+*already on the log*; a consumer initialized at the head would subscribe, claim and settle perfectly
+and repair nothing at all, which is the failure with no symptom. It is bounded by the signature —
+catch-up queries the log with that one name filter, and the whole history of it was two frames on
+2026-09-07 — and it is consulted once, at initialization, so a later re-repair is
+`CatchupSweeper.rebuildFromEpoch("ci-repository-rename")` rather than a flag. The other four act on
+arrivals and must never carry it: one of them replaying would re-adopt every daemon release the
+platform ever published, or re-evaluate every event any repository ever declared an interest in.
+`EventstreamDarknessTest` asserts the partition rather than the flag, so a sixth listener copying
+this one's shape without its reason is a red build.
+
+**And it is the only one that BINDS a foreign payload.** `service/…/bus/RepositoryRenamed` is a local
+transcription of qits-projects' record — that service publishes no vocabulary jar, the same
+measurement `ScmReleaseContractTest` records — and the listener decodes it with
+`CanonicalJson.payloadTo`, which is a `@RegisterForReflection` target it owes and `EventWireReflection`
+carries. `ScmReleaseListener` walks its payload with `readTree` and owes none. Which of the two shapes
+a jarless event gets is a choice per event, not a rule about jars; the guard for this one is
+`RepositoryRenamedContractTest`, which names the publisher's source file and pins the payload's key
+set — exactly these five, no more and no fewer — through the real `CanonicalJson`.
+
+**What the repair is FOR is the announcement, not the display.** The cheap half is
+`GET /ci/api/repositories/summary` showing a renamed repository's old name until it next builds. The
+expensive half is an announcement left OWED across a rename: it publishes `SoftwareRelease` naming the
+old repository, qits-deployments reads that released repository's spec name-addressed at
+`/git/<projectId>/<repoName>`, and the read 404s — the id-addressed fallback being refused by
+qits-githost's storage-client guard for everyone but qits-projects. The release publishes, the deploy
+never happens, and neither service names the rename as the cause. **The candidate catalogue is not
+part of this**: it is a live listing behind a five-second cache and was never stale.
+
+The repair writes on ci's datasource in **its own transaction**, `ScmReleaseListener`'s exact
+arrangement and for the identical measured reason (`Enlisted connection used without active
+transaction`), and it is idempotent by construction — the same two values, keyed by the storage id the
+rename did not move — so it needs no tip check of the kind the library's ordering section demands of a
+last-writer-wins handler. Two renames of one repository inside one catch-up sweep could still apply
+reversed; that is accepted and stated in the class javadoc, because the next event or the next run of
+that repository heals it and the alternative is a call to qits-projects on the dispatch thread.
+
+**There were five before this one too, and `ci-push-runs` retired on 2026-09-05.**
+`ScmPublishCommitListener` was the
 push intake — it had itself replaced `POST /ci/api/events/post-receive` — and it called
 `CiRunService.onPostReceive` for every `SCMPublishCommit`, accepting one `QUEUED` run per pushed
 branch ref against `.config/qits/ci-post-receive.yml`. The platform runs no CI outside release

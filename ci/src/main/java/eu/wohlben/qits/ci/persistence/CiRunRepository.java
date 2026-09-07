@@ -215,4 +215,27 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
             configPath)
         > 0;
   }
+
+  /**
+   * Rewrites the public coordinate of every run recorded for one repository — what {@code
+   * RepositoryRenamed} makes of the rows a rename left stale.
+   *
+   * <p>{@code project_id} and {@code repo_name} are written once, at accept time, off whatever the
+   * triggering event announced; nothing re-derives them afterwards, so a repository renamed in
+   * qits-projects displays its old name in {@code GET /ci/api/repositories/summary} forever. The
+   * storage id is what makes the repair possible at all: the bare on the git host does not move on a
+   * rename, and neither does {@link eu.wohlben.qits.ci.entity.CiRun#repoId}, so every stale row is
+   * found by the one column the rename did not touch.
+   *
+   * <p>A bulk update rather than a read-modify-write: the set of rows is unbounded (a repository's
+   * whole history) and none of them is otherwise being mutated, so loading them into a persistence
+   * context would buy nothing but the memory. Idempotent by construction — it writes the same two
+   * values whatever the row held — which is what a durable consumer needs from an effect it may be
+   * offered twice.
+   *
+   * @return how many rows were rewritten, which is zero for a repository this instance never ran
+   */
+  public int renameRepository(String repoId, String projectId, String repoName) {
+    return update("set projectId = ?1, repoName = ?2 where repoId = ?3", projectId, repoName, repoId);
+  }
 }
