@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import eu.wohlben.qits.ci.control.CiRunOrdering;
 import eu.wohlben.qits.ci.control.CiRunService;
 import eu.wohlben.qits.eventstream.QitsEvent;
 import eu.wohlben.qits.eventstream.control.CanonicalJson;
@@ -34,12 +35,20 @@ import org.junit.jupiter.api.Test;
  *   sha: mergedSha
  * }</pre>
  *
- * <p>Four literals therefore have to agree with a record in another repository: the event NAME
- * ({@link CiRunService#RELEASE_REQUEST_EVENT_NAME}), the two checkout dot-paths, and the field the
- * run's {@code release_request_id} column is read out of ({@link
- * CiRunService#RELEASE_REQUEST_ID_FIELD}). Nothing in this service binds the payload — the trigger
- * engine subscribes to {@code "*"} and walks a {@code JsonNode} — so nothing but this file would
- * notice a rename.
+ * <p><b>Six literals</b> therefore have to agree with a record in another repository: the event NAME
+ * ({@link CiRunService#RELEASE_REQUEST_EVENT_NAME}), the two checkout dot-paths, the field the run's
+ * {@code release_request_id} column is read out of ({@link CiRunService#RELEASE_REQUEST_ID_FIELD}),
+ * and — since the ordering campaign — the two fields the run QUEUE is ordered by ({@link
+ * CiRunService#PRIORITY_FIELD} and {@link CiRunService#RELEASE_REQUEST_DOWNSTREAM_FIELD}, read onto
+ * {@code ci_run.priority} and {@code ci_run.downstream_repos} and consumed by {@link
+ * CiRunOrdering}). Nothing in this service binds the payload — the trigger engine subscribes to
+ * {@code "*"} and walks a {@code JsonNode} — so nothing but this file would notice a rename.
+ *
+ * <p><b>The two halves fail differently and both matter.</b> A rename of the event or the checkout
+ * paths costs a repository its QA run outright, loudly. A rename of the two ordering fields costs
+ * nothing visible at all: an unreadable field is "unknown", unknown is a legitimate value with a
+ * defined rank, and the only symptom is a queue that has quietly stopped being ordered. That is
+ * precisely the class of regression a transcription exists to catch.
  *
  * <h2>Why this is a transcription and not a resolution against the real record</h2>
  *
@@ -92,7 +101,8 @@ public class ReleaseRequestChangedContractTest {
       String backingBranch,
       String mergedSha,
       Instant changedAt,
-      String priority)
+      String priority,
+      List<String> downstreamTechnicalComponents)
       implements QitsEvent {
 
     @Override
@@ -110,6 +120,16 @@ public class ReleaseRequestChangedContractTest {
   /** The same, with the request's effective priority stated. */
   static ReleaseRequestChanged changed(
       String repoId, String requestId, String mergedSha, String priority) {
+    return changed(repoId, requestId, mergedSha, priority, null);
+  }
+
+  /** The same again, with the downstream closure qits-projects resolved for the folded repository. */
+  static ReleaseRequestChanged changed(
+      String repoId,
+      String requestId,
+      String mergedSha,
+      String priority,
+      List<String> downstream) {
     return new ReleaseRequestChanged(
         UUID.randomUUID(),
         "qits",
@@ -119,7 +139,8 @@ public class ReleaseRequestChangedContractTest {
         "release/" + requestId,
         mergedSha,
         Instant.parse("2026-09-03T09:07:06Z"),
-        priority);
+        priority,
+        downstream);
   }
 
   /** The canonical payload of one re-fold — the bytes a frame carries. */
@@ -131,6 +152,16 @@ public class ReleaseRequestChangedContractTest {
   static String canonicalPayload(
       String repoId, String requestId, String mergedSha, String priority) {
     return CanonicalJson.payload(changed(repoId, requestId, mergedSha, priority));
+  }
+
+  /** The same, for a re-fold that also carries the downstream closure. */
+  static String canonicalPayload(
+      String repoId,
+      String requestId,
+      String mergedSha,
+      String priority,
+      List<String> downstream) {
+    return CanonicalJson.payload(changed(repoId, requestId, mergedSha, priority, downstream));
   }
 
   @Test
@@ -172,25 +203,97 @@ public class ReleaseRequestChangedContractTest {
   }
 
   /**
-   * <b>The ninth component, and the one nothing in this service reads at all.</b>
+   * <b>The ninth component, and the first one the run queue really reads.</b>
    *
    * <p>{@code priority} is the release request's effective priority — the maximum over the
-   * priorities declared on its participating branches. It is transcribed here because the record it
-   * copies grew it in this campaign, and for no other reason: a QA run is <em>not</em> where the
-   * value enters qits-ci. It enters on {@code SCMRelease}, at release time, and the join carries it
-   * onto {@code SoftwareRelease}; this event's copy is read by nobody, since a fold is built the same
-   * way whatever it is worth and the queue is FIFO.
+   * priorities declared on its participating branches. It was transcribed here in the priority
+   * campaign purely because the record grew it, with the note that "a QA run is not where the value
+   * enters qits-ci" and "the queue is FIFO". <b>That is no longer true</b>: the queue is a claim loop
+   * ordered by {@link CiRunOrdering}, {@code CiRunService.priorityOf} reads this exact field off this
+   * exact event at accept time, and it lands on {@code ci_run.priority}.
    *
-   * <p><b>So the assertion is deliberately about the wire and not about a behaviour</b> — there is no
-   * behaviour to assert. It is here so that a rename in qits-projects shows up as one failing
-   * transcription in this file rather than as two half-updated copies of the same record.
+   * <p>So the spelling is pinned against the constant that reads it, and not only asserted to be
+   * present: a rename in qits-projects now costs every release request its place in the queue
+   * (silently — an unreadable field is "unknown", which is a rank rather than an error), and this
+   * assertion is what turns that into a red suite instead.
    */
   @Test
-  public void theRequestsEffectivePriorityIsInTheCanonicalPayload() throws Exception {
+  public void theRequestsEffectivePriorityIsInTheCanonicalPayloadUnderTheNameCiReadsIt()
+      throws Exception {
     JsonNode payload = MAPPER.readTree(canonicalPayload("r-1", "rr-42", "c".repeat(40), "HIGHER"));
 
-    assertTrue(payload.has("priority"), "the canonical payload carries no priority");
-    assertEquals("HIGHER", payload.get("priority").asText());
+    assertEquals(
+        "priority",
+        CiRunService.PRIORITY_FIELD,
+        "the field qits-ci reads a run's priority out of is spelled by this constant");
+    assertTrue(
+        payload.has(CiRunService.PRIORITY_FIELD),
+        "the canonical payload carries no " + CiRunService.PRIORITY_FIELD);
+    assertEquals("HIGHER", payload.get(CiRunService.PRIORITY_FIELD).asText());
+  }
+
+  /**
+   * <b>The tenth component, and the other half of what the queue orders by.</b>
+   *
+   * <p>{@code downstreamTechnicalComponents} is the downstream closure qits-projects resolves for the
+   * repository being folded — the repositories that will be renovated onto this one's release, named
+   * nearest-first. qits-ci stores it verbatim on {@code ci_run.downstream_repos} and {@link
+   * CiRunOrdering} sequences the queue by it: a queued run whose repository appears in this list
+   * waits for the run that named it.
+   *
+   * <p>It is <b>added LAST</b>, after {@code priority}, and that position is part of the contract
+   * rather than a style choice — a canonical payload is a function of the component list, so a
+   * component inserted anywhere else would move bytes this file asserts are stable. That is what the
+   * additive case below measures.
+   */
+  @Test
+  public void theDownstreamClosureIsInTheCanonicalPayloadUnderTheNameCiReadsIt() throws Exception {
+    JsonNode payload =
+        MAPPER.readTree(
+            canonicalPayload(
+                "r-1",
+                "rr-42",
+                "c".repeat(40),
+                "HIGHER",
+                List.of("qits-ci-frontend", "qits-ci-service")));
+
+    assertEquals(
+        "downstreamTechnicalComponents",
+        CiRunService.RELEASE_REQUEST_DOWNSTREAM_FIELD,
+        "the field qits-ci reads a run's downstream closure out of is spelled by this constant");
+    assertTrue(
+        payload.has(CiRunService.RELEASE_REQUEST_DOWNSTREAM_FIELD),
+        "the canonical payload carries no " + CiRunService.RELEASE_REQUEST_DOWNSTREAM_FIELD);
+    JsonNode downstream = payload.get(CiRunService.RELEASE_REQUEST_DOWNSTREAM_FIELD);
+    assertTrue(downstream.isArray(), "the closure travels as a JSON array of repository names");
+    assertEquals(2, downstream.size());
+    // Order is information: qits-projects sends the closure nearest-first, and while the ordering
+    // does not depend on it today, an array that arrived reversed would be a different statement.
+    assertEquals("qits-ci-frontend", downstream.get(0).asText());
+    assertEquals("qits-ci-service", downstream.get(1).asText());
+  }
+
+  /**
+   * The closure's own compatibility arm, and the one this rollout is actually sitting in: a
+   * qits-projects that cannot reach qits-maintenance — or has not shipped the enrichment at all —
+   * publishes a null, which NON_NULL turns into no key. An empty array is a <em>different</em>
+   * statement ("asked, this repository is a leaf") and travels as real information; qits-ci orders
+   * both identically, which is why nothing here has to tell them apart.
+   */
+  @Test
+  public void aReFoldThatCouldNotAskCarriesNoClosureKeyAtAll() throws Exception {
+    JsonNode unasked =
+        MAPPER.readTree(canonicalPayload("r-1", "rr-42", "c".repeat(40), "HIGHER", null));
+    JsonNode leaf =
+        MAPPER.readTree(canonicalPayload("r-1", "rr-42", "c".repeat(40), "HIGHER", List.of()));
+
+    assertFalse(
+        unasked.has(CiRunService.RELEASE_REQUEST_DOWNSTREAM_FIELD),
+        "NON_NULL: 'could not ask' is an absent key, indistinguishable from a pre-change event");
+    assertTrue(
+        leaf.has(CiRunService.RELEASE_REQUEST_DOWNSTREAM_FIELD),
+        "'asked, it is a leaf' is an empty array and travels");
+    assertEquals(0, leaf.get(CiRunService.RELEASE_REQUEST_DOWNSTREAM_FIELD).size());
   }
 
   /**
@@ -201,14 +304,19 @@ public class ReleaseRequestChangedContractTest {
    * repository can be released independently of the one that publishes the event.
    */
   @Test
-  public void aReFoldStatingNoPriorityCarriesNoSuchKeyAndIsOtherwiseIdentical() throws Exception {
-    JsonNode prioritised =
-        MAPPER.readTree(canonicalPayload("r-1", "rr-42", "c".repeat(40), "MEDIUM"));
+  public void aReFoldStatingNeitherNewFieldCarriesNoSuchKeyAndIsOtherwiseIdentical()
+      throws Exception {
+    JsonNode enriched =
+        MAPPER.readTree(
+            canonicalPayload("r-1", "rr-42", "c".repeat(40), "MEDIUM", List.of("qits-ci-frontend")));
     JsonNode without = MAPPER.readTree(canonicalPayload("r-1", "rr-42", "c".repeat(40)));
 
     assertFalse(
-        without.has("priority"),
+        without.has(CiRunService.PRIORITY_FIELD),
         "NON_NULL: an absent priority is an absent key, so a consumer cannot read 'none' as a value");
+    assertFalse(
+        without.has(CiRunService.RELEASE_REQUEST_DOWNSTREAM_FIELD),
+        "and an absent closure is an absent key for the same reason");
     for (String field :
         List.of(
             BACKING_BRANCH_FIELD,
@@ -218,9 +326,9 @@ public class ReleaseRequestChangedContractTest {
             "repoName",
             "changedAt")) {
       assertEquals(
-          prioritised.get(field),
+          enriched.get(field),
           without.get(field),
-          field + " moved with priority, so the addition was not additive after all");
+          field + " moved with the new components, so they were not additive after all");
     }
   }
 

@@ -131,6 +131,53 @@ public class CiReleaseRequestRunTest extends CiTestSupport {
     assertNull(runService.runsFor(repoId).get(0).releaseRequestId);
   }
 
+  @Test
+  public void aReleaseRequestChangedCarriesBothOrderingInputsOntoTheRow() throws Exception {
+    // The whole path, at the seam a frame really arrives on: the engine matches the trigger file,
+    // resolves the checkout out of the payload, and the accept reads the two fields the queue orders
+    // by off that same payload. Nothing about the trigger file mentions either of them — this is the
+    // generic grammar, and the ordering inputs ride along on the event that was going to arrive
+    // anyway.
+    seedQa();
+
+    deliver(
+        arrival(
+            UUID.randomUUID().toString(),
+            "{\"projectId\":\"qits\",\"repoId\":\"r-1\",\"repoName\":\"qits-ci-service\","
+                + "\"releaseRequestId\":\""
+                + REQUEST_ID
+                + "\",\"backingBranch\":\"release/"
+                + REQUEST_ID
+                + "\",\"mergedSha\":\""
+                + MERGED
+                + "\",\"priority\":\"HIGHER\","
+                + "\"downstreamTechnicalComponents\":[\"qits-ci-frontend\",\"qits-spa-ci\"]}"));
+
+    CiRun run = runService.runsFor(repoId).get(0);
+    assertEquals(REQUEST_ID, run.releaseRequestId, "the provenance column is unaffected");
+    assertEquals("HIGHER", run.priority);
+    // Verbatim, as the canonical array text arrived — CiRunOrdering parses it once per pass and
+    // nothing else reads it at all.
+    assertEquals("[\"qits-ci-frontend\",\"qits-spa-ci\"]", run.downstreamRepos);
+    assertEquals(CiRunStatus.SUCCESS, run.status, "and none of it is in the run's way");
+  }
+
+  @Test
+  public void aReFoldThatStatesNeitherRecordsNeitherAndBuildsExactlyTheSame() throws Exception {
+    // The compatibility arm and the live state of the rollout: a qits-projects that has not shipped
+    // the enrichment publishes neither key, which is indistinguishable from stating none. Both
+    // columns are null, the run is identical, and CiRunOrdering reads null as "unknown" — which
+    // constrains nothing and ranks in the middle.
+    seedQa();
+
+    deliver(arrival(UUID.randomUUID().toString(), payload(REQUEST_ID, MERGED)));
+
+    CiRun run = runService.runsFor(repoId).get(0);
+    assertNull(run.priority);
+    assertNull(run.downstreamRepos);
+    assertEquals(CiRunStatus.SUCCESS, run.status);
+  }
+
   // --- the gating / non-gating split inside ONE file ---------------------------------------------
 
   @Test

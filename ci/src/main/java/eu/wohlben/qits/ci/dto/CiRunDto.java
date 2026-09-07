@@ -52,6 +52,24 @@ import java.util.List;
  * <p><b>{@code gating} on a FINISHED run is what the verdict was worth</b>, not only what the
  * pipeline declared: a gating pipeline whose failure happened in a step declaring {@code gating:
  * false} reads {@code false} here, which is the same value its build event carried.
+ *
+ * <p><b>{@code priority} is why the queue reorders</b>, and it is here for exactly that reason. It
+ * is the triggering event's own word — the release request's effective priority, folded in
+ * qits-projects — recorded verbatim at accept, and it is one of the two inputs the claim loop ranks
+ * {@code QUEUED} runs by. An operator looking at {@code /active} and asking why the newest run was
+ * claimed before the oldest must be able to read the answer off the rows rather than infer it, so
+ * the value is exposed even though this service compares it to nothing outside its ordering.
+ *
+ * <p>It is <b>null</b> on every run whose event stated none — which is every run not triggered by a
+ * {@code ReleaseRequestChanged} or an {@code SCMRelease}, and every row recorded before the ordering
+ * campaign — and null means <b>unknown</b> rather than "lowest": such a run is ranked in the middle,
+ * exactly where a run saying {@code MEDIUM} is. This service holds no enum for the vocabulary, so
+ * the value is a plain string and a word a client has not heard of is a word qits-projects added.
+ *
+ * <p>The other ordering input, the downstream closure the run waits on, is deliberately <b>not</b>
+ * here: it is a list of another context's repository names that explains a run's position only in
+ * combination with every other queued run's list, which is a question this DTO cannot answer one row
+ * at a time.
  */
 public record CiRunDto(
     String id,
@@ -74,5 +92,6 @@ public record CiRunDto(
     String releaseRequestId,
     String retryOfRunId,
     String configPath,
+    String priority,
     List<CiStepDto> steps,
     CiLiveStepDto live) {}

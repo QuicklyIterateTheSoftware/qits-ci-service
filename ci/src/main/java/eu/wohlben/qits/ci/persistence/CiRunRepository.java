@@ -100,8 +100,19 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   }
 
   /**
-   * Every run left {@code QUEUED} by a previous process, oldest-first — what the startup sweep
-   * re-enqueues, in the order the runs were accepted so a restart does not reorder a backlog.
+   * Every {@code QUEUED} run, oldest-first — the <b>candidate feed</b> the claim loop scans and the
+   * startup sweep counts.
+   *
+   * <p>It was "what the startup sweep re-enqueues, in the order the runs were accepted so a restart
+   * does not reorder a backlog", and both halves of that moved on. The claim loop reads this list on
+   * every pass and hands it to {@code CiRunOrdering}, which decides the real order; the ordering's
+   * <em>last</em> tie-break is {@code (createdAt, id)}, which is exactly this order — so a queue
+   * with no priorities, no downstream lists and no release runs in it is claimed in precisely the
+   * order this query returns, and a restart re-derives that from the same rows.
+   *
+   * <p>Unbounded on purpose: it is bounded by the accepted backlog, which is the same thing {@code
+   * listActiveNewestFirst} says about itself, and a bound here would be a bound on how far the
+   * ordering can see.
    */
   public List<CiRun> listQueuedOldestFirst() {
     return list("status = ?1 order by createdAt, id", CiRunStatus.QUEUED);

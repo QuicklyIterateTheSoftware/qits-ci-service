@@ -499,8 +499,80 @@ log for anything.
 
 **`onStart` skips test mode, so `sweepInterrupted` is package-private and the suite drives it.** A
 claim about a restart is made by seeding the rows a dead process would have left and calling it —
-`CiQueuedRunTest` does exactly that, including the ordering, which is `createdAt` because the worker
-is FIFO and a restart must not reorder a backlog.
+`CiQueuedRunTest` does exactly that, including the ordering. The doctrine there used to be *a
+restart must not reorder a backlog*, because the worker was FIFO and `createdAt` was what FIFO had
+meant before the process died. **It now reads: a restart re-derives the same suggested order** — the
+same rows through the same pure function in whichever process is running — which is a stronger
+statement, since it holds for a backlog nothing accepted in this process at all. A queue whose rows
+state nothing derives `(createdAt, id)`, so the old case is the new one with no signals in it, and it
+is still green unchanged.
+
+### The queue is the table, and workers claim out of it
+
+**There is no in-memory queue any more (2026-09-07).** `enqueue` used to submit one closure per run
+to the worker pool, which fixed the order at accept time: whoever accepted first ran first, and
+nothing could change it afterwards — not a high-priority arrival, not a restart, not an operator.
+Now `CiRunService.initializeWorkers` starts `qits.ci.concurrent-builds` **claim loops**, and each one
+does exactly this: read every `QUEUED` row in one transaction (`listQueuedOldestFirst`, kept as the
+*candidate feed*), hand them to `CiRunOrdering.suggestedOrder`, and walk the answer taking the first
+row it can have. `enqueue` is now a one-permit release on a semaphore and the draining refusal,
+nothing else; an idle worker parks on that semaphore for `qits.ci.queue-poll-interval` (PT10S
+shipped, PT1H in both suites so a staged `QUEUED` row is claimed only when a test says so).
+
+**`startQueued` is unchanged and is still the whole claim.** It re-reads the status and the draining
+flag inside the writing transaction, so a cancelled row is still never picked up and two workers
+racing for one row are still settled by the database. What the loop adds is what happens when the
+claim comes back null: the next candidate, not a parked worker.
+
+**`CiRunOrdering` is a pure function and that is load-bearing** — no I/O, no clock, no CDI — because
+it is what makes the restart doctrine above true and what makes the ordering testable without a
+database. Its precedence is kind (an `SCMRelease`-triggered run before everything else, two tiers and
+not three), then dependency topology (Kahn's algorithm over `ci_run.downstream_repos`), then priority
+(a private rank table), then `(createdAt, id)`. **Priority never outranks topology by construction**:
+priority only chooses among in-degree-zero nodes, so an upstream `LOW` necessarily precedes a
+downstream `BLOCKING`. A cycle degrades to the next criteria rather than throwing, since this runs on
+a run worker and a fact about the estate must not cost every queued run its claim.
+
+**The rank table is a local copy of another context's vocabulary, and the tension is deliberate.**
+Nothing else here interprets the word: both priority columns are plain `varchar`, no check
+constraint enumerates the values, and `SoftwareRelease` carries whatever arrived. But there is no
+ordering without a rank. What makes it benign is the failure mode — an unknown word, a new word, a
+word in the wrong case all rank `MEDIUM` and the run is claimed like any other, so a stale table
+costs one misordered queue and never one lost build. Absent ranks `MEDIUM` too, and *not* `LOWEST`:
+otherwise the rollout order of qits-projects would decide the build order of every repository whose
+events predate the field.
+
+**Two limits are accepted rather than overlooked.** Topology sequences `QUEUED` claims only — a
+downstream run may start while its upstream is `RUNNING`, because strict chaining idles workers
+behind a long build and stalls outright on one that never ends. And priority starves: a steady
+stream of `BLOCKING` work can hold a `LOWEST` run indefinitely, with a manual-reorder API as the
+intended escape hatch rather than an ageing fudge nobody can predict.
+
+**One regression got worse and is written down rather than hidden.** A `QUEUED` row whose
+`trigger_config` will not parse used to cost only itself: `enqueue` had submitted one closure per
+run, so the failure was logged and the next closure ran. The loop walks a shared list, so it
+**abandons the scan** at such a row and leaves it `QUEUED` — which means it also holds up everything
+behind it, once per wake, loudly. It is unreachable through the engine (the snapshot parsed once, at
+accept) and settling such a row is the follow-up.
+
+**`awaitIdle` is the suite's only window onto all of this and is the most delicate hunk in the
+change.** It cannot be a submit-and-wait any more — every pool thread is inside a loop that never
+returns — so it polls `(!draining && hasQueuedRows()) || busyWorkers > 0`, nudging the semaphore and
+sleeping 25ms. **Two orderings make it sound and both were got wrong once.** `busyWorkers` is
+incremented before the candidate read, not after the claim, so a worker that has chosen a row but has
+not flipped it yet is already counted. And the two halves are read **queue first, workers second**,
+because the transition that slips between them is exactly `QUEUED → RUNNING`: reading the workers
+first can see zero, let a worker claim and start a run, and then see an empty queue — reporting idle
+over a run that has just begun. That is not hypothetical; it is what a first cut of this hunk did,
+and it surfaced as a one-in-a-few-runs `CiRunCancelAndRetryTest` failure where a retried run's
+announcement had simply not happened yet. Queue-first cannot be wrong: an empty queue means every
+accepted row is already `RUNNING` or over, and a `RUNNING` one is held by a worker that has not
+decremented. The `draining` arm is not an optimisation either — a draining process deliberately leaves its backlog
+`QUEUED`, so waiting for the queue to empty would be waiting for something that must never happen.
+It drains the semaphore on the way out, and *only* there: the nudges are the one thing releasing
+permits for something other than real work, and a leftover one would let an idle worker rescan into
+rows a later test staged and expects nobody to touch. Everywhere else **permits accumulate and are
+never drained** — a surplus permit costs one indexed read, a drained one costs a run its wake.
 
 ## Addressing
 
@@ -819,15 +891,22 @@ Four things about that second seam are worth having in front of you:
   <br>**Null is a supported value and reaches the wire as an ABSENT KEY**, because `CanonicalJson`
   includes `NON_NULL`. An id-addressed candidate has neither project nor name, so "qits-ci does not
   know" is spelled by the keys not being there; writing a null would have made absence a value.
-- **`priority` is carried verbatim and read by nobody here.** It is the release request's effective
-  priority, declared in qits-projects on its participating branches; `SCMRelease` carries it, the
-  release join records it on `ci_scm_release` and resolves it back at announce time, and it leaves on
-  this event. **qits-ci acts on it nowhere** — no local enum, no comparison, `ci_run` without the
-  column and the run queue still FIFO — so an unknown word rides through untouched rather than
-  costing a release its announcement. Null where no release fact stands behind the announcement (a
-  hand-supplied event through the manual door leaves no row) and where the release stated none, and
-  null is an ABSENT KEY for the same NON_NULL reason `projectId` and `repoName` are. The hand-kept
-  half is `ScmReleaseContractTest`'s transcription, as ever.
+- **`priority` is carried verbatim, and what is transcribed onto this event is still judged
+  nowhere.** It is the release request's effective priority, declared in qits-projects on its
+  participating branches; `SCMRelease` carries it, the release join records it on `ci_scm_release`
+  and resolves it back at announce time, and it leaves on this event — **byte for byte, with no
+  local enum and no comparison anywhere on the announce path**, so an unknown word rides through
+  rather than costing a release its announcement. Null where no release fact stands behind the
+  announcement (a hand-supplied event through the manual door leaves no row) and where the release
+  stated none, and null is an ABSENT KEY for the same NON_NULL reason `projectId` and `repoName` are.
+  The hand-kept half is `ScmReleaseContractTest`'s transcription, as ever.
+  <br>**This bullet used to end "the run queue is still FIFO" and that half is now false**, so read
+  the two paths apart. The announce path is unchanged and is the sentence above. The *accept* path
+  grew a second, independent reader on 2026-09-07: `CiRunService.priorityOf` reads the same field off
+  the same event onto `ci_run.priority`, and `CiRunOrdering` ranks the queue by it (see "The queue is
+  the table"). The two copies are deliberately different facts — `ci_scm_release.priority` is what
+  the RELEASE said, resolved at announce time; `ci_run.priority` is what THIS RUN was accepted
+  knowing, which is the only one a release request's QA run could have at all.
 - **The fan-out is `CiRunService`'s and the port takes one artifact.** N declarations are N calls, so
   a failure costs one announcement rather than the rest. The bus already supports siblings —
   the outbox enqueues one row per event in its own transaction and `CausationScope.current()` is a
@@ -1260,22 +1339,33 @@ names"), and what follows is what biting it feels like.
   generic grammar — the branch that gets built is a branch nobody pushed, which is the whole reason
   the event has to exist, and "decide at main, build at the payload's commit" answers it unchanged.
 
-  **What is event-specific is `ci_run.release_request_id` and nothing else.** `mergedSha` names one
-  fold and the next re-fold replaces it, so it is not a handle a cancellation or a retry can hold;
-  the request id is. It is read at accept in `CiRunService`, **gated on the event NAME** the way
-  `supersedeByVersion` is gated on the tag event's — a `releaseRequestId` elsewhere on the bus is
-  some other context's word, and a provenance column that reads any field of any payload eventually
-  records something nobody meant. A value longer than the column is recorded as *none* rather than
-  truncated or thrown: the run is the point.
+  **What is event-specific is THREE accept-time reads, and they follow one rule.** `mergedSha` names
+  one fold and the next re-fold replaces it, so it is not a handle a cancellation or a retry can
+  hold; the request id is, and `ci_run.release_request_id` is what carries it. `ci_run.priority` and
+  `ci_run.downstream_repos` joined it on 2026-09-07 as the run queue's two ordering inputs (see "The
+  queue is the table"). All three are read at accept in `CiRunService`, all three are **gated on the
+  event NAME** the way `supersedeByVersion` is gated on the tag event's — a `releaseRequestId`, a
+  `priority` or a `downstreamTechnicalComponents` elsewhere on the bus is some other context's word,
+  and a column that reads any field of any payload eventually records something nobody meant. The
+  priority's gate is the one that names **two** events, because `SCMRelease` carries the same field;
+  the closure's names only this one, since a release run already outranks every release-request run
+  categorically. A value longer than its column is recorded as *none* rather than truncated or
+  thrown: the run is the point. An absent or non-array closure is *none* silently — absent is the
+  ordinary value for as long as the enrichment has not shipped, and a WARN there would be a line per
+  release request forever.
 
-  **`RELEASE_REQUEST_EVENT_NAME`/`RELEASE_REQUEST_ID_FIELD` are strings, and there is no jar to make
-  them anything else** — qits-projects publishes no vocabulary jar, by its own ruling and for
-  qits-workspaces' measured reason. `bus/ReleaseRequestChangedContractTest` is the guard, and it is
-  `ScmReleaseContractTest`'s mechanism rather than `ScmPublishTagContractTest`'s: a **transcription**
-  of the published record's component list, run through the real `CanonicalJson`, pinning the name,
-  both checkout dot-paths and the id field. A rename over there is a change to that transcription in
-  the same campaign; landing it there and not here leaves this suite green and every repository's QA
-  pipeline silently dead.
+  **`RELEASE_REQUEST_EVENT_NAME`/`RELEASE_REQUEST_ID_FIELD`/`PRIORITY_FIELD`/
+  `RELEASE_REQUEST_DOWNSTREAM_FIELD` are strings, and there is no jar to make them anything else** —
+  qits-projects publishes no vocabulary jar, by its own ruling and for qits-workspaces' measured
+  reason. `bus/ReleaseRequestChangedContractTest` is the guard, and it is `ScmReleaseContractTest`'s
+  mechanism rather than `ScmPublishTagContractTest`'s: a **transcription** of the published record's
+  component list, run through the real `CanonicalJson`, pinning the name, both checkout dot-paths,
+  the id field and both ordering fields. A rename over there is a change to that transcription in the
+  same campaign. **The two halves fail differently and the second is the reason the pins were
+  added**: renaming the event or a checkout path costs a repository its QA run outright and loudly,
+  while renaming an ordering field costs nothing visible at all — an unreadable field is "unknown",
+  unknown is a legitimate value with a defined rank, and the only symptom is a queue that has quietly
+  stopped being ordered.
 
   **The re-fold burst needs nothing new.** The backing branch is stable per request, so
   `supersedeByCheckoutBranch` already collapses the queued older folds to the newest tip.
@@ -1703,15 +1793,38 @@ id, so a redelivery finds its own row; one index, on `accepted_at`, which is the
 shape a fifth time: `ci_scm_release.priority`, `varchar(32)`, nullable, no default, no backfill, part
 of no constraint and no index. A release request's priority is declared in qits-projects on its
 participating branches, folded there into one effective value, and carried down on `SCMRelease`;
-qits-ci **transcribes** it onto `SoftwareRelease` and acts on it nowhere — `ci_run` gains no column,
-the FIFO queue is untouched, and no code path compares the value to anything. Queue ordering is the
-next feature and this is the inert data it will read. It lands on the release fact rather than on the
-owed announcement for V10's reason exactly reversed in time: the announcement is often made by
-whoever closes the join later, and the fact row is the half that knows what the release said, so
-`ReleaseJoin.announceOwed` resolves it there at announce time. No check constraint names the six
-values — the vocabulary is another context's and will grow there — and the only rule applied is the
-column's own width, a longer value recorded as **none** with a WARN, `ci_run.release_request_id`'s
-rule verbatim.
+qits-ci **transcribes** it onto `SoftwareRelease` verbatim, and nothing on the announce path compares
+it to anything. That file's header says "`ci_run` gains no column, the FIFO queue is untouched" and
+ends "queue ordering is the next feature and this is the inert data it will read" — **V15 is that
+feature**, so read the two columns as the different facts they are rather than as a duplication: this
+one is what the RELEASE said, resolved at announce time from the fact row, and V15's is what a RUN
+was accepted knowing. It lands on the release fact rather than on the owed announcement for V10's
+reason exactly reversed in time: the announcement is often made by whoever closes the join later, and
+the fact row is the half that knows what the release said, so `ReleaseJoin.announceOwed` resolves it
+there at announce time. No check constraint names the six values — the vocabulary is another
+context's and will grow there — and the only rule applied is the column's own width, a longer value
+recorded as **none** with a WARN, `ci_run.release_request_id`'s rule verbatim.
+
+`V15__run_ordering_inputs.sql` is the queue-ordering campaign's whole schema cost, and it is V8's
+shape a **sixth** time twice over: `ci_run.priority varchar(32)` and `ci_run.downstream_repos text`,
+both nullable, no default, no backfill, part of no constraint and carrying no index. They are the two
+inputs `CiRunOrdering` ranks the queued rows by — see "The queue is the table, and workers claim out
+of it" — read at accept off the triggering event's own payload and by nothing else, ever.
+
+Four decisions in it are worth having in front of you. **The closure is stored verbatim as the
+canonical JSON array text**, `trigger_event_payload`'s precedent and its reason: this module walks
+payloads rather than binding them, so the honest column for a list of another context's words is the
+text it arrived as, and the ordering parses it once per pass rather than once per comparison. `text`
+rather than `varchar` because the list's length is the platform's dependency graph, not a number this
+schema should pick. **Nullable is the ordinary value rather than a gap** — most events carry neither
+field, and NON_NULL makes "stated none" and "predates the field" the same absent key, so both are
+read as UNKNOWN: unconstrained for the topology, `MEDIUM` for the priority, never an error and never
+a refusal. **The width equals `ci_scm_release.priority`'s deliberately**: a value one row could hold
+and the other could not would make one release read two ways depending on which row was asked. And
+**no index**, because the only reader is the claim loop's scan of the `QUEUED` rows, which is bounded
+by the accepted backlog; an index over two columns that are null on most rows would be a second copy
+of the table for nobody. A platform where nothing states either orders exactly as it did before the
+migration, by `(created_at, id)`.
 
 `V1__init.sql` is the rest of the schema. The nine H2 migrations it replaces (V1-V8 plus a Java V9) are
 history in this repository's log and are not a prefix of this lineage: the move off H2 is a

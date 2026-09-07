@@ -121,6 +121,38 @@ public class CiSchemaTest {
     assertEquals("text", columnType("ci_run", "trigger_event_payload"));
     assertEquals("text", columnType("ci_run", "trigger_config"));
     assertEquals("text", columnType("ci_daemon_pin", "detail"));
+    // V15's half of the same rule: the closure is a canonical JSON array whose length is the
+    // platform's dependency graph, so it is text for trigger_event_payload's reason exactly.
+    assertEquals("text", columnType("ci_run", "downstream_repos"));
+  }
+
+  @Test
+  public void theOrderingInputColumnsAreNullableAndTakeBothArms() throws SQLException {
+    // V15. Both are ordering inputs and both are OPTIONAL by design: only two of the events on this
+    // bus carry a priority, only one carries a closure, and every row recorded before the campaign
+    // has neither — so a not-null column would have needed a value nobody published. Written and
+    // rolled back rather than described, so the lineage is proven to accept a run that states both
+    // and a run that states neither.
+    assertEquals("character varying", columnType("ci_run", "priority"));
+    try (Connection connection = ci.getConnection()) {
+      connection.setAutoCommit(false);
+      try (PreparedStatement run =
+          connection.prepareStatement(
+              "insert into ci_run (id, repo_id, branch, commit_sha, gating, status, created_at,"
+                  + " trigger_type, config_path, priority, downstream_repos) values (?,"
+                  + " 'schema-probe', 'main', '0', true, 'QUEUED', current_timestamp, 'EVENT',"
+                  + " '.config/qits/ci-event-release-request.yml', ?, ?)")) {
+        run.setString(1, "ordering-probe-stated");
+        run.setString(2, "BLOCKING");
+        run.setString(3, "[\"qits-ci-frontend\",\"qits-ci-service\"]");
+        run.executeUpdate();
+        run.setString(1, "ordering-probe-silent");
+        run.setString(2, null);
+        run.setString(3, null);
+        run.executeUpdate();
+      }
+      connection.rollback();
+    }
   }
 
   @Test

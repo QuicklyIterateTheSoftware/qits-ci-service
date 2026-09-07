@@ -139,6 +139,44 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   @Column(name = "retry_of_run_id", length = 255)
   public String retryOfRunId;
 
+  /**
+   * What the triggering event said this work was worth, verbatim, or null when it said nothing —
+   * which is every run not triggered by a {@code ReleaseRequestChanged} or an {@code SCMRelease},
+   * every run whose event stated no priority, and every row recorded before the ordering campaign.
+   *
+   * <p><b>An ordering input, and read by {@code CiRunOrdering} alone.</b> Nothing else in this
+   * service compares it to anything: there is no enum for the vocabulary (it is qits-projects', and
+   * it will grow there), so an unknown word rides onto the row untouched and is ranked as {@code
+   * MEDIUM} rather than refused. Absent means <b>unknown</b>, which the ordering also reads as
+   * {@code MEDIUM} — never as "lowest", because a publisher that has not been released yet must not
+   * cost its runs their place in the queue.
+   *
+   * <p>It is deliberately not the same value as {@code ci_scm_release.priority}: that one is what the
+   * RELEASE said and is resolved at announce time, while this one is what THIS RUN was accepted
+   * knowing. A QA run of a release request has no release fact to resolve against and must still be
+   * orderable.
+   */
+  @Column(length = 32)
+  public String priority;
+
+  /**
+   * The repositories qits-projects named as downstream of this run's repository, as the canonical
+   * JSON array text the event carried, or null when the event named none.
+   *
+   * <p><b>The second ordering input, and read by {@code CiRunOrdering} alone.</b> It is stored
+   * verbatim rather than normalised into rows, {@code trigger_event_payload}'s precedent: this module
+   * walks payloads rather than binding them, and the ordering parses this text once per pass rather
+   * than once per comparison.
+   *
+   * <p>Null is the ordinary value and means <b>unknown</b> — a run whose event predates the field, a
+   * qits-projects that could not ask qits-maintenance, or any event that is not a {@code
+   * ReleaseRequestChanged}. Unknown is <em>unconstrained</em>: it never holds a run back and never
+   * pushes one forward. An empty array is a different statement — "asked, this repository is a leaf"
+   * — and orders identically, which is why nothing here has to tell the two apart.
+   */
+  @Column(name = "downstream_repos", columnDefinition = "text")
+  public String downstreamRepos;
+
   @Enumerated(EnumType.STRING)
   @Column(nullable = false, length = 32)
   public CiRunStatus status;

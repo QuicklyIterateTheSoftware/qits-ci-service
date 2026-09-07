@@ -1525,6 +1525,21 @@ a repository's own listing will show.
 - Set `qits.ci.concurrent-builds` to the maximum number of pipelines this qits-ci instance may run
   at once (default **4**, minimum **1**). Steps remain sequential within one pipeline. Size this
   together with the host's CPU and memory and the per-container `qits.ci.cpus`/`memory-limit` caps.
+  It is also how many **claim loops** the process runs: a worker is a thread that reads the queued
+  runs, ranks them, and takes the best one it can have.
+- `qits.ci.queue-poll-interval` (default **PT10S**) is how long an idle claim loop waits for a wake
+  before scanning the queue anyway. Every accepted run, retry and boot sweep wakes a worker
+  immediately, so this is a **net** rather than the mechanism — it is what picks up a row nobody
+  woke anybody for, such as one accepted by a process that died before it could. Leave it alone
+  unless an instance is being tuned for a very large backlog; lowering it buys nothing an accept does
+  not already buy, and raising it lengthens the worst case for a stranded row.
+- **The run queue is ordered, not FIFO** (since 2026-09-07), and nothing has to be configured for
+  that. Queued runs are claimed by: a release build (`SCMRelease`-triggered) before anything else;
+  then dependency order, so a run whose repository qits-projects named downstream of another queued
+  run's waits for it; then priority (`BLOCKING` … `LOWEST`, as declared on a release request in
+  qits-projects, with anything absent or unrecognised treated as `MEDIUM`); then acceptance time. A
+  platform that states none of it is claimed oldest-first, exactly as before. A run's own value is on
+  `GET /ci/api/runs/*` as `priority`, so an operator can read why the queue reordered.
 - Set `qits.ci.git-host-url` / `qits.ci.container-git-url` to the git host as reachable from the ci
   host and from a step container respectively. **Both end at the service, not at `/git`** — ci
   appends `/git/<repoId>` itself, because `/git` is the codebase's segment for the git host while

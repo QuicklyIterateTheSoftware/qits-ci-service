@@ -39,6 +39,8 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.hibernate.exception.ConstraintViolationException;
@@ -164,6 +166,28 @@ import org.jboss.logging.Logger;
  * <p>An event-triggered row also stores its event envelope and exact trigger-file content. The
  * worker reparses that immutable snapshot, so a queued event run is recoverable without consulting
  * a branch that may have moved and without relying on an at-most-once event redelivery.
+ *
+ * <h2>The queue is the table, and the workers claim out of it</h2>
+ *
+ * <p><b>There is no in-memory queue left.</b> {@link #initializeWorkers} starts {@code
+ * concurrent-builds} loops ({@link #workerLoop}); each one reads every {@code QUEUED} row in one
+ * transaction, asks the pure {@link CiRunOrdering} which of them to take, and claims the first it
+ * can with {@link #startQueued} — the CAS that was already there, re-reading the status and the
+ * draining flag inside the writing transaction. {@link #enqueue} is a one-permit wake on a
+ * semaphore and nothing else; an idle worker parks on it for {@code qits.ci.queue-poll-interval}.
+ *
+ * <p>Three things follow, and each of them was a defect of the executor queue it replaced. Ordering
+ * is <b>dynamic</b>: a high-priority run accepted while ten others wait is claimed next rather than
+ * eleventh, because the order is re-derived on every pass rather than fixed at submit time. A
+ * restart is no longer a special path — the boot sweep says "there is work" and the same loop
+ * re-derives the same order from the same rows, which is a stronger guarantee than the "a restart
+ * must not reorder a backlog" it replaces. And a manual reorder, if it is ever wanted, is a change
+ * to one pure function rather than a reach into an executor.
+ *
+ * <p>What is deliberately NOT here: no cross-state blocking (a run may start while the run it
+ * depends on is {@code RUNNING} — see {@link CiRunOrdering}), and no lock. The ordering is a
+ * suggestion; the claim is the decision, and two workers racing for one row is settled by the
+ * database exactly as it always was.
  */
 @ApplicationScoped
 public class CiRunService {
@@ -258,8 +282,52 @@ public class CiRunService {
 
   public static final String RELEASE_REQUEST_ID_FIELD = "releaseRequestId";
 
+  /**
+   * The payload field naming what a piece of release work is worth, on <b>both</b> events that carry
+   * one: {@code ReleaseRequestChanged} (the request's effective priority, folded in qits-projects
+   * from its participating branches) and {@code SCMRelease} (the same value, carried down to the
+   * release itself).
+   *
+   * <p>One spelling for two events because it is one field: qits-projects publishes both and names
+   * it the same on each. The read is <b>gated on those two names</b>, exactly as {@link
+   * #RELEASE_REQUEST_ID_FIELD}'s is gated on one — a {@code priority} elsewhere on the bus is some
+   * other context's word about something else, and a column that reads any field of any payload
+   * eventually records something nobody meant.
+   *
+   * <p>Spelled as a string, and guarded by {@code bus/ReleaseRequestChangedContractTest} and {@code
+   * bus/ScmReleaseContractTest} over in the module where those records can be transcribed at all.
+   */
+  public static final String PRIORITY_FIELD = "priority";
+
+  /**
+   * The payload field naming what depends on a release request's repository, on {@code
+   * ReleaseRequestChanged} alone.
+   *
+   * <p>qits-projects asks qits-maintenance for the downstream closure of the repository being folded
+   * and carries the answer here, nearest first. qits-ci stores it verbatim on {@link
+   * CiRun#downstreamRepos} and {@link CiRunOrdering} sequences the queue by it: a queued run whose
+   * repository is named in another queued run's list waits for that one.
+   *
+   * <p><b>Absent is the ordinary value and never an error.</b> The field is additive, a qits-projects
+   * that cannot reach qits-maintenance publishes none, and {@code CanonicalJson}'s NON_NULL
+   * inclusion makes "stated none" and "predates the field" the same absent key. An absent list is
+   * read as unknown, which constrains nothing — so this whole feature degrades to the ordering this
+   * service had before it, which is {@code (createdAt, id)}.
+   */
+  public static final String RELEASE_REQUEST_DOWNSTREAM_FIELD = "downstreamTechnicalComponents";
+
   /** What {@code ci_run.release_request_id} can hold; a longer value is recorded as none. */
   static final int MAX_RELEASE_REQUEST_ID_LENGTH = 255;
+
+  /**
+   * What {@code ci_run.priority} can hold; a longer value is recorded as none, with a WARN.
+   *
+   * <p>Deliberately <b>the same number as {@link ReleaseJoin#MAX_PRIORITY_LENGTH}</b> and derived
+   * from it rather than repeated: the two columns hold the same vocabulary's words about the same
+   * piece of work, and a value one row could hold while the other could not would make one release
+   * read two ways depending on which row was asked.
+   */
+  static final int MAX_PRIORITY_LENGTH = ReleaseJoin.MAX_PRIORITY_LENGTH;
 
   public static final String USER_CANCELLED = "USER_CANCELLED";
   public static final String DEDUPED = "DEDUPED";
@@ -308,6 +376,23 @@ public class CiRunService {
   /** The instance-wide upper bound on runs executing at the same time. */
   @ConfigProperty(name = "qits.ci.concurrent-builds")
   int concurrentBuilds;
+
+  /**
+   * How long an idle worker waits for a wake before scanning the queue anyway.
+   *
+   * <p><b>A net under the wake, not the mechanism.</b> Every accept, retry and boot sweep releases a
+   * permit, so the ordinary path is immediate; this is what covers the cases where no permit was
+   * ever released for a row that is nevertheless {@code QUEUED} — a run accepted by a process that
+   * died before it could wake anything, a row written by an operator, a permit consumed by a worker
+   * that lost the race to claim it. Ten seconds is short enough that such a row is never stranded
+   * and long enough that an idle instance is not polling its database for a living.
+   *
+   * <p>No {@code defaultValue} here: the shipped ten seconds is in the {@code ci} jar's {@code
+   * META-INF/microprofile-config.properties} with its argument beside it, which is where {@code
+   * qits.ci.concurrent-builds} keeps its own and the one place either can be changed.
+   */
+  @ConfigProperty(name = "qits.ci.queue-poll-interval")
+  Duration queuePollInterval;
 
   /**
    * How long a <b>read</b> holds while the datasource is gone — see "Patience" in this class's
@@ -371,11 +456,142 @@ public class CiRunService {
    */
   private volatile boolean draining;
 
+  /**
+   * Raised by {@link #shutdown} so a worker parked on {@link #work} stops looping once it is woken.
+   *
+   * <p>Distinct from {@link #draining}, and both are needed. {@code draining} is a <b>policy</b> a
+   * test raises and lowers and a {@code ShutdownEvent} raises for real: a draining worker keeps
+   * running, it simply claims nothing. This one is the <b>end of the thread</b>, set once and never
+   * cleared, so a worker that wakes during bean destruction returns instead of touching a datasource
+   * Quarkus is closing.
+   */
+  private volatile boolean stopping;
+
+  /**
+   * The wake. One permit is released per accepted run, per retry and per swept backlog; a worker
+   * with nothing to do parks on it for {@link #queuePollInterval}.
+   *
+   * <p><b>Permits accumulate and that is harmless — never drain them.</b> A surplus permit costs one
+   * scan of the queued rows, which is one indexed read; a drained one costs a run its wake, and the
+   * only thing that would then start it is the poll interval. The asymmetry is the whole argument.
+   */
+  private final Semaphore work = new Semaphore(0);
+
+  /**
+   * How many workers are inside {@link #claimAndRunOne} right now — <b>incremented before the
+   * candidate read, not after the claim</b>.
+   *
+   * <p>That order is the point. It makes "a worker holds a row nobody can see it holding" impossible:
+   * between the scan and the {@code RUNNING} flip a row is still {@code QUEUED} and a reader asking
+   * "is the queue drained" would otherwise be told yes about work that is one statement from
+   * starting. {@link #awaitIdle} is that reader and the suite is built on its answer.
+   */
+  private final AtomicInteger busyWorkers = new AtomicInteger();
+
   private ExecutorService worker;
 
+  /**
+   * Starts the claim loops: {@code concurrent-builds} threads, each one claiming and running one run
+   * at a time for the life of the process.
+   *
+   * <p><b>The pool is exactly saturated on purpose.</b> Every thread it has is occupied by a loop
+   * that never returns, so nothing else may ever be submitted to it — the queue's shape lives in the
+   * database now, not in an executor.
+   */
   @PostConstruct
   void initializeWorkers() {
     worker = createWorkerPool(concurrentBuilds);
+    for (int i = 0; i < concurrentBuilds; i++) {
+      worker.submit(this::workerLoop);
+    }
+  }
+
+  /**
+   * One worker's whole life: claim the best queued run and run it, or park until something says
+   * there may be work.
+   *
+   * <p>It re-scans immediately after a successful claim rather than parking, because a backlog is
+   * exactly the case where the next run is already there — and it re-derives the order every time,
+   * which is what makes a late high-priority arrival jump a queue this loop had already looked at.
+   */
+  private void workerLoop() {
+    while (!stopping && !Thread.currentThread().isInterrupted()) {
+      try {
+        if (!draining && claimAndRunOne()) {
+          continue;
+        }
+        work.tryAcquire(queuePollInterval.toMillis(), TimeUnit.MILLISECONDS);
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        return;
+      } catch (RuntimeException e) {
+        // The datasource is gone, or something in the scan is broken. Neither is a reason to lose a
+        // worker for the life of the process, and neither is a reason to spin: say it once and wait
+        // out the poll interval like an idle worker does.
+        LOG.errorf(e, "The CI run worker could not claim work — retrying after the poll interval");
+        try {
+          work.tryAcquire(queuePollInterval.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          return;
+        }
+      }
+    }
+  }
+
+  /**
+   * One pass of the claim loop: read every {@code QUEUED} row, ask {@link CiRunOrdering} what order
+   * they should be claimed in, and take the first one this process can actually have.
+   *
+   * @return whether this pass did something — a run executed, or a row retired. False means the
+   *     queue held nothing for this worker and it should park.
+   */
+  private boolean claimAndRunOne() {
+    // Incremented BEFORE the read, and see the field's javadoc for why: from here until the finally,
+    // this worker is holding a claim somebody else may not conclude is absent.
+    busyWorkers.incrementAndGet();
+    try {
+      List<CiRun> candidates =
+          QuarkusTransaction.requiringNew()
+              .call(() -> CiRunOrdering.suggestedOrder(runs.listQueuedOldestFirst()));
+      for (CiRun candidate : candidates) {
+        String runId = candidate.id;
+        if (!runnable(candidate)) {
+          retireUnrunnable(candidate);
+          return true;
+        }
+        EventRun request;
+        try {
+          request = reconstructEventRun(candidate);
+        } catch (RuntimeException unparseable) {
+          // The snapshot on the row parsed once, at accept, so this is unreachable through the
+          // engine. If it ever is not, the row is left QUEUED — it is accepted work and this process
+          // has learned nothing that would let it be settled honestly — and the scan is abandoned
+          // rather than continued past it, so the log says the queue is stuck rather than quietly
+          // reordering around a row nobody can run.
+          LOG.errorf(
+              unparseable,
+              "CI run %s cannot be reconstructed from its own row (%s) — left QUEUED, and this"
+                  + " scan of the queue is abandoned",
+              runId,
+              candidate.configPath);
+          return false;
+        }
+        CiRun claimed = startQueued(runId);
+        if (claimed == null) {
+          // Cancelled, superseded, already taken by another worker, or this process is draining.
+          // All four are ordinary and none of them is this pass's business.
+          LOG.debugf("CI run %s is no longer queued — moving on to the next candidate", runId);
+          cancelled.remove(runId);
+          continue;
+        }
+        executeClaimed(claimed, request);
+        return true;
+      }
+      return false;
+    } finally {
+      busyWorkers.decrementAndGet();
+    }
   }
 
   static ExecutorService createWorkerPool(int concurrentBuilds) {
@@ -409,8 +625,17 @@ public class CiRunService {
     this.draining = draining;
   }
 
+  /**
+   * Ends the claim loops. Three statements and the order is the whole of it: raise {@link #stopping}
+   * so a woken worker returns rather than scanning, hand out one permit per worker so a worker
+   * parked on the poll interval wakes at once instead of holding the shutdown for it, and only then
+   * interrupt whatever is left — a worker inside a step, which is exactly what {@code draining}
+   * plus the successor's boot sweep exist to make survivable.
+   */
   @PreDestroy
   void shutdown() {
+    stopping = true;
+    work.release(concurrentBuilds);
     worker.shutdownNow();
   }
 
@@ -450,8 +675,16 @@ public class CiRunService {
     sweepInterrupted();
   }
 
-  /** What one sweep found: work to restart, and the runs it failed — announced after the commit. */
-  private record Sweep(List<String> requeue, List<FailedOrphan> failed, int restartedEvents) {}
+  /**
+   * What one sweep found: how many rows are queued for the claim loop to take, and the runs it
+   * failed — announced after the commit.
+   *
+   * <p>{@code requeued} is a <b>count</b> rather than a list of ids, and that is the claim loop
+   * showing through: a row is claimed because it is {@code QUEUED} in the table, never because a
+   * particular id was handed to a particular thread. The sweep's whole remaining job is to say
+   * "there is work" once.
+   */
+  private record Sweep(int requeued, List<FailedOrphan> failed, int restartedEvents) {}
 
   /** One orphaned run the sweep marked FAILED, with the instant the row was stamped with. */
   private record FailedOrphan(CiRun run, Instant finishedAt) {}
@@ -488,9 +721,11 @@ public class CiRunService {
           "Restarting %d event-triggered CI run(s) interrupted by the previous shutdown",
           sweep.restartedEvents());
     }
-    if (!sweep.requeue().isEmpty()) {
-      LOG.infof("Re-enqueued %d CI run(s) left QUEUED by a previous shutdown", sweep.requeue().size());
-      sweep.requeue().forEach(this::enqueue);
+    if (sweep.requeued() > 0) {
+      LOG.infof("Re-enqueued %d CI run(s) left QUEUED by a previous shutdown", sweep.requeued());
+      // One permit per worker rather than one per row: the rows are in the table and the claim loop
+      // re-derives their order for itself, so what a sweep owes is "wake up", once, to everybody.
+      work.release(concurrentBuilds);
     }
   }
 
@@ -517,16 +752,14 @@ public class CiRunService {
       }
     }
 
-    // Every QUEUED row goes back to the worker, including one this engine can no longer run — a
-    // POST_RECEIVE leftover from a predecessor deployment. `enqueue` is the single place that
-    // decides what a row is worth (it has to be: a row can also become unrunnable between here and
-    // the worker claiming it), and it settles such a row CANCELLED rather than leaving it QUEUED
-    // for a successor that will make the same discovery.
-    List<String> requeue = new ArrayList<>();
-    for (CiRun queued : runs.listQueuedOldestFirst()) {
-      requeue.add(queued.id);
-    }
-    return new Sweep(requeue, failed, restartedEvents);
+    // Every QUEUED row is the claim loop's, including one this engine can no longer run — a
+    // POST_RECEIVE leftover from a predecessor deployment. The loop is the single place that decides
+    // what a row is worth (it has to be: a row can also become unrunnable between here and a worker
+    // reaching it), and it settles such a row CANCELLED rather than leaving it QUEUED for a
+    // successor that will make the same discovery. The count includes the rows this method just
+    // moved back to QUEUED — the query flushes them first, which is what makes an interrupted event
+    // run restart on this boot rather than on the next one.
+    return new Sweep(runs.listQueuedOldestFirst().size(), failed, restartedEvents);
   }
 
   /**
@@ -550,7 +783,31 @@ public class CiRunService {
   }
 
   /**
-   * Puts an already-accepted (QUEUED) run on the worker.
+   * Tells the claim loop there is work.
+   *
+   * <p><b>It hands nothing to anybody, and that is the 2026-09-07 change.</b> This method used to
+   * submit a closure per run to the worker pool, which made the order runs executed in the order
+   * they were submitted — an ordering decided at accept time, by the thread that happened to accept
+   * first, and unchangeable afterwards. The row is the queue now: a worker reads every {@code
+   * QUEUED} row, asks {@link CiRunOrdering} which one to take, and takes it. So a high-priority run
+   * accepted while ten others wait is claimed next rather than eleventh, a restart re-derives the
+   * same order from the same rows, and a future manual reorder has one function to change instead of
+   * an executor to reach into.
+   *
+   * <p>What is left here is the <b>wake</b>, and the draining refusal, which is unchanged: a dying
+   * process must not start work, so it does not even say there is any. The row stays {@code QUEUED}
+   * for the successor's boot sweep — see {@link #draining}.
+   */
+  private void enqueue(String runId) {
+    if (draining) {
+      logLeftQueuedWhileDraining(runId);
+      return;
+    }
+    work.release();
+  }
+
+  /**
+   * Whether this process can execute a row at all.
    *
    * <p><b>Every runnable row is an event run</b>, since per-push CI retired on 2026-09-05 and the
    * only entry left is {@link #onEventTrigger}. A row that is not one is therefore a row this
@@ -558,33 +815,9 @@ public class CiRunService {
    * {@code EVENT} row whose trigger snapshot is missing. Neither is a defect to throw over and
    * neither may be silently dropped either — a {@code QUEUED} row nothing will ever run sits in
    * {@code GET /ci/api/runs/active} forever, which is exactly the phantom the retirement is about.
-   * So it is settled {@code CANCELLED}, which is the truthful terminal state for accepted work that
-   * will not happen, and said out loud once.
+   * So {@link #retireUnrunnable} settles it {@code CANCELLED}, which is the truthful terminal state
+   * for accepted work that will not happen, and says so out loud once.
    */
-  private void enqueue(String runId) {
-    if (draining) {
-      logLeftQueuedWhileDraining(runId);
-      return;
-    }
-    worker.submit(
-        () -> {
-          try {
-            CiRun queued = QuarkusTransaction.requiringNew().call(() -> runs.findById(runId));
-            if (queued == null) {
-              return;
-            }
-            if (!runnable(queued)) {
-              retireUnrunnable(queued);
-              return;
-            }
-            runQueuedEventRun(runId, reconstructEventRun(queued));
-          } catch (RuntimeException e) {
-            LOG.errorf(e, "CI run %s failed unexpectedly", runId);
-          }
-        });
-  }
-
-  /** Whether this process can execute a row at all — see {@link #enqueue}. */
   private static boolean runnable(CiRun run) {
     return run.triggerType == CiTriggerType.EVENT && run.triggerConfig != null;
   }
@@ -721,6 +954,18 @@ public class CiRunService {
       cancelled.remove(runId);
       return;
     }
+    executeClaimed(run, request);
+  }
+
+  /**
+   * The half of {@link #runQueuedEventRun} that runs a run this thread has <b>already claimed</b>.
+   *
+   * <p>It is split out for the claim loop, which does its own {@link #startQueued} — it has to, since
+   * "could this row be claimed" is how it decides whether to move on to the next candidate. What is
+   * left above is the synchronous entry {@link #executeEventRun} uses, unchanged, so no test's path
+   * through this class moved.
+   */
+  private void executeClaimed(CiRun run, EventRun request) {
     // Resolved once, here: every step container of this run downloads the same daemon build.
     DaemonPin pin = runner.pinDaemon();
     pinDaemonVersion(run.id, pin.version());
@@ -1330,6 +1575,12 @@ public class CiRunService {
     run.triggerConfig = request.triggerConfig();
     run.gating = request.trigger().gating();
     run.releaseRequestId = releaseRequestOf(request);
+    // The two ordering inputs, read here and nowhere else: what this run is worth, and what waits on
+    // it. Accept time is the only moment they can be read — the payload is on the row afterwards,
+    // but a queue that had to parse every candidate's payload on every scan would be paying the
+    // ordering's cost per pass instead of per run.
+    run.priority = priorityOf(request);
+    run.downstreamRepos = downstreamReposOf(request);
     runs.persist(run);
     runs.flush();
     supersedeByVersion(run, request);
@@ -1510,6 +1761,85 @@ public class CiRunService {
       return null;
     }
     return text;
+  }
+
+  /**
+   * What the triggering event said this run's work is worth, or null when it said nothing.
+   *
+   * <p><b>Gated on the two event names that carry the field</b>, {@link
+   * #RELEASE_REQUEST_EVENT_NAME} and {@link ReleaseJoin#RELEASE_EVENT_NAME} — {@link
+   * #releaseRequestOf}'s rule with one more name in it, for its reason exactly: a {@code priority}
+   * elsewhere on the bus is some other context's word about some other thing, and a column that
+   * reads any field of any payload eventually records something nobody meant.
+   *
+   * <p><b>Nothing here judges the VALUE</b>, which is {@code ReleaseJoin.priorityToRecord}'s stance
+   * carried onto this row: there is no enum, no accepted-word list, and an unknown priority is
+   * recorded verbatim — {@link CiRunOrdering} is where a word becomes a rank, and an unrecognised
+   * one is ranked in the middle rather than refused. The one rule is the column's own width, and it
+   * is {@link #MAX_RELEASE_REQUEST_ID_LENGTH}'s rule verbatim: <b>recorded as none, with a WARN,
+   * rather than truncated or thrown</b>. The run is the point, and a payload that cannot name a
+   * priority within {@link #MAX_PRIORITY_LENGTH} characters is not naming one this platform issued.
+   *
+   * <p>Walked rather than bound, like every other payload read on this path, and for the
+   * native-image reason {@code EventWireReflection}'s javadoc states.
+   */
+  private static String priorityOf(EventRun request) {
+    if (!RELEASE_REQUEST_EVENT_NAME.equals(request.eventName())
+        && !ReleaseJoin.RELEASE_EVENT_NAME.equals(request.eventName())) {
+      return null;
+    }
+    JsonNode priority =
+        CiEventSelectionEvaluator.resolve(
+            CiEventSelectionEvaluator.parsePayload(request.payload()), PRIORITY_FIELD);
+    if (priority == null) {
+      return null;
+    }
+    String text = CiEventSelectionEvaluator.asString(priority);
+    if (text.isBlank()) {
+      return null;
+    }
+    if (text.length() > MAX_PRIORITY_LENGTH) {
+      LOG.warnf(
+          "Event %s (%s) names a '%s' of %d characters — too long to record, the run keeps none",
+          request.eventId(), request.eventName(), PRIORITY_FIELD, text.length());
+      return null;
+    }
+    return text;
+  }
+
+  /**
+   * The repositories qits-projects named as downstream of this run's repository, as the canonical
+   * JSON array text it arrived as, or null when the event named none.
+   *
+   * <p><b>Gated on {@link #RELEASE_REQUEST_EVENT_NAME} alone</b>, unlike {@link #priorityOf}: it is
+   * the only event that carries a closure. {@code SCMRelease} deliberately does not — a release run
+   * already ranks ahead of every release-request run categorically, so sequencing releases among
+   * themselves would buy an ordering nothing has asked for, and the field can be added there later
+   * at no migration cost.
+   *
+   * <p><b>An absent field, a null and a non-array are all null, silently.</b> No WARN: absent is the
+   * ordinary value for as long as qits-projects has not shipped the enrichment (and for every
+   * deployment of it that cannot reach qits-maintenance), so warning here would be a line per
+   * release request forever — the same argument the trigger listing's DEBUG makes one section over.
+   *
+   * <p>The array is stored <b>verbatim</b> rather than validated element by element. The names are
+   * another context's words, matched against {@link CiRun#repoName} as strings and against nothing
+   * else, and they reach no filesystem path, no URL and no argv — so there is nothing here for
+   * {@code CiIdentifiers} to protect. What a nonsense element costs is one edge that matches no
+   * queued run, which is what "unknown means unconstrained" already covers.
+   */
+  private static String downstreamReposOf(EventRun request) {
+    if (!RELEASE_REQUEST_EVENT_NAME.equals(request.eventName())) {
+      return null;
+    }
+    JsonNode downstream =
+        CiEventSelectionEvaluator.resolve(
+            CiEventSelectionEvaluator.parsePayload(request.payload()),
+            RELEASE_REQUEST_DOWNSTREAM_FIELD);
+    if (downstream == null || !downstream.isArray()) {
+      return null;
+    }
+    return downstream.toString();
   }
 
   /**
@@ -1875,6 +2205,12 @@ public class CiRunService {
     retry.createdAt = Instant.now();
     retry.gating = declaredGating(source);
     retry.releaseRequestId = source.releaseRequestId;
+    // Copied rather than re-read: a retry asks for the SAME work, so it is worth what the original
+    // was worth and waits on what the original waited on. The payload is on the row and would answer
+    // identically, but a re-fire whose queue position differed from the run it re-fires would be a
+    // second decision nobody asked for.
+    retry.priority = source.priority;
+    retry.downstreamRepos = source.downstreamRepos;
     retry.retryOfRunId = source.id;
     retry.triggerType = source.triggerType;
     retry.configPath = source.configPath;
@@ -2196,8 +2532,49 @@ public class CiRunService {
     }
   }
 
-  /** Test hook: waits for the work queued at this moment to drain. */
+  /**
+   * Test hook: waits until no worker is running anything and the queue holds nothing this process
+   * would claim.
+   *
+   * <p><b>It cannot be a submit-and-wait any more, and the reason is the claim loop.</b> The pool's
+   * threads are all inside {@link #workerLoop} for the life of the process, so a task submitted to
+   * it would never run at all. What replaced it is a poll over the two facts that together mean
+   * "idle": no worker is inside {@link #claimAndRunOne}, and no {@code QUEUED} row is waiting.
+   *
+   * <p><b>Two things make it sound and both are easy to get backwards.</b> {@link #busyWorkers} is
+   * incremented <em>before</em> the candidate read, so a worker that has chosen a row but not yet
+   * flipped it is already counted. And the two halves are read <b>queue first, workers second</b>,
+   * because the transition that would otherwise slip between them is exactly {@code QUEUED →
+   * RUNNING}: reading the workers first can see zero, let a worker claim and start a run, and then
+   * see an empty queue — reporting idle over a run that has just begun. Measured, as a suite-only
+   * flake in which a retried run's announcement had not happened yet. Reading the queue first cannot
+   * be wrong: an empty queue means every accepted row is already {@code RUNNING} or over, and a
+   * {@code RUNNING} one is held by a worker that has not decremented yet.
+   *
+   * <p>The {@code draining} arm is not an optimisation either: a draining process deliberately leaves
+   * its backlog {@code QUEUED} for the successor, so waiting for the queue to empty would be waiting
+   * for something that must never happen. The nudge is for the mirror case — a row accepted while
+   * draining released no permit, so once a test lowers the flag there is nothing to wake the worker
+   * but this.
+   */
   void awaitIdle() throws Exception {
-    worker.submit(() -> {}).get();
+    try {
+      while ((!draining && hasQueuedRows()) || busyWorkers.get() > 0) {
+        work.release();
+        Thread.sleep(25);
+      }
+    } finally {
+      // The nudges above are the one place permits are released for something other than real work,
+      // so they are the one place they are taken back: a permit left over here would let an idle
+      // worker rescan into rows a later test has staged and expects nobody to touch. Outside this
+      // hook, permits accumulate and are never drained — see the field.
+      work.drainPermits();
+    }
+  }
+
+  /** Whether anything is waiting to be claimed at all — {@link #awaitIdle}'s other half. */
+  private boolean hasQueuedRows() {
+    return QuarkusTransaction.requiringNew()
+        .call(() -> runs.count("status = ?1", CiRunStatus.QUEUED) > 0);
   }
 }
