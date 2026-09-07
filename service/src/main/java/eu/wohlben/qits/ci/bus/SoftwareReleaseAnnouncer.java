@@ -30,6 +30,14 @@ import java.time.Instant;
  * and which together are the only address a deploy consumer can read a released repository's files
  * at, since the id-addressed scheme is refused to everyone but qits-projects.
  *
+ * <p><b>{@code priority} is handed on exactly as it arrived and is read nowhere in between.</b> The
+ * value is a release request's effective priority, declared in qits-projects, carried on {@code
+ * SCMRelease} and recorded on the fact row the join reads it back off. Nothing in this service
+ * compares it, orders by it or parses it into an enum — the queue is FIFO and stays FIFO — so what
+ * this method does with it is name it on the wire. Null means the release stated none, and {@code
+ * CanonicalJson}'s {@code NON_NULL} inclusion leaves the key out rather than writing a null, the
+ * same spelling {@code projectId} and {@code repoName} already use.
+ *
  * <p><b>qits-ci publishes this name and subscribes to nothing under it.</b> The wire name is the
  * simple class name, and qits-workspaces is simultaneously renaming <em>its</em> release event
  * {@code SoftwareRelease → SCMRelease} — the two halves of one cutover, after which this is the only
@@ -51,10 +59,19 @@ public class SoftwareReleaseAnnouncer implements ReleaseAnnouncer {
       String packageType,
       String packageName,
       Instant finishedAt,
-      String triggerEventId) {
+      String triggerEventId,
+      String priority) {
     bus.publish(
         new SoftwareRelease(
-            repoId, projectId, repoId, repoName, version, packageType, packageName, finishedAt),
+            repoId,
+            projectId,
+            repoId,
+            repoName,
+            version,
+            packageType,
+            packageName,
+            finishedAt,
+            priority),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 }

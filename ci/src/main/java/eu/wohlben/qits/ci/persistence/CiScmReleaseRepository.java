@@ -53,4 +53,44 @@ public class CiScmReleaseRepository implements PanacheRepositoryBase<CiScmReleas
   public Optional<CiScmRelease> findRelease(String repoId, String version) {
     return find("repoId = ?1 and version = ?2", repoId, version).firstResultOptional();
   }
+
+  /**
+   * The priority the recorded release stated, asked with the storage id alone — what the boot sweep
+   * has, exactly as {@link #released(String, String)} is.
+   */
+  public Optional<String> priorityOf(String repoId, String version) {
+    return priorityOf(repoId, null, version);
+  }
+
+  /**
+   * The priority the recorded release stated, asked with <b>both</b> spellings of the repository —
+   * the matcher of {@link #released(String, String, String)} verbatim, and deliberately so.
+   *
+   * <p>The two questions are the same question: "is there a release fact for this key, and if so what
+   * did it say". A lookup that matched on fewer spellings than the gate would answer null for a
+   * release the join had just closed on, and the announcement would then carry no priority for a
+   * release that plainly stated one — a silent half-answer rather than a failure. So the predicate is
+   * kept identical, and the only difference is what comes back.
+   *
+   * <p>{@link Optional#empty()} is "no such release fact"; a row that stated no priority answers an
+   * empty Optional too, since the column is null and both mean the same thing to the caller — the
+   * announcement carries no priority, and the key is absent on the wire. Nothing here distinguishes
+   * them because nothing downstream could act on the distinction.
+   *
+   * @param repoName the run's own public name, or null when its push was id-addressed
+   */
+  public Optional<String> priorityOf(String repoId, String repoName, String version) {
+    if (repoName == null || repoName.isBlank()) {
+      return find("(repoId = ?1 or repoName = ?1) and version = ?2", repoId, version)
+          .firstResultOptional()
+          .map(release -> release.priority);
+    }
+    return find(
+            "(repoName = ?1 or repoId = ?1 or repoId = ?2 or repoName = ?2) and version = ?3",
+            repoName,
+            repoId,
+            version)
+        .firstResultOptional()
+        .map(release -> release.priority);
+  }
 }

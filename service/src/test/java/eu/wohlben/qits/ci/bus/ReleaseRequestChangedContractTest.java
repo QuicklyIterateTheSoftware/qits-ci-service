@@ -10,6 +10,7 @@ import eu.wohlben.qits.ci.control.CiRunService;
 import eu.wohlben.qits.eventstream.QitsEvent;
 import eu.wohlben.qits.eventstream.control.CanonicalJson;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -90,7 +91,8 @@ public class ReleaseRequestChangedContractTest {
       String releaseRequestId,
       String backingBranch,
       String mergedSha,
-      Instant changedAt)
+      Instant changedAt,
+      String priority)
       implements QitsEvent {
 
     @Override
@@ -99,8 +101,15 @@ public class ReleaseRequestChangedContractTest {
     }
   }
 
-  /** One re-fold, as qits-projects would publish it. */
+  /** One re-fold, as qits-projects would publish it — stating no priority, the shape every case
+   *  written before the field existed produces. */
   static ReleaseRequestChanged changed(String repoId, String requestId, String mergedSha) {
+    return changed(repoId, requestId, mergedSha, null);
+  }
+
+  /** The same, with the request's effective priority stated. */
+  static ReleaseRequestChanged changed(
+      String repoId, String requestId, String mergedSha, String priority) {
     return new ReleaseRequestChanged(
         UUID.randomUUID(),
         "qits",
@@ -109,12 +118,19 @@ public class ReleaseRequestChangedContractTest {
         requestId,
         "release/" + requestId,
         mergedSha,
-        Instant.parse("2026-09-03T09:07:06Z"));
+        Instant.parse("2026-09-03T09:07:06Z"),
+        priority);
   }
 
   /** The canonical payload of one re-fold — the bytes a frame carries. */
   static String canonicalPayload(String repoId, String requestId, String mergedSha) {
     return CanonicalJson.payload(changed(repoId, requestId, mergedSha));
+  }
+
+  /** The same, for a re-fold of a request that carries a priority. */
+  static String canonicalPayload(
+      String repoId, String requestId, String mergedSha, String priority) {
+    return CanonicalJson.payload(changed(repoId, requestId, mergedSha, priority));
   }
 
   @Test
@@ -153,6 +169,59 @@ public class ReleaseRequestChangedContractTest {
 
     assertEquals("qits-ci-service", payload.get("repoName").asText());
     assertEquals("r-1", payload.get("repoId").asText());
+  }
+
+  /**
+   * <b>The ninth component, and the one nothing in this service reads at all.</b>
+   *
+   * <p>{@code priority} is the release request's effective priority — the maximum over the
+   * priorities declared on its participating branches. It is transcribed here because the record it
+   * copies grew it in this campaign, and for no other reason: a QA run is <em>not</em> where the
+   * value enters qits-ci. It enters on {@code SCMRelease}, at release time, and the join carries it
+   * onto {@code SoftwareRelease}; this event's copy is read by nobody, since a fold is built the same
+   * way whatever it is worth and the queue is FIFO.
+   *
+   * <p><b>So the assertion is deliberately about the wire and not about a behaviour</b> — there is no
+   * behaviour to assert. It is here so that a rename in qits-projects shows up as one failing
+   * transcription in this file rather than as two half-updated copies of the same record.
+   */
+  @Test
+  public void theRequestsEffectivePriorityIsInTheCanonicalPayload() throws Exception {
+    JsonNode payload = MAPPER.readTree(canonicalPayload("r-1", "rr-42", "c".repeat(40), "HIGHER"));
+
+    assertTrue(payload.has("priority"), "the canonical payload carries no priority");
+    assertEquals("HIGHER", payload.get("priority").asText());
+  }
+
+  /**
+   * And the compatibility arm, which is the ordinary case: the field is additive, so a re-fold
+   * published before it existed — or by a qits-projects that has not been released yet, which is the
+   * live state of the rollout — carries no {@code priority} KEY at all rather than a null. Every
+   * field a QA pipeline depends on is byte-identical either way, which is the whole reason this
+   * repository can be released independently of the one that publishes the event.
+   */
+  @Test
+  public void aReFoldStatingNoPriorityCarriesNoSuchKeyAndIsOtherwiseIdentical() throws Exception {
+    JsonNode prioritised =
+        MAPPER.readTree(canonicalPayload("r-1", "rr-42", "c".repeat(40), "MEDIUM"));
+    JsonNode without = MAPPER.readTree(canonicalPayload("r-1", "rr-42", "c".repeat(40)));
+
+    assertFalse(
+        without.has("priority"),
+        "NON_NULL: an absent priority is an absent key, so a consumer cannot read 'none' as a value");
+    for (String field :
+        List.of(
+            BACKING_BRANCH_FIELD,
+            MERGED_SHA_FIELD,
+            CiRunService.RELEASE_REQUEST_ID_FIELD,
+            "repoId",
+            "repoName",
+            "changedAt")) {
+      assertEquals(
+          prioritised.get(field),
+          without.get(field),
+          field + " moved with priority, so the addition was not additive after all");
+    }
   }
 
   /**

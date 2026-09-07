@@ -1,0 +1,44 @@
+# Composed by qits-ci from .config/qits/release.yml.
+# Generated: this text is never committed. Edit the slot file or the archetype recipe.
+event: SCMRelease
+when:
+  - repository: { exact: 'qits-ci-daemon' }
+checkout:
+  branch: version
+  sha: commitSha
+  optional: true
+artifacts:
+  - { type: 'daemon', name: 'qits-ci-daemon' }
+steps:
+  - image: 'qits/build-images/ci-base:latest'
+    timeout-seconds: 3600
+    build: true
+    script: |
+      set -eu
+      # --- platform prelude ---------------------------------------------------------
+      : "${QITS_VERSION:?the triggering release event carried no version}"
+      git fetch "$QITS_CI_REPOSITORY_URL" "refs/tags/$QITS_VERSION:refs/tags/$QITS_VERSION"
+      git checkout --detach "$QITS_VERSION"
+      if [ -n "${QITS_ARTIFACTS_CLI_URL:-}" ]; then
+        mkdir -p /tmp/qits-bin
+        curl -fsSL -o /tmp/qits-bin/qits-publish "$QITS_ARTIFACTS_CLI_URL"
+        chmod +x /tmp/qits-bin/qits-publish
+        PATH="/tmp/qits-bin:$PATH"
+        export PATH
+      fi
+      : "${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only through it}"
+      : "${QITS_BUILD_REGISTRY:?}"
+      (
+        umask 077
+        printf '%s' "${QITS_COMMISSIONED_CLIENT_ID:-}" > /tmp/qits-client-id
+        printf '%s' "${QITS_COMMISSIONED_CLIENT_SECRET:-}" > /tmp/qits-client-secret
+      )
+      # --- the declared step, run as data -------------------------------------------
+      cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
+      buildctl build --frontend dockerfile.v0 --opt target=binary --output type=local,dest=out
+      qits-publish daemon submit --name qits-ci-daemon --version "$QITS_VERSION" --file out/qits-ci-daemon
+      QITS_SLOT_EOF
+      bash -eu /tmp/qits-slot.sh
+      # --- platform postlude --------------------------------------------------------
+      : "${QITS_ARTIFACTS_CLI_URL:?this release submits an SBOM, and qits-publish is not configured on this deployment}"
+      qits-publish sbom submit --type 'daemon' --name 'qits-ci-daemon' --version "$QITS_VERSION" --file 'out/sbom.json'

@@ -57,6 +57,57 @@ public class CiRunServiceTest extends CiTestSupport {
 
   @Inject CiRunService service;
 
+  // --- what a step container is handed about the release ------------------------------------------
+
+  /**
+   * {@code QITS_VERSION}, seeded by the platform from the triggering event.
+   *
+   * <p>It exists because thirty files in the estate re-derive the same value out of {@code
+   * $QITS_EVENT_PAYLOAD}, in three mutually inconsistent {@code jq} grammars, and because the
+   * platform already owns the one place the two spellings are chosen between — {@code
+   * CiRunService.releaseVersionOf}, which the release join has depended on since it existed. Seeding
+   * it here means the value a step reads and the value the {@code SoftwareRelease} is announced under
+   * are the SAME derivation rather than two that agree today.
+   */
+  @Test
+  public void aReleaseRunsStepsAreHandedTheVersionTheJoinWillAnnounceUnder() {
+    assertEquals(
+        "2026.906.100732",
+        versionSeededBy("SCMRelease", "{\"version\":\"2026.906.100732\"}"));
+    // The tag event spells it differently and the value IS the version: a release stamp is the name
+    // of the tag the release push created.
+    assertEquals(
+        "2026.905.73500",
+        versionSeededBy(CiRunService.TAG_EVENT_NAME, "{\"tagName\":\"2026.905.73500\"}"));
+  }
+
+  @Test
+  public void anEventWithNoVersionSeedsTheVariableEmptyRatherThanLeavingItOut() {
+    // EMPTY, NEVER ABSENT — the convention every injected value here follows. A recipe reads one
+    // shape whatever triggered it, so its own `set -u` guard fires where the author put it rather
+    // than at some unrelated expansion five lines down.
+    assertEquals("", versionSeededBy("ReleaseRequestChanged", "{\"mergedSha\":\"cafe\"}"));
+    assertEquals("", versionSeededBy("SCMRelease", "{}"));
+  }
+
+  /** Runs a one-step pipeline under one event and answers the {@code QITS_VERSION} it was handed. */
+  private String versionSeededBy(String eventName, String payload) {
+    String repo = UUID.randomUUID().toString();
+    String content = triggerFile("steps:\n  - image: alpine:3\n    script: echo v\n");
+    service.executeEventRun(
+        new CiRunService.EventRun(
+            CiRepoRef.of(repo),
+            "main",
+            UUID.randomUUID().toString().replace("-", ""),
+            triggerParser.parse(".config/qits/ci-event-test.yml", content),
+            UUID.randomUUID().toString(),
+            eventName,
+            Instant.now(),
+            payload,
+            content));
+    return fakeRunner.executed().get(fakeRunner.executed().size() - 1).env().get("QITS_VERSION");
+  }
+
   /** The green-run port, for the one case that has to prove an all-skipped run is really green. */
   @Inject FakeRunAnnouncer announcer;
 

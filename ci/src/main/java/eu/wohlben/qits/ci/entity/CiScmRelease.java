@@ -54,4 +54,23 @@ public class CiScmRelease extends PanacheEntityBase {
   /** When this instance recorded it. */
   @Column(name = "seen_at", nullable = false)
   public Instant seenAt;
+
+  /**
+   * The priority the release itself stated, verbatim — {@code LOWEST} … {@code BLOCKING} as
+   * qits-projects folds it out of a release request's participating branches.
+   *
+   * <p><b>A String and not an enum, because qits-ci never acts on it.</b> It is carried from {@code
+   * SCMRelease} onto {@code SoftwareRelease} and read by nobody in between: no queue is ordered by
+   * it, no comparison is made against it, and the run row does not have it at all. The vocabulary
+   * belongs to qits-projects, so a local enum would be a second list to keep in step and a value it
+   * had not heard of would turn an inert field into a refused release.
+   *
+   * <p>It is on <b>this</b> row rather than on the owed announcement for the same reason the join has
+   * two rows at all: the announcement may be made by whoever closes the join later — a later {@code
+   * SCMRelease}, or a boot sweep in another process — and this is the row that knows what the release
+   * said. Nullable, no backfill: a release that named none, one published before the field existed,
+   * and every historical row carry nothing, and absence reaches the wire as a missing key.
+   */
+  @Column(length = 32)
+  public String priority;
 }

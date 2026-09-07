@@ -336,6 +336,60 @@ public class DurableBusConsumptionTest {
   }
 
   /**
+   * <b>The priority, from the real canonical bytes onto the fact row, through the real listener.</b>
+   *
+   * <p>The payload is {@link ScmReleaseContractTest}'s transcription run through {@code
+   * CanonicalJson}, so the key this asserts is read is the key the publisher really writes — a
+   * hand-typed string could agree with the reader and disagree with the writer, which is the one
+   * failure a transcription test on its own cannot catch. What is proved here is the whole hop: the
+   * listener finds {@code priority} in bytes it did not compose, and the join records it verbatim.
+   *
+   * <p>Nothing about the value changes what the listener does with the event — it is no part of the
+   * join key, no part of the poison rules, and qits-ci compares it to nothing — which is why the
+   * assertion is the recorded row rather than any behaviour.
+   */
+  @Test
+  public void anScmReleaseCarryingAPriorityRecordsItVerbatim() {
+    String repository = "prioritised-repo-" + anId().substring(0, 8);
+
+    assertEquals(
+        DurableFunnel.Result.HANDLED,
+        funnel.offer(
+            scmReleases,
+            prioritisedReleaseFrame(anId(), repository, "2026.906.120000", "BLOCKING")));
+
+    assertEquals(
+        Optional.of("BLOCKING"),
+        QuarkusTransaction.requiringNew()
+            .call(() -> releases.priorityOf(repository, "2026.906.120000")),
+        "the value the release stated, on the row the announcement reads it back off");
+  }
+
+  /**
+   * And the ordinary case, which is a release that states none: the field is additive, so the
+   * canonical payload of a publisher that predates it carries no such key at all. The fact is
+   * recorded exactly as it always was and the row simply holds nothing — absence is the value, and
+   * it leaves again as an absent key on {@code SoftwareRelease}.
+   */
+  @Test
+  public void anScmReleaseStatingNoPriorityIsRecordedWithNone() {
+    String repository = "unprioritised-repo-" + anId().substring(0, 8);
+
+    assertEquals(
+        DurableFunnel.Result.HANDLED,
+        funnel.offer(scmReleases, releaseFrame(anId(), repository, "2026.906.130000")));
+
+    assertTrue(
+        QuarkusTransaction.requiringNew()
+            .call(() -> releases.released(repository, "2026.906.130000")),
+        "the release is recorded whatever it says about priority");
+    assertEquals(
+        Optional.empty(),
+        QuarkusTransaction.requiringNew()
+            .call(() -> releases.priorityOf(repository, "2026.906.130000")));
+  }
+
+  /**
    * A frame with no {@code occurredAt} is <b>not</b> poison here, unlike on the daemon ladder: this
    * join orders nothing by it, so the fact is recorded with this instance's own clock rather than
    * declined. A release that could not be recorded would be a release nobody ever announces.
@@ -371,6 +425,25 @@ public class DurableBusConsumptionTest {
 
   private static EventFrame releaseFrame(String eventId, String repository, String version) {
     return releaseFrame(eventId, repository, version, T0);
+  }
+
+  /**
+   * The same, for a release that states a priority — the same transcription, one field on.
+   *
+   * <p>Named rather than overloaded on purpose: {@link #releaseFrame(String, String, String,
+   * Instant)}'s fourth argument is a timestamp that is legitimately null, and two four-argument
+   * overloads differing only in a reference type make {@code null} at a call site ambiguous.
+   */
+  private static EventFrame prioritisedReleaseFrame(
+      String eventId, String repository, String version, String priority) {
+    return new EventFrame(
+        eventId,
+        ReleaseJoin.RELEASE_EVENT_NAME,
+        T0,
+        ScmReleaseContractTest.canonicalPayload(repository, repository, version, priority),
+        null,
+        null,
+        null);
   }
 
   /**
