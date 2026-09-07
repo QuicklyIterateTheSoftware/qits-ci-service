@@ -290,7 +290,10 @@ public class CiRunController {
                 // during that window it means nothing — a client must never be handed the same
                 // step twice, once as a row and once as live.
                 .filter(snapshot -> steps.stream().noneMatch(s -> s.stepIndex == snapshot.stepIndex()))
-                .map(snapshot -> new CiLiveStepDto(snapshot.stepIndex(), snapshot.output()))
+                .map(
+                    snapshot ->
+                        new CiLiveStepDto(
+                            snapshot.stepIndex(), snapshot.startedAt(), snapshot.output()))
                 .orElse(null)
             : null;
     return mapper.toDto(run, steps, live);

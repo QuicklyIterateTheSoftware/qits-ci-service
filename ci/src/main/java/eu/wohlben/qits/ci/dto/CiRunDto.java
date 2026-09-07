@@ -70,6 +70,23 @@ import java.util.List;
  * here: it is a list of another context's repository names that explains a run's position only in
  * combination with every other queued run's list, which is a question this DTO cannot answer one row
  * at a time.
+ *
+ * <p><b>{@code expectedStepDurationsMillis} is how long this run's steps are expected to take</b>,
+ * one entry per step of the pipeline it is running, in declaration order, every entry a positive
+ * number of milliseconds. It is what lets a client draw a <em>segmented</em> progress bar for a
+ * running job: the persisted {@code steps} say what is finished, {@code live} says which step is in
+ * flight and (with its {@code startedAt}) how long it has been, and this says how wide each of the
+ * remaining segments should be.
+ *
+ * <p>It is a <b>prediction</b> — the p95 of what the same step of the same pipeline really took over
+ * its most recent successful runs — computed once when the run was accepted and never revised, so a
+ * step that overruns it is a slow step rather than a stale field. It is <b>null</b> whenever this
+ * service has nothing to predict from: a repository's first run, the first run after the pipeline
+ * grew a step or a step changed its image, and every run recorded before the feature existed. Null
+ * means <em>unknown</em> and a client draws what it drew before this field existed; it never means
+ * "instant". When it is present it has exactly one entry per planned step, so a client may index it
+ * by {@code stepIndex} — but it describes the pipeline as ACCEPTED, and comparing its length to the
+ * number of {@code steps} rows mid-run is exactly the gap {@code live} explains.
  */
 public record CiRunDto(
     String id,
@@ -93,5 +110,6 @@ public record CiRunDto(
     String retryOfRunId,
     String configPath,
     String priority,
+    List<Long> expectedStepDurationsMillis,
     List<CiStepDto> steps,
     CiLiveStepDto live) {}

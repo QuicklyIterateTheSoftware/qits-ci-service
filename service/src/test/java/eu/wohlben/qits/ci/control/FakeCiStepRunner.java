@@ -1,8 +1,11 @@
 package eu.wohlben.qits.ci.control;
 
+import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import io.quarkus.arc.properties.IfBuildProperty;
 import io.quarkus.test.Mock;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -24,6 +27,14 @@ import java.util.function.Consumer;
  * in exactly one place, {@code CiDaemonGateIT}, against a real container running a real daemon.
  *
  * <p>What a test scripts here is therefore only what the seam promises: some chunks, then a result.
+ *
+ * <p><b>It does feed the live relay, and that is not it performing a step.</b> The relay is the
+ * transport's own bookkeeping — which step a run is on, when the host handed it over, what has come
+ * back so far — and this class stands in for the transport, so a suite whose fake left it empty
+ * could not see {@code GET /ci/api/runs/&#123;runId&#125;}'s {@code live} object at all and every
+ * assertion about it would have to be made against a hand-wired relay instead of against the read
+ * surface. What is still scripted rather than performed is everything a step does; the four calls
+ * below are the ones {@code CiDaemonStepRunner} makes around a step, in its order.
  *
  * <p><b>It is on by default and off for the gate.</b> A {@code @Mock} alternative replaces its bean
  * across the whole test application, which would have made {@code CiDaemonGateIT} assert against
@@ -57,6 +68,9 @@ public class FakeCiStepRunner implements CiStepRunner {
   // Written on the worker thread and read on the request thread — the same crossing the real
   // runner's in-flight map makes, and the reason this one is concurrent.
   private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
+
+  /** The live surface, fed here exactly where the real runner feeds it — see the class javadoc. */
+  @Inject CiStepRelay relay;
 
   public List<StepSpec> executed() {
     return executed;
@@ -99,6 +113,7 @@ public class FakeCiStepRunner implements CiStepRunner {
   @Override
   public StepResult run(StepSpec spec, StepListener listener) {
     inFlight.add(spec.runId());
+    relay.begin(spec.runId(), spec.stepIndex());
     try {
       return runStep(spec, listener);
     } finally {
@@ -110,11 +125,15 @@ public class FakeCiStepRunner implements CiStepRunner {
     executed.add(spec);
     Script script = scripted.getOrDefault(spec.stepIndex(), green(spec.stepIndex()));
     listener.onStarted();
+    relay.started(spec.runId(), Instant.now());
+    // The hook runs AFTER the stamp, deliberately: what it stages is the middle of a step, and a
+    // step the host has not handed over yet is the setup window rather than the state under test.
     Consumer<StepSpec> midStep = during.get(spec.stepIndex());
     if (midStep != null) {
       midStep.accept(spec);
     }
     for (String chunk : script.chunks()) {
+      relay.append(spec.runId(), chunk);
       listener.onChunk(chunk);
     }
     listener.onFinished();
@@ -134,7 +153,9 @@ public class FakeCiStepRunner implements CiStepRunner {
 
   @Override
   public void runClosed(String runId) {
-    // nothing is held between runs
+    // The relay is the one thing that IS held between steps, and dropping it is what makes `live`
+    // null on a finished run — the real runner's own last act.
+    relay.drop(runId);
   }
 
   private static Script green(int stepIndex) {

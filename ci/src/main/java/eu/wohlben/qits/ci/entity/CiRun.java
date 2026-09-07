@@ -177,6 +177,31 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   @Column(name = "downstream_repos", columnDefinition = "text")
   public String downstreamRepos;
 
+  /**
+   * How long each of this run's planned steps is expected to take, as the JSON array of millisecond
+   * longs {@link ExpectedStepDurations} writes — one entry per step of the pipeline the trigger file
+   * declared, in declaration order — or null when there is nothing to predict from.
+   *
+   * <p><b>A prediction, computed once at accept and never revised.</b> It is the p95 of what the
+   * <em>same step of the same pipeline</em> really took over its most recent successful runs, read
+   * off {@link CiStep#startedAt}/{@link CiStep#finishedAt} — the host-stamped record — and a run that
+   * then takes twice as long is not a row to correct. What it exists for is the one thing a client
+   * cannot draw without it: a segmented progress bar for a run that is still executing, where the
+   * persisted steps say what is done and this says how much of the rest each remaining step is.
+   *
+   * <p><b>Null is the ordinary value and means "no prediction", never "instant".</b> The first run a
+   * repository records, the first run after the pipeline grew a step, the first run after a step
+   * changed its image, a run whose trigger config would not parse, and every row recorded before the
+   * feature existed all carry null — and so does a run whose stored value cannot be read back, since
+   * the codec answers a malformed column with no prediction rather than an exception. A client with
+   * no prediction draws exactly what it drew before this column existed.
+   *
+   * <p>Read whole and queried into by nothing, which is why it is one text column rather than a
+   * table: {@code downstream_repos}' precedent and its reasoning.
+   */
+  @Column(name = "expected_step_durations", columnDefinition = "text")
+  public String expectedStepDurations;
+
   @Enumerated(EnumType.STRING)
   @Column(nullable = false, length = 32)
   public CiRunStatus status;

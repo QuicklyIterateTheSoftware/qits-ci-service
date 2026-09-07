@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.daemonhost;
 
 import eu.wohlben.qits.ci.control.CiRunService;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.time.Instant;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -39,12 +40,35 @@ public class CiStepRelay {
 
   private final ConcurrentHashMap<String, Buffer> live = new ConcurrentHashMap<>();
 
-  /** Which step a run is on and what it has printed so far. */
-  public record Snapshot(int stepIndex, String output) {}
+  /**
+   * Which step a run is on, when it really started, and what it has printed so far.
+   *
+   * <p>{@code startedAt} is <b>null until the step starts</b>, which is a state and not a gap: a
+   * buffer opens the moment the runner takes the step on, and the container has still to be asked
+   * for, started and dialled back before there is a step to have begun. It is the same instant, taken
+   * at the same moment on the same side of the wire, that the step's row will carry — host-stamped,
+   * never daemon-reported.
+   */
+  public record Snapshot(int stepIndex, Instant startedAt, String output) {}
 
   /** Start relaying a step. Replaces whatever the run's previous step left behind. */
   public void begin(String runId, int stepIndex) {
     live.put(runId, new Buffer(stepIndex, Math.max(MARKER_LENGTH + 1, outputMaxChars)));
+  }
+
+  /**
+   * Stamp when the run's live step really began — the moment the host handed the script over.
+   *
+   * <p>One instant per buffer and nothing else: this class deliberately holds the minimum a live
+   * read needs, and what it is being told here is the same fact the step row records at its end
+   * rather than a second timeline. A stamp for a run with no live step is dropped, exactly as a
+   * chunk for one is: neither resurrects a buffer.
+   */
+  public void started(String runId, Instant startedAt) {
+    Buffer buffer = live.get(runId);
+    if (buffer != null) {
+      buffer.started(startedAt);
+    }
   }
 
   /** Append one chunk. A chunk for a run with no live step is dropped, not resurrected. */
@@ -60,7 +84,7 @@ public class CiStepRelay {
     Buffer buffer = live.get(runId);
     return buffer == null
         ? Optional.empty()
-        : Optional.of(new Snapshot(buffer.stepIndex, buffer.text()));
+        : Optional.of(new Snapshot(buffer.stepIndex, buffer.startedAt(), buffer.text()));
   }
 
   /** Forget a run's live output. Called when its run closes, however it closed. */
@@ -86,9 +110,22 @@ public class CiStepRelay {
     private final StringBuilder text = new StringBuilder();
     private boolean truncated;
 
+    // Written on the run worker when the step is handed over and read on an HTTP worker — one
+    // reference, so volatile is the whole of the synchronization it needs. Deliberately not under
+    // the buffer's monitor: a read of it must never queue behind a chatty step's append.
+    private volatile Instant startedAt;
+
     Buffer(int stepIndex, int maxChars) {
       this.stepIndex = stepIndex;
       this.maxChars = maxChars;
+    }
+
+    void started(Instant at) {
+      startedAt = at;
+    }
+
+    Instant startedAt() {
+      return startedAt;
     }
 
     synchronized void append(String chunk) {
