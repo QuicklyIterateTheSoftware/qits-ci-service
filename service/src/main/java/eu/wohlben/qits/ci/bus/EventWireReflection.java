@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.bus;
 
 import eu.wohlben.qits.ci.events.BuildFailed;
+import eu.wohlben.qits.ci.events.BuildStatusChanged;
 import eu.wohlben.qits.ci.events.BuildSuccessful;
 import eu.wohlben.qits.ci.events.SoftwareRelease;
 import eu.wohlben.qits.eventstream.control.EventEnvelope;
@@ -71,6 +72,13 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * jar changes nothing: the registration is a statement about this image, exactly as it is for {@link
  * SCMPublishCommit}.
  *
+ * <p><b>{@link BuildStatusChanged} is the publish-only case at its most expensive</b>, which is why
+ * it is named rather than left to the paragraph below. It is serialized on the way out and never
+ * read back here, exactly like {@link SoftwareRelease} — but where a green build publishes one event
+ * and a release a handful, this one publishes on every transition of every run, so an unregistered
+ * record would be a throw or a mangled payload several times per run rather than once, and the run
+ * lifecycle a mirror is built on would simply never arrive.
+ *
  * <p><b>An event this service only publishes is exactly as dependent on this list</b>, which is
  * worth stating because "nothing binds it back" reads like a reason to skip it. The failure is on
  * the writing side: {@code CanonicalJson} finds a record's components by reflection, so an
@@ -114,6 +122,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
     targets = {
       BuildSuccessful.class,
       BuildFailed.class,
+      BuildStatusChanged.class,
       SoftwareRelease.class,
       SCMPublishCommit.class,
       RepositoryRenamed.class,

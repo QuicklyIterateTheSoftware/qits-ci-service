@@ -942,8 +942,15 @@ public class CiRunService {
    * showing through: a row is claimed because it is {@code QUEUED} in the table, never because a
    * particular id was handed to a particular thread. The sweep's whole remaining job is to say
    * "there is work" once.
+   *
+   * <p><b>{@code restarted} is a list where {@code requeued} is a count, and the asymmetry is the
+   * same distinction pointed at two different readers.</b> The claim loop wants a wake and nothing
+   * else, so a count is the whole of what it is owed. A mirror of the active listing is owed the
+   * rows: a run this sweep moved from {@code RUNNING} back to {@code QUEUED} is a transition like any
+   * other, and one nobody else will ever announce — the run's next announcement is the {@code
+   * RUNNING} a worker's claim makes, minutes later and from a state the mirror was never told about.
    */
-  private record Sweep(int requeued, List<FailedOrphan> failed, int restartedEvents) {}
+  private record Sweep(int requeued, List<FailedOrphan> failed, List<CiRun> restarted) {}
 
   /** One orphaned run the sweep marked FAILED, with the instant the row was stamped with. */
   private record FailedOrphan(CiRun run, Instant finishedAt) {}
@@ -972,13 +979,22 @@ public class CiRunService {
       // consumer told the run failed must be able to read the terminal row back. An interrupted
       // run is a real failure of a real commit, so the per-commit ledger hears about it too.
       for (FailedOrphan orphan : sweep.failed()) {
+        announceStatus(
+            orphan.run(), CiRunStatus.FAILED, CiRunStatus.RUNNING, orphan.finishedAt());
         announceFailedRun(orphan.run(), orphan.finishedAt(), CiRunStatus.FAILED);
       }
     }
-    if (sweep.restartedEvents() > 0) {
+    if (!sweep.restarted().isEmpty()) {
       LOG.infof(
           "Restarting %d event-triggered CI run(s) interrupted by the previous shutdown",
-          sweep.restartedEvents());
+          sweep.restarted().size());
+      // The one transition on this path that goes BACKWARDS, and the one nothing else would ever
+      // say: the run was RUNNING in a process that is gone and is queued again here. Its next
+      // announcement is a worker's RUNNING claim, so a mirror not told about this one would be
+      // holding a run it believes is still executing on a dead instance.
+      for (CiRun restarted : sweep.restarted()) {
+        announceStatus(restarted, CiRunStatus.QUEUED, CiRunStatus.RUNNING, restarted.createdAt);
+      }
     }
     if (sweep.requeued() > 0) {
       LOG.infof("Re-enqueued %d CI run(s) left QUEUED by a previous shutdown", sweep.requeued());
@@ -991,7 +1007,7 @@ public class CiRunService {
   private Sweep reconcile() {
     List<CiRun> orphans = runs.list("status = ?1", CiRunStatus.RUNNING);
     List<FailedOrphan> failed = new ArrayList<>();
-    int restartedEvents = 0;
+    List<CiRun> restarted = new ArrayList<>();
     for (CiRun orphan : orphans) {
       // The restartable case, and after the push retirement the only one a live deployment
       // produces. The `else` covers what a predecessor left: a POST_RECEIVE row whose in-flight
@@ -1002,7 +1018,7 @@ public class CiRunService {
         orphan.status = CiRunStatus.QUEUED;
         orphan.finishedAt = null;
         orphan.daemonVersion = null;
-        restartedEvents++;
+        restarted.add(orphan);
       } else {
         failIncompleteSteps(orphan.id);
         orphan.status = CiRunStatus.FAILED;
@@ -1018,7 +1034,7 @@ public class CiRunService {
     // successor that will make the same discovery. The count includes the rows this method just
     // moved back to QUEUED — the query flushes them first, which is what makes an interrupted event
     // run restart on this boot rather than on the next one.
-    return new Sweep(runs.listQueuedOldestFirst().size(), failed, restartedEvents);
+    return new Sweep(runs.listQueuedOldestFirst().size(), failed, restarted);
   }
 
   /**
@@ -1128,26 +1144,41 @@ public class CiRunService {
    * scan's whole safety net: this runs on the claim loop, over a row the loop cannot run, and a
    * database blip while settling one poison row must not cost every row behind it its pass. The row
    * stays {@code QUEUED} and the next wake tries again.
+   *
+   * <p><b>The announcement is made here rather than by either caller</b>, for the reason {@link
+   * #startQueued} makes the {@code RUNNING} one: this is the single write, so it is the one place
+   * that cannot be forgotten by a third settlement. It is made from the row the transaction settled
+   * and after that transaction has committed, and the {@code false} arm — a row that had already
+   * moved, or a write that did not land — announces nothing, because nothing happened. Note the run
+   * leaves the active listing here without ever announcing a verdict, which is exactly the departure
+   * {@link #announceFailedRun} is contractually unable to report.
    */
   private boolean settleQueued(String runId, String reason) {
+    CiRun settled;
     try {
-      return QuarkusTransaction.requiringNew()
-          .call(
-              () -> {
-                CiRun row = runs.findById(runId);
-                if (row == null || row.status != CiRunStatus.QUEUED) {
-                  return false;
-                }
-                row.status = CiRunStatus.CANCELLED;
-                row.finishedAt = Instant.now();
-                row.cancellationReason = reason;
-                return true;
-              });
+      settled =
+          QuarkusTransaction.requiringNew()
+              .call(
+                  () -> {
+                    CiRun row = runs.findById(runId);
+                    if (row == null || row.status != CiRunStatus.QUEUED) {
+                      return null;
+                    }
+                    row.status = CiRunStatus.CANCELLED;
+                    row.finishedAt = Instant.now();
+                    row.cancellationReason = reason;
+                    return row;
+                  });
     } catch (RuntimeException e) {
       LOG.warnf(
           e, "CI run %s could not be settled %s — skipping it for this pass", runId, reason);
       return false;
     }
+    if (settled == null) {
+      return false;
+    }
+    announceStatus(settled, CiRunStatus.CANCELLED, CiRunStatus.QUEUED, settled.finishedAt);
+    return true;
   }
 
   /**
@@ -1305,6 +1336,9 @@ public class CiRunService {
     QuarkusTransaction.requiringNew().run(() -> failIncompleteSteps(run.id));
     CiRunStatus outcome = cancelled.contains(run.id) ? CiRunStatus.CANCELLED : CiRunStatus.FAILED;
     Instant finishedAt = finishRun(run.id, outcome);
+    // Unconditional, unlike the verdict below: a run that blew up has left the active listing on
+    // both arms, and the cancelled one is exactly the arm a mirror would otherwise never hear about.
+    announceStatus(run, outcome, CiRunStatus.RUNNING, finishedAt);
     if (outcome == CiRunStatus.FAILED) {
       announceFailedRun(run, finishedAt, outcome);
     }
@@ -1540,6 +1574,9 @@ public class CiRunService {
     boolean verdictGating = run.gating && (failedStepGating == null || failedStepGating);
     Instant finishedAt = finishRun(run.id, outcome, verdictGating);
     run.gating = verdictGating;
+    // First, and unconditionally: the run has left the active listing whichever way it ended, and
+    // that is true of the CANCELLED outcome the two verdict announcements below deliberately skip.
+    announceStatus(run, outcome, CiRunStatus.RUNNING, finishedAt);
     if (outcome == CiRunStatus.SUCCESS) {
       announceRun(run, finishedAt);
       announceRelease(run, finishedAt, release);
@@ -1645,6 +1682,60 @@ public class CiRunService {
             causingEventId(run));
       } catch (RuntimeException e) {
         LOG.warnf(e, "Announcing run %s failed", run.id);
+      }
+    }
+  }
+
+  /**
+   * Announces that a run's row moved from one status to the next, through {@link
+   * RunAnnouncer#onRunStatusChanged} — the third announcement this class makes, and the only one
+   * that fires more than once per run.
+   *
+   * <p><b>It is called at every transition, and "every" is the contract rather than an ambition.</b>
+   * {@link #announceRun} and {@link #announceFailedRun} are selective on purpose — they say
+   * something about a commit, so a cancelled or superseded run says nothing at all — and a mirror of
+   * {@code GET /ci/api/runs/active} needs precisely what that leaves out. A listing is two edges: a
+   * run enters it (accepted {@code QUEUED}, or handed back by a boot sweep) and a run leaves it (any
+   * terminal status, cancellations and supersedes included). Announce only the flattering half and a
+   * mirror holds a cancelled run forever, which is the failure this method exists to make
+   * impossible. So every writer of {@code ci_run.status} in this class calls it, and a new one that
+   * does not is a bug in the new writer.
+   *
+   * <p><b>{@code status} is passed rather than read off {@code run}</b>, and that is not
+   * belt-and-braces. The writes go through {@link #finishRun} and friends, which mutate a
+   * <em>freshly loaded</em> entity inside their own transaction; the instance the caller is holding
+   * is detached and still says whatever it said before. Reading the status off it would announce the
+   * old state at half these call sites, silently.
+   *
+   * <p>{@code occurredAt} is the column the new status is stamped by — {@code createdAt} for {@code
+   * QUEUED}, {@code startedAt} for {@code RUNNING}, {@code finishedAt} for a terminal one — and comes
+   * from the transaction that wrote it, so the row and the event cannot disagree about when the run
+   * moved. {@code previous} is null for a run's first announcement, which is what says it entered the
+   * listing rather than moved within it.
+   *
+   * <p>Everything else is {@link #announceRun}'s, unchanged: called after the write commits so a
+   * consumer reading the run back sees the status it was just told about, the causation id off the
+   * row, and failures being the port's rather than the run's — an announcement that throws must not
+   * cost a run its next transition.
+   */
+  private void announceStatus(
+      CiRun run, CiRunStatus status, CiRunStatus previous, Instant occurredAt) {
+    for (RunAnnouncer announcer : runAnnouncers) {
+      try {
+        announcer.onRunStatusChanged(
+            run.id,
+            run.repoId,
+            run.projectId,
+            run.repoName,
+            run.branch,
+            run.commitSha,
+            run.gating,
+            status.name(),
+            previous == null ? null : previous.name(),
+            occurredAt,
+            causingEventId(run));
+      } catch (RuntimeException e) {
+        LOG.warnf(e, "Announcing run %s as %s failed", run.id, status);
       }
     }
   }
@@ -1781,26 +1872,40 @@ public class CiRunService {
    * below is an HTTP read against a host that can take seconds, and a run doing that has
    * started. It also fixes what a crash during it costs — a {@code RUNNING} row, swept to {@code
    * FAILED}, which is the truthful answer to "did this run begin".
+   *
+   * <p><b>The {@code RUNNING} announcement is made here rather than by the callers</b>, and there are
+   * two of them — the claim loop and the synchronous entry — which is exactly the reason. This is the
+   * one place {@code QUEUED} becomes {@code RUNNING}, so it is the one place that can say so without
+   * a second caller ever being able to forget; and the two ways it answers null (cancelled first,
+   * draining) announce nothing, correctly, because neither wrote anything. See {@link
+   * #announceStatus} for what a mirror of the active listing does with it. The announcement is after
+   * the claiming transaction has committed, so a consumer that reads the run back sees {@code
+   * RUNNING}.
    */
   private CiRun startQueued(String runId) {
-    return QuarkusTransaction.requiringNew()
-        .call(
-            () -> {
-              CiRun run = runs.findById(runId);
-              if (run == null || run.status != CiRunStatus.QUEUED) {
-                return null;
-              }
-              // Read as late as it can be — after the row, immediately before the flip, inside the
-              // claiming transaction. A dying process leaves the row QUEUED for the successor's
-              // boot sweep rather than claiming it and dying holding it RUNNING.
-              if (draining) {
-                logLeftQueuedWhileDraining(runId);
-                return null;
-              }
-              run.status = CiRunStatus.RUNNING;
-              run.startedAt = Instant.now();
-              return run;
-            });
+    CiRun claimed =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  CiRun run = runs.findById(runId);
+                  if (run == null || run.status != CiRunStatus.QUEUED) {
+                    return null;
+                  }
+                  // Read as late as it can be — after the row, immediately before the flip, inside
+                  // the claiming transaction. A dying process leaves the row QUEUED for the
+                  // successor's boot sweep rather than claiming it and dying holding it RUNNING.
+                  if (draining) {
+                    logLeftQueuedWhileDraining(runId);
+                    return null;
+                  }
+                  run.status = CiRunStatus.RUNNING;
+                  run.startedAt = Instant.now();
+                  return run;
+                });
+    if (claimed != null) {
+      announceStatus(claimed, CiRunStatus.RUNNING, CiRunStatus.QUEUED, claimed.startedAt);
+    }
+    return claimed;
   }
 
   /** Writes the daemon build this run pinned, once, when the first container is about to launch. */
@@ -1838,6 +1943,22 @@ public class CiRunService {
     }
   }
 
+  /**
+   * What one accept transaction did: the run it inserted, and the queued runs that transaction
+   * superseded on the way.
+   *
+   * <p><b>The losers travel out of the transaction because the announcement cannot happen inside
+   * it.</b> {@link #dedupe} settles them {@code CANCELLED} beside the insert, so they leave the
+   * active listing at the accept — and a mirror is owed that departure exactly as it is owed the
+   * arrival. Collecting them here is what lets {@link #announceAccepted} say so after the commit,
+   * with no second query for rows this transaction already had in hand.
+   *
+   * <p>Built fresh inside {@link #insertEventRun} on every attempt, which it has to be: {@link
+   * DbRetry#inNewTx} re-runs the whole body, and a list surviving a rolled-back attempt would
+   * announce a cancellation the database never took.
+   */
+  private record Accepted(CiRun run, List<CiRun> superseded) {}
+
   private CiRun acceptEventRun(EventRun request) {
     String configPath = request.trigger().configPath();
     // Computed BEFORE the insert bracket rather than inside it, and that placement is the whole of
@@ -1847,9 +1968,9 @@ public class CiRunService {
     String expected =
         predictedStepDurations(
             request.repo().repoId(), configPath, request.triggerConfig());
-    CiRun run;
+    Accepted accepted;
     try {
-      run =
+      accepted =
           DbRetry.inNewTx(
               "event run accept",
               () -> insertEventRun(request, configPath, expected),
@@ -1863,13 +1984,47 @@ public class CiRunService {
           request.eventId(), configPath, request.repo().display());
       return null;
     }
-    if (run == null) {
+    if (accepted == null) {
       LOG.debugf(
           "Event %s already triggered %s in %s — no second run",
           request.eventId(), configPath, request.repo().display());
       return null;
     }
-    return run;
+    announceAccepted(accepted);
+    return accepted.run();
+  }
+
+  /**
+   * Announces what the accept transaction did, after it has committed — the accepted run's own
+   * status first, then every queued run it displaced.
+   *
+   * <p><b>The accepted run is announced with the status its row REALLY holds, not with {@code
+   * QUEUED}.</b> That distinction is the whole of this method, and it is what keeps a superseded
+   * arrival from being announced twice or wrongly. {@link #supersedeByVersion} can settle the run
+   * being accepted — an out-of-order tag burst, where the row is inserted and beaten inside one
+   * transaction — so it commits {@code CANCELLED} having never been {@code QUEUED} in any state any
+   * reader could observe. Announcing {@code QUEUED} here on the strength of "we just accepted it"
+   * would put a run into a mirror's listing that was over before the transaction ended, and nothing
+   * afterwards would ever take it out again: no worker claims it, no terminal write happens, its row
+   * is already final. The status is carried out of the transaction on the entity rather than re-read,
+   * because the transaction that decided it is the one that has the answer.
+   *
+   * <p>{@code previousStatus} is null for both halves' own first announcement and {@code QUEUED} for
+   * a displaced run, which really did sit in the listing before this accept took it out. {@code
+   * occurredAt} is the row's own column either way: {@code createdAt} for a run that is queued,
+   * {@code finishedAt} — the winner's acceptance instant, which is what {@link #dedupe} stamps — for
+   * one that is settled.
+   */
+  private void announceAccepted(Accepted accepted) {
+    CiRun run = accepted.run();
+    announceStatus(
+        run,
+        run.status,
+        null,
+        run.status == CiRunStatus.QUEUED ? run.createdAt : run.finishedAt);
+    for (CiRun loser : accepted.superseded()) {
+      announceStatus(loser, loser.status, CiRunStatus.QUEUED, loser.finishedAt);
+    }
   }
 
   /**
@@ -1886,11 +2041,17 @@ public class CiRunService {
    * <p>Nothing in here is anything but a database statement, because {@link DbRetry#inNewTx} re-runs
    * the whole body. The trailing {@code flush} is the second half of that contract: it moves the
    * supersede's updates into the statement phase, where a lost connection is a certain no-commit.
+   *
+   * <p><b>The losers list is created here, per attempt</b>, and handed down to both supersedes to
+   * fill. Same reasoning as the fresh entity above pointed at the announcement instead of at the
+   * insert: a list carried in from outside would survive a rolled-back attempt and have this method
+   * report a cancellation the database never took. See {@link Accepted}.
    */
-  private CiRun insertEventRun(EventRun request, String configPath, String expectedStepDurations) {
+  private Accepted insertEventRun(EventRun request, String configPath, String expectedStepDurations) {
     if (runs.alreadyTriggered(request.eventId(), request.repo().repoId(), configPath)) {
       return null;
     }
+    List<CiRun> superseded = new ArrayList<>();
     CiRun run = newRun(request.repo(), request.branch(), request.sha());
     run.triggerType = CiTriggerType.EVENT;
     run.configPath = configPath;
@@ -1917,10 +2078,10 @@ public class CiRunService {
     run.expectedStepDurations = expectedStepDurations;
     runs.persist(run);
     runs.flush();
-    supersedeByVersion(run, request);
-    supersedeByCheckoutBranch(run, request);
+    supersedeByVersion(run, request, superseded);
+    supersedeByCheckoutBranch(run, request, superseded);
     runs.flush();
-    return run;
+    return new Accepted(run, superseded);
   }
 
   /**
@@ -1944,7 +2105,8 @@ public class CiRunService {
    * {@link #supersedeByVersion} (the two cannot both fire: one is gated on {@code SCMPublishTag},
    * whose payload names no branch and therefore parses into no checkout).
    */
-  private void supersedeByCheckoutBranch(CiRun accepted, EventRun request) {
+  private void supersedeByCheckoutBranch(
+      CiRun accepted, EventRun request, List<CiRun> superseded) {
     if (request.trigger().checkout() == null) {
       return;
     }
@@ -1959,6 +2121,7 @@ public class CiRunService {
           "Run %s at %s@%s supersedes queued %s — a burst builds the newest tip only",
           accepted.id, accepted.repoId, accepted.branch, queued.id);
       dedupe(queued, accepted);
+      superseded.add(queued);
     }
   }
 
@@ -1994,7 +2157,7 @@ public class CiRunService {
    * <p>Called inside {@link #acceptEventRun}'s transaction, after the flush, so a row it supersedes
    * and the row that superseded it commit together or not at all.
    */
-  private void supersedeByVersion(CiRun accepted, EventRun request) {
+  private void supersedeByVersion(CiRun accepted, EventRun request, List<CiRun> superseded) {
     if (!TAG_EVENT_NAME.equals(request.eventName())) {
       return;
     }
@@ -2013,6 +2176,7 @@ public class CiRunService {
       }
       if (VersionSort.compare(tag, queuedTag) >= 0) {
         dedupe(queued, accepted);
+        superseded.add(queued);
       } else if (newerTag == null || VersionSort.compare(queuedTag, newerTag) > 0) {
         newer = queued;
         newerTag = queuedTag;
@@ -2046,6 +2210,13 @@ public class CiRunService {
    * BuildFailed} before this change and publishes none after, so qits-projects' build gate — which
    * matches verdicts on {@code (repoId, commitSha)} — sees exactly what it saw. The status is a read
    * surface, and this is a correction to what that surface says.
+   *
+   * <p><b>It does reach {@link #announceStatus}, and that is the same sentence rather than an
+   * exception to it.</b> A deduped row is not a verdict, so it says nothing about its commit; it IS
+   * a row that was in the active listing and is not any more, so it says exactly that much about
+   * itself. The announcement is made by {@link #announceAccepted} after the accepting transaction
+   * commits — never from in here, which runs inside it — so a mirror is told about a cancellation
+   * the database has really taken.
    *
    * <p>The other columns are unchanged and load-bearing: {@code finishedAt} is the winner's
    * acceptance rather than {@code now}, so the row is finished at the moment it was beaten; {@code
@@ -2408,6 +2579,15 @@ public class CiRunService {
    *
    * <p>Cancelling anything already terminal is a 409 rather than a quiet success: a finished run has
    * nothing to stop, and telling the caller it does would be a lie it cannot check.
+   *
+   * <p><b>Two of the three arms write a terminal row and both announce it</b> through {@link
+   * #announceStatus}, after their own write commits — the {@code QUEUED} one and the ownerless
+   * {@code RUNNING} one. The third writes only a reason: the run is still going and the worker that
+   * owns it settles it through {@link #settleUnexpectedly} or the step loop, which is where its
+   * terminal announcement is made. So the run announces exactly once for exactly the write that
+   * finished it, and never for the request that asked. That the announcement happens at all is the
+   * difference between this port and the verdict ones: a cancellation is not a statement about the
+   * commit, and it is very much a statement about the listing the run has just left.
    */
   public void cancel(String runId) {
     cancel(runId, null);
@@ -2424,48 +2604,58 @@ public class CiRunService {
     // Both writes are held through a short outage: this runs on the request thread, outside any
     // transaction of its own, and each body is nothing but statements — the flag above and the
     // runner below are outside the retry precisely because they are not.
-    boolean neverStarted =
+    // The settled row rather than a boolean, so the announcement below can carry the timestamp and
+    // the coordinates the transaction itself wrote. Null is "it was no longer QUEUED", which is the
+    // ordinary race and not a settlement.
+    CiRun neverStarted =
         DbRetry.inNewTx(
             "cancel a queued run",
             () -> {
               CiRun current = runs.findById(runId);
               if (current == null || current.status != CiRunStatus.QUEUED) {
-                return false;
+                return null;
               }
               current.status = CiRunStatus.CANCELLED;
               current.finishedAt = Instant.now();
               current.cancellationReason = reason;
               current.supersededByRunId = null;
               runs.flush();
-              return true;
+              return current;
             },
             retryDeadline());
-    if (neverStarted) {
+    if (neverStarted != null) {
       LOG.infof("CI run %s cancelled on request before it started (%s)", runId, reason);
+      announceStatus(
+          neverStarted, CiRunStatus.CANCELLED, CiRunStatus.QUEUED, neverStarted.finishedAt);
       return;
     }
     if (!runner.owns(runId)) {
       // Nobody here is running it, so there is nothing to ask to stop and nothing that will ever
       // write the terminal row. Settle it in one write instead of recording a reason on a row that
       // would stay RUNNING forever.
-      DbRetry.runInNewTx(
-          "settle a running run no worker owns",
-          () -> {
-            CiRun current = runs.findById(runId);
-            if (current == null) {
-              return;
-            }
-            failIncompleteSteps(runId);
-            current.status = CiRunStatus.CANCELLED;
-            current.finishedAt = Instant.now();
-            current.cancellationReason = reason;
-            current.supersededByRunId = null;
-            runs.flush();
-          },
-          retryDeadline());
+      CiRun settled =
+          DbRetry.inNewTx(
+              "settle a running run no worker owns",
+              () -> {
+                CiRun current = runs.findById(runId);
+                if (current == null) {
+                  return null;
+                }
+                failIncompleteSteps(runId);
+                current.status = CiRunStatus.CANCELLED;
+                current.finishedAt = Instant.now();
+                current.cancellationReason = reason;
+                current.supersededByRunId = null;
+                runs.flush();
+                return current;
+              },
+              retryDeadline());
       LOG.infof(
           "CI run %s was RUNNING with no worker in this process — settled as CANCELLED on request",
           runId);
+      if (settled != null) {
+        announceStatus(settled, CiRunStatus.CANCELLED, CiRunStatus.RUNNING, settled.finishedAt);
+      }
       return;
     }
     DbRetry.runInNewTx(
@@ -2579,6 +2769,11 @@ public class CiRunService {
     LOG.infof(
         "CI run %s retried as %s — same %s at %s", runId, retry.id, retry.configPath,
         retry.commitSha);
+    // After the insert's transaction and before the wake, the accept path's arrangement exactly: a
+    // retry is a new row entering the active listing, and the only thing that separates it from an
+    // event-triggered arrival is which method wrote it. `previousStatus` is null for that reason —
+    // this run has no earlier state, whatever the run it re-fires ended as.
+    announceStatus(retry, CiRunStatus.QUEUED, null, retry.createdAt);
     enqueue(retry.id);
     return retry;
   }

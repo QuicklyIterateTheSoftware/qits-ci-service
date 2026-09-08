@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.bus;
 
 import eu.wohlben.qits.ci.control.RunAnnouncer;
 import eu.wohlben.qits.ci.events.BuildFailed;
+import eu.wohlben.qits.ci.events.BuildStatusChanged;
 import eu.wohlben.qits.ci.events.BuildSuccessful;
 import eu.wohlben.qits.eventstream.QitsEventBus;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -45,6 +46,14 @@ import java.time.Instant;
  * RunAnnouncer#onRunFailed} — and {@link SoftwareReleaseAnnouncer} is the other producer on this
  * bus and is additional, never a replacement: a release pipeline's green run publishes {@code
  * BuildSuccessful} and then one {@code SoftwareRelease} per artifact it declared.
+ *
+ * <p><b>{@code BuildStatusChanged} is the exception to the paragraph above, and it is an exception
+ * by design rather than a leak in it.</b> The two build events are statements about a commit and are
+ * selective for that reason; the third is a statement about the run's own row, so it publishes on
+ * <em>every</em> transition — queued, running, and every terminal state including the cancelled and
+ * superseded ones the others deliberately never see. Nothing about that widens what a per-commit
+ * subscriber is told: those readers subscribe by name, and a name they do not subscribe to costs
+ * them nothing. See {@link RunAnnouncer#onRunStatusChanged} for the reader it exists for.
  */
 @ApplicationScoped
 public class BuildAnnouncer implements RunAnnouncer {
@@ -85,6 +94,26 @@ public class BuildAnnouncer implements RunAnnouncer {
         new BuildFailed(
             runId, repoId, projectId, repoName, branch, commitSha, wireGating(gating), outcome,
             finishedAt),
+        CausingEvent.parentOf(triggerEventId, runId));
+  }
+
+  @Override
+  public void onRunStatusChanged(
+      String runId,
+      String repoId,
+      String projectId,
+      String repoName,
+      String branch,
+      String commitSha,
+      boolean gating,
+      String status,
+      String previousStatus,
+      Instant occurredAt,
+      String triggerEventId) {
+    bus.publish(
+        new BuildStatusChanged(
+            runId, repoId, projectId, repoName, branch, commitSha, wireGating(gating), status,
+            previousStatus, occurredAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 

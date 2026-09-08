@@ -962,6 +962,51 @@ freshly loaded entity in its own transaction, so the caller's copy never sees th
 `occurredAt` is a 400 from qits-events on every green build**, which is why the seam test asserts
 the timestamp rather than only the coordinates.
 
+**That heading is now false in its second half, and the correction is the whole of the run-lifecycle
+feature.** `RunAnnouncer` grew a third method, `onRunStatusChanged`, and a green run publishes four
+events rather than one: `BuildStatusChanged` at `QUEUED`, at `RUNNING` and at the terminal
+transition, then its `BuildSuccessful`. **Same seam, one method, every transition** — not one event
+type per state, because the thing worth announcing is that `ci_run.status` moved and what it moved
+between, and a per-state vocabulary would make a mirror subscribe to five names and grow a sixth the
+day the enum does.
+
+The two are statements about **different subjects** and that is why neither could be widened into the
+other. `BuildSuccessful`/`BuildFailed` are statements about the *commit*, so they are selective on
+purpose — a cancelled run and a superseded one announce nothing, and qits-projects' gate depends on
+that. `BuildStatusChanged` is a statement about the *row*, for a subscriber mirroring
+`GET /ci/api/runs/active`, and it is exhaustive for the mirror-image reason: **a listing has two
+edges and both are owed.** A run that leaves by being cancelled leaves as completely as one that
+leaves green, so announcing only the flattering half would strand a mirror holding that run forever.
+
+Every writer of `ci_run.status` in `CiRunService` therefore calls `announceStatus`, and a new one
+that does not is a bug in the new writer. Four of those call sites are worth knowing:
+
+- **`startQueued` announces its own `RUNNING`**, and `settleQueued` its own `CANCELLED`, rather than
+  either caller doing it. Each is the single writer of its transition, so it is the one place a
+  second caller cannot forget — the same argument that put `finishRun` where it is.
+- **The accept path announces whatever status the row REALLY holds**, never `QUEUED` on the strength
+  of having just accepted. `supersedeByVersion` can settle the run being accepted inside the very
+  transaction that inserted it (an out-of-order tag burst), so such a row commits `CANCELLED` having
+  been `QUEUED` in no state any reader could observe. Announcing it queued would put a run into a
+  mirror's listing that nothing afterwards could ever take out: no worker claims it, no terminal
+  write happens, the row is already final. The status travels out of the transaction on the entity,
+  and the **losers** that accept superseded travel with it (`CiRunService.Accepted`), because the
+  announcement has to happen after the commit and a second query for rows the transaction already
+  held would be paying twice for one answer.
+- **The boot sweep announces the backwards one.** A `RUNNING` row handed back to `QUEUED` is a
+  transition nothing else would ever report — the run's next announcement is a worker's claim,
+  minutes later, from a state the mirror was never told about.
+- **`cancel` announces from the two arms that WRITE a terminal row** and not from the third, which
+  only records a reason on a run that is still going; that one's terminal announcement is made by the
+  worker that owns it. So a run announces exactly once for the write that finished it, and never for
+  the request that asked.
+
+`BuildStatusChanged` is on `EventWireReflection`'s list like every other type that crosses the wire,
+and it is the publish-only case at its most expensive: an unregistered record would throw or mangle
+its payload several times per run rather than once. One shape of it differs from `BuildSuccessful`
+and is deliberate — the record's timestamp component **is** `occurredAt`, so `CanonicalJson`'s mix-in
+excludes it from the payload and it rides the envelope alone, where an event's time has always been.
+
 **There are two publishing seams and they are separate because they say different things.**
 `ReleaseAnnouncer` (`ci/control`, implemented by
 `service/…/bus/SoftwareReleaseAnnouncer`) announces one published *artifact*; `RunAnnouncer`

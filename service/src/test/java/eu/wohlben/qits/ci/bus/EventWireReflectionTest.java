@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.JsonNode;
 import eu.wohlben.qits.ci.events.BuildFailed;
+import eu.wohlben.qits.ci.events.BuildStatusChanged;
 import eu.wohlben.qits.ci.events.BuildSuccessful;
 import eu.wohlben.qits.ci.events.SoftwareRelease;
 import eu.wohlben.qits.eventstream.QitsDurableEventListener;
@@ -78,13 +79,14 @@ public class EventWireReflectionTest {
         Set.of(
             BuildSuccessful.class,
             BuildFailed.class,
+            BuildStatusChanged.class,
             SoftwareRelease.class,
             SCMPublishCommit.class,
             RepositoryRenamed.class,
             EventEnvelope.class,
             EventFrame.class),
         Set.of(registration.targets()),
-        "the three events out, the push and the rename in, the PUT body, the frame — an eighth wire"
+        "the four events out, the push and the rename in, the PUT body, the frame — a ninth wire"
             + " type is added here");
   }
 

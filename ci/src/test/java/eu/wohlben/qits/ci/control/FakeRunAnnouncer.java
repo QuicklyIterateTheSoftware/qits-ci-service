@@ -39,8 +39,27 @@ public class FakeRunAnnouncer implements RunAnnouncer {
       Instant finishedAt,
       String triggerEventId) {}
 
+  /**
+   * One {@link RunAnnouncer#onRunStatusChanged} call. Unlike the two above there are several per
+   * run, so the list is a <b>sequence</b> and the order it is read back in is part of what a test
+   * asserts.
+   */
+  public record AnnouncedStatus(
+      String runId,
+      String repoId,
+      String projectId,
+      String repoName,
+      String branch,
+      String commitSha,
+      boolean gating,
+      String status,
+      String previousStatus,
+      Instant occurredAt,
+      String triggerEventId) {}
+
   private final List<Announced> announced = Collections.synchronizedList(new ArrayList<>());
   private final List<AnnouncedFailure> failed = Collections.synchronizedList(new ArrayList<>());
+  private final List<AnnouncedStatus> statuses = Collections.synchronizedList(new ArrayList<>());
 
   public List<Announced> announced() {
     return List.copyOf(announced);
@@ -50,9 +69,22 @@ public class FakeRunAnnouncer implements RunAnnouncer {
     return List.copyOf(failed);
   }
 
+  public List<AnnouncedStatus> statuses() {
+    return List.copyOf(statuses);
+  }
+
+  /** The status words announced for one run, in order — what a lifecycle assertion is made of. */
+  public List<String> statusesOf(String runId) {
+    return statuses().stream()
+        .filter(status -> status.runId().equals(runId))
+        .map(AnnouncedStatus::status)
+        .toList();
+  }
+
   public void reset() {
     announced.clear();
     failed.clear();
+    statuses.clear();
   }
 
   @Override
@@ -102,6 +134,34 @@ public class FakeRunAnnouncer implements RunAnnouncer {
             gating,
             outcome,
             finishedAt,
+            triggerEventId));
+  }
+
+  @Override
+  public void onRunStatusChanged(
+      String runId,
+      String repoId,
+      String projectId,
+      String repoName,
+      String branch,
+      String commitSha,
+      boolean gating,
+      String status,
+      String previousStatus,
+      Instant occurredAt,
+      String triggerEventId) {
+    statuses.add(
+        new AnnouncedStatus(
+            runId,
+            repoId,
+            projectId,
+            repoName,
+            branch,
+            commitSha,
+            gating,
+            status,
+            previousStatus,
+            occurredAt,
             triggerEventId));
   }
 }

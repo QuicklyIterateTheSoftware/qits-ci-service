@@ -66,6 +66,13 @@ public class CiEventTriggerCausationTest {
   private static final String TRIGGER_PATH = ".config/qits/ci-event-upstream.yml";
 
   /**
+   * What one green run puts on the bus before any declaration adds to it: three {@code
+   * BuildStatusChanged} transitions plus its one {@code BuildSuccessful}. Named so the waits below
+   * settle on a whole run rather than on the first event of one.
+   */
+  private static final int PER_GREEN_RUN = 4;
+
+  /**
    * The selection names an upstream id unique to the repository that committed it. That is not
    * decoration: every repository this JVM has ever seeded is a candidate for every frame, so a
    * trigger selecting a shared literal would make one test method's event fire the previous method's
@@ -147,10 +154,19 @@ public class CiEventTriggerCausationTest {
     assertEquals(payload(upstream), env.get("QITS_EVENT_PAYLOAD"));
 
     // And the edge: the run's OWN BuildSuccessful names the event that triggered it as its parent.
-    List<StubEventsServer.Put> puts = awaitPuts(1);
+    List<StubEventsServer.Put> all = awaitPuts(PER_GREEN_RUN);
+    List<StubEventsServer.Put> puts = named(all, "BuildSuccessful");
+    assertEquals(1, puts.size(), "one green run is one verdict");
     JsonNode envelope = json.readTree(puts.get(0).body());
     assertEquals("BuildSuccessful", envelope.get("name").asText());
     assertEquals(eventId, envelope.get("parentId").asText(), "the first automatic causation edge");
+
+    // Every lifecycle transition hangs off the same parent, and that is the same claim rather than
+    // an extra one: the causation id is read off the run's own row at each announcement, so a run
+    // accepted on the trigger worker and finished on ci-run-worker draws the edge from both.
+    for (StubEventsServer.Put lifecycle : named(all, "BuildStatusChanged")) {
+      assertEquals(eventId, json.readTree(lifecycle.body()).get("parentId").asText());
+    }
 
     // The parent is envelope data and must never have reached the compared payload bytes.
     JsonNode payload = json.readTree(envelope.get("payload").asText());
@@ -166,14 +182,17 @@ public class CiEventTriggerCausationTest {
     String eventId = UUID.randomUUID().toString();
     dispatcher.dispatch(frame(eventId, upstream));
     awaitRuns(repoId, 1);
-    awaitPuts(1);
+    awaitPuts(PER_GREEN_RUN);
 
     // The same event again — legal on this bus, and the catch-up sweep does it on purpose.
     // Observable from outside as "the run list did not grow".
     dispatcher.dispatch(frame(eventId, upstream));
     Thread.sleep(1_500);
     assertEquals(1, runsOf(repoId).size(), "a redelivered event is dropped, not re-run");
-    assertEquals(1, StubEventsServer.puts().size(), "and so nothing further is published");
+    // No second run means no second announcement of any kind: the one green run's four events —
+    // three transitions and its verdict — are still all there is.
+    assertEquals(
+        PER_GREEN_RUN, StubEventsServer.puts().size(), "and so nothing further is published");
   }
 
   @Test
@@ -210,13 +229,17 @@ public class CiEventTriggerCausationTest {
     dispatcher.dispatch(scmReleaseFrame(eventId, released));
     awaitRuns(repoId, 1);
 
-    // One green run, three events in total: the run's own BuildSuccessful — unchanged, every green
-    // run still announces itself — and then one SoftwareRelease per declaration.
-    List<StubEventsServer.Put> puts = awaitPuts(3);
-    assertEquals(3, puts.size(), "a build announcement plus two artifacts");
-    assertEquals("BuildSuccessful", json.readTree(puts.get(0).body()).get("name").asText());
+    // One green run: its own BuildSuccessful — unchanged, every green run still announces itself —
+    // and then one SoftwareRelease per declaration, which is the fan-out under test. The three
+    // lifecycle transitions ride alongside and are filtered out here, because what a declaration
+    // adds is asserted against the announcements a declaration is about.
+    List<StubEventsServer.Put> all = awaitPuts(PER_GREEN_RUN + 2);
+    assertEquals(
+        1, named(all, "BuildSuccessful").size(), "a build announcement, whatever it published");
+    List<StubEventsServer.Put> puts = named(all, "SoftwareRelease");
+    assertEquals(2, puts.size(), "one event per declared artifact and no more");
 
-    JsonNode npm = json.readTree(puts.get(1).body());
+    JsonNode npm = json.readTree(puts.get(0).body());
     assertEquals("SoftwareRelease", npm.get("name").asText());
     assertEquals(eventId, npm.get("parentId").asText(), "N siblings under one parent");
     // repoId is the same string `repository` carries, under the name the platform addresses a
@@ -231,7 +254,7 @@ public class CiEventTriggerCausationTest {
             + "\",\"version\":\"1.4.0\"}",
         npm.get("payload").asText());
 
-    JsonNode image = json.readTree(puts.get(2).body());
+    JsonNode image = json.readTree(puts.get(1).body());
     assertEquals("SoftwareRelease", image.get("name").asText());
     assertEquals(eventId, image.get("parentId").asText());
     assertEquals(
@@ -244,7 +267,7 @@ public class CiEventTriggerCausationTest {
 
     // Every event is its own occurrence: the PUT path is the idempotency key, and two artifacts that
     // shared one would be a 400 on the second.
-    assertNotEquals(puts.get(1).id(), puts.get(2).id());
+    assertNotEquals(puts.get(0).id(), puts.get(1).id());
   }
 
   // --- the frame, as the socket would deliver it ---
@@ -411,5 +434,21 @@ public class CiEventTriggerCausationTest {
     }
     Thread.sleep(300);
     return StubEventsServer.puts();
+  }
+
+  /**
+   * The PUTs carrying one envelope {@code name}, in publish order. A green run publishes its three
+   * {@code BuildStatusChanged} transitions beside whatever else it announces — a different reader's
+   * half of the same run — so a claim about one name filters for it, exactly as a subscriber does.
+   */
+  private List<StubEventsServer.Put> named(List<StubEventsServer.Put> puts, String name)
+      throws Exception {
+    List<StubEventsServer.Put> matching = new java.util.ArrayList<>();
+    for (StubEventsServer.Put put : puts) {
+      if (name.equals(json.readTree(put.body()).get("name").asText())) {
+        matching.add(put);
+      }
+    }
+    return matching;
   }
 }

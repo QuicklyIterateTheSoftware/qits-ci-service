@@ -93,4 +93,49 @@ public interface RunAnnouncer {
       String outcome,
       Instant finishedAt,
       String triggerEventId);
+
+  /**
+   * A run's row changed status. <b>Every</b> transition reaches this method — {@code QUEUED} when
+   * the accept commits, {@code RUNNING} when a worker claims the row, and whichever terminal state
+   * it settles in, cancellations and supersedes included.
+   *
+   * <p><b>That "every" is the whole contract, and it is deliberately the opposite of the two methods
+   * above.</b> Those are statements about a commit, so they are selective on purpose: a cancelled
+   * run and a superseded one announce nothing, because a person withdrawing a question is not an
+   * answer to it. This is a statement about the run row, and the reader it exists for is one
+   * mirroring {@code GET /ci/api/runs/active} — a listing whose whole content is that column. A run
+   * that leaves the listing by being cancelled leaves it exactly as completely as one that leaves it
+   * green, so a selective announcement here would strand a mirror holding a run forever. Both edges
+   * are owed: what enters the listing, and what leaves it, for every reason there is.
+   *
+   * <p>{@code status} is the {@code CiRunStatus} the row now holds and {@code previousStatus} the
+   * one it left, both as that enum's own word — plain {@code String}s for {@link #onRunFailed}'s
+   * reason, so no other context's subscriber depends on this service's storage model. {@code
+   * previousStatus} is <b>null on a run's first announcement</b>, which is what says "this run
+   * entered the listing" rather than moved within it.
+   *
+   * <p>{@code occurredAt} is the row's own timestamp for the state just written — {@code createdAt},
+   * {@code startedAt} or {@code finishedAt}, whichever the new status is stamped by — never a fresh
+   * clock read at announce time. Same reasoning as {@code finishedAt} above, applied to three
+   * columns instead of one, and the same wire requirement behind it: a published event with no
+   * {@code occurredAt} is a 400.
+   *
+   * <p>Everything else is {@link #onRunSucceeded}'s, unchanged: the field meanings, {@code
+   * triggerEventId} as the causation argument that crosses a thread, the must-not-block caveat, and
+   * zero implementations being a supported configuration. One difference in degree is worth naming —
+   * this fires several times per run rather than once, so an implementation's cost is paid at every
+   * transition and the bound on it matters correspondingly more.
+   */
+  void onRunStatusChanged(
+      String runId,
+      String repoId,
+      String projectId,
+      String repoName,
+      String branch,
+      String commitSha,
+      boolean gating,
+      String status,
+      String previousStatus,
+      Instant occurredAt,
+      String triggerEventId);
 }

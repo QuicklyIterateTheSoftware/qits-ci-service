@@ -49,10 +49,19 @@ import org.junit.jupiter.api.Test;
  * nothing.
  *
  * <p>What is asserted is the contract the other side was built against, not this side's internals:
- * one PUT per green run, at a v4 UUID of the publisher's choosing, carrying the envelope's {@code
- * name} as the signature and the run's own coordinates in the canonical payload. The three-way PUT
- * semantics, the outbox and the retry schedule belong to the eventstream suite; the round trip
- * through a real qits-events belongs to the platform.
+ * one {@code BuildSuccessful} PUT per green run, at a v4 UUID of the publisher's choosing, carrying
+ * the envelope's {@code name} as the signature and the run's own coordinates in the canonical
+ * payload. The three-way PUT semantics, the outbox and the retry schedule belong to the eventstream
+ * suite; the round trip through a real qits-events belongs to the platform.
+ *
+ * <p><b>"One PUT per green run" became "one PUT of this NAME per green run" when the run lifecycle
+ * joined the bus</b>, and the difference is worth spelling out rather than absorbing into a count. A
+ * green run also publishes three {@code BuildStatusChanged} events — queued, running, and the
+ * terminal transition — for a subscriber mirroring {@code GET /ci/api/runs/active}, which is a
+ * different reader asking a different question (see {@code RunAnnouncer.onRunStatusChanged}). So
+ * every assertion here filters by name through {@link #named}, and an unfiltered count would now be
+ * a statement about how many things qits-ci publishes rather than about the verdict this class is
+ * for. A subscriber's own filtering is exactly the same operation: it subscribes by signature.
  */
 @QuarkusTest
 @WithTestResource(value = StubGitHost.class, scope = TestResourceScope.GLOBAL)
@@ -82,6 +91,14 @@ public class BuildSuccessfulPublishTest {
 
   private static final String TRIGGER_PATH = ".config/qits/ci-event-publish.yml";
 
+  /**
+   * What one green run puts on the bus: three {@code BuildStatusChanged} transitions plus its one
+   * {@code BuildSuccessful}. A total rather than an assertion — it is what the waits below are told
+   * to expect, so that "exactly one of this name" is asserted against a settled stub rather than
+   * against a race.
+   */
+  private static final int PER_GREEN_RUN = 4;
+
   @Inject FakeCiStepRunner fakeRunner;
 
   @Inject FakeGitHostRepoListing gitHostListing;
@@ -106,8 +123,15 @@ public class BuildSuccessfulPublishTest {
     Map<String, Object> run = awaitTerminalRun(repoId);
     assertEquals("SUCCESS", run.get("status"));
 
-    List<StubEventsServer.Put> puts = awaitPuts(1);
-    assertEquals(1, puts.size(), "one green run is one publish");
+    List<StubEventsServer.Put> all = awaitPuts(PER_GREEN_RUN);
+    List<StubEventsServer.Put> puts = named(all, "BuildSuccessful");
+    assertEquals(1, puts.size(), "one green run is one verdict");
+    // The lifecycle rides beside it, in the order the run really moved — the other reader's half of
+    // the same run, asserted here so a green build's whole output on the bus is written down once.
+    assertEquals(
+        List.of("QUEUED", "RUNNING", "SUCCESS"),
+        statusWords(named(all, "BuildStatusChanged")),
+        "a green run's transitions, in order");
 
     // The id is the publisher's, in the path — which is what makes a retry a replay rather than a
     // duplicate. A v4 UUID is what the contract fixes.
@@ -153,7 +177,7 @@ public class BuildSuccessfulPublishTest {
     Map<String, Object> run = awaitTerminalRun(repoId);
     assertEquals("SUCCESS", run.get("status"));
 
-    List<StubEventsServer.Put> puts = awaitPuts(1);
+    List<StubEventsServer.Put> puts = named(awaitPuts(PER_GREEN_RUN), "BuildSuccessful");
     JsonNode envelope = json.readTree(puts.get(0).body());
     JsonNode payload = json.readTree(envelope.get("payload").asText());
 
@@ -174,8 +198,9 @@ public class BuildSuccessfulPublishTest {
     fire(second);
     awaitTerminalRun(second);
 
-    List<StubEventsServer.Put> puts = awaitPuts(2);
-    assertEquals(2, puts.size(), "two green runs are two publishes");
+    List<StubEventsServer.Put> puts =
+        named(awaitPuts(2 * PER_GREEN_RUN), "BuildSuccessful");
+    assertEquals(2, puts.size(), "two green runs are two verdicts");
     assertNotEquals(
         puts.get(0).id(),
         puts.get(1).id(),
@@ -293,5 +318,30 @@ public class BuildSuccessfulPublishTest {
     }
     Thread.sleep(300);
     return StubEventsServer.puts();
+  }
+
+  /**
+   * The PUTs carrying one envelope {@code name}, in publish order — which is what a subscriber does
+   * with its subscription set, done here by hand.
+   */
+  private List<StubEventsServer.Put> named(List<StubEventsServer.Put> puts, String name)
+      throws Exception {
+    List<StubEventsServer.Put> matching = new java.util.ArrayList<>();
+    for (StubEventsServer.Put put : puts) {
+      if (name.equals(json.readTree(put.body()).get("name").asText())) {
+        matching.add(put);
+      }
+    }
+    return matching;
+  }
+
+  /** The {@code status} each lifecycle event carried, in publish order. */
+  private List<String> statusWords(List<StubEventsServer.Put> puts) throws Exception {
+    List<String> words = new java.util.ArrayList<>();
+    for (StubEventsServer.Put put : puts) {
+      JsonNode envelope = json.readTree(put.body());
+      words.add(json.readTree(envelope.get("payload").asText()).get("status").asText());
+    }
+    return words;
   }
 }
