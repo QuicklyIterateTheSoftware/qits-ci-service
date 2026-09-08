@@ -97,8 +97,25 @@ public final class FakeCiDaemon implements AutoCloseable {
     this.vertx = vertx;
     this.client = client;
     this.socket = socket;
-    socket.textMessageHandler(text -> received.offer(CiDaemonCodec.decode(new JsonObject(text).getMap())));
-    socket.closeHandler(ignored -> closeCode.complete(socket.closeStatusCode()));
+    // A REFUSED dial may already be over by the time the upgrade's future resolves on this thread:
+    // the two unauthorized cases close 1008 from @OnOpen, microseconds after the handshake, and
+    // Vert.x answers every handler setter on a closed socket with IllegalStateException("WebSocket
+    // is closed"). So both orderings are handled — check first, and catch the one that slips
+    // between the check and the setter — and the code is read off the socket, since a closeHandler
+    // registered after the close will never fire. Left unguarded this is a genuine flake: it fails
+    // the two refusal cases and only under load, which is exactly the shape that reads as an
+    // unrelated regression in whatever change happened to be in the tree.
+    try {
+      if (!socket.isClosed()) {
+        socket.textMessageHandler(
+            text -> received.offer(CiDaemonCodec.decode(new JsonObject(text).getMap())));
+        socket.closeHandler(ignored -> closeCode.complete(socket.closeStatusCode()));
+        return;
+      }
+    } catch (IllegalStateException closedWhileWeWereListening) {
+      // Fall through to the same answer.
+    }
+    closeCode.complete(socket.closeStatusCode());
   }
 
   /** Send one frame, framed exactly as the binary frames it. */

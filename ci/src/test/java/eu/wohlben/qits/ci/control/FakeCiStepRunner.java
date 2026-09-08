@@ -49,6 +49,16 @@ public class FakeCiStepRunner implements CiStepRunner {
 
   private String daemonVersion = "fake-daemon";
 
+  /**
+   * What {@link #pinDaemon()} throws instead of answering. Null is the ordinary case.
+   *
+   * <p>Its own hook rather than a {@link #throwOn} step index, because the pin is resolved
+   * <b>before</b> the first step of a claimed run — which is exactly what makes it worth staging: a
+   * throw there happens after the row is already {@code RUNNING} and before anything that could
+   * record why.
+   */
+  private RuntimeException pinFailure;
+
   public List<StepSpec> executed() {
     return executed;
   }
@@ -78,6 +88,11 @@ public class FakeCiStepRunner implements CiStepRunner {
     daemonVersion = version;
   }
 
+  /** Makes the daemon pin blow up instead of answering — see {@link #pinFailure}. */
+  public void failPin(RuntimeException failure) {
+    pinFailure = failure;
+  }
+
   /**
    * Makes the step blow up instead of returning — stands in for a transient infrastructure error.
    */
@@ -105,10 +120,14 @@ public class FakeCiStepRunner implements CiStepRunner {
     closed.clear();
     inFlight.clear();
     daemonVersion = "fake-daemon";
+    pinFailure = null;
   }
 
   @Override
   public DaemonPin pinDaemon() {
+    if (pinFailure != null) {
+      throw pinFailure;
+    }
     return new DaemonPin(daemonVersion, "http://fake.invalid/ci-daemon/" + daemonVersion);
   }
 

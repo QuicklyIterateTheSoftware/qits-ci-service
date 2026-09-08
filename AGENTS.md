@@ -478,7 +478,8 @@ step died with its process, and arbitrary push work is not safe to replay even i
 for it), and a `QUEUED` one is settled `CANCELLED` rather than left queued — a row nothing will ever
 run sits in `GET /ci/api/runs/active` forever, which is exactly the phantom the retirement is about.
 One INFO line says which and why, and the row says it too: `cancellation_reason` is
-`TRIGGER_RETIRED`, its own value beside `USER_CANCELLED`/`DEDUPED`/`RELEASE_REQUEST_CANCELLED`,
+`TRIGGER_RETIRED`, its own value beside
+`USER_CANCELLED`/`DEDUPED`/`RELEASE_REQUEST_CANCELLED`/`TRIGGER_UNREADABLE`,
 because nobody cancelled it — the engine that would have run it is gone, and somebody reading the row
 a year from now should find that out from the row rather than from a changelog.
 
@@ -554,12 +555,19 @@ behind a long build and stalls outright on one that never ends. And priority sta
 stream of `BLOCKING` work can hold a `LOWEST` run indefinitely, with a manual-reorder API as the
 intended escape hatch rather than an ageing fudge nobody can predict.
 
-**One regression got worse and is written down rather than hidden.** A `QUEUED` row whose
-`trigger_config` will not parse used to cost only itself: `enqueue` had submitted one closure per
-run, so the failure was logged and the next closure ran. The loop walks a shared list, so it
-**abandons the scan** at such a row and leaves it `QUEUED` — which means it also holds up everything
-behind it, once per wake, loudly. It is unreachable through the engine (the snapshot parsed once, at
-accept) and settling such a row is the follow-up.
+**One regression got worse before it was closed, and both halves are worth having.** A `QUEUED` row
+whose `trigger_config` will not parse used to cost only itself: `enqueue` had submitted one closure
+per run, so the failure was logged and the next closure ran. The loop walks a shared list, and its
+first cut **abandoned the scan** at such a row and left it `QUEUED` — which held up everything
+behind it, for every worker, once per wake, and the boot sweep handed the same row back so a restart
+did not clear it either. That was written down here as "the follow-up"; **this is that follow-up
+landed (2026-09-08)**. Such a row is settled `CANCELLED` with `cancellation_reason`
+`TRIGGER_UNREADABLE` — its own value beside `TRIGGER_RETIRED`, and for that value's reason, since
+nobody cancelled it — and the walk continues to the next candidate. **No candidate ends the scan
+except the one that is claimed**: an unrunnable row is settled and the scan goes on (it used to
+`return true` at the first one), and a row the settling write itself could not reach is skipped for
+this pass, because a database blip while settling one poison row must not cost every row behind it
+its pass.
 
 **`awaitIdle` is the suite's only window onto all of this and is the most delicate hunk in the
 change.** It cannot be a submit-and-wait any more — every pool thread is inside a loop that never
@@ -579,6 +587,54 @@ It drains the semaphore on the way out, and *only* there: the nudges are the one
 permits for something other than real work, and a leftover one would let an idle worker rescan into
 rows a later test staged and expects nobody to touch. Everywhere else **permits accumulate and are
 never drained** — a surplus permit costs one indexed read, a drained one costs a run its wake.
+
+### The claim loop survives its workers
+
+**A pool of loops that never return has a failure mode the executor queue did not have: a loop can
+END.** Nothing resubmitted it, nothing counted it, and a qits-ci with zero live claim loops keeps
+accepting runs, writing `QUEUED` rows and releasing permits nobody consumes — while every health
+check it declared stayed green. **Measured 2026-09-07**: after a redeploy, runs sat `QUEUED`
+indefinitely, `/q/health/ready` was UP and `GET /ci/api/daemon` said `source=adopted`, and only a
+process restart healed it. Four things close it and each closes a different half.
+
+- **A leaked interrupt flag no longer retires a worker.** At least five helpers on the run worker's
+  own call path catch `InterruptedException`, **restore the flag** and return a fallback —
+  `CiDaemonRegistry.await`, `CiDaemonLauncher`'s sleep, three in `IdpCommissioner`,
+  `HttpGitConfigSource`, and `DbRetry` in qits-db-core. Every one of them is locally correct and
+  every one of them used to end the loop, because `while (!stopping && !isInterrupted())` cannot
+  tell a restored flag from a shutdown. `stopping` is now the only thing that ends the loop: a flag
+  found raised while it is false is a **leak** — cleared with `Thread.interrupted()`, named in a
+  WARN, and the worker stays on the queue. The step it happened on is still failed; that half was
+  always right.
+- **An `Error` no longer kills a thread the pool will never refill.** The loop catches `Throwable`,
+  not `RuntimeException`. `service/` compiles to a native image, so `NoClassDefFoundError` and
+  `ExceptionInInitializerError` are the ordinary shape of a missing reflection registration — and a
+  fixed pool's thread that dies of one is a build slot gone for the life of the process.
+- **And a loop that ends anyway is REPLACED.** `CiRunService.supervised` is the outer net: whatever
+  a claim loop returns or throws, a fresh one is submitted **on the same pool** for as long as
+  `stopping` is false. The resubmission sits in a `finally` and is deadlock-free rather than lucky —
+  `execute` on a saturated fixed pool *queues*, and the thread that queued it is the one about to
+  become free. It is deliberately the belt to the two braces above: a loop that survives is a loop
+  whose backlog never waited on a resubmission. `shutdown()` raises `stopping` **before**
+  `shutdownNow`, which is what makes a shutdown a shutdown rather than a stream of replacements.
+- **The count is a surface.** `CiRunService.workerCensus()` answers `(live, configured, stopping)`
+  and `api/CiRunWorkerReadinessCheck` is DOWN exactly when live is zero and `stopping` is false.
+  Zero live loops *during* a shutdown is what a shutdown is, so that arm is UP; `busyWorkers` is
+  deliberately not consulted, because an idle instance is legitimately zero-busy for days. What DOWN
+  buys is `CiDaemonReadinessCheck`'s bargain exactly — qits-cd's `awaitHealthy` restores the previous
+  container — plus a `/q/health/ready` that says "0 of 4" instead of nothing at all.
+
+**Two more things moved with it, both in `executeClaimed`.** `runner.pinDaemon()` and
+`pinDaemonVersion` are **inside** the try now: `startQueued` has already flipped the row `RUNNING`
+by the time they run, the pin ladder's `answer()` is deliberately not `DbRetry`-wrapped, and a throw
+out of either left a row `RUNNING` with no steps, no `finishedAt` and no owner — the 2026-08-23
+stranded-row shape arrived at from the other direction. And an `Error` out of `runSteps` settles the
+run before it is rethrown, because the run is over either way and the row has to say so; what to do
+about the JVM is the loop's business, not the row's.
+
+`CiRunWorkerResilienceTest` holds all four behaviourally against a real database and a real worker,
+and `CiRunWorkerPoolTest` holds `supervised` on its own — a supervisor nothing exercises is a
+supervisor nobody knows resubmits.
 
 ## Addressing
 
@@ -2266,6 +2322,14 @@ contract, tested where it lives.
   A `@QuarkusTest` cannot see the difference — the forward-auth `%test` `dev` identity already holds
   `qits:system` — so this was invisible until a packaged story dialled and got a 401. Never drop
   them, and never assume a socket assertion that passes in TEST mode passes against the artifact.
+  <br>**A REFUSED dial can be over before the fixture is listening, and that was a live flake.** The
+  two unauthorized cases close 1008 from `@OnOpen`, microseconds after the handshake, while
+  `FakeCiDaemon`'s constructor is still installing its handlers on the test thread — and Vert.x
+  answers every handler setter on a closed socket with `IllegalStateException: WebSocket is closed`.
+  So the constructor handles both orderings (check `isClosed()`, and catch the one that slips between
+  the check and the setter) and reads the close code off the socket, because a `closeHandler`
+  registered after the close never fires. Under load it failed maybe one run in three; do not undo
+  the guard on the grounds that the tests look green.
 - `CiDaemonHandshakeIT` is the **phase-B gate**: a real container from `buildpack-deps:scm` (verified
   to carry git, bash, wget *and* curl — the whole image contract), a real download of the daemon
   binary from a file-served stand-in, a real dial back, a real step. Tagged `extended`, run with
