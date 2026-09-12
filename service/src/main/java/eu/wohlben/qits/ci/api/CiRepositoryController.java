@@ -43,10 +43,12 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  *
  * <p><b>Read by both kinds of caller</b>, so it takes {@code qits:admin} and {@code qits:system}
  * together — the same pair {@code CiRunController}'s reads take, and for the reason stated there.
+ * {@code qits:agent} reads it too: agents keep every read and write nothing, and this class has no
+ * write.
  */
 @Path("/repositories")
 @Produces(MediaType.APPLICATION_JSON)
-@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:system"})
+@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:system", "qits:agent"})
 public class CiRepositoryController {
 
   @Inject CiRunService runService;

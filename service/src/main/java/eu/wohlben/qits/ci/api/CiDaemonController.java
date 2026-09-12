@@ -65,7 +65,8 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  */
 @Path("/daemon")
 @Produces(MediaType.APPLICATION_JSON)
-@jakarta.annotation.security.RolesAllowed("qits:system")
+// qits:agent reads it too: agents keep every read and write nothing, and this class has no write.
+@jakarta.annotation.security.RolesAllowed({"qits:system", "qits:agent"})
 public class CiDaemonController {
 
   @Inject CiDaemonPins pins;

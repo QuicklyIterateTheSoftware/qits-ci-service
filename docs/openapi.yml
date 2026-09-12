@@ -253,6 +253,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:system
+        - qits:agent
   /ci/api/events/trigger:
     post:
       summary: Run every event pipeline that selects a caller-supplied domain event
@@ -310,6 +311,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:system
+        - qits:agent
   /ci/api/repositories/summary:
     get:
       summary: Each repository with its newest run and its newest run on main
@@ -330,6 +332,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:system
+        - qits:agent
   /ci/api/runs:
     get:
       summary: "List a repository's CI runs, newest first"
@@ -366,6 +369,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:system
+        - qits:agent
   /ci/api/runs/active:
     get:
       summary: "Every queued or running CI run, all repositories, newest first"
@@ -386,6 +390,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:system
+        - qits:agent
   /ci/api/runs/cancellations:
     post:
       summary: Cancel every unfinished run a repository has for one release request
@@ -446,6 +451,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:system
+        - qits:agent
   /ci/api/runs/{runId}:
     get:
       summary: "One CI run with its steps, output and — while it runs — its live step"
@@ -474,6 +480,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:system
+        - qits:agent
   /ci/api/runs/{runId}/cancel:
     post:
       summary: Cancel a queued or running CI run
@@ -539,4 +546,4 @@ paths:
         - qits:admin
 info:
   title: qits-ci API
-  version: 2026.907.123357
+  version: 2026.912.181851

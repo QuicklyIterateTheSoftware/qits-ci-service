@@ -166,6 +166,9 @@ public class CiRunController {
    * refusing it buys nothing.
    */
   @GET
+  // Every read also takes qits:agent. It sits on each read rather than on the class, because the
+  // class list also guards the cancellations write, and agents do not write here.
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:system", "qits:agent"})
   @Operation(summary = "List a repository's CI runs, newest first")
   @APIResponse(responseCode = "200", description = "The repository's runs, without step output")
   @APIResponse(responseCode = "400", description = "The repository id is missing or invalid, or the limit is not a positive integer")
@@ -217,6 +220,7 @@ public class CiRunController {
    */
   @GET
   @Path("/active")
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:system", "qits:agent"})
   @Operation(summary = "Every queued or running CI run, all repositories, newest first")
   @APIResponse(responseCode = "200", description = "The active runs, without step output")
   public ListRunsResponse listActiveRuns() {
@@ -250,6 +254,7 @@ public class CiRunController {
    */
   @GET
   @Path("/finished")
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:system", "qits:agent"})
   @Operation(summary = "The newest finished CI runs, all repositories, newest first")
   @APIResponse(responseCode = "200", description = "The finished runs, without step output")
   @APIResponse(responseCode = "400", description = "The limit is not a positive integer")
@@ -275,6 +280,7 @@ public class CiRunController {
    */
   @GET
   @Path("/{runId}")
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:system", "qits:agent"})
   @Operation(summary = "One CI run with its steps, output and — while it runs — its live step")
   @APIResponse(responseCode = "200", description = "The run")
   @APIResponse(responseCode = "404", description = "No such run")

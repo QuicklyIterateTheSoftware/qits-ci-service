@@ -726,6 +726,13 @@ all — so a fixture that mints a token without `groups` authenticates perfectly
 403, which is a stale fixture rather than a regression. A method-level role list **replaces** the
 class-level one rather than adding to it; a route both a person and a machine read must name both.
 
+**Every read route also takes `qits:agent`, and no write does.** Agents keep all read access and
+lose write access (user ruling, 2026-09-12). So `CiRepositoryController` and `CiDaemonController`
+name it on the class, and `CiRunController` names it on each of its four reads: its class list
+also guards the `cancellations` write. Nothing filters what an agent reads. The daemon socket is
+not a read route (step daemons write run records through it) and is unchanged.
+`AgentReadAccessTest` holds this. A new read route names `qits:agent` too.
+
 ## The Angular client
 
 `service/src/main/webui` is the
