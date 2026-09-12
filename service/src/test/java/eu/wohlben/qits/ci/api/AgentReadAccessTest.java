@@ -11,6 +11,7 @@ import eu.wohlben.qits.ci.entity.CiTriggerType;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.TestProfile;
 import io.quarkus.test.security.TestSecurity;
 import io.quarkus.test.security.oidc.Claim;
 import io.quarkus.test.security.oidc.OidcSecurity;
@@ -30,11 +31,25 @@ import org.junit.jupiter.api.Test;
  *
  * <p>The agent's token names a project, and the run it reads is in another one: agents lose no read
  * access, so the project claim narrows nothing here.
+ *
+ * <p><b>The profile is what makes the agent the caller.</b> Under {@code %test},
+ * {@code ForwardAuthMechanism} gives every request without {@code X-Qits-User} the synthetic
+ * {@code dev} identity, which holds {@code qits:admin}. {@code @TestSecurity} yields to any identity
+ * that is not anonymous, so without the profile every case ran as {@code dev}: the reads passed for
+ * the admin and the cancel reached its handler (409 on a finished run). {@link MachineGuardTest.GateOn}
+ * blanks the dev user, and reusing it costs no second Quarkus start. The token carries this
+ * service's audience and {@code project=*}, so {@code MachineAuth} would admit it: only the role can
+ * refuse a write. The reads answering 200 and the writes answering 403 together prove the agent was
+ * the caller.
  */
 @QuarkusTest
+@TestProfile(MachineGuardTest.GateOn.class)
 class AgentReadAccessTest {
 
   private static final String AGENT = "qits:agent";
+
+  /** This service's own audience, so the machine guard admits the token and only roles decide. */
+  private static final String OWN_AUDIENCE = "qits-ci";
 
   private static final String REPO = "agent-read-repo";
 
@@ -75,7 +90,11 @@ class AgentReadAccessTest {
 
   @Test
   @TestSecurity(user = "ticket-agent", roles = {AGENT})
-  @OidcSecurity(claims = {@Claim(key = QitsClaims.PROJECT, value = "agent-project")})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = OWN_AUDIENCE),
+        @Claim(key = QitsClaims.PROJECT, value = "agent-project")
+      })
   void anAgentReadsEveryRunRoute() {
     List<String> byRepository =
         given()
@@ -108,7 +127,11 @@ class AgentReadAccessTest {
 
   @Test
   @TestSecurity(user = "ticket-agent", roles = {AGENT})
-  @OidcSecurity(claims = {@Claim(key = QitsClaims.PROJECT, value = "agent-project")})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = OWN_AUDIENCE),
+        @Claim(key = QitsClaims.PROJECT, value = "agent-project")
+      })
   void anAgentReadsTheRepositoryRoutes() {
     given().when().get("/ci/api/repositories").then().statusCode(200);
     given().when().get("/ci/api/repositories/summary").then().statusCode(200);
@@ -116,14 +139,22 @@ class AgentReadAccessTest {
 
   @Test
   @TestSecurity(user = "ticket-agent", roles = {AGENT})
-  @OidcSecurity(claims = {@Claim(key = QitsClaims.PROJECT, value = "agent-project")})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = OWN_AUDIENCE),
+        @Claim(key = QitsClaims.PROJECT, value = "agent-project")
+      })
   void anAgentReadsTheDaemonPin() {
     given().when().get("/ci/api/daemon").then().statusCode(200);
   }
 
   @Test
   @TestSecurity(user = "ticket-agent", roles = {AGENT})
-  @OidcSecurity(claims = {@Claim(key = QitsClaims.PROJECT, value = "*")})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = OWN_AUDIENCE),
+        @Claim(key = QitsClaims.PROJECT, value = "*")
+      })
   void anAgentWritesNothing() {
     given().when().post("/ci/api/runs/" + foreignRun + "/cancel").then().statusCode(403);
     given().when().post("/ci/api/runs/" + foreignRun + "/retry").then().statusCode(403);
