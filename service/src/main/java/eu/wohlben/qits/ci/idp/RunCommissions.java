@@ -2,7 +2,9 @@ package eu.wohlben.qits.ci.idp;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import org.jboss.logging.Logger;
 
@@ -45,10 +47,14 @@ public class RunCommissions {
    * ITs set the fields a case needs and leave the rest, so an unset one is a test's silence rather
    * than a wiring failure.
    *
+   * <p>{@code runEnv} is the step's run-scoped environment. Its {@code QITS_EVENT_NAME} and {@code
+   * QITS_EVENT_PAYLOAD} decide the Git refs the commission states ({@link RunGitRefs}). Every step
+   * of a run carries the same pair, so the first step's is the run's.
+   *
    * @throws IdpCommissioner.CommissionFailedException when qits-idp could not be asked, which fails
    *     the step rather than launching it credential-less
    */
-  public IdpCommissioner.Commission forRun(String runId) {
+  public IdpCommissioner.Commission forRun(String runId, Map<String, String> runEnv) {
     if (idp == null || !idp.enabled()) {
       return null;
     }
@@ -56,7 +62,10 @@ public class RunCommissions {
     if (held != null) {
       return held;
     }
-    IdpCommissioner.Commission fresh = idp.commission(IdpCommissioner.CONTEXT_KIND, runId);
+    Optional<List<String>> gitRefs = RunGitRefs.fromRunEnv(runEnv, idp.objectMapper);
+    LOG.debugf("Run %s states gitRefs %s", runId, gitRefs.map(String::valueOf).orElse("(none)"));
+    IdpCommissioner.Commission fresh =
+        idp.commission(IdpCommissioner.CONTEXT_KIND, runId, gitRefs.orElse(null));
     byRun.put(runId, fresh);
     return fresh;
   }

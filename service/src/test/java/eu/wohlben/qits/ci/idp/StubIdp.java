@@ -46,6 +46,9 @@ public final class StubIdp implements AutoCloseable {
 
   public volatile String mintBody = null;
 
+  /** Answer 400 to a commission that states {@code gitRefs}, as a qits-idp older than C2 does. */
+  public volatile boolean refuseGitRefs = false;
+
   /** What the listing answers. */
   public volatile String listingBody = "[]";
 
@@ -60,7 +63,11 @@ public final class StubIdp implements AutoCloseable {
             req.bodyHandler(
                 body -> {
                   posted.add(body.toString());
-                  int n = minted.incrementAndGet();
+                  int status =
+                      refuseGitRefs && body.toString().contains("\"gitRefs\"") ? 400 : mintStatus;
+                  // Only a mint uses up a number, so the first pair minted is always run-client-1.
+                  int n =
+                      status == 201 || status == 200 ? minted.incrementAndGet() : minted.get();
                   String answer =
                       mintBody != null
                           ? mintBody
@@ -71,9 +78,9 @@ public final class StubIdp implements AutoCloseable {
                               + "\",\"owner\":\"dev-qits-ci\",\"contextKind\":\"ci-run\","
                               + "\"contextId\":\"whatever\",\"createdAt\":\"2026-08-14T10:00:00Z\"}";
                   req.response()
-                      .setStatusCode(mintStatus)
+                      .setStatusCode(status)
                       .putHeader("Content-Type", "application/json")
-                      .end(mintStatus == 201 || mintStatus == 200 ? answer : refusal(mintStatus));
+                      .end(status == 201 || status == 200 ? answer : refusal(status));
                 });
             return;
           }

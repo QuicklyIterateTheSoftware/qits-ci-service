@@ -441,6 +441,19 @@ is exactly what it always was, which is the case a deployment on an anonymous re
 **A commission that could not be made fails the step**, naming the call, rather than launching a
 step with no credential: an unreachable idp must not surface as a mysterious push 401 minutes later.
 
+**The commission states which Git refs the run may push.** qits-ci reads them from the event that
+triggered the run and sends them as `gitRefs`. qits-idp puts them in every token of that client as
+`git_refs`, and qits-githost refuses a push to any other ref.
+
+| trigger | `gitRefs` |
+|---|---|
+| `MaintenanceBump` | `["refs/heads/<payload.branch>"]`: `maintenance/<group>`, or the one source branch of a targeted bump. `[]` if the payload names no usable branch. |
+| `ReleaseRequestChanged`, `SCMRelease` | `[]`. No recipe on these events pushes. |
+| any other event, or none | not stated. The token has no Git scope, as before. |
+
+An older qits-idp answers a scoped commission with 400. qits-ci then commissions again without
+`gitRefs`, logs one warning, and continues. The next run tries the scope again.
+
 **Two BuildKit variables ride the same scope.** A step declaring `docker: true` also gets
 `DOCKER_BUILDKIT=1` and `BUILDX_NO_DEFAULT_ATTESTATIONS=1`. Every step image ships buildx, so the
 first turns a silent fall back to the legacy builder into a loud error, and the second keeps a push a

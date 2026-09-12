@@ -1090,7 +1090,9 @@ public class CiDaemonLauncher {
     // that pair for a short-lived, audience-bound bearer when (and only when) Git asks for the
     // configured qits-githost authority.  The helper is installed by BOOTSTRAP below, outside the
     // checkout, so neither its configuration nor a token can enter a build context.
-    IdpCommissioner.Commission commission = commissions == null ? null : commissions.forRun(spec.runId());
+    // The run's own QITS_EVENT_* pair decides which Git refs that credential may push (RunGitRefs).
+    IdpCommissioner.Commission commission =
+        commissions == null ? null : commissions.forRun(spec.runId(), spec.env());
     if (commission != null) {
       env.put("QITS_COMMISSIONED_CLIENT_ID", value(commission.clientId()));
       env.put("QITS_COMMISSIONED_CLIENT_SECRET", value(commission.secret()));

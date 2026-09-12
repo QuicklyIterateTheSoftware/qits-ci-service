@@ -188,6 +188,20 @@ the adapter for it:
   lists and deletes every `ci-run` row whose `contextId` is not a `QUEUED`/`RUNNING` run and which
   this process is not holding right now. **A listing it could not read reaps nothing**: `live()`
   answers an empty `Optional` rather than an empty list precisely so the two cannot be confused.
+- **`RunGitRefs`** — the Git scope the commission states as `gitRefs` (C6 of the superproject's
+  `principal-bound-git-refs-plan.md`; the table is in `README.md`). It reads the run's own
+  `QITS_EVENT_NAME` and `QITS_EVENT_PAYLOAD` from `LaunchSpec.env`, so no seam changed.
+
+Three rules for that scope:
+
+- **An event kind states nothing until somebody has checked its recipes.** Add it to
+  `RunGitRefs.PUSH_NOTHING` only when no recipe on that event pushes: `[]` refuses every push the
+  run makes. Not stated means no Git scope, which is the old behaviour.
+- **The bump scope is the payload's `branch`**, because that is the one ref the wrapper's
+  `ci-platform-event-maintenance-bump.yml` pushes. If that pipeline starts to push another ref,
+  change `RunGitRefs` with it.
+- **A 400 on a scoped commission means an older qits-idp.** `IdpCommissioner` asks again at once
+  without `gitRefs` and warns once per process. Any other answer is handled as before.
 
 Three decisions worth keeping in front of you:
 

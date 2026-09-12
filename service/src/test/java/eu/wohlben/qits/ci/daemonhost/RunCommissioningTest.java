@@ -91,6 +91,30 @@ public class RunCommissioningTest {
 
   /** One step of a run, publishing or not. */
   private static LaunchSpec step(String runId, int index, boolean docker) {
+    return step(runId, index, docker, Map.of());
+  }
+
+  /** The four QITS_EVENT_* variables an event-triggered run carries. */
+  private static Map<String, String> event(String name, String payload) {
+    return Map.of(
+        "QITS_EVENT_ID", "0b5f3c1e-0000-4000-8000-000000000001",
+        "QITS_EVENT_NAME", name,
+        "QITS_EVENT_OCCURRED_AT", "2026-09-12T10:00:00Z",
+        "QITS_EVENT_PAYLOAD", payload);
+  }
+
+  private static Map<String, String> bump(String group, String branch) {
+    return event(
+        "MaintenanceBump",
+        "{\"repository\":\"repo-1\",\"group\":\""
+            + group
+            + "\",\"branch\":\""
+            + branch
+            + "\",\"baseRef\":\"main\",\"changes\":[]}");
+  }
+
+  /** One step of a run with its run-scoped environment. */
+  private static LaunchSpec step(String runId, int index, boolean docker, Map<String, String> env) {
     return new LaunchSpec(
         runId,
         index,
@@ -105,7 +129,76 @@ public class RunCommissioningTest {
         docker,
         false,
         "",
-        Map.of());
+        env);
+  }
+
+  @Test
+  public void aGroupBumpRunMayPushItsMaintenanceBranch() {
+    launcher(idp.runCommissions(PATIENCE))
+        .buildWorkloadSpec(step(RUN, 0, false, bump("dependencies", "maintenance/dependencies")));
+
+    assertEquals(
+        List.of(
+            "{\"contextKind\":\"ci-run\",\"contextId\":\""
+                + RUN
+                + "\",\"gitRefs\":[\"refs/heads/maintenance/dependencies\"]}"),
+        idp.posted);
+  }
+
+  @Test
+  public void aTargetedBumpRunMayPushTheSourceBranchItWasAskedToBump() {
+    launcher(idp.runCommissions(PATIENCE))
+        .buildWorkloadSpec(step(RUN, 0, false, bump("targeted", "task/pin-the-frontend")));
+
+    assertEquals(
+        List.of(
+            "{\"contextKind\":\"ci-run\",\"contextId\":\""
+                + RUN
+                + "\",\"gitRefs\":[\"refs/heads/task/pin-the-frontend\"]}"),
+        idp.posted);
+  }
+
+  @Test
+  public void aReleaseRequestRunMayPushNothing() {
+    launcher(idp.runCommissions(PATIENCE))
+        .buildWorkloadSpec(
+            step(
+                RUN,
+                0,
+                true,
+                event(
+                    "ReleaseRequestChanged",
+                    "{\"backingBranch\":\"release/4711\",\"mergedSha\":\"cafebabe\"}")));
+
+    assertEquals(
+        List.of("{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\",\"gitRefs\":[]}"),
+        idp.posted);
+  }
+
+  @Test
+  public void aRunKindWhosePushesAreUnknownStatesNoScope() {
+    launcher(idp.runCommissions(PATIENCE))
+        .buildWorkloadSpec(step(RUN, 0, false, event("SCMPublishTag", "{\"tagName\":\"1.0\"}")));
+
+    assertEquals(
+        List.of("{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\"}"), idp.posted);
+  }
+
+  @Test
+  public void anOlderIdpThatRefusesTheScopeStillGivesTheRunItsCredential() {
+    idp.refuseGitRefs = true;
+
+    Map<String, String> env =
+        launcher(idp.runCommissions(PATIENCE))
+            .buildWorkloadSpec(step(RUN, 0, false, bump("dependencies", "maintenance/dependencies")))
+            .spec()
+            .env();
+
+    assertEquals(2, idp.posted.size());
+    assertTrue(idp.posted.get(0).contains("\"gitRefs\""), idp.posted.get(0));
+    assertEquals("{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\"}", idp.posted.get(1));
+    assertEquals("run-client-1", env.get("QITS_COMMISSIONED_CLIENT_ID"));
+    assertEquals("/tmp/qits-gitconfig", env.get("GIT_CONFIG_GLOBAL"));
   }
 
   @Test

@@ -57,7 +57,8 @@ public class CommissionReconcilerTest {
   public void aCommissionThisProcessIsHoldingIsSparedEvenWithNoRunRowLeft() {
     // The window between a run's row going terminal and its runClosed. The row says the run is over
     // and the credential is still in use, so memory outranks the table here.
-    IdpCommissioner.Commission held = reconciler.commissions.forRun("run-finishing");
+    IdpCommissioner.Commission held =
+        reconciler.commissions.forRun("run-finishing", java.util.Map.of());
 
     int reaped = reconciler.reap(List.of(row(held.clientId(), "ci-run", "run-finishing")), Set.of());
 

@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -118,6 +119,9 @@ public class IdpCommissioner {
 
   private final HttpClient http = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
 
+  /** Set by the first 400 on a scoped commission, so that warning is logged once per process. */
+  final AtomicBoolean warnedScopeRefused = new AtomicBoolean();
+
   /**
    * Whether this process can commission at all: the oidc client is on and both halves of its own
    * credential are there. Everything else answers "commission nothing, inject nothing".
@@ -135,9 +139,15 @@ public class IdpCommissioner {
    * is the 2026-08-12 lesson this platform already paid for once. A 403 and a 400 are statements
    * about the request that no window fixes, so they are one attempt.
    *
+   * <p><b>{@code gitRefs} is the Git scope the commission states</b> (see {@link RunGitRefs}): null
+   * states nothing, an empty list means "may push nothing". A qits-idp older than that contract
+   * answers a scoped commission with 400. This method then asks again at once without {@code
+   * gitRefs}, warns once per process, and carries on. Every commission tries the scope first, so an
+   * upgraded qits-idp is used from its next commission.
+   *
    * @throws CommissionFailedException when every attempt inside the patience window failed
    */
-  public Commission commission(String contextKind, String contextId) {
+  public Commission commission(String contextKind, String contextId, List<String> gitRefs) {
     String url = clientsUrl();
     Instant giveUpAt = Instant.now().plus(patience);
     // Never pause past the window itself — the launcher's rule, for the same reason: a pause longer
@@ -145,14 +155,21 @@ public class IdpCommissioner {
     Duration pause = RETRY_PAUSE.compareTo(patience) > 0 ? patience : RETRY_PAUSE;
     int attempts = 0;
     String detail;
+    List<String> scope = gitRefs;
     while (true) {
       attempts++;
-      Attempt attempt = attemptCommission(url, contextKind, contextId);
+      Attempt attempt = attemptCommission(url, contextKind, contextId, scope);
       if (attempt.commission() != null) {
         LOG.debugf("Commissioned %s for %s %s", attempt.commission().clientId(), contextKind, contextId);
         return attempt.commission();
       }
       detail = attempt.detail();
+      if (attempt.status() == 400 && scope != null) {
+        // An older qits-idp. A different request, so no pause, and it happens at most once.
+        warnScopeRefused(contextKind, contextId, detail);
+        scope = null;
+        continue;
+      }
       if (!attempt.retryable() || !Instant.now().isBefore(giveUpAt) || !sleep(pause)) {
         break;
       }
@@ -167,18 +184,59 @@ public class IdpCommissioner {
             + contextKind
             + " contextId="
             + contextId
+            + (scope == null ? "" : " gitRefs=" + scope)
             + ") after "
             + attempts
             + " attempt(s): "
             + detail);
   }
 
-  /** One attempt: the pair, or why not and whether asking again could change the answer. */
-  private record Attempt(Commission commission, boolean retryable, String detail) {}
+  /** Warn about the first scope refusal only; later ones are the same fact about the same idp. */
+  private void warnScopeRefused(String contextKind, String contextId, String detail) {
+    if (warnedScopeRefused.compareAndSet(false, true)) {
+      LOG.warnf(
+          "qits-idp refused a commission that states gitRefs (%s). It is probably older than the"
+              + " Git-scope contract, so %s %s gets a credential with no Git scope. Later"
+              + " commissions still state the scope first. This warning is logged once.",
+          detail, contextKind, contextId);
+    } else {
+      LOG.debugf(
+          "qits-idp refused the Git scope again (%s); %s %s is commissioned without it",
+          detail, contextKind, contextId);
+    }
+  }
 
-  private Attempt attemptCommission(String url, String contextKind, String contextId) {
-    String body =
-        "{\"contextKind\":\"" + escape(contextKind) + "\",\"contextId\":\"" + escape(contextId) + "\"}";
+  /**
+   * One attempt: the pair, or why not and whether asking again could change the answer. {@code
+   * status} is the HTTP status, or 0 when nothing answered.
+   */
+  private record Attempt(Commission commission, boolean retryable, String detail, int status) {}
+
+  /**
+   * The POST body. Without a scope it is byte-identical to the body before {@code gitRefs}
+   * existed. The context id and every ref are validated before they get here; escaping is a
+   * second line of defence.
+   */
+  static String commissionBody(String contextKind, String contextId, List<String> gitRefs) {
+    StringBuilder body =
+        new StringBuilder("{\"contextKind\":\"")
+            .append(escape(contextKind))
+            .append("\",\"contextId\":\"")
+            .append(escape(contextId))
+            .append('"');
+    if (gitRefs != null) {
+      body.append(",\"gitRefs\":[");
+      for (int i = 0; i < gitRefs.size(); i++) {
+        body.append(i == 0 ? "\"" : ",\"").append(escape(gitRefs.get(i))).append('"');
+      }
+      body.append(']');
+    }
+    return body.append('}').toString();
+  }
+
+  private Attempt attemptCommission(
+      String url, String contextKind, String contextId, List<String> gitRefs) {
+    String body = commissionBody(contextKind, contextId, gitRefs);
     HttpResponse<String> response;
     try {
       HttpRequest request =
@@ -191,21 +249,24 @@ public class IdpCommissioner {
       response = http.send(request, HttpResponse.BodyHandlers.ofString());
     } catch (InterruptedException interrupted) {
       Thread.currentThread().interrupt();
-      return new Attempt(null, false, "interrupted while asking qits-idp");
+      return new Attempt(null, false, "interrupted while asking qits-idp", 0);
     } catch (Exception unreachable) {
-      return new Attempt(null, true, "qits-idp unreachable: " + unreachable);
+      return new Attempt(null, true, "qits-idp unreachable: " + unreachable, 0);
     }
     int status = response.statusCode();
     if (status == 200 || status == 201) {
       Commission minted = readCommission(response.body());
       return minted == null
-          ? new Attempt(null, false, "qits-idp answered " + status + " with no clientId and secret")
-          : new Attempt(minted, false, null);
+          ? new Attempt(
+              null, false, "qits-idp answered " + status + " with no clientId and secret", status)
+          : new Attempt(minted, false, null, status);
     }
     // 401 is the idp-cutover window; a 5xx is the service's own trouble. Everything else — 403 from
-    // a client that may not commission, a 400 on a value — is about the request and stands.
+    // a client that may not commission, a 400 on a value — is about the request and stands. (A 400
+    // on a scoped commission is first retried without the scope, in commission().)
     boolean retryable = status == 401 || status >= 500;
-    return new Attempt(null, retryable, "qits-idp answered " + status + ": " + errorOf(response.body()));
+    return new Attempt(
+        null, retryable, "qits-idp answered " + status + ": " + errorOf(response.body()), status);
   }
 
   /**
