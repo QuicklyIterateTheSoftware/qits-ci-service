@@ -46,8 +46,12 @@ public final class StubIdp implements AutoCloseable {
 
   public volatile String mintBody = null;
 
-  /** Answer 400 to a commission that states {@code gitRefs}, as a qits-idp older than C2 does. */
-  public volatile boolean refuseGitRefs = false;
+  /**
+   * Answer 400 to a commission whose {@code gitRefs} list is not empty, as a qits-idp with the
+   * Git-scope contract does when it refuses the list. An empty list is still minted. (A qits-idp
+   * without the contract ignores the field and mints, which is the default here.)
+   */
+  public volatile boolean refuseGitRefList = false;
 
   /** What the listing answers. */
   public volatile String listingBody = "[]";
@@ -64,7 +68,9 @@ public final class StubIdp implements AutoCloseable {
                 body -> {
                   posted.add(body.toString());
                   int status =
-                      refuseGitRefs && body.toString().contains("\"gitRefs\"") ? 400 : mintStatus;
+                      refuseGitRefList && body.toString().contains("\"gitRefs\":[\"")
+                          ? 400
+                          : mintStatus;
                   // Only a mint uses up a number, so the first pair minted is always run-client-1.
                   int n =
                       status == 201 || status == 200 ? minted.incrementAndGet() : minted.get();

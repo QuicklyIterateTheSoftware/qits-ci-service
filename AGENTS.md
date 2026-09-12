@@ -179,9 +179,10 @@ the adapter for it:
   **The address is derived, never configured** — a second key would be a second thing to keep in step
   with the first, and two idps would mean minting against one and presenting tokens signed by the
   other.
-- **`RunCommissions`** — the run-scoped memory, one entry per run, populated **lazily at the first
-  `docker: true` step** and reused by every later one. A pipeline of plain steps asks qits-idp for
-  nothing; a run is one credential rather than one per step, which is one thing to leak instead of N.
+- **`RunCommissions`** — the run-scoped memory, one entry per run, populated **lazily at the run's
+  first step** and reused by every later one. Every step clones from the authenticated git host, so
+  every step needs the pair; a run is one credential rather than one per step, which is one thing to
+  leak instead of N.
   Not a row: a commission is worth exactly one run, and a run does not survive this process.
 - **`CommissionReconciler`** — the durable half. On boot (after both existing boot observers, on its
   own `ci-commission-reconcile` thread — `DaemonReleaseListener`'s healthcheck lesson) and hourly, it
@@ -200,8 +201,12 @@ Three rules for that scope:
 - **The bump scope is the payload's `branch`**, because that is the one ref the wrapper's
   `ci-platform-event-maintenance-bump.yml` pushes. If that pipeline starts to push another ref,
   change `RunGitRefs` with it.
-- **A 400 on a scoped commission means an older qits-idp.** `IdpCommissioner` asks again at once
-  without `gitRefs` and warns once per process. Any other answer is handled as before.
+- **A 400 on a scoped commission means qits-idp refused the list.** A qits-idp without the contract
+  ignores `gitRefs` and answers 201, so a 400 never means "older idp". `IdpCommissioner` asks again
+  at once with `gitRefs: []` and logs an ERROR naming the run and the idp's reason. It fails closed:
+  it never commissions without `gitRefs` once the run states a scope, because that widens the
+  credential (C5/C6 of the plan). A 400 to the `[]` form fails the step. A run whose trigger states
+  nothing is not affected.
 
 Three decisions worth keeping in front of you:
 

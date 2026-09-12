@@ -123,7 +123,7 @@ rest of qits it reaches over a URL it is configured with:
 | out | the same route — one `SoftwareRelease` per artifact a green **release pipeline** declared (the `ReleaseAnnouncer` seam), and **only once an `SCMRelease` for the same (repository, version) has been seen** — see "The release join" | the same two keys |
 | out | `ws://…/events/stream` — dialled out and held open, carrying what qits-events broadcasts back | the same two keys; the address is derived, never configured twice |
 | out | `PUT/DELETE /containers/api/containers/<owner>/ci-step/<ref>` — every step container: started, read and removed through qits-containers, which owns the docker daemon. **qits-ci holds no docker socket.** | `qits.containers.url`, `qits.ci.containers.owner` |
-| out | `POST/DELETE/GET /idp/api/clients` — one commissioned oidc client per run, minted at its first `docker: true` step and deleted when the run closes; the pair a publishing step pushes with | `quarkus.oidc-client.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.client-enabled` |
+| out | `POST/DELETE/GET /idp/api/clients` — one commissioned oidc client per run, minted at the run's first step and deleted when the run closes; every step clones with it, and a publishing step pushes with it | `quarkus.oidc-client.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.client-enabled` |
 | out | the registry a publishing step pushes to, as `$QITS_REGISTRY` and `$QITS_IMAGE_REPOSITORY` in **every** step container — dialled by the *host's docker daemon*, never by this process | `qits.artifacts.registry-host`, `qits.artifacts.image-repository` |
 | out | the npm registry roots, as `$QITS_NPM_REGISTRY_URL` (hosted, `@qits/*` publishes) and `$QITS_NPM_PROXY_URL` (the npmjs pull-through cache) in **every** step container — dialled by the *step container itself* on the shared network | `qits.artifacts.npm.hosted-url`, `qits.artifacts.npm.proxy-url` |
 | out | the hosted Maven repository root, as `$QITS_MAVEN_REGISTRY_URL` in **every** step container — also dialled by the step container on the shared network | `qits.artifacts.maven.registry-url` |
@@ -422,13 +422,14 @@ step image supplies the docker CLI; the platform supplies the socket and the two
 says nothing about either.** An in-network registry answers an anonymous push; one behind the edge
 answers it with a docker Bearer challenge, and the CLI then exchanges a *stored* username/password
 for a short-lived token at the realm the challenge names — by itself, with no `docker login` in the
-pipeline. So at the **first step of a run that declared `docker: true`**, qits-ci asks qits-idp to
-commission a client for that run and hands the step `$DOCKER_CONFIG` pointing at a directory holding
-the `config.json` the CLI reads, plus `$QITS_COMMISSIONED_CLIENT_ID` and
-`$QITS_COMMISSIONED_CLIENT_SECRET` for a BuildKit secret mount. Every later docker step of the same
-run reuses the pair; the run's end deletes it. A step without the socket is handed nothing — it
-cannot push, so it has no use for a credential. The file lives under `/tmp`, never in the checkout,
-so it can never reach a `docker build` context. It carries **one entry per host in
+pipeline. So at the **first step of every run**, qits-ci asks qits-idp to commission a client for
+that run. Every step gets the pair as `$QITS_COMMISSIONED_CLIENT_ID` and
+`$QITS_COMMISSIONED_CLIENT_SECRET`, because every step clones from the authenticated git host: a Git
+credential helper trades the pair for a short-lived git-host token. A step that declared
+`docker: true` or `build: true` also gets `$DOCKER_CONFIG`, pointing at a directory holding the
+`config.json` the CLI reads, and can use the pair for a BuildKit secret mount. Every later step of
+the same run reuses the pair; the run's end deletes it. The file lives under `/tmp`, never in the
+checkout, so it can never reach a `docker build` context. It carries **one entry per host in
 `qits.ci.docker-auth-hosts`** — the docker client picks a login by hostname, so a build that pulls
 its base image from the mirror vhost and pushes to the registry vhost needs both named.
 
@@ -451,8 +452,11 @@ triggered the run and sends them as `gitRefs`. qits-idp puts them in every token
 | `ReleaseRequestChanged`, `SCMRelease` | `[]`. No recipe on these events pushes. |
 | any other event, or none | not stated. The token has no Git scope, as before. |
 
-An older qits-idp answers a scoped commission with 400. qits-ci then commissions again without
-`gitRefs`, logs one warning, and continues. The next run tries the scope again.
+A qits-idp without the Git-scope contract ignores `gitRefs` and answers 201. So a 400 to a
+commission that states refs means qits-idp refused the list. qits-ci then commissions again with
+`gitRefs: []`, so the run may push nothing, and logs an error that names the run and qits-idp's
+reason. It never commissions such a run without `gitRefs`: that would widen the credential. A 400 to
+the `[]` commission fails the step. A run whose trigger states nothing is not affected.
 
 **Two BuildKit variables ride the same scope.** A step declaring `docker: true` also gets
 `DOCKER_BUILDKIT=1` and `BUILDX_NO_DEFAULT_ATTESTATIONS=1`. Every step image ships buildx, so the

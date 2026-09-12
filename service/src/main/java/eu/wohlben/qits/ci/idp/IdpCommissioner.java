@@ -16,7 +16,6 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicBoolean;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -119,9 +118,6 @@ public class IdpCommissioner {
 
   private final HttpClient http = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
 
-  /** Set by the first 400 on a scoped commission, so that warning is logged once per process. */
-  final AtomicBoolean warnedScopeRefused = new AtomicBoolean();
-
   /**
    * Whether this process can commission at all: the oidc client is on and both halves of its own
    * credential are there. Everything else answers "commission nothing, inject nothing".
@@ -140,10 +136,11 @@ public class IdpCommissioner {
    * about the request that no window fixes, so they are one attempt.
    *
    * <p><b>{@code gitRefs} is the Git scope the commission states</b> (see {@link RunGitRefs}): null
-   * states nothing, an empty list means "may push nothing". A qits-idp older than that contract
-   * answers a scoped commission with 400. This method then asks again at once without {@code
-   * gitRefs}, warns once per process, and carries on. Every commission tries the scope first, so an
-   * upgraded qits-idp is used from its next commission.
+   * states nothing, an empty list means "may push nothing". A qits-idp without that contract
+   * ignores the field and answers 201, so a 400 to a list means qits-idp refused the list. This
+   * method then asks again at once with an empty list and logs an ERROR naming the context and
+   * qits-idp's reason. <b>It fails closed</b>: once a scope is stated it never commissions without
+   * one, because that would widen the credential. A 400 to the empty list stands like any other.
    *
    * @throws CommissionFailedException when every attempt inside the patience window failed
    */
@@ -164,10 +161,14 @@ public class IdpCommissioner {
         return attempt.commission();
       }
       detail = attempt.detail();
-      if (attempt.status() == 400 && scope != null) {
-        // An older qits-idp. A different request, so no pause, and it happens at most once.
-        warnScopeRefused(contextKind, contextId, detail);
-        scope = null;
+      if (attempt.status() == 400 && scope != null && !scope.isEmpty()) {
+        // qits-idp refused the list. Push nothing, never anything: a different request, so no
+        // pause, and it happens at most once.
+        LOG.errorf(
+            "qits-idp refused the Git refs %s for %s %s (%s). Commissioning it with gitRefs [],"
+                + " so it may push nothing.",
+            scope, contextKind, contextId, detail);
+        scope = List.of();
         continue;
       }
       if (!attempt.retryable() || !Instant.now().isBefore(giveUpAt) || !sleep(pause)) {
@@ -189,21 +190,6 @@ public class IdpCommissioner {
             + attempts
             + " attempt(s): "
             + detail);
-  }
-
-  /** Warn about the first scope refusal only; later ones are the same fact about the same idp. */
-  private void warnScopeRefused(String contextKind, String contextId, String detail) {
-    if (warnedScopeRefused.compareAndSet(false, true)) {
-      LOG.warnf(
-          "qits-idp refused a commission that states gitRefs (%s). It is probably older than the"
-              + " Git-scope contract, so %s %s gets a credential with no Git scope. Later"
-              + " commissions still state the scope first. This warning is logged once.",
-          detail, contextKind, contextId);
-    } else {
-      LOG.debugf(
-          "qits-idp refused the Git scope again (%s); %s %s is commissioned without it",
-          detail, contextKind, contextId);
-    }
   }
 
   /**
@@ -263,7 +249,7 @@ public class IdpCommissioner {
     }
     // 401 is the idp-cutover window; a 5xx is the service's own trouble. Everything else — 403 from
     // a client that may not commission, a 400 on a value — is about the request and stands. (A 400
-    // on a scoped commission is first retried without the scope, in commission().)
+    // on a scoped commission is first retried with gitRefs [], in commission().)
     boolean retryable = status == 401 || status >= 500;
     return new Attempt(
         null, retryable, "qits-idp answered " + status + ": " + errorOf(response.body()), status);

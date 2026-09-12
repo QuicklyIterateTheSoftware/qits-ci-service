@@ -382,8 +382,8 @@ public class CiDaemonLauncher {
   String buildkitRegistryHost;
 
   /**
-   * The credential a step pushes an image with: <b>this run's own</b>, commissioned at qits-idp when
-   * the run reaches its first docker step and deleted when the run closes.
+   * The credential a step clones and pushes with: <b>this run's own</b>, commissioned at qits-idp at
+   * the run's first step and deleted when the run closes.
    *
    * <p><b>It replaced a static pair wholesale.</b> {@code qits.ci.registry-auth.client-id}/{@code
    * …client-secret} were one deployment-lived credential shared by every run of every repository,
@@ -1131,7 +1131,7 @@ public class CiDaemonLauncher {
         env.put("BUILDKIT_HOST", "");
       }
       // And this run's own push credential — the document, the directory the bootstrap writes it
-      // into, and the pair itself for a BuildKit secret mount. Commissioned on the first docker step
+      // into, and the pair itself for a BuildKit secret mount. Commissioned at the run's first step
       // and reused by every later one; absent whole on a deployment with no oidc client, where a
       // step container's environment is exactly what it always was.
       if (commission != null) {

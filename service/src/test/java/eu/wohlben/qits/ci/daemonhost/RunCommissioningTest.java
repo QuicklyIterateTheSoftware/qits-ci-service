@@ -185,8 +185,8 @@ public class RunCommissioningTest {
   }
 
   @Test
-  public void anOlderIdpThatRefusesTheScopeStillGivesTheRunItsCredential() {
-    idp.refuseGitRefs = true;
+  public void aRefusedScopeGivesTheRunACredentialThatMayPushNothing() {
+    idp.refuseGitRefList = true;
 
     Map<String, String> env =
         launcher(idp.runCommissions(PATIENCE))
@@ -194,9 +194,14 @@ public class RunCommissioningTest {
             .spec()
             .env();
 
-    assertEquals(2, idp.posted.size());
-    assertTrue(idp.posted.get(0).contains("\"gitRefs\""), idp.posted.get(0));
-    assertEquals("{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\"}", idp.posted.get(1));
+    // Fail closed: the second commission states [], never no scope at all.
+    assertEquals(
+        List.of(
+            "{\"contextKind\":\"ci-run\",\"contextId\":\""
+                + RUN
+                + "\",\"gitRefs\":[\"refs/heads/maintenance/dependencies\"]}",
+            "{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\",\"gitRefs\":[]}"),
+        idp.posted);
     assertEquals("run-client-1", env.get("QITS_COMMISSIONED_CLIENT_ID"));
     assertEquals("/tmp/qits-gitconfig", env.get("GIT_CONFIG_GLOBAL"));
   }
