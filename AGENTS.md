@@ -197,7 +197,12 @@ Three rules for that scope:
 
 - **An event kind states nothing until somebody has checked its recipes.** Add it to
   `RunGitRefs.PUSH_NOTHING` only when no recipe on that event pushes: `[]` refuses every push the
-  run makes. Not stated means no Git scope, which is the old behaviour.
+  run makes. Not stated means no Git scope, which is the old behaviour. The push inventory of
+  2026-09-12 across every `origin/main` of the estate: the only live pushes are the wrapper's
+  bump pipeline. No recipe selects `SoftwareRelease`: the hop files (`ci-event-upstream-*.yml`,
+  which force-pushed `maintenance/<payload.repository>`) were deleted on 2026-09-02/03, so that
+  event is in `PUSH_NOTHING` too. Copies of them under a service's `src/main/webui` or in the
+  bootstrap's `.qits-bootstrap-src` are stale working trees, not recipes.
 - **The bump scope is the payload's `branch`**, because that is the one ref the wrapper's
   `ci-platform-event-maintenance-bump.yml` pushes. If that pipeline starts to push another ref,
   change `RunGitRefs` with it.

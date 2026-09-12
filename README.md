@@ -450,6 +450,7 @@ triggered the run and sends them as `gitRefs`. qits-idp puts them in every token
 |---|---|
 | `MaintenanceBump` | `["refs/heads/<payload.branch>"]`: `maintenance/<group>`, or the one source branch of a targeted bump. `[]` if the payload names no usable branch. |
 | `ReleaseRequestChanged`, `SCMRelease` | `[]`. No recipe on these events pushes. |
+| `SoftwareRelease` | `[]`. No recipe selects it. The hop files (`ci-event-upstream-*.yml`) that force-pushed `maintenance/<payload.repository>` were deleted on 2026-09-02/03; qits-platform-maintenance follows releases through a `MaintenanceBump` run now. |
 | any other event, or none | not stated. The token has no Git scope, as before. |
 
 A qits-idp without the Git-scope contract ignores `gitRefs` and answers 201. So a 400 to a

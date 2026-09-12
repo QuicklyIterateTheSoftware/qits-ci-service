@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
  * states them as {@code gitRefs}, and qits-idp stamps them into every token of that client as
  * {@code git_refs} (contract C6 in the superproject's {@code principal-bound-git-refs-plan.md}).
  *
- * <p>Three answers:
+ * <p>Four answers:
  *
  * <ul>
  *   <li><b>{@code MaintenanceBump}</b>: the one branch the payload names in {@code branch}. For a
@@ -25,6 +25,11 @@ import java.util.regex.Pattern;
  *   <li><b>{@code ReleaseRequestChanged} and {@code SCMRelease}</b>: an empty list, "may push
  *       nothing". Inventory of 2026-09-12: 46 and 31 recipes across the estate, and none of them
  *       pushes — they only fetch release tags.
+ *   <li><b>{@code SoftwareRelease}</b>: an empty list too. Inventory of 2026-09-12: no recipe on
+ *       any {@code origin/main} of the estate selects it. The hop files
+ *       ({@code ci-event-upstream-*.yml}) that force-pushed {@code maintenance/<payload.repository>}
+ *       were deleted on 2026-09-02/03. qits-platform-maintenance follows those releases now, through
+ *       a {@code MaintenanceBump} run. If a hop comes back, scope it here in the same change.
  *   <li><b>Any other event, or none</b>: empty {@code Optional}. The commission states no scope,
  *       which is the behaviour before this class existed. Nobody has checked what such a run
  *       pushes, so an empty list could break it.
@@ -45,7 +50,8 @@ public final class RunGitRefs {
    * Events whose recipes are known to push nothing. Add an event here only after checking every
    * recipe that declares it: an empty list refuses every push the run makes.
    */
-  static final Set<String> PUSH_NOTHING = Set.of("ReleaseRequestChanged", "SCMRelease");
+  static final Set<String> PUSH_NOTHING =
+      Set.of("ReleaseRequestChanged", "SCMRelease", "SoftwareRelease");
 
   /** The two run-scoped variables every event-triggered step already carries. */
   static final String EVENT_NAME_VARIABLE = "QITS_EVENT_NAME";

@@ -83,6 +83,29 @@ public class RunGitRefsTest {
     assertEquals(MAY_PUSH_NOTHING, of("SCMRelease", payload));
   }
 
+  /** The payload shape {@code SoftwareReleaseAnnouncer} publishes for a ui-components release. */
+  private static final String UI_COMPONENTS_RELEASE =
+      "{\"repository\":\"0b5f3c1e-0000-4000-8000-000000000002\",\"projectId\":\"qits\","
+          + "\"repoId\":\"0b5f3c1e-0000-4000-8000-000000000002\","
+          + "\"repoName\":\"qits-ui-components-jslib\",\"version\":\"2026.912.1\","
+          + "\"packageType\":\"npm\",\"packageName\":\"@qits/ui-components\"}";
+
+  @Test
+  public void aSoftwareReleaseRunMayPushNothing() {
+    // No recipe selects SoftwareRelease since the hop files were deleted, so the repository the
+    // payload names does not become a ref.
+    assertEquals(MAY_PUSH_NOTHING, of("SoftwareRelease", UI_COMPONENTS_RELEASE));
+  }
+
+  @Test
+  public void aMalformedSoftwareReleaseMayPushNothing() {
+    for (String payload :
+        Arrays.asList(
+            "{\"repository\":\"../main\"}", "{\"repository\":42}", "not json", "", null)) {
+      assertEquals(MAY_PUSH_NOTHING, of("SoftwareRelease", payload), String.valueOf(payload));
+    }
+  }
+
   @Test
   public void aRunKindWhosePushesAreUnknownStatesNothing() {
     assertEquals(NOTHING_STATED, of("SCMPublishTag", "{\"branch\":\"main\"}"));
