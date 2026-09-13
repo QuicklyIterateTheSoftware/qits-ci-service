@@ -57,7 +57,6 @@ public class RunCommissioningTest {
     launcher.network = "qits-net";
     launcher.containerGitUrl = "http://qits-githost:8080/";
     launcher.idpUrl = idp.authServerUrl();
-    launcher.containerGitAudience = "dev-qits-githost";
     launcher.containerDaemonUrl = "ws://qits-ci:8080/ci/daemon";
     launcher.daemonBinaryUrlTemplate = "http://qits-artifacts:8080/artifacts/daemons/{version}";
     launcher.registerTimeoutSeconds = 60;
@@ -222,7 +221,8 @@ public class RunCommissioningTest {
         first.get("QITS_COMMISSIONED_CLIENT_SECRET"), second.get("QITS_COMMISSIONED_CLIENT_SECRET"));
     assertEquals(idp.authServerUrl() + "/token", first.get("QITS_GIT_AUTH_TOKEN_URL"));
     assertEquals("qits-githost:8080", first.get("QITS_GIT_AUTH_HOST"));
-    assertEquals("dev-qits-githost", first.get("QITS_GIT_AUTH_AUDIENCE"));
+    // The wire value, spelled out: one audience for every service, and no key can change it.
+    assertEquals("qits-platform", first.get("QITS_GIT_AUTH_AUDIENCE"));
     assertEquals("/tmp/qits-gitconfig", first.get("GIT_CONFIG_GLOBAL"));
   }
 

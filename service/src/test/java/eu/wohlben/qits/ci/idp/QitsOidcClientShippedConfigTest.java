@@ -57,9 +57,13 @@ class QitsOidcClientShippedConfigTest {
   }
 
   @Test
-  void theContainerGitAudienceIsThePlatformAudience() {
-    // What CiDaemonLauncher hands a step container as $QITS_GIT_AUTH_AUDIENCE — one audience for
-    // every service now, not qits-githost specifically.
-    assertEquals("qits-platform", value("qits.ci.container-git-audience"));
+  void theContainerGitAudienceIsNoLongerAConfigKey() {
+    // What CiDaemonLauncher hands a step container as $QITS_GIT_AUTH_AUDIENCE is the constant
+    // qits-platform now. The key is not shipped, so a leftover QITS_CI_CONTAINER_GIT_AUDIENCE entry
+    // has nothing to override.
+    assertTrue(
+        ConfigProvider.getConfig()
+            .getOptionalValue("qits.ci.container-git-audience", String.class)
+            .isEmpty());
   }
 }

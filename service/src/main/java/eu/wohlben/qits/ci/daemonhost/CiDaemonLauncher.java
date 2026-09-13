@@ -265,11 +265,18 @@ public class CiDaemonLauncher {
   String idpUrl;
 
   /**
-   * One audience for every service (service-client-identity-plan.md, C4): {@code qits-platform},
-   * not a git-host-specific one.
+   * The audience a step container's Git helper asks the idp for: {@code qits-platform}, one audience
+   * for every service (service-client-identity-plan.md, C4). The git host accepts it because C1
+   * widened every receiver's audience check.
+   *
+   * <p>A constant, not a config key. {@code qits.ci.container-git-audience} existed only to carry the
+   * old {@code <env>-qits-githost} value, and a leftover {@code QITS_CI_CONTAINER_GIT_AUDIENCE}
+   * deployment entry kept handing step containers that old audience after the shipped default had
+   * moved. Nothing reads that key now, so the entry shows as orphaned in qits-configuration (C10)
+   * and a person can remove it. qits-workspaces' {@code
+   * WorkspaceContainerFactory.CONTAINER_TOKEN_AUDIENCE} is the same decision.
    */
-  @ConfigProperty(name = "qits.ci.container-git-audience", defaultValue = "qits-platform")
-  String containerGitAudience;
+  static final String CONTAINER_GIT_AUDIENCE = "qits-platform";
 
   @ConfigProperty(name = "qits.ci.container-daemon-url")
   String containerDaemonUrl;
@@ -1101,7 +1108,7 @@ public class CiDaemonLauncher {
       env.put("QITS_COMMISSIONED_CLIENT_SECRET", value(commission.secret()));
       env.put("QITS_GIT_AUTH_TOKEN_URL", tokenUrl(idpUrl));
       env.put("QITS_GIT_AUTH_HOST", gitAuthority(containerGitUrl));
-      env.put("QITS_GIT_AUTH_AUDIENCE", value(containerGitAudience));
+      env.put("QITS_GIT_AUTH_AUDIENCE", CONTAINER_GIT_AUDIENCE);
       env.put("GIT_CONFIG_GLOBAL", "/tmp/qits-gitconfig");
     }
     if (spec.docker() || spec.build()) {
