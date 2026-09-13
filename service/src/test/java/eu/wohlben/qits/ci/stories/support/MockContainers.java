@@ -70,8 +70,8 @@ public final class MockContainers {
 
   /**
    * Who qits-ci is to the orchestrator: {@code qits.ci.containers.owner}, which defaults to reading
-   * {@code quarkus.oidc-client.client-id}. It is in the path of every call, so a diagram's label
-   * carries it and a story has to spell it.
+   * {@code quarkus.oidc-client.qits.client-id}. It is in the path of every call, so a diagram's
+   * label carries it and a story has to spell it.
    */
   public static final String OWNER = "qits-ci";
 

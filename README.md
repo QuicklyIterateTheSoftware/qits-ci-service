@@ -123,7 +123,7 @@ rest of qits it reaches over a URL it is configured with:
 | out | the same route — one `SoftwareRelease` per artifact a green **release pipeline** declared (the `ReleaseAnnouncer` seam), and **only once an `SCMRelease` for the same (repository, version) has been seen** — see "The release join" | the same two keys |
 | out | `ws://…/events/stream` — dialled out and held open, carrying what qits-events broadcasts back | the same two keys; the address is derived, never configured twice |
 | out | `PUT/DELETE /containers/api/containers/<owner>/ci-step/<ref>` — every step container: started, read and removed through qits-containers, which owns the docker daemon. **qits-ci holds no docker socket.** | `qits.containers.url`, `qits.ci.containers.owner` |
-| out | `POST/DELETE/GET /idp/api/clients` — one commissioned oidc client per run, minted at the run's first step and deleted when the run closes; every step clones with it, and a publishing step pushes with it | `quarkus.oidc-client.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.client-enabled` |
+| out | `POST/DELETE/GET /idp/api/clients` — one commissioned oidc client per run, minted at the run's first step and deleted when the run closes; every step clones with it, and a publishing step pushes with it | `quarkus.oidc-client.qits.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.qits.client-enabled` |
 | out | the registry a publishing step pushes to, as `$QITS_REGISTRY` and `$QITS_IMAGE_REPOSITORY` in **every** step container — dialled by the *host's docker daemon*, never by this process | `qits.artifacts.registry-host`, `qits.artifacts.image-repository` |
 | out | the npm registry roots, as `$QITS_NPM_REGISTRY_URL` (hosted, `@qits/*` publishes) and `$QITS_NPM_PROXY_URL` (the npmjs pull-through cache) in **every** step container — dialled by the *step container itself* on the shared network | `qits.artifacts.npm.hosted-url`, `qits.artifacts.npm.proxy-url` |
 | out | the hosted Maven repository root, as `$QITS_MAVEN_REGISTRY_URL` in **every** step container — also dialled by the step container on the shared network | `qits.artifacts.maven.registry-url` |
@@ -436,8 +436,9 @@ its base image from the mirror vhost and pushes to the registry vhost needs both
 **There are no `qits.ci.registry-auth.*` keys any more.** The credential used to be one static pair
 in a deployment's environment, shared by every run of every repository; a deployment still setting
 them is setting nothing. What decides whether anything is commissioned is
-`quarkus.oidc-client.client-enabled` — off (the shipped default) and a step container's environment
-is exactly what it always was, which is the case a deployment on an anonymous registry stays in.
+`quarkus.oidc-client.qits.client-enabled` — off (the shipped default) and a step container's
+environment is exactly what it always was, which is the case a deployment on an anonymous registry
+stays in.
 
 **A commission that could not be made fails the step**, naming the call, rather than launching a
 step with no credential: an unreachable idp must not surface as a mysterious push 401 minutes later.
@@ -1548,7 +1549,7 @@ a repository's own listing will show.
   own rows in the orchestrator's registry, and two owners cannot see each other's. The constraint
   that replaces "one instance per daemon" is smaller and is a config fact rather than a property of
   the host: **two instances must not share an owner string.** The default reads
-  `quarkus.oidc-client.client-id`, which qits-idp mints per environment (`dev-qits-ci`,
+  `quarkus.oidc-client.qits.client-id`, which qits-idp mints per environment (`dev-qits-ci`,
   `prod-qits-ci`), so two environments on one daemon are already apart; two instances of one
   environment sharing capacity are not a supported shape — size a single instance with
   `qits.ci.concurrent-builds` instead.

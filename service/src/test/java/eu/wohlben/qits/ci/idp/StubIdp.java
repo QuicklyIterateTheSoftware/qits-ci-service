@@ -118,7 +118,7 @@ public final class StubIdp implements AutoCloseable {
         + " refusal\"}";
   }
 
-  /** The base a deployment configures as {@code quarkus.oidc-client.auth-server-url}. */
+  /** The base a deployment configures as {@code quarkus.oidc-client.qits.auth-server-url}. */
   public String authServerUrl() {
     return "http://127.0.0.1:" + port + "/idp";
   }
@@ -155,7 +155,7 @@ public final class StubIdp implements AutoCloseable {
   }
 
   /**
-   * The shipped posture: {@code quarkus.oidc-client.client-enabled} off, so there is nothing to
+   * The shipped posture: {@code quarkus.oidc-client.qits.client-enabled} off, so there is nothing to
    * commission with and nothing is commissioned. No stub is needed for it — a disabled commissioner
    * dials nothing, which is the property this arm is about.
    */

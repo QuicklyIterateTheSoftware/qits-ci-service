@@ -295,8 +295,8 @@ public class TokenValidationBootstrapIT {
       well-formed it looks. Both are 401 and not 403: the credential never became an identity, so
       there is no caller to have been forbidden. The audience half is the one worth stating out
       loud, because every service on qits-net is issued tokens by the same idp — qits-ci itself
-      asks for two, one for qits-containers and one for qits-githost — and neither of those may
-      open this door.
+      asks for one now, qits-platform, and this door accepts it by design; qits-containers, an
+      audience it never asks for and never accepts, is the stranger here.
       """)
   @Order(2)
   void aStrangersTokenIsRefused(Interactions story) {
@@ -323,9 +323,11 @@ public class TokenValidationBootstrapIT {
         .note("a token signed by a key the published JWKS never carried is refused")
         .as("unknown-key-refused");
 
-    // qits-containers and not an invented name: it is an audience this service's own oidc-client
-    // really requests (quarkus.oidc-client.grant-options.client.audience), so the story documents
-    // the confusion that could actually happen on qits-net rather than a strawman.
+    // qits-containers and not an invented name: it is a real audience on qits-net (what
+    // qits-containers itself validates), so the story documents a plausible mix-up rather than a
+    // strawman. It is no longer this service's own oidc-client audience — since C4
+    // (service-client-identity-plan.md) that is qits-platform, which this door accepts by design
+    // (C1 widened it fleet-wide), so using it here would open the route instead of testing a refusal.
     String wrongAudienceToken =
         idp.token().audience("qits-containers").groups("qits:system").mint();
     given()
