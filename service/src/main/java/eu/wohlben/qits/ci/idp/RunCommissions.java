@@ -1,5 +1,6 @@
 package eu.wohlben.qits.ci.idp;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
@@ -35,6 +36,14 @@ public class RunCommissions {
 
   @Inject IdpCommissioner idp;
 
+  /**
+   * Our own mapper, for the run's event payload. Never {@code idp.objectMapper}: {@code idp} is a
+   * client proxy, and a field read through a proxy is null. That read made every {@code
+   * MaintenanceBump} run state {@code gitRefs []} on 2026-09-13 (see {@code
+   * RunCommissionsWiringTest}).
+   */
+  @Inject ObjectMapper objectMapper;
+
   /** One entry per run that has reached its first step, removed when the run closes. */
   private final Map<String, IdpCommissioner.Commission> byRun = new ConcurrentHashMap<>();
 
@@ -62,8 +71,11 @@ public class RunCommissions {
     if (held != null) {
       return held;
     }
-    Optional<List<String>> gitRefs = RunGitRefs.fromRunEnv(runEnv, idp.objectMapper);
-    LOG.debugf("Run %s states gitRefs %s", runId, gitRefs.map(String::valueOf).orElse("(none)"));
+    Optional<List<String>> gitRefs = RunGitRefs.fromRunEnv(runEnv, objectMapper);
+    // INFO, once per run: the scope decides which pushes the githost refuses, so it must be
+    // readable next to a refusal. Ref names only, never the credential.
+    LOG.infof(
+        "Run %s states gitRefs %s", runId, gitRefs.map(String::valueOf).orElse("(nothing)"));
     IdpCommissioner.Commission fresh =
         idp.commission(IdpCommissioner.CONTEXT_KIND, runId, gitRefs.orElse(null));
     byRun.put(runId, fresh);

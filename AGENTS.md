@@ -192,6 +192,12 @@ the adapter for it:
 - **`RunGitRefs`** — the Git scope the commission states as `gitRefs` (C6 of the superproject's
   `principal-bound-git-refs-plan.md`; the table is in `README.md`). It reads the run's own
   `QITS_EVENT_NAME` and `QITS_EVENT_PAYLOAD` from `LaunchSpec.env`, so no seam changed.
+  `RunCommissions` parses them with its own injected `ObjectMapper` and logs the scope at INFO
+  (`Run <id> states gitRefs [...]`). **Never read a field of another bean**: an injected
+  `@ApplicationScoped` bean is a client proxy, and its fields are null. On 2026-09-13
+  `idp.objectMapper` read null, every `MaintenanceBump` run stated `gitRefs []`, and the githost
+  refused every bump push. The hand-wired tests could not see it; `RunCommissionsWiringTest` goes
+  through the real proxy.
 
 Three rules for that scope:
 
