@@ -53,8 +53,8 @@ import java.util.List;
  * <p><b>Environment, in every case but two.</b> A step reads {@code $QITS_VERSION} (seeded by
  * {@code CiRunService} from the triggering event — the three inconsistent {@code jq} grammars in the
  * fleet die with it), {@code $QITS_CI_REPO_NAME}, {@code $QITS_ARTIFACTS_URL}, {@code
- * $QITS_ARTIFACTS_CLI_URL}, the registry variables and the commissioned pair. The two exceptions are
- * an artifact's {@code type}/{@code name} and its {@code sbom:} path, which are interpolated into
+ * $QITS_ARTIFACTS_CLI_PACKAGE}, the registry variables and the commissioned pair. The two exceptions
+ * are an artifact's {@code type}/{@code name} and its {@code sbom:} path, which are interpolated into
  * the postlude — held to {@link CiReleaseSlotParser#SCRIPT_SAFE} at parse time and single-quoted
  * here, so the value cannot be anything but a word.
  */
@@ -79,8 +79,15 @@ public final class CiReleaseComposer {
   /** The quoted heredoc delimiter. A script containing it is refused — see the class javadoc. */
   static final String HEREDOC_DELIMITER = "QITS_SLOT_EOF";
 
-  /** Where the platform prelude installs {@code qits-publish} on a release-phase step. */
+  /**
+   * Where the platform prelude installs the qits CLI on a release-phase step — the binary as {@code
+   * qits}, plus a {@code qits-publish} symlink for compatibility with a script written against the
+   * old name.
+   */
   static final String CLI_DIR = "/tmp/qits-bin";
+
+  /** The one audience every idp token this platform mints carries (service-client-identity C4). */
+  static final String TOKEN_AUDIENCE = "qits-platform";
 
   private CiReleaseComposer() {}
 
@@ -283,13 +290,62 @@ public final class CiReleaseComposer {
       out.append(
           "git fetch \"$QITS_CI_REPOSITORY_URL\" \"refs/tags/$QITS_VERSION:refs/tags/$QITS_VERSION\"\n");
       out.append("git checkout --detach \"$QITS_VERSION\"\n");
-      // qits-publish, on PATH for the whole release phase. Soft on the URL: a deployment that has
-      // not pinned the CLI yet still runs every recipe that does not call it, and one that does gets
-      // `command not found` rather than a silent skip. The postlude below demands the URL outright.
-      out.append("if [ -n \"${QITS_ARTIFACTS_CLI_URL:-}\" ]; then\n");
+      // The qits CLI (qits, which also answers to qits-publish), fetched at its LATEST published
+      // version — never a pin — and put on PATH for the whole release phase. Soft on the package: a
+      // deployment that has switched it off still runs every recipe that does not call it, and one
+      // that does gets `command not found` rather than a silent skip. The postlude below demands the
+      // package outright.
+      out.append("if [ -n \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]; then\n");
       out.append("  mkdir -p ").append(CLI_DIR).append('\n');
-      out.append("  curl -fsSL -o ").append(CLI_DIR).append("/qits-publish \"$QITS_ARTIFACTS_CLI_URL\"\n");
-      out.append("  chmod +x ").append(CLI_DIR).append("/qits-publish\n");
+      // No /latest download address exists on the store, so the version is read off its own
+      // listing first — the same "latestVersion" field a person reads by hand (README, Download).
+      out.append(
+          "  command -v jq >/dev/null 2>&1 || { echo \"qits-ci: this image has no jq, so the qits"
+              + " CLI's latest version cannot be resolved\" >&2; exit 1; }\n");
+      // A bearer from this run's own commissioned pair, best-effort: absent whole on a deployment
+      // with no oidc client or no commission, in which case the read below goes out bare, exactly
+      // as the git credential helper degrades when qits-idp cannot be reached.
+      out.append("  cli_token=\"\"\n");
+      out.append(
+          "  if [ -n \"${QITS_COMMISSIONED_CLIENT_ID:-}\" ] && [ -n"
+              + " \"${QITS_COMMISSIONED_CLIENT_SECRET:-}\" ] && [ -n \"${QITS_GIT_AUTH_TOKEN_URL:-}\""
+              + " ]; then\n");
+      out.append(
+          "    cli_token=$(curl -fsS --connect-timeout 2 --max-time 10 -u"
+              + " \"$QITS_COMMISSIONED_CLIENT_ID:$QITS_COMMISSIONED_CLIENT_SECRET\" -H"
+              + " 'Content-Type: application/x-www-form-urlencoded' --data"
+              + " \"grant_type=client_credentials&audience=")
+          .append(TOKEN_AUDIENCE)
+          .append("\" \"$QITS_GIT_AUTH_TOKEN_URL\" | sed -n"
+              + " 's/.*\"access_token\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p') ||"
+              + " cli_token=\"\"\n");
+      out.append("  fi\n");
+      // Two calls rather than one built from a conditional argument list, so nothing here touches
+      // the script's own positional parameters — the daemon runs this whole text as one `bash -c`
+      // and nothing downstream may find them changed out from under it.
+      out.append("  if [ -n \"$cli_token\" ]; then\n");
+      out.append("    curl -fsSL --retry 2 --retry-delay 2 -H \"Authorization: Bearer $cli_token\" -o ")
+          .append(CLI_DIR)
+          .append("/.qits-daemons.json \"$QITS_ARTIFACTS_URL/artifacts/api/repositories/daemons/daemons\"\n");
+      out.append("  else\n");
+      out.append("    curl -fsSL --retry 2 --retry-delay 2 -o ")
+          .append(CLI_DIR)
+          .append("/.qits-daemons.json \"$QITS_ARTIFACTS_URL/artifacts/api/repositories/daemons/daemons\"\n");
+      out.append("  fi\n");
+      out.append(
+          "  cli_version=$(jq -r --arg n \"$QITS_ARTIFACTS_CLI_PACKAGE\" '(.daemons[] | select(.name"
+              + " == $n) | .latestVersion) // empty' ")
+          .append(CLI_DIR)
+          .append("/.qits-daemons.json)\n");
+      out.append(
+          "  : \"${cli_version:?no published version of $QITS_ARTIFACTS_CLI_PACKAGE at"
+              + " $QITS_ARTIFACTS_URL}\"\n");
+      out.append("  curl -fsSL --retry 2 --retry-delay 2 -o ")
+          .append(CLI_DIR)
+          .append("/qits \"$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$cli_version\"\n");
+      out.append("  chmod +x ").append(CLI_DIR).append("/qits\n");
+      out.append("  ln -sf ").append(CLI_DIR).append("/qits ").append(CLI_DIR).append("/qits-publish\n");
+      out.append("  echo \"qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $cli_version\" >&2\n");
       out.append("  PATH=\"").append(CLI_DIR).append(":$PATH\"\n");
       out.append("  export PATH\n");
       out.append("fi\n");
@@ -322,13 +378,13 @@ public final class CiReleaseComposer {
     if (!postlude.isEmpty()) {
       out.append("# --- platform postlude --------------------------------------------------------\n");
       out.append(
-          ": \"${QITS_ARTIFACTS_CLI_URL:?this release submits an SBOM, and qits-publish is not"
+          ": \"${QITS_ARTIFACTS_CLI_PACKAGE:?this release submits an SBOM, and the qits CLI is not"
               + " configured on this deployment}\"\n");
       for (SlotArtifact artifact : postlude) {
         if (!artifact.hasSbom()) {
           continue;
         }
-        out.append("qits-publish sbom submit --type ")
+        out.append("qits publish sbom submit --type ")
             .append(quote(artifact.artifact().type().declared()))
             .append(" --name ")
             .append(quote(artifact.artifact().name()))
