@@ -11,11 +11,12 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
- * qits-ci's separately audience-bound credential for reads from qits-githost.
+ * qits-ci's credential for reads from qits-githost.
  *
- * <p>The default OIDC client is qits-containers' and its token names that audience, so it must never
- * be reused here. Nothing this class cannot answer stops a read: an empty answer costs the {@code
- * Authorization} header, and the git host refuses the bare request itself — see {@code
+ * <p>The same {@code qits} named client every outbound call this service makes now shares
+ * (service-client-identity-plan.md, C4), asking one audience — {@code qits-platform} — rather than a
+ * git-host-specific one. Nothing this class cannot answer stops a read: an empty answer costs the
+ * {@code Authorization} header, and the git host refuses the bare request itself — see {@code
  * HttpGitConfigSource#get}.
  */
 @ApplicationScoped
@@ -24,10 +25,10 @@ public class IdpGitHostBearer implements GitHostBearer {
   private static final Logger LOG = Logger.getLogger(IdpGitHostBearer.class);
   private static final Duration TOKEN_TIMEOUT = Duration.ofSeconds(5);
 
-  @ConfigProperty(name = "quarkus.oidc-client.githost.client-enabled")
+  @ConfigProperty(name = "quarkus.oidc-client.qits.client-enabled")
   boolean enabled;
 
-  @Inject @NamedOidcClient("githost") OidcClient oidcClient;
+  @Inject @NamedOidcClient("qits") OidcClient oidcClient;
 
   private final TokensHelper tokens = new TokensHelper();
 

@@ -245,8 +245,8 @@ public class CiDaemonLauncher {
    * Who this process <b>is</b> to the orchestrator, and the second half of every place it addresses.
    *
    * <p>It must equal the {@code sub} of the machine token this service presents once the gate is on,
-   * because {@code OwnerGuard} compares them — so the shipped default reads
-   * {@code quarkus.oidc-client.client-id} and the coupling lives in one place, the key's own comment
+   * because {@code OwnerGuard} compares them — so the shipped default reads {@code
+   * quarkus.oidc-client.qits.client-id} and the coupling lives in one place, the key's own comment
    * in the {@code ci} jar's {@code microprofile-config.properties}. It is also the scope: two
    * environments sharing one docker daemon are {@code dev-qits-ci} and {@code prod-qits-ci} and
    * neither one's rows name the other's containers, which is what makes the boot reap safe.
@@ -261,11 +261,14 @@ public class CiDaemonLauncher {
   String containerGitUrl;
 
   /** The only token endpoint a step's Git credential helper may call. */
-  @ConfigProperty(name = "quarkus.oidc-client.auth-server-url")
+  @ConfigProperty(name = "quarkus.oidc-client.qits.auth-server-url")
   String idpUrl;
 
-  /** The git host's environment-qualified machine audience. */
-  @ConfigProperty(name = "qits.ci.container-git-audience", defaultValue = "qits-githost")
+  /**
+   * One audience for every service (service-client-identity-plan.md, C4): {@code qits-platform},
+   * not a git-host-specific one.
+   */
+  @ConfigProperty(name = "qits.ci.container-git-audience", defaultValue = "qits-platform")
   String containerGitAudience;
 
   @ConfigProperty(name = "qits.ci.container-daemon-url")
@@ -392,7 +395,7 @@ public class CiDaemonLauncher {
    * whole of the point.
    *
    * <p><b>The fallback arm is byte-identical to the old unset-keys behaviour.</b> With {@code
-   * quarkus.oidc-client.client-enabled} off there is nothing to commission with, so nothing is
+   * quarkus.oidc-client.qits.client-enabled} off there is nothing to commission with, so nothing is
    * commissioned and nothing is injected — see {@link IdpCommissioner#enabled()}.
    *
    * <p><b>The secret does reach the environment now, under one name.</b> The document behind {@code
