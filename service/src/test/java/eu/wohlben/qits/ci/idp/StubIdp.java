@@ -150,6 +150,7 @@ public final class StubIdp implements AutoCloseable {
   public RunCommissions runCommissions(Duration patience) {
     RunCommissions commissions = new RunCommissions();
     commissions.idp = commissioner(patience);
+    commissions.objectMapper = new ObjectMapper();
     return commissions;
   }
 
@@ -168,6 +169,7 @@ public final class StubIdp implements AutoCloseable {
     idp.objectMapper = new ObjectMapper();
     RunCommissions commissions = new RunCommissions();
     commissions.idp = idp;
+    commissions.objectMapper = new ObjectMapper();
     return commissions;
   }
 

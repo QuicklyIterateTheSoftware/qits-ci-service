@@ -1,5 +1,6 @@
 package eu.wohlben.qits.ci.idp;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
@@ -94,7 +95,11 @@ public final class RunGitRefs {
     return Optional.empty();
   }
 
-  /** The payload's branch, or null when it is missing or not a plain branch name. */
+  /**
+   * The payload's branch, or null when it is missing or not a plain branch name. Only a JSON error
+   * means "no branch": any other exception is a defect and propagates, so it cannot pass as an
+   * empty scope again (a null mapper did, on 2026-09-13).
+   */
   private static String branchOf(String payload, ObjectMapper json) {
     if (payload == null || payload.isBlank()) {
       return null;
@@ -102,7 +107,7 @@ public final class RunGitRefs {
     JsonNode root;
     try {
       root = json.readTree(payload);
-    } catch (Exception notJson) {
+    } catch (JsonProcessingException notJson) {
       return null;
     }
     JsonNode branch = root == null ? null : root.get(BRANCH_FIELD);
