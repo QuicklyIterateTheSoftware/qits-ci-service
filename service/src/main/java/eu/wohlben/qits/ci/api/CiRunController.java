@@ -116,13 +116,17 @@ public class CiRunController {
   @Inject CiCandidateRepos candidates;
 
   /**
-   * The two roles that admit a caller naming no project — {@code CiEventController}'s constants,
-   * spelled again here for the reason that class spells them: a role is a string qits-idp issues and
-   * this repository holds no vocabulary for it. The machine half is platform-tier; the admin half is
+   * The roles that admit a caller naming no project — {@code CiEventController}'s constants, spelled
+   * again here for the reason that class spells them: a role is a string qits-idp issues and this
+   * repository holds no vocabulary for it. {@code qits:system} is a service calling a service and,
+   * under the open calling model (2026-09-13), may act for every project; {@code qits-platform:system}
+   * still admits a claim-less caller too, for a token minted before the cutover; the admin half is
    * plain {@code qits:admin}, since there is no platform-scoped administrator any more. Read that
    * class's javadoc for why the split was retired rather than finished.
    */
   private static final String PLATFORM_SYSTEM_ROLE = "qits-platform:system";
+
+  private static final String SYSTEM_ROLE = "qits:system";
 
   private static final String ADMIN_ROLE = "qits:admin";
 
@@ -389,7 +393,7 @@ public class CiRunController {
   @APIResponse(
       responseCode = "403",
       description =
-          "The token covers this repository for nobody — no project claim and no platform-tier role,"
+          "The token covers this repository for nobody — no project claim and no platform-wide role,"
               + " or a project claim this instance cannot place the repository in")
   public Response cancelReleaseRequestRuns(CancelReleaseRequestRunsRequest request) {
     if (request == null) {
@@ -450,11 +454,11 @@ public class CiRunController {
    *       projectId} off qits-projects' catalogue. The lookup that was missing is in hand.
    *   <li><b>{@code project=*}</b> — every repository. Read on the token side only, so a caller
    *       cannot widen its own check by naming {@code "*"}: nothing here compares it to a target.
-   *   <li><b>No {@code project} claim at all</b> — admitted on a <b>platform-tier role</b>, refused
-   *       without one.
+   *   <li><b>No {@code project} claim at all</b> — admitted on {@code qits:system}, {@code
+   *       qits-platform:system} or {@code qits:admin}; refused without any of them.
    * </ol>
    *
-   * <p><b>The last arm is the fix, and it is the arm the live 403 landed on.</b> Measured
+   * <p><b>The last arm was the fix for the live 403, and it has since widened again.</b> Measured
    * 2026-09-05: qits-projects' bearer for this hop is the {@code <env>-qits-projects} client's, and
    * qits-idp mints that client {@code groups} of {@code qits:system}, {@code qits-platform:system}
    * and {@code clients/<id>} — no {@code project} claim, because the bootstrap grants one to exactly
@@ -463,16 +467,15 @@ public class CiRunController {
    * because the hop is best-effort (the release gate is correlated by merged sha and stays correct
    * without it), so what a supersession actually cost was a build agent, indefinitely.
    *
-   * <p><b>The ordinary machine role is deliberately not enough.</b> A claim-less {@code qits:system}
-   * client is refused here as it is on the trigger, and the reason is the same one: {@code
-   * MachineAuth.requireClaim}'s rule that an absent claim is never a wildcard survives, and what
-   * replaces it for a door asking "what may I do <em>for</em> you" is the other half of what qits-idp
-   * issues. Widening to {@code qits:system} alone would have admitted the real caller too — the
-   * cancellation is bounded, it stops the runs of one named release request in one named repository
-   * and publishes no verdict — but it would also have made this the one door on the service where a
-   * project-scoped client escapes its scope by simply not carrying it, which is the shape that
-   * produced the bug being fixed. The platform-tier role is a grant somebody wrote down; the absence
-   * of a claim is not.
+   * <p><b>The ordinary machine role used to not be enough, and under the open calling model
+   * (2026-09-13) it is.</b> {@code qits:system} names a service calling a service, and such a
+   * caller may act for every project — the cancellation is bounded regardless (it stops the runs of
+   * one named release request in one named repository and publishes no verdict), so nothing is
+   * widened beyond what the role already means. What stays refused is a commissioned credential: a
+   * {@code ci-run} or {@code agent} context is minted {@code qits:ci-run}/{@code qits:agent}, never
+   * {@code qits:system}, and neither role is in this resource's {@code @RolesAllowed} — such a token
+   * never reaches this class's writes at all, so it stays bound to whatever the read routes that do
+   * accept it narrow it to.
    */
   private String cancellationScope() {
     if (!MachineIdentity.isMachine(identity)) {
@@ -481,11 +484,13 @@ public class CiRunController {
     machineAuth.require();
     String project = MachineIdentity.claim(identity, QitsClaims.PROJECT).orElse(null);
     if (project == null) {
-      if (!identity.hasRole(PLATFORM_SYSTEM_ROLE) && !identity.hasRole(ADMIN_ROLE)) {
+      if (!identity.hasRole(PLATFORM_SYSTEM_ROLE)
+          && !identity.hasRole(ADMIN_ROLE)
+          && !identity.hasRole(SYSTEM_ROLE)) {
         throw new ForbiddenException(
             "Token carries no "
                 + QitsClaims.PROJECT
-                + " claim and no platform-tier role, so it names no repository to cancel in");
+                + " claim and no platform-wide role, so it names no repository to cancel in");
       }
       return null;
     }

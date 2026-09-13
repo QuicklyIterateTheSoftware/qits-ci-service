@@ -218,9 +218,29 @@ class MachineGuardTest {
   @Test
   @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
-  void aTokenWithNoProjectClaimAndNoPlatformRoleIs403() {
-    // It names nothing to evaluate: no project claim, and no platform-tier role either. The
-    // ordinary machine role is what every read here takes and is not a statement about scope.
+  void aQitsSystemOnlyTokenWithNoProjectClaimEvaluatesEverything() {
+    // The open calling model (2026-09-13): qits:system is a service calling a service and may act
+    // for every project, so a claim-less qits:system token is admitted here on its own — no
+    // qits-platform:system and no qits:admin needed beside it. 503 is the guard PASSING, for the
+    // same deterministic reason as aPlatformTierTokenWithNoProjectClaimEvaluatesEverything: this
+    // instance has no git host to read. What a dropped guard looks like is 401 or 403.
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(TRIGGER_BODY)
+        .when()
+        .post(TRIGGER)
+        .then()
+        .statusCode(503);
+  }
+
+  @Test
+  @TestSecurity(user = ARTIFACTS, roles = {"qits:ci-run"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void aCommissionedCiRunTokenMayNotManuallyTrigger() {
+    // A ci-run commission is minted qits:ci-run, never qits:system — this resource's
+    // @RolesAllowed names neither qits:ci-run nor qits:agent, so such a token is refused before
+    // scopeOf() is ever asked. Proves the open calling model widened qits:system without widening
+    // what a commissioned, project-bound credential may do.
     given()
         .contentType(MediaType.APPLICATION_JSON)
         .body(TRIGGER_BODY)
@@ -496,10 +516,27 @@ class MachineGuardTest {
   @Test
   @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
-  void aCancellationTokenWithNoProjectClaimAndNoPlatformRoleIs403() {
-    // The other side of the case above, and what keeps the widening where CiEventController.scopeOf
-    // put it: an ordinary qits:system client that carries no claim names nothing to cancel in. The
-    // platform-tier role is a grant somebody wrote down; an absent claim is not one.
+  void aQitsSystemOnlyTokenCancelsInEveryProject() {
+    // The other side of the trigger's case above, and the same ruling: under the open calling
+    // model an ordinary qits:system client with no project claim may act for every project, so it
+    // is admitted rather than refused. 202 is the guard PASSING.
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(CANCELLATIONS_BODY)
+        .when()
+        .post(CANCELLATIONS)
+        .then()
+        .statusCode(202);
+  }
+
+  @Test
+  @TestSecurity(user = ARTIFACTS, roles = {"qits:agent"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void aCommissionedAgentTokenMayNotCancelReleaseRequestRuns() {
+    // An agent commission is minted qits:agent, never qits:system — this resource's class-level
+    // @RolesAllowed is {qits:admin, qits:system} and cancelReleaseRequestRuns inherits it with no
+    // widening, so such a token is refused before cancellationScope() is ever asked. The open
+    // calling model widened what qits:system may do; it did not widen who holds it.
     given()
         .contentType(MediaType.APPLICATION_JSON)
         .body(CANCELLATIONS_BODY)

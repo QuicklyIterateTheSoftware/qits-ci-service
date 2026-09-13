@@ -77,9 +77,11 @@ import org.jboss.logging.Logger;
  *   <li><b>Platform pipelines are not part of a scoped evaluation.</b> One repository's file acting
  *       on the whole catalogue is a platform-wide act, and {@code project=*} is the honest grant for
  *       it.
- *   <li><b>A token with no {@code project} claim is admitted on a platform-tier role</b>, and
- *       refused without one. That is the arm the live 403 actually landed on — the platform's
- *       commissioned credentials carry no structured claims at all — and the argument for it is in
+ *   <li><b>A token with no {@code project} claim is admitted on {@code qits:system} alone</b>, since
+ *       2026-09-13: under the open calling model a service calling a service may act for the whole
+ *       platform. {@code qits:admin} and the now-superseded {@code qits-platform:system} still
+ *       admit it too. That is the arm the live 403 actually landed on — the platform's commissioned
+ *       credentials carry no structured claims at all — and the argument for it is in
  *       {@link #scopeOf()}, which is where to read before changing any of this.
  * </ul>
  *
@@ -275,22 +277,30 @@ public class CiEventController {
   }
 
   /**
-   * The two roles that admit a caller naming no project: the platform's machine role, and the
-   * administrator's.
+   * The roles that admit a caller naming no project: the ordinary service-to-service role, the
+   * platform's now-superseded machine role, and the administrator's.
    *
-   * <p>They are what a credential that acts <em>for the platform</em> carries, as against one that
-   * acts for a project. The machine half keeps its {@code qits-platform:} tier, because a machine
-   * acting for the whole platform really is a different principal from one acting inside a project.
-   * The admin half is plain {@code qits:admin}: there is no platform-scoped administrator any more.
-   * That split was retired rather than completed — one person administering the platform and the
-   * same person administering a project was never two facts, and keeping two spellings of it only
-   * ever produced surfaces that accepted one and refused the other.
+   * <p><b>Open calling model (2026-09-13).</b> {@code qits:system} names a service calling a
+   * service, and under that ruling it may act for every project — so a claim-less {@code
+   * qits:system} caller is admitted rather than refused. A commissioned credential never carries
+   * it: {@code ci-run} and {@code agent} contexts mint their own roles ({@code qits:ci-run}, {@code
+   * qits:agent}) and stay project-bound, and neither one is in this resource's {@code
+   * @RolesAllowed} at all, so such a token never reaches this method.
+   *
+   * <p>{@code qits-platform:system} still admits a caller too — a token minted before the cutover —
+   * until every issuer has moved (C8 of {@code service-client-identity-plan.md}). The admin half is
+   * plain {@code qits:admin}: there is no platform-scoped administrator any more. That split was
+   * retired rather than completed — one person administering the platform and the same person
+   * administering a project was never two facts, and keeping two spellings of it only ever produced
+   * surfaces that accepted one and refused the other.
    *
    * <p>Spelled here rather than taken from {@code QitsClaims}, like every other role on this
    * service's annotations, because a role is a string qits-idp issues and this repository holds no
    * vocabulary for it.
    */
   private static final String PLATFORM_SYSTEM_ROLE = "qits-platform:system";
+
+  private static final String SYSTEM_ROLE = "qits:system";
 
   private static final String ADMIN_ROLE = "qits:admin";
 
@@ -312,25 +322,25 @@ public class CiEventController {
    *       widen its own check by naming {@code "*"} as a target: this method never compares it to
    *       one.
    *   <li><b>No {@code project} claim at all</b> — the token is not project-scoped, so the door asks
-   *       the other half of what qits-idp issues and demands a <b>platform-tier role</b>. See below.
+   *       whether it is a service calling for the whole platform: {@code qits:system}, {@code
+   *       qits-platform:system} or {@code qits:admin} admit it, and nothing else does. See below.
    * </ol>
    *
-   * <p><b>That last arm is a ruling and it is the one to read before changing anything here.</b>
-   * "An absent claim is a mismatch, never a wildcard" is {@code MachineAuth.requireClaim}'s rule and
-   * it stays true of it: that method answers "does your claim cover <em>this target</em>", and for
-   * that question absence must never mean yes. This door asks a different question — "what may I
-   * evaluate <em>for</em> you" — and the platform's own answer, measured 2026-09-04, is that its
-   * agent and operator credentials carry <b>no structured claims at all</b>: a commissioned
-   * workspace client's token holds {@code groups} of {@code qits:system}, {@code
-   * qits-platform:system} and {@code qits:admin}, and nothing else, and it pushes protected refs at
-   * qits-githost on exactly that. Demanding a claim qits-idp does not mint made this the one door in
-   * the service no real machine caller could open, while {@code POST /ci/api/runs/{runId}/retry} —
-   * which starts a build for any repository at all — has always taken a role and no claim.
+   * <p><b>That last arm used to demand more than {@code qits:system}, and it does not any more —
+   * read this before changing anything here.</b> "An absent claim is a mismatch, never a wildcard"
+   * is {@code MachineAuth.requireClaim}'s rule and it stays true of it: that method answers "does
+   * your claim cover <em>this target</em>", and for that question absence must never mean yes. This
+   * door asks a different question — "what may I evaluate <em>for</em> you" — and the open calling
+   * model's ruling (2026-09-13) is that {@code qits:system} is a service calling a service and may
+   * act for the whole platform: a claim-less caller holding it is a different principal from a
+   * claim-scoped one, and no commissioned context is ever minted with it — {@code ci-run} and {@code
+   * agent} contexts get {@code qits:ci-run}/{@code qits:agent} instead, roles this resource does not
+   * accept at all.
    *
-   * <p>So an unscoped machine caller is admitted <b>on the platform-tier role</b> and not on the
-   * ordinary one. A project-scoped client that holds {@code qits:system} alone still cannot act
-   * across the catalogue: it must carry its {@code project} and gets narrowed to it. What widened is
-   * exactly the set of callers that already hold a platform-wide credential.
+   * <p>So an unscoped machine caller is admitted <b>on {@code qits:system} alone</b>, {@code
+   * qits-platform:system} and {@code qits:admin} admitting it too for a token minted before the
+   * cutover or presented by a person. A project-scoped client is still narrowed to its own claim:
+   * holding {@code qits:system} lets it stand in for a missing claim, never widen one it does carry.
    */
   private String scopeOf() {
     if (!MachineIdentity.isMachine(identity)) {
@@ -339,11 +349,13 @@ public class CiEventController {
     machineAuth.require();
     String project = MachineIdentity.claim(identity, QitsClaims.PROJECT).orElse(null);
     if (project == null) {
-      if (!identity.hasRole(PLATFORM_SYSTEM_ROLE) && !identity.hasRole(ADMIN_ROLE)) {
+      if (!identity.hasRole(PLATFORM_SYSTEM_ROLE)
+          && !identity.hasRole(ADMIN_ROLE)
+          && !identity.hasRole(SYSTEM_ROLE)) {
         throw new ForbiddenException(
             "Token carries no "
                 + QitsClaims.PROJECT
-                + " claim and no platform-tier role, so it names nothing to evaluate");
+                + " claim and no platform-wide role, so it names nothing to evaluate");
       }
       return null;
     }
