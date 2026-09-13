@@ -76,7 +76,7 @@ public class CiDaemonLauncherTest {
         java.util.Optional.of("http://mirror.dev.localhost:8080/mirror/maven/central");
     launcher.mavenCentralMirrorStepUrl = "http://qits-platform-mirror:8080/mirror/maven/central";
     launcher.artifactsDocsUrl = "http://qits-artifacts:8080/artifacts/docs/docs";
-    launcher.artifactsUrl = "http://qits-artifacts:8080";
+    launcher.artifactsUrl = java.util.Optional.of("http://qits-artifacts:8080");
     launcher.artifactsCliPackage = "qits-platform-access-cli";
     launcher.workspacesUrl = "http://qits-workspaces:8080";
     // The shipped state of the push credential: an oidc client that is off, so nothing is
@@ -569,6 +569,51 @@ public class CiDaemonLauncherTest {
     CiDaemonLauncher blank = launcher();
     blank.artifactsCliPackage = "  ";
     assertEquals("", blank.buildWorkloadSpec(spec).spec().env().get("QITS_ARTIFACTS_CLI_PACKAGE"));
+  }
+
+  @Test
+  public void anExplicitArtifactsUrlWinsOverTheDerivedOne() {
+    // qits.artifacts.url set is still the whole answer, whatever the maven and docs roots say.
+    CiDaemonLauncher explicit = launcher();
+    explicit.artifactsUrl = java.util.Optional.of("http://qits-artifacts:8080");
+    explicit.artifactsMavenRegistryUrl = "http://somewhere-else:9090/artifacts/maven/maven";
+    assertEquals("http://qits-artifacts:8080", explicit.resolvedArtifactsUrl());
+  }
+
+  @Test
+  public void aBlankArtifactsUrlIsDerivedFromTheMavenRegistryRoot() {
+    // qits-platform-artifacts is a retired alias and no deployment sets qits.artifacts.url any
+    // more, so this is the normal arm: the scheme and authority of the maven registry root, which
+    // every deployment DOES set, with the path cut off.
+    CiDaemonLauncher derived = launcher();
+    derived.artifactsUrl = java.util.Optional.empty();
+    derived.artifactsMavenRegistryUrl = "http://dev-qits-artifacts:8080/artifacts/maven/maven";
+    assertEquals("http://dev-qits-artifacts:8080", derived.resolvedArtifactsUrl());
+    assertEquals(
+        "http://dev-qits-artifacts:8080",
+        derived.buildWorkloadSpec(spec).spec().env().get("QITS_ARTIFACTS_URL"));
+  }
+
+  @Test
+  public void aBlankArtifactsUrlFallsBackToTheDocsRootWhenTheMavenUrlDoesNotParse() {
+    CiDaemonLauncher fallback = launcher();
+    fallback.artifactsUrl = java.util.Optional.empty();
+    fallback.artifactsMavenRegistryUrl = "not a url";
+    fallback.artifactsDocsUrl = "http://dev-qits-artifacts:8080/artifacts/docs/docs";
+    assertEquals("http://dev-qits-artifacts:8080", fallback.resolvedArtifactsUrl());
+  }
+
+  @Test
+  public void twoBlankSourcesDeriveEmptyAndNeverCrash() {
+    // A deployment with no maven root and no docs root either has nothing to derive from. The
+    // variable ships empty, exactly the off state every other mirror pair here already uses — not
+    // an exception, and not a launch that silently sends a name resolving nowhere.
+    CiDaemonLauncher empty = launcher();
+    empty.artifactsUrl = java.util.Optional.empty();
+    empty.artifactsMavenRegistryUrl = "";
+    empty.artifactsDocsUrl = "";
+    assertEquals("", empty.resolvedArtifactsUrl());
+    assertEquals("", empty.buildWorkloadSpec(spec).spec().env().get("QITS_ARTIFACTS_URL"));
   }
 
   @Test

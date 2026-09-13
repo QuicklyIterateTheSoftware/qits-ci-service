@@ -496,17 +496,19 @@ public class CiDaemonLauncher {
   String artifactsDocsUrl;
 
   /**
-   * qits-artifacts' ROOT — scheme and authority, no path — injected as {@code $QITS_ARTIFACTS_URL}.
+   * qits-artifacts' ROOT — scheme and authority, no path — configured value for {@code
+   * $QITS_ARTIFACTS_URL}. Read this field directly only inside {@link #resolvedArtifactsUrl()};
+   * everywhere else, call that method.
    *
-   * <p><b>It ends three string-chopping derivations.</b> Every release pipeline that publishes an
-   * SBOM, a daemon binary or a docs bundle today reaches its route by taking one of the package
-   * roots above and cutting the path off with {@code sed}, each repository spelling the expression
-   * differently. There is one origin; saying so is one variable rather than one regex per pipeline.
-   * Same reading of "reachable from where" as the npm and maven roots — the step container dials it
-   * over qits-net, so the in-network alias is the right value and a host-published mapping is not.
+   * <p><b>Blank by default and read as {@link Optional}</b>, not a plain {@code String}: SmallRye
+   * fails a non-{@code Optional} injection on a blank value (SRCFG00040), and blank is the value
+   * this key now ships.
+   *
+   * <p><b>An explicit value here still wins.</b> When it is blank, {@link #resolvedArtifactsUrl()}
+   * derives the answer instead of shipping a name that resolves nowhere — see that method.
    */
   @ConfigProperty(name = "qits.artifacts.url")
-  String artifactsUrl;
+  Optional<String> artifactsUrl;
 
   /**
    * The daemon package a step resolves and downloads the qits CLI from — {@code qits}, which also
@@ -610,11 +612,20 @@ public class CiDaemonLauncher {
    * the same decision: the reap retries a patience window long, and an instant re-read per attempt
    * would widen the set with every retry until it included what this boot had already started.
    *
-   * <p>Skipped under {@code TEST}, like the runner's own startup observer: the suites reach no
-   * orchestrator by intent, and a test app must not delete another process's containers to prove
-   * it.
+   * <p>The reap below is skipped under {@code TEST}, like the runner's own startup observer: the
+   * suites reach no orchestrator by intent, and a test app must not delete another process's
+   * containers to prove it. The {@link #resolvedArtifactsUrl()} check above it is not skipped — it
+   * reads no orchestrator, and this is the one moment a misconfigured deployment can say so once
+   * instead of once per step launch.
    */
   void onStart(@Observes @Priority(BOOT_REAP_PRIORITY) StartupEvent event) {
+    if (resolvedArtifactsUrl().isBlank()) {
+      LOG.warnf(
+          "qits.artifacts.url is blank and neither qits.artifacts.maven.registry-url (%s) nor "
+              + "qits.artifacts.docs.url (%s) names a usable origin; every step container gets "
+              + "an EMPTY $QITS_ARTIFACTS_URL",
+          artifactsMavenRegistryUrl, artifactsDocsUrl);
+    }
     if (LaunchMode.current() == LaunchMode.TEST) {
       return;
     }
@@ -1081,7 +1092,7 @@ public class CiDaemonLauncher {
     // The store's own root, and the daemon package a composed release prelude resolves the qits CLI's
     // latest version from. Both EMPTY-never-absent, so a deployment that has switched the CLI off
     // hands every step one shape to read.
-    env.put("QITS_ARTIFACTS_URL", value(artifactsUrl));
+    env.put("QITS_ARTIFACTS_URL", resolvedArtifactsUrl());
     env.put("QITS_ARTIFACTS_CLI_PACKAGE", value(artifactsCliPackage).trim());
     // And where a step asks for its own repository to be released — same network, same reading of
     // "reachable from where" as the npm pair.
@@ -1206,6 +1217,60 @@ public class CiDaemonLauncher {
 
   private static String value(String text) {
     return text == null ? "" : text;
+  }
+
+  /**
+   * The value every step container reads as {@code $QITS_ARTIFACTS_URL} — the ONE place that
+   * value is decided.
+   *
+   * <ol>
+   *   <li>{@link #artifactsUrl} ({@code qits.artifacts.url}), when a deployment set it.
+   *   <li>Otherwise, the scheme and authority of {@link #artifactsMavenRegistryUrl} ({@code
+   *       qits.artifacts.maven.registry-url}) — set on every live deployment, so this is the
+   *       normal arm.
+   *   <li>Otherwise, the scheme and authority of {@link #artifactsDocsUrl} ({@code
+   *       qits.artifacts.docs.url}).
+   *   <li>Otherwise, empty, with one WARN at startup naming the three keys — see {@link
+   *       #onStart}.
+   * </ol>
+   *
+   * <p>Cheap and pure, so it is safe to call every time a workload spec is built rather than
+   * caching a value computed once: three config strings in, one derived string out, no I/O.
+   */
+  String resolvedArtifactsUrl() {
+    String explicit = artifactsUrl == null ? null : artifactsUrl.orElse(null);
+    if (explicit != null && !explicit.isBlank()) {
+      return explicit;
+    }
+    String fromMaven = originOf(artifactsMavenRegistryUrl);
+    if (fromMaven != null) {
+      return fromMaven;
+    }
+    String fromDocs = originOf(artifactsDocsUrl);
+    if (fromDocs != null) {
+      return fromDocs;
+    }
+    return "";
+  }
+
+  /**
+   * The scheme and authority of {@code url} — {@code http://host:8080} out of {@code
+   * http://host:8080/some/path} — or {@code null} when {@code url} is blank or has no scheme or
+   * authority to read.
+   */
+  private static String originOf(String url) {
+    if (url == null || url.isBlank()) {
+      return null;
+    }
+    try {
+      URI uri = URI.create(url);
+      if (uri.getScheme() == null || uri.getRawAuthority() == null) {
+        return null;
+      }
+      return uri.getScheme() + "://" + uri.getRawAuthority();
+    } catch (RuntimeException badUrl) {
+      return null;
+    }
   }
 
   /**

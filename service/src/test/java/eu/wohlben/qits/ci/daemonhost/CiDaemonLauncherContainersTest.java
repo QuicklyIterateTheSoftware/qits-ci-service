@@ -101,7 +101,7 @@ public class CiDaemonLauncherContainersTest {
     launcher.artifactsNpmProxyUrl = "http://qits-artifacts:8080/artifacts/npm/npmjs/";
     launcher.artifactsMavenRegistryUrl = "http://qits-artifacts:8080/artifacts/maven/maven";
     launcher.artifactsDocsUrl = "http://qits-artifacts:8080/artifacts/docs/docs";
-    launcher.artifactsUrl = "http://qits-artifacts:8080";
+    launcher.artifactsUrl = Optional.of("http://qits-artifacts:8080");
     launcher.artifactsCliPackage = "qits-platform-access-cli";
     launcher.workspacesUrl = "http://qits-workspaces:8080";
     // Deadlines a test can afford. The shipped ones are minutes, and they are about an image pull.
