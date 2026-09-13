@@ -43,7 +43,7 @@ public record CiReleaseSlots(
    *
    * <p>The <b>sbom path never reaches the composed {@code artifacts:} block</b> — that block is the
    * existing trigger schema and is strict about unknown keys. It is spent at composition time, on
-   * one {@code qits-publish sbom submit} line in the platform postlude. Which is the point: today
+   * one {@code qits artifacts publish sbom submit} line in the platform postlude. Which is the point: today
    * every repository derives an SBOM base URL by string-chopping some other variable and writes its
    * own PUT, and after this the path is the only thing a repository still says about it.
    *

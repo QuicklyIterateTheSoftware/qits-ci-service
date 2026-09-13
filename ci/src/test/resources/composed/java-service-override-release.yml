@@ -58,4 +58,4 @@ steps:
       bash -eu /tmp/qits-slot.sh
       # --- platform postlude --------------------------------------------------------
       : "${QITS_ARTIFACTS_CLI_PACKAGE:?this release submits an SBOM, and the qits CLI is not configured on this deployment}"
-      qits publish sbom submit --type 'docker' --name 'qits/qits-ci' --version "$QITS_VERSION" --file 'out/sbom.json'
+      qits artifacts publish sbom submit --type 'docker' --name 'qits/qits-ci' --version "$QITS_VERSION" --file 'out/sbom.json'

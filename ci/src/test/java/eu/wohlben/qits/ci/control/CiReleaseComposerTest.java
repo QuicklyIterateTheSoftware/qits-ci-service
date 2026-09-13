@@ -304,7 +304,7 @@ public class CiReleaseComposerTest {
     // and BEFORE that step's exit code, which is what makes "SBOM before green" structural.
     String document = composed.releaseDocument();
     int build = document.indexOf("buildctl build --opt target=binary");
-    int submit = document.indexOf("qits publish sbom submit");
+    int submit = document.indexOf("qits artifacts publish sbom submit");
     int docs = document.indexOf("npm run docs");
     assertTrue(build > 0 && submit > build && docs > submit, document);
   }

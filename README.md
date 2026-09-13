@@ -1087,7 +1087,7 @@ child rather than sourcing it is what makes **SBOM-before-green structural**: a 
 - `build: true` — `${BUILDKIT_HOST:?}` and `${QITS_BUILD_REGISTRY:?}`, the kill switch's loud half
 - `build:`/`docker:` — the commissioned pair written to `/tmp/qits-client-*` under `umask 077`, in a
   subshell so the umask bounds those two files and nothing after them
-- release phase, on the last building step — one `qits publish sbom submit` per declared artifact
+- release phase, on the last building step — one `qits artifacts publish sbom submit` per declared artifact
   carrying an `sbom:` path
 
 **Composition-time interpolation is only ever an artifact's `type`, `name` and `sbom:` path.**

@@ -384,7 +384,7 @@ public final class CiReleaseComposer {
         if (!artifact.hasSbom()) {
           continue;
         }
-        out.append("qits publish sbom submit --type ")
+        out.append("qits artifacts publish sbom submit --type ")
             .append(quote(artifact.artifact().type().declared()))
             .append(" --name ")
             .append(quote(artifact.artifact().name()))
