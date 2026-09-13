@@ -37,19 +37,19 @@ import org.jboss.logging.Logger;
  * reason {@code HttpGitHostRepoListing} writes down: a static one is created at image-build time and
  * native-image refuses the heap it lands in.
  *
- * <p><b>The address is derived, never configured.</b> {@code quarkus.oidc-client.auth-server-url} is
- * already the idp base this service asks for its own machine token, and {@code /api/clients} is the
- * commissioning surface under it. A second key would be a second thing to keep in step with the
+ * <p><b>The address is derived, never configured.</b> {@code quarkus.oidc-client.qits.auth-server-url}
+ * is already the idp base this service asks for its own machine token, and {@code /api/clients} is
+ * the commissioning surface under it. A second key would be a second thing to keep in step with the
  * first, and a deployment that pointed the two at different idps would mint credentials one issuer
  * knows and present tokens another signed.
  *
  * <p><b>The caller is the service's own oidc client, and only a real one may commission.</b> The
- * request carries HTTP Basic of {@code quarkus.oidc-client.client-id} and {@code
- * quarkus.oidc-client.credentials.secret}; qits-idp answers 401 to an unknown pair and 403 when a
- * commissioned client tries to commission again, which is what keeps the tree one level deep.
+ * request carries HTTP Basic of {@code quarkus.oidc-client.qits.client-id} and {@code
+ * quarkus.oidc-client.qits.credentials.secret}; qits-idp answers 401 to an unknown pair and 403 when
+ * a commissioned client tries to commission again, which is what keeps the tree one level deep.
  *
  * <p><b>{@link #enabled()} is the fallback arm.</b> With {@code
- * quarkus.oidc-client.client-enabled} off — the shipped posture, and every test's — there is no
+ * quarkus.oidc-client.qits.client-enabled} off — the shipped posture, and every test's — there is no
  * credential to present and nothing to commission with, so this class does nothing at all and a
  * step container's environment is byte-identical to what it was before any of this existed.
  */
@@ -97,18 +97,23 @@ public class IdpCommissioner {
   /**
    * The single switch, read from the extension's own key rather than shadowed by one of ours — the
    * same arrangement {@code containers/ContainersClientProducer} makes for the token it fetches.
+   *
+   * <p>{@code qits}, the one named client every outbound identity this service has now shares
+   * (service-client-identity-plan.md, C4). This class never asks {@code quarkus-oidc-client} for a
+   * token on that client — the idp's commissioning door takes HTTP Basic, not a bearer — so it reads
+   * the client's id and secret directly rather than injecting the client bean itself.
    */
-  @ConfigProperty(name = "quarkus.oidc-client.client-enabled")
+  @ConfigProperty(name = "quarkus.oidc-client.qits.client-enabled")
   boolean clientEnabled;
 
-  @ConfigProperty(name = "quarkus.oidc-client.auth-server-url")
+  @ConfigProperty(name = "quarkus.oidc-client.qits.auth-server-url")
   String authServerUrl;
 
-  @ConfigProperty(name = "quarkus.oidc-client.client-id")
+  @ConfigProperty(name = "quarkus.oidc-client.qits.client-id")
   String clientId;
 
   /** Unset on every deployment that has not turned the oidc client on — see {@link #enabled()}. */
-  @ConfigProperty(name = "quarkus.oidc-client.credentials.secret")
+  @ConfigProperty(name = "quarkus.oidc-client.qits.credentials.secret")
   Optional<String> clientSecret;
 
   @ConfigProperty(name = "qits.ci.commission.patience")

@@ -412,8 +412,8 @@ public class RunCommissioningTest {
   @Test
   public void aDeploymentWithNoOidcClientCommissionsNothingAndInjectsNothing() {
     // The fallback arm, and it must be byte-identical to what shipped before per-run credentials
-    // existed: quarkus.oidc-client.client-enabled is false out of the box, so there is nothing to
-    // commission with and a step container's environment gains nothing at all.
+    // existed: quarkus.oidc-client.qits.client-enabled is false out of the box, so there is nothing
+    // to commission with and a step container's environment gains nothing at all.
     Map<String, String> env =
         launcher(StubIdp.disabledCommissions()).buildWorkloadSpec(step(RUN, 1, true)).spec().env();
 

@@ -173,8 +173,8 @@ alive for as long as the deployment was. qits-idp grew a commissioning API and `
 the adapter for it:
 
 - **`IdpCommissioner`** — hand-rolled `java.net.http`, like every other client here. `POST
-  <quarkus.oidc-client.auth-server-url>/api/clients` with HTTP Basic of **this service's own** oidc
-  client and `{"contextKind":"ci-run","contextId":"<runId>"}`; `DELETE …/{clientId}` gives one back
+  <quarkus.oidc-client.qits.auth-server-url>/api/clients` with HTTP Basic of **this service's own**
+  oidc client and `{"contextKind":"ci-run","contextId":"<runId>"}`; `DELETE …/{clientId}` gives one back
   (404 is "already gone", which is what was asked for); `GET …/clients` lists this owner's live ones.
   **The address is derived, never configured** — a second key would be a second thing to keep in step
   with the first, and two idps would mean minting against one and presenting tokens signed by the
@@ -228,7 +228,7 @@ Three decisions worth keeping in front of you:
   classification is `holdThrough`'s — 401, a 5xx and nothing answering are about the moment; a 403
   (a commissioned client may not commission) and a 400 are about the request and stand at once.
 - **The fallback arm is byte-identical to the old unset-keys behaviour.** With
-  `quarkus.oidc-client.client-enabled` off there is nothing to commission with, so nothing is
+  `quarkus.oidc-client.qits.client-enabled` off there is nothing to commission with, so nothing is
   commissioned and nothing is injected — the arm every test in this repo is on.
 - **The secret reaches the container in exactly two forms**: base64 inside the docker document, and
   raw as `$QITS_COMMISSIONED_CLIENT_SECRET` beside `$QITS_COMMISSIONED_CLIENT_ID`, which is what a
@@ -331,8 +331,8 @@ Four things bite:
   it names places by owner and no owner can see another's. What is left of the constraint is one
   config key, `qits.ci.containers.owner`, which **must equal the machine token's `sub`** (the
   service's `OwnerGuard` compares them once the gate is on) and therefore defaults to reading
-  `quarkus.oidc-client.client-id`. Two instances must not share it. That coupling is argued in ONE
-  place, the key's own comment in the `ci` jar's `microprofile-config.properties`.
+  `quarkus.oidc-client.qits.client-id`. Two instances must not share it. That coupling is argued in
+  ONE place, the key's own comment in the `ci` jar's `microprofile-config.properties`.
 
   **The two boot observers are still ordered, and the order is still reap-then-sweep.** They observe
   one `StartupEvent` and CDI orders two observers of one event only if they ask, so both carry
@@ -444,13 +444,15 @@ The host's side of the contract, including the 8 MiB blob cap and why a slashy b
 spawns no `git`**, and the image no longer carries one.
 
 **Both reads carry `IdpGitHostBearer`'s token, and a missing one costs the HEADER rather than the
-call.** The bearer is its own named oidc client (`quarkus.oidc-client.githost`) because qits-githost
-validates a different audience from qits-containers'. When it has nothing to give — the client is
-disabled, or the idp did not answer — the request goes out bare and the git host refuses it, which
-is a 401 this class reports like any other status. It used to throw instead, and that was worse in
-both directions: with the client shipped `false` every config read of every run failed before a
-socket was opened, and the refusal it stood in for is one the host makes anyway. Same rule, and the
-same reasoning, as qits-containers' client.
+call.** The bearer is the `qits` named oidc client (`quarkus.oidc-client.qits`), the one client every
+outbound identity this service has (service-client-identity-plan.md, C4) — it used to be its own
+`githost`-named client, audience-bound to qits-githost specifically, before every outbound call
+moved to one audience, `qits-platform`. When it has nothing to give — the client is disabled, or the
+idp did not answer — the request goes out bare and the git host refuses it, which is a 401 this class
+reports like any other status. It used to throw instead, and that was worse in both directions: with
+the client shipped `false` every config read of every run failed before a socket was opened, and the
+refusal it stood in for is one the host makes anyway. Same rule, and the same reasoning, as
+qits-containers' client.
 
 ## The run queue, and what a run row means
 
@@ -2126,21 +2128,25 @@ and a deployment that turns it on with no audience configured fails at **startup
 accepting tokens meant for another service. Which endpoints call the guard, and what a new one owes,
 is under "Addressing"; the deployment steps are in `README.md`.
 
-**This service presents a credential to two hops now, and both are the same identity.** It asks
-qits-idp for a token of its own to present to **qits-containers**, and it presents the same client
-id and secret as HTTP Basic to **qits-idp itself** to commission one credential per run (see "The
-credential is commissioned per run"). One is a bearer this service holds, the other is a credential
-it mints for a container; both live or die with `quarkus.oidc-client.client-enabled`.
+**This service presents a credential to three hops now, and all three are the same identity — the
+one named oidc client `qits`** (service-client-identity-plan.md, C4; it replaced a default client
+audience-bound to qits-containers and a separately named `githost` one audience-bound to
+qits-githost). It asks qits-idp for a token to present to **qits-containers** and to
+**qits-githost**, both now addressed with the single audience `qits-platform`, and it presents the
+same client id and secret as HTTP Basic to **qits-idp itself** to commission one credential per run
+(see "The credential is commissioned per run"). Two are bearers this service holds, the third is a
+credential it mints for a container; all three live or die with
+`quarkus.oidc-client.qits.client-enabled`.
 
 qits-containers guards
 every route — reads included — on the caller's own identity: its `OwnerGuard` compares the token's
-`sub` to the owner in the path. So `quarkus.oidc-client.client-id` is not a label here, it is this
-service's **owner string**, and `qits.ci.containers.owner` defaults to reading it.
+`sub` to the owner in the path. So `quarkus.oidc-client.qits.client-id` is not a label here, it is
+this service's **owner string**, and `qits.ci.containers.owner` defaults to reading it.
 `containers/ContainersClientProducer` is where the token becomes a header.
 
-One switch, `quarkus.oidc-client.client-enabled`, shipped **false**, exactly as its predecessor was:
-off, the extension builds a disabled client, the process boots with no secret and dials nothing, and
-the calls go out bare — which is what the orchestrator's own gate (`qits.auth.machine.required`,
+One switch, `quarkus.oidc-client.qits.client-enabled`, shipped **false**, exactly as its predecessor
+was: off, the extension builds a disabled client, the process boots with no secret and dials nothing,
+and the calls go out bare — which is what the orchestrator's own gate (`qits.auth.machine.required`,
 also off) expects. It stays independent of the inbound gate: either end of a hop is switched on
 first. **It is also the commissioning switch**: `IdpCommissioner.enabled()` reads the same key plus
 both halves of the credential behind it, so a deployment that has not turned the oidc client on
