@@ -131,6 +131,10 @@ keys:
     type: string
     description: "The docs repository root, handed to steps as $QITS_DOCS_URL."
 
+  env.QITS_CI_ARTIFACTS_CLI_PACKAGE:
+    type: string
+    description: "The daemon package a release-phase step resolves the qits CLI's latest version from. Blank turns the fetch off."
+
   # --- what arrives here: the inbound identity -----------------------------------------------------
 
   env.QITS_AUTH_MACHINE_REQUIRED:

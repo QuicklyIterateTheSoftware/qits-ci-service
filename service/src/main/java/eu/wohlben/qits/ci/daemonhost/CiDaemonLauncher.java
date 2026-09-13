@@ -509,31 +509,22 @@ public class CiDaemonLauncher {
   String artifactsUrl;
 
   /**
-   * Where a step downloads {@code qits-publish}, the artifacts CLI that owns every direct HTTP call
-   * to qits-artifacts and the idempotency policy around it.
+   * The daemon package a step resolves and downloads the qits CLI from — {@code qits}, which also
+   * answers to the name {@code qits-publish} — at its LATEST published version, every release-phase
+   * step, never a pin.
    *
-   * <p><b>A template plus a version pin, exactly like {@code qits.ci.daemon-binary-url-template}</b>
-   * and for that key's reason: two free values that can disagree is one more way to point a fleet at
-   * a binary nobody published. It is delivered through the same daemon-binary train the ci-daemon
-   * rides, so the template's shape is its sibling's.
+   * <p><b>No version travels from here at all.</b> The composed prelude reads qits-artifacts' own
+   * listing (its {@code latestVersion} field) to find the version and downloads it version-addressed,
+   * the way {@link #daemonBinaryUrlTemplate} still does for the ci-daemon; the CLI carries no such
+   * template because there is no pin left to hold.
    *
-   * <p><b>A blank pin sends the variable EMPTY rather than a url with a hole in it.</b> Empty is the
-   * off state every mirror pair here already uses, and it is what a deployment that has not shipped
-   * the CLI yet is in: a composed release-phase prelude skips the download, and a composed postlude
-   * that needs it fails on its own {@code :?} guard naming the two keys, rather than 404ing on a url
-   * ending in {@code /}.
+   * <p><b>Blank sends the variable EMPTY rather than a package with nothing behind it.</b> Empty is
+   * the off state every mirror pair here already uses: a composed release-phase prelude skips the
+   * fetch, and a composed postlude that needs the CLI fails on its own {@code :?} guard naming this
+   * key, rather than a curl error nobody can place.
    */
-  @ConfigProperty(name = "qits.ci.artifacts-cli-url-template")
-  String artifactsCliUrlTemplate;
-
-  @ConfigProperty(name = "qits.ci.artifacts-cli-version")
-  Optional<String> artifactsCliVersion;
-
-  /** The pinned CLI's download url, or {@code ""} when this deployment pins no version. */
-  String artifactsCliUrl() {
-    String version = artifactsCliVersion.orElse("").trim();
-    return version.isEmpty() ? "" : artifactsCliUrlTemplate.replace("{version}", version);
-  }
+  @ConfigProperty(name = "qits.ci.artifacts-cli-package")
+  String artifactsCliPackage;
 
   /**
    * qits-workspaces' root, injected into every step container so the release train's maintenance
@@ -1087,12 +1078,11 @@ public class CiDaemonLauncher {
     env.put("QITS_MAVEN_PROXY_URL",
         mavenCentralMirrorEnabled ? value(mavenCentralMirrorStepUrl) : "");
     env.put("QITS_DOCS_URL", value(artifactsDocsUrl));
-    // The store's own root, and the CLI that talks to it. The first ends the three string-chopping
-    // derivations of an SBOM/daemon/docs base url in the estate; the second is where a composed
-    // release prelude fetches qits-publish from. Both EMPTY-never-absent, so a deployment that has
-    // pinned no CLI hands every step one shape to read.
+    // The store's own root, and the daemon package a composed release prelude resolves the qits CLI's
+    // latest version from. Both EMPTY-never-absent, so a deployment that has switched the CLI off
+    // hands every step one shape to read.
     env.put("QITS_ARTIFACTS_URL", value(artifactsUrl));
-    env.put("QITS_ARTIFACTS_CLI_URL", artifactsCliUrl());
+    env.put("QITS_ARTIFACTS_CLI_PACKAGE", value(artifactsCliPackage).trim());
     // And where a step asks for its own repository to be released — same network, same reading of
     // "reachable from where" as the npm pair.
     env.put("QITS_WORKSPACES_URL", value(workspacesUrl));
