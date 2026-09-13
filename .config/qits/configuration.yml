@@ -1,0 +1,166 @@
+# What qits-ci declares about its own configuration.
+#
+# The deployer reads this file from the git host at the RELEASED TAG, beside
+# `.config/qits/deployments.yml`, and POSTs it to qits-configuration before it schedules the
+# deployment. qits-configuration parses it with its own `DeclarationParser`; nothing in qits-ci
+# reads it. The name does not start with `ci-event-`, so the trigger engine never takes it for a
+# pipeline.
+#
+# WHY IT EXISTS. qits-configuration flags a stored entry `orphaned` only when the application has a
+# declaration that does not list the key. With no file, none of qits-ci's leftover entries can be
+# flagged, so none can be removed from the configuration UI. With it, every stored qits-ci entry not
+# listed below shows as orphaned — and those are exactly the keys nothing reads any more
+# (service-client-identity-plan.md, C9 and C10).
+#
+# SO THE LIST MUST BE COMPLETE. Every key below is read by qits-ci today, checked against the code.
+# A key left out would show as orphaned and invite a person to delete a value the service needs.
+#
+# NO DEFAULTS, ON PURPOSE. A declared default sits UNDER the stored entries, and a key declared with
+# no default adds nothing to the resolved read. So this file changes nothing a container receives:
+# it is step one of the two-step rule (docs guide §7.5), and provably inert.
+#
+# NO serviceAddress. The URLs are `string` here. A serviceAddress is rendered by the platform and
+# ignores a stored value, so declaring one would replace every hand-set address on this platform in
+# the same step. That change belongs to the config-declarations work, one application at a time.
+#
+# THE FOUR `QUARKUS_OIDC_CLIENT_*` KEYS WITH NO CLIENT NAME are the `qits` client's fallback
+# (application.properties reads `${QITS_RESOURCE_IDP_*:${QUARKUS_OIDC_CLIENT_*}}`). They stay
+# declared until qits-ci's `idp:client` cutover (plan C5) retires that fallback. Note
+# `QUARKUS_OIDC_CLIENT_CLIENT_ENABLED` has no QITS_RESOURCE_IDP_* twin and the shipped value behind
+# it is `false`: deleting it turns the client off, cutover or not.
+#
+# DELIBERATELY NOT HERE (these show as orphaned):
+#   * QUARKUS_OIDC_CLIENT_GRANT_OPTIONS_CLIENT_AUDIENCE — the old unnamed client's audience. The
+#     `qits` client's audience is the constant `qits-platform`.
+#   * QUARKUS_OIDC_CLIENT_GITHOST_* (five keys) — the old `githost` client. No code uses it and its
+#     shipped block is disabled. Quarkus still binds that block, but binding is not reading.
+#   * QITS_CI_REGISTRY_AUTH_CLIENT_ID / _SECRET — the old static push credential, replaced by one
+#     commissioned per run.
+#   * QITS_RESOURCE_* — injected by the deployer from its resource registry. Configuration cannot
+#     state or delete one.
+#
+# `OwnDeclarationTest` (service module) checks what a hand edit can break: the file is here, the
+# top level is `keys:` alone, and no key is declared twice. It is not a parser; the store is.
+
+keys:
+  # --- where this service's peers answer ---------------------------------------------------------
+
+  env.QITS_CI_PROJECTS_URL:
+    type: string
+    description: "Where qits-projects answers. Its repository catalogue is the list an event can trigger. Scheme, host and port only; unset, ci lists the git host's storage ids instead."
+
+  env.QITS_CI_GIT_HOST_URL:
+    type: string
+    description: "Where the git host answers; ci reads pipeline config from it. Scheme, host and port only; ci adds /git itself."
+
+  env.QITS_CI_CONTAINER_GIT_URL:
+    type: string
+    description: "The git host as a step container reaches it: the platform edge, which turns the step's Basic credential into a bearer."
+
+  env.QITS_CI_CONTAINER_GIT_AUDIENCE:
+    type: string
+    description: "The token audience a step container's Git helper asks for. Overrides the shipped qits-platform."
+
+  env.QITS_CONTAINERS_URL:
+    type: string
+    description: "Where qits-containers answers. Every step container is started and removed through it."
+
+  env.QITS_CI_WORKSPACES_URL:
+    type: string
+    description: "qits-workspaces' root, handed to every step container as $QITS_WORKSPACES_URL."
+
+  env.QITS_EVENTS_URL:
+    type: string
+    description: "The event bus this service publishes to and consumes from."
+
+  env.QITS_OBSERVABILITY_URL:
+    type: string
+    description: "Where this service's OTLP telemetry goes. Scheme, host and port only."
+
+  # --- step containers ---------------------------------------------------------------------------
+
+  env.QITS_CI_NETWORK:
+    type: string
+    description: "The docker network every step container joins."
+
+  env.QITS_CI_CONCURRENT_BUILDS:
+    type: number
+    description: "How many runs this instance executes at once. At least 1; size it to the host."
+
+  env.QITS_CI_MEMORY_LIMIT:
+    type: string
+    description: "Memory cap for one step container, with its unit (for example 4g)."
+
+  env.QITS_CI_CPUS:
+    type: number
+    description: "CPU cap for one step container, as docker's --cpus reads it."
+
+  env.QITS_CI_DAEMON_VERSION:
+    type: string
+    description: "The qits-ci-daemon version a run uses when no adopted release outranks it. Blank means none is pinned."
+
+  env.QITS_CI_DAEMON_BINARY_URL_TEMPLATE:
+    type: string
+    description: "Where a step container downloads qits-ci-daemon; {version} is replaced with the run's pinned version."
+
+  env.QITS_CI_CONTAINER_DAEMON_URL:
+    type: string
+    description: "Where a step container's daemon dials back to this service, the /ci/daemon websocket."
+
+  # --- registries handed to step containers --------------------------------------------------------
+
+  env.QITS_ARTIFACTS_REGISTRY_HOST:
+    type: string
+    description: "The image registry as the host's docker daemon reaches it, handed to steps as $QITS_REGISTRY."
+
+  env.QITS_CI_DOCKER_AUTH_HOSTS:
+    type: string
+    description: "Comma-separated registry hosts a publishing step's docker config holds the run's credential for."
+
+  env.QITS_ARTIFACTS_NPM_HOSTED_URL:
+    type: string
+    description: "The hosted npm registry, handed to steps as $QITS_NPM_REGISTRY_URL."
+
+  env.QITS_ARTIFACTS_NPM_PROXY_URL:
+    type: string
+    description: "The npm pull-through cache, handed to steps as $QITS_NPM_PROXY_URL."
+
+  env.QITS_ARTIFACTS_MAVEN_REGISTRY_URL:
+    type: string
+    description: "The hosted Maven repository, handed to steps as $QITS_MAVEN_REGISTRY_URL."
+
+  env.QITS_ARTIFACTS_DOCS_URL:
+    type: string
+    description: "The docs repository root, handed to steps as $QITS_DOCS_URL."
+
+  # --- what arrives here: the inbound identity -----------------------------------------------------
+
+  env.QITS_AUTH_MACHINE_REQUIRED:
+    type: boolean
+    description: "The machine gate. Off, there is no OIDC tenant and no bearer is checked; on, a machine token is validated."
+
+  env.QITS_AUTH_MACHINE_AUDIENCE:
+    type: string
+    description: "The audience a machine token addressed to this service must carry, beside qits-platform."
+
+  env.QUARKUS_OIDC_AUTH_SERVER_URL:
+    type: string
+    description: "The issuer whose keys validate the bearers that arrive here."
+
+  # --- what goes out: the `qits` client's fallback, until the idp:client cutover -------------------
+
+  env.QUARKUS_OIDC_CLIENT_CLIENT_ENABLED:
+    type: boolean
+    description: "Turns the qits client on; its only switch. Off, nothing is commissioned and peer calls carry no bearer."
+
+  env.QUARKUS_OIDC_CLIENT_AUTH_SERVER_URL:
+    type: string
+    description: "The idp the qits client gets tokens from. Read only when QITS_RESOURCE_IDP_URL is unset."
+
+  env.QUARKUS_OIDC_CLIENT_CLIENT_ID:
+    type: string
+    description: "This service's idp client id, and so its owner at qits-containers. Read only when QITS_RESOURCE_IDP_CLIENT_ID is unset."
+
+  env.QUARKUS_OIDC_CLIENT_CREDENTIALS_SECRET:
+    type: string
+    description: "A secret: the qits client's secret. Read only when QITS_RESOURCE_IDP_CLIENT_SECRET is unset."
