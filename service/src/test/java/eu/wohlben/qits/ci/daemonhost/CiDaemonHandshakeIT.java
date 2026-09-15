@@ -229,6 +229,9 @@ public class CiDaemonHandshakeIT {
           CiDaemonRegistry.Credentials credentials = registry.registerLaunch(runId, 0, null);
           // A binary url that 404s — the shape a blank qits.ci.daemon-version or a botched publish
           // produces. The container comes up, the bootstrap cannot fetch, nothing ever dials.
+          // A 404 is permanent, but the bootstrap does not know that: it retries 10 times 12s apart
+          // like any other failed fetch, so this case now costs its whole ~108s budget before the
+          // container gives up. That is what the wait below is sized for.
           CiDaemonLauncher.Launched launched =
               launcher.launch(
                   new LaunchSpec(
@@ -248,8 +251,13 @@ public class CiDaemonHandshakeIT {
                       Map.of()));
           try {
             assertTrue(launched.started(), launched.error());
+            // 150s, not 60s: the assertion is "nothing registered because the bootstrap could not
+            // fetch", and a wait shorter than BOOTSTRAP's 10 x 12s retry budget would pass while the
+            // container was still trying — false for the wrong reason, and a log capture below with
+            // no give-up line in it. 150s clears the ~108s budget with slop for the image pull and
+            // stays under the launcher's own 180s register deadline set in withFixture.
             assertFalse(
-                registry.awaitRegistered(credentials.daemonId(), Duration.ofSeconds(60)),
+                registry.awaitRegistered(credentials.daemonId(), Duration.ofSeconds(150)),
                 "nothing should have registered");
 
             // Captured BEFORE the reap, which is the whole reason --rm is gone: the bootstrap's own

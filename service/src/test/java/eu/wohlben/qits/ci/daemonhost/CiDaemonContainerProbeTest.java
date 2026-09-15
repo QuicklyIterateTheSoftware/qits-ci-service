@@ -60,13 +60,14 @@ public class CiDaemonContainerProbeTest {
 
   /**
    * A registration that never arrives would otherwise cost this class the full {@code
-   * qits.ci.daemon-register-timeout-seconds} (60s by default) per test -- staged short through
+   * qits.ci.daemon-register-timeout-seconds} (180s by default, since BOOTSTRAP's fetch retry has to
+   * fit inside it) per test -- staged short through
    * {@link ClientProxy#unwrap}, the same trick {@code CiDaemonPinTest} uses on {@code
    * CiDaemonPins.configuredVersion}, and restored after.
    */
   @AfterEach
   void restoreTheShippedTimeout() {
-    ClientProxy.unwrap(probe).registerTimeoutSeconds = 60;
+    ClientProxy.unwrap(probe).registerTimeoutSeconds = 180;
   }
 
   @Test

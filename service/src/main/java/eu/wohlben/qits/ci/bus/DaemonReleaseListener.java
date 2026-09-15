@@ -280,7 +280,8 @@ public class DaemonReleaseListener implements QitsDurableEventListener {
    * instead of on the first run". That reasoning was wrong: {@code answer()} probes any {@code
    * UNPROVEN} rung by launching a real container, and the probe dials back to this very process over
    * a socket the startup thread has not bound yet. It cannot succeed before boot finishes, so it
-   * blocks for {@code qits.ci.daemon-register-timeout-seconds} (60s); the container healthcheck's
+   * blocks for {@code qits.ci.daemon-register-timeout-seconds} (180s, and 60s when this was
+   * measured); the container healthcheck's
    * shorter budget (~19s) fails first, and cd kills the deployment before the socket ever opens.
    * Measured live: qits-ci {@code 0e09ca32} (2026.803.171135) failed exactly this way.
    *

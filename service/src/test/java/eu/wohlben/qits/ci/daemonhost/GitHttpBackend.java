@@ -107,16 +107,21 @@ public final class GitHttpBackend implements AutoCloseable {
    * <p><b>Why this exists.</b> Docker's host-gateway forwarding does not pick up a listener the
    * instant it binds — measured on one host, a container launched immediately after {@code listen()}
    * returns gets {@code Connection refused}, and the very next attempt two seconds later downloads
-   * all 45MB. The step container's bootstrap fetches <em>once</em> and exits when it cannot, so
-   * losing that race does not look like a race: the container is dead within a second and the host
-   * then waits out its full register deadline, reporting {@code wget could not fetch} two minutes
+   * all 45MB. The step container's bootstrap fetched <em>once</em> and exited when it could not, so
+   * losing that race did not look like a race: the container was dead within a second and the host
+   * then waited out its full register deadline, reporting {@code wget could not fetch} minutes
    * later. That reads like a broken bootstrap or a bad url, and it is neither.
    *
-   * <p>Waiting here rather than retrying in the bootstrap is deliberate. The race is a property of
-   * <em>the fixture</em> — production ports belong to long-lived services that were listening long
-   * before any container started — so the fix belongs in the fixture. Adding a retry loop to the
-   * host-authored bootstrap to paper over a test-harness timing artefact would be changing shipped
-   * behaviour to suit a test.
+   * <p><b>This guard is still the right place for THIS fact, even though {@code BOOTSTRAP} now
+   * retries.</b> The paragraph that used to stand here argued the fix belonged in the fixture
+   * because "production ports belong to long-lived services", and that premise turned out to be
+   * false about one service: qits-artifacts serves the daemon binary and deploys {@code stop-first},
+   * so it refuses connections for a window on every deploy, and on 2026-09-15 a step container lost
+   * exactly that race in production. {@code BOOTSTRAP} retries for that reason and not for this one.
+   * What remains a fixture property is the <em>freshly bound</em> port: a listener this JVM stood up
+   * a moment ago, which the retry would only paper over — and a host that can never route back
+   * should say so here, in a minute, rather than after every case has failed for an apparently
+   * unrelated reason.
    *
    * <p>It doubles as the honest form of the host-networking caveat both ITs carry: on a host where a
    * container genuinely cannot route back to the JVM, this fails in a minute saying so, instead of

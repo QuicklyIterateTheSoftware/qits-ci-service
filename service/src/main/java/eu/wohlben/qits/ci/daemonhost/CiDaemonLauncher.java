@@ -152,6 +152,33 @@ public class CiDaemonLauncher {
    * fetch instead of letting a bare non-zero exit stand: by the time the host notices, the only
    * thing it can ask for is the tail {@link #destroyWithLogs} brings back.
    *
+   * <p><b>The fetch RETRIES, and the reason is measured rather than defensive.</b> qits-artifacts
+   * serves this binary and deploys {@code update_order: stop-first}, so it refuses connections for a
+   * window on <em>every</em> deploy — the one service the bootstrap depends on before it can do
+   * anything at all is also one that is deliberately absent now and then. On 2026-09-15 at 01:05 UTC
+   * a step container landed 7 seconds into such a window, got {@code Connection refused} from
+   * busybox wget, exited, and the gating run went red with {@code NEVER_STARTED} a minute later:
+   * a one-attempt fetch turned a routine redeploy into a rejected release request on somebody's
+   * commit. The loop is explicit shell rather than a downloader flag because the platform's step
+   * images are Alpine, so the {@code wget} that is probed first is <b>busybox wget</b>, which has
+   * neither a retry nor a {@code --tries}; the {@code curl} arm is never reached there.
+   *
+   * <p><b>The budget: 10 attempts, 12 seconds apart — about 108 seconds of retrying for a refused
+   * connection</b>, which must stay inside {@code qits.ci.daemon-register-timeout-seconds}, the
+   * deadline the host gives the same container to become a daemon. The two numbers move together:
+   * a deadline below this budget makes the retry pointless, because qits-ci gives up while the
+   * container is still trying. Both literals are typed into this text — it is a {@code static final
+   * String} with <b>zero interpolation</b>, and a Java constant folded in here would be the end of
+   * that property.
+   *
+   * <p><b>The accepted limit.</b> The budget is only bounded that tightly for connections that are
+   * <em>refused</em>, which is the measured failure. Attempts that instead hang to their own
+   * per-attempt timeouts ({@code -T 20}, {@code --connect-timeout 10 --max-time 120} — new, and the
+   * reason a hung attempt cannot make the retry meaningless) can make the loop outlast the host's
+   * deadline. In that case qits-ci gives up first and reports {@code NEVER_STARTED} exactly as it
+   * does today, and the container is reaped either way: the loop's worst case is bounded by the
+   * host, not by itself.
+   *
    * <p><b>It is also where the registry push credential becomes a file.</b> The last block writes
    * {@code $DOCKER_CONFIG/config.json} from {@code $QITS_CI_REGISTRY_AUTH_CONFIG} when both are set,
    * which is how a step gets a small file that is <em>not</em> in the clone and therefore not in any
@@ -171,16 +198,30 @@ public class CiDaemonLauncher {
   static final String BOOTSTRAP =
       """
       set -e
-      if command -v wget >/dev/null 2>&1; then
-        wget -q -O /tmp/qits-ci-daemon "$QITS_CI_DAEMON_BINARY_URL" \\
-          || { echo "qits-ci: wget could not fetch $QITS_CI_DAEMON_BINARY_URL" >&2; exit 1; }
-      elif command -v curl >/dev/null 2>&1; then
-        curl -fsS -o /tmp/qits-ci-daemon "$QITS_CI_DAEMON_BINARY_URL" \\
-          || { echo "qits-ci: curl could not fetch $QITS_CI_DAEMON_BINARY_URL" >&2; exit 1; }
-      else
-        echo "qits-ci: this image has neither wget nor curl, so the ci daemon cannot be fetched" >&2
-        exit 127
-      fi
+      attempt=1
+      while :; do
+        if command -v wget >/dev/null 2>&1; then
+          downloader=wget
+          if wget -q -T 20 -O /tmp/qits-ci-daemon "$QITS_CI_DAEMON_BINARY_URL"; then
+            break
+          fi
+        elif command -v curl >/dev/null 2>&1; then
+          downloader=curl
+          if curl -fsS --connect-timeout 10 --max-time 120 -o /tmp/qits-ci-daemon "$QITS_CI_DAEMON_BINARY_URL"; then
+            break
+          fi
+        else
+          echo "qits-ci: this image has neither wget nor curl, so the ci daemon cannot be fetched" >&2
+          exit 127
+        fi
+        if [ "$attempt" -ge 10 ]; then
+          echo "qits-ci: $downloader could not fetch $QITS_CI_DAEMON_BINARY_URL after $attempt attempts" >&2
+          exit 1
+        fi
+        echo "qits-ci: $downloader could not fetch $QITS_CI_DAEMON_BINARY_URL (attempt $attempt), retrying" >&2
+        attempt=$((attempt + 1))
+        sleep 12
+      done
       chmod +x /tmp/qits-ci-daemon
       if [ -n "$QITS_CI_REGISTRY_AUTH_CONFIG" ] && [ -n "$DOCKER_CONFIG" ]; then
         mkdir -p "$DOCKER_CONFIG"
@@ -661,7 +702,17 @@ public class CiDaemonLauncher {
     return pins.answer().version();
   }
 
-  /** How long a launch may take, which is mostly how long an image pull may take. */
+  /**
+   * How long a launch may take, which is mostly how long an image pull may take.
+   *
+   * <p><b>It is {@code qits.ci.daemon-register-timeout-seconds} on purpose, not a key of its own.</b>
+   * That one key drives all three deadlines a container may spend on becoming a daemon — {@code
+   * CiDaemonStepRunner}'s register wait, this {@code ensure} call, and {@code
+   * CiDaemonContainerProbe}'s probe deadline — because they are three halves of one question and
+   * three keys would be three ways to disagree about the answer. It moved from 60s to 180s with
+   * {@link #BOOTSTRAP}'s fetch retry, whose ~108s budget has to fit inside it; see the key's own
+   * comment in the {@code ci} jar's {@code microprofile-config.properties}.
+   */
   public Duration launchTimeout() {
     return Duration.ofSeconds(registerTimeoutSeconds);
   }
@@ -696,7 +747,7 @@ public class CiDaemonLauncher {
    * is one attempt's deadline and stays exactly that — it is mostly an image pull, and shortening
    * it to fit a retry budget would turn a cold pull into a failed launch. {@code
    * qits.ci.containers.launch-patience} bounds when a <em>fresh</em> attempt may start, so the worst
-   * case is the patience plus one whole launch deadline (PT90S + 60s as shipped). That is
+   * case is the patience plus one whole launch deadline (PT90S + 180s as shipped). That is
    * deliberately far inside {@link #MAX_AGE_SLOP}'s fifteen minutes: an unreachable first attempt
    * may have created the container, its {@code maxAge} clock starts there, and the slop is what
    * keeps the registry's GC a backstop rather than a second timeout even then. Nothing downstream
@@ -706,7 +757,7 @@ public class CiDaemonLauncher {
    * that an {@code ensure} whose container did not start is a true answer rather than a failed
    * request — the row exists, it says {@code MISSING}, and it carries what docker said — so the
    * status alone does not answer this method's question. Reading such an answer as "started" would
-   * cost the run its register deadline (a minute of a build slot) and then record {@code
+   * cost the run its register deadline (three minutes of a build slot) and then record {@code
    * NEVER_STARTED} for a container that never existed, which is the wrong outcome as well as the
    * slow one. It is not retried either: something answered about this very container.
    */
@@ -978,6 +1029,10 @@ public class CiDaemonLauncher {
    * <b>backstop rather than a second timeout</b>: every one of those deadlines is enforced by
    * something that reports what it enforced, and a {@code maxAge} that could fire first would take a
    * container away mid-step and leave the host reporting a lost socket instead of a timeout.
+   *
+   * <p><b>It follows the register deadline on its own, which is why raising that key took no second
+   * edit here.</b> The 60s → 180s move that gave {@link #BOOTSTRAP}'s fetch retry room to finish
+   * added the same two minutes to this sum, and two minutes is nothing against fifteen of slop.
    */
   long maxAgeSeconds(LaunchSpec spec) {
     long step = spec.stepTimeoutSeconds() > 0 ? spec.stepTimeoutSeconds() : stepTimeoutSeconds;

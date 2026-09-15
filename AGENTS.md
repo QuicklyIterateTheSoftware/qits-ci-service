@@ -152,6 +152,16 @@ zero interpolation, and it now travels as its own JSON list element (`entrypoint
 `args` `["-c", BOOTSTRAP]`), so that property holds by construction rather than by inspection of an
 argv.
 
+**The fetch in it is retried, not a single attempt.** qits-artifacts serves the daemon binary and
+deploys `stop-first`, so it refuses connections for a window on every deploy; one attempt turned
+that window into a red gating verdict on 2026-09-15 (hazard 2 under `CiDaemonHandshakeIT` has the
+measurement). The loop is explicit shell — the platform's step images are Alpine, and busybox `wget`
+has neither a retry nor `--tries` — and its literals stay typed into the text, because a Java
+constant folded in here would end the zero-interpolation property. Ten attempts twelve seconds
+apart is ~108s against a refused connection, which is why
+`qits.ci.daemon-register-timeout-seconds` is 180: the in-container budget has to fit inside the
+host's deadline, and the two numbers move together.
+
 **The bootstrap is also the only way to hand a step a FILE, and the registry push credential is the
 one that uses it.** The wire has no file field — a spec carries images, environment, mounts and
 lifetimes — and qits-ci shares no volume with a step container, so a small file can only be a value
@@ -315,7 +325,7 @@ Four things bite:
   and the ref is the step container's own name, so every attempt addresses the same place and a
   container an unanswered attempt created is *adopted*, not duplicated. The window sits **beside**
   the launch deadline rather than inside it — `launchTimeout()` stays one attempt's deadline, mostly
-  an image pull — so the worst case is the patience plus one of those (90s + 60s), far inside the
+  an image pull — so the worst case is the patience plus one of those (90s + 180s), far inside the
   fifteen minutes of slop under the registry's `maxAge`, which is what keeps that GC a backstop
   rather than a second timeout. `CiDaemonLauncher.holdThrough` is the one place the classification
   lives; the teardown paths (`destroyWithLogs`, `reap`) share it, since a DELETE is idempotent and
@@ -2442,12 +2452,24 @@ contract, tested where it lives.
      for the same reason.
   2. **Host-gateway forwarding lags a freshly-bound listener.** A container started the instant
      `listen()` returns gets `Connection refused`; two seconds later the same port serves 45MB fine.
-     The bootstrap fetches *once* and exits, so the container is dead within a second and the host
-     then waits out its whole 120s register deadline — surfacing as `wget could not fetch`, which
+     The bootstrap fetched *once* and exited, so the container was dead within a second and the host
+     then waited out its whole register deadline — surfacing as `wget could not fetch`, which
      reads like a broken url. `awaitReachableFromAContainer` gates the fixture on a real TCP connect
-     from a real container first. Deliberately **not** fixed by retrying in `BOOTSTRAP`: the race is
-     the fixture's (production ports belong to long-lived services), and papering over a harness
-     artefact by changing shipped behaviour is the wrong trade.
+     from a real container first, and that guard stays: host-gateway forwarding lagging a *freshly
+     bound* port is a fact about the fixture, and a fixture that cannot be reached at all should say
+     so in a minute rather than let every case fail later for an apparently unrelated reason.
+     <br>**This hazard used to close "deliberately not fixed by retrying in `BOOTSTRAP`". It WAS
+     fixed by retrying, because the old reasoning's premise about production was false.** The
+     argument was that the race is the fixture's, since "production ports belong to long-lived
+     services" — but a long-lived service that deploys `update_order: stop-first` has a refusal
+     window on *every* deploy, and qits-artifacts, the one service the bootstrap depends on before it
+     can do anything at all, is exactly such a service. Measured: 2026-09-15 01:05 UTC, run
+     `974b5c0b-cc6d-4068-8baa-1108db86472c`, `wget: can't connect to remote host (10.0.1.237):
+     Connection refused` 7 seconds into a qits-artifacts redeploy, which rejected release request
+     `71b2c572-ab57-4359-8644-5e4973c25ec2`. So `BOOTSTRAP` now retries the fetch 10 times, 12
+     seconds apart, and `qits.ci.daemon-register-timeout-seconds` moved to 180 so that ~108s budget
+     fits inside the deadline. The two halves are different facts: the fixture's guard is about a
+     port that has just been bound, the retry is about a server that is deliberately absent.
   3. **The git fixture must serve *smart* HTTP.** The daemon clones `--depth 50`, and shallow is a
      capability only the smart transport advertises — a static-file handler gets exactly as far as
      `fatal: dumb http transport does not support shallow capabilities`. The fixture shells `git

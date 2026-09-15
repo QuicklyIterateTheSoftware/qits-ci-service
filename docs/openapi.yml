@@ -411,7 +411,7 @@ paths:
           description: The repository id or the release request id is missing or invalid
         "403":
           description: "The token covers this repository for nobody — no project claim\
-            \ and no platform-tier role, or a project claim this instance cannot place\
+            \ and no platform-wide role, or a project claim this instance cannot place\
             \ the repository in"
         "401":
           description: Not Authorized
@@ -546,4 +546,4 @@ paths:
         - qits:admin
 info:
   title: qits-ci API
-  version: 2026.912.181851
+  version: 2026.914.224554
