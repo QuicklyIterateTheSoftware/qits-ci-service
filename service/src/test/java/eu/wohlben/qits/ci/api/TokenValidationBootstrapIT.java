@@ -118,14 +118,14 @@ public class TokenValidationBootstrapIT {
 
     /**
      * The audience this service enforces, and it is a LITERAL rather than a variable name.
-     * {@code qits.auth.machine.audience=qits-ci} is spelled out in {@code application.properties}
-     * — set there rather than left to a deployment because a service that accepted tokens addressed
-     * elsewhere would be broken, not configured differently — so the audience under test is the
-     * shipped one and there is no expression to feed. {@code
-     * quarkus.oidc.token.audience=${qits.auth.machine.audience}} is what carries it to quarkus-oidc,
-     * so minting against this string is also what proves that indirection is read.
+     * {@code quarkus.oidc.token.audience=qits-platform} is spelled out in {@code
+     * application.properties} — set there rather than left to a deployment because a service that
+     * accepted tokens addressed elsewhere would be broken, not configured differently — so the
+     * audience under test is the shipped one and there is no expression to feed. It is the one
+     * audience on the platform: qits-idp puts it on every token it mints, so a token minted against
+     * this string is what every real caller presents.
      */
-    static final String AUDIENCE = "qits-ci";
+    static final String AUDIENCE = "qits-platform";
 
     @Override
     public Map<String, String> getConfigOverrides() {
@@ -323,11 +323,11 @@ public class TokenValidationBootstrapIT {
         .note("a token signed by a key the published JWKS never carried is refused")
         .as("unknown-key-refused");
 
-    // qits-containers and not an invented name: it is a real audience on qits-net (what
-    // qits-containers itself validates), so the story documents a plausible mix-up rather than a
-    // strawman. It is no longer this service's own oidc-client audience — since C4
-    // (service-client-identity-plan.md) that is qits-platform, which this door accepts by design
-    // (C1 widened it fleet-wide), so using it here would open the route instead of testing a refusal.
+    // qits-containers and not an invented name: it was a real per-service audience on qits-net, so
+    // the story documents a plausible mix-up rather than a strawman. It is not what this service's
+    // oidc client asks for — that is qits-platform (service-client-identity-plan.md, C4), the one
+    // audience this door accepts — so using that here would open the route instead of testing a
+    // refusal.
     String wrongAudienceToken =
         idp.token().audience("qits-containers").groups("qits:system").mint();
     given()

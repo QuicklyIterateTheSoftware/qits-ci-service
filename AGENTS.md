@@ -1355,7 +1355,7 @@ names"), and what follows is what biting it feels like.
   one the live 403 actually landed on**: qits-idp mints its agent and operator credentials with no
   structured claims at all — measured, a commissioned workspace client's token carries only
   `groups` — so the door asks the other half of what qits-idp does issue and admits such a caller on
-  a **platform-tier role** (`qits-platform:system`/`qits:admin`), refusing it without one.
+  a **platform-wide role** (`qits:system`/`qits:admin`), refusing it without one.
   That is not "absent means wildcard": `MachineAuth.requireClaim` answers "does your claim cover THIS
   TARGET", and absence must never mean yes there; this door asks "what may I evaluate FOR you", a
   question a role can answer. `CiEventController.scopeOf`'s javadoc carries the argument in full. The guard sits on the **machine arm** the way
@@ -2139,8 +2139,9 @@ two different facts.
 **Machines** are a bearer, and the guard is `MachineAuth`. qits-idp mints the token; quarkus-oidc
 validates its signature, issuer and expiry; `MachineAuth` then asks the two questions this service
 owns — is it addressed here (`aud` contains `qits.auth.machine.audience`, which
-`application.properties` pins to `qits-ci` because it is this service's identity and not a deployment
-fact), and does its `project` claim cover the target. A missing claim is a mismatch, never a
+`application.properties` pins to `qits-platform`, the one audience qits-idp puts on every token it
+mints; it is a fact about the platform and not about a deployment), and does its `project` claim
+cover the target. A missing claim is a mismatch, never a
 wildcard; `project=*` on the **token** covers everything, but `"*"` as the *target* is compared like
 any other string, so a caller cannot widen its own check. Failures are 401 with no machine token and
 403 with the wrong one, both mapped by quarkus-security rather than by `CiExceptionMapper`.

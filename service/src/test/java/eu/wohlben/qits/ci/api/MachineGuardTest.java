@@ -39,8 +39,8 @@ import org.junit.jupiter.api.Test;
  *
  * <p><b>"Exactly as the trigger's is" is new, and it is the 2026-09-05 fix.</b> The cancellation
  * demanded {@code project=*} and its only real sender could not present one: qits-projects' bearer
- * for this hop is the {@code <env>-qits-projects} client's, minted with {@code qits:system}, {@code
- * qits-platform:system} and no structured claims at all, so every superseded release request's
+ * for this hop is the {@code <env>-qits-projects} client's, minted with {@code qits:system} and no
+ * structured claims at all, so every superseded release request's
  * cancellation was answered 403 and swallowed at debug by a hop that is best-effort on purpose.
  * {@link #theReleaseRequestCancellationAdmitsQitsProjectsOwnBearer} is that caller's exact shape and
  * is the case that must never go back to 403; the two beside it keep the widening where the ruling
@@ -64,8 +64,8 @@ import org.junit.jupiter.api.Test;
  * client's {@code roles} into the token's {@code groups} claim and quarkus-oidc reads that claim as
  * roles with no configuration at all, so a token minted without it authenticates and covers
  * nothing. Only then is {@code MachineAuth} asked, and a wrong audience or an uncovered project is
- * its own 403. Which caller each read serves is spelled out per case: the daemon pin takes the two
- * system roles a machine peer holds, and the run and repository reads take <b>the pair</b> —
+ * its own 403. Which caller each read serves is spelled out per case: the daemon pin takes the
+ * machine role a peer holds, and the run and repository reads take <b>the pair</b> —
  * {@code qits:system} is the machine role, {@code qits:admin} the human one, and both of those
  * callers legitimately read. What mutates is not widened with them: cancelling a run stays
  * {@code qits:admin} alone.
@@ -74,8 +74,12 @@ import org.junit.jupiter.api.Test;
 @TestProfile(MachineGuardTest.GateOn.class)
 class MachineGuardTest {
 
-  /** The audience this service's machine guard expects — its config default, injected in prod. */
-  private static final String OWN_AUDIENCE = "qits-ci";
+  /**
+   * The audience this service's machine guard expects — its config default, injected in prod. It is
+   * the platform's one audience: qits-idp puts {@code qits-platform} on every token it mints, so a
+   * receiver addressed by it is addressed by every caller there is.
+   */
+  private static final String OWN_AUDIENCE = "qits-platform";
 
   /** A valid platform audience that is not ours; the guard must refuse it. */
   private static final String FOREIGN_AUDIENCE = "prod-qits-deployments";
@@ -129,9 +133,6 @@ class MachineGuardTest {
    */
   private static final String SYSTEM = "qits:system";
 
-  /** The platform-wide half of the same grant, held by the same clients. */
-  private static final String PLATFORM_SYSTEM = "qits-platform:system";
-
   /** A person's role, which the edge forwards in {@code X-Qits-Roles} and no machine token holds. */
   private static final String ADMIN = "qits:admin";
 
@@ -174,7 +175,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = OWN_AUDIENCE),
@@ -196,7 +197,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = FOREIGN_AUDIENCE),
@@ -221,9 +222,13 @@ class MachineGuardTest {
   void aQitsSystemOnlyTokenWithNoProjectClaimEvaluatesEverything() {
     // The open calling model (2026-09-13): qits:system is a service calling a service and may act
     // for every project, so a claim-less qits:system token is admitted here on its own — no
-    // qits-platform:system and no qits:admin needed beside it. 503 is the guard PASSING, for the
-    // same deterministic reason as aPlatformTierTokenWithNoProjectClaimEvaluatesEverything: this
-    // instance has no git host to read. What a dropped guard looks like is 401 or 403.
+    // qits:admin needed beside it. This is also the arm the live 403 landed on, and the ruling
+    // behind it is in CiEventController.scopeOf: qits-idp mints its agent and operator credentials
+    // with NO structured claims at all — measured on a commissioned workspace client, which pushes
+    // protected refs at qits-githost on its roles alone — so demanding one here made this the only
+    // door in the service no real machine caller could open. 503 is the guard PASSING, and it is
+    // deterministic: this instance has no git host to read. What a dropped guard looks like is 401
+    // or 403.
     given()
         .contentType(MediaType.APPLICATION_JSON)
         .body(TRIGGER_BODY)
@@ -251,26 +256,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
-  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
-  void aPlatformTierTokenWithNoProjectClaimEvaluatesEverything() {
-    // The arm the live 403 landed on, and the ruling behind it is in CiEventController.scopeOf:
-    // qits-idp mints its agent and operator credentials with NO structured claims at all — measured
-    // on a commissioned workspace client, which pushes protected refs at qits-githost on its roles
-    // alone — so demanding one here made this the only door in the service no real machine caller
-    // could open. 503 is the guard passing; the case above is what keeps the widening to callers
-    // that already hold a platform-wide credential.
-    given()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(TRIGGER_BODY)
-        .when()
-        .post(TRIGGER)
-        .then()
-        .statusCode(503);
-  }
-
-  @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = OWN_AUDIENCE),
@@ -292,7 +278,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = OWN_AUDIENCE),
@@ -359,7 +345,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = OWN_AUDIENCE),
@@ -367,13 +353,13 @@ class MachineGuardTest {
       })
   void theDaemonPinIsAMachinePeersReadRatherThanAnOpenOne() {
     // qits-platform-artifacts' collector reads the pin before it deletes a daemon binary. It holds
-    // this service's audience and the two system roles, so the read answers it — and the endpoint
+    // this service's audience and the machine role, so the read answers it — and the endpoint
     // is closed to everyone else, which is the contract rather than an oversight.
     given().when().get("/ci/api/daemon").then().statusCode(200);
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = OWN_AUDIENCE),
@@ -387,7 +373,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = OWN_AUDIENCE),
@@ -401,7 +387,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = OWN_AUDIENCE),
@@ -417,7 +403,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = OWN_AUDIENCE),
@@ -430,7 +416,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = OWN_AUDIENCE),
@@ -458,7 +444,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = OWN_AUDIENCE),
@@ -478,7 +464,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = FOREIGN_AUDIENCE),
@@ -495,12 +481,12 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = PROJECTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = PROJECTS, roles = {SYSTEM})
   @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
   void theReleaseRequestCancellationAdmitsQitsProjectsOwnBearer() {
     // THE case. This is the shape of the only sender this route has: the <env>-qits-projects client
-    // credential, groups of qits:system + qits-platform:system (+ its own clients/<id>, which
-    // nothing here reads), and NO structured claims — qits-idp's bootstrap grants a project claim to
+    // credential, groups of qits:system (+ its own clients/<id>, which nothing here reads), and NO
+    // structured claims — qits-idp's bootstrap grants a project claim to
     // exactly two clients and this is neither. It was a deterministic 403 against project=*, on
     // every supersession, logged at debug by a sender that treats this hop as best-effort. 202 is
     // the guard passing; a regression to 403 puts the cancellation feature back to inert.
@@ -547,7 +533,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = OWN_AUDIENCE),
@@ -573,7 +559,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = OWN_AUDIENCE),
@@ -599,7 +585,7 @@ class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM, PLATFORM_SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
   @OidcSecurity(
       claims = {
         @Claim(key = "aud", value = OWN_AUDIENCE),

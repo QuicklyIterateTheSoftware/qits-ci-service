@@ -1293,15 +1293,15 @@ listing. So:
   a listing outage narrows a scoped call to nothing rather than widening it to everybody. An unscoped
   call is unaffected: a read failure never shrinks the candidate set.
 - **A token with no `project` claim at all** is not project-scoped, and the door then asks the other
-  half of what qits-idp issues: a **platform-tier role** (`qits-platform:system` or
-  `qits:admin`) evaluates every project, and a token without one is a 403 naming what it is
+  half of what qits-idp issues: a **platform-wide role** (`qits:system` or `qits:admin`) evaluates
+  every project, and a token without one is a 403 naming what it is
   missing. That is not "absent means wildcard" — `MachineAuth.requireClaim` answers "does your claim
   cover *this target*", and for that question absence must never mean yes. This door asks "what may I
   evaluate *for* you", and the platform's answer, measured, is that its agent and operator
   credentials carry **no structured claims at all**: a commissioned workspace client's token holds
-  `groups` of `qits:system`, `qits-platform:system` and `qits:admin` and nothing else, and it pushes
+  `groups` of `qits:system` and `qits:admin` and nothing else, and it pushes
   protected refs at qits-githost on exactly that. A project-scoped client holding `qits:system` alone
-  still cannot act across the catalogue.
+  is still narrowed to its own claim.
 
 Measured 2026-09-04: that commissioned client was 403 here while every other `/ci/api` read answered
 the same bearer, which made the documented manual re-fire mechanism unusable by exactly the callers
@@ -1583,8 +1583,9 @@ a repository's own listing will show.
   keeps that segment 404s every read, and a 404 on the blob reads as "this commit declares no
   pipeline", so every push would report no pipeline instead of an error. The container-side alias
   only resolves on the network ci itself is on, so `qits.ci.network` must be set together with it.
-- Leave `qits.auth.machine.audience=qits-ci` alone. It is this service's id at qits-idp — the `aud`
-  its tokens carry — not a deployment fact.
+- Leave `qits.auth.machine.audience=qits-platform` alone. It is the platform's one audience — qits-idp
+  puts it on every token it mints, whatever the client — not a deployment fact. What a caller may do
+  once it is in is decided by its roles.
 - Turn the machine guard on with `QITS_AUTH_MACHINE_REQUIRED=true`, once qits-idp is reachable.
   That one platform-wide gate switches on both the bearer validation and every `MachineAuth` call in
   the code, and it ships **off**: with it off the endpoints behave exactly as they did under network

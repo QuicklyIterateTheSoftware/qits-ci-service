@@ -32,8 +32,8 @@
 # DELIBERATELY NOT HERE (these show as orphaned):
 #   * QUARKUS_OIDC_CLIENT_GRANT_OPTIONS_CLIENT_AUDIENCE — the old unnamed client's audience. The
 #     `qits` client's audience is the constant `qits-platform`.
-#   * QUARKUS_OIDC_CLIENT_GITHOST_* (five keys) — the old `githost` client. No code uses it and its
-#     shipped block is disabled. Quarkus still binds that block, but binding is not reading.
+#   * QUARKUS_OIDC_CLIENT_GITHOST_* (five keys) — the old `githost` client. There is no such client:
+#     `application.properties` ships one named block, `qits`, and nothing binds these.
 #   * QITS_CI_CONTAINER_GIT_AUDIENCE — the audience a step container's Git helper asks for is the
 #     constant `qits-platform` now (CiDaemonLauncher.CONTAINER_GIT_AUDIENCE).
 #   * QITS_CI_REGISTRY_AUTH_CLIENT_ID / _SECRET — the old static push credential, replaced by one
@@ -143,7 +143,7 @@ keys:
 
   env.QITS_AUTH_MACHINE_AUDIENCE:
     type: string
-    description: "The audience a machine token addressed to this service must carry, beside qits-platform."
+    description: "The audience a machine token arriving here must carry. It is the platform's one audience, qits-platform, and a deployment has no reason to say otherwise."
 
   env.QUARKUS_OIDC_AUTH_SERVER_URL:
     type: string

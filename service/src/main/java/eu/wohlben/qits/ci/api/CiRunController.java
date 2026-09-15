@@ -67,8 +67,8 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * <p><b>That check demanded {@code project=*} until 2026-09-05, and no real caller could satisfy
  * it.</b> The only sender of this route is qits-projects' {@code HttpQaRunCancellations}, fired
  * when a release request is superseded, and the bearer it presents is the {@code
- * <env>-qits-projects} client's — which qits-idp mints with {@code groups} of {@code qits:system},
- * {@code qits-platform:system} and {@code clients/<id>}, and <b>no structured claims at all</b>.
+ * <env>-qits-projects} client's — which qits-idp mints with {@code groups} of {@code qits:system}
+ * and {@code clients/<id>}, and <b>no structured claims at all</b>.
  * So every supersession was answered 403, swallowed at debug on the sender's side (that hop is
  * best-effort by design — the gate is correlated by merged sha and stayed correct), and superseded
  * QA runs simply kept running. The door now asks {@link #cancellationScope()}, which is {@code
@@ -110,7 +110,7 @@ public class CiRunController {
    * project covers it" means one thing on both machine doors rather than two.
    *
    * <p>It is read on one arm only: a machine caller that presents a {@code project} claim naming a
-   * single project. {@code project=*}, an unscoped platform-tier caller and an operator's forwarded
+   * single project. {@code project=*}, an unscoped platform-wide caller and an operator's forwarded
    * session never reach it, so the route's real traffic costs no listing read.
    */
   @Inject CiCandidateRepos candidates;
@@ -119,13 +119,10 @@ public class CiRunController {
    * The roles that admit a caller naming no project — {@code CiEventController}'s constants, spelled
    * again here for the reason that class spells them: a role is a string qits-idp issues and this
    * repository holds no vocabulary for it. {@code qits:system} is a service calling a service and,
-   * under the open calling model (2026-09-13), may act for every project; {@code qits-platform:system}
-   * still admits a claim-less caller too, for a token minted before the cutover; the admin half is
-   * plain {@code qits:admin}, since there is no platform-scoped administrator any more. Read that
-   * class's javadoc for why the split was retired rather than finished.
+   * under the open calling model (2026-09-13), may act for every project; the admin half is plain
+   * {@code qits:admin}, since there is no platform-scoped administrator. Read that class's javadoc
+   * for why the split was retired rather than finished.
    */
-  private static final String PLATFORM_SYSTEM_ROLE = "qits-platform:system";
-
   private static final String SYSTEM_ROLE = "qits:system";
 
   private static final String ADMIN_ROLE = "qits:admin";
@@ -454,14 +451,14 @@ public class CiRunController {
    *       projectId} off qits-projects' catalogue. The lookup that was missing is in hand.
    *   <li><b>{@code project=*}</b> — every repository. Read on the token side only, so a caller
    *       cannot widen its own check by naming {@code "*"}: nothing here compares it to a target.
-   *   <li><b>No {@code project} claim at all</b> — admitted on {@code qits:system}, {@code
-   *       qits-platform:system} or {@code qits:admin}; refused without any of them.
+   *   <li><b>No {@code project} claim at all</b> — admitted on {@code qits:system} or {@code
+   *       qits:admin}; refused without either.
    * </ol>
    *
    * <p><b>The last arm was the fix for the live 403, and it has since widened again.</b> Measured
    * 2026-09-05: qits-projects' bearer for this hop is the {@code <env>-qits-projects} client's, and
-   * qits-idp mints that client {@code groups} of {@code qits:system}, {@code qits-platform:system}
-   * and {@code clients/<id>} — no {@code project} claim, because the bootstrap grants one to exactly
+   * qits-idp mints that client {@code groups} of {@code qits:system} and {@code clients/<id>} — no
+   * {@code project} claim, because the bootstrap grants one to exactly
    * two clients and this is neither. Demanding {@code project=*} therefore refused the route's only
    * sender on every call, and the loss was quiet twice over: the sender logs a non-2xx at debug
    * because the hop is best-effort (the release gate is correlated by merged sha and stays correct
@@ -484,9 +481,7 @@ public class CiRunController {
     machineAuth.require();
     String project = MachineIdentity.claim(identity, QitsClaims.PROJECT).orElse(null);
     if (project == null) {
-      if (!identity.hasRole(PLATFORM_SYSTEM_ROLE)
-          && !identity.hasRole(ADMIN_ROLE)
-          && !identity.hasRole(SYSTEM_ROLE)) {
+      if (!identity.hasRole(ADMIN_ROLE) && !identity.hasRole(SYSTEM_ROLE)) {
         throw new ForbiddenException(
             "Token carries no "
                 + QitsClaims.PROJECT

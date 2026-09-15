@@ -10,7 +10,7 @@ import io.restassured.specification.RequestSpecification;
  * <h2>A machine is a bearer</h2>
  *
  * <p>{@link #platformService(RequestSpecification)} presents an RS256 token minted by {@link
- * MockIdp} against the very JWKS the launched process fetched at startup: {@code aud=qits-ci}
+ * MockIdp} against the very JWKS the launched process fetched at startup: {@code aud=qits-platform}
  * (what {@code qits.auth.machine.audience} pins), {@code groups=[qits:system]} — the machine role
  * quarkus-oidc reads as a role with no configuration — and {@code project=*}, which is what {@code
  * POST /ci/api/events/trigger} demands, since an event names no repository and the
@@ -33,7 +33,7 @@ import io.restassured.specification.RequestSpecification;
 public final class StoryIdentities {
 
   /** The audience this service enforces — a literal, because {@code application.properties} pins it. */
-  public static final String AUDIENCE = "qits-ci";
+  public static final String AUDIENCE = "qits-platform";
 
   /** The machine role a platform peer holds, and what {@code CiEventController} requires. */
   public static final String MACHINE_ROLE = "qits:system";

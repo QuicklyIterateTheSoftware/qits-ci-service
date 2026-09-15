@@ -49,7 +49,7 @@ class AgentReadAccessTest {
   private static final String AGENT = "qits:agent";
 
   /** This service's own audience, so the machine guard admits the token and only roles decide. */
-  private static final String OWN_AUDIENCE = "qits-ci";
+  private static final String OWN_AUDIENCE = "qits-platform";
 
   private static final String REPO = "agent-read-repo";
 
