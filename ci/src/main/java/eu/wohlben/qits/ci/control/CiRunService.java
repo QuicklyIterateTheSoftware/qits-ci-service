@@ -278,6 +278,17 @@ public class CiRunService {
   @Inject ReleaseJoin releaseJoin;
 
   /**
+   * The engine, for the one thing a retry asks of it: re-composing a release run's platform prelude
+   * and postlude — see {@link #retry}. The dependency is circular (the engine accepts runs through
+   * this class) and that is sound rather than tolerated: both beans are normal-scoped, so each holds
+   * the other's client proxy and neither is constructed inside the other. The alternative was a
+   * second bean re-injecting {@code qits.ci.platform-pipelines-repository}, which the release-slot
+   * feature refused once already — a second injection point is a second thing to arm in a test and a
+   * second thing to keep in step.
+   */
+  @Inject CiEventTriggerService triggerService;
+
+  /**
    * The field a release pipeline's version comes out of. It is the triggering event's payload, read
    * by name — {@code SCMRelease} carries it, and a trigger file declaring artifacts against an event
    * that does not, and that is not the tag event either, was written for something this cannot feed.
@@ -2746,6 +2757,20 @@ public class CiRunService {
    * {@code unique (trigger_event_id, repo_id, config_path)} changes, and no replay of a real event
    * becomes possible.
    *
+   * <p><b>"Unchanged" is the repository's half, and a COMPOSED run's platform half is re-derived.</b>
+   * A run recorded against {@link CiReleaseSlotParser#CONFIG_PATH} stored a document qits-ci wrote:
+   * the repository's declared script wrapped in this service's own prelude and postlude. The wrapper
+   * is environment rather than content, so a retry re-composes it with the platform code running
+   * now — see {@link CiEventTriggerService#recomposedReleaseDocument}, which also states why every
+   * failure of that re-composition falls back to the stored snapshot rather than refusing the retry.
+   * A run from a hand-written {@code ci-event-*.yml} has no platform half and is replayed byte for
+   * byte, exactly as it always was.
+   *
+   * <p><b>The re-composition happens OUTSIDE the accept transaction</b>, like every other read on
+   * this class's write paths: it reads the git host twice and {@link DbRetry#inNewTx} re-runs its
+   * whole body, so a read in there would be re-issued per attempt and could poison the session it
+   * was meant to serve.
+   *
    * @return the new run, already {@code QUEUED} and on the worker
    */
   public CiRun retry(String runId) {
@@ -2754,15 +2779,17 @@ public class CiRunService {
       throw new ConflictException(
           "CI run " + runId + " has not finished (" + source.status + ") — nothing to retry yet");
     }
+    String pipeline = retriedPipeline(source);
     // Predicted rather than copied, unlike priority and the downstream closure beside it: those are
     // what the run is WORTH and a re-fire must be worth what it re-fires, while this is how long the
     // work TAKES and the honest answer is the one the history gives now. The source's own value may
     // be months old, and every run it has had since is evidence the source row cannot carry.
-    String expected =
-        predictedStepDurations(source.repoId, source.configPath, source.triggerConfig);
+    // Predicted against the pipeline this retry will really run, since a re-composed document is
+    // what its steps come out of.
+    String expected = predictedStepDurations(source.repoId, source.configPath, pipeline);
     CiRun retry =
         DbRetry.inNewTx(
-            "run retry accept", () -> insertRetry(source.id, expected), retryDeadline());
+            "run retry accept", () -> insertRetry(source.id, expected, pipeline), retryDeadline());
     if (retry == null) {
       throw new NotFoundException("No such CI run: " + runId);
     }
@@ -2779,6 +2806,43 @@ public class CiRunService {
   }
 
   /**
+   * The trigger document a retry of {@code source} will run: the composed one re-derived with
+   * today's platform prelude and postlude, or — for everything else, and for every way that
+   * re-derivation can fail — the document stored on the run being re-fired.
+   *
+   * <p><b>{@code configPath} is the whole test for "composed".</b> A run recorded against {@link
+   * CiReleaseSlotParser#CONFIG_PATH} is one this service compiled; anything else is a file somebody
+   * committed, and its bytes are the repository's word about its own pipeline rather than a document
+   * with a platform share in it.
+   *
+   * <p><b>The rev is the run's own commit, never its branch.</b> The retry builds exactly the commit
+   * the source built, so the declaration it is composed from has to be the one that commit carries —
+   * and for a publish run that is a released tag, whose bytes cannot move under it. Reading at the
+   * branch would compose a retry from a declaration the run never built.
+   */
+  private String retriedPipeline(CiRun source) {
+    if (!CiReleaseSlotParser.CONFIG_PATH.equals(source.configPath)
+        || source.commitSha == null
+        || source.commitSha.isBlank()) {
+      return source.triggerConfig;
+    }
+    String recomposed =
+        triggerService.recomposedReleaseDocument(
+            repoOf(source), source.commitSha, source.triggerEventName);
+    if (recomposed == null) {
+      return source.triggerConfig;
+    }
+    if (!recomposed.equals(source.triggerConfig)) {
+      // Worth one line at INFO: the retry is deliberately not the same bytes as the run it re-fires,
+      // and that is the difference somebody comparing the two rows will otherwise have to guess at.
+      LOG.infof(
+          "Retry of run %s re-composes %s at %s — the platform prelude has moved since that run",
+          source.id, source.configPath, source.commitSha);
+    }
+    return recomposed;
+  }
+
+  /**
    * The retry row, built inside its own transaction from a freshly read source row.
    *
    * <p>The source is re-read here rather than taken from the caller's detached copy for {@link
@@ -2791,9 +2855,14 @@ public class CiRunService {
    * step failed — so copying it would start a green retry of a gating pipeline off as non-gating and
    * publish a verdict no release gate holds a commit for. The declaration is on the row as {@code
    * triggerConfig}, so the answer is one parse away; a historical push row carries none and is
-   * gating, which is what every push run was.
+   * gating, which is what every push run was. <b>It is derived from the document this retry will
+   * really run</b> — the re-composed one where there is one — because a flag read off a document the
+   * retry is not running is a statement about a pipeline nobody is about to execute.
+   *
+   * @param pipeline the trigger document handed in by {@link #retriedPipeline}, computed outside
+   *     this transaction because it reads the git host
    */
-  private CiRun insertRetry(String sourceRunId, String expectedStepDurations) {
+  private CiRun insertRetry(String sourceRunId, String expectedStepDurations, String pipeline) {
     CiRun source = runs.findById(sourceRunId);
     if (source == null) {
       return null;
@@ -2807,7 +2876,7 @@ public class CiRunService {
     retry.commitSha = source.commitSha;
     retry.status = CiRunStatus.QUEUED;
     retry.createdAt = Instant.now();
-    retry.gating = declaredGating(source);
+    retry.gating = declaredGating(source, pipeline);
     retry.releaseRequestId = source.releaseRequestId;
     // Copied rather than re-read: a retry asks for the SAME work, so it is worth what the original
     // was worth and waits on what the original waited on. The payload is on the row and would answer
@@ -2829,19 +2898,19 @@ public class CiRunService {
     retry.triggerEventName = source.triggerEventName;
     retry.triggerEventOccurredAt = source.triggerEventOccurredAt;
     retry.triggerEventPayload = source.triggerEventPayload;
-    retry.triggerConfig = source.triggerConfig;
+    retry.triggerConfig = pipeline;
     runs.persist(retry);
     runs.flush();
     return retry;
   }
 
   /** What a run's trigger file declared the pipeline to be worth, before any step narrowed it. */
-  private boolean declaredGating(CiRun source) {
-    if (source.triggerConfig == null) {
+  private boolean declaredGating(CiRun source, String pipeline) {
+    if (pipeline == null) {
       return true;
     }
     try {
-      return triggerParser.parse(source.configPath, source.triggerConfig).gating();
+      return triggerParser.parse(source.configPath, pipeline).gating();
     } catch (RuntimeException unparseable) {
       // The snapshot parsed once, at accept, so this is unreachable through the engine. If it ever
       // is not, the run's own recorded value is the closest true statement available — never a

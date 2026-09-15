@@ -1781,6 +1781,25 @@ biting it feels like.
   files it stopped maintaining, on the strength of the wrapper being briefly unreadable.
 - **`ci/` gained no HTTP and no new dependency.** The composer emits strings; the one read is the
   port's. There is no migration, no bus change, no endpoint and nothing in `qits-ci-daemon`.
+- **A RETRY of a composed run re-composes the platform's half, and that is the one place a run's
+  stored snapshot is not replayed verbatim.** The document on such a row is half the repository's
+  (its declared script) and half qits-ci's (the prelude and the postlude around it), and the platform
+  half is *environment*: a fix to it is a fix to 47 repositories at once. Measured 2026-09-13 on
+  qits-coding-agents, whose failed publish, retried hours after the prelude was fixed, would have
+  re-run the broken prelude and died at the same SBOM step — so a platform fix could never heal an
+  earlier failed release by retry, which is exactly the loop "fix the environment, `qits ci retry`,
+  the request finalizes" depends on. `CiRunService.retriedPipeline` therefore calls
+  `CiEventTriggerService.recomposedReleaseDocument` when `config_path` is
+  `CiReleaseSlotParser.CONFIG_PATH`, and three things about it are load-bearing. The slot file is read
+  at the run's **own commit**, never at its branch: the retry builds that commit, and for a publish
+  run it is a released tag whose bytes cannot move — so the repository's share of the document is
+  identical by construction and only the platform's changes. Every way the re-composition can fail —
+  the ref is unreadable, `release.yml` is gone from it, the archetype cannot be read, compose throws
+  — **falls back to the stored snapshot** with a WARN naming the reason, because a retry that refused
+  is worse than a retry of the old document. And the reads happen **outside** `DbRetry.inNewTx`, like
+  every other IO on this class's write paths. A run from a hand-written `ci-event-*.yml` has no
+  platform half and is replayed byte for byte, as it always was; `gating` and the predicted step
+  durations are then derived from whichever document the retry really ends up with.
 - **The heredoc is the security-shaped part.** A repository's script is data: quoted heredoc to
   `/tmp/qits-slot.sh`, run as a child `bash -eu`. The only way out of a quoted heredoc is a line
   carrying the delimiter, so a script containing `QITS_SLOT_EOF` is a `CiConfigException` naming the

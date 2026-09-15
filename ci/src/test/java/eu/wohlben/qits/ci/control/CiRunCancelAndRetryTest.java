@@ -265,6 +265,26 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
   }
 
   @Test
+  public void aRetryOfAHandWrittenPipelineReplaysItsStoredBytesAndReadsNothing() throws Exception {
+    // The other side of the re-composition rule. A repository that commits its own
+    // `ci-event-*.yml` has no platform half in its document — every byte of it is the repository's
+    // word about its own pipeline — so the snapshot is replayed exactly, and no git-host read is
+    // made to find that out.
+    String repo = "consumer-" + UUID.randomUUID();
+    String original = accept(repo, "rr-a");
+    service.awaitIdle();
+    forgetLoadedEntities();
+    fakeConfig.reset();
+
+    CiRun retry = service.retry(original);
+    service.awaitIdle();
+    forgetLoadedEntities();
+
+    assertEquals(QA_TRIGGER, service.requireRun(retry.id).triggerConfig, "the file, verbatim");
+    assertEquals(List.of(), fakeConfig.fileReads(), "and nothing was read to compose it");
+  }
+
+  @Test
   public void aRunThatHasNotFinishedIsNotRetryableAndAnUnknownOneIsNotFound() throws Exception {
     occupyTheWorker();
     String repo = "consumer-" + UUID.randomUUID();

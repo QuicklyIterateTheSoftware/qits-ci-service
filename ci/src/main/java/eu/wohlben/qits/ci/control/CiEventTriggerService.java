@@ -828,14 +828,37 @@ public class CiEventTriggerService {
     if (found.status() != CiConfigSource.FileLookup.Status.FOUND) {
       return ReleaseSlots.NONE;
     }
+    CiReleaseComposer.Composed composed =
+        compose(repo, repoId, found.content(), platformRepo, "no release run");
+    return composed == null
+        ? ReleaseSlots.NO_RUN
+        : new ReleaseSlots(true, documentFor(composed, arrival.eventName()));
+  }
+
+  /**
+   * Parses one repository's slot file, reads whatever archetype it names at the wrapper's {@code
+   * main}, and compiles the pair — or answers null, having already said which of the three ways it
+   * failed.
+   *
+   * <p><b>The consequence is the caller's to state and travels in as a word</b>, because the two
+   * callers do different things with a null: an evaluation records no run at all, while a retry
+   * replays the pipeline stored on the run it re-fires. A shared WARN that named only one of them
+   * would be a log line that is wrong half the time.
+   */
+  private CiReleaseComposer.Composed compose(
+      CiRepoRef repo,
+      String repoId,
+      String slotFile,
+      CiRepoRef platformRepo,
+      String consequence) {
     CiReleaseSlots slots;
     try {
-      slots = slotParser.parse(CiReleaseSlotParser.CONFIG_PATH, found.content());
+      slots = slotParser.parse(CiReleaseSlotParser.CONFIG_PATH, slotFile);
     } catch (CiConfigException e) {
       LOG.warnf(
-          "%s: %s is not a usable release slot file: %s — no release run",
-          repoId, CiReleaseSlotParser.CONFIG_PATH, e.getMessage());
-      return ReleaseSlots.NO_RUN;
+          "%s: %s is not a usable release slot file: %s — %s",
+          repoId, CiReleaseSlotParser.CONFIG_PATH, e.getMessage(), consequence);
+      return null;
     }
     CiReleaseSlots archetype = null;
     if (slots.namesArchetype()) {
@@ -845,25 +868,82 @@ public class CiEventTriggerService {
         // CiReleaseArchetypes has already said which of the four ways it failed; this line is what
         // names the repository that asked, which that class deliberately does not hold.
         LOG.warnf(
-            "%s: %s names release archetype '%s', which could not be read — no release run",
-            repoId, CiReleaseSlotParser.CONFIG_PATH, slots.archetype());
-        return ReleaseSlots.NO_RUN;
+            "%s: %s names release archetype '%s', which could not be read — %s",
+            repoId, CiReleaseSlotParser.CONFIG_PATH, slots.archetype(), consequence);
+        return null;
       }
       archetype = recipe.get().slots();
     }
     try {
-      CiReleaseComposer.Composed composed = CiReleaseComposer.compose(repo, slots, archetype);
-      return new ReleaseSlots(
-          true,
-          CiReleaseComposer.RELEASE_REQUEST_EVENT.equals(arrival.eventName())
-              ? composed.releaseRequestDocument()
-              : composed.releaseDocument());
+      return CiReleaseComposer.compose(repo, slots, archetype);
     } catch (CiConfigException e) {
       LOG.warnf(
-          "%s: %s could not be composed into a release pipeline: %s — no release run",
-          repoId, CiReleaseSlotParser.CONFIG_PATH, e.getMessage());
-      return ReleaseSlots.NO_RUN;
+          "%s: %s could not be composed into a release pipeline: %s — %s",
+          repoId, CiReleaseSlotParser.CONFIG_PATH, e.getMessage(), consequence);
+      return null;
     }
+  }
+
+  /**
+   * Which half of a composed pair one event runs. Extracted rather than copied, because the retry
+   * path has to make the same choice and a second spelling of it would be a second place for the two
+   * release events to drift apart.
+   */
+  private static String documentFor(CiReleaseComposer.Composed composed, String eventName) {
+    return CiReleaseComposer.RELEASE_REQUEST_EVENT.equals(eventName)
+        ? composed.releaseRequestDocument()
+        : composed.releaseDocument();
+  }
+
+  /**
+   * Re-composes a composed release run's pipeline with <b>today's</b> platform prelude and postlude,
+   * or answers null when it cannot be had.
+   *
+   * <p><b>Why a retry does not simply replay its snapshot.</b> A run whose {@code config_path} is
+   * {@link CiReleaseSlotParser#CONFIG_PATH} carries a stored document that is half the repository's
+   * and half the platform's: the repository declared the script, and qits-ci wrapped it in a prelude
+   * and a postlude. The wrapper is <em>environment</em>, not content — a fix to it is a fix to 47
+   * repositories at once — so a retry composed before that fix would re-run the broken prelude and
+   * fail again for a reason nobody can act on. Measured 2026-09-13 on qits-coding-agents, whose
+   * failed publish would have failed identically on retry hours after the prelude was fixed. The
+   * repository's half does not move: the slot file is read at the <b>ref the source run built</b>,
+   * whose bytes are part of the released commit, so a re-composition changes exactly the platform's
+   * share of the document and nothing the repository wrote.
+   *
+   * <p><b>Every failure answers null and the caller falls back to the stored snapshot.</b> The ref
+   * is unreadable, {@code release.yml} is gone from it, the archetype cannot be read, the
+   * composition throws — in each case a retry of the old document is a worse answer than no retry at
+   * all, since the run being re-fired is the one thing the caller definitely has. Each is a WARN
+   * naming the reason, so a retry that quietly kept the old prelude is readable from the log.
+   *
+   * @param repo the repository the run was recorded against
+   * @param rev the run's own commit — never a branch name, which moves
+   * @param eventName the run's triggering event, which picks the QA half or the release half
+   */
+  public String recomposedReleaseDocument(CiRepoRef repo, String rev, String eventName) {
+    if (!RELEASE_EVENTS.contains(eventName)) {
+      // A composed document exists only for the two release events; anything else on this path is a
+      // row nobody composed, so there is nothing to re-derive.
+      return null;
+    }
+    String repoId = repo.display();
+    CiConfigSource.FileLookup found =
+        configSource.readFile(repo, rev, CiReleaseSlotParser.CONFIG_PATH);
+    if (found.status() != CiConfigSource.FileLookup.Status.FOUND) {
+      LOG.warnf(
+          "%s: %s could not be read at %s (%s) — this retry replays the pipeline stored on the run"
+              + " it re-fires",
+          repoId, CiReleaseSlotParser.CONFIG_PATH, rev, found.status());
+      return null;
+    }
+    CiReleaseComposer.Composed composed =
+        compose(
+            repo,
+            repoId,
+            found.content(),
+            platformRepo(candidateRepos.candidates()),
+            "this retry replays the pipeline stored on the run it re-fires");
+    return composed == null ? null : documentFor(composed, eventName);
   }
 
   /**
