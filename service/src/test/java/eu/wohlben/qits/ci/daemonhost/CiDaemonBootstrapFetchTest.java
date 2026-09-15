@@ -35,9 +35,26 @@ import org.junit.jupiter.api.condition.OS;
  * Linux build host. It is guarded rather than assumed — a host with no {@code /bin/sh} or no
  * downloader on {@code PATH} skips, because neither says anything about the bootstrap.
  *
- * <p><b>It writes {@code /tmp/qits-ci-daemon}</b>, because that path is a literal in the text and
- * the text honours no {@code TMPDIR}. Nothing here asserts on that file beyond running it, and
- * nothing else in this repo reads it.
+ * <p><b>It must NOT write {@code /tmp/qits-ci-daemon}, and that is the one edit made to the shipped
+ * text.</b> The path is a literal in {@code BOOTSTRAP} and the text honours no {@code TMPDIR}, so
+ * the only way to run the real thing safely is to rewrite the literal. Rewriting it is not
+ * convenience: this suite runs inside a qits-ci step container, where {@code /tmp/qits-ci-daemon}
+ * <em>is the running ci daemon</em> — the maven build executing this test is a child of the process
+ * exec'd from that file. Writing there is one errno away from overwriting the daemon that is
+ * hosting the build, and Linux answers the attempt with {@code ETXTBSY} ("Text file busy", errno
+ * 26) because the file is a mapped ELF image. That is exactly what happened on 2026-09-15: every
+ * fetch failed, the loop slept its whole budget, and the test reported "the bootstrap never exited"
+ * — a message that hid its own cause. (A {@code #!/bin/sh} script at that path is NOT protected
+ * this way, which is why a developer sandbox with nothing running from there passed.)
+ *
+ * <p>The substitution is a single guarded {@code replace} of that one literal with a path under
+ * this test's own temp directory, and it is the <b>only</b> edit made to the shipped text:
+ * the downloader probe, the retry loop, the per-attempt timeouts, the sleep, the give-up arm, the
+ * {@code chmod +x} and the {@code exec} are all run verbatim. What keeps that honest is the
+ * occurrence count asserted before the replace — if somebody changes the path or adds another use
+ * of it, this test fails loudly instead of quietly exercising a text that no longer ships. The
+ * substituted copy is local to this method; every other test in this class asserts on the
+ * unmodified constant.
  */
 public class CiDaemonBootstrapFetchTest {
 
@@ -48,6 +65,26 @@ public class CiDaemonBootstrapFetchTest {
 
   /** What the bootstrap can spend retrying a connection that is REFUSED, which fails at once. */
   private static final long REFUSED_BUDGET_SECONDS = (long) (ATTEMPTS - 1) * PAUSE_SECONDS;
+
+  /** The output path typed into BOOTSTRAP, and how many times the real text spells it. */
+  private static final String SHIPPED_OUTPUT_PATH = "/tmp/qits-ci-daemon";
+
+  private static final int SHIPPED_OUTPUT_PATH_USES = 4;
+
+  /**
+   * Room per attempt on top of {@link #REFUSED_BUDGET_SECONDS} for the attempts themselves — the
+   * connect, and on a host that answers slowly the {@code -T 20} / {@code --max-time 120} deadlines.
+   */
+  private static final long PER_ATTEMPT_ALLOWANCE_SECONDS = 8;
+
+  /**
+   * <b>Derived, not picked.</b> A wait shorter than the bootstrap's own give-up budget turns every
+   * real failure into "the bootstrap never exited" and hides the stderr that explains it — which is
+   * precisely what 90s did here. So it is {@link #REFUSED_BUDGET_SECONDS} plus a generous per-attempt
+   * margin, and it moves when {@link #ATTEMPTS} or {@link #PAUSE_SECONDS} do.
+   */
+  private static final long PROCESS_WAIT_SECONDS =
+      REFUSED_BUDGET_SECONDS + ATTEMPTS * PER_ATTEMPT_ALLOWANCE_SECONDS;
 
   @Test
   @EnabledOnOs(OS.LINUX)
@@ -61,6 +98,17 @@ public class CiDaemonBootstrapFetchTest {
     Path work = Files.createTempDirectory("ci-bootstrap-fetch");
     Path out = work.resolve("stdout");
     Path err = work.resolve("stderr");
+
+    // The one edit to the shipped text — see this class's javadoc. The count is asserted first so
+    // that a change to the path, or a fifth use of it, fails here rather than silently leaving an
+    // occurrence pointing at the running daemon.
+    String shipped = CiDaemonLauncher.BOOTSTRAP;
+    assertEquals(
+        SHIPPED_OUTPUT_PATH_USES,
+        occurrences(shipped, SHIPPED_OUTPUT_PATH),
+        "BOOTSTRAP no longer spells " + SHIPPED_OUTPUT_PATH + " the expected number of times");
+    Path daemonPath = work.resolve("qits-ci-daemon");
+    String bootstrap = shipped.replace(SHIPPED_OUTPUT_PATH, daemonPath.toString());
 
     // Bound about a second in, so attempt 1 is refused and attempt 2 (at ~12s) succeeds. A thread
     // rather than a scheduler: there is exactly one thing to do and one place it can fail.
@@ -93,7 +141,7 @@ public class CiDaemonBootstrapFetchTest {
 
     Process process;
     try {
-      ProcessBuilder builder = new ProcessBuilder("/bin/sh", "-c", CiDaemonLauncher.BOOTSTRAP);
+      ProcessBuilder builder = new ProcessBuilder("/bin/sh", "-c", bootstrap);
       builder.redirectOutput(out.toFile());
       builder.redirectError(err.toFile());
       Map<String, String> env = builder.environment();
@@ -113,8 +161,10 @@ public class CiDaemonBootstrapFetchTest {
       process = builder.start();
 
       // ~13 seconds by construction (one refusal, one 12s pause, then success). The wait is
-      // generous and finite: a bootstrap that hangs must fail this test, not hang the build.
-      if (!process.waitFor(90, TimeUnit.SECONDS)) {
+      // generous and finite: a bootstrap that hangs must fail this test, not hang the build — and
+      // it OUTLASTS the give-up budget by construction (see PROCESS_WAIT_SECONDS), so a bootstrap
+      // that really gave up is reported as its own stderr rather than as "never exited".
+      if (!process.waitFor(PROCESS_WAIT_SECONDS, TimeUnit.SECONDS)) {
         process.destroyForcibly();
         throw new AssertionError(
             "the bootstrap never exited\nstdout:\n" + read(out) + "\nstderr:\n" + read(err));
@@ -195,6 +245,14 @@ public class CiDaemonBootstrapFetchTest {
       }
     }
     return false;
+  }
+
+  private static int occurrences(String text, String needle) {
+    int count = 0;
+    for (int at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length())) {
+      count++;
+    }
+    return count;
   }
 
   private static String read(Path file) throws IOException {
