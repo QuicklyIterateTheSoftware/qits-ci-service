@@ -2182,6 +2182,26 @@ first. **It is also the commissioning switch**: `IdpCommissioner.enabled()` read
 both halves of the credential behind it, so a deployment that has not turned the oidc client on
 commissions nothing and a step container's environment is what it always was.
 
+**Two other client NAMES still ship keys, and they are neutralisation rather than dead stubs.** The
+deployment sets `QUARKUS_OIDC_CLIENT_*` (the unnamed default client — four of the five are declared
+in `.config/qits/configuration.yml` as the `qits` client's env-name fallback until the `idp:client`
+cutover) and the whole `QUARKUS_OIDC_CLIENT_GITHOST_*` family, and **one such variable mints the map
+key**: both clients exist at runtime whatever `application.properties` leaves out, with
+`client-enabled` and `discovery-enabled` defaulting to true. An enabled client is resolved during
+**runtime init** — `initOidcClients` awaits `createOidcClient` per client before the HTTP listener
+accepts — so an issuer that accepts and does not answer fails the boot on a mutiny
+`TimeoutException`, which is how deleting those two blocks as "dead" on 2026-09-15 shipped a boot
+hazard in `2026.915.174621`. Three keys per name close it and each does a different job: with no
+variable set `client-enabled=false` disables the client outright, and where the deployment DOES set
+the variable it wins (env is ordinal 300, this file 250) — so `discovery-enabled=false` is what
+removes the dial, and `token-path` is what stops that same discovery-less client failing runtime init
+on a token endpoint it may no longer discover. The `qits` client is untouched by all of it because
+its fallbacks name environment VARIABLES inside `${…}` rather than the dotted keys.
+`OidcClientNeutralisationTest` measures both arms against a real `EnvConfigSource`, which is the only
+way to see it: a surefire JVM gains no environment variable and a `QuarkusTestProfile` override is
+read by the expressions but never by a dotted key. The keys go when the deployment's entries go, not
+before.
+
 **This is a NEW arrangement rather than the old one coming back.** The retired one was
 `notify/PdBearer`, a bearer for qits-platform-deployments' HTTP intake, and it went with the call it
 carried when the deployer started subscribing off the bus instead. What the pom said in the gap —

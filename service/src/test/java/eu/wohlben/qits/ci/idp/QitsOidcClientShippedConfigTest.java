@@ -50,6 +50,22 @@ class QitsOidcClientShippedConfigTest {
   }
 
   @Test
+  void theTwoNamesTheDeploymentStillSetsShipNeutralised() {
+    // Not stubs: the deployment sets QUARKUS_OIDC_CLIENT_* and QUARKUS_OIDC_CLIENT_GITHOST_*, one
+    // such variable mints the map key, and an enabled client dials its issuer during runtime init
+    // before the listener accepts. `client-enabled` is what disables the client where no variable
+    // outranks this file; `discovery-enabled` and `token-path` are what keep an env-ENABLED client
+    // from dialling and from failing the boot, and they have no environment twin to lose to.
+    // OidcClientNeutralisationTest is the same three keys measured against a real env source.
+    assertEquals("false", value("quarkus.oidc-client.client-enabled"));
+    assertEquals("false", value("quarkus.oidc-client.discovery-enabled"));
+    assertEquals("token", value("quarkus.oidc-client.token-path"));
+    assertEquals("false", value("quarkus.oidc-client.githost.client-enabled"));
+    assertEquals("false", value("quarkus.oidc-client.githost.discovery-enabled"));
+    assertEquals("token", value("quarkus.oidc-client.githost.token-path"));
+  }
+
+  @Test
   void theContainersOwnerKeyFollowsTheQitsClientsId() {
     // qits.ci.containers.owner (the `ci` jar) reads quarkus.oidc-client.qits.client-id by default —
     // OwnerGuard compares this string to a machine token's `sub` once the gate is on.
