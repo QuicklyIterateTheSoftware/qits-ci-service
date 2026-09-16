@@ -135,6 +135,16 @@ class AgentReadAccessTest {
   void anAgentReadsTheRepositoryRoutes() {
     given().when().get("/ci/api/repositories").then().statusCode(200);
     given().when().get("/ci/api/repositories/summary").then().statusCode(200);
+    // The release-phase read answers the ENDPOINT's own answer here rather than 200, and the
+    // repository is deliberately one no suite seeds: it is in no catalogue, so the question cannot
+    // be asked and the answer is 503 whatever else is running in this JVM. What the case rules out
+    // is 401 and 403, which is the whole of what a role test can say — the verdicts themselves are
+    // CiReleasePhaseSurfaceTest's and the ci module's.
+    given()
+        .when()
+        .get("/ci/api/repositories/agent-read-no-such-repo/release-phase?rev=refs/tags/2026.9.1")
+        .then()
+        .statusCode(503);
   }
 
   @Test

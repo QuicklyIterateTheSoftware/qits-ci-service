@@ -1810,6 +1810,30 @@ biting it feels like.
   (an enum), its `name`, and its `sbom:` path, held to an allow-list rather than an escape. The
   composer single-quotes them as well; the guard is what makes the quoting a second line of defence
   rather than the only one.
+- **`GET /ci/api/repositories/{repoId}/release-phase?rev=` is the one endpoint this feature grew, and
+  it exists because only the composer can answer.** qits-projects decides whether a released tag is
+  publish-gated, and it decided by reading that tag's `release.yml` and asking whether it named an
+  `archetype:` — answerable from the file, and the wrong question: `spa-frontend` and `cli` declare
+  no `release:` slot, so a migrated SPA got a PUBLISH gate whose run nobody would ever record and its
+  request sat RELEASED forever. What decides is the **composition**, because the whole-slot override
+  lets a repository declare its own `release:` on top of a publish-free archetype. So qits-ci
+  answers: `CiEventTriggerService.releasePhaseAt` composes at the rev and reports
+  `DECLARED`/`NOT_DECLARED`/`UNKNOWN`, and `CiRepositoryController` maps the third to **503**.
+  <br>**Three answers, because a boolean has to give a failure a side and both sides are wrong.** A
+  `false` derived from a read that did not happen publishes a release nothing gated; a `true` derived
+  from one hangs a request behind a gate nobody can answer. So `UNKNOWN` is reserved for the question
+  not having been asked at all — the repository is in no catalogue here, the slot file's read was
+  `UNREACHABLE`, or the archetype could not be read — and the caller retries. **A slot file that will
+  not parse, and a pair that will not compile, answer `declared: true`**: those are the repository's
+  own committed bytes, the fix is a commit, and waiting is recoverable where publishing past an
+  unchecked pipeline is not. `detail` says which case it was, and it is contract rather than log.
+  <br>`attemptCompose` is `compose` with the outcome named — extracted rather than copied, because
+  the two evaluation callers want a null and a WARN while this one needs "the file is broken" and
+  "the wrapper is unreadable" to be opposite answers. The archetype is still read at the wrapper's
+  `main` **at ask time**, so the answer is about the pipeline as it composes now; that is the wanted
+  direction, since the run that would satisfy the gate would be composed now too. The endpoint is in
+  `docs/openapi.yml` for `GET /ci/api/daemon`'s reason — a machine consumer whose contract is written
+  down here and nowhere else.
 - **`userflows:` composes no step, deliberately.** It replaces qits-projects' substring grep for
   `@userflows/<site>` in a QA recipe — a search inside a shell script, which stops working the moment
   the script is composed — so it is a declaration for the reader on the other side of the release.

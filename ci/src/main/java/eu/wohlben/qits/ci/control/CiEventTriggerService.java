@@ -851,6 +851,54 @@ public class CiEventTriggerService {
       String slotFile,
       CiRepoRef platformRepo,
       String consequence) {
+    return attemptCompose(repo, repoId, slotFile, platformRepo, consequence).composed();
+  }
+
+  /**
+   * Which of the four ways a composition attempt ended. The three failures are one {@code null} to
+   * {@link #compose}, and they are told apart here for the one caller that must not collapse them —
+   * see {@link #releasePhaseAt}.
+   */
+  private enum ComposeOutcome {
+    /** Parsed, resolved and compiled. The {@code Composed} pair is there, either half may be null. */
+    COMPOSED,
+    /** The repository's own {@code release.yml} is not a usable slot file. */
+    UNPARSEABLE,
+    /** The archetype it names could not be read from the wrapper repository. */
+    ARCHETYPE_UNREADABLE,
+    /** Parsed and resolved, but the pair cannot be compiled into a pipeline. */
+    UNCOMPOSABLE
+  }
+
+  /**
+   * One composition attempt: what came of it, the pair when there is one, and the sentence a caller
+   * can put in front of a person.
+   *
+   * <p>The detail is built here rather than at the call site because it is the same fact the WARN
+   * already names — the file, the archetype, the parser's own message — and a second spelling of it
+   * would be a second thing to keep in step with the log.
+   */
+  private record ComposeAttempt(
+      ComposeOutcome outcome, CiReleaseComposer.Composed composed, String detail) {}
+
+  /**
+   * Parses one repository's slot file, reads whatever archetype it names at the wrapper's {@code
+   * main}, and compiles the pair — saying which of the three ways it failed rather than only that it
+   * did.
+   *
+   * <p><b>Extracted from {@link #compose} rather than copied.</b> The two evaluation callers want a
+   * null and a WARN; the release-phase read wants the distinction, because "this repository's
+   * pipeline is broken" and "qits-ci could not read the wrapper" are opposite answers there — one is
+   * a pipeline somebody must fix, the other is a question this instance could not ask at all. A
+   * second copy of the parse/read/compile sequence would be a second place for the archetype branch
+   * to drift.
+   */
+  private ComposeAttempt attemptCompose(
+      CiRepoRef repo,
+      String repoId,
+      String slotFile,
+      CiRepoRef platformRepo,
+      String consequence) {
     CiReleaseSlots slots;
     try {
       slots = slotParser.parse(CiReleaseSlotParser.CONFIG_PATH, slotFile);
@@ -858,7 +906,10 @@ public class CiEventTriggerService {
       LOG.warnf(
           "%s: %s is not a usable release slot file: %s — %s",
           repoId, CiReleaseSlotParser.CONFIG_PATH, e.getMessage(), consequence);
-      return null;
+      return new ComposeAttempt(
+          ComposeOutcome.UNPARSEABLE,
+          null,
+          CiReleaseSlotParser.CONFIG_PATH + " is not a usable release slot file: " + e.getMessage());
     }
     CiReleaseSlots archetype = null;
     if (slots.namesArchetype()) {
@@ -870,17 +921,29 @@ public class CiEventTriggerService {
         LOG.warnf(
             "%s: %s names release archetype '%s', which could not be read — %s",
             repoId, CiReleaseSlotParser.CONFIG_PATH, slots.archetype(), consequence);
-        return null;
+        return new ComposeAttempt(
+            ComposeOutcome.ARCHETYPE_UNREADABLE,
+            null,
+            CiReleaseSlotParser.CONFIG_PATH
+                + " names release archetype '"
+                + slots.archetype()
+                + "', which could not be read from the platform-pipelines repository");
       }
       archetype = recipe.get().slots();
     }
     try {
-      return CiReleaseComposer.compose(repo, slots, archetype);
+      return new ComposeAttempt(
+          ComposeOutcome.COMPOSED, CiReleaseComposer.compose(repo, slots, archetype), null);
     } catch (CiConfigException e) {
       LOG.warnf(
           "%s: %s could not be composed into a release pipeline: %s — %s",
           repoId, CiReleaseSlotParser.CONFIG_PATH, e.getMessage(), consequence);
-      return null;
+      return new ComposeAttempt(
+          ComposeOutcome.UNCOMPOSABLE,
+          null,
+          CiReleaseSlotParser.CONFIG_PATH
+              + " could not be composed into a release pipeline: "
+              + e.getMessage());
     }
   }
 
@@ -944,6 +1007,154 @@ public class CiEventTriggerService {
             platformRepo(candidateRepos.candidates()),
             "this retry replays the pipeline stored on the run it re-fires");
     return composed == null ? null : documentFor(composed, eventName);
+  }
+
+  /**
+   * Whether a repository's composed release cycle has a <b>release phase</b> at one rev — three
+   * answers, never two.
+   *
+   * <h2>Why a caller cannot work this out for itself</h2>
+   *
+   * <p>qits-projects decides whether a released tag is publish-gated by reading that tag's {@code
+   * .config/qits/release.yml} and asking whether it names an {@code archetype:}. That question is
+   * answerable from the file; the one it stands in for is not. A repository may declare its own
+   * {@code release:} slot on top of an archetype that has none, and {@link CiReleaseComposer}'s
+   * whole-slot override means the composition — not the file — is what says whether a release run
+   * exists. qits-ci is the composer, so qits-ci is the only component that can answer.
+   *
+   * <h2>Why three answers and not two</h2>
+   *
+   * <p>A boolean would have to give a failure a side, and both sides are wrong. Answering "declared"
+   * for a read that did not happen hangs a release request behind a PUBLISH gate whose run nobody
+   * will ever record — which is the failure this read exists to end, in the other direction.
+   * Answering "not declared" waves a release through whose pipeline was never composed, so nothing
+   * checks the publish that was supposed to happen. {@link Verdict#UNKNOWN} is what the caller
+   * retries on, and it is reserved for the question not having been asked at all: the repository is
+   * not in this instance's candidate catalogue, the slot file's read came back {@code UNREACHABLE},
+   * or the archetype it names could not be read from the wrapper repository.
+   *
+   * <h2>Why a broken pipeline is DECLARED</h2>
+   *
+   * <p>A slot file that will not parse, and a pair that will not compile, both answer {@link
+   * Verdict#DECLARED}. The asymmetry with the reads above is deliberate: those are facts about the
+   * repository's own committed bytes, and waiting on a pipeline somebody has to fix is recoverable —
+   * the fix is a commit, the request finalizes afterwards. Waving through a release whose pipeline
+   * was never checked is not recoverable, because nothing downstream re-asks. {@code detail} says
+   * which of the two it was, so a person looking at a stuck gate is told the file is broken rather
+   * than left to infer it.
+   *
+   * <h2>Two things the answer is NOT about</h2>
+   *
+   * <p><b>The repository's half is read at {@code rev}, the platform's at the wrapper's {@code
+   * main}</b> — {@link #recomposedReleaseDocument}'s split, for its reason. So this is an answer
+   * about the pipeline <em>as it composes now</em>, not as it composed when the tag was cut: an
+   * archetype that gains or loses its {@code release:} slot changes what this read says about a tag
+   * whose own bytes never moved. That is the wanted direction, since the run that would satisfy the
+   * gate would be composed now too.
+   *
+   * <p><b>{@code false} is a real answer and not an absence.</b> {@code spa-frontend} and {@code
+   * cli} declare no {@code release:} slot on purpose, and a rev with no {@code release.yml} at all
+   * composes nothing — at an immutable tag that is honest rather than provisional. Both are {@link
+   * Verdict#NOT_DECLARED}, and neither is ever reached from a read that failed.
+   *
+   * <p><b>One edge of that is worth knowing rather than guarding.</b> {@code HttpGitConfigSource}
+   * maps every 404 to {@code ABSENT} and nothing else — it reads at revs its callers have already
+   * had resolved — so a {@code rev} that does not resolve at all comes back as "no {@code
+   * release.yml} here" rather than as a failure. The catalogue check above is what keeps that from
+   * mattering: the repository is known, and the caller asks about a tag it has just released.
+   *
+   * @param repositoryId the repository, by public name or by storage id — {@link #find}'s two arms
+   * @param rev a git rev the host can resolve, in practice {@code refs/tags/<version>}
+   */
+  public ReleasePhase releasePhaseAt(String repositoryId, String rev) {
+    if (repositoryId == null || repositoryId.isBlank()) {
+      return new ReleasePhase(Verdict.UNKNOWN, "No repository was named");
+    }
+    // One listing, read once and used for both lookups — the evaluation path's own rule, and here it
+    // is also what keeps the repository and the wrapper resolved against the same catalogue.
+    List<CiRepoRef> candidates = candidateRepos.candidates();
+    CiRepoRef repo = find(candidates, repositoryId);
+    if (repo == null) {
+      // Not a NOT_DECLARED: an empty or unreachable catalogue looks exactly like this, and the
+      // candidate list's standing rule is that a read failure never shrinks the set observably.
+      return new ReleasePhase(
+          Verdict.UNKNOWN,
+          "Repository " + repositoryId + " is not in this qits-ci's candidate catalogue");
+    }
+    String repoId = repo.display();
+    CiConfigSource.FileLookup found =
+        configSource.readFile(repo, rev, CiReleaseSlotParser.CONFIG_PATH);
+    if (found.status() == CiConfigSource.FileLookup.Status.UNREACHABLE) {
+      return new ReleasePhase(
+          Verdict.UNKNOWN,
+          repoId + ": " + CiReleaseSlotParser.CONFIG_PATH + " could not be read at " + rev);
+    }
+    if (found.status() != CiConfigSource.FileLookup.Status.FOUND) {
+      return new ReleasePhase(
+          Verdict.NOT_DECLARED,
+          repoId
+              + " declares no "
+              + CiReleaseSlotParser.CONFIG_PATH
+              + " at "
+              + rev
+              + ", so nothing composes and there is no release run to wait for");
+    }
+    ComposeAttempt attempt =
+        attemptCompose(
+            repo,
+            repoId,
+            found.content(),
+            platformRepo(candidates),
+            "this release-phase read answers on which failure it was");
+    return switch (attempt.outcome()) {
+      case UNPARSEABLE, UNCOMPOSABLE ->
+          new ReleasePhase(
+              Verdict.DECLARED,
+              repoId
+                  + ": "
+                  + attempt.detail()
+                  + " — reported as declared, because a pipeline that must be fixed is recoverable"
+                  + " and a release waved through unchecked is not");
+      case ARCHETYPE_UNREADABLE -> new ReleasePhase(Verdict.UNKNOWN, repoId + ": " + attempt.detail());
+      case COMPOSED ->
+          attempt.composed().releaseDocument() != null
+              ? new ReleasePhase(
+                  Verdict.DECLARED,
+                  repoId
+                      + ": "
+                      + CiReleaseSlotParser.CONFIG_PATH
+                      + " at "
+                      + rev
+                      + " composes a release pipeline")
+              : new ReleasePhase(
+                  Verdict.NOT_DECLARED,
+                  repoId
+                      + ": "
+                      + CiReleaseSlotParser.CONFIG_PATH
+                      + " at "
+                      + rev
+                      + " composes no release phase — neither it nor its archetype declares any"
+                      + " 'release' step");
+    };
+  }
+
+  /**
+   * What {@link #releasePhaseAt} answered, and the sentence behind it.
+   *
+   * <p>The detail is part of the contract rather than a log line: the caller puts it in front of a
+   * person who is looking at a release request that is either gated or not, and "why" is the only
+   * thing the verdict itself cannot carry.
+   */
+  public record ReleasePhase(Verdict verdict, String detail) {}
+
+  /** The three answers. Collapsing {@link #UNKNOWN} into either of the others is the bug. */
+  public enum Verdict {
+    /** The composition has a release half, or has one that must be fixed before it can run. */
+    DECLARED,
+    /** The composition succeeded and has no release half, or there is nothing to compose. */
+    NOT_DECLARED,
+    /** The question could not be asked. Never an answer about the repository; always a retry. */
+    UNKNOWN
   }
 
   /**

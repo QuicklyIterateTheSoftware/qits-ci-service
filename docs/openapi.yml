@@ -174,6 +174,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CiRunDto"
+    ReleasePhaseResponse:
+      type: object
+      properties:
+        repositoryId:
+          type: string
+        rev:
+          type: string
+        declared:
+          type: boolean
+        detail:
+          type: string
     RepositorySummaryDto:
       type: object
       properties:
@@ -322,6 +333,44 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListRepositorySummariesResponse"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Repository Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:system
+        - qits:agent
+  /ci/api/repositories/{repoId}/release-phase:
+    get:
+      summary: Whether a rev's composed release cycle declares a release phase
+      parameters:
+      - name: repoId
+        in: path
+        required: true
+        schema:
+          type: string
+      - description: "A git rev the host can resolve, in practice refs/tags/<version>"
+        required: true
+        name: rev
+        in: query
+        schema:
+          type: string
+      responses:
+        "200":
+          description: "Answered — declared true or false, with the reason"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleasePhaseResponse"
+        "400":
+          description: Missing or blank rev
+        "503":
+          description: "Not answered — the repository is in no catalogue here, or\
+            \ the slot file or its archetype could not be read. Retry."
         "401":
           description: Not Authorized
         "403":
@@ -546,4 +595,4 @@ paths:
         - qits:admin
 info:
   title: qits-ci API
-  version: 2026.914.224554
+  version: 2026.916.21501

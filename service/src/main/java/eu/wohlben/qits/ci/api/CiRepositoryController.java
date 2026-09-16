@@ -1,15 +1,23 @@
 package eu.wohlben.qits.ci.api;
 
+import eu.wohlben.qits.ci.control.CiEventTriggerService;
 import eu.wohlben.qits.ci.control.CiRunService;
 import eu.wohlben.qits.ci.dto.CiRunDto;
+import eu.wohlben.qits.ci.error.BadRequestException;
+import eu.wohlben.qits.ci.error.UnavailableException;
 import eu.wohlben.qits.ci.mapper.CiRunMapper;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
+import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import java.util.List;
 import org.eclipse.microprofile.openapi.annotations.Operation;
+import org.eclipse.microprofile.openapi.annotations.media.Content;
+import org.eclipse.microprofile.openapi.annotations.media.Schema;
+import org.eclipse.microprofile.openapi.annotations.parameters.Parameter;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 
 /**
@@ -41,6 +49,11 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * {@code /api} already covers it. And it is a read, so it calls no machine guard — exactly like the
  * run reads.
  *
+ * <p><b>One read here is scoped to a repository after all</b>, and it is the exception that says
+ * what the resource is: {@link #releasePhase} asks whether a given rev of a given repository
+ * composes a release pipeline. It sits here rather than beside the runs because it is not about a
+ * run — it is about the repository at a rev, which is the only subject this resource has.
+ *
  * <p><b>Read by both kinds of caller</b>, so it takes {@code qits:admin} and {@code qits:system}
  * together — the same pair {@code CiRunController}'s reads take, and for the reason stated there.
  * {@code qits:agent} reads it too: agents keep every read and write nothing, and this class has no
@@ -54,6 +67,8 @@ public class CiRepositoryController {
   @Inject CiRunService runService;
 
   @Inject CiRunMapper mapper;
+
+  @Inject CiEventTriggerService triggers;
 
   public record ListRepositoryIdsResponse(List<String> repositoryIds) {}
 
@@ -125,5 +140,99 @@ public class CiRepositoryController {
                         mapper.toDto(summary.lastRun()),
                         summary.lastMainRun() == null ? null : mapper.toDto(summary.lastMainRun())))
             .toList());
+  }
+
+  /**
+   * Whether a rev's composed release cycle has a release phase.
+   *
+   * <p>{@code declared} is the whole answer; {@code detail} is the sentence behind it, and it is part
+   * of the contract rather than a log line — a caller showing a person why a release request is, or
+   * is not, waiting for a publish has nothing else to show. {@code repositoryId} and {@code rev} come
+   * back verbatim as the caller sent them, so an answer correlates without the caller keeping state.
+   */
+  public record ReleasePhaseResponse(
+      String repositoryId, String rev, boolean declared, String detail) {}
+
+  /**
+   * Whether qits-ci would run a <b>release pipeline</b> for this repository at this rev — the one
+   * question the composer can answer and its caller cannot.
+   *
+   * <h2>What it is for</h2>
+   *
+   * <p>qits-projects gates a released tag on a PUBLISH phase, and it decided whether to raise that
+   * gate by reading the tag's {@code .config/qits/release.yml} and asking only whether it named an
+   * {@code archetype:}. That is answerable from the file and it is the wrong question: {@code
+   * spa-frontend} and {@code cli} deliberately declare no {@code release:} slot, so a migrated SPA
+   * got a PUBLISH gate whose run nobody would ever record and its release request sat RELEASED
+   * forever. What decides is the <b>composition</b> — {@code CiReleaseComposer}'s whole-slot override
+   * lets a repository declare its own {@code release:} on top of a publish-free archetype — and
+   * qits-ci is the composer. So the composer answers, and this is the read.
+   *
+   * <h2>Three answers, because a boolean has to give a failure a side</h2>
+   *
+   * <p>A 200 means the question was asked and answered. <b>503 means it was not asked at all</b> —
+   * the repository is in no catalogue here, the slot file's read was {@code UNREACHABLE}, or the
+   * archetype could not be read from the wrapper repository — and the caller retries. It is never a
+   * {@code false}: a {@code false} derived from a failure is the very bug this endpoint fixes, in
+   * the direction that publishes a release nothing gated.
+   *
+   * <p><b>A slot file that will not parse, or a pair that will not compile, answers {@code declared:
+   * true}.</b> Both are facts about bytes the repository committed, and the two outcomes are not
+   * symmetrical: waiting on a pipeline somebody has to fix is recoverable — the fix is a commit and
+   * the gate answers afterwards — while waving a release through whose pipeline was never composed
+   * is not, because nothing downstream asks again. {@code detail} names which case it was, so a
+   * stuck gate reads as "your release.yml is broken" rather than as silence.
+   *
+   * <h2>What the answer is about in time</h2>
+   *
+   * <p>The repository's half is read at {@code rev} — immutable bytes at a tag — and <b>the archetype
+   * is read at the wrapper's {@code main} at ask time</b>, which is where every composition on this
+   * service reads it. So the answer describes the pipeline <em>as it composes now</em>, not as it
+   * composed when the tag was cut: a wrapper commit that gives an archetype a {@code release:} slot
+   * changes what this read says about a tag whose own bytes never moved. That is the direction that
+   * is wanted, because the run that would satisfy the gate would be composed now too.
+   *
+   * <p>The role set is the class's, and {@code qits:system} is load-bearing rather than inherited:
+   * the caller is qits-projects, presenting either a machine bearer or the edge's forwarded {@code
+   * X-Qits-User: qits-projects} / {@code X-Qits-Roles: qits:system} pair. It is a read, so it calls
+   * no machine guard — exactly like every other read here.
+   *
+   * @param repoId the repository, by public name or by storage id
+   * @param rev mandatory; a git rev the host can resolve, in practice {@code refs/tags/<version>}.
+   *     Blank is a 400 rather than a default, because the one thing this read must never do is
+   *     answer about a ref the caller did not name.
+   */
+  @GET
+  @Path("/{repoId}/release-phase")
+  @Operation(summary = "Whether a rev's composed release cycle declares a release phase")
+  @APIResponse(
+      responseCode = "200",
+      description = "Answered — declared true or false, with the reason",
+      content = @Content(schema = @Schema(implementation = ReleasePhaseResponse.class)))
+  @APIResponse(responseCode = "400", description = "Missing or blank rev")
+  @APIResponse(
+      responseCode = "503",
+      description =
+          "Not answered — the repository is in no catalogue here, or the slot file or its archetype"
+              + " could not be read. Retry.")
+  public ReleasePhaseResponse releasePhase(
+      @PathParam("repoId") String repoId,
+      @Parameter(
+              required = true,
+              description = "A git rev the host can resolve, in practice refs/tags/<version>")
+          @QueryParam("rev")
+          String rev) {
+    if (rev == null || rev.isBlank()) {
+      throw new BadRequestException("A rev is required");
+    }
+    CiEventTriggerService.ReleasePhase phase = triggers.releasePhaseAt(repoId, rev.trim());
+    if (phase.verdict() == CiEventTriggerService.Verdict.UNKNOWN) {
+      throw new UnavailableException(phase.detail());
+    }
+    return new ReleasePhaseResponse(
+        repoId,
+        rev,
+        phase.verdict() == CiEventTriggerService.Verdict.DECLARED,
+        phase.detail());
   }
 }
