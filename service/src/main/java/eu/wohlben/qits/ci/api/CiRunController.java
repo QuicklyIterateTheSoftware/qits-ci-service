@@ -13,6 +13,7 @@ import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import eu.wohlben.qits.ci.dto.CiLiveStepDto;
 import eu.wohlben.qits.ci.dto.CiRunDto;
 import eu.wohlben.qits.ci.entity.CiRun;
+import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiStep;
 import eu.wohlben.qits.ci.error.BadRequestException;
@@ -145,6 +146,22 @@ public class CiRunController {
 
   /** The run a retry created; poll it like any other. */
   public record RetryRunResponse(String runId) {}
+
+  /**
+   * What qits-projects sends to re-ask one phase of one release request: the repository, the request,
+   * and which half of the release. All three are required — see {@link #rerunReleaseRequestPhase}
+   * for why this triple and not a run id.
+   */
+  public record RerunReleaseRequestPhaseRequest(
+      @Schema(description = "The repository whose run to re-fire", required = true) String repoId,
+      @Schema(description = "The release request the run serves", required = true)
+          String releaseRequestId,
+      @Schema(
+              description =
+                  "Which phase of the release to re-fire: RELEASE_REQUEST (QA) or RELEASE (publish)",
+              required = true,
+              enumeration = {"RELEASE_REQUEST", "RELEASE"})
+          String phase) {}
 
   /**
    * A repository's runs, newest-first — without step output (fetch a single run for that). The
@@ -550,6 +567,96 @@ public class CiRunController {
   @APIResponse(responseCode = "409", description = "The run has not finished, so there is nothing to retry yet")
   public Response retryRun(@PathParam("runId") String runId) {
     return Response.accepted().entity(new RetryRunResponse(runService.retry(runId).id)).build();
+  }
+
+  /**
+   * Run one PHASE of one release request again — the newest run that phase has for this repository
+   * and request, re-fired through exactly the machinery {@link #retryRun} uses.
+   *
+   * <p><b>Addressed by {@code (repoId, releaseRequestId, phase)} because that triple is the only
+   * identity the caller holds.</b> The release request in qits-projects IS the pipeline; a run id is
+   * qits-ci's, and the run's commit is no handle either — a QA run builds a fold nobody pushed that
+   * the next re-fold replaces. It is {@link #cancelReleaseRequestRuns}' pair with the phase added,
+   * and both halves of that pair are required here for the identical reason: one request folds many
+   * repositories and one repository carries many open requests, so either alone reaches a sibling's
+   * work.
+   *
+   * <p><b>202 and a run id, exactly like {@link #retryRun}</b>: the answer is a run that has been
+   * accepted, is {@code QUEUED} and has not started, so the caller polls {@code GET
+   * /ci/api/runs/{runId}} with it.
+   *
+   * <p><b>The 409 for a phase that SUCCEEDED replaces a live failure mode rather than adding a
+   * rule.</b> The same press used to reach {@code /ci/api/runs/{runId}/retry}, be accepted, and die
+   * in a step container cloning {@code release/<id>} — the branch tag creation deletes — so the
+   * operator's answer was a red run about a missing ref. A phase whose verdict was spent has nothing
+   * to re-ask, and the message says so in words.
+   *
+   * <p><b>The guard is {@link #cancelReleaseRequestRuns}', arm for arm.</b> The roles are the
+   * write's — {@code qits:admin}, as on {@code /ci/api/runs/{runId}/retry}, because starting
+   * somebody's build is a person's act — plus {@code qits:system}, because qits-projects calls this
+   * as a machine exactly as it calls the cancellation. The machine arm then runs the same {@link
+   * #cancellationScope()}/{@link #requireRepositoryInProject} check, so "what does my token cover"
+   * has one answer across every write on this resource.
+   */
+  @POST
+  @Path("/rerun")
+  @Consumes(MediaType.APPLICATION_JSON)
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:system"})
+  @Operation(summary = "Run one phase of a release request's CI again")
+  @APIResponse(
+      responseCode = "202",
+      description = "A new run has been accepted and queued",
+      content = @Content(schema = @Schema(implementation = RetryRunResponse.class)))
+  @APIResponse(responseCode = "400", description = "The repository id, the release request id or the phase is missing or invalid")
+  @APIResponse(
+      responseCode = "403",
+      description =
+          "The token covers this repository for nobody — no project claim and no platform-wide role,"
+              + " or a project claim this instance cannot place the repository in")
+  @APIResponse(responseCode = "404", description = "No such repository")
+  @APIResponse(
+      responseCode = "409",
+      description =
+          "That phase has no run yet, its newest run is still going, or it succeeded — a succeeded"
+              + " phase has nothing to ask again")
+  public Response rerunReleaseRequestPhase(RerunReleaseRequestPhaseRequest request) {
+    if (request == null) {
+      throw new BadRequestException("A repository id, a release request id and a phase are required");
+    }
+    CiIdentifiers.requireRepoId(request.repoId());
+    String releaseRequestId = requireReleaseRequestId(request.releaseRequestId());
+    CiRunPhase phase = requirePhase(request.phase());
+    String projectScope = cancellationScope();
+    if (projectScope != null) {
+      requireRepositoryInProject(request.repoId(), projectScope);
+    }
+    return Response.accepted()
+        .entity(
+            new RetryRunResponse(
+                runService.retryReleaseRequestPhase(request.repoId(), releaseRequestId, phase).id))
+        .build();
+  }
+
+  /**
+   * The phase as the enum's own name, refused as a bad request when it is anything else.
+   *
+   * <p>Spelled out rather than bound to the enum by JAX-RS for {@code ?limit=}'s reason one door
+   * over: a conversion failure on a body property is a framework-shaped answer, and every rejected
+   * input on this surface arrives as a 400 through {@link CiExceptionMapper}'s {@code {"message":
+   * …}} envelope. The message names both accepted words, because a caller that spelled one wrong
+   * cannot be expected to know the vocabulary is closed.
+   */
+  private static CiRunPhase requirePhase(String phase) {
+    if (phase == null || phase.isBlank()) {
+      throw new BadRequestException(
+          "A phase is required: one of RELEASE_REQUEST (QA) or RELEASE (publish)");
+    }
+    try {
+      return CiRunPhase.valueOf(phase.trim());
+    } catch (IllegalArgumentException unknown) {
+      throw new BadRequestException(
+          "Unknown phase '" + phase + "': expected RELEASE_REQUEST (QA) or RELEASE (publish)");
+    }
   }
 
   private String cancellationReason(String payload) {

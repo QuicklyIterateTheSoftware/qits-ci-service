@@ -163,7 +163,7 @@ public class EventWireReflectionTest {
     Instant finishedAt = Instant.parse("2026-07-31T12:46:03Z");
     BuildSuccessful out =
         new BuildSuccessful(
-            "run-1", "qits-ci", "qits", "qits-ci", "main", "0123456789abcdef", null, null,
+            "run-1", "qits-ci", "qits", "qits-ci", "main", "0123456789abcdef", null, null, null,
             finishedAt);
 
     EventEnvelope envelope = EventEnvelope.of(out);

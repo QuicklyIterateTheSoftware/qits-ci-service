@@ -1127,6 +1127,16 @@ Four things about that second seam are worth having in front of you:
 
 ### The release join, and why the port has a gatekeeper now
 
+**Two words carry across this section and the release-slots one below, and they mean exactly one
+thing in all three services.** A **phase** is a unit of work with a state and a rerun — QA, publish,
+deploy — so a step is not a phase and a `gating: false` half of one is not a second phase. A **gate**
+is the condition between two phases, and there are four (CI, approval, publish, deployment): **a gate
+delays, it does not fail.** The pipeline those phases belong to is the release request in
+qits-projects, not a table here; what qits-ci learns is which phase a run is, from the triggering
+event. Read the join in those terms: a publish-phase run that goes green while no `SCMRelease` has
+arrived leaves its announcement **owed**, which is the publish gate still waiting on a fact — not a
+release refused, and not a verdict about the run.
+
 **A green release pipeline no longer announces on its own.** `CiRunService.announceRelease` hands
 what the run published to `ReleaseJoin` (`ci/control`), and that is what calls `ReleaseAnnouncer` —
 only once an `SCMRelease` for the same `(repository, version)` has been seen. bootstrap-replay-plan.md's
@@ -1751,6 +1761,16 @@ checkout resolution, the run row, the dedupe, restart-reparse — is the path a 
 takes. `README.md` under "The fourth file" has the format and the rollout story; what follows is what
 biting it feels like.
 
+**Its two keys are PHASES, and this is where that vocabulary is fixed.** `release-request:` is phase
+one — QA, a run at `release/<id>@mergedSha` — and `release:` is phase two, publish, a run at
+`<version>@commitSha`; phase three is the deploy, which is qits-deployments' own release request and
+appears in no slot file. A phase is a unit of work with a state and a rerun, a **gate** is the
+condition between two phases (CI, approval, publish, deployment), and **a gate delays, it does not
+fail**. **Nothing in the composed text names a phase**: the DSL declares slots, and which phase a run
+is, is the engine's word, taken from the triggering event and never from which config file produced
+the document — which is exactly what makes a migrated and an unmigrated repository's runs read the
+same, and what keeps this feature out of every reader keyed on a phase.
+
 - **Four classes, and the split is the usual one.** `CiReleaseSlotParser` and `CiReleaseSlots` are
   the document; `CiReleaseArchetypes` is the wrapper read, through the existing `CiConfigSource`
   port; `CiReleaseComposer` is a **pure function** — three arguments in, two strings out, no clock,
@@ -1834,6 +1854,19 @@ biting it feels like.
   direction, since the run that would satisfy the gate would be composed now too. The endpoint is in
   `docs/openapi.yml` for `GET /ci/api/daemon`'s reason — a machine consumer whose contract is written
   down here and nowhere else.
+- **`POST /ci/api/repositories/{repoId}/release-composition?rev=` is the door beside it, and it is a
+  READ** — a POST only because it takes a request body, the `release.yml` a person is about to commit
+  and has not. It composes at the rev, from supplied bytes or from the committed ones, and reports
+  **per phase and per side** — composed and committed — the document text and a structured summary of
+  what decides behaviour. **It emits no boolean `matches`, and that is the design rather than an
+  omission**: a composed document carries a platform prelude and postlude the hand-written pair never
+  had, so the two can never be byte-equal and an equality answer would be a false negative somebody
+  then chases. It is for judgement, not a pass/fail gate, and nothing gates on it. The
+  UNKNOWN-shaped failures are `release-phase`'s exactly — the repository is in no catalogue here, a
+  read came back `UNREACHABLE`, the archetype is unreadable — and answer **503** for that bullet's
+  reason, while a slot file that will not parse is the repository's own committed bytes and is a
+  **200** saying so. It exists because 46 repositories have still to migrate and a person has to be
+  able to look before they commit.
 - **`userflows:` composes no step, deliberately.** It replaces qits-projects' substring grep for
   `@userflows/<site>` in a QA recipe — a search inside a shell script, which stops working the moment
   the script is composed — so it is a declaration for the reader on the other side of the release.

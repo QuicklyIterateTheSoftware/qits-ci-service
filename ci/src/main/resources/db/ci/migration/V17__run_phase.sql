@@ -1,0 +1,33 @@
+-- Which phase of a release pipeline this run is: the QA half or the publish half.
+--
+-- A release is ONE pipeline of three phases — P1 QA (a run at `release/<id>@mergedSha`, triggered
+-- by ReleaseRequestChanged), P2 Publish (a run at `<version>@commitSha`, triggered by SCMRelease),
+-- P3 Deploy (qits-deployments' own request) — and the release request in qits-projects IS the
+-- pipeline. There is deliberately NO pipeline table here and no pipeline id: this column is the
+-- whole of qits-ci's share, which is that a run knows which half of a release it is and can say so
+-- on the wire and be addressed by it.
+--
+-- **Decided by the TRIGGER EVENT NAME, never by the trigger file.** V8's release_request_id rule
+-- exactly, and for its reason: a run's phase is a fact about which event caused it, not about which
+-- YAML somebody happened to commit. So this works identically for the 46 repositories still on a
+-- hand-written `ci-event-release-request.yml`/`ci-event-release.yml` pair and for a composed
+-- `release.yml` one, and the file migration and this column are independent of one another. A
+-- condition on config_path anywhere would have coupled them and made the phase a property of a
+-- rollout instead of a property of the release.
+--
+-- Nullable, no default, no backfill, part of no constraint — V8's and V14's shape. Null is the
+-- ORDINARY value and it is PERMANENT, three ways: an event that named no release request (every
+-- SCMRelease published before qits-projects grew the field, which is the arm every live row takes
+-- on the day this ships), a dependency-bump run and every other run that is no part of a release,
+-- and every row recorded before this migration. Absent means "not part of a release", never "phase
+-- unknown, go and work it out".
+--
+-- **Nothing in the queue reads it.** No ordering rule, no priority, no dedupe key and no supersede
+-- rule touches this column; the dedupe stays (trigger_event_id, repo_id, config_path) and the
+-- per-branch collapse stays the checkout branch's. It is written at accept, copied by a retry, read
+-- by the announcement and by the per-phase rerun door, and by nothing else.
+--
+-- No check constraint naming the two words: V1's header and this codebase's standing rule — the
+-- enum class (CiRunPhase) is the invariant, and a database that enumerated it would be a second
+-- list to keep in step. 32 characters is what the longer of the two words needs twice over.
+alter table ci_run add column phase varchar(32);

@@ -13,6 +13,16 @@ import java.util.List;
  * gets published, and whether the repository has userflows. {@link CiReleaseComposer} turns this
  * plus an archetype into two ordinary trigger documents.
  *
+ * <p><b>The two step slots are the release pipeline's first two PHASES.</b> {@code
+ * release-request:} is phase one — the QA a release request is gated on — and {@code release:} is
+ * phase two, the publish; phase three is the deploy and belongs to qits-deployments, so no slot file
+ * declares it. A phase is a unit of work with a state and a rerun, a <b>gate</b> is the condition
+ * between two of them, and a gate delays rather than fails. This document <b>names neither
+ * phase</b>: it declares slots, {@link CiReleaseComposer} turns them into trigger documents, and the
+ * engine is what records which phase a run is — from the event that triggered it, never from the
+ * file it was composed out of. A slot with no steps is a phase this repository does not have (an SPA
+ * frontend has no publish phase) rather than a phase that is empty.
+ *
  * <p><b>Every slot is nullable or empty and that is the whole grammar.</b> A repository that
  * declares nothing but {@code archetype: spa-frontend} is one line; the archetype supplies both
  * step lists. A repository that declares a slot <b>replaces the archetype's entirely</b> — whole

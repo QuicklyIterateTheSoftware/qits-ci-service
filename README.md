@@ -1051,11 +1051,28 @@ An SPA frontend's whole file is `archetype: spa-frontend`.
 repository's `main`, together with the archetype recipe — into **two ordinary trigger documents** in
 the format above, and *those* are what land in `trigger_config`:
 
-| | QA | release |
+| | phase one — QA (`release-request:`) | phase two — publish (`release:`) |
 |---|---|---|
 | `event:` | `ReleaseRequestChanged` | `SCMRelease` |
 | `when:` | `repoName: { exact: <this repository> }` | `repository: { exact: <this repository> }` |
 | `checkout:` | `{ branch: backingBranch, sha: mergedSha }` | `{ branch: version, sha: commitSha, optional: true }` |
+
+**Those two keys are the first two PHASES of one release pipeline, not two pipelines that happen to
+share a file.** A release is one pipeline with three phases and four gates in it: **P1 QA**, a run at
+`release/<id>@mergedSha`, behind the CI gate and then a person's approval gate; **P2 publish**, a run
+at `<version>@commitSha`, behind the publish gate; **P3 deploy**, which is qits-deployments' own
+release request, behind the deployment gate, and past it the request is FINALIZED. A **phase** is a
+unit of work with a state and a rerun — a step is not a phase, and the `gating: false` half of a
+phase is not a second phase — and a **gate** is the condition between two phases: **it delays, it
+does not fail.** Phase three is in no slot file because it is not this repository's work to declare.
+
+**The pipeline itself is the release request in qits-projects, and qits-ci deliberately holds no
+table of one.** What qits-ci learns is one word per run — which phase this run is — and it is decided
+by the **triggering event**, never by which config file produced the document. A
+`ReleaseRequestChanged` run is phase one whether its document was composed from `release-request:` or
+committed by hand as `ci-event-release-request.yml`, and an `SCMRelease` run is phase two on the same
+terms. That is what keeps the migration invisible to every reader: `config_path` says where the bytes
+came from, the phase says what the run is for, and a half-migrated estate reads the same either way.
 
 Nothing downstream knows the document was composed. `config_path` is `.config/qits/release.yml` for
 both derived runs — the dedupe is `(trigger_event_id, repo_id, config_path)` and the two runs come

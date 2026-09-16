@@ -7,7 +7,9 @@ import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.UnavailableException;
 import eu.wohlben.qits.ci.mapper.CiRunMapper;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
@@ -18,6 +20,7 @@ import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
 import org.eclipse.microprofile.openapi.annotations.media.Schema;
 import org.eclipse.microprofile.openapi.annotations.parameters.Parameter;
+import org.eclipse.microprofile.openapi.annotations.parameters.RequestBody;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 
 /**
@@ -49,10 +52,17 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * {@code /api} already covers it. And it is a read, so it calls no machine guard — exactly like the
  * run reads.
  *
- * <p><b>One read here is scoped to a repository after all</b>, and it is the exception that says
- * what the resource is: {@link #releasePhase} asks whether a given rev of a given repository
- * composes a release pipeline. It sits here rather than beside the runs because it is not about a
- * run — it is about the repository at a rev, which is the only subject this resource has.
+ * <p><b>Two reads here are scoped to a repository after all</b>, and they are the exception that
+ * says what the resource is: {@link #releasePhase} asks whether a given rev of a given repository
+ * composes a release pipeline, and {@link #releaseComposition} asks what a candidate {@code
+ * release.yml} would compose at a rev beside what that rev commits. Both sit here rather than beside
+ * the runs because neither is about a run — each is about the repository at a rev, which is the only
+ * subject this resource has.
+ *
+ * <p><b>The second of those is a POST and this class still has no write.</b> It is a POST because a
+ * candidate slot file is a whole YAML document that is not committed anywhere yet, and a document is
+ * not a thing a query string carries; nothing is recorded, enqueued or mutated by it. So the
+ * sentence below still holds, and no machine guard is called anywhere in this file.
  *
  * <p><b>Read by both kinds of caller</b>, so it takes {@code qits:admin} and {@code qits:system}
  * together — the same pair {@code CiRunController}'s reads take, and for the reason stated there.
@@ -234,5 +244,326 @@ public class CiRepositoryController {
         rev,
         phase.verdict() == CiEventTriggerService.Verdict.DECLARED,
         phase.detail());
+  }
+
+  /**
+   * The one thing this door takes: the candidate {@code release.yml} to compose.
+   *
+   * <p>One field, and no second one is coming. A rev is a query parameter because it addresses the
+   * thing being read; this is a <em>body</em> because it is a whole YAML document that has not been
+   * committed anywhere yet, and a file's text is not a thing a query string carries.
+   *
+   * @param candidateSlotFile the slot-file text to compose. Null or blank means "use the
+   *     repository's own {@code .config/qits/release.yml} at that ref" — the honest spelling of "I
+   *     have no draft, show me what is already there" — and it is ignored outright when the ref
+   *     commits one, because the ref's own bytes are the better answer to the question asked.
+   */
+  public record ReleaseCompositionRequest(String candidateSlotFile) {}
+
+  /** The two payload dot-paths a run of a document is anchored at, and the compatibility arm. */
+  public record CheckoutResponse(String branchPath, String shaPath, boolean optional) {}
+
+  /**
+   * One step as this read reports it.
+   *
+   * <p><b>{@code scriptSha256} and {@code scriptLines} are the whole of what is said about a
+   * script's content</b>, and that bound is the decision rather than a first cut. Two digests that
+   * differ prove the two texts differ, which is what a reader needs in order to know that a step was
+   * not carried over verbatim; how they differ is what opening the two documents is for. A diff
+   * algorithm here would be a second thing to maintain, on a door whose whole answer is "read these
+   * and decide".
+   *
+   * @param user the container user, {@code ""} when the document declares none — the image's default
+   * @param timeoutSeconds null when the document declares none, which is the deployment-wide default
+   */
+  public record StepResponse(
+      int index,
+      String image,
+      boolean gating,
+      boolean build,
+      boolean docker,
+      String user,
+      Integer timeoutSeconds,
+      String scriptSha256,
+      int scriptLines) {}
+
+  /**
+   * One declared artifact — which is what answers "what does this pipeline publish", because nothing
+   * else can.
+   *
+   * <p>qits-ci never learns how to publish anything and cannot see what a step pushed (README, "What
+   * it declares is not what it observed"), so the {@code artifacts:} block is the statically
+   * readable claim and the script is not consulted. Reading a script for an {@code npm publish}
+   * would be a grep inside a shell script — the mechanism {@code userflows:} was invented to retire —
+   * and it stops working the moment the script is composed.
+   *
+   * @param sbomPath the {@code sbom:} path the slot file carried for this artifact, {@code ""} when
+   *     none — and always {@code ""} on the committed side, since a trigger file's {@code
+   *     artifacts:} grammar has no such key and never did
+   */
+  public record ArtifactResponse(String type, String name, String sbomPath) {}
+
+  /**
+   * Everything about one trigger document that decides what a run of it does.
+   *
+   * @param selection the {@code when:} written out as one line, because an absent {@code when:}
+   *     means <b>unconditional</b> and a candidate that lost its selection would fire for every
+   *     release of every repository on the platform
+   * @param checkout null when the document declares none, which means the run builds {@code main}'s
+   *     head
+   * @param gating the FILE-level flag: whether a red run stands in the way of releasing its commit
+   */
+  public record SummaryResponse(
+      String event,
+      String selection,
+      CheckoutResponse checkout,
+      boolean gating,
+      List<StepResponse> steps,
+      List<ArtifactResponse> artifacts) {}
+
+  /**
+   * One side of one phase.
+   *
+   * @param document the document's text, or null when this side declares nothing — {@code detail}
+   *     then says why, which is an explicit absence marker rather than an empty string a reader
+   *     could take for an empty file
+   * @param summary null when there is nothing to summarise: the side is absent, or its document is
+   *     present and will not parse — in which case {@code detail} carries the parser's own message,
+   *     which is the most useful sentence this read has
+   */
+  public record DocumentResponse(
+      String path, String document, String detail, SummaryResponse summary) {}
+
+  /**
+   * One phase of the release cycle, from both sides — what the slot file composes, and what the ref
+   * commits.
+   *
+   * @param event the domain event a run of this phase is triggered by, which is what makes the two
+   *     sides comparable at all: they are two declarations about one event
+   */
+  public record PhaseResponse(
+      String phase, String event, DocumentResponse composed, DocumentResponse committed) {}
+
+  /**
+   * Both phases, and the prose that says what this answer is worth.
+   *
+   * @param slotFileSource {@code COMMITTED} when the ref's own slot file was composed, {@code
+   *     CANDIDATE} when the supplied one was. Reported rather than left to be inferred: a caller
+   *     that sent a draft and got the committed file back has to be told so.
+   * @param guidance the standing sentence about what to do with this, carried in every answer rather
+   *     than left to a document nobody reads beside the response — see {@link #GUIDANCE}
+   */
+  public record ReleaseCompositionResponse(
+      String repositoryId,
+      String rev,
+      String slotFileSource,
+      String slotFilePath,
+      String detail,
+      String guidance,
+      PhaseResponse releaseRequestPhase,
+      PhaseResponse releasePhase) {}
+
+  /**
+   * What the answer is for, said in the answer itself.
+   *
+   * <p>It travels on every response rather than living in a README because the failure it prevents
+   * is a caller treating this door as a gate: there is no boolean here, and the one a reader would
+   * most like — "do these two match" — is unanswerable in principle. A composed document carries a
+   * platform prelude and a postlude no hand-written file ever had, so the two texts are never
+   * byte-equal; a comparison over them could only ever say "different", and a signal that is always
+   * the same is worse than no signal because somebody comes to trust it.
+   */
+  static final String GUIDANCE =
+      "This is for judgement, not a pass/fail gate. A composed document carries a platform prelude"
+          + " and postlude the hand-written pair never had, so the two sides are NEVER byte-equal and"
+          + " no comparison of their texts would mean anything; qits-ci therefore reports both sides"
+          + " and compares neither. Read the summaries — event, selection, checkout, file-level and"
+          + " per-step gating, each step's image and flags, the script digests, and the declared"
+          + " artifacts — and decide whether the candidate says what the committed pair says. A"
+          + " step's script is reported as a digest and a line count only: what a pipeline publishes"
+          + " is answered by its declared artifacts, never by reading its script. And note that a"
+          + " recipe is decided at main: a repository's slot file cannot gate the fold that"
+          + " introduces it, so the first run that composes from it is the one after the file is on"
+          + " main.";
+
+  /**
+   * What a candidate {@code .config/qits/release.yml} <b>would</b> compose at a ref, beside the two
+   * hand-written trigger files that ref really commits.
+   *
+   * <h2>What it is for, and why it exists before the migration rather than after</h2>
+   *
+   * <p>46 repositories are about to delete their {@code ci-event-release-request.yml}/{@code
+   * ci-event-release.yml} pair and commit a {@code release.yml} in its place. The pair is what gates
+   * and publishes them today; the slot file is a promise about what would happen instead, and the
+   * promise is only redeemable by <em>composing</em> it — {@link
+   * eu.wohlben.qits.ci.control.CiReleaseComposer}'s whole-slot override means the file alone does
+   * not say what the pipeline is. So a person sends the draft here, before committing it, and reads
+   * the two sides side by side.
+   *
+   * <h2>It is a POST only because it takes a body. It is a READ.</h2>
+   *
+   * <p>Nothing is written: no run is recorded, no row is touched, nothing is enqueued and no
+   * container is asked for. The candidate slot file is a whole YAML document that is not committed
+   * anywhere yet, which is not a thing a query string carries — so the method is POST and the
+   * subject is still a repository at a rev, exactly as {@link #releasePhase}'s is.
+   *
+   * <p><b>Because it writes nothing it calls no machine guard, and that omission is deliberate
+   * rather than an oversight.</b> {@code MachineAuth} is called by the handlers that mutate — the
+   * house rule is a call in the handler rather than a filter over a path — and a read that mutates
+   * nothing has nothing to authorise beyond the roles that already shut in front of it. There is no
+   * {@code MachineGuardTest} case for this route for the same reason: that test is the guard over
+   * the <em>writes</em>, and adding a read to it would say a guard is here that is not.
+   *
+   * <p><b>No method-level role list, so it inherits the class's</b> — {@code qits:admin}, {@code
+   * qits:system} and {@code qits:agent}. A method-level list replaces the class's rather than adding
+   * to it, so naming one here would be the way to lose a role by accident. {@code qits:agent} is the
+   * one worth saying out loud: the house rule is that <b>a new read route names {@code qits:agent}
+   * too</b> — agents keep every read and write nothing — and {@code AgentReadAccessTest} is what
+   * holds it, this route included.
+   *
+   * <h2>A recipe is decided at {@code main}</h2>
+   *
+   * <p>A repository's slot file <b>cannot gate the fold that introduces it</b>. Discovery, parsing
+   * and selection all read the tracked branch's head, so the first run composed from a new {@code
+   * release.yml} is the one after that file is on {@code main} — the release request that lands it
+   * is still gated by whatever {@code main} said beforehand. That is precisely why this door is
+   * useful before the commit and largely uninteresting after it: the migration commit's own CI
+   * proves nothing about the migration.
+   *
+   * <h2>Three statuses, and which failures are answers</h2>
+   *
+   * <p><b>200</b> is "both sides were read". Every failure of <em>bytes</em> is inside it: a
+   * candidate that will not parse, and a pair that will not compose, come back as an absent composed
+   * side carrying the parser's own message — which is the single most useful thing this read hands
+   * back to somebody about to commit that file.
+   *
+   * <p><b>503</b> is "the question was not asked at all", {@link #releasePhase}'s rule exactly: the
+   * repository is in no catalogue here, the slot file's read was {@code UNREACHABLE}, either legacy
+   * file's read was, or the archetype could not be read from the wrapper repository. None of those
+   * says anything about the repository's bytes, and reporting one as an absence would have this door
+   * say "this repository has already stopped committing that file" on the strength of a blip.
+   *
+   * <p><b>400</b> is the empty ask, and there are two of them. A blank {@code rev} is one, because
+   * the one thing a read must never do is answer about a ref the caller did not name. The other is
+   * <em>no {@code release.yml} at the ref and no candidate supplied</em>: the subject of this read is
+   * a candidate measured against a committed pair, so with neither there is nothing composed to
+   * report, and a 200 carrying two absences would read as "this repository composes nothing" — a
+   * statement about the repository rather than about an empty request — when the missing input is
+   * the caller's own to send.
+   *
+   * @param repoId the repository, by public name or by storage id
+   * @param rev mandatory; the git rev to read the committed pair and the committed slot file at. In
+   *     practice {@code main} or a branch tip while a migration is being written, rather than the
+   *     released tag {@link #releasePhase} is asked about — this read is about files somebody is
+   *     still editing. Blank is a 400 rather than a default.
+   * @param request the candidate slot file, or null/blank for "use the repository's own". A body-less
+   *     POST is accepted and means exactly that.
+   */
+  @POST
+  @Path("/{repoId}/release-composition")
+  @Consumes(MediaType.APPLICATION_JSON)
+  @Operation(
+      summary =
+          "What a candidate release.yml would compose at a rev, beside what that rev commits (a"
+              + " read; POST only because it takes a body)")
+  @APIResponse(
+      responseCode = "200",
+      description =
+          "Both sides, per phase, with the guidance that says this is for judgement rather than a"
+              + " gate. A candidate that will not parse or compose is reported here, not as a 503.",
+      content = @Content(schema = @Schema(implementation = ReleaseCompositionResponse.class)))
+  @APIResponse(
+      responseCode = "400",
+      description =
+          "Missing or blank rev, or no release.yml at the ref and no candidate supplied — an empty"
+              + " request rather than an empty answer")
+  @APIResponse(
+      responseCode = "503",
+      description =
+          "Not answered — the repository is in no catalogue here, or the slot file, a legacy trigger"
+              + " file or the archetype could not be read. Retry.")
+  public ReleaseCompositionResponse releaseComposition(
+      @PathParam("repoId") String repoId,
+      @Parameter(
+              required = true,
+              description =
+                  "A git rev the host can resolve — in practice main or the branch a migration is"
+                      + " being written on")
+          @QueryParam("rev")
+          String rev,
+      @RequestBody(
+              required = false,
+              description =
+                  "The candidate release.yml to compose. Omit it — or send a blank one — to compose"
+                      + " the repository's own file at that ref, which is what a caller with no"
+                      + " draft asks for.")
+          ReleaseCompositionRequest request) {
+    if (rev == null || rev.isBlank()) {
+      throw new BadRequestException("A rev is required");
+    }
+    CiEventTriggerService.ReleaseComposition composition =
+        triggers.releaseCompositionAt(
+            repoId, rev.trim(), request == null ? null : request.candidateSlotFile());
+    switch (composition.verdict()) {
+      case UNAVAILABLE -> throw new UnavailableException(composition.detail());
+      case NOTHING_TO_COMPARE -> throw new BadRequestException(composition.detail());
+      default -> {
+        // Answered. Fall through to the mapping below.
+      }
+    }
+    return new ReleaseCompositionResponse(
+        repoId,
+        rev,
+        composition.slotFileSource().name(),
+        composition.slotFilePath(),
+        composition.detail(),
+        GUIDANCE,
+        phase(composition.releaseRequestPhase()),
+        phase(composition.releasePhase()));
+  }
+
+  private static PhaseResponse phase(CiEventTriggerService.PhaseComparison phase) {
+    return new PhaseResponse(
+        phase.phase(), phase.event(), document(phase.composed()), document(phase.committed()));
+  }
+
+  private static DocumentResponse document(CiEventTriggerService.PhaseDocument document) {
+    return new DocumentResponse(
+        document.path(), document.document(), document.detail(), summary(document.summary()));
+  }
+
+  private static SummaryResponse summary(CiEventTriggerService.DocumentSummary summary) {
+    if (summary == null) {
+      return null;
+    }
+    return new SummaryResponse(
+        summary.event(),
+        summary.selection(),
+        summary.checkout() == null
+            ? null
+            : new CheckoutResponse(
+                summary.checkout().branchPath(),
+                summary.checkout().shaPath(),
+                summary.checkout().optional()),
+        summary.gating(),
+        summary.steps().stream()
+            .map(
+                step ->
+                    new StepResponse(
+                        step.index(),
+                        step.image(),
+                        step.gating(),
+                        step.build(),
+                        step.docker(),
+                        step.user(),
+                        step.timeoutSeconds(),
+                        step.scriptSha256(),
+                        step.scriptLines()))
+            .toList(),
+        summary.artifacts().stream()
+            .map(
+                artifact ->
+                    new ArtifactResponse(artifact.type(), artifact.name(), artifact.sbomPath()))
+            .toList());
   }
 }

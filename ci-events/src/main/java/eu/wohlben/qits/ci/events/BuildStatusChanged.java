@@ -43,6 +43,15 @@ import java.util.UUID;
  * {@code occurredAt} <b>only</b> and appears nowhere in the payload. A mirror reads it off the
  * envelope, which is where an event's time has always been.
  *
+ * <p><b>{@code phase} is the run's half of a release</b> — {@code "RELEASE_REQUEST"} or {@code
+ * "RELEASE"}, null for a run that is no part of one — carried as a plain string for {@link
+ * BuildFailed#outcome}'s reason and omitted from the payload when null, so an ordinary run's
+ * transitions stay byte-identical on the wire. <b>It does not turn this into a statement about a
+ * release.</b> This event remains a statement about the RUN's own row: that a run of phase P1 moved
+ * to {@code RUNNING} says nothing about the release request that caused it, and a mirror reads the
+ * phase as an attribute of the row it is mirroring rather than as a pipeline's state. The pipeline
+ * is the release request in qits-projects, and no event qits-ci publishes is a verdict about it.
+ *
  * <p>The remaining field conventions are {@link BuildSuccessful}'s, argued there at length and only
  * named here: {@code eventId} is generated when absent, final once set, and travels in the envelope
  * rather than the payload; {@code repoId} is the storage id and is always set, while {@code
@@ -60,6 +69,7 @@ public record BuildStatusChanged(
     String branch,
     String commitSha,
     Boolean gating,
+    String phase,
     String status,
     String previousStatus,
     Instant occurredAt)
@@ -80,11 +90,12 @@ public record BuildStatusChanged(
       String branch,
       String commitSha,
       Boolean gating,
+      String phase,
       String status,
       String previousStatus,
       Instant occurredAt) {
     this(
-        null, runId, repoId, projectId, repoName, branch, commitSha, gating, status, previousStatus,
-        occurredAt);
+        null, runId, repoId, projectId, repoName, branch, commitSha, gating, phase, status,
+        previousStatus, occurredAt);
   }
 }

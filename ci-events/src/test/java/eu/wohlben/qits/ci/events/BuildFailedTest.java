@@ -25,7 +25,7 @@ class BuildFailedTest {
 
   private static BuildFailed anEvent() {
     return new BuildFailed(
-        "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, "FAILED", FINISHED);
+        "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null, "FAILED", FINISHED);
   }
 
   @Test
@@ -87,7 +87,7 @@ class BuildFailedTest {
   void anIdAddressedPushOmitsTheNamePairRatherThanNullingIt() {
     BuildFailed idOnly =
         new BuildFailed(
-            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, "TIMED_OUT", FINISHED);
+            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, "TIMED_OUT", FINISHED);
 
     String payload = CanonicalJson.payload(idOnly);
 
@@ -109,8 +109,8 @@ class BuildFailedTest {
 
     BuildFailed nonGating =
         new BuildFailed(
-            "run-4", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", false, "FAILED",
-            FINISHED);
+            "run-4", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", false, null,
+            "FAILED", FINISHED);
     String payload = CanonicalJson.payload(nonGating);
     assertEquals(
         "{\"branch\":\"main\",\"commitSha\":\"0123456789abcdef\","
@@ -118,6 +118,23 @@ class BuildFailedTest {
             + "\"projectId\":\"qits\",\"repoId\":\"repo-uuid\",\"repoName\":\"qits-ci\","
             + "\"runId\":\"run-4\"}",
         payload);
+  }
+
+  @Test
+  void aRunThatIsNoPartOfAReleaseOmitsThePhaseAndAReleaseRunWritesIt() {
+    // BuildSuccessful's rule, unchanged: null is omitted, so an ordinary red build's payload is what
+    // it always was, and a release phase's run carries the word.
+    assertFalse(CanonicalJson.payload(anEvent()).contains("phase"));
+
+    BuildFailed publish =
+        new BuildFailed(
+            "run-5", "qits-ci", null, null, "2026.916.101112", "0123456789abcdef", null, "RELEASE",
+            "FAILED", FINISHED);
+    assertEquals(
+        "{\"branch\":\"2026.916.101112\",\"commitSha\":\"0123456789abcdef\","
+            + "\"finishedAt\":\"2026-07-31T12:46:03Z\",\"outcome\":\"FAILED\","
+            + "\"phase\":\"RELEASE\",\"repoId\":\"qits-ci\",\"runId\":\"run-5\"}",
+        CanonicalJson.payload(publish));
   }
 
   @Test

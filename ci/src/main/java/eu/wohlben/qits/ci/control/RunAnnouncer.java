@@ -47,6 +47,19 @@ public interface RunAnnouncer {
    * quality gate reads it as data; green-and-non-gating still announces, because a verdict is a
    * verdict whichever way a reader weighs it.
    *
+   * <p><b>{@code phase} is which half of a release this run was</b> — {@code "RELEASE_REQUEST"} for
+   * the QA run a {@code ReleaseRequestChanged} caused, {@code "RELEASE"} for the publish run an
+   * {@code SCMRelease} caused — and <b>null for every run that is no part of a release</b>, which is
+   * the ordinary one. A {@code CiRunPhase} word carried as a plain {@code String}, exactly as {@code
+   * status} and {@code outcome} are and for their reason: a wire vocabulary that imported this
+   * service's storage model would make another context's subscriber depend on it.
+   *
+   * <p><b>What it does NOT do is change what this announcement is.</b> A green run is still a
+   * statement about a <em>commit</em> and the phase is an attribute of the run that made it, never a
+   * verdict about the release as a whole — P1 going green says the fold passed QA, not that the
+   * release succeeded. A subscriber reading this as a pipeline verdict is reading something the
+   * event does not say.
+   *
    * <p>{@code repoId} is the storage id and is always set; {@code projectId} and {@code repoName}
    * are the public {@code (project, name)} pair off the run's own row, present when the candidate
    * the run was accepted for carried a public coordinate and null when it did not. They ride the event so a subscriber can
@@ -70,6 +83,7 @@ public interface RunAnnouncer {
       String branch,
       String commitSha,
       boolean gating,
+      String phase,
       Instant finishedAt,
       String triggerEventId);
 
@@ -90,6 +104,7 @@ public interface RunAnnouncer {
       String branch,
       String commitSha,
       boolean gating,
+      String phase,
       String outcome,
       Instant finishedAt,
       String triggerEventId);
@@ -134,6 +149,7 @@ public interface RunAnnouncer {
       String branch,
       String commitSha,
       boolean gating,
+      String phase,
       String status,
       String previousStatus,
       Instant occurredAt,

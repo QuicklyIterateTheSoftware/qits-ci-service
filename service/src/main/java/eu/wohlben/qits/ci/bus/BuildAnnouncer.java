@@ -69,11 +69,12 @@ public class BuildAnnouncer implements RunAnnouncer {
       String branch,
       String commitSha,
       boolean gating,
+      String phase,
       Instant finishedAt,
       String triggerEventId) {
     bus.publish(
         new BuildSuccessful(
-            runId, repoId, projectId, repoName, branch, commitSha, null, wireGating(gating),
+            runId, repoId, projectId, repoName, branch, commitSha, null, wireGating(gating), phase,
             finishedAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
@@ -87,13 +88,14 @@ public class BuildAnnouncer implements RunAnnouncer {
       String branch,
       String commitSha,
       boolean gating,
+      String phase,
       String outcome,
       Instant finishedAt,
       String triggerEventId) {
     bus.publish(
         new BuildFailed(
-            runId, repoId, projectId, repoName, branch, commitSha, wireGating(gating), outcome,
-            finishedAt),
+            runId, repoId, projectId, repoName, branch, commitSha, wireGating(gating), phase,
+            outcome, finishedAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 
@@ -106,19 +108,28 @@ public class BuildAnnouncer implements RunAnnouncer {
       String branch,
       String commitSha,
       boolean gating,
+      String phase,
       String status,
       String previousStatus,
       Instant occurredAt,
       String triggerEventId) {
     bus.publish(
         new BuildStatusChanged(
-            runId, repoId, projectId, repoName, branch, commitSha, wireGating(gating), status,
-            previousStatus, occurredAt),
+            runId, repoId, projectId, repoName, branch, commitSha, wireGating(gating), phase,
+            status, previousStatus, occurredAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 
   /**
-   * Null means gating on the wire, so every gating build's canonical payload stays byte-identical
+   * <b>The phase is passed straight through, and null straight through with it.</b> The port hands
+   * this class the word {@code CiRunPhase} spells, already turned into a plain {@code String} by the
+   * caller, so nothing here maps, defaults or validates it — a wire vocabulary that held an opinion
+   * about another module's enum would be the coupling {@code ci-events/} exists to avoid. Null is a
+   * run that is no part of a release, which is most of them, and {@code CanonicalJson}'s NON_NULL
+   * inclusion leaves the key out entirely: such a build's payload is byte-identical to what it was
+   * before the component existed.
+   *
+   * <p>Null means gating on the wire, so every gating build's canonical payload stays byte-identical
    * to what shipped before the field existed; only a non-gating run writes {@code false}.
    */
   private static Boolean wireGating(boolean gating) {

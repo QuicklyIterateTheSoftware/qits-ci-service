@@ -3,6 +3,7 @@ package eu.wohlben.qits.ci.api;
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -224,6 +225,186 @@ public class CiPipelineBoundaryTest {
     release.countDown();
     Map<String, Object> run = awaitTerminalRun(repoId);
     assertEquals("superseded manually", run.get("cancellationReason"));
+  }
+
+  // --- the per-phase rerun door ---
+
+  @Test
+  public void aReleaseRequestPhaseIsRerunByItsTripleAndASucceededOneIsRefusedInWords()
+      throws Exception {
+    // The door exists because (repoId, releaseRequestId, phase) is the ONLY identity qits-projects
+    // holds: it mints no run ids, and a QA run's sha is a fold nobody pushed that the next re-fold
+    // replaces. The trigger file here is a HAND-WRITTEN ci-event-release-request.yml — the shape
+    // most of the estate is still on — so the door is decoupled from the release.yml migration at
+    // the HTTP surface too, not only at the accept.
+    String repoId = seedReleaseRequestOrigin();
+    String requestId = "rr-" + UUID.randomUUID();
+    // A step that fails, so the phase's newest run is one there is something to re-ask about.
+    fakeRunner.script(0, new StepResult(1, false, StepOutcome.OK, "boom"));
+    String mergedSha = foldAndTrigger(repoId, requestId);
+    Map<String, Object> failed = awaitTerminalRun(repoId);
+    assertEquals("FAILED", failed.get("status"));
+
+    fakeRunner.reset();
+    String rerunId =
+        given()
+            .contentType(ContentType.JSON)
+            .body(rerunBody(repoId, requestId, "RELEASE_REQUEST"))
+            .when()
+            .post("/ci/api/runs/rerun")
+            .then()
+            .statusCode(202)
+            .contentType(ContentType.JSON)
+            .extract()
+            .jsonPath()
+            .getString("runId");
+    assertNotNull(rerunId, "the answer is a run id, like the by-id retry's");
+    assertNotEquals(failed.get("id"), rerunId);
+
+    awaitAllTerminal(repoId, 2);
+    Map<String, Object> rerun =
+        listRuns(repoId).stream()
+            .filter(run -> rerunId.equals(run.get("id")))
+            .findFirst()
+            .orElseThrow();
+    assertEquals("SUCCESS", rerun.get("status"));
+    // No new execution path: the rerun checked out what the phase always checked out.
+    assertEquals(mergedSha, rerun.get("commitSha"));
+    assertEquals("release/" + requestId, rerun.get("branch"));
+    // That the row really carries the phase is CiRunPhaseTest's — the read surface deliberately
+    // does not publish the column, so what proves it here is the door finding the run at all, by a
+    // triple whose third term is the phase.
+
+    // And now that the phase has SUCCEEDED, the same press is refused with the sentence that
+    // replaces today's failure mode — a run accepted and then dying in its container cloning a
+    // branch the tag creation deleted.
+    String message =
+        given()
+            .contentType(ContentType.JSON)
+            .body(rerunBody(repoId, requestId, "RELEASE_REQUEST"))
+            .when()
+            .post("/ci/api/runs/rerun")
+            .then()
+            .statusCode(409)
+            .extract()
+            .jsonPath()
+            .getString("message");
+    assertTrue(message.contains("succeeded"), message);
+    assertTrue(message.contains("nothing to ask again"), message);
+    assertTrue(message.contains("spent on cutting the tag"), message);
+  }
+
+  @Test
+  public void theRerunDoorRefusesAPhaseWithNoRunAndAnUnknownRepositoryAndABadPhase()
+      throws Exception {
+    String repoId = seedReleaseRequestOrigin();
+    String requestId = "rr-" + UUID.randomUUID();
+    foldAndTrigger(repoId, requestId);
+    awaitTerminalRun(repoId);
+
+    // The publish half of this request has not run: a statement about the release's progress, so a
+    // 409 rather than a 404 — the repository is perfectly well known.
+    given()
+        .contentType(ContentType.JSON)
+        .body(rerunBody(repoId, requestId, "RELEASE"))
+        .when()
+        .post("/ci/api/runs/rerun")
+        .then()
+        .statusCode(409);
+
+    // A repository this instance has never recorded a run for is the 404.
+    given()
+        .contentType(ContentType.JSON)
+        .body(rerunBody(UUID.randomUUID().toString(), requestId, "RELEASE_REQUEST"))
+        .when()
+        .post("/ci/api/runs/rerun")
+        .then()
+        .statusCode(404);
+
+    // And the vocabulary is closed, answered through the {"message": …} envelope every other
+    // rejected input on this surface arrives in rather than as a framework-shaped conversion error.
+    given()
+        .contentType(ContentType.JSON)
+        .body(rerunBody(repoId, requestId, "P1"))
+        .when()
+        .post("/ci/api/runs/rerun")
+        .then()
+        .statusCode(400)
+        .body("message", org.hamcrest.Matchers.containsString("RELEASE_REQUEST"));
+    given()
+        .contentType(ContentType.JSON)
+        .body("{\"releaseRequestId\":\"" + requestId + "\",\"phase\":\"RELEASE\"}")
+        .when()
+        .post("/ci/api/runs/rerun")
+        .then()
+        .statusCode(400);
+  }
+
+  /** The body the door takes: the only identity a release request holds. */
+  private static String rerunBody(String repoId, String releaseRequestId, String phase) {
+    return """
+        {"repoId":"%s","releaseRequestId":"%s","phase":"%s"}"""
+        .formatted(repoId, releaseRequestId, phase);
+  }
+
+  /**
+   * Pushes a release request's backing branch and fires the {@code ReleaseRequestChanged} that
+   * builds it; returns the merged sha the run is recorded at.
+   *
+   * <p>The branch really exists on the stub host, as it does in life right up until the tag is cut,
+   * and the payload carries the request id — which is what makes the accepted run a PHASE rather
+   * than an ordinary event run.
+   */
+  private String foldAndTrigger(String repoId, String requestId) throws Exception {
+    String mergedSha = pushBranch(repoId, "release/" + requestId);
+    given()
+        .contentType(ContentType.JSON)
+        .body(
+            """
+            {"name":"ReleaseRequestChanged","occurredAt":"2026-09-16T09:00:00Z",\
+            "payload":{"boundaryRepo":"%s","releaseRequestId":"%s",\
+            "backingBranch":"release/%s","mergedSha":"%s"}}"""
+                .formatted(repoId, requestId, requestId, mergedSha))
+        .when()
+        .post("/ci/api/events/trigger")
+        .then()
+        .statusCode(200);
+    return mergedSha;
+  }
+
+  /**
+   * A repository whose QA pipeline is a hand-written {@code ci-event-release-request.yml}, selecting
+   * on this repository alone for {@link #seedOrigin}'s reason.
+   */
+  private String seedReleaseRequestOrigin() throws Exception {
+    String repoId = UUID.randomUUID().toString();
+    Path seed = Files.createTempDirectory("ci-boundary-seed");
+    git(seed, "init", "-q", "-b", "main");
+    Files.writeString(seed.resolve("hello.txt"), "hello\n");
+    Path triggerFile = seed.resolve(".config/qits/ci-event-release-request.yml");
+    Files.createDirectories(triggerFile.getParent());
+    Files.writeString(
+        triggerFile,
+        """
+        event: ReleaseRequestChanged
+        when:
+          - boundaryRepo: { exact: %s }
+        checkout:
+          branch: backingBranch
+          sha: mergedSha
+        steps:
+          - image: alpine:3
+            script: ./mvnw verify
+        """
+            .formatted(repoId));
+    commitAll(seed, "initial");
+
+    Path origin = gitHostRoot().resolve(repoId);
+    Files.createDirectories(origin.getParent());
+    git(null, "clone", "-q", "--bare", seed.toString(), origin.toString());
+    seeded.add(repoId);
+    gitHostListing.set(seeded.toArray(String[]::new));
+    return repoId;
   }
 
   @Test

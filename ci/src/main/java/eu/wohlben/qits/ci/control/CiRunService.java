@@ -6,6 +6,7 @@ import eu.wohlben.qits.ci.control.CiStepRunner.DaemonPin;
 import eu.wohlben.qits.ci.control.CiStepRunner.StepOutcome;
 import eu.wohlben.qits.ci.control.CiStepRunner.StepResult;
 import eu.wohlben.qits.ci.entity.CiRun;
+import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiStep;
 import eu.wohlben.qits.ci.entity.CiStepStatus;
@@ -1638,6 +1639,7 @@ public class CiRunService {
             run.branch,
             run.commitSha,
             run.gating,
+            phaseWord(run),
             finishedAt,
             causingEventId(run));
       } catch (RuntimeException e) {
@@ -1666,6 +1668,15 @@ public class CiRunService {
   }
 
   /**
+   * The run's phase as the plain word the wire carries, or null for a run that is no part of a
+   * release — which is the ordinary case, and the one whose canonical payload stays byte-identical
+   * to what it was before the field existed.
+   */
+  private static String phaseWord(CiRun run) {
+    return run.phase == null ? null : run.phase.name();
+  }
+
+  /**
    * {@link #announceRun}'s failure twin, called at every terminal write that says something true
    * about a commit: red and timed-out runs, config errors, a crash the worker caught, and the runs
    * a boot sweep found interrupted. What it is <b>not</b> called for is the contract's other half —
@@ -1688,6 +1699,7 @@ public class CiRunService {
             run.branch,
             run.commitSha,
             run.gating,
+            phaseWord(run),
             outcome.name(),
             finishedAt,
             causingEventId(run));
@@ -1741,6 +1753,7 @@ public class CiRunService {
             run.branch,
             run.commitSha,
             run.gating,
+            phaseWord(run),
             status.name(),
             previous == null ? null : previous.name(),
             occurredAt,
@@ -2079,6 +2092,9 @@ public class CiRunService {
     run.triggerConfig = request.triggerConfig();
     run.gating = request.trigger().gating();
     run.releaseRequestId = releaseRequestOf(request);
+    // Which half of that release this is, read off the same gate that just read the id — see
+    // phaseOf. Null whenever the id is null, which is every run that is no part of a release.
+    run.phase = phaseOf(request, run.releaseRequestId);
     // The two ordering inputs, read here and nowhere else: what this run is worth, and what waits on
     // it. Accept time is the only moment they can be read — the payload is on the row afterwards,
     // but a queue that had to parse every candidate's payload on every scan would be paying the
@@ -2251,13 +2267,25 @@ public class CiRunService {
    * and a provenance column that reads any field of any payload is one that eventually records
    * something nobody meant.
    *
+   * <p><b>Two names now, and the second one is the whole of the phase feature's intake.</b> {@link
+   * #RELEASE_REQUEST_EVENT_NAME} was the QA half and is still it; {@link
+   * ReleaseJoin#RELEASE_EVENT_NAME} is the publish half, which qits-projects grew the same {@code
+   * releaseRequestId} field on so that a release can say which request it came out of. Same field,
+   * same length rule, same blank rule, same "too long is recorded as none" — one seam reading one
+   * name, rather than a second reader that would drift from this one. It is this method's gate and
+   * NOT any condition on {@link CiRun#configPath} that decides both the column and {@link
+   * #phaseOf}, and that is deliberate: a phase is a fact about which event caused the run, so the
+   * 46 repositories still on a hand-written {@code ci-event-release-request.yml}/{@code
+   * ci-event-release.yml} pair get it exactly as a repository on a composed {@code release.yml}
+   * does, and neither rollout waits on the other.
+   *
    * <p>Walked rather than bound, the trigger engine's rule and the one that keeps this path free of
    * native-image reflection metadata. A value too long for the column is recorded as <b>none</b>
    * rather than truncated or thrown: the run is the point and a payload that cannot name a request
    * within 255 characters is not naming one this platform issued.
    */
   private static String releaseRequestOf(EventRun request) {
-    if (!RELEASE_REQUEST_EVENT_NAME.equals(request.eventName())) {
+    if (!namesAReleaseRequest(request)) {
       return null;
     }
     JsonNode id =
@@ -2277,6 +2305,44 @@ public class CiRunService {
       return null;
     }
     return text;
+  }
+
+  /** The two event names that name a release request: the QA half's and the publish half's. */
+  private static boolean namesAReleaseRequest(EventRun request) {
+    return RELEASE_REQUEST_EVENT_NAME.equals(request.eventName())
+        || ReleaseJoin.RELEASE_EVENT_NAME.equals(request.eventName());
+  }
+
+  /**
+   * Which phase of a release pipeline this run is, or null when it is no part of one.
+   *
+   * <p><b>The trigger event's NAME decides it, and nothing else does.</b> {@code
+   * ReleaseRequestChanged} is P1, the QA half; {@code SCMRelease} is P2, the publish half. No
+   * condition on {@link CiRun#configPath} appears here or anywhere else, which is the point of the
+   * feature rather than an implementation detail of it: the release request in qits-projects is the
+   * pipeline, a phase is which event of that request caused this run, and a repository's choice of
+   * trigger file has nothing to say about it.
+   *
+   * <p><b>No id means no phase, silently.</b> {@code releaseRequestId} is handed in already read by
+   * {@link #releaseRequestOf}, so the two cannot disagree about what the payload said, and an event
+   * that names no request produces a row written exactly as it was written before this column
+   * existed — no phase, no WARN, no error. That arm is the <em>live traffic</em>: every {@code
+   * SCMRelease} published before qits-projects shipped the field takes it, and a warning here would
+   * be a line per release of every repository on the platform, forever, about the ordinary case.
+   * Null is permanent for a second reason too — a dependency-bump run is not part of a release and
+   * never will be.
+   */
+  private static CiRunPhase phaseOf(EventRun request, String releaseRequestId) {
+    if (releaseRequestId == null) {
+      return null;
+    }
+    if (RELEASE_REQUEST_EVENT_NAME.equals(request.eventName())) {
+      return CiRunPhase.RELEASE_REQUEST;
+    }
+    if (ReleaseJoin.RELEASE_EVENT_NAME.equals(request.eventName())) {
+      return CiRunPhase.RELEASE;
+    }
+    return null;
   }
 
   /**
@@ -2806,6 +2872,110 @@ public class CiRunService {
   }
 
   /**
+   * Re-fire one phase of one release request: the newest run that phase has for {@code (repoId,
+   * releaseRequestId)}, through {@link #retry} and therefore through nothing new.
+   *
+   * <p><b>Addressed by the triple because that is the only identity the asker holds.</b> The release
+   * request lives in qits-projects and IS the pipeline; what it knows is a repository, its own id
+   * and which half of the release it is talking about. It holds no run id — qits-ci mints those —
+   * and the sha cannot stand in for one, since a QA run's commit is a fold nobody pushed that the
+   * next re-fold replaces. It is the same pair {@link #cancelReleaseRequestRuns} takes with the
+   * phase added, for that method's reason exactly: the id alone reaches another repository's run and
+   * the repository alone reaches another request's.
+   *
+   * <p><b>No new execution path, and that is the point rather than a convenience.</b> This picks a
+   * row and calls {@link #retry}, so the rerun checks out precisely what that phase always checked
+   * out — P1 the fold at the sha the event named, P2 the released tag at its own commit — from the
+   * run's own recorded coordinates. Nothing here reads a branch, resolves a ref or composes a
+   * checkout.
+   *
+   * <p><b>The 409 for a phase that SUCCEEDED is the whole reason this door exists.</b> Before it,
+   * the same press reached {@code POST /ci/api/runs/{runId}/retry} with a QA run id, was accepted,
+   * and died in its step container cloning {@code release/<id>} — a branch the tag creation deleted
+   * — so an operator got a red run about a ref instead of an answer about their request. A phase
+   * whose verdict was <em>spent</em> has nothing to be asked again: P1's green is what the tag was
+   * cut on, and P2's green is what was published. So it is refused here, in words, before any work
+   * is accepted.
+   *
+   * @return the new run, already {@code QUEUED} and on the worker
+   * @throws NotFoundException this instance has never recorded a run for the repository
+   * @throws ConflictException the phase has no run, its newest run is still going, or that run
+   *     succeeded
+   */
+  public CiRun retryReleaseRequestPhase(
+      String repoId, String releaseRequestId, CiRunPhase phase) {
+    if (!DbRetry.call(
+        "release request phase repository check",
+        () -> QuarkusTransaction.requiringNew().call(() -> runs.hasAnyRun(repoId)),
+        retryDeadline())) {
+      throw new NotFoundException("No such repository: " + repoId);
+    }
+    CiRun newest =
+        DbRetry.call(
+                "release request phase lookup",
+                () ->
+                    QuarkusTransaction.requiringNew()
+                        .call(
+                            () ->
+                                runs.findNewestForReleaseRequestPhase(
+                                    repoId, releaseRequestId, phase)),
+                retryDeadline())
+            .orElseThrow(
+                () ->
+                    new ConflictException(
+                        "Release request "
+                            + releaseRequestId
+                            + " has no "
+                            + phase
+                            + " run in "
+                            + repoId
+                            + " — there is nothing to ask again until that phase has run once"));
+    if (newest.status == CiRunStatus.QUEUED || newest.status == CiRunStatus.RUNNING) {
+      throw new ConflictException(
+          "The "
+              + phase
+              + " phase of release request "
+              + releaseRequestId
+              + " is already running as CI run "
+              + newest.id
+              + " ("
+              + newest.status
+              + ") — that question is still being answered");
+    }
+    if (newest.status == CiRunStatus.SUCCESS) {
+      throw new ConflictException(spentPhaseMessage(newest, releaseRequestId, phase));
+    }
+    return retry(newest.id);
+  }
+
+  /**
+   * Why a phase that went green cannot be re-asked, said in words rather than as a status code.
+   *
+   * <p>The QA arm names the mechanism on purpose: that verdict was <b>spent on cutting the tag</b>,
+   * and the branch it built — {@code release/<id>} — was deleted in the same operation that created
+   * it. An operator who pressed rerun expecting a fresh QA answer is told that, here, instead of
+   * being told it by a step container failing to clone a ref twenty seconds later.
+   */
+  private static String spentPhaseMessage(
+      CiRun succeeded, String releaseRequestId, CiRunPhase phase) {
+    if (phase == CiRunPhase.RELEASE_REQUEST) {
+      return "The QA phase of release request "
+          + releaseRequestId
+          + " succeeded (CI run "
+          + succeeded.id
+          + "), so there is nothing to ask again: that verdict was spent on cutting the tag, and the"
+          + " fold it built (branch "
+          + succeeded.branch
+          + ") no longer exists.";
+    }
+    return "The publish phase of release request "
+        + releaseRequestId
+        + " succeeded (CI run "
+        + succeeded.id
+        + "), so there is nothing to ask again: that phase published what the release names.";
+  }
+
+  /**
    * The trigger document a retry of {@code source} will run: the composed one re-derived with
    * today's platform prelude and postlude, or — for everything else, and for every way that
    * re-derivation can fail — the document stored on the run being re-fired.
@@ -2878,6 +3048,10 @@ public class CiRunService {
     retry.createdAt = Instant.now();
     retry.gating = declaredGating(source, pipeline);
     retry.releaseRequestId = source.releaseRequestId;
+    // Copied beside it, and for the same reason the id is: a retry asks for the SAME work, so it is
+    // the same half of the same release. Re-deriving it from the stored payload would answer
+    // identically and be a second place the rule lives.
+    retry.phase = source.phase;
     // Copied rather than re-read: a retry asks for the SAME work, so it is worth what the original
     // was worth and waits on what the original waited on. The payload is on the row and would answer
     // identically, but a re-fire whose queue position differed from the run it re-fires would be a

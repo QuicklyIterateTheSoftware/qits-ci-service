@@ -39,6 +39,24 @@ import java.util.UUID;
  * — and a null field is omitted from the canonical payload rather than written as an explicit null,
  * so an id-addressed push stays byte-identical on the wire.
  *
+ * <p><b>{@code phase} says which half of a RELEASE this run was</b> — {@code "RELEASE_REQUEST"} for
+ * the QA run of a release request, {@code "RELEASE"} for the publish run of a released tag — and it
+ * is null for every run that is no part of a release, which is the ordinary one. A null is omitted
+ * from the canonical payload, so an ordinary build's bytes are identical to what they were before
+ * this component existed.
+ *
+ * <p><b>It does not make this event a pipeline verdict, and that line is the contract.</b> This is
+ * still a statement about a <em>commit</em>: this repository, at this sha, finished green. A green
+ * P1 says the fold passed QA — not that the release succeeded, not that anything was published, not
+ * that the next phase may start. Who decides that is the release request in qits-projects, which is
+ * the pipeline; the phase is here so a subscriber can tell which of a release's two runs it is
+ * being told about, and for nothing else.
+ *
+ * <p><b>A plain {@code String} and never an enum</b>, the rule {@code status} and {@code outcome}
+ * already ride: the word is {@code CiRunPhase}'s, that enum lives in qits-ci's {@code ci/entity},
+ * and a wire vocabulary that imported it would make every subscriber depend on this service's
+ * storage model.
+ *
  * <p>{@code gating} rides the same convention pointed the other way: <b>null means gating</b> — a
  * red outcome of this pipeline would have stood in the way of releasing the commit — and only a
  * non-gating run (a trigger file saying {@code gating: false}; the userflow pipelines) writes an
@@ -55,6 +73,7 @@ public record BuildSuccessful(
     String commitSha,
     String imageDigest,
     Boolean gating,
+    String phase,
     Instant finishedAt)
     implements QitsEvent {
 
@@ -74,9 +93,10 @@ public record BuildSuccessful(
       String commitSha,
       String imageDigest,
       Boolean gating,
+      String phase,
       Instant finishedAt) {
     this(
-        null, runId, repoId, projectId, repoName, branch, commitSha, imageDigest, gating,
+        null, runId, repoId, projectId, repoName, branch, commitSha, imageDigest, gating, phase,
         finishedAt);
   }
 

@@ -34,6 +34,7 @@ public record BuildFailed(
     String branch,
     String commitSha,
     Boolean gating,
+    String phase,
     String outcome,
     Instant finishedAt)
     implements QitsEvent {
@@ -53,9 +54,12 @@ public record BuildFailed(
       String branch,
       String commitSha,
       Boolean gating,
+      String phase,
       String outcome,
       Instant finishedAt) {
-    this(null, runId, repoId, projectId, repoName, branch, commitSha, gating, outcome, finishedAt);
+    this(
+        null, runId, repoId, projectId, repoName, branch, commitSha, gating, phase, outcome,
+        finishedAt);
   }
 
   @Override

@@ -110,6 +110,23 @@ public class RunLifecycleAnnounceSeamTest extends CiTestSupport {
 
   // --- the ordinary lifecycle ---
 
+
+  @Test
+  public void everyTransitionOfARunThatIsNoPartOfAReleaseCarriesNoPhase() {
+    // Null on every announcement rather than on the terminal one, because this event fires several
+    // times per run and a mirror reading the phase off one of them must read the same thing off all
+    // of them. An omitted key three times over is what keeps an ordinary run's lifecycle
+    // byte-identical on the wire. The word a release phase's run carries is CiRunPhaseTest's — the
+    // phase is decided by the trigger event's NAME, and nothing here drives an event worth one.
+    executePipeline(repoId, "main", sha, CONFIG_ONE_STEP);
+
+    CiRun run = theRun();
+    assertEquals(List.of("QUEUED", "RUNNING", "SUCCESS"), wordsOf(run.id));
+    for (FakeRunAnnouncer.AnnouncedStatus status : statusesOf(run.id)) {
+      assertNull(status.phase(), "an ordinary run is no phase of a release at " + status.status());
+    }
+  }
+
   @Test
   public void aGreenRunAnnouncesQueuedThenRunningThenSuccessWithItsOwnTimestamps() {
     executePipeline(repoId, "main", sha, CONFIG_ONE_STEP);

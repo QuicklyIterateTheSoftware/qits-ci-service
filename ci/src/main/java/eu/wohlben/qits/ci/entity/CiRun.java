@@ -120,6 +120,36 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   public String releaseRequestId;
 
   /**
+   * Which phase of that release this run is — {@link CiRunPhase#RELEASE_REQUEST} for the QA half,
+   * {@link CiRunPhase#RELEASE} for the publish half — or null for every run that is no part of a
+   * release.
+   *
+   * <p><b>Decided by the trigger event's NAME, never by {@link #configPath}.</b> A {@code
+   * ReleaseRequestChanged} that names a release request writes {@code RELEASE_REQUEST}; an {@code
+   * SCMRelease} that names one writes {@code RELEASE} <em>and</em> fills {@link #releaseRequestId},
+   * which the QA half alone used to. That is {@code CiRunService.releaseRequestOf}'s rule with one
+   * more name in it, and keeping it there is what decouples this column from the trigger-file
+   * migration: a repository on a hand-written {@code ci-event-release-request.yml}/{@code
+   * ci-event-release.yml} pair records both phases exactly as one on a composed {@code release.yml}
+   * does.
+   *
+   * <p><b>Null is the ordinary value and it is permanent.</b> A dependency-bump run is not part of a
+   * release; neither is any other run whose event names no request, which includes every {@code
+   * SCMRelease} published before qits-projects grew the field. Such a row is written exactly as it
+   * was written before this column existed, with no warning and no error — that arm is the live
+   * traffic, not the exception.
+   *
+   * <p>Part of no constraint and read by nothing in the queue: no ordering rule, no priority, no
+   * dedupe key and no supersede rule touches it. What reads it is the announcement (it rides {@code
+   * BuildSuccessful}/{@code BuildFailed}/{@code BuildStatusChanged} as a plain string) and {@code
+   * POST /ci/api/runs/rerun}, which addresses a run by {@code (repoId, releaseRequestId, phase)}
+   * because that triple is the only identity qits-projects holds.
+   */
+  @Enumerated(EnumType.STRING)
+  @Column(name = "phase", length = 32)
+  public CiRunPhase phase;
+
+  /**
    * The run this one re-fires, or null for every run that is not a manual retry — which is every run
    * a trigger produced.
    *

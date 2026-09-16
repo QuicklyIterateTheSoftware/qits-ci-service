@@ -28,7 +28,7 @@ class BuildSuccessfulTest {
   private static BuildSuccessful anEvent() {
     return new BuildSuccessful(
         "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", "sha256:deadbeef", null,
-        FINISHED);
+        null, FINISHED);
   }
 
   @Test
@@ -94,7 +94,7 @@ class BuildSuccessfulTest {
   void aPipelineThatPublishedNoImageOmitsTheDigestRatherThanNullingIt() {
     BuildSuccessful noImage =
         new BuildSuccessful(
-            "run-2", "qits-ci", "qits", "qits-ci", "main", "0123456789abcdef", null, null, FINISHED);
+            "run-2", "qits-ci", "qits", "qits-ci", "main", "0123456789abcdef", null, null, null, FINISHED);
 
     String payload = CanonicalJson.payload(noImage);
 
@@ -121,7 +121,7 @@ class BuildSuccessfulTest {
     // existed.
     BuildSuccessful idOnly =
         new BuildSuccessful(
-            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, FINISHED);
+            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, null, FINISHED);
 
     String payload = CanonicalJson.payload(idOnly);
 
@@ -142,12 +142,33 @@ class BuildSuccessfulTest {
 
     BuildSuccessful nonGating =
         new BuildSuccessful(
-            "run-4", "qits-ci", null, null, "main", "0123456789abcdef", null, false, FINISHED);
+            "run-4", "qits-ci", null, null, "main", "0123456789abcdef", null, false, null, FINISHED);
     assertEquals(
         "{\"branch\":\"main\",\"commitSha\":\"0123456789abcdef\","
             + "\"finishedAt\":\"2026-07-31T12:46:03Z\",\"gating\":false,"
             + "\"repoId\":\"qits-ci\",\"runId\":\"run-4\"}",
         CanonicalJson.payload(nonGating));
+  }
+
+  @Test
+  void aRunThatIsNoPartOfAReleaseOmitsThePhaseAndAReleaseRunWritesIt() {
+    // Null is the ordinary value — most runs are no part of a release — so an ordinary green build's
+    // payload is byte-identical to what it was before the component existed. A run that IS a phase
+    // of a release writes the CiRunPhase word as a plain string, which is what a reader on the other
+    // side of the bus tells P1 from P2 by. It does not make this a verdict about the release: the
+    // event still says "this commit built green", and what a release is worth is the release
+    // request's own business in qits-projects.
+    assertFalse(CanonicalJson.payload(anEvent()).contains("phase"));
+
+    BuildSuccessful qa =
+        new BuildSuccessful(
+            "run-5", "qits-ci", null, null, "release/rr-1", "0123456789abcdef", null, null,
+            "RELEASE_REQUEST", FINISHED);
+    assertEquals(
+        "{\"branch\":\"release/rr-1\",\"commitSha\":\"0123456789abcdef\","
+            + "\"finishedAt\":\"2026-07-31T12:46:03Z\",\"phase\":\"RELEASE_REQUEST\","
+            + "\"repoId\":\"qits-ci\",\"runId\":\"run-5\"}",
+        CanonicalJson.payload(qa));
   }
 
   @Test

@@ -54,6 +54,13 @@ import org.junit.jupiter.api.Test;
  * nothing at all. It is transcribed anyway, because a field carried verbatim is still a field two
  * repositories have to spell the same way.
  *
+ * <p><b>{@code releaseRequestId}</b> — the release request this release came out of. The same
+ * standing instruction a third time, and the component that makes a release run part of a release
+ * rather than merely about a tag: qits-ci decides a run's PHASE from the trigger event's name and
+ * reads this field to know there is a request to be a phase of. Nullable and additive like the two
+ * before it, and its absence is the live state of the rollout rather than an edge case — see {@link
+ * #aReleaseFromBeforeTheReleaseRequestIdCarriesNoSuchKeyAndIsOtherwiseIdentical}.
+ *
  * <p><b>That nothing had to change is the finding, and it is a property of how this consumer is
  * written rather than luck.</b> Nothing here keys on the producer: the durable seam subscribes by
  * SIGNATURE, {@code EventFrame} carries no publisher and no source service, {@code ReleaseJoin}'s key
@@ -130,6 +137,7 @@ public class ScmReleaseContractTest {
       String branch,
       String version,
       String commitSha,
+      String releaseRequestId,
       Instant occurredAt,
       String priority)
       implements QitsEvent {}
@@ -169,6 +177,25 @@ public class ScmReleaseContractTest {
       String branch,
       String commitSha,
       String priority) {
+    return release(repository, repositoryName, version, branch, commitSha, priority, null);
+  }
+
+  /**
+   * The same, with the release request stated — for the cases that are about the tenth component.
+   *
+   * <p>Null is the default above rather than a value, the rule {@code priority} set one component
+   * earlier and for its reason exactly: every case written before this field existed must keep
+   * producing the bytes it produced then, which is what makes the addition additive in this file as
+   * well as on the wire.
+   */
+  static SCMRelease release(
+      String repository,
+      String repositoryName,
+      String version,
+      String branch,
+      String commitSha,
+      String priority,
+      String releaseRequestId) {
     return new SCMRelease(
         UUID.randomUUID(),
         "p-1",
@@ -177,9 +204,13 @@ public class ScmReleaseContractTest {
         branch,
         version,
         commitSha,
+        releaseRequestId,
         Instant.parse("2026-08-12T15:34:38Z"),
         priority);
   }
+
+  /** The release request a release came out of, as qits-projects spells one. */
+  static final String RELEASE_REQUEST_ID = "9f2c1a7e-4b31-4c8e-9a11-6d0f5c2e8b44";
 
   /**
    * What the tag points at: the version-bump commit qits-projects made on the backing branch, which
@@ -402,6 +433,97 @@ public class ScmReleaseContractTest {
    * library's wire contract had changed under this service, and the listener's use of {@code
    * frame.id()} and {@code frame.occurredAt()} would be reading the wrong one of two.
    */
+  /**
+   * <b>The tenth component, and the one that makes a release run know which half of a release it
+   * is.</b>
+   *
+   * <p>{@code releaseRequestId} is the request this release came out of, and qits-projects grew it
+   * for one reader: qits-ci decides a run's PHASE by the trigger event's NAME and reads this field
+   * off the payload to decide there is a release to be a phase of at all. A {@code
+   * ReleaseRequestChanged} carrying one is P1, the QA half; an {@code SCMRelease} carrying one is
+   * P2, the publish half, and the id also lands on {@code ci_run.release_request_id}, which until
+   * now only the QA half wrote. So this string is what lets a rerun be addressed by {@code (repoId,
+   * releaseRequestId, phase)} — the only identity the release request holds, since it knows no run
+   * id and a QA run's sha is a fold that the next re-fold replaces.
+   *
+   * <p><b>It is the SAME field name the QA event already uses</b> ({@code
+   * CiRunService.RELEASE_REQUEST_ID_FIELD}), read by the same seam under the same length and blank
+   * rules — one reader for two events rather than a second one that would drift. Which is why the
+   * assertion here is about the STRING: the name is the whole of what the two repositories have to
+   * agree on, and a rename over there costs qits-ci both the column and the phase.
+   */
+  @Test
+  public void theReleaseRequestThePhaseIsDecidedFromIsInTheCanonicalPayload() throws Exception {
+    JsonNode payload =
+        MAPPER.readTree(
+            CanonicalJson.payload(
+                release(
+                    "qits-ci",
+                    "qits-ci",
+                    "2026.812.153438",
+                    BACKING_BRANCH,
+                    RELEASED_SHA,
+                    null,
+                    RELEASE_REQUEST_ID)));
+
+    assertTrue(
+        payload.has("releaseRequestId"),
+        "the canonical payload carries no releaseRequestId, so an SCMRelease-triggered run can name"
+            + " no release request and can be no phase of one");
+    assertEquals(RELEASE_REQUEST_ID, payload.get("releaseRequestId").asText());
+  }
+
+  /**
+   * <b>The compatibility arm for it, and this one is the LIVE case rather than the exception.</b>
+   *
+   * <p>The field is additive, so every {@code SCMRelease} published before qits-projects shipped it
+   * — which on the day the phase column lands is every release on the platform, plus every replay
+   * out of the durable log — carries no {@code releaseRequestId} KEY at all rather than a null,
+   * {@code CanonicalJson}'s {@code NON_NULL} inclusion for the third time in this file. qits-ci
+   * reads that absence as <b>no phase</b>: the run is recorded exactly as it was recorded before the
+   * column existed, with no error and no warning, because a WARN here would be a line per release of
+   * every repository forever about the ordinary case.
+   *
+   * <p>The rest of the assertion is that every field this service does read is byte-identical either
+   * way — the claim {@link #aReleaseStatingNoPriorityCarriesNoSuchKeyAndIsOtherwiseIdentical} makes
+   * about the component before it.
+   */
+  @Test
+  public void aReleaseFromBeforeTheReleaseRequestIdCarriesNoSuchKeyAndIsOtherwiseIdentical()
+      throws Exception {
+    JsonNode withRequest =
+        MAPPER.readTree(
+            CanonicalJson.payload(
+                release(
+                    "qits-ci",
+                    "qits-ci",
+                    "2026.812.153438",
+                    BACKING_BRANCH,
+                    RELEASED_SHA,
+                    "HIGHER",
+                    RELEASE_REQUEST_ID)));
+    JsonNode without =
+        MAPPER.readTree(canonicalPayload("qits-ci", "qits-ci", "2026.812.153438", "HIGHER"));
+
+    assertFalse(
+        without.has("releaseRequestId"),
+        "NON_NULL: a release that named no request states it by the key not being there, which is"
+            + " what qits-ci reads as 'this run is no phase of a release'");
+    for (String field :
+        List.of(
+            ScmReleaseListener.REPOSITORY_FIELD,
+            ScmReleaseListener.REPOSITORY_NAME_FIELD,
+            ScmReleaseListener.VERSION_FIELD,
+            ScmReleaseListener.PRIORITY_FIELD,
+            "branch",
+            "commitSha")) {
+      assertEquals(
+          withRequest.get(field),
+          without.get(field),
+          field + " moved with releaseRequestId, so the addition was not additive after all");
+    }
+  }
+
   @Test
   public void theEnvelopesOwnFieldsAreNotInThePayload() throws Exception {
     JsonNode payload =

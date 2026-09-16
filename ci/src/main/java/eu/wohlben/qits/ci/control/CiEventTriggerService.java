@@ -17,10 +17,14 @@ import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -161,15 +165,29 @@ public class CiEventTriggerService {
       Set.of(CiReleaseComposer.RELEASE_REQUEST_EVENT, CiReleaseComposer.RELEASE_EVENT);
 
   /**
+   * The hand-written QA pipeline a {@code release.yml}'s {@code release-request:} slot replaces —
+   * one half of the pair every unmigrated repository still commits.
+   *
+   * <p>Public because it is the subject of a read as well as of a supersession: {@link
+   * #releaseCompositionAt} reports what this file commits today beside what a candidate slot file
+   * would compose, and a second spelling of the path there would be a second thing to keep in step
+   * with the supersession below.
+   */
+  public static final String LEGACY_RELEASE_REQUEST_PATH =
+      CiEventTriggerParser.CONFIG_DIR + "ci-event-release-request.yml";
+
+  /** The other half: the hand-written release pipeline a {@code release:} slot replaces. */
+  public static final String LEGACY_RELEASE_PATH =
+      CiEventTriggerParser.CONFIG_DIR + "ci-event-release.yml";
+
+  /**
    * The two trigger files a {@code release.yml} replaces. Matched by PATH rather than by declared
    * event: these two names are the platform's own convention across all 47 repositories, and a
    * repository that keeps a bespoke {@code ci-event-*.yml} for one of the release events is
    * declaring a second pipeline on purpose — two files, two runs, exactly as the dedupe already says.
    */
   private static final Set<String> LEGACY_RELEASE_PATHS =
-      Set.of(
-          CiEventTriggerParser.CONFIG_DIR + "ci-event-release-request.yml",
-          CiEventTriggerParser.CONFIG_DIR + "ci-event-release.yml");
+      Set.of(LEGACY_RELEASE_REQUEST_PATH, LEGACY_RELEASE_PATH);
 
   @Inject CiConfigSource configSource;
   @Inject CiEventTriggerParser triggerParser;
@@ -856,10 +874,16 @@ public class CiEventTriggerService {
 
   /**
    * Which of the four ways a composition attempt ended. The three failures are one {@code null} to
-   * {@link #compose}, and they are told apart here for the one caller that must not collapse them —
-   * see {@link #releasePhaseAt}.
+   * {@link #compose}, and they are told apart here for the two callers that must not collapse them —
+   * see {@link #releasePhaseAt} and {@link #releaseCompositionAt}.
+   *
+   * <p><b>Public rather than private, and that is a choice against duplication.</b> The read surface
+   * has to say which of the three failures it hit — "your file is broken" and "qits-ci could not
+   * read the wrapper" are a 200 and a 503 — and the alternative to widening this enum was a second
+   * vocabulary in the adapter that means the same four things. Two vocabularies for one outcome is
+   * the drift this class spends a paragraph avoiding everywhere else.
    */
-  private enum ComposeOutcome {
+  public enum ComposeOutcome {
     /** Parsed, resolved and compiled. The {@code Composed} pair is there, either half may be null. */
     COMPOSED,
     /** The repository's own {@code release.yml} is not a usable slot file. */
@@ -871,15 +895,34 @@ public class CiEventTriggerService {
   }
 
   /**
-   * One composition attempt: what came of it, the pair when there is one, and the sentence a caller
-   * can put in front of a person.
+   * One composition attempt: what came of it, the pair when there is one, every artifact either
+   * document declared, and the sentence a caller can put in front of a person.
    *
    * <p>The detail is built here rather than at the call site because it is the same fact the WARN
    * already names — the file, the archetype, the parser's own message — and a second spelling of it
    * would be a second thing to keep in step with the log.
+   *
+   * <p><b>Public for {@link ComposeOutcome}'s reason</b>, and {@code declaredArtifacts} exists for
+   * exactly one reader. A composed {@code artifacts:} block carries {@code {type, name}} and never
+   * the {@code sbom:} path — the trigger schema is strict about unknown keys, so the path is spent
+   * on a postlude line instead — and {@link #releaseCompositionAt} has to report the path a person
+   * wrote down. It is a <b>lookup table by coordinate</b> rather than a resolved list: the slot
+   * file's declarations followed by the archetype's, with the whole-slot override deliberately not
+   * restated here, because restating it would be a second copy of a rule {@link CiReleaseComposer}
+   * owns. Reading an sbom path out of it can only ever name the document that really declared it.
+   *
+   * @param declaredArtifacts empty on every failing outcome, since nothing was parsed to declare
    */
-  private record ComposeAttempt(
-      ComposeOutcome outcome, CiReleaseComposer.Composed composed, String detail) {}
+  public record ComposeAttempt(
+      ComposeOutcome outcome,
+      CiReleaseComposer.Composed composed,
+      List<CiReleaseSlots.SlotArtifact> declaredArtifacts,
+      String detail) {
+
+    public ComposeAttempt {
+      declaredArtifacts = List.copyOf(declaredArtifacts);
+    }
+  }
 
   /**
    * Parses one repository's slot file, reads whatever archetype it names at the wrapper's {@code
@@ -909,6 +952,7 @@ public class CiEventTriggerService {
       return new ComposeAttempt(
           ComposeOutcome.UNPARSEABLE,
           null,
+          List.of(),
           CiReleaseSlotParser.CONFIG_PATH + " is not a usable release slot file: " + e.getMessage());
     }
     CiReleaseSlots archetype = null;
@@ -924,6 +968,7 @@ public class CiEventTriggerService {
         return new ComposeAttempt(
             ComposeOutcome.ARCHETYPE_UNREADABLE,
             null,
+            List.of(),
             CiReleaseSlotParser.CONFIG_PATH
                 + " names release archetype '"
                 + slots.archetype()
@@ -933,7 +978,10 @@ public class CiEventTriggerService {
     }
     try {
       return new ComposeAttempt(
-          ComposeOutcome.COMPOSED, CiReleaseComposer.compose(repo, slots, archetype), null);
+          ComposeOutcome.COMPOSED,
+          CiReleaseComposer.compose(repo, slots, archetype),
+          declarations(slots, archetype),
+          null);
     } catch (CiConfigException e) {
       LOG.warnf(
           "%s: %s could not be composed into a release pipeline: %s — %s",
@@ -941,10 +989,29 @@ public class CiEventTriggerService {
       return new ComposeAttempt(
           ComposeOutcome.UNCOMPOSABLE,
           null,
+          List.of(),
           CiReleaseSlotParser.CONFIG_PATH
               + " could not be composed into a release pipeline: "
               + e.getMessage());
     }
+  }
+
+  /**
+   * Every {@code artifacts:} entry either document declared, the slot file's first.
+   *
+   * <p>Not the <em>effective</em> list — see {@link ComposeAttempt#declaredArtifacts()}. It is read
+   * by coordinate and never by position, so a repository whose archetype declares the same artifact
+   * it does finds its own {@code sbom:} path first, which is the same precedence the override has
+   * without this method having to know that the override exists.
+   */
+  private static List<CiReleaseSlots.SlotArtifact> declarations(
+      CiReleaseSlots slots, CiReleaseSlots archetype) {
+    if (archetype == null) {
+      return slots.artifacts();
+    }
+    List<CiReleaseSlots.SlotArtifact> all = new ArrayList<>(slots.artifacts());
+    all.addAll(archetype.artifacts());
+    return all;
   }
 
   /**
@@ -1156,6 +1223,533 @@ public class CiEventTriggerService {
     /** The question could not be asked. Never an answer about the repository; always a retry. */
     UNKNOWN
   }
+
+  // --- composed versus committed: what a candidate release.yml WOULD do, beside what is there -----
+
+  /**
+   * What a {@code release.yml} composes at one rev, side by side with the two hand-written trigger
+   * files that rev really commits — <b>read-only, and it runs nothing.</b>
+   *
+   * <h2>What it is for, and why it has to exist before the migration rather than after</h2>
+   *
+   * <p>46 repositories are about to delete their hand-written {@code
+   * ci-event-release-request.yml}/{@code ci-event-release.yml} pair and commit a {@code release.yml}
+   * in its place. The pair is what gates and publishes them today; the slot file is a promise about
+   * what would happen instead, and the promise is only redeemable by <em>composing</em> it — {@link
+   * CiReleaseComposer}'s whole-slot override means the file alone does not say what the pipeline is,
+   * which is the same reason {@link #releasePhaseAt} exists. So the composer is asked, on a candidate
+   * that is <b>not committed yet</b>, and it reports both sides for a person to read.
+   *
+   * <p><b>It reports and it does not judge.</b> There is no textual diff here and no boolean saying
+   * the two agree, and both absences are deliberate. A composed document carries a platform prelude
+   * and a postlude no hand-written file ever had, so the two texts are <em>never</em> byte-equal and
+   * an equality check over them could only ever answer "different" — a signal with no information in
+   * it, which is worse than none because somebody would come to trust it. What is comparable is what
+   * <em>decides behaviour</em>: the event, the selection, the checkout, the file-level and per-step
+   * gating, each step's image and flags, and what the pipeline declares it publishes. Those are what
+   * the two summaries carry, and a person compares them.
+   *
+   * <h2>What a script publishes is the DECLARATION, never the script</h2>
+   *
+   * <p>qits-ci never learns how to publish anything and cannot see what a step pushed — README's
+   * "What it declares is not what it observed" — so "what does this pipeline publish" is answered by
+   * the {@code artifacts:} block on each side and by nothing else. Reading the script for an {@code
+   * npm publish} would be a grep inside a shell script, which is exactly the mechanism {@code
+   * userflows:} was invented to retire, and it would stop working the moment the script is composed.
+   *
+   * <p>What each step's script gets instead is a <b>sha-256 digest and a line count</b>. That is
+   * enough to see at a glance that two scripts are not the same text, and it is deliberately not
+   * enough to see how they differ: a diff algorithm here would be a second thing to maintain for a
+   * door whose whole answer is "read these two and decide".
+   *
+   * <h2>Which slot file is composed, and the one request that has no answer</h2>
+   *
+   * <p><b>The ref's own {@code release.yml} wins when it is there.</b> A repository that has already
+   * migrated is asking about itself, and composing a candidate over the top of committed bytes would
+   * answer a question nobody asked. A blank or null candidate means "use the repository's own", and
+   * {@link ReleaseComposition#slotFileSource()} reports which it really was, so a caller never has to
+   * infer it.
+   *
+   * <p><b>Neither of the two is {@link CompositionVerdict#NOTHING_TO_COMPARE}, and that is a 400
+   * rather than an empty 200.</b> The subject of this read is a candidate measured against a
+   * committed pair; with no slot file at the ref and no candidate supplied there is nothing composed
+   * to report at all. A 200 carrying two absences would read as "this repository composes nothing" —
+   * a statement about the repository — when the truth is that the request was empty, and the missing
+   * input is the caller's own to supply.
+   *
+   * <h2>Which failures are answers and which are not, and it is {@link #releasePhaseAt}'s rule</h2>
+   *
+   * <p>{@link CompositionVerdict#UNAVAILABLE} is reserved for the question not having been asked:
+   * the repository is in no catalogue here, the slot file's read at {@code rev} came back {@code
+   * UNREACHABLE}, either legacy file's read did, or the archetype could not be read from the wrapper
+   * ({@link ComposeOutcome#ARCHETYPE_UNREADABLE}). None of those says anything about the
+   * repository's bytes, so none of them may be reported as an absence on either side.
+   *
+   * <p><b>A slot file that will not parse, and a pair that will not compose, are ANSWERS.</b> They
+   * are facts about the bytes that were handed in — the ref's, or the caller's own candidate — and
+   * reporting them is the single most useful thing this door does before a migration commit: the
+   * composed side comes back absent <em>with the parser's own message</em>, which is precisely what a
+   * person about to commit that file needs to read.
+   *
+   * @param repositoryId the repository, by public name or by storage id — {@link #find}'s two arms
+   * @param rev a git rev the host can resolve. In practice {@code main} or a branch tip while a
+   *     migration is being written, rather than the released tag {@link #releasePhaseAt} is asked
+   *     about — this read is about a file somebody is still editing.
+   * @param candidateSlotFile the {@code release.yml} text to compose, or null/blank for "use the
+   *     repository's own at that rev". Ignored outright when the ref commits one, because the ref's
+   *     own bytes are the better answer to the question that was asked.
+   */
+  public ReleaseComposition releaseCompositionAt(
+      String repositoryId, String rev, String candidateSlotFile) {
+    if (repositoryId == null || repositoryId.isBlank()) {
+      return ReleaseComposition.unanswered(
+          CompositionVerdict.UNAVAILABLE, repositoryId, rev, "No repository was named");
+    }
+    // One listing for both lookups — the evaluation path's rule, and here also what keeps the
+    // repository and the wrapper resolved against the same catalogue.
+    List<CiRepoRef> candidates = candidateRepos.candidates();
+    CiRepoRef repo = find(candidates, repositoryId);
+    if (repo == null) {
+      // Never an absence: an empty or unreachable catalogue looks exactly like this, and the
+      // candidate list's standing rule is that a read failure never shrinks the set observably.
+      return ReleaseComposition.unanswered(
+          CompositionVerdict.UNAVAILABLE,
+          repositoryId,
+          rev,
+          "Repository " + repositoryId + " is not in this qits-ci's candidate catalogue");
+    }
+    String repoId = repo.display();
+    CiConfigSource.FileLookup own =
+        configSource.readFile(repo, rev, CiReleaseSlotParser.CONFIG_PATH);
+    if (own.status() == CiConfigSource.FileLookup.Status.UNREACHABLE) {
+      return ReleaseComposition.unanswered(
+          CompositionVerdict.UNAVAILABLE,
+          repositoryId,
+          rev,
+          repoId + ": " + CiReleaseSlotParser.CONFIG_PATH + " could not be read at " + rev);
+    }
+    String candidate =
+        candidateSlotFile == null || candidateSlotFile.isBlank() ? null : candidateSlotFile;
+    String slotFile;
+    SlotFileSource source;
+    if (own.status() == CiConfigSource.FileLookup.Status.FOUND) {
+      slotFile = own.content();
+      source = SlotFileSource.COMMITTED;
+    } else if (candidate != null) {
+      slotFile = candidate;
+      source = SlotFileSource.CANDIDATE;
+    } else {
+      return ReleaseComposition.unanswered(
+          CompositionVerdict.NOTHING_TO_COMPARE,
+          repositoryId,
+          rev,
+          repoId
+              + " declares no "
+              + CiReleaseSlotParser.CONFIG_PATH
+              + " at "
+              + rev
+              + " and no candidate was supplied — there is nothing composed to compare, and the"
+              + " missing half is the caller's to send");
+    }
+    // Both legacy reads BEFORE the composition, so that "nothing was learned" outranks every answer
+    // about bytes: a committed side reported absent on the strength of an unreachable git host would
+    // be read as "this repository has already stopped committing that file", which is the one
+    // sentence this door must never say by accident.
+    CiConfigSource.FileLookup committedQa =
+        configSource.readFile(repo, rev, LEGACY_RELEASE_REQUEST_PATH);
+    if (committedQa.status() == CiConfigSource.FileLookup.Status.UNREACHABLE) {
+      return ReleaseComposition.unanswered(
+          CompositionVerdict.UNAVAILABLE,
+          repositoryId,
+          rev,
+          repoId + ": " + LEGACY_RELEASE_REQUEST_PATH + " could not be read at " + rev);
+    }
+    CiConfigSource.FileLookup committedRelease = configSource.readFile(repo, rev, LEGACY_RELEASE_PATH);
+    if (committedRelease.status() == CiConfigSource.FileLookup.Status.UNREACHABLE) {
+      return ReleaseComposition.unanswered(
+          CompositionVerdict.UNAVAILABLE,
+          repositoryId,
+          rev,
+          repoId + ": " + LEGACY_RELEASE_PATH + " could not be read at " + rev);
+    }
+    ComposeAttempt attempt =
+        attemptCompose(
+            repo,
+            repoId,
+            slotFile,
+            platformRepo(candidates),
+            "this composed-versus-committed read reports which failure it was");
+    if (attempt.outcome() == ComposeOutcome.ARCHETYPE_UNREADABLE) {
+      // The repository's own bytes are fine and the wrapper's could not be read. That is a statement
+      // about qits-ci, so it is the one composition failure that is not an answer about the file.
+      return ReleaseComposition.unanswered(
+          CompositionVerdict.UNAVAILABLE, repositoryId, rev, repoId + ": " + attempt.detail());
+    }
+    return new ReleaseComposition(
+        CompositionVerdict.ANSWERED,
+        repoId
+            + ": composed "
+            + (source == SlotFileSource.CANDIDATE ? "the supplied candidate " : "")
+            + CiReleaseSlotParser.CONFIG_PATH
+            + " against what "
+            + rev
+            + " commits",
+        repositoryId,
+        rev,
+        source,
+        CiReleaseSlotParser.CONFIG_PATH,
+        phase(
+            RELEASE_REQUEST_PHASE,
+            CiReleaseComposer.RELEASE_REQUEST_EVENT,
+            attempt,
+            attempt.composed() == null ? null : attempt.composed().releaseRequestDocument(),
+            RELEASE_REQUEST_SLOT,
+            LEGACY_RELEASE_REQUEST_PATH,
+            committedQa,
+            rev),
+        phase(
+            RELEASE_PHASE,
+            CiReleaseComposer.RELEASE_EVENT,
+            attempt,
+            attempt.composed() == null ? null : attempt.composed().releaseDocument(),
+            RELEASE_SLOT,
+            LEGACY_RELEASE_PATH,
+            committedRelease,
+            rev));
+  }
+
+  /** The QA phase as this read names it — the slot file's {@code release-request:} half. */
+  private static final String RELEASE_REQUEST_PHASE = "release-request";
+
+  /** The publish phase as this read names it — the slot file's {@code release:} half. */
+  private static final String RELEASE_PHASE = "release";
+
+  /** The slot key behind {@link #RELEASE_REQUEST_PHASE}, for a detail a person can act on. */
+  private static final String RELEASE_REQUEST_SLOT = "release-request";
+
+  /** The slot key behind {@link #RELEASE_PHASE}. */
+  private static final String RELEASE_SLOT = "release";
+
+  /**
+   * One phase, both sides.
+   *
+   * <p>The two sides are built by <b>one</b> code path — {@link #described} — because both are
+   * ordinary trigger documents in the same grammar, and a composed document that were summarised by
+   * a second reader would be a second reader to keep in step with {@link CiEventTriggerParser}. That
+   * is also the whole reason the composer emits a trigger document rather than a private shape.
+   */
+  private PhaseComparison phase(
+      String phase,
+      String event,
+      ComposeAttempt attempt,
+      String composedDocument,
+      String slotKey,
+      String legacyPath,
+      CiConfigSource.FileLookup committed,
+      String rev) {
+    PhaseDocument composed;
+    if (attempt.outcome() != ComposeOutcome.COMPOSED) {
+      composed = PhaseDocument.absent(CiReleaseSlotParser.CONFIG_PATH, attempt.detail());
+    } else if (composedDocument == null) {
+      composed =
+          PhaseDocument.absent(
+              CiReleaseSlotParser.CONFIG_PATH,
+              "composes no "
+                  + phase
+                  + " phase — neither the slot file nor its archetype declares any '"
+                  + slotKey
+                  + "' step, so no run of this phase would ever be recorded");
+    } else {
+      composed =
+          described(
+              CiReleaseSlotParser.CONFIG_PATH,
+              composedDocument,
+              "composed from "
+                  + CiReleaseSlotParser.CONFIG_PATH
+                  + ", platform prelude and postlude included",
+              attempt.declaredArtifacts());
+    }
+    PhaseDocument onRef =
+        committed.status() == CiConfigSource.FileLookup.Status.FOUND
+            ? described(legacyPath, committed.content(), legacyPath + " at " + rev, List.of())
+            : PhaseDocument.absent(
+                legacyPath,
+                "no "
+                    + legacyPath
+                    + " at "
+                    + rev
+                    + " — this rev commits no hand-written pipeline for "
+                    + event);
+    return new PhaseComparison(phase, event, composed, onRef);
+  }
+
+  /**
+   * One trigger document read back: its text, and the structured summary of what decides its
+   * behaviour.
+   *
+   * <p><b>A document that will not parse is still reported with its text.</b> It is a fact about
+   * bytes somebody wrote, and the parser's own message is the most useful sentence this read can
+   * hand back — the same argument {@link #releasePhaseAt} makes for answering rather than retrying.
+   * On the composed side it should be unreachable, since the composer's output round-trips through
+   * this parser by construction; the arm is here because "should be unreachable" is not a reason to
+   * turn a surprise into a 500 on a read.
+   */
+  private PhaseDocument described(
+      String path, String document, String detail, List<CiReleaseSlots.SlotArtifact> declared) {
+    try {
+      return new PhaseDocument(
+          path, document, detail, summarise(triggerParser.parse(path, document), declared));
+    } catch (CiConfigException e) {
+      return new PhaseDocument(
+          path, document, path + " is not a usable event trigger: " + e.getMessage(), null);
+    }
+  }
+
+  /** What a parsed trigger document decides, flattened into something a person can read side by side. */
+  private static DocumentSummary summarise(
+      CiEventTrigger trigger, List<CiReleaseSlots.SlotArtifact> declared) {
+    List<StepSummary> steps = new ArrayList<>();
+    List<CiPipeline.CiStepDecl> declaredSteps = trigger.pipeline().steps();
+    for (int i = 0; i < declaredSteps.size(); i++) {
+      CiPipeline.CiStepDecl step = declaredSteps.get(i);
+      steps.add(
+          new StepSummary(
+              i,
+              step.image(),
+              step.gating(),
+              step.build(),
+              step.docker(),
+              step.user(),
+              step.timeoutSeconds(),
+              sha256(step.script()),
+              lineCount(step.script())));
+    }
+    List<ArtifactSummary> artifacts = new ArrayList<>();
+    for (CiArtifact artifact : trigger.artifacts()) {
+      artifacts.add(
+          new ArtifactSummary(
+              artifact.type().declared(), artifact.name(), sbomPath(declared, artifact)));
+    }
+    return new DocumentSummary(
+        trigger.eventName(),
+        rendered(trigger.selection()),
+        trigger.checkout() == null
+            ? null
+            : new CheckoutSummary(
+                trigger.checkout().branchPath(),
+                trigger.checkout().shaPath(),
+                trigger.checkout().optional()),
+        trigger.gating(),
+        List.copyOf(steps),
+        List.copyOf(artifacts));
+  }
+
+  /**
+   * The {@code sbom:} path declared for one artifact, or {@code ""} when none was.
+   *
+   * <p>Matched by the coordinate rather than by position, for {@link
+   * ComposeAttempt#declaredArtifacts()}'s reason: the composed {@code artifacts:} block is the
+   * effective list and the lookup table is every declaration either document made, so the join has
+   * to be on the thing both spell the same way.
+   */
+  private static String sbomPath(List<CiReleaseSlots.SlotArtifact> declared, CiArtifact artifact) {
+    for (CiReleaseSlots.SlotArtifact candidate : declared) {
+      if (candidate.artifact().equals(artifact)) {
+        return candidate.sbomPath();
+      }
+    }
+    return "";
+  }
+
+  /**
+   * A {@code when:} as one line: groups OR'd, conditions within a group AND'd — the grammar {@link
+   * CiEventSelection} defines, written out rather than left for a reader to reconstruct from nested
+   * JSON.
+   *
+   * <p>Rendered rather than echoed, because the two sides of a phase are compared by eye and a
+   * selection is the single most consequential line in either document: an absent {@code when:}
+   * means <b>unconditional</b>, so a candidate that lost its selection would fire for every release
+   * of every repository on the platform, and that has to be readable at a glance rather than
+   * inferred from an empty list.
+   */
+  private static String rendered(CiEventSelection selection) {
+    if (selection.isUnconditional()) {
+      return "unconditional — every event of this name matches";
+    }
+    List<String> groups = new ArrayList<>();
+    for (CiEventSelection.Group group : selection.groups()) {
+      List<String> conditions = new ArrayList<>();
+      for (CiEventSelection.PathCondition condition : group.conditions()) {
+        for (CiEventSelection.Matcher matcher : condition.matchers()) {
+          conditions.add(condition.path() + " " + rendered(matcher));
+        }
+      }
+      String joined = String.join(" AND ", conditions);
+      groups.add(selection.groups().size() > 1 ? "(" + joined + ")" : joined);
+    }
+    return String.join(" OR ", groups);
+  }
+
+  private static String rendered(CiEventSelection.Matcher matcher) {
+    return switch (matcher.kind()) {
+      case EXACT -> "exact '" + matcher.value() + "'";
+      case PREFIX -> "prefix '" + matcher.value() + "'";
+      case EXISTS -> matcher.expected() ? "exists" : "does not exist";
+    };
+  }
+
+  /**
+   * A script's sha-256, hex.
+   *
+   * <p>The whole of what this read says about a script's content, and the bound is the point: two
+   * digests that differ prove the texts differ, and nothing here tells a reader how — see the {@link
+   * #releaseCompositionAt} javadoc for why a diff algorithm is not what this door is.
+   */
+  private static String sha256(String text) {
+    try {
+      return HexFormat.of()
+          .formatHex(
+              MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)));
+    } catch (NoSuchAlgorithmException impossible) {
+      // Every JDK is required to carry SHA-256; if this one does not, the read is broken rather than
+      // the repository, and pretending the digest was something would be worse than saying so.
+      throw new IllegalStateException("SHA-256 is not available on this JVM", impossible);
+    }
+  }
+
+  /** How many lines a script is — the cheap half of the digest, and the one a person reads first. */
+  private static int lineCount(String script) {
+    return script.isEmpty() ? 0 : (int) script.lines().count();
+  }
+
+  /**
+   * What {@link #releaseCompositionAt} answered, and — when it answered at all — both phases.
+   *
+   * <p>The detail is contract rather than a log line, {@link ReleasePhase}'s rule: on the two
+   * unanswered verdicts it is the only thing the caller can put in front of a person, and on the
+   * answered one it names which slot file was composed against which rev.
+   *
+   * @param slotFileSource which slot file was composed — null on an unanswered verdict, because none
+   *     was
+   * @param slotFilePath the path a slot file lives at, reported even when the candidate came in over
+   *     the wire: a person editing the candidate is editing the file that will sit there
+   */
+  public record ReleaseComposition(
+      CompositionVerdict verdict,
+      String detail,
+      String repositoryId,
+      String rev,
+      SlotFileSource slotFileSource,
+      String slotFilePath,
+      PhaseComparison releaseRequestPhase,
+      PhaseComparison releasePhase) {
+
+    static ReleaseComposition unanswered(
+        CompositionVerdict verdict, String repositoryId, String rev, String detail) {
+      return new ReleaseComposition(verdict, detail, repositoryId, rev, null, null, null, null);
+    }
+  }
+
+  /**
+   * The three answers this read has, and the two that are not answers about a repository at all.
+   *
+   * <p>Collapsing {@link #UNAVAILABLE} into {@link #ANSWERED} would report a git host's blip as an
+   * absence on one side, which reads as a statement about what the repository commits.
+   */
+  public enum CompositionVerdict {
+    /** Both sides were read and reported. Every failure of bytes is inside the answer. */
+    ANSWERED,
+    /** The question could not be asked — a catalogue miss or an unreachable read. Retry. */
+    UNAVAILABLE,
+    /** No slot file at the rev and no candidate supplied: an empty request, not an empty answer. */
+    NOTHING_TO_COMPARE
+  }
+
+  /** Which slot file was composed. Reported rather than inferred — see {@link #releaseCompositionAt}. */
+  public enum SlotFileSource {
+    /** The one the ref itself commits, which always wins when it is there. */
+    COMMITTED,
+    /** The one the caller supplied, used because the ref commits none. */
+    CANDIDATE
+  }
+
+  /**
+   * One phase of the release cycle, from both sides.
+   *
+   * @param phase {@code release-request} or {@code release} — the slot key, which is also what the
+   *     platform calls the phase
+   * @param event the domain event a run of this phase is triggered by, which is what makes the two
+   *     sides comparable at all: they are two declarations about one event
+   */
+  public record PhaseComparison(
+      String phase, String event, PhaseDocument composed, PhaseDocument committed) {}
+
+  /**
+   * One side of one phase: where it lives, its text, the sentence about it, and the summary.
+   *
+   * @param document the text, or null when this side declares nothing — {@code detail} then says why,
+   *     which is the explicit absence marker rather than an empty string that could be mistaken for
+   *     an empty file
+   * @param summary null when there is nothing to summarise: the side is absent, or its document is
+   *     present and will not parse
+   */
+  public record PhaseDocument(
+      String path, String document, String detail, DocumentSummary summary) {
+
+    static PhaseDocument absent(String path, String detail) {
+      return new PhaseDocument(path, null, detail, null);
+    }
+  }
+
+  /**
+   * Everything about a trigger document that decides what a run of it does — and deliberately
+   * nothing about what its scripts say beyond their digests.
+   *
+   * @param selection the {@code when:} as one line; see {@link #rendered(CiEventSelection)}
+   * @param checkout null when the document declares none, which means the run builds {@code main}'s
+   *     head — a difference between the two sides worth seeing rather than deducing
+   * @param gating the FILE-level flag: whether a red run of this pipeline stands in the way of
+   *     releasing its commit
+   */
+  public record DocumentSummary(
+      String event,
+      String selection,
+      CheckoutSummary checkout,
+      boolean gating,
+      List<StepSummary> steps,
+      List<ArtifactSummary> artifacts) {}
+
+  /** The two payload dot-paths a run of this document is anchored at, and the compatibility arm. */
+  public record CheckoutSummary(String branchPath, String shaPath, boolean optional) {}
+
+  /**
+   * One step as this read reports it.
+   *
+   * @param user the container user, {@code ""} when the document declares none — the image's default
+   * @param timeoutSeconds null when the document declares none, which is the deployment-wide default
+   * @param scriptSha256 the script's digest, which is the whole of what is said about its content
+   * @param scriptLines how long it is, so a reader sees a script that grew or shrank without opening
+   *     either document
+   */
+  public record StepSummary(
+      int index,
+      String image,
+      boolean gating,
+      boolean build,
+      boolean docker,
+      String user,
+      Integer timeoutSeconds,
+      String scriptSha256,
+      int scriptLines) {}
+
+  /**
+   * One declared artifact.
+   *
+   * @param sbomPath the {@code sbom:} path the slot file carried for it, {@code ""} when none — and
+   *     always {@code ""} on the committed side, since a trigger file's {@code artifacts:} grammar
+   *     has no such key and never did
+   */
+  public record ArtifactSummary(String type, String name, String sbomPath) {}
 
   /**
    * The platform-pipelines repository as a candidate, or null when the feature is off or the

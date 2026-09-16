@@ -24,6 +24,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
       String branch,
       String commitSha,
       boolean gating,
+      String phase,
       Instant finishedAt,
       String triggerEventId) {}
 
@@ -35,6 +36,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
       String branch,
       String commitSha,
       boolean gating,
+      String phase,
       String outcome,
       Instant finishedAt,
       String triggerEventId) {}
@@ -52,6 +54,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
       String branch,
       String commitSha,
       boolean gating,
+      String phase,
       String status,
       String previousStatus,
       Instant occurredAt,
@@ -71,6 +74,14 @@ public class FakeRunAnnouncer implements RunAnnouncer {
 
   public List<AnnouncedStatus> statuses() {
     return List.copyOf(statuses);
+  }
+
+  /** The phases announced for one run's status transitions, in order. */
+  public List<String> phasesOf(String runId) {
+    return statuses().stream()
+        .filter(status -> status.runId().equals(runId))
+        .map(AnnouncedStatus::phase)
+        .toList();
   }
 
   /** The status words announced for one run, in order — what a lifecycle assertion is made of. */
@@ -96,6 +107,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
       String branch,
       String commitSha,
       boolean gating,
+      String phase,
       Instant finishedAt,
       String triggerEventId) {
     announced.add(
@@ -107,6 +119,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
             branch,
             commitSha,
             gating,
+            phase,
             finishedAt,
             triggerEventId));
   }
@@ -120,6 +133,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
       String branch,
       String commitSha,
       boolean gating,
+      String phase,
       String outcome,
       Instant finishedAt,
       String triggerEventId) {
@@ -132,6 +146,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
             branch,
             commitSha,
             gating,
+            phase,
             outcome,
             finishedAt,
             triggerEventId));
@@ -146,6 +161,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
       String branch,
       String commitSha,
       boolean gating,
+      String phase,
       String status,
       String previousStatus,
       Instant occurredAt,
@@ -159,6 +175,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
             branch,
             commitSha,
             gating,
+            phase,
             status,
             previousStatus,
             occurredAt,

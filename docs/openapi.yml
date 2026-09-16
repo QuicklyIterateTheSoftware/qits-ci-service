@@ -4,6 +4,15 @@
 openapi: 3.1.0
 components:
   schemas:
+    ArtifactResponse:
+      type: object
+      properties:
+        type:
+          type: string
+        name:
+          type: string
+        sbomPath:
+          type: string
     CancelReleaseRequestRunsRequest:
       type: object
       required:
@@ -28,6 +37,15 @@ components:
       properties:
         reason:
           type: string
+    CheckoutResponse:
+      type: object
+      properties:
+        branchPath:
+          type: string
+        shaPath:
+          type: string
+        optional:
+          type: boolean
     CiLiveStepDto:
       type: object
       properties:
@@ -148,6 +166,17 @@ components:
           type: string
         source:
           type: string
+    DocumentResponse:
+      type: object
+      properties:
+        path:
+          type: string
+        document:
+          type: string
+        detail:
+          type: string
+        summary:
+          $ref: "#/components/schemas/SummaryResponse"
     Instant:
       type: string
       format: date-time
@@ -174,6 +203,41 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CiRunDto"
+    PhaseResponse:
+      type: object
+      properties:
+        phase:
+          type: string
+        event:
+          type: string
+        composed:
+          $ref: "#/components/schemas/DocumentResponse"
+        committed:
+          $ref: "#/components/schemas/DocumentResponse"
+    ReleaseCompositionRequest:
+      type: object
+      properties:
+        candidateSlotFile:
+          type: string
+    ReleaseCompositionResponse:
+      type: object
+      properties:
+        repositoryId:
+          type: string
+        rev:
+          type: string
+        slotFileSource:
+          type: string
+        slotFilePath:
+          type: string
+        detail:
+          type: string
+        guidance:
+          type: string
+        releaseRequestPhase:
+          $ref: "#/components/schemas/PhaseResponse"
+        releasePhase:
+          $ref: "#/components/schemas/PhaseResponse"
     ReleasePhaseResponse:
       type: object
       properties:
@@ -198,11 +262,74 @@ components:
           $ref: "#/components/schemas/CiRunDto"
         lastMainRun:
           $ref: "#/components/schemas/CiRunDto"
+    RerunReleaseRequestPhaseRequest:
+      type: object
+      required:
+      - repoId
+      - releaseRequestId
+      - phase
+      properties:
+        repoId:
+          type: string
+          description: The repository whose run to re-fire
+        releaseRequestId:
+          type: string
+          description: The release request the run serves
+        phase:
+          type: string
+          enum:
+          - RELEASE_REQUEST
+          - RELEASE
+          description: "Which phase of the release to re-fire: RELEASE_REQUEST (QA)\
+            \ or RELEASE (publish)"
     RetryRunResponse:
       type: object
       properties:
         runId:
           type: string
+    StepResponse:
+      type: object
+      properties:
+        index:
+          type: integer
+          format: int32
+        image:
+          type: string
+        gating:
+          type: boolean
+        build:
+          type: boolean
+        docker:
+          type: boolean
+        user:
+          type: string
+        timeoutSeconds:
+          type: integer
+          format: int32
+        scriptSha256:
+          type: string
+        scriptLines:
+          type: integer
+          format: int32
+    SummaryResponse:
+      type: object
+      properties:
+        event:
+          type: string
+        selection:
+          type: string
+        checkout:
+          $ref: "#/components/schemas/CheckoutResponse"
+        gating:
+          type: boolean
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/StepResponse"
+        artifacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ArtifactResponse"
     TriggerEventRequest:
       type: object
       properties:
@@ -333,6 +460,59 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListRepositorySummariesResponse"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Repository Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:system
+        - qits:agent
+  /ci/api/repositories/{repoId}/release-composition:
+    post:
+      summary: "What a candidate release.yml would compose at a rev, beside what that\
+        \ rev commits (a read; POST only because it takes a body)"
+      parameters:
+      - name: repoId
+        in: path
+        required: true
+        schema:
+          type: string
+      - description: A git rev the host can resolve — in practice main or the branch
+          a migration is being written on
+        required: true
+        name: rev
+        in: query
+        schema:
+          type: string
+      requestBody:
+        description: "The candidate release.yml to compose. Omit it — or send a blank\
+          \ one — to compose the repository's own file at that ref, which is what\
+          \ a caller with no draft asks for."
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReleaseCompositionRequest"
+      responses:
+        "200":
+          description: "Both sides, per phase, with the guidance that says this is\
+            \ for judgement rather than a gate. A candidate that will not parse or\
+            \ compose is reported here, not as a 503."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseCompositionResponse"
+        "400":
+          description: "Missing or blank rev, or no release.yml at the ref and no\
+            \ candidate supplied — an empty request rather than an empty answer"
+        "503":
+          description: "Not answered — the repository is in no catalogue here, or\
+            \ the slot file, a legacy trigger file or the archetype could not be read.\
+            \ Retry."
         "401":
           description: Not Authorized
         "403":
@@ -501,6 +681,42 @@ paths:
         - qits:admin
         - qits:system
         - qits:agent
+  /ci/api/runs/rerun:
+    post:
+      summary: Run one phase of a release request's CI again
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RerunReleaseRequestPhaseRequest"
+        required: true
+      responses:
+        "202":
+          description: A new run has been accepted and queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetryRunResponse"
+        "400":
+          description: "The repository id, the release request id or the phase is\
+            \ missing or invalid"
+        "403":
+          description: "The token covers this repository for nobody — no project claim\
+            \ and no platform-wide role, or a project claim this instance cannot place\
+            \ the repository in"
+        "404":
+          description: No such repository
+        "409":
+          description: "That phase has no run yet, its newest run is still going,\
+            \ or it succeeded — a succeeded phase has nothing to ask again"
+        "401":
+          description: Not Authorized
+      tags:
+      - Ci Run Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:system
   /ci/api/runs/{runId}:
     get:
       summary: "One CI run with its steps, output and — while it runs — its live step"
@@ -595,4 +811,4 @@ paths:
         - qits:admin
 info:
   title: qits-ci API
-  version: 2026.916.21501
+  version: 2026.916.165359

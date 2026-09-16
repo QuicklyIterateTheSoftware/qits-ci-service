@@ -160,6 +160,77 @@ class MachineGuardTest {
       """
       {"repoId":"guarded-repo","releaseRequestId":"rr-guarded"}""";
 
+  /**
+   * The third guarded write: qits-projects re-asking one PHASE of a release request's CI. Absolute
+   * like the rest, and guarded exactly as the cancellation is — same two real callers, same machine
+   * arm, same project check — because it takes the same identity with a phase added.
+   */
+  private static final String RERUN = "/ci/api/runs/rerun";
+
+  private static final String RERUN_BODY =
+      """
+      {"repoId":"guarded-repo","releaseRequestId":"rr-guarded","phase":"RELEASE_REQUEST"}""";
+
+  @Test
+  void thePhaseRerunWithNoMachineTokenIs401() {
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(RERUN_BODY)
+        .when()
+        .post(RERUN)
+        .then()
+        .statusCode(401);
+  }
+
+  @Test
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = FOREIGN_AUDIENCE),
+        @Claim(key = QitsClaims.PROJECT, value = "*")
+      })
+  void aTokenMintedForAnotherServiceMayNotRerunAPhase() {
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(RERUN_BODY)
+        .when()
+        .post(RERUN)
+        .then()
+        .statusCode(403);
+  }
+
+  @Test
+  @TestSecurity(user = PROJECTS, roles = {SYSTEM})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void thePhaseRerunAdmitsQitsProjectsOwnBearer() {
+    // The same shape as theReleaseRequestCancellationAdmitsQitsProjectsOwnBearer, and it has to be:
+    // this door's whole purpose is that qits-projects can press it as a machine. 404 is the guard
+    // PASSING and is deterministic in this profile — this instance has recorded no run for that
+    // repository, so it is the endpoint's own answer. What a dropped or tightened guard looks like
+    // is 401 or 403, which is what this case rules out.
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(RERUN_BODY)
+        .when()
+        .post(RERUN)
+        .then()
+        .statusCode(404);
+  }
+
+  @Test
+  @TestSecurity(user = ARTIFACTS, roles = {"qits:agent"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void aCommissionedAgentTokenMayNotRerunAPhase() {
+    // Agents keep every read and lose every write, and this is a write.
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(RERUN_BODY)
+        .when()
+        .post(RERUN)
+        .then()
+        .statusCode(403);
+  }
+
   @Test
   void theManualTriggerWithNoMachineTokenIs401() {
     // 401, not 403: nothing was presented, so the answer is "present something". The forward-auth

@@ -9,6 +9,20 @@ import java.util.List;
  * trigger documents</b> the release cycle is: the QA pipeline that gates a release request, and the
  * release pipeline that publishes.
  *
+ * <p><b>Two documents, two PHASES of one pipeline.</b> A release is one pipeline: phase one is the
+ * QA a release request is gated on, phase two is the publish at the released tag, and phase three is
+ * the deploy, which is qits-deployments' own release request and is declared nowhere near here.
+ * Between two phases sits a gate — CI, approval, publish, deployment — and <b>a gate delays, it does
+ * not fail</b>. So the pair this class emits is the first two phases of one thing, never two
+ * independent pipelines that share a file.
+ *
+ * <p><b>Nothing in the composed text names a phase, and that is the DSL's boundary.</b> {@link
+ * CiReleaseSlots} declares slots and these documents declare events; which phase a run is, is the
+ * <b>engine's</b> word, recorded when the run is accepted and derived from the triggering event
+ * alone. So a run composed from {@code release:} and a run from a hand-written {@code
+ * ci-event-release.yml} are the same phase, which is what makes a half-migrated estate read
+ * identically — and why a phase must never be inferred here from which slot produced a document.
+ *
  * <p><b>A pure function.</b> No clock, no config, no lookup, no logging — inputs in, two strings
  * out, the same two strings every time. That is what makes the golden-file tests a regression net
  * rather than a snapshot: a diff in a composed document is a reviewable fact about a change to this

@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.persistence;
 
 import eu.wohlben.qits.ci.entity.CiRun;
+import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -175,6 +176,49 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
    * partial pass (a caller that died halfway) leave the newest work standing rather than the
    * staleest.
    */
+  /**
+   * The newest run one repository has for one release request in one phase, or empty when that
+   * phase has never run there.
+   *
+   * <p><b>The triple is the identity, and it is the only one the caller holds.</b> qits-projects
+   * knows a repository and a release request and which half of the release it is asking about; it
+   * does not know a run id, and the sha cannot stand in for one — a QA run's commit is a fold nobody
+   * pushed and the next re-fold replaces it. So the rerun door addresses work exactly as {@link
+   * #listUnfinishedForReleaseRequest} does, with the phase as the third term, and both halves of
+   * that pair are load-bearing there for the reasons stated there.
+   *
+   * <p>Newest first and one row, because a phase can have run several times — a re-fold, a rerun of
+   * its own — and what a rerun re-asks is the latest question, never an older one whose answer has
+   * already been superseded. {@code createdAt desc, id desc} is the strict total order every other
+   * newest-first read here uses, so "the newest" names one row rather than an arbitrary one of
+   * several.
+   */
+  public Optional<CiRun> findNewestForReleaseRequestPhase(
+      String repoId, String releaseRequestId, CiRunPhase phase) {
+    return find(
+            "repoId = ?1 and releaseRequestId = ?2 and phase = ?3 order by createdAt desc, id desc",
+            repoId,
+            releaseRequestId,
+            phase)
+        .range(0, 0)
+        .firstResultOptional();
+  }
+
+  /**
+   * Whether this instance has ever recorded a run for a repository — what tells a repository the
+   * rerun door has never heard of from one whose phase simply has not run.
+   *
+   * <p>Run history is deliberately the test rather than the candidate catalogue. The catalogue is a
+   * live listing behind a five-second cache and an unreachable qits-projects empties it, so asking
+   * it here would turn a listing outage into a 404 about a repository that exists; a row, once
+   * written, is this service's own durable knowledge of the repository and cannot go away under a
+   * blip. It is also exactly the set the door can answer for: a repository with no run has no phase
+   * to re-ask.
+   */
+  public boolean hasAnyRun(String repoId) {
+    return count("repoId = ?1", repoId) > 0;
+  }
+
   public List<CiRun> listUnfinishedForReleaseRequest(String repoId, String releaseRequestId) {
     return list(
         "repoId = ?1 and releaseRequestId = ?2 and status in (?3, ?4) order by createdAt, id",

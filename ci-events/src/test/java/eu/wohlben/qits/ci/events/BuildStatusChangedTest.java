@@ -36,8 +36,8 @@ class BuildStatusChangedTest {
 
   private static BuildStatusChanged anEvent() {
     return new BuildStatusChanged(
-        "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, "RUNNING",
-        "QUEUED", STARTED);
+        "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null,
+        "RUNNING", "QUEUED", STARTED);
   }
 
   @Test
@@ -108,8 +108,8 @@ class BuildStatusChangedTest {
     // null, the convention every nullable field on this bus follows.
     BuildStatusChanged accepted =
         new BuildStatusChanged(
-            "run-2", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, "QUEUED",
-            null, STARTED);
+            "run-2", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null,
+            "QUEUED", null, STARTED);
 
     String payload = CanonicalJson.payload(accepted);
 
@@ -126,8 +126,8 @@ class BuildStatusChangedTest {
   void anIdAddressedRunOmitsTheNamePairRatherThanNullingIt() {
     BuildStatusChanged idOnly =
         new BuildStatusChanged(
-            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, "CANCELLED", "QUEUED",
-            STARTED);
+            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, "CANCELLED",
+            "QUEUED", STARTED);
 
     String payload = CanonicalJson.payload(idOnly);
 
@@ -147,14 +147,33 @@ class BuildStatusChangedTest {
 
     BuildStatusChanged nonGating =
         new BuildStatusChanged(
-            "run-4", "qits-ci", null, null, "main", "0123456789abcdef", false, "SUCCESS", "RUNNING",
-            STARTED);
+            "run-4", "qits-ci", null, null, "main", "0123456789abcdef", false, null, "SUCCESS",
+            "RUNNING", STARTED);
 
     assertEquals(
         "{\"branch\":\"main\",\"commitSha\":\"0123456789abcdef\",\"gating\":false,"
             + "\"previousStatus\":\"RUNNING\",\"repoId\":\"qits-ci\",\"runId\":\"run-4\","
             + "\"status\":\"SUCCESS\"}",
         CanonicalJson.payload(nonGating));
+  }
+
+  @Test
+  void aRunThatIsNoPartOfAReleaseOmitsThePhaseAndAReleaseRunWritesIt() {
+    // The same convention every nullable component here follows. What the phase does NOT do is make
+    // this a statement about a release: it is still a statement about the run's own row moving, and
+    // a mirror reads the phase as an attribute of the row rather than as a pipeline's state.
+    assertFalse(CanonicalJson.payload(anEvent()).contains("phase"));
+
+    BuildStatusChanged qa =
+        new BuildStatusChanged(
+            "run-5", "qits-ci", null, null, "release/rr-1", "0123456789abcdef", null,
+            "RELEASE_REQUEST", "RUNNING", "QUEUED", STARTED);
+
+    assertEquals(
+        "{\"branch\":\"release/rr-1\",\"commitSha\":\"0123456789abcdef\","
+            + "\"phase\":\"RELEASE_REQUEST\",\"previousStatus\":\"QUEUED\","
+            + "\"repoId\":\"qits-ci\",\"runId\":\"run-5\",\"status\":\"RUNNING\"}",
+        CanonicalJson.payload(qa));
   }
 
   @Test

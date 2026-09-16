@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.entity.CiRun;
@@ -118,6 +119,29 @@ public class RunAnnounceSeamTest extends CiTestSupport {
   // arm on 2026-09-05 — a trigger file is read and parsed by CiEventTriggerService BEFORE a row
   // exists, so an unparseable one is a WARN and no run at all, and nothing writes CONFIG_ERROR any
   // more. What a broken trigger file does is CiEventTriggerServiceTest's.
+
+  @Test
+  public void aRunThatIsNoPartOfAReleaseAnnouncesNoPhase() {
+    // The ordinary run, which is most of them: no phase on the row, so null on the wire, so the key
+    // is omitted from the canonical payload entirely and the bytes are what they were before the
+    // component existed. Both verdict kinds carry it, because both are statements about a commit
+    // and the phase is an attribute of the run that made them.
+    seedConfig(CONFIG_ONE_STEP);
+    run();
+    assertNull(announcer.announced().get(0).phase(), "an ordinary build is no phase of a release");
+
+    announcer.reset();
+    seedConfig(CONFIG_ONE_STEP);
+    fakeRunner.script(
+        0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
+    run();
+    assertNull(announcer.failed().get(0).phase());
+  }
+
+  // What a run that IS a phase of a release announces — the word, on every one of its
+  // announcements — is CiRunPhaseTest's, because only the trigger engine can produce one: the phase
+  // is decided by the trigger event's NAME, and this class drives runs through no event worth a
+  // phase.
 
   @Test
   public void anEmptyPipelineIsStillAGreenRunAndAnnounces() {
