@@ -98,6 +98,23 @@
              repo consumes a newer reactor, and until then it names the release the mock idp
              actually shipped in. -->
         <qits.service-mock.version>2026.915.220910</qits.service-mock.version>
+        <!-- THE qits CLI PIN, AND IT IS NOT AN ORDINARY LIBRARY VERSION. This artifact's version IS
+             the daemons-store coordinate of the `qits` binary, and CiDaemonLauncher carries that
+             string into every step container as $QITS_ARTIFACTS_CLI_VERSION — so THIS LINE DECIDES
+             WHICH qits CLI EVERY COMPOSED RELEASE STEP ON THE PLATFORM RUNS.
+
+             Before it, a release-phase step downloaded whatever was latest in the daemons store at
+             the moment it started: a shared, unversioned, unreviewed input to every release at once.
+             On 2026-09-13 one bad CLI release broke all of them, with nothing changed in any
+             consumer's tree and no line anybody could revert. A dependency cannot fail that way: it
+             has to RESOLVE for this reactor to build, QitsCliPinIT proves the version it names is
+             really in the store, and a bad CLI is then one repository's red gate rather than every
+             release on the platform.
+
+             qits-platform-maintenance moves it like any internal pin, on a maintenance/* branch, and
+             THIS repository's own release request is what gates the move. Do not hand-edit it to
+             chase a release. -->
+        <qits.platform-access-cli-binary.version>2026.917.33816</qits.platform-access-cli-binary.version>
         <qits.maven.repository.url>http://registry.dev.localhost:8080/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -254,6 +271,16 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-service-mock</artifactId>
                 <version>${qits.service-mock.version}</version>
+            </dependency>
+            <dependency>
+                <!-- The qits CLI's coordinate: three strings and no bytes of the binary — the
+                     daemons-store name, the command name, and the version the same release
+                     published the binary under. Compile scope and one class with no transitive
+                     dependency of its own: a consumer that pins the CLI must not inherit a
+                     classpath for it. See the property above for why the pin exists. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-platform-access-cli-binary</artifactId>
+                <version>${qits.platform-access-cli-binary.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

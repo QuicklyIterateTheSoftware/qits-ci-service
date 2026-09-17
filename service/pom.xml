@@ -47,6 +47,17 @@
             <artifactId>qits-ci-daemon-protocol</artifactId>
         </dependency>
         <dependency>
+            <!-- WHICH qits CLI EVERY COMPOSED RELEASE STEP RUNS. Three strings and no bytes:
+                 PlatformAccessCliBinary.VERSION is what CiDaemonLauncher injects as
+                 $QITS_ARTIFACTS_CLI_VERSION, and the composed prelude downloads exactly that
+                 coordinate. Declared here and not in `ci/` because the launcher — the one thing
+                 that has to state a version — lives in this module; the composer only reads the
+                 variable out of the step's environment and needs no constant at all.
+                 The pin itself is the root pom's property; see it for why. -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-platform-access-cli-binary</artifactId>
+        </dependency>
+        <dependency>
             <!-- The platform event bus client. Joining it here is what turns three library modules
                  into one deployable that publishes and listens: the outbox's datasource, its Flyway
                  lineage, the sweeper's @Scheduled job and the stream subscriber all arrive with

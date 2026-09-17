@@ -1098,9 +1098,14 @@ child rather than sourcing it is what makes **SBOM-before-green structural**: a 
 
 - always — `set -eu`
 - release phase — `${QITS_VERSION:?}`, the tag fetch and `git checkout --detach`, and the qits CLI
-  (also answers to `qits-publish`) fetched at its LATEST published version and put onto `PATH`, when
-  `$QITS_ARTIFACTS_CLI_PACKAGE` names one. Never a pin: the version is read off qits-artifacts' own
-  listing at every release-phase step start, the same way the clone is fetched fresh every time.
+  (also answers to `qits-publish`) fetched **at the version qits-ci pins** and put onto `PATH`, when
+  `$QITS_ARTIFACTS_CLI_PACKAGE` names one. The download was always version-addressed; what changed
+  is where the version comes from. It used to be read off qits-artifacts' own listing at every step
+  start — so one CLI release was a shared, unversioned input to every composed release at once, and
+  on 2026-09-13 one bad release broke all of them with no line anybody could revert. It is a pom pin
+  now (`eu.wohlben.qits:qits-platform-access-cli-binary`), injected as
+  `$QITS_ARTIFACTS_CLI_VERSION`, moved by qits-platform-maintenance and gated by this repository's
+  own release request. A release step's image therefore no longer needs `jq` for the CLI's sake.
 - `build: true` — `${BUILDKIT_HOST:?}` and `${QITS_BUILD_REGISTRY:?}`, the kill switch's loud half
 - `build:`/`docker:` — the commissioned pair written to `/tmp/qits-client-*` under `umask 077`, in a
   subshell so the umask bounds those two files and nothing after them

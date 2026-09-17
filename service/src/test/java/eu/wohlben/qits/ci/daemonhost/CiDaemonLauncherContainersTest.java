@@ -103,6 +103,10 @@ public class CiDaemonLauncherContainersTest {
     launcher.artifactsDocsUrl = "http://qits-artifacts:8080/artifacts/docs/docs";
     launcher.artifactsUrl = Optional.of("http://qits-artifacts:8080");
     launcher.artifactsCliPackage = "qits-platform-access-cli";
+    // The shipped state of the CLI pin: no override, so the version is the pinned dependency's
+    // own constant. A field write rather than a left-null Optional — these launchers are hand-built,
+    // so nothing injects it and `null` would NPE where the real bean cannot.
+    launcher.artifactsCliVersionOverride = java.util.Optional.empty();
     launcher.workspacesUrl = "http://qits-workspaces:8080";
     // Deadlines a test can afford. The shipped ones are minutes, and they are about an image pull.
     launcher.containers =
