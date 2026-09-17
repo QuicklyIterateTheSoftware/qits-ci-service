@@ -121,14 +121,23 @@ public class RunAnnounceSeamTest extends CiTestSupport {
   // more. What a broken trigger file does is CiEventTriggerServiceTest's.
 
   @Test
-  public void aRunThatIsNoPartOfAReleaseAnnouncesNoPhase() {
-    // The ordinary run, which is most of them: no phase on the row, so null on the wire, so the key
-    // is omitted from the canonical payload entirely and the bytes are what they were before the
-    // component existed. Both verdict kinds carry it, because both are statements about a commit
-    // and the phase is an attribute of the run that made them.
+  public void aRunThatIsNoPartOfAReleaseAnnouncesNeitherPhaseNorReleaseRequest() {
+    // The ordinary run, which is most of them: no phase and no release request on the row, so null
+    // for both on the wire, so both keys are omitted from the canonical payload entirely and the
+    // bytes are what they were before either component existed. Both verdict kinds carry the pair,
+    // because both are statements about a commit and both facts are attributes of the run that made
+    // them.
+    //
+    // This is the NULL half of the invariant the three events state: phase and releaseRequestId are
+    // null together or set together, never one without the other. The set half is CiRunPhaseTest's,
+    // because only the trigger engine can produce one — the phase is decided by the trigger event's
+    // NAME, and this class drives runs through no event worth a phase.
     seedConfig(CONFIG_ONE_STEP);
     run();
     assertNull(announcer.announced().get(0).phase(), "an ordinary build is no phase of a release");
+    assertNull(
+        announcer.announced().get(0).releaseRequestId(),
+        "and it belonged to no release request either");
 
     announcer.reset();
     seedConfig(CONFIG_ONE_STEP);
@@ -136,12 +145,8 @@ public class RunAnnounceSeamTest extends CiTestSupport {
         0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
     run();
     assertNull(announcer.failed().get(0).phase());
+    assertNull(announcer.failed().get(0).releaseRequestId(), "null together on the red verdict too");
   }
-
-  // What a run that IS a phase of a release announces — the word, on every one of its
-  // announcements — is CiRunPhaseTest's, because only the trigger engine can produce one: the phase
-  // is decided by the trigger event's NAME, and this class drives runs through no event worth a
-  // phase.
 
   @Test
   public void anEmptyPipelineIsStillAGreenRunAndAnnounces() {

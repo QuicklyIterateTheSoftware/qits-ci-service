@@ -1640,6 +1640,7 @@ public class CiRunService {
             run.commitSha,
             run.gating,
             phaseWord(run),
+            run.releaseRequestId,
             finishedAt,
             causingEventId(run));
       } catch (RuntimeException e) {
@@ -1671,6 +1672,15 @@ public class CiRunService {
    * The run's phase as the plain word the wire carries, or null for a run that is no part of a
    * release — which is the ordinary case, and the one whose canonical payload stays byte-identical
    * to what it was before the field existed.
+   *
+   * <p><b>It travels beside {@link CiRun#releaseRequestId}, which needs no helper of its own</b> —
+   * it is already the plain {@code String} the wire wants — and the three announce methods pass the
+   * two on adjacent lines deliberately. They are <b>null together or set together</b> on every row
+   * this class writes: {@link #phaseOf} is handed the id {@link #releaseRequestOf} has already read
+   * and returns null whenever that is null, so the pair cannot drift apart at the accept, and
+   * passing them together here is what keeps it from drifting at the announce. A consumer is told it
+   * may rely on that (see the three events' javadoc), which is what lets a pipeline read model key
+   * on the pair without a second lookup.
    */
   private static String phaseWord(CiRun run) {
     return run.phase == null ? null : run.phase.name();
@@ -1700,6 +1710,7 @@ public class CiRunService {
             run.commitSha,
             run.gating,
             phaseWord(run),
+            run.releaseRequestId,
             outcome.name(),
             finishedAt,
             causingEventId(run));
@@ -1754,6 +1765,7 @@ public class CiRunService {
             run.commitSha,
             run.gating,
             phaseWord(run),
+            run.releaseRequestId,
             status.name(),
             previous == null ? null : previous.name(),
             occurredAt,

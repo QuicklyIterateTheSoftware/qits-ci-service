@@ -112,18 +112,26 @@ public class RunLifecycleAnnounceSeamTest extends CiTestSupport {
 
 
   @Test
-  public void everyTransitionOfARunThatIsNoPartOfAReleaseCarriesNoPhase() {
+  public void everyTransitionOfARunThatIsNoPartOfAReleaseCarriesNoPhaseAndNoReleaseRequest() {
     // Null on every announcement rather than on the terminal one, because this event fires several
-    // times per run and a mirror reading the phase off one of them must read the same thing off all
-    // of them. An omitted key three times over is what keeps an ordinary run's lifecycle
-    // byte-identical on the wire. The word a release phase's run carries is CiRunPhaseTest's — the
-    // phase is decided by the trigger event's NAME, and nothing here drives an event worth one.
+    // times per run and a mirror reading the pair off one of them must read the same thing off all
+    // of them. Two omitted keys three times over is what keeps an ordinary run's lifecycle
+    // byte-identical on the wire.
+    //
+    // The pair is the point: phase and releaseRequestId are null together or set together on every
+    // row the engine writes, so a consumer may key a pipeline read model on the two without a second
+    // lookup. This is the null half; the set half — both carried, on every transition of a release's
+    // run — is CiRunPhaseTest's, because the phase is decided by the trigger event's NAME and
+    // nothing here drives an event worth one.
     executePipeline(repoId, "main", sha, CONFIG_ONE_STEP);
 
     CiRun run = theRun();
     assertEquals(List.of("QUEUED", "RUNNING", "SUCCESS"), wordsOf(run.id));
     for (FakeRunAnnouncer.AnnouncedStatus status : statusesOf(run.id)) {
       assertNull(status.phase(), "an ordinary run is no phase of a release at " + status.status());
+      assertNull(
+          status.releaseRequestId(),
+          "and belonged to no release request at " + status.status());
     }
   }
 

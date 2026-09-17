@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import eu.wohlben.qits.eventstream.control.CanonicalJson;
@@ -25,7 +26,8 @@ class BuildFailedTest {
 
   private static BuildFailed anEvent() {
     return new BuildFailed(
-        "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null, "FAILED", FINISHED);
+        "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null, null,
+        "FAILED", FINISHED);
   }
 
   @Test
@@ -87,7 +89,8 @@ class BuildFailedTest {
   void anIdAddressedPushOmitsTheNamePairRatherThanNullingIt() {
     BuildFailed idOnly =
         new BuildFailed(
-            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, "TIMED_OUT", FINISHED);
+            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, null,
+            "TIMED_OUT", FINISHED);
 
     String payload = CanonicalJson.payload(idOnly);
 
@@ -109,7 +112,7 @@ class BuildFailedTest {
 
     BuildFailed nonGating =
         new BuildFailed(
-            "run-4", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", false, null,
+            "run-4", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", false, null, null,
             "FAILED", FINISHED);
     String payload = CanonicalJson.payload(nonGating);
     assertEquals(
@@ -121,20 +124,57 @@ class BuildFailedTest {
   }
 
   @Test
-  void aRunThatIsNoPartOfAReleaseOmitsThePhaseAndAReleaseRunWritesIt() {
-    // BuildSuccessful's rule, unchanged: null is omitted, so an ordinary red build's payload is what
-    // it always was, and a release phase's run carries the word.
+  void aRunThatIsNoPartOfAReleaseOmitsThePairAndAReleaseRunWritesBoth() {
+    // BuildSuccessful's rule, unchanged: a null is omitted, so an ordinary red build's payload is
+    // what it always was, and a release phase's run carries the word and the release request id
+    // beside it. The publish half is the one that proves the id had to be a field: this run's branch
+    // is the version, so there is no release/<id> in it for a consumer to parse a correlation out of.
     assertFalse(CanonicalJson.payload(anEvent()).contains("phase"));
+    assertFalse(CanonicalJson.payload(anEvent()).contains("releaseRequestId"));
 
     BuildFailed publish =
         new BuildFailed(
             "run-5", "qits-ci", null, null, "2026.916.101112", "0123456789abcdef", null, "RELEASE",
-            "FAILED", FINISHED);
+            "rr-1", "FAILED", FINISHED);
     assertEquals(
         "{\"branch\":\"2026.916.101112\",\"commitSha\":\"0123456789abcdef\","
             + "\"finishedAt\":\"2026-07-31T12:46:03Z\",\"outcome\":\"FAILED\","
-            + "\"phase\":\"RELEASE\",\"repoId\":\"qits-ci\",\"runId\":\"run-5\"}",
+            + "\"phase\":\"RELEASE\",\"releaseRequestId\":\"rr-1\","
+            + "\"repoId\":\"qits-ci\",\"runId\":\"run-5\"}",
         CanonicalJson.payload(publish));
+  }
+
+  @Test
+  void thePhaseAndTheReleaseRequestAreNullTogetherOrSetTogether() {
+    // The invariant the three events state and a consumer may rely on: qits-ci derives the phase
+    // from the release request id it has already read, so neither is ever carried without the other.
+    String ordinary = CanonicalJson.payload(anEvent());
+    assertFalse(ordinary.contains("phase"), ordinary);
+    assertFalse(ordinary.contains("releaseRequestId"), ordinary);
+
+    String qa =
+        CanonicalJson.payload(
+            new BuildFailed(
+                "run-6", "qits-ci", null, null, "release/rr-1", "0123456789abcdef", null,
+                "RELEASE_REQUEST", "rr-1", "FAILED", FINISHED));
+    assertTrue(qa.contains("\"phase\":\"RELEASE_REQUEST\""), qa);
+    assertTrue(qa.contains("\"releaseRequestId\":\"rr-1\""), qa);
+  }
+
+  @Test
+  void aRunThatIsNoPartOfAReleaseIsByteIdenticalToWhatShippedBeforeEitherComponentExisted() {
+    // An ordinary id-addressed red build carries exactly the keys it carried before phase and
+    // releaseRequestId were components, because a null is omitted rather than written.
+    BuildFailed ordinary =
+        new BuildFailed(
+            "run-7", "qits-ci", null, null, "main", "0123456789abcdef", null, null, null, "FAILED",
+            FINISHED);
+
+    assertEquals(
+        "{\"branch\":\"main\",\"commitSha\":\"0123456789abcdef\","
+            + "\"finishedAt\":\"2026-07-31T12:46:03Z\",\"outcome\":\"FAILED\","
+            + "\"repoId\":\"qits-ci\",\"runId\":\"run-7\"}",
+        CanonicalJson.payload(ordinary));
   }
 
   @Test

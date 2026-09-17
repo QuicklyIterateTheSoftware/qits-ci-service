@@ -164,7 +164,7 @@ public class EventWireReflectionTest {
     BuildSuccessful out =
         new BuildSuccessful(
             "run-1", "qits-ci", "qits", "qits-ci", "main", "0123456789abcdef", null, null, null,
-            finishedAt);
+            null, finishedAt);
 
     EventEnvelope envelope = EventEnvelope.of(out);
     JsonNode body = CanonicalJson.parse(CanonicalJson.envelope(envelope));

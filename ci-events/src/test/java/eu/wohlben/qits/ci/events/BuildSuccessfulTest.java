@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import eu.wohlben.qits.eventstream.control.CanonicalJson;
@@ -28,7 +29,7 @@ class BuildSuccessfulTest {
   private static BuildSuccessful anEvent() {
     return new BuildSuccessful(
         "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", "sha256:deadbeef", null,
-        null, FINISHED);
+        null, null, FINISHED);
   }
 
   @Test
@@ -94,7 +95,8 @@ class BuildSuccessfulTest {
   void aPipelineThatPublishedNoImageOmitsTheDigestRatherThanNullingIt() {
     BuildSuccessful noImage =
         new BuildSuccessful(
-            "run-2", "qits-ci", "qits", "qits-ci", "main", "0123456789abcdef", null, null, null, FINISHED);
+            "run-2", "qits-ci", "qits", "qits-ci", "main", "0123456789abcdef", null, null, null,
+            null, FINISHED);
 
     String payload = CanonicalJson.payload(noImage);
 
@@ -121,7 +123,8 @@ class BuildSuccessfulTest {
     // existed.
     BuildSuccessful idOnly =
         new BuildSuccessful(
-            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, null, FINISHED);
+            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, null, null,
+            FINISHED);
 
     String payload = CanonicalJson.payload(idOnly);
 
@@ -142,7 +145,8 @@ class BuildSuccessfulTest {
 
     BuildSuccessful nonGating =
         new BuildSuccessful(
-            "run-4", "qits-ci", null, null, "main", "0123456789abcdef", null, false, null, FINISHED);
+            "run-4", "qits-ci", null, null, "main", "0123456789abcdef", null, false, null, null,
+            FINISHED);
     assertEquals(
         "{\"branch\":\"main\",\"commitSha\":\"0123456789abcdef\","
             + "\"finishedAt\":\"2026-07-31T12:46:03Z\",\"gating\":false,"
@@ -151,24 +155,66 @@ class BuildSuccessfulTest {
   }
 
   @Test
-  void aRunThatIsNoPartOfAReleaseOmitsThePhaseAndAReleaseRunWritesIt() {
+  void aRunThatIsNoPartOfAReleaseOmitsThePairAndAReleaseRunWritesBoth() {
     // Null is the ordinary value — most runs are no part of a release — so an ordinary green build's
-    // payload is byte-identical to what it was before the component existed. A run that IS a phase
-    // of a release writes the CiRunPhase word as a plain string, which is what a reader on the other
-    // side of the bus tells P1 from P2 by. It does not make this a verdict about the release: the
-    // event still says "this commit built green", and what a release is worth is the release
-    // request's own business in qits-projects.
+    // payload is byte-identical to what it was before either component existed. A run that IS a
+    // phase of a release writes the CiRunPhase word as a plain string, which is what a reader on the
+    // other side of the bus tells P1 from P2 by, and the release request id beside it, which is what
+    // that reader correlates the two halves of one release by. It does not make this a verdict about
+    // the release: the event still says "this commit built green", and what a release is worth is
+    // the release request's own business in qits-projects.
     assertFalse(CanonicalJson.payload(anEvent()).contains("phase"));
+    assertFalse(CanonicalJson.payload(anEvent()).contains("releaseRequestId"));
 
     BuildSuccessful qa =
         new BuildSuccessful(
             "run-5", "qits-ci", null, null, "release/rr-1", "0123456789abcdef", null, null,
-            "RELEASE_REQUEST", FINISHED);
+            "RELEASE_REQUEST", "rr-1", FINISHED);
     assertEquals(
         "{\"branch\":\"release/rr-1\",\"commitSha\":\"0123456789abcdef\","
             + "\"finishedAt\":\"2026-07-31T12:46:03Z\",\"phase\":\"RELEASE_REQUEST\","
+            + "\"releaseRequestId\":\"rr-1\","
             + "\"repoId\":\"qits-ci\",\"runId\":\"run-5\"}",
         CanonicalJson.payload(qa));
+  }
+
+  @Test
+  void thePhaseAndTheReleaseRequestAreNullTogetherOrSetTogether() {
+    // The invariant a consumer is told it may rely on, and the reason it can key a pipeline read
+    // model on the pair without a second lookup: qits-ci derives the phase from the release request
+    // id it has already read, returning null whenever that is null, so no run it announces holds one
+    // without the other. Stated here on the wire because that is where a consumer meets it.
+    String ordinary = CanonicalJson.payload(anEvent());
+    assertFalse(ordinary.contains("phase"), ordinary);
+    assertFalse(ordinary.contains("releaseRequestId"), ordinary);
+
+    String release =
+        CanonicalJson.payload(
+            new BuildSuccessful(
+                "run-6", "qits-ci", null, null, "2026.916.101112", "0123456789abcdef", null, null,
+                "RELEASE", "rr-1", FINISHED));
+    assertTrue(release.contains("\"phase\":\"RELEASE\""), release);
+    assertTrue(release.contains("\"releaseRequestId\":\"rr-1\""), release);
+    // And the publish half is why the id is a field rather than something derived: there is no
+    // release/<id> in a P2 run's branch to parse — the branch is the version.
+    assertFalse(release.contains("release/"), release);
+  }
+
+  @Test
+  void aRunThatIsNoPartOfAReleaseIsByteIdenticalToWhatShippedBeforeEitherComponentExisted() {
+    // The compatibility claim, spelled as bytes rather than as an absence: an ordinary id-addressed
+    // green build's payload is exactly the five keys it carried before phase and releaseRequestId
+    // were components at all, because CanonicalJson omits a null rather than writing one.
+    BuildSuccessful ordinary =
+        new BuildSuccessful(
+            "run-7", "qits-ci", null, null, "main", "0123456789abcdef", null, null, null, null,
+            FINISHED);
+
+    assertEquals(
+        "{\"branch\":\"main\",\"commitSha\":\"0123456789abcdef\","
+            + "\"finishedAt\":\"2026-07-31T12:46:03Z\",\"repoId\":\"qits-ci\","
+            + "\"runId\":\"run-7\"}",
+        CanonicalJson.payload(ordinary));
   }
 
   @Test
@@ -185,6 +231,8 @@ class BuildSuccessfulTest {
     assertEquals(published.branch(), received.branch());
     assertEquals(published.commitSha(), received.commitSha());
     assertEquals(published.imageDigest(), received.imageDigest());
+    assertEquals(published.phase(), received.phase());
+    assertEquals(published.releaseRequestId(), received.releaseRequestId());
     assertEquals(published.finishedAt(), received.finishedAt());
   }
 }

@@ -52,6 +52,18 @@ import java.util.UUID;
  * phase as an attribute of the row it is mirroring rather than as a pipeline's state. The pipeline
  * is the release request in qits-projects, and no event qits-ci publishes is a verdict about it.
  *
+ * <p><b>{@code releaseRequestId} is which release that was</b> — the id qits-projects addresses a
+ * release request by, carried so that correlation is a field rather than a derivation: parsing
+ * {@code release/<id>} out of {@code branch} would be a second spelling of one fact, the branch is
+ * the half qits-projects deletes at tag time, and a publish run's {@code branch} is the version
+ * rather than a backing branch at all. It does not turn this into a statement about the release
+ * request either; it says which release the row being mirrored belonged to.
+ *
+ * <p><b>{@code phase} and {@code releaseRequestId} are null together or set together</b> on every
+ * row the engine writes — the phase is derived from the id and is null whenever that is — so a
+ * consumer may key a pipeline read model on the pair without a second lookup. Both are omitted from
+ * the canonical payload when null, so an ordinary run's transitions stay byte-identical on the wire.
+ *
  * <p>The remaining field conventions are {@link BuildSuccessful}'s, argued there at length and only
  * named here: {@code eventId} is generated when absent, final once set, and travels in the envelope
  * rather than the payload; {@code repoId} is the storage id and is always set, while {@code
@@ -70,6 +82,7 @@ public record BuildStatusChanged(
     String commitSha,
     Boolean gating,
     String phase,
+    String releaseRequestId,
     String status,
     String previousStatus,
     Instant occurredAt)
@@ -91,11 +104,12 @@ public record BuildStatusChanged(
       String commitSha,
       Boolean gating,
       String phase,
+      String releaseRequestId,
       String status,
       String previousStatus,
       Instant occurredAt) {
     this(
-        null, runId, repoId, projectId, repoName, branch, commitSha, gating, phase, status,
-        previousStatus, occurredAt);
+        null, runId, repoId, projectId, repoName, branch, commitSha, gating, phase, releaseRequestId,
+        status, previousStatus, occurredAt);
   }
 }

@@ -24,6 +24,18 @@ import java.util.UUID;
  * gating} is <b>null for a gating run</b> and an explicit {@code false} only for a non-gating one,
  * so absent reads as gating. There is no {@code imageDigest}: a failed run published nothing worth
  * naming.
+ *
+ * <p><b>{@code phase} and {@code releaseRequestId} are {@link BuildSuccessful}'s too, including the
+ * invariant that binds them: they are null together or set together</b> on every event qits-ci
+ * publishes — the engine derives the phase from the id it has already read, returning null whenever
+ * that is null — so a consumer may key a pipeline read model on the pair without a second lookup.
+ * Both are null for a run that is no part of a release and both are omitted from the canonical
+ * payload when null, so such a build's bytes are identical to what they were before either component
+ * existed.
+ *
+ * <p><b>Carrying the request id does not make this a verdict about the release request.</b> A red P1
+ * says this commit failed QA; what that is worth to the release is the release request's own
+ * business in qits-projects. The id says which release the run belonged to, and nothing more.
  */
 public record BuildFailed(
     UUID eventId,
@@ -35,6 +47,7 @@ public record BuildFailed(
     String commitSha,
     Boolean gating,
     String phase,
+    String releaseRequestId,
     String outcome,
     Instant finishedAt)
     implements QitsEvent {
@@ -55,11 +68,12 @@ public record BuildFailed(
       String commitSha,
       Boolean gating,
       String phase,
+      String releaseRequestId,
       String outcome,
       Instant finishedAt) {
     this(
-        null, runId, repoId, projectId, repoName, branch, commitSha, gating, phase, outcome,
-        finishedAt);
+        null, runId, repoId, projectId, repoName, branch, commitSha, gating, phase, releaseRequestId,
+        outcome, finishedAt);
   }
 
   @Override

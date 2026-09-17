@@ -70,12 +70,13 @@ public class BuildAnnouncer implements RunAnnouncer {
       String commitSha,
       boolean gating,
       String phase,
+      String releaseRequestId,
       Instant finishedAt,
       String triggerEventId) {
     bus.publish(
         new BuildSuccessful(
             runId, repoId, projectId, repoName, branch, commitSha, null, wireGating(gating), phase,
-            finishedAt),
+            releaseRequestId, finishedAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 
@@ -89,13 +90,14 @@ public class BuildAnnouncer implements RunAnnouncer {
       String commitSha,
       boolean gating,
       String phase,
+      String releaseRequestId,
       String outcome,
       Instant finishedAt,
       String triggerEventId) {
     bus.publish(
         new BuildFailed(
             runId, repoId, projectId, repoName, branch, commitSha, wireGating(gating), phase,
-            outcome, finishedAt),
+            releaseRequestId, outcome, finishedAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 
@@ -109,6 +111,7 @@ public class BuildAnnouncer implements RunAnnouncer {
       String commitSha,
       boolean gating,
       String phase,
+      String releaseRequestId,
       String status,
       String previousStatus,
       Instant occurredAt,
@@ -116,12 +119,18 @@ public class BuildAnnouncer implements RunAnnouncer {
     bus.publish(
         new BuildStatusChanged(
             runId, repoId, projectId, repoName, branch, commitSha, wireGating(gating), phase,
-            status, previousStatus, occurredAt),
+            releaseRequestId, status, previousStatus, occurredAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 
   /**
-   * <b>The phase is passed straight through, and null straight through with it.</b> The port hands
+   * <b>The phase and the release request id are passed straight through, and null straight through
+   * with them.</b> The pair arrives from the port already null-together-or-set-together — the engine
+   * derives the phase from the id it read — so nothing here has to reconcile them, and nothing here
+   * may: a defaulting or a validation at this seam would be a second opinion about a fact the run
+   * row already holds. The paragraph below is the phase's and the id rides every word of it.
+   *
+   * <p>The port hands
    * this class the word {@code CiRunPhase} spells, already turned into a plain {@code String} by the
    * caller, so nothing here maps, defaults or validates it — a wire vocabulary that held an opinion
    * about another module's enum would be the coupling {@code ci-events/} exists to avoid. Null is a

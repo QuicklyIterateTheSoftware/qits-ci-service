@@ -54,11 +54,24 @@ public interface RunAnnouncer {
    * status} and {@code outcome} are and for their reason: a wire vocabulary that imported this
    * service's storage model would make another context's subscriber depend on it.
    *
-   * <p><b>What it does NOT do is change what this announcement is.</b> A green run is still a
-   * statement about a <em>commit</em> and the phase is an attribute of the run that made it, never a
-   * verdict about the release as a whole — P1 going green says the fold passed QA, not that the
-   * release succeeded. A subscriber reading this as a pipeline verdict is reading something the
-   * event does not say.
+   * <p><b>{@code releaseRequestId} is which release that was</b> — {@link
+   * eu.wohlben.qits.ci.entity.CiRun#releaseRequestId}, the id qits-projects addresses a release
+   * request by — and it rides beside the phase as a plain {@code String} for the identical reason:
+   * this module names foreign things by their id and nothing else. It is here so the far side can
+   * correlate a run to a release by reading a field rather than by parsing {@code release/<id>} out
+   * of {@code branch} — a second spelling of one fact, on the half of the release qits-projects
+   * deletes at tag time, and one a publish run does not carry at all since its branch is the version.
+   *
+   * <p><b>The two are null together or set together, and a caller must keep them that way.</b> The
+   * engine reads the id off the triggering event and derives the phase from it, returning null
+   * whenever the id is null, so no row can hold one without the other — and the published events say
+   * so, which is what lets a consumer key a pipeline read model on the pair without a second lookup.
+   *
+   * <p><b>What neither does is change what this announcement is.</b> A green run is still a
+   * statement about a <em>commit</em>; the phase is an attribute of the run that made it and the
+   * request id says which release the run belonged to, never a verdict about the release as a whole
+   * — P1 going green says the fold passed QA, not that the release succeeded. A subscriber reading
+   * this as a pipeline verdict is reading something the event does not say.
    *
    * <p>{@code repoId} is the storage id and is always set; {@code projectId} and {@code repoName}
    * are the public {@code (project, name)} pair off the run's own row, present when the candidate
@@ -84,6 +97,7 @@ public interface RunAnnouncer {
       String commitSha,
       boolean gating,
       String phase,
+      String releaseRequestId,
       Instant finishedAt,
       String triggerEventId);
 
@@ -105,6 +119,7 @@ public interface RunAnnouncer {
       String commitSha,
       boolean gating,
       String phase,
+      String releaseRequestId,
       String outcome,
       Instant finishedAt,
       String triggerEventId);
@@ -150,6 +165,7 @@ public interface RunAnnouncer {
       String commitSha,
       boolean gating,
       String phase,
+      String releaseRequestId,
       String status,
       String previousStatus,
       Instant occurredAt,

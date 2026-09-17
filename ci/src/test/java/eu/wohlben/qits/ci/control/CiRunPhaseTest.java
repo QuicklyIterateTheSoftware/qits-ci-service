@@ -192,29 +192,78 @@ public class CiRunPhaseTest extends CiTestSupport {
   }
 
   @Test
-  public void thePhaseRidesOutOnEveryAnnouncementAsAPlainWord() throws Exception {
+  public void thePhaseAndTheReleaseRequestRideOutOnEveryAnnouncementAsPlainWords() throws Exception {
     deliver(releaseRequest(REQUEST_ID, MERGED));
 
     CiRun qa = runService.runsFor(repoId).get(0);
     assertEquals(1, announcer.announced().size());
     // The wire carries the word, not the enum: ci-events must not import this module's storage
-    // model, which is the rule `status` and `outcome` already ride.
+    // model, which is the rule `status` and `outcome` already ride. The id beside it is already a
+    // plain string and is qits-projects' own handle on the release.
     assertEquals("RELEASE_REQUEST", announcer.announced().get(0).phase());
+    assertEquals(REQUEST_ID, announcer.announced().get(0).releaseRequestId());
     assertTrue(
         announcer.phasesOf(qa.id).stream().allMatch("RELEASE_REQUEST"::equals),
         "every transition of a phase's run says which phase it was: " + announcer.phasesOf(qa.id));
+    assertTrue(
+        announcer.releaseRequestsOf(qa.id).stream().allMatch(REQUEST_ID::equals),
+        "and which release it was: " + announcer.releaseRequestsOf(qa.id));
+    // The SET half of the invariant the three events state, on both announcements of this run and on
+    // every transition of it: the pair is never one without the other, which is what lets a consumer
+    // key a pipeline read model on it with no second lookup.
+    assertTrue(
+        announcer.statuses().stream()
+            .filter(status -> status.runId().equals(qa.id))
+            .allMatch(status -> status.phase() != null && status.releaseRequestId() != null),
+        "phase and releaseRequestId are set together on every transition");
   }
 
   @Test
-  public void anOrdinaryRunAnnouncesNoPhaseAtAll() {
+  public void thePublishHalfCorrelatesByTheIdBecauseItsBranchIsTheVersion() throws Exception {
+    // The half the field was really added for. A P2 run's branch is the tag, so there is no
+    // `release/<id>` in it to parse and a consumer deriving the correlation from the branch could
+    // not close the pipeline at all — it would have to go through a second table. The id makes both
+    // halves one read.
+    deliver(release(REQUEST_ID, VERSION, RELEASED));
+
+    CiRun publish = runService.runsFor(repoId).get(0);
+    assertEquals(VERSION, publish.branch, "nothing here spells release/<id>");
+    assertEquals(1, announcer.announced().size());
+    assertEquals("RELEASE", announcer.announced().get(0).phase());
+    assertEquals(REQUEST_ID, announcer.announced().get(0).releaseRequestId());
+    assertTrue(
+        announcer.releaseRequestsOf(publish.id).stream().allMatch(REQUEST_ID::equals),
+        "on every transition too: " + announcer.releaseRequestsOf(publish.id));
+  }
+
+  @Test
+  public void aReleaseThatNamesNoRequestAnnouncesNeitherHalfOfThePair() throws Exception {
+    // The live arm, and the null half of the invariant reached through a release event rather than
+    // through an ordinary run: no id on the event is no id and no phase on the row, so both keys are
+    // omitted and the payload is what it was before either component existed.
+    deliver(release(null, VERSION, RELEASED));
+
+    CiRun run = runService.runsFor(repoId).get(0);
+    assertEquals(1, announcer.announced().size());
+    assertNull(announcer.announced().get(0).phase());
+    assertNull(announcer.announced().get(0).releaseRequestId());
+    assertTrue(
+        announcer.releaseRequestsOf(run.id).stream().allMatch(id -> id == null),
+        "null together on every transition: " + announcer.releaseRequestsOf(run.id));
+  }
+
+  @Test
+  public void anOrdinaryRunAnnouncesNeitherPhaseNorReleaseRequestAtAll() {
     // Null all the way out, which is what keeps an ordinary build's canonical payload byte-identical
-    // to what it was before the component existed.
+    // to what it was before either component existed.
     String repo = UUID.randomUUID().toString();
     executePipeline(repo, "main", "d".repeat(40), "steps: []\n");
 
     assertNull(runService.runsFor(repo).get(0).phase);
+    assertNull(runService.runsFor(repo).get(0).releaseRequestId);
     assertEquals(1, announcer.announced().size());
     assertNull(announcer.announced().get(0).phase());
+    assertNull(announcer.announced().get(0).releaseRequestId());
   }
 
   // --- a retry asks for the same work, so it is the same phase ------------------------------------
