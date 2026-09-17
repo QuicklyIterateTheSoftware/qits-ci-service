@@ -249,7 +249,7 @@ steps:
   # sets it), so that `-DskipITs=false` keeps meaning "run everything" as AGENTS.md documents. Naming
   # the class is therefore the opt-in that is correct here, and it also keeps CiPackagedSurfaceIT —
   # which is not extended-tagged and would otherwise run — out of a pipeline that is about the stories:
-  # `-DskipITs=false "-Dit.test=TokenValidationBootstrapIT,BuildExecutionIT,BuildTriggerIT,CiDaemonPinIT"`.
+  # `-DskipITs=false "-Dit.test=TokenValidationBootstrapIT,BuildExecutionIT,BuildTriggerIT,QitsCliPinIT,CiDaemonPinIT"`.
   #
   # CiDaemonPinIT IS THE ONE THAT IS NOT A STORY, AND IT IS THE REASON THIS LIST GATES A DAEMON BUMP.
   # It downloads the qits-ci-daemon binary at the version `qits.ci-daemon-protocol.version` pins,
@@ -261,6 +261,15 @@ steps:
   # repository's release request, on a branch, instead of every step of every build on the platform.
   # A pin test nobody runs is a pin test that passes, so if it is ever dropped from this list, drop
   # the class too rather than leaving it to look like a gate.
+  #
+  # QitsCliPinIT IS IN THAT LIST AND IT IS NOT A STORY. It composes no userflow and emits no report;
+  # it is the gate over the qits CLI pin (the qits-platform-access-cli-binary dependency in the root
+  # pom, whose version every composed release step on the platform downloads). It is a PLAIN failsafe
+  # *IT — no @QuarkusIntegrationTest, no @TestProfile — so it costs the phase nothing: no second
+  # launched qits-ci, no second boot. It needs no docker. What it does need is qits-artifacts
+  # reachable through $QITS_MAVEN_REPOSITORY_URL, which the export below supplies, because it
+  # downloads the pinned binary from the real daemons store and runs it. A class not named here never
+  # runs at all — silently — so the two move together.
   #
   # THE SEPARATOR IS A COMMA. `-Dit.test=A+B` is not a union, and failsafe silently matches nothing —
   # a pipeline that regenerates an EMPTY bundle and goes green is the failure this line exists to
@@ -286,7 +295,7 @@ steps:
       ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
         -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
         -Dquarkus.quinoa=false \
-        -DskipITs=false "-Dit.test=TokenValidationBootstrapIT,BuildExecutionIT,BuildTriggerIT,CiDaemonPinIT"
+        -DskipITs=false "-Dit.test=TokenValidationBootstrapIT,BuildExecutionIT,BuildTriggerIT,QitsCliPinIT,CiDaemonPinIT"
 
       # `-C … .` so the story directories are the bundle's roots — nesting one directory deep would
       # put it in every served URL.

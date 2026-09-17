@@ -145,7 +145,11 @@ keys:
 
   env.QITS_CI_ARTIFACTS_CLI_PACKAGE:
     type: string
-    description: "The daemon package a release-phase step resolves the qits CLI's latest version from. Blank turns the fetch off."
+    description: "The daemon package a release-phase step downloads the qits CLI from. The package only — the version is a pinned dependency of qits-ci, not configuration. Blank turns the fetch off."
+
+  env.QITS_CI_ARTIFACTS_CLI_VERSION_OVERRIDE:
+    type: string
+    description: "Emergency door: the qits CLI version every release-phase step downloads, overriding qits-ci's own pin. Normally UNSET — the real mechanism is the qits-platform-access-cli-binary dependency in qits-ci's pom, which this repository's release request gates. Setting this runs a CLI nothing gated."
 
   # --- what arrives here: the inbound identity -----------------------------------------------------
 

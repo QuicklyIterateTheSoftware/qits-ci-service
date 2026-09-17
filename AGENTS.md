@@ -1836,6 +1836,36 @@ same, and what keeps this feature out of every reader keyed on a phase.
   every other IO on this class's write paths. A run from a hand-written `ci-event-*.yml` has no
   platform half and is replayed byte for byte, as it always was; `gating` and the predicted step
   durations are then derived from whichever document the retry really ends up with.
+- **The qits CLI a composed release step runs is a POM PIN, not a resolution.** The prelude
+  downloads `$QITS_ARTIFACTS_CLI_PACKAGE` at `$QITS_ARTIFACTS_CLI_VERSION`, and the version comes
+  from `eu.wohlben.qits:qits-platform-access-cli-binary` — one class, three strings, no bytes of the
+  binary — by way of `CiDaemonLauncher`. It used to read qits-artifacts' own daemons listing and
+  take that package's `latestVersion` at every step start, which made one CLI release a shared,
+  unversioned, unreviewed input to every release on the platform at once: on 2026-09-13 one bad CLI
+  broke all of them, with nothing changed in any consumer's tree and no line anybody could revert.
+  Four things follow. The pin has to **resolve** for this reactor to build, so a version that does
+  not exist is a red build rather than a broken release later. `QitsCliPinIT` proves the coordinate
+  is really in the store and that the binary at it publishes an SBOM through the composed text.
+  qits-platform-maintenance moves the line like any internal pin and **this repository's own release
+  request gates the move** — never hand-edit it to chase a release. And a release step's image no
+  longer needs `jq` for the CLI's sake: the listing read, its best-effort bearer and the jq that
+  parsed it are all gone. `qits.ci.artifacts-cli-version-override` is an emergency door that ships
+  unset and must stay that way; setting it runs a CLI nothing gated.
+- **The qits CLI a composed release step runs is a POM PIN, not a resolution.** The prelude
+  downloads `$QITS_ARTIFACTS_CLI_PACKAGE` at `$QITS_ARTIFACTS_CLI_VERSION`, and the version comes
+  from `eu.wohlben.qits:qits-platform-access-cli-binary` — one class, three strings, no bytes of the
+  binary — by way of `CiDaemonLauncher`. It used to read qits-artifacts' own daemons listing and
+  take that package's `latestVersion` at every step start, which made one CLI release a shared,
+  unversioned, unreviewed input to every release on the platform at once: on 2026-09-13 one bad CLI
+  broke all of them, with nothing changed in any consumer's tree and no line anybody could revert.
+  Four things follow. The pin has to **resolve** for this reactor to build, so a version that does
+  not exist is a red build rather than a broken release later. `QitsCliPinIT` proves the coordinate
+  is really in the store and that the binary at it publishes an SBOM through the composed text.
+  qits-platform-maintenance moves the line like any internal pin and **this repository's own release
+  request gates the move** — never hand-edit it to chase a release. And a release step's image no
+  longer needs `jq` for the CLI's sake: the listing read, its best-effort bearer and the jq that
+  parsed it are all gone. `qits.ci.artifacts-cli-version-override` is an emergency door that ships
+  unset and must stay that way; setting it runs a CLI nothing gated.
 - **The heredoc is the security-shaped part.** A repository's script is data: quoted heredoc to
   `/tmp/qits-slot.sh`, run as a child `bash -eu`. The only way out of a quoted heredoc is a line
   carrying the delimiter, so a script containing `QITS_SLOT_EOF` is a `CiConfigException` naming the
@@ -2545,6 +2575,50 @@ contract, tested where it lives.
   What is out of reach here and stays with the `extended` gates: a real step image, a real
   `qits-ci-daemon` binary and a real docker daemon. `CiDaemonGateIT` owns those. What these stories
   add is that they need none of them, so the flow is documented on every ordinary build.
+- **`daemonhost/QitsCliPinIT` is the qits CLI pin's gate, and it is a plain failsafe `*IT`.** The
+  `qits` CLI every composed release step on the platform runs is a pinned dependency now
+  (`eu.wohlben.qits:qits-platform-access-cli-binary`; the root pom's property, `CiDaemonLauncher`
+  injecting `PlatformAccessCliBinary.VERSION` as `$QITS_ARTIFACTS_CLI_VERSION`), and this is what
+  makes the pin mean something: it downloads that exact coordinate from the REAL artifacts store,
+  composes a real release-phase step through `CiReleaseComposer`, runs the composed text under
+  `bash` against a scratch git origin and a stub store in its own process, and asserts the SBOM PUT
+  the pinned binary made. A missing coordinate is a **failure naming it**, never a skip; the one
+  `assumeTrue` covers an artifacts origin configured to nothing and is defensive rather than a
+  supported mode. **Not a `@QuarkusIntegrationTest`**: nothing in the assertion needs the
+  application, and a second `@TestProfile` would be a second launched qits-ci for no assertion a
+  plain JUnit class cannot make — `WorkspaceDaemonPinIT` over in qits-workspaces makes the same
+  judgement in the same words. It is named in `.config/qits/ci-event-release-request.yml`'s
+  `-Dit.test` comma list, needs no docker, and needs qits-artifacts reachable through
+  `$QITS_MAVEN_REPOSITORY_URL` — which that recipe's verify step already exports. A class not named
+  there never runs at all, silently, so the two move together.
+  <br>The store is stubbed for the PUT and real for the GET, and the split is the point: "the pinned
+  version exists" is the assertion, while writing an SBOM into the platform's own immutable sbom
+  store at a coordinate nobody released would be permanent litter a re-run then asserted against.
+  The child process's environment is stripped of every ambient `QITS_` variable before the five a
+  step really gets are set, for `WorkspaceDaemonPinIT`'s measured reason: a pin test whose result
+  depends on where it runs proves nothing about the pin.
+- **`daemonhost/QitsCliPinIT` is the qits CLI pin's gate, and it is a plain failsafe `*IT`.** The
+  `qits` CLI every composed release step on the platform runs is a pinned dependency now
+  (`eu.wohlben.qits:qits-platform-access-cli-binary`; the root pom's property, `CiDaemonLauncher`
+  injecting `PlatformAccessCliBinary.VERSION` as `$QITS_ARTIFACTS_CLI_VERSION`), and this is what
+  makes the pin mean something: it downloads that exact coordinate from the REAL artifacts store,
+  composes a real release-phase step through `CiReleaseComposer`, runs the composed text under
+  `bash` against a scratch git origin and a stub store in its own process, and asserts the SBOM PUT
+  the pinned binary made. A missing coordinate is a **failure naming it**, never a skip; the one
+  `assumeTrue` covers an artifacts origin configured to nothing and is defensive rather than a
+  supported mode. **Not a `@QuarkusIntegrationTest`**: nothing in the assertion needs the
+  application, and a second `@TestProfile` would be a second launched qits-ci for no assertion a
+  plain JUnit class cannot make — `WorkspaceDaemonPinIT` over in qits-workspaces makes the same
+  judgement in the same words. It is named in `.config/qits/ci-event-release-request.yml`'s
+  `-Dit.test` comma list, needs no docker, and needs qits-artifacts reachable through
+  `$QITS_MAVEN_REPOSITORY_URL` — which that recipe's verify step already exports. A class not named
+  there never runs at all, silently, so the two move together.
+  <br>The store is stubbed for the PUT and real for the GET, and the split is the point: "the pinned
+  version exists" is the assertion, while writing an SBOM into the platform's own immutable sbom
+  store at a coordinate nobody released would be permanent litter a re-run then asserted against.
+  The child process's environment is stripped of every ambient `QITS_` variable before the five a
+  step really gets are set, for `WorkspaceDaemonPinIT`'s measured reason: a pin test whose result
+  depends on where it runs proves nothing about the pin.
 - `CiDaemonSocketTest` drives the real socket with a real WebSocket from `FakeCiDaemon`, an in-JVM
   dialler framing the real protocol exactly as the binary does. The host cannot tell it from a
   container, which is the point: admission, framing, dispatch and the blocking bridge are all
