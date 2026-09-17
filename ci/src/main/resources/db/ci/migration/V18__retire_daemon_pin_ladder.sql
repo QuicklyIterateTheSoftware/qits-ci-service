@@ -1,0 +1,46 @@
+-- Drop ci_daemon_pin: the daemon pin ladder is retired, and the table is DELETED rather than kept.
+--
+-- Every migration in this lineage since V1 has ADDED a nullable column and kept what was there —
+-- V8's rule, repeated through V17 — so a drop is the exception and owes an argument. The argument
+-- is what the rows were, which is not the same as what the rows on ci_run are.
+--
+-- WHAT THE TABLE HELD. One row per qits-ci-daemon version this instance had seen released, adopted
+-- straight off a SoftwareRelease frame by a bus listener, each carrying a verdict from a container
+-- probe: qits-ci launched a throwaway container running whatever had just been published, kept the
+-- version if the container dialled back and spoke a capability version it recognised, and answered
+-- GET /ci/api/daemon with the newest PROVEN rung. V1's header describes it at length and that
+-- description is left standing, amended to say it ended here.
+--
+-- WHY THE LADDER WENT. A daemon release reached every CI step container on the platform without
+-- qits-ci's own test suite ever having run against it. The only gate on a protocol break was that
+-- probe — a check the released service ran on itself, in production, against its own host — and a
+-- container that dials and states a version has demonstrated that it starts, not that it can run a
+-- step this host will understand. The version comes from the pinned dependency now
+-- (eu.wohlben.qits:qits-ci-daemon-protocol, whose CiDaemonBinary.VERSION is the version of the
+-- binary the same release published), so bumping the wire contract and bumping the binary are one
+-- act, and the gate is this repository's own release request, which runs that binary at that
+-- version before the merge.
+--
+-- WHY THE ROWS ARE NOT WORTH KEEPING, which is the only question a drop actually turns on. This
+-- lineage keeps history wherever a row is a statement about something that happened: a CANCELLED
+-- run whose cancellation_reason is TRIGGER_RETIRED still says what happened to that run, and
+-- CiRunStatus keeps POST_RECEIVE and CONFIG_ERROR as constants precisely so such rows stay
+-- readable. A ci_daemon_pin row is not that. It was never a record of an event — it was the
+-- CURRENT STATE of a decision procedure, read on every launch and rewritten by every probe, and a
+-- decision procedure that no longer exists has no current state. Kept, the table would be a set of
+-- verdicts about candidate versions that nothing can produce, nothing will ever read, and nothing
+-- can explain to somebody who finds it in a year. The account of what was adopted and when is on
+-- the event log, where the SoftwareRelease frames it was derived from still are, and on ci_run's
+-- own daemon_version column, which records what each run really launched and is UNTOUCHED here:
+-- that column is history in the sense this lineage means it, and it stays.
+--
+-- ck_ci_daemon_pin_verdict goes with the table. It was the one check constraint V1 kept, and
+-- V1's header argues for it on the grounds that a verdict is a closed statement about one probe's
+-- outcome rather than a growing catalogue. That argument was right and is now moot: there are no
+-- probes. `drop table` takes the constraint and the unique index with it; naming them separately
+-- would be three statements where one is exact.
+--
+-- NOT `if exists`. Every database that has run V1 has this table, and Flyway will not offer this
+-- file to one that has not. A conditional drop here would only hide a lineage that is not the one
+-- this file was written against.
+drop table ci_daemon_pin;

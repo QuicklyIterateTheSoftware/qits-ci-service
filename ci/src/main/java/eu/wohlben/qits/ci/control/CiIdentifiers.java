@@ -48,7 +48,7 @@ public final class CiIdentifiers {
   /**
    * One path segment, nothing else — a calver and a digest hex both fit, and neither {@code /},
    * {@code ..}, {@code ?}, {@code #} nor whitespace can, which is what keeps this value from
-   * redirecting the download it is interpolated into (ci-daemon-autoadopt-plan.md §1.5).
+   * redirecting the download it is interpolated into.
    */
   private static final String DAEMON_VERSION = "[A-Za-z0-9][A-Za-z0-9._-]{0,63}";
 
@@ -165,11 +165,16 @@ public final class CiIdentifiers {
    * ({@code qits.ci.daemon-binary-url-template}). Accepts both spellings a pin can legitimately
    * hold: a calver ({@code 2026.803.91607}) and a sha256 digest hex.
    *
-   * <p>This is the check that replaces {@code CiDaemonLauncher}'s old boot-time
-   * {@code daemonVersionComplaint}, which warned only while the shipped template still spelled
-   * {@code sha256:{version}} and went silent by construction once it stopped — see
-   * ci-daemon-autoadopt-plan.md §1.5. This one is enforced at adoption rather than merely logged,
-   * because the value it guards now arrives over the bus rather than from a reviewed deployment.
+   * <p><b>It has no caller on a shipped path any more, and it is kept rather than deleted.</b> It
+   * replaced {@code CiDaemonLauncher}'s boot-time {@code daemonVersionComplaint}, and it was
+   * enforced at ADOPTION — where a version really did arrive untrusted, off a {@code SoftwareRelease}
+   * frame on the bus. The daemon pin ladder is retired, so the only two versions that reach a
+   * download url now are a constant compiled into the protocol jar and an override a person typed
+   * into this deployment's own configuration; neither is attacker-shaped, and neither is validated
+   * here. What justifies keeping the method is that the <em>shape</em> rule is the thing worth not
+   * re-deriving: the day any version reaches that template from somewhere untrusted again, this is
+   * the check it owes, and rewriting the regex from scratch under time pressure is how the
+   * single-path-segment property gets lost.
    *
    * @throws BadRequestException if the version could redirect the download it is interpolated into
    */

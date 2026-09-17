@@ -1309,11 +1309,17 @@ public class CiRunService {
    * <p><b>Everything a claimed run does is inside the try, and the daemon pin is why that had to be
    * said out loud.</b> {@code pinDaemon()} and {@link #pinDaemonVersion} used to sit above it —
    * two statements between a row that {@link #startQueued} has already flipped {@code RUNNING} and
-   * the handler that settles it. Neither is free: the first resolves a pin ladder whose {@code
-   * answer()} is deliberately not {@code DbRetry}-wrapped, the second is a write. A throw out of
-   * either left a row {@code RUNNING} with no steps, no {@code finishedAt} and no owner, settleable
-   * by nothing short of the next process's boot sweep — the 2026-08-23 shape of failure, arrived at
-   * from the other direction.
+   * the handler that settles it. Neither was free: the first resolved a pin ladder that read a
+   * table and could launch a probe container, and whose {@code answer()} was deliberately not
+   * {@code DbRetry}-wrapped; the second is a write. A throw out of either left a row {@code RUNNING}
+   * with no steps, no {@code finishedAt} and no owner, settleable by nothing short of the next
+   * process's boot sweep — the 2026-08-23 shape of failure, arrived at from the other direction.
+   *
+   * <p><b>The first of those two can no longer throw, and the placement stays anyway.</b> The ladder
+   * is retired: {@code pinDaemon()} now reads a constant off the classpath and trims a config
+   * string, touching no database and no container. {@link #pinDaemonVersion} is still a write, which
+   * is reason enough on its own — and moving a statement back out of a try because it has stopped
+   * being able to fail is how the next statement added beside it ends up outside the bracket.
    *
    * <p><b>An {@code Error} settles the row too, and is then rethrown.</b> The two facts are
    * independent: the run is over either way and its row must say so, while the loop above is what

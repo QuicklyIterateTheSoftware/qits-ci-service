@@ -10,27 +10,26 @@ import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 
 /**
- * The daemon binary this qits-ci is configured to launch, and where that answer came from:
- * {@code {"daemonName", "daemonVersion", "previousDaemonVersion", "source"}}
- * (ci-daemon-autoadopt-plan.md §2.7).
+ * The daemon binary this qits-ci launches, and where that answer came from:
+ * {@code {"daemonName", "daemonVersion", "previousDaemonVersion", "source"}}.
  *
- * <p><b>The ladder's top rung, never a run row.</b> {@code ci_run.daemon_version} is history — what
- * some run once launched — and the run listing clamps at 100, so the rows cannot even enumerate what
- * this instance has pinned over its life. This answers the different and much smaller question: what
- * would a run started right now download, and what would it fall back to. There is exactly one
- * place that knows it, {@link CiDaemonPins}, which is why this reads that rather than a config key
- * of its own.
+ * <p><b>The pin, never a run row.</b> {@code ci_run.daemon_version} is history — what some run once
+ * launched — and the run listing clamps at 100, so the rows cannot even enumerate what this
+ * instance has launched over its life. This answers the different and much smaller question: what
+ * would a run started right now download. There is exactly one place that knows it,
+ * {@link CiDaemonPins}, which is why this reads that rather than a config key of its own.
  *
- * <p><b>{@code daemonVersion} blank is an answer, not an absence.</b> It means this deployment has
- * adopted or pinned no daemon — the shipped default, and the honest state of a platform that has not
- * published one yet. A caller deciding anything on this value must treat blank as "no pin" and never
- * as "unknown". {@code source} is {@code "none"} exactly then.
+ * <p><b>{@code daemonVersion} is never blank, and that is what changed.</b> It used to be: the
+ * shipped state of a deployment that had adopted and pinned no daemon, spelled {@code source:
+ * "none"}. The version is now the pinned protocol jar's own, resolved at build time, so a
+ * deployment that could produce a blank here could not have been built. The two {@code source}
+ * values left are {@code "pinned"} (the dependency's version — the ordinary answer) and
+ * {@code "override"} (a person set {@code qits.ci.daemon-version-override}); {@code "adopted"},
+ * {@code "configured"} and {@code "none"} went with the ladder.
  *
- * <p><b>{@code previousDaemonVersion} is the fallback rung, not row order.</b> It is the next
- * {@code PROVEN} adopted candidate below the current pin — the version qits-ci would actually try
- * next if the current one stopped registering — and it is blank both when the pin is the
- * configured one (there is no rung below it in this ladder) and when no second adopted candidate
- * has proven itself yet.
+ * <p><b>{@code previousDaemonVersion} is permanently blank</b> and is kept for the shape's sake
+ * alone — see {@link CiDaemonPins.Pin}, which argues why an always-blank key is better than a key
+ * removed from a document another repository binds.
  *
  * <p><b>Who asks.</b> qits-artifacts' daemon-binary GC reads it when it plans a sweep: the blobs a
  * live pin names are the ones it must keep, and an unreachable qits-ci aborts the plan with nothing
@@ -58,10 +57,10 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * Note the address is {@code /ci/api/daemon} and the control socket is {@code /ci/daemon}: adjacent
  * spellings, unrelated surfaces, and only this one is a resource.
  *
- * <p><b>Reads {@link CiDaemonPins#currentAnswer()}, never {@link CiDaemonPins#answer()}.</b> This is
- * a public, unguarded endpoint, so calling the probing method here would let anyone who can reach it
- * launch a probe container on demand. An unprobed candidate answers exactly as it would through
- * {@code answer()} once it is proven or rejected; only the probe side effect differs.
+ * <p>This class used to be careful about <em>which</em> read of {@link CiDaemonPins} it made: there
+ * were two, and the probing one would have let anyone who can reach this endpoint launch a
+ * container on demand. There is one method now and it touches neither a database nor a container,
+ * so the care has nowhere left to go wrong.
  */
 @Path("/daemon")
 @Produces(MediaType.APPLICATION_JSON)
@@ -83,10 +82,12 @@ public class CiDaemonController {
   @APIResponse(
       responseCode = "200",
       description =
-          "The ladder's top rung; daemonVersion and source are blank/\"none\" when this"
-              + " deployment has adopted or pinned no daemon")
+          "The pinned daemon binary. daemonVersion is the version of the protocol dependency this"
+              + " service is built against, with source \"pinned\"; source is \"override\" when a"
+              + " deployment has set qits.ci.daemon-version-override. previousDaemonVersion is"
+              + " always blank: a pin has no fallback rung.")
   public DaemonPinDto daemonPin() {
-    CiDaemonPins.Pin pin = pins.currentAnswer();
+    CiDaemonPins.Pin pin = pins.answer();
     return new DaemonPinDto(
         CiDaemonPins.DAEMON_NAME, pin.version(), pin.previousVersion(), pin.source());
   }

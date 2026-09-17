@@ -95,15 +95,14 @@ package:
   `CiStepRunner`/`daemonhost`, and what lives here is only the two things a deployable owes a plain
   jar — a bean, and a `@RegisterForReflection` for the wire records the jar's own `ObjectMapper`
   hides from the build step.
-- `ci-daemon-protocol/` — the vendored wire contract (below). Its package is
-  `eu.wohlben.qits.cidaemon.protocol`, deliberately not under `eu.wohlben.qits.ci`: it is a copy of
-  another repo's module and its package must stay byte-identical with the original.
+  There **was** a `ci-daemon-protocol/` module here, a vendored copy of the daemon repo's. It is
+  gone; the contract is the dependency `eu.wohlben.qits:qits-ci-daemon-protocol` now — see "The
+  protocol is a dependency" below.
 - `ci-events/` — the event classes qits-ci emits, `eu.wohlben.qits.ci.events`. Under this repo's own
   namespace because it *is* this repo's vocabulary; depends on `eventstream` and nothing else.
 
-The **directories** are `ci/`, `service/`, `ci-daemon-protocol/` and `ci-events/`;
-the artifactIds are `qits-ci-domain`, `qits-ci-service`, `qits-ci-daemon-protocol`,
-`qits-eventstream` and `qits-ci-events`. The first two mismatch deliberately — the extracted git
+The **directories** are `ci/`, `service/` and `ci-events/`; the artifactIds are `qits-ci-domain`,
+`qits-ci-service`, `qits-eventstream` and `qits-ci-events`. The first two mismatch deliberately — the extracted git
 history is anchored to the directory names, and generic coordinates like `eu.wohlben:ci` would
 collide in the shared `~/.m2` that every workspace container mounts. `eventstream/` no longer
 mismatches at all: the directory took the artifact's name when the module left, which is the whole
@@ -112,33 +111,37 @@ not an event-sourcing implementation, and nothing here or anywhere else has an e
 aggregate. The old name is kept alive only by `eventsourcing-plan.md`, which is a historical
 document and is not renamed.
 
-## The vendored protocol module
+## The protocol is a dependency, and its version is the daemon binary
 
-`ci-daemon-protocol/` is a copy of
+`ci-daemon-protocol/` used to be a module here — a byte-identical copy of
 [qits-ci-daemon](https://github.com/QuicklyIterateTheSoftware/qits-ci-daemon)'s module of the same
-name: same java package, different artifactId, so the two jars can never collide while the day the
-artifact is published somewhere stays a one-line change. It is copied rather than depended on
-because that module is published to no registry and the clone-alone rule is not negotiable.
+name, same java package, different artifactId — vendored because that module was published to no
+registry and the clone-alone rule is not negotiable. **It is gone.** The daemon repo publishes it as
+`eu.wohlben.qits:qits-ci-daemon-protocol` and this reactor depends on it, pinned by the root pom
+property `qits.ci-daemon-protocol.version`. Its own pom always said this would be the day: the
+package was kept identical precisely so the swap would be a pom change with no source edits.
 
-**Never edit this copy.** The daemon repo owns the contract; a change lands there, bumps
-`CiDaemonProtocol.CAPABILITY_VERSION`, and is re-copied whole:
+**The version of that jar IS the `qits-ci-daemon` binary version**, because the thing this service
+must *speak* and the thing its step containers must *download* are one release. `CiDaemonBinary` is
+the constant — `DAEMON_NAME` plus a `VERSION` filtered from the module's own `${project.version}` at
+build time — and `CiDaemonPins` is the one reader. That is qits-workspaces' arrangement with
+`WorkspaceImage.VERSION` exactly, one repository over, and for the same measured reason.
 
-    diff -r ../qits-ci-daemon/ci-daemon-protocol/src ci-daemon-protocol/src
+Three consequences worth keeping straight:
 
-must be silent. `CiDaemonCodecTest` travels with the copy and runs on both sides, so a drift fails a
-build rather than a socket. A "small fix" applied here instead is how the workspace pair drifted once
-already (`migration-plan.md` §9 item 19), and this is knowingly the third such mirrored pair.
-
-**`eventstream/` is the sibling that shows what this module is not, and the contrast is the whole
-justification for vendoring.** Both are another repository's code sitting in this tree, and both are
-read-only from here — but that one is a **submodule**, so git owns the copy, a drift is impossible
-by construction and an update is one `git submodule update --remote`. This one is a hand-made copy
-kept honest by a `diff -r` and a shared test. The difference is not taste: `qits-eventstream` is a
-maven module a reactor can build, and `qits-ci-daemon`'s protocol module is one module of a **go**
-repository whose build this reactor cannot enter. Vendoring is what is left when a submodule would
-give you the files but not a jar. If that ever stops being true — the day the protocol module is
-published, or the day its repo grows a maven build — vendoring stops being the answer, and the
-sibling directory is the template for what replaces it.
+- **A protocol change reaches this service as a version bump, gated here.** Add a message in the
+  daemon repo, bump `CiDaemonProtocol.CAPABILITY_VERSION`, release it, let qits-platform-maintenance
+  move the pom line, handle the new case in `CiDaemonRegistry`. Slower than editing a vendored copy,
+  and that is the point — the host that must understand a frame is the one whose gate now sees the
+  change. There is no copy to keep matched and no `diff -r` to run: a published artifact cannot be
+  edited in place, so the "small fix on the consumer's side" that drifted the workspace pair once
+  (`migration-plan.md` §9 item 19) has no way to happen.
+- **Nothing in the daemon repo reaches qits-ci by itself.** Publishing a version makes it available;
+  only a bump in this pom makes it used. Leaving the bump to the maintenance train is normal — what
+  is not normal is assuming a release over there changed anything about a running run here.
+- **Pin at a RELEASED calver, never a snapshot**, the rule "Adding a dependency on another context"
+  states for `qits-eventstream` and `qits-containers-client` and for the reason measured on
+  2026-08-12: a green build that resolved nothing is not evidence that it could.
 
 ## The ci-daemon control plane
 
@@ -195,7 +198,8 @@ the adapter for it:
   leak instead of N.
   Not a row: a commission is worth exactly one run, and a run does not survive this process.
 - **`CommissionReconciler`** — the durable half. On boot (after both existing boot observers, on its
-  own `ci-commission-reconcile` thread — `DaemonReleaseListener`'s healthcheck lesson) and hourly, it
+  own `ci-commission-reconcile` thread — the daemon pin ladder's healthcheck lesson, which outlived
+  the ladder) and hourly, it
   lists and deletes every `ci-run` row whose `contextId` is not a `QUEUED`/`RUNNING` run and which
   this process is not holding right now. **A listing it could not read reaps nothing**: `live()`
   answers an empty `Optional` rather than an empty list precisely so the two cannot be confused.
@@ -444,7 +448,7 @@ name. Four things follow, and each of them replaced something:
   must never be recorded against one commit with a trigger file from another. A 404 on the directory
   costs one more read (the root tree) to tell "declares nothing" from "could not ask".
 - **`ci/` stays free of `java.net.http`.** The port is `CiConfigSource` in `ci/control`, the client
-  is in `service/`, exactly as `GitHostRepoListing` and `DaemonReleaseLog` are. That split is also why the
+  is in `service/`, exactly as `GitHostRepoListing` and `CiRepositoryListing` are. That split is also why the
   logging differs by path: the push path WARNs (a repository and a branch existed a moment ago),
   the trigger listing stays at DEBUG (it asks every known repository on every frame, and a deleted
   one is simply not a candidate — a warning per green build forever is how a log stops being read).
@@ -636,8 +640,8 @@ never drained** — a surplus permit costs one indexed read, a drained one costs
 END.** Nothing resubmitted it, nothing counted it, and a qits-ci with zero live claim loops keeps
 accepting runs, writing `QUEUED` rows and releasing permits nobody consumes — while every health
 check it declared stayed green. **Measured 2026-09-07**: after a redeploy, runs sat `QUEUED`
-indefinitely, `/q/health/ready` was UP and `GET /ci/api/daemon` said `source=adopted`, and only a
-process restart healed it. Four things close it and each closes a different half.
+indefinitely, `/q/health/ready` was UP and `GET /ci/api/daemon` happily reported a daemon, and only
+a process restart healed it. Four things close it and each closes a different half.
 
 - **A leaked interrupt flag no longer retires a worker.** At least five helpers on the run worker's
   own call path catch `InterruptedException`, **restore the flag** and return a fallback —
@@ -663,14 +667,22 @@ process restart healed it. Four things close it and each closes a different half
   and `api/CiRunWorkerReadinessCheck` is DOWN exactly when live is zero and `stopping` is false.
   Zero live loops *during* a shutdown is what a shutdown is, so that arm is UP; `busyWorkers` is
   deliberately not consulted, because an idle instance is legitimately zero-busy for days. What DOWN
-  buys is `CiDaemonReadinessCheck`'s bargain exactly — qits-cd's `awaitHealthy` restores the previous
-  container — plus a `/q/health/ready` that says "0 of 4" instead of nothing at all.
+  buys is qits-cd's `awaitHealthy` restoring the previous container, plus a `/q/health/ready` that
+  says "0 of 4" instead of nothing at all. **It is the only readiness check here that reaches that
+  gate.** `CiDaemonReadinessCheck` had a DOWN arm of its own while the daemon pin ladder could fall
+  all the way through; the version comes from the pom now and cannot be absent, so that check is an
+  unconditional readout (renamed `ci-daemon-pin` → `ci-daemon-version` to say so) and a bad daemon
+  version is caught by this repository's own release request rather than by a deployment.
 
 **Two more things moved with it, both in `executeClaimed`.** `runner.pinDaemon()` and
 `pinDaemonVersion` are **inside** the try now: `startQueued` has already flipped the row `RUNNING`
-by the time they run, the pin ladder's `answer()` is deliberately not `DbRetry`-wrapped, and a throw
-out of either left a row `RUNNING` with no steps, no `finishedAt` and no owner — the 2026-08-23
-stranded-row shape arrived at from the other direction. And an `Error` out of `runSteps` settles the
+by the time they run, and a throw out of either left a row `RUNNING` with no steps, no `finishedAt`
+and no owner — the 2026-08-23 stranded-row shape arrived at from the other direction. The first of
+them read a pin ladder whose `answer()` was deliberately not `DbRetry`-wrapped and could launch a
+probe container; it reads a classpath constant and trims a config string now, so it can no longer
+throw at all. The placement stays anyway: `pinDaemonVersion` is still a write, and moving a
+statement out of a try because it has stopped being able to fail is how the next statement added
+beside it ends up outside the bracket. And an `Error` out of `runSteps` settles the
 run before it is rethrown, because the run is over either way and the row has to say so; what to do
 about the JVM is the loop's business, not the row's.
 
@@ -888,18 +900,23 @@ a watermark is paged forward from qits-events' log at startup and on a schedule,
 delay rather than a hole. `event-delivery-guarantees-plan.md` in the superproject is the design and
 `eventstream/AGENTS.md` is the contract; what follows is only what is qits-ci's to get right.
 
-**Each listener's `consumerId()` is STORAGE, not a label**, and the five shipped are literals in
+**Each listener's `consumerId()` is STORAGE, not a label**, and the four shipped are literals in
 `EventstreamDarknessTest` for that reason:
 
 | bean | `consumerId()` | `signatures()` | `selects` |
 |---|---|---|---|
 | `CiEventTriggerListener` | `ci-event-triggers` | `["*"]` | default (see below) |
 | `BuildSuccessfulListener` | `ci-release-train` | `BuildSuccessful` | default |
-| `DaemonReleaseListener` | `ci-daemon-adopt` | `SoftwareRelease` | the daemon's own releases |
 | `ScmReleaseListener` | `ci-release-facts` | `SCMRelease` | default |
 | `RepositoryRenamedListener` | `ci-repository-rename` | `RepositoryRenamed` | default |
 
-**The fifth is the only one that REPLAYS, and it is the only one that may.**
+There were five. `DaemonReleaseListener` (`ci-daemon-adopt`, `SoftwareRelease`, selecting the
+daemon's own releases) adopted the version named on a daemon release and had it probed in a
+throwaway container — so a daemon reached every step container without this repository's tests ever
+running against it. It is deleted; see "The ci-daemon control plane". Its id is abandoned, not
+migrated away, exactly as `ci-push-runs` is.
+
+**The fourth is the only one that REPLAYS, and it is the only one that may.**
 `RepositoryRenamedListener.replayFromEpoch()` returns true, which is the library's reserved case —
 "a projection being built" — being taken up for the first time here. The rows it repairs
 (`ci_run.project_id`/`repo_name` V5, `ci_release_announcement.project_id`/`repo_name` V10/V11) are
@@ -908,10 +925,10 @@ written once at accept time and re-derived by nothing, so the renames that made 
 and repair nothing at all, which is the failure with no symptom. It is bounded by the signature —
 catch-up queries the log with that one name filter, and the whole history of it was two frames on
 2026-09-07 — and it is consulted once, at initialization, so a later re-repair is
-`CatchupSweeper.rebuildFromEpoch("ci-repository-rename")` rather than a flag. The other four act on
-arrivals and must never carry it: one of them replaying would re-adopt every daemon release the
-platform ever published, or re-evaluate every event any repository ever declared an interest in.
-`EventstreamDarknessTest` asserts the partition rather than the flag, so a sixth listener copying
+`CatchupSweeper.rebuildFromEpoch("ci-repository-rename")` rather than a flag. The other three act on
+arrivals and must never carry it: one of them replaying would re-evaluate every event any repository
+ever declared an interest in, or re-announce every release the platform ever made.
+`EventstreamDarknessTest` asserts the partition rather than the flag, so a fifth listener copying
 this one's shape without its reason is a red build.
 
 **And it is the only one that BINDS a foreign payload.** `service/…/bus/RepositoryRenamed` is a local
@@ -991,8 +1008,7 @@ identically every time) is a WARN and a return. Each of the three javadocs names
 
 **The suite must not be swept behind.** `service/src/test/resources/application.properties` sets
 `qits.eventstream.catchup-at-startup=false` and stretches `qits.eventstream.catchup-interval`,
-because a tick landing mid-test would adopt a daemon release or enqueue a trigger evaluation nothing
-asked for — and `StubEventsServer` scripts a canned list and ignores the cursor, so it would do it
+because a tick landing mid-test would enqueue a trigger evaluation nothing asked for — and `StubEventsServer` scripts a canned list and ignores the cursor, so it would do it
 repeatedly. The scheduler stays *on*: the outbox sweeper is scheduled too and has no business being
 disabled. A test that wants a sweep calls `CatchupSweeper.catchUp()` itself, which is what the
 eventstream suite does.
@@ -1187,7 +1203,7 @@ WP2; the class javadoc carries the argument in full and the short form is:
   the commit leaves the row owed for the boot sweep. At-least-once by choice: losing an announcement
   is the failure the platform forbids, making one twice is the nuisance the other way round.
 - **The boot sweep runs on its own thread** (`ci-release-join-sweep`), and that is the
-  `DaemonReleaseListener.reconcileFromLog` lesson applied: a startup observer that blocks on the
+  daemon pin ladder's own startup-discovery lesson applied: a startup observer that blocks on the
   network loses the healthcheck race and cd kills the deployment.
 - **`ScmReleaseListener` writes in its own transaction, not the claim's.** The claim lives on the
   eventstream datasource and the fact row on ci's, and one JTA transaction does not take both —
@@ -1685,8 +1701,8 @@ names"), and what follows is what biting it feels like.
   the known set still covers a repository the host has stopped listing but ci holds a row for.
 
   Four things about the HTTP half, which is `service/…/githost/HttpGitHostRepoListing` and is in
-  `service/` because **`ci/` stays free of `java.net.http`** — the rule `DaemonReleaseLog` states and
-  `CiConfigSource` set:
+  `service/` because **`ci/` stays free of `java.net.http`** — the rule `CiConfigSource` set and
+  every port here follows:
 
   - **The url is derived, never configured.** It is the git host's own base plus the same `/git`
     segment `HttpGitConfigSource` reads content under, so the listing and the config read move
@@ -2012,7 +2028,7 @@ trigger, which evaluates on the request thread under the REST filter's restored 
 causation decisions themselves are enforced by `ArchRulesTest` in the `ci` module: every `@Entity`
 here implements `CausedRow` (CiRun) or declares `@Uncaused` with its reason in the javadoc (CiStep
 — its run carries the cause, and its row is written on the run worker where no scope stands;
-CiDaemonPin — `event_id` is already the adopting event; CiReleaseAnnouncement — `trigger_event_id`
+CiReleaseAnnouncement — `trigger_event_id`
 is already the cause, and it is on the row because the published event is stamped with it;
 CiScmRelease — `event_id` is already the announcing release; CiOwedEvent — `event_id` IS the event
 the row is owed for). A new entity that skips the decision fails the build naming the class.
@@ -2162,10 +2178,25 @@ path writes a status any other way. **A new status value is one enum constant an
 **A RETIRED one is not even that**: `POST_RECEIVE` and `CONFIG_ERROR` have no writer since
 2026-09-05 and both constants stay, because the column holds the STRING and rows carry it — deleting
 either would make history unreadable. There is no migration and no backfill for a retirement.
-V8's `ck_ci_daemon_pin_verdict` is the one check that stays, because a verdict is a closed statement
-about one probe's outcome rather than a growing catalogue — and because it is named, so widening it
-would cost one line. `CiSchemaTest` runs the real migration against a real postgres and pins all of
-that, including that the unbounded columns came out `text` and not a large object.
+**There is no check constraint left in this schema at all.** `ck_ci_daemon_pin_verdict` was the one
+that stayed — a verdict being a closed statement about one probe's outcome rather than a growing
+catalogue, and named, so widening it would have cost one line — and `V18` drops it with the table it
+guarded. Being named is exactly what made it free to remove. `CiSchemaTest` runs the real migration
+against a real postgres and pins all of that, including that `ci_daemon_pin` is really gone and that
+the unbounded columns came out `text` and not a large object.
+
+`V18__retire_daemon_pin_ladder.sql` is the **first migration in this lineage that drops anything**,
+and it owes an argument the additive ones do not. Every file since V1 has added a nullable column and
+kept what was there; this one removes `ci_daemon_pin` outright, because the rows were not history.
+This lineage keeps history wherever a row is a *statement about something that happened* — which is
+why `CiRunStatus` keeps `POST_RECEIVE` and `CONFIG_ERROR` as constants — and a `ci_daemon_pin` row
+was the **current state of a decision procedure**, read on every launch and rewritten by every probe.
+A decision procedure that no longer exists has no current state, and kept rows would be verdicts
+about candidate versions that nothing can produce, nothing will read, and nothing can explain.
+What *is* history is untouched: `ci_run.daemon_version` still records what each run really launched,
+and the `SoftwareRelease` frames the adoptions were derived from are still on the event log. The
+file's header carries all of this; `V1`'s ladder block is amended to say the table ended here rather
+than rewritten into a claim about what V1 did.
 
 The locations list is shipped **once**, in the jar's `META-INF/microprofile-config.properties`, with
 no copy in either test resources file — and it names one directory now that there is no Java
@@ -2410,12 +2441,20 @@ contract, tested where it lives.
   <br>Its `@TestProfile` **extends `CiPackagedSurfaceIT.PackagedUnderTarget`** rather than copying
   it — what a launched qits-ci needs in order to boot is one answer, and the two `QITS_RESOURCE_*`
   triples with their system-property parking are written out over there — and adds only the gate,
-  the mock idp's address, and the four keys a host-run process needs because it has no deployment
-  behind it: otel dark, the bus dark, the daemon autoadopt discovery off (its own separate dial to
-  `qits.events.url`), and `qits.containers.url` — which used to be an address nothing answers on,
+  the mock idp's address, and the keys a host-run process needs because it has no deployment
+  behind it: otel dark, the bus dark, and `qits.containers.url` — which used to be an address nothing answers on,
   because the boot reap is a `StartupEvent` observer that skips TEST mode and a launched artifact
   really would ask a reachable orchestrator to delete this owner's containers, and is now the
   **recording stand-in** the build stories need (below).
+  **<br>It used to set two more and needs neither.** `qits.ci.daemon-autoadopt-enabled=false`
+  darkened a *second* dial to `qits.events.url` that `qits.eventstream.enabled` did not cover — the
+  daemon pin ladder's startup discovery — and had to be repeated here because a launched artifact
+  runs under neither `%dev` nor `%test`. And `qits.ci.daemon-version` was set to a plausible CalVer
+  nothing ever resolved, purely so `/ci/q/health/ready` came up: the daemon readiness check was DOWN
+  whenever the ladder had no rung at all, which is exactly an isolated boot with no qits-events to
+  adopt from, so an auth story had to pin a version to be allowed to talk about auth. Both went with
+  the ladder — there is no discovery, and the version comes from the pinned protocol dependency and
+  can never be absent.
   <br>**That profile is now shared by every story class in this repository, and that is the rule
   rather than an accident.** A `@TestProfile` is what decides whether failsafe launches another
   process, so one profile is one launched qits-ci for the whole failsafe phase; every seam any story

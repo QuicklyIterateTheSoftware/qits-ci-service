@@ -40,9 +40,9 @@ import org.jboss.logging.Logger;
  * <p><b>Boot, on its own thread.</b> The observer runs after both existing boot observers ({@code
  * CiDaemonLauncher.BOOT_REAP_PRIORITY}, then {@code CiRunService.BOOT_SWEEP_PRIORITY}) so the run
  * table it reads is the one the sweep left, and it hands the work to a thread of its own rather than
- * blocking the startup thread on the network: that is {@code DaemonReleaseListener}'s lesson, paid
- * live — a startup observer that waits on a service loses the container healthcheck's race and cd
- * kills the deployment.
+ * blocking the startup thread on the network. That lesson was paid live by the daemon pin ladder's
+ * own startup discovery — a startup observer that waits on a service loses the container
+ * healthcheck's race and cd kills the deployment — and it outlived the discovery, which is deleted.
  */
 @ApplicationScoped
 public class CommissionReconciler {

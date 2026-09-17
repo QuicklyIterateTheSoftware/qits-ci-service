@@ -39,14 +39,43 @@
     <name>qits-ci</name>
 
     <modules>
-        <!-- Listed in dependency order for readability; Maven computes reactor order itself. -->
-        <module>ci-daemon-protocol</module>
+        <!-- Listed in dependency order for readability; Maven computes reactor order itself.
+
+             `ci-daemon-protocol` was the FIRST entry here and is gone: the wire contract was a
+             vendored copy of qits-ci-daemon's module of the same name, carried because that module
+             was published to no registry. It is published now, so the copy's own pom comment came
+             true — deleting the module and adding a <dependency> was the whole change, with no
+             source edit anywhere, because the java package was identical by construction. See
+             qits.ci-daemon-protocol.version below for what that dependency's VERSION now decides. -->
         <module>ci-events</module>
         <module>ci</module>
         <module>service</module>
     </modules>
 
     <properties>
+        <!-- THIS IS NOT AN ORDINARY LIBRARY VERSION. It is the qits-ci-daemon BINARY that every CI
+             step container this deployment launches downloads and executes: the same release that
+             publishes this jar PUTs the bare binary to
+             `…/artifacts/daemons/qits-ci-daemon/<version>`, and CiDaemonBinary.VERSION — filtered
+             out of that release's own ${project.version} — is the path segment the bootstrap
+             composes. So bumping this line changes what runs inside every step of every build on
+             the platform, and it does so with the wire contract in the same jar: a daemon that
+             broke the protocol cannot arrive without the classes qits-ci compiles against arriving
+             with it.
+
+             It replaced `qits.ci.daemon-version`, a qits-configuration entry a release listener
+             rewrote the moment qits-ci-daemon published — so a new daemon reached every step
+             container with qits-ci's own suite never having run against it, and the only gate was
+             an adoption probe the released service ran on itself in production. The ladder and the
+             probe are retired (V18); what gates a bump now is CiDaemonPinIT, which downloads the
+             binary this property names and drives a real run through it on this repository's own
+             branch, before the merge.
+
+             MOVED BY qits-platform-maintenance's bump train, on a `maintenance/*` branch, folded
+             into a release request and gated by this repository's own CI like any other content.
+             Do NOT hand-edit it to chase a release you just made: a hand-written pin asserts a
+             pairing nobody gated, and the next bump overwrites it regardless. -->
+        <qits.ci-daemon-protocol.version>2026.917.35753</qits.ci-daemon-protocol.version>
         <qits.eventstream.version>2026.915.224730</qits.eventstream.version>
         <!-- qits-githost's event vocabulary: the SCM records a push announces. qits-ci consumes
              SCMPublishCommit and nothing else, but the jar is the whole vocabulary — it is a data
@@ -199,10 +228,13 @@
                 <artifactId>qits-ci-domain</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <!-- Not `${project.version}` any more, and the difference is the whole ticket: this is
+                 a RELEASED sibling artifact now, not a module of this reactor. Its version is the
+                 daemon binary's — see the property's own comment. -->
             <dependency>
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-ci-daemon-protocol</artifactId>
-                <version>${project.version}</version>
+                <version>${qits.ci-daemon-protocol.version}</version>
             </dependency>
             <dependency>
                 <groupId>${project.groupId}</groupId>

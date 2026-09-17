@@ -323,10 +323,15 @@ public class CiDaemonLauncher {
   String containerDaemonUrl;
 
   /**
-   * The daemon pin ladder (ci-daemon-autoadopt-plan.md, workstream BV): the top adopted candidate
-   * that has proven itself, or the deployment's configured {@code qits.ci.daemon-version} pin when
-   * none has, or blank. {@link #daemonVersion()} delegates to it entirely — this class no longer
-   * reads {@code qits.ci.daemon-version} itself.
+   * Which daemon binary a run started right now downloads: the version of the protocol dependency
+   * this reactor pins, or {@code qits.ci.daemon-version-override} when a person set one.
+   * {@link #daemonVersion()} delegates to it entirely, and this class reads no version key itself.
+   *
+   * <p>It was a <b>ladder</b> until the pin retirement — a durable table of candidate versions
+   * adopted off {@code SoftwareRelease} frames and probed in throwaway containers, with an adopted
+   * rung outranking the deployment's own pin. That is why this is still an injected collaborator
+   * rather than a config field: the answer is one place's to give, and which sources it has is that
+   * place's business.
    */
   @Inject CiDaemonPins pins;
 
@@ -687,16 +692,16 @@ public class CiDaemonLauncher {
   }
 
   /**
-   * The daemon version a run started right now would pin — the top of {@link #pins}'s ladder;
-   * blank when neither an adopted candidate nor the configured pin exists.
+   * The daemon version a run started right now would pin, and it is <b>never blank</b>: the pinned
+   * protocol dependency's own version, which refuses to exist rather than resolve to {@code ""}.
    *
-   * <p><b>Delegates entirely, and that is the whole of the flip.</b> Before
-   * ci-daemon-autoadopt-plan.md workstream BV this read {@code qits.ci.daemon-version} itself and a
-   * boot-time check (long since deleted, {@code daemonVersionComplaint}) warned when the value could
-   * not be a sha256 the old digest-addressed template needed. That check went silent by construction
-   * the moment {@code qits.ci.daemon-binary-url-template} stopped saying {@code sha256:{version}} —
-   * see {@code CiIdentifiers.requireDaemonVersion}, its replacement, enforced where a version now
-   * actually arrives untrusted: at adoption, not at boot.
+   * <p><b>Delegates entirely, and the delegate has changed twice.</b> This class read
+   * {@code qits.ci.daemon-version} directly to begin with, with a boot-time check (long since
+   * deleted, {@code daemonVersionComplaint}) warning when the value could not be the sha256 the old
+   * digest-addressed template needed. It then read a pin ladder, which could still answer blank when
+   * every adopted candidate had been rejected and no pin was configured — a state a whole readiness
+   * check existed to report. It now reads a constant off the classpath, so the blank case has no
+   * way to arise and nothing downstream needs to defend against it.
    */
   public String daemonVersion() {
     return pins.answer().version();
@@ -706,10 +711,11 @@ public class CiDaemonLauncher {
    * How long a launch may take, which is mostly how long an image pull may take.
    *
    * <p><b>It is {@code qits.ci.daemon-register-timeout-seconds} on purpose, not a key of its own.</b>
-   * That one key drives all three deadlines a container may spend on becoming a daemon — {@code
-   * CiDaemonStepRunner}'s register wait, this {@code ensure} call, and {@code
-   * CiDaemonContainerProbe}'s probe deadline — because they are three halves of one question and
-   * three keys would be three ways to disagree about the answer. It moved from 60s to 180s with
+   * That one key drives both deadlines a container may spend on becoming a daemon — {@code
+   * CiDaemonStepRunner}'s register wait and this {@code ensure} call — because they are two halves
+   * of one question and two keys would be two ways to disagree about the answer. It drove a third
+   * until the pin ladder was retired, the probe container's own deadline, which is one fewer reader
+   * and no change to the number. It moved from 60s to 180s with
    * {@link #BOOTSTRAP}'s fetch retry, whose ~108s budget has to fit inside it; see the key's own
    * comment in the {@code ci} jar's {@code microprofile-config.properties}.
    */

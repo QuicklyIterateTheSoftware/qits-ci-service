@@ -32,9 +32,8 @@ import org.junit.jupiter.api.Test;
  * for it.
  *
  * <p><b>Deliberately does not exercise {@link CiDaemonLauncher#daemonVersion()}.</b> That method
- * delegates to the injected {@code CiDaemonPins} ladder (ci-daemon-autoadopt-plan.md, workstream
- * BV), a real CDI bean this plain-construction test never wires up; its coverage lives in
- * {@code CiDaemonPinsTest} and {@code CiDaemonPinTest} instead. This class stays about pure spec
+ * delegates to the injected {@code CiDaemonPins}, a real CDI bean this plain-construction test never
+ * wires up; its coverage lives in {@code CiDaemonPinsTest} and {@code CiDaemonPinTest} instead. This class stays about pure spec
  * assembly, which is why it can be {@code new CiDaemonLauncher()} with fields set by hand rather
  * than a {@code @QuarkusTest} — and why it needs no client at all: nothing here sends anything.
  */
@@ -814,9 +813,9 @@ public class CiDaemonLauncherTest {
   @Test
   public void theBinaryUrlIsTheVersionResolvedIntoTheTemplate() {
     // One template rather than two free values, so the version pin and the download address cannot
-    // drift apart. {version} is a version-addressed pin, not a digest, since the template flip
-    // (ci-daemon-autoadopt-plan.md); resolveBinaryUrl itself does not care which spelling it is
-    // handed.
+    // drift apart. {version} is a version-addressed pin rather than a digest since the template
+    // flip; resolveBinaryUrl itself does not care which spelling it is handed, which is why it is
+    // unchanged by the version moving from a config key to the pinned protocol dependency.
     assertEquals(
         "http://qits-artifacts:8080/artifacts/daemons/qits-ci-daemon/abc123",
         launcher().resolveBinaryUrl("abc123"));
@@ -897,17 +896,18 @@ public class CiDaemonLauncherTest {
   }
 
   @Test
-  public void twoFreshProbeRunIdsNeverCollide() {
-    // The concrete case this incident hit, with CiDaemonContainerProbe's own (now bare-UUID) runId
-    // generation: two distinct random UUIDs must not collide on the resulting container name. Not a
-    // guarantee about UUID collisions in general -- just that containerName does not throw the
-    // entropy away the way the old blind prefix did.
+  public void twoFreshRunIdsNeverCollide() {
+    // The concrete case this incident hit -- it was the pin ladder's probe, which minted a bare UUID
+    // per candidate, and the property is the launcher's rather than the probe's so it outlives it:
+    // two distinct random UUIDs must not collide on the resulting container name. Not a guarantee
+    // about UUID collisions in general -- just that containerName does not throw the entropy away
+    // the way the old blind prefix did.
     String runIdA = java.util.UUID.randomUUID().toString();
     String runIdB = java.util.UUID.randomUUID().toString();
     assertFalse(runIdA.equals(runIdB), "test setup: the two random UUIDs must differ");
     assertFalse(
         CiDaemonLauncher.containerName(runIdA, 0).equals(CiDaemonLauncher.containerName(runIdB, 0)),
-        "two distinct probe runIds must not collide on the container name");
+        "two distinct runIds must not collide on the container name");
   }
 
   // The docker-is-down WARN that used to live here went with the CLI it was about: there is no
@@ -918,8 +918,10 @@ public class CiDaemonLauncherTest {
 
   // The boot-time shape check that used to live here (daemonVersionComplaint) is gone with the
   // template flip: it warned only while the shipped template still addressed the binary by digest,
-  // and it would have gone silent by construction the moment that stopped being true
-  // (ci-daemon-autoadopt-plan.md §1.5). Its replacement, CiIdentifiers.requireDaemonVersion, is
-  // enforced where a version now actually arrives untrusted — at adoption, in CiDaemonPinsTest —
-  // rather than warned about at boot.
+  // and it would have gone silent by construction the moment that stopped being true. Its
+  // replacement, CiIdentifiers.requireDaemonVersion, was enforced where a version really did arrive
+  // untrusted — at adoption, off a SoftwareRelease frame. There is no adoption any more: the version
+  // is a constant compiled into the protocol jar, or an override typed into this deployment's own
+  // configuration, and neither is attacker-shaped. The check is kept unused rather than deleted, for
+  // the reason its own javadoc gives.
 }

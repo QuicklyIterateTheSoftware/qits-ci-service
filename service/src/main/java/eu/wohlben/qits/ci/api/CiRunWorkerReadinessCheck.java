@@ -14,10 +14,11 @@ import org.eclipse.microprofile.health.Readiness;
  *
  * <p><b>This check exists because the alternative was measured.</b> After a redeploy, runs sat
  * {@code QUEUED} indefinitely while every health check this service declared stayed green and
- * {@code GET /ci/api/daemon} happily answered {@code source=adopted}: the daemon pin ladder is what
- * {@link CiDaemonReadinessCheck} knows about, and the thing that had actually died — every one of
- * {@code qits.ci.concurrent-builds} claim loops — was a fact no surface stated. Green-while-dead
- * cost the diagnosis hours and the fix a process restart. So the count is a surface now.
+ * {@code GET /ci/api/daemon} happily answered that it had a daemon: which daemon binary this
+ * instance would launch is all {@link CiDaemonReadinessCheck} ever knew about, and the thing that
+ * had actually died — every one of {@code qits.ci.concurrent-builds} claim loops — was a fact no
+ * surface stated. Green-while-dead cost the diagnosis hours and the fix a process restart. So the
+ * count is a surface now.
  *
  * <p><b>The conjunction is the whole check.</b> Zero live loops during a shutdown is what a
  * shutdown is, so {@code stopping} is UP; zero live loops while the process intends to keep serving
@@ -25,9 +26,14 @@ import org.eclipse.microprofile.health.Readiness;
  * legitimately zero-busy for days, and a check that read it would report every quiet night as an
  * outage.
  *
- * <p><b>What DOWN buys is qits-cd's health gate</b>, exactly as {@link CiDaemonReadinessCheck}'s
- * does and with the same limits: a deployment that lands with no claim loop fails {@code
- * awaitHealthy} and the previous container is restored, while a container already running is not
+ * <p><b>What DOWN buys is qits-cd's health gate, and this is now the ONLY readiness check here that
+ * reaches it.</b> {@link CiDaemonReadinessCheck} had a DOWN arm of its own until the daemon pin
+ * ladder was retired — it fired when every adopted candidate had been rejected and no pin was
+ * configured — and it is an unconditional readout now, because a version that comes from the pom
+ * cannot be absent and a bad one is caught by this repository's own release request rather than by
+ * a deployment. The limits of the gate are unchanged: a deployment that lands with no claim loop
+ * fails {@code awaitHealthy} and the previous container is restored, while a container already
+ * running is not
  * restarted by {@code --restart unless-stopped} and the gateway does not remove a DOWN qits-ci from
  * routing — which stays correct, because the read surface has to answer in order to say what is
  * wrong. Beyond the gate it is what a person or a monitor reads: {@code /q/health/ready} names the

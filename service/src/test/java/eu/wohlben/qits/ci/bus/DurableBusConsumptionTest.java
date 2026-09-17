@@ -4,22 +4,17 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import eu.wohlben.qits.ci.control.CiDaemonPins;
 import eu.wohlben.qits.ci.control.ReleaseJoin;
-import eu.wohlben.qits.ci.control.DaemonProbe.Verdict;
-import eu.wohlben.qits.ci.control.FakeDaemonProbe;
 import eu.wohlben.qits.ci.entity.CiReleaseAnnouncement;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
-import eu.wohlben.qits.ci.persistence.CiDaemonPinRepository;
 import eu.wohlben.qits.ci.persistence.CiReleaseAnnouncementRepository;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import eu.wohlben.qits.ci.persistence.CiScmReleaseRepository;
 import eu.wohlben.qits.eventstream.QitsRawEventListener;
 import eu.wohlben.qits.eventstream.control.DurableFunnel;
 import eu.wohlben.qits.eventstream.control.EventFrame;
-import io.quarkus.arc.ClientProxy;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.common.WithTestResource;
 import io.quarkus.test.junit.QuarkusTest;
@@ -33,33 +28,41 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * The five bus listeners as <b>durable</b> consumers: what the claim ledger settles, what stays
+ * The four bus listeners as <b>durable</b> consumers: what the claim ledger settles, what stays
  * owed, and what a late arrival is allowed to do.
  *
- * <p>The fifth, {@code RepositoryRenamedListener}, is the one whose section asserts rows rather than
+ * <p>The fourth, {@code RepositoryRenamedListener}, is the one whose section asserts rows rather than
  * verdicts — it is a repair of durable state, so "handled" is only half of what has to be true.
  *
- * <p>There were five before that too, until 2026-09-05. {@code ScmPublishCommitListener} — consumer
- * {@code ci-push-runs} — accepted one run per pushed branch ref, and its section here asserted the claim
- * that made a redelivered push one build rather than two. An ordinary push triggers nothing now, so
- * the listener is gone and so is the consumption: its {@code consumed_event} rows and its watermark
- * are simply left behind, the way {@code pd-build-succeeded} was in qits-platform-deployments.
- * SCMPublishCommit still reaches {@link CiEventTriggerListener}, which subscribes to everything, and
- * is claimed under {@code ci-event-triggers} like every other event on the bus.
+ * <p><b>Two sections have been deleted from this class, and both are worth knowing about.</b>
+ * {@code ScmPublishCommitListener} — consumer {@code ci-push-runs} — accepted one run per pushed
+ * branch ref until 2026-09-05, and its section asserted the claim that made a redelivered push one
+ * build rather than two; an ordinary push triggers nothing now. {@code DaemonReleaseListener} —
+ * consumer {@code ci-daemon-adopt} — adopted the version named on a {@code SoftwareRelease} for the
+ * daemon, and its section was the largest here: adopting once across a duplicate delivery, declining
+ * a late release rather than rolling the pin backwards, declining another artifact's release in the
+ * predicate so no claim row was written at all, and settling a release with no {@code occurredAt}
+ * unadopted. Each was a real durable-consumption property and each is gone with the consumption —
+ * the daemon version is the pinned protocol dependency's now, so nothing on the bus decides it.
+ * Both consumer ids are abandoned rather than migrated away, the way {@code pd-build-succeeded} was
+ * in qits-platform-deployments, and {@code EventstreamDarknessTest} is what keeps either from being
+ * handed to a new listener. SCMPublishCommit and SoftwareRelease both still reach {@link
+ * CiEventTriggerListener}, which subscribes to everything, and are claimed under
+ * {@code ci-event-triggers} like every other event on the bus.
  *
  * <p>Driven through {@link DurableFunnel} directly rather than over the socket, which is the same
- * choice {@code CiEventTriggerCausationTest} and {@code DaemonReleaseListenerTest} make one level up
- * — the arriving is somebody else's test. It also buys the one thing dispatch cannot give: the
- * funnel <em>answers</em>, so "handled once" and "still owed" are assertions rather than inferences
- * from a side effect. The funnel is also exactly what the catch-up sweeper calls, so a second offer
- * of one frame IS a sweep reading past an event the stream already delivered.
+ * choice {@code CiEventTriggerCausationTest} makes one level up — the arriving is somebody else's
+ * test. It also buys the one thing dispatch cannot give: the funnel <em>answers</em>, so "handled
+ * once" and "still owed" are assertions rather than inferences from a side effect. The funnel is
+ * also exactly what the catch-up sweeper calls, so a second offer of one frame IS a sweep reading
+ * past an event the stream already delivered.
  *
  * <p>What is not asserted here is the paging, the watermark and the pruning. Those are the library's
  * and its suite holds them; a copy here would test qits-eventstream through qits-ci.
  *
  * <p>Reuses {@link BuildSuccessfulPublishTest.EventstreamOn} — the funnel is a no-op with the module
  * dark, by design — and declares nothing else, so this class shares the application {@code
- * DaemonReleaseListenerTest} already starts rather than costing a second Quarkus boot.
+ * CiEventTriggerCausationTest} already starts rather than costing a second Quarkus boot.
  */
 @QuarkusTest
 @TestProfile(BuildSuccessfulPublishTest.EventstreamOn.class)
@@ -74,8 +77,6 @@ public class DurableBusConsumptionTest {
 
   @Inject CiEventTriggerListener triggers;
 
-  @Inject DaemonReleaseListener daemon;
-
   @Inject ScmReleaseListener scmReleases;
 
   @Inject RepositoryRenamedListener renames;
@@ -84,25 +85,12 @@ public class DurableBusConsumptionTest {
 
   @Inject CiReleaseAnnouncementRepository announcements;
 
-  @Inject CiDaemonPins pins;
-
-  @Inject CiDaemonPinRepository repo;
-
   @Inject CiScmReleaseRepository releases;
-
-  @Inject FakeDaemonProbe probe;
 
   @BeforeEach
   void resetState() {
     StubEventsServer.reset();
-    probe.reset();
-    QuarkusTransaction.requiringNew()
-        .run(
-            () -> {
-              repo.deleteAll();
-              releases.deleteAll();
-            });
-    ClientProxy.unwrap(pins).configuredVersion = Optional.empty();
+    QuarkusTransaction.requiringNew().run(releases::deleteAll);
   }
 
   // --- BuildSuccessfulListener: ci-release-train ---
@@ -194,104 +182,6 @@ public class DurableBusConsumptionTest {
         DurableFunnel.Result.SKIPPED,
         funnel.offer(triggers, frame),
         "a catch-up sweep reaching a push the stream already delivered evaluates it once");
-  }
-
-  // --- DaemonReleaseListener: ci-daemon-adopt ---
-
-  @Test
-  public void aDaemonReleaseIsAdoptedOnceAcrossADuplicateDelivery() throws Exception {
-    probe.willAnswer("2026.801.101010", Verdict.PROVEN, "");
-    EventFrame frame = daemonFrame(anId(), "2026.801.101010", T0);
-
-    assertEquals(DurableFunnel.Result.HANDLED, funnel.offer(daemon, frame));
-    assertEquals(DurableFunnel.Result.SKIPPED, funnel.offer(daemon, frame));
-    daemon.awaitIdle();
-
-    assertEquals(1, repo.count());
-    assertEquals("2026.801.101010", pins.answer().version());
-  }
-
-  /**
-   * <b>The late-delivery guard, which is the whole reason this listener needed thinking about.</b>
-   * Catch-up delivers out of stream order, so after a restart this handler can be handed a release
-   * that is older than the one already pinned. Adopting it would roll the daemon backwards. {@link
-   * CiDaemonPins#adopt}'s freshness check — not newer than the newest adopted, so ignored — is the
-   * tip check, and the event is still settled: it was genuinely handled, and the handling was to
-   * decline.
-   */
-  @Test
-  public void aLateDaemonReleaseIsSettledWithoutRollingThePinBackwards() throws Exception {
-    probe.willAnswer("2026.802.120000", Verdict.PROVEN, "");
-    probe.willAnswer("2026.801.090000", Verdict.PROVEN, "");
-
-    funnel.offer(daemon, daemonFrame(anId(), "2026.802.120000", T0.plusSeconds(3600)));
-    daemon.awaitIdle();
-    assertEquals("2026.802.120000", pins.answer().version());
-
-    assertEquals(
-        DurableFunnel.Result.HANDLED,
-        funnel.offer(daemon, daemonFrame(anId(), "2026.801.090000", T0)),
-        "an older release is handled and declined, not retried");
-    daemon.awaitIdle();
-
-    assertEquals(1, repo.count(), "the older candidate never became a rung");
-    assertEquals("2026.802.120000", pins.answer().version());
-  }
-
-  /**
-   * Selective storage: a release for anything but this one daemon leaves <b>no row at all</b>, which
-   * is what keeps the claim ledger proportional to the adoptions rather than to every artifact the
-   * platform publishes.
-   */
-  @Test
-  public void aReleaseForAnotherArtifactIsNotSelected() throws Exception {
-    EventFrame image =
-        new EventFrame(
-            anId(),
-            "SoftwareRelease",
-            T0,
-            "{\"packageName\":\"qits/qits-stt\",\"packageType\":\"docker\",\"repository\":\"some-repo\""
-                + ",\"version\":\"1.4.0\"}",
-            null,
-            null, null);
-
-    assertFalse(daemon.selects(image));
-    assertEquals(DurableFunnel.Result.SKIPPED, funnel.offer(daemon, image));
-    daemon.awaitIdle();
-
-    assertEquals(0, repo.count());
-  }
-
-  /**
-   * Poison, answered in the predicate rather than in the handler. A {@code selects} that <em>threw</em>
-   * would leave the event owed — the seam treats an undecidable selection as a failure on purpose —
-   * so an unreadable payload has to answer "no" instead, which settles it with no row.
-   */
-  @Test
-  public void aSoftwareReleaseWithAnUnreadablePayloadIsDeclinedRatherThanOwed() throws Exception {
-    EventFrame broken =
-        new EventFrame(anId(), "SoftwareRelease", T0, "not json at all", null, null, null);
-
-    assertFalse(daemon.selects(broken), "a predicate that throws leaves the event owed forever");
-    assertEquals(DurableFunnel.Result.SKIPPED, funnel.offer(daemon, broken));
-    daemon.awaitIdle();
-
-    assertEquals(0, repo.count());
-  }
-
-  /**
-   * The other poison case, and the one that has to be caught in the handler: the ladder orders
-   * candidates by {@code occurredAt} and {@code adopt} throws without one. A throw here is retried
-   * forever, so it is a WARN and a settled event instead.
-   */
-  @Test
-  public void aDaemonReleaseWithNoOccurredAtIsSettledUnadopted() throws Exception {
-    EventFrame undated = daemonFrame(anId(), "2026.801.111111", null);
-
-    assertEquals(DurableFunnel.Result.HANDLED, funnel.offer(daemon, undated));
-    daemon.awaitIdle();
-
-    assertEquals(0, repo.count());
   }
 
   // --- ScmReleaseListener: ci-release-facts ---
@@ -652,16 +542,4 @@ public class DurableBusConsumptionTest {
         null);
   }
 
-  private static EventFrame daemonFrame(String eventId, String version, Instant occurredAt) {
-    return new EventFrame(
-        eventId,
-        "SoftwareRelease",
-        occurredAt,
-        "{\"packageName\":\"qits-ci-daemon\",\"packageType\":\"daemon\",\"repository\":"
-            + "\"qits-ci-daemon\",\"version\":\""
-            + version
-            + "\"}",
-        null,
-        null, null);
-  }
 }

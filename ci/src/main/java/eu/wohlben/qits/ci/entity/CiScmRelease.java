@@ -21,9 +21,10 @@ import java.time.Instant;
  * repoId} is the git host's id, and on this platform the two agree — but the event's own javadoc does
  * not promise it, and a join that silently missed would be a release nobody announces.
  *
- * <p>{@code @Uncaused} by decision, the {@link CiDaemonPin} argument verbatim: {@link #eventId} IS
- * the causing event, already on the row, so a generic causation column would be that column under a
- * second name.
+ * <p>{@code @Uncaused} by decision: {@link #eventId} IS the causing event, already on the row, so a
+ * generic causation column would be that column under a second name. The argument was first made by
+ * {@code CiDaemonPin}, whose {@code event_id} was the release it adopted; that entity and its table
+ * went with the daemon pin ladder, and the argument outlived them.
  */
 @Entity
 @Table(name = "ci_scm_release")

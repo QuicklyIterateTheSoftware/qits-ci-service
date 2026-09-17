@@ -241,23 +241,35 @@ steps:
   # exactly that. The packaged fast-jar failsafe boots is otherwise exactly what ships.
   #
   # THE TWO IT FLAGS ARE THE OTHER HALF, and they are why this repository does NOT opt its service
-  # module back into ITs wholesale. `skipITs` is true in the root pom because three docker-backed
-  # gates bind to the same failsafe run — CiDaemonHandshakeIT, CiDaemonGateIT and
-  # CiDaemonContainerProbeIT, which need real docker, a published step image, a built qits-ci-daemon
-  # binary and a container route back to the JVM. The root pom's `qits.it.excluded-groups` would drop
+  # module back into ITs wholesale. `skipITs` is true in the root pom because two docker-backed
+  # gates bind to the same failsafe run — CiDaemonHandshakeIT and CiDaemonGateIT, which need real
+  # docker, a published step image, a built qits-ci-daemon binary and a container route back to the
+  # JVM. The root pom's `qits.it.excluded-groups` would drop
   # them by their `extended` tag, but it is EMPTY by default on purpose (only the `native` profile
   # sets it), so that `-DskipITs=false` keeps meaning "run everything" as AGENTS.md documents. Naming
   # the class is therefore the opt-in that is correct here, and it also keeps CiPackagedSurfaceIT —
   # which is not extended-tagged and would otherwise run — out of a pipeline that is about the stories:
-  # `-DskipITs=false "-Dit.test=TokenValidationBootstrapIT,BuildExecutionIT,BuildTriggerIT"`.
+  # `-DskipITs=false "-Dit.test=TokenValidationBootstrapIT,BuildExecutionIT,BuildTriggerIT,CiDaemonPinIT"`.
+  #
+  # CiDaemonPinIT IS THE ONE THAT IS NOT A STORY, AND IT IS THE REASON THIS LIST GATES A DAEMON BUMP.
+  # It downloads the qits-ci-daemon binary at the version `qits.ci-daemon-protocol.version` pins,
+  # starts it as a process against the launched qits-ci, and drives one real step through the real
+  # control socket. It is deliberately NOT `extended`-tagged: the orchestrator is the stories'
+  # recording stand-in, so no docker and no qits-containers is involved, and the binary is a
+  # musl-static native image that runs in this very step container. What it buys is that a daemon
+  # release which breaks the wire — or a pin naming a binary nobody published — fails THIS
+  # repository's release request, on a branch, instead of every step of every build on the platform.
+  # A pin test nobody runs is a pin test that passes, so if it is ever dropped from this list, drop
+  # the class too rather than leaving it to look like a gate.
   #
   # THE SEPARATOR IS A COMMA. `-Dit.test=A+B` is not a union, and failsafe silently matches nothing —
   # a pipeline that regenerates an EMPTY bundle and goes green is the failure this line exists to
-  # prevent. The three classes share one @TestProfile on purpose, so all of them together cost one
-  # launched qits-ci for the whole failsafe phase; adding a fourth with a profile of its own would
-  # double the phase. TokenValidationBootstrapIT must stay FIRST in the list and first in the run:
-  # its class name sorts ahead of the story packages, and the startup JWKS fetch it documents lands
-  # in whichever story drains first.
+  # prevent. The four classes share one @TestProfile on purpose, so all of them together cost one
+  # launched qits-ci for the whole failsafe phase; adding a fifth with a profile of its own would
+  # double the phase — and a step here runs in a 4 g cgroup with no swap, where each Quarkus profile
+  # retains ~125 MB of metaspace. TokenValidationBootstrapIT must stay FIRST in the list and first in
+  # the run: its class name sorts ahead of the story packages, and the startup JWKS fetch it
+  # documents lands in whichever story drains first.
   - image: qits/build-images/maven-base:latest
     user: build
     timeout-seconds: 2400
@@ -274,7 +286,7 @@ steps:
       ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
         -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
         -Dquarkus.quinoa=false \
-        -DskipITs=false "-Dit.test=TokenValidationBootstrapIT,BuildExecutionIT,BuildTriggerIT"
+        -DskipITs=false "-Dit.test=TokenValidationBootstrapIT,BuildExecutionIT,BuildTriggerIT,CiDaemonPinIT"
 
       # `-C … .` so the story directories are the bundle's roots — nesting one directory deep would
       # put it in every served URL.

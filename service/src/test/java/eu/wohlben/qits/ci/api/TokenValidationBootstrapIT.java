@@ -64,9 +64,10 @@ import org.junit.jupiter.api.TestMethodOrder;
  * story would empty the story it documents.
  *
  * <p><b>ITs stay skipped by default here and this one does NOT flip that.</b> {@code skipITs} is
- * {@code true} in the root pom because the three docker-backed gates — {@code CiDaemonHandshakeIT},
- * {@code CiDaemonGateIT}, {@code CiDaemonContainerProbeIT} — bind to the same failsafe run and need
- * real docker, a published step image, a built daemon binary and a container route back to this JVM.
+ * {@code true} in the root pom because the docker-backed gates — {@code CiDaemonHandshakeIT} and
+ * {@code CiDaemonGateIT} — bind to the same failsafe run and need real docker, a published step
+ * image, a built daemon binary and a container route back to this JVM. (There were three; {@code
+ * CiDaemonContainerProbeIT} went with the pin ladder it probed for.)
  * The root pom's {@code qits.it.excluded-groups} would exclude them by their {@code extended} tag,
  * but it is <b>empty by default</b> and only the {@code native} profile sets it, deliberately, so
  * that {@code -DskipITs=false} still means "run everything". Naming the class is therefore the only
@@ -148,12 +149,12 @@ public class TokenValidationBootstrapIT {
       // datasource), which is why the second triple the parent supplies is not optional.
       overrides.put("quarkus.otel.sdk.disabled", "true");
       overrides.put("qits.eventstream.enabled", "false");
-      // The daemon pin ladder's startup discovery is a SEPARATE HTTP call to qits.events.url and is
-      // not covered by the key above — application.properties gives it its own %dev/%test switch for
-      // exactly that reason, and a launched artifact runs under neither profile. Off here for the
-      // same reason it is off there: there is no qits-events to dial, and an adoption landing
-      // mid-story would be state nothing asked for behind the listing this story reads.
-      overrides.put("qits.ci.daemon-autoadopt-enabled", "false");
+      // THERE IS NO THIRD DIAL ANY MORE. This block used to carry a second switch —
+      // qits.ci.daemon-autoadopt-enabled=false — because the daemon pin ladder's startup discovery
+      // was a SEPARATE HTTP call to qits.events.url that the key above did not cover, and a launched
+      // artifact runs under neither %dev nor %test, so it had to be said again here. The ladder is
+      // retired: the daemon version is the pinned protocol dependency's, resolved at build time,
+      // with no discovery, no adoption and nothing for a story to be polluted by.
       // The orchestrator, played by a recording stand-in. This used to be http://127.0.0.1:1 — an
       // address nothing answers on — because the only thing an auth story needed of qits-containers
       // was that the boot reap give up and let boot proceed. The build stories need the opposite:
@@ -177,15 +178,14 @@ public class TokenValidationBootstrapIT {
       // Measured on this IT's first CI run (2026-08-29). A stand-in that answers immediately never
       // enters that window, and one second is what keeps the collision from coming back if it stops.
       overrides.put("qits.ci.containers.boot-reap-patience", "PT1S");
-      // A configured daemon pin, so /ci/q/health/ready is UP. The ci-daemon-pin @Readiness check is
-      // DOWN whenever the pin ladder has SOURCE_NONE — no adopted release AND no configured version
-      // — which is exactly an isolated boot with no qits-events to adopt from. A deployment carries a
-      // pin (autoadopted or configured); this is the configured arm, which is what turns the pin's
-      // source away from NONE and the check UP without dialling anything. The value is a plausible
-      // CalVer and never resolved — no image is pulled here — it only has to be non-blank. Without
-      // it the story's own readiness beat (and cd's health gate, in prod) reads the service as not
-      // ready, which is true and beside the point of an auth story.
-      overrides.put("qits.ci.daemon-version", "2026.101.000000");
+      // AND NO DAEMON PIN IS SET HERE EITHER, which is one fewer thing a story has to arrange. This
+      // block used to carry qits.ci.daemon-version=2026.101.000000 purely so /ci/q/health/ready came
+      // up: the readiness check was DOWN whenever the pin ladder had no rung at all — no adopted
+      // release AND no configured version — which is exactly an isolated boot with no qits-events to
+      // adopt from, so an auth story had to pin a version it never resolved to be allowed to talk
+      // about auth. The version is the pinned dependency's now and can never be absent, and the
+      // check (renamed ci-daemon-version) is an unconditional readout rather than a gate, so
+      // readiness here is UP for a reason rather than because a story propped it up.
       return overrides;
     }
   }

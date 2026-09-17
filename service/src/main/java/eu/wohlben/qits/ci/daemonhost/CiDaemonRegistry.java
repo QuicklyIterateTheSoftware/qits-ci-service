@@ -261,10 +261,14 @@ public class CiDaemonRegistry {
    * delivery — which is what a real run actually depends on, since {@code Ack} and every frame after
    * it (not least {@code RunStep}) travel that direction.
    *
-   * <p>No real run calls this — {@link CiDaemonStepRunner} moves straight from {@link
-   * #awaitRegistered} to {@link #awaitInitialized}, so a real container's {@link AckReceived} is
-   * simply recorded here and never awaited. Only {@code CiDaemonContainerProbe} does, because a
-   * probe's whole job is to prove the round trip before anything is pinned; see its javadoc.
+   * <p><b>Nothing calls this today, and it is kept deliberately.</b> {@link CiDaemonStepRunner}
+   * moves straight from {@link #awaitRegistered} to {@link #awaitInitialized}, so a real container's
+   * {@link AckReceived} is recorded here and never awaited. Its one caller was the pin ladder's
+   * container probe, whose whole job was to prove the host→daemon round trip before a version was
+   * pinned — the ladder is retired and the probe with it. The method stays because the property it
+   * measures is the only one {@link #awaitRegistered} and {@link #awaitHello} cannot: those prove
+   * the daemon reached the host, and this proves the host reaches the daemon, which is what every
+   * frame after the handshake actually depends on.
    */
   public boolean awaitAckConfirmed(String daemonId, Duration timeout) {
     Launch launch = launches.get(daemonId);
@@ -387,9 +391,11 @@ public class CiDaemonRegistry {
    * caller that needs to know what the daemon announced: reading this straight after {@link
    * #awaitRegistered} returns can still see {@code null} for a daemon whose {@link Hello} has not
    * arrived yet, because registration completes at websocket admission, one round trip earlier. A
-   * caller that must not see that gap blocks on {@link #awaitHello} instead — the fix for exactly
-   * this race in {@code CiDaemonContainerProbe} (proven in production: it read this method right
-   * after {@link #awaitRegistered} and rejected every genuine daemon).
+   * caller that must not see that gap blocks on {@link #awaitHello} instead. That was the fix for
+   * exactly this race in the pin ladder's container probe, proven in production: it read this method
+   * right after {@link #awaitRegistered} and rejected every genuine daemon. The probe is deleted
+   * with the ladder, and the race is not — it is a property of when registration completes, so the
+   * warning stays for the next caller that reaches for the cheap read.
    */
   public Integer capabilityVersionOf(String daemonId) {
     Launch launch = launches.get(daemonId);

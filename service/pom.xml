@@ -41,8 +41,12 @@
             <artifactId>qits-ci-domain</artifactId>
         </dependency>
         <dependency>
-            <!-- The ci-daemon wire contract. Vendored into this repo (see that module's pom)
-                 because it is published to no registry. -->
+            <!-- The ci-daemon wire contract, and the daemon BINARY's version with it
+                 (CiDaemonBinary). A released sibling artifact, no longer a vendored module of this
+                 reactor — see qits.ci-daemon-protocol.version in the root pom for why this one
+                 dependency decides what runs inside every step container. Restated here rather
+                 than left to arrive transitively through qits-ci-domain, because this module's
+                 daemonhost package imports the protocol records directly. -->
             <groupId>${project.groupId}</groupId>
             <artifactId>qits-ci-daemon-protocol</artifactId>
         </dependency>

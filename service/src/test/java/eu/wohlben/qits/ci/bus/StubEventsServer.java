@@ -40,8 +40,16 @@ public class StubEventsServer implements QuarkusTestResourceLifecycleManager {
   /** One request that arrived: the id from the path, and the body verbatim. */
   public record Put(String id, String body) {}
 
-  /** One event a test seeds for {@code GET} to answer -- {@link DaemonReleaseListener}'s startup
-   *  discovery is the one reader in this repository, and this is the whole shape it reads. */
+  /**
+   * One event a test seeds for {@code GET} to answer.
+   *
+   * <p><b>Nothing in this repository reads it any more.</b> Its one reader was the daemon pin
+   * ladder's startup discovery, which paged qits-events' log for {@code SoftwareRelease}s naming the
+   * daemon and adopted the newest; that is retired, and the version comes from the pinned protocol
+   * dependency. The seeding door is kept rather than deleted because it is a stand-in for a real
+   * qits-events route that still exists, and the next consumer that needs to read the log back will
+   * need exactly this shape — but a test seeding one today is scripting an answer nobody asks for.
+   */
   public record Seeded(String id, String occurredAt, String payload) {}
 
   private static final List<Put> PUTS = Collections.synchronizedList(new ArrayList<>());
@@ -86,12 +94,12 @@ public class StubEventsServer implements QuarkusTestResourceLifecycleManager {
   }
 
   /**
-   * Script what {@code GET /events/api/events} answers -- a {@code SoftwareRelease}'s three fields
-   * {@link eu.wohlben.qits.ci.control.DaemonReleaseLog} reads, in the order they are added. This stub
-   * ignores every query parameter and returns the whole scripted list: {@code EventsDaemonReleaseLog}
-   * asks for {@code limit=2} of a query qits-events itself already filters and orders (BU), so
-   * scripting the two rows a test wants read is the honest shape for a stub standing in for that
-   * service, not a second implementation of its filter.
+   * Script what {@code GET /events/api/events} answers, in the order they are added. This stub
+   * ignores every query parameter and returns the whole scripted list, which was the honest shape
+   * for a stub standing in for a service that already filters and orders the query itself — a stub
+   * reimplementing that filter would be a second implementation of somebody else's behaviour.
+   *
+   * <p>Unused today: see {@link Seeded} for what read it and why that reader went.
    */
   public static void seedEvent(String id, String occurredAt, String payload) {
     SEEDED_EVENTS.add(new Seeded(id, occurredAt, payload));
