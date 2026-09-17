@@ -19,4 +19,8 @@ steps:
       npm run test
       npm run build
       QITS_SLOT_EOF
-      bash -eu /tmp/qits-slot.sh
+      if command -v bash > /dev/null 2>&1; then
+        bash -eu /tmp/qits-slot.sh
+      else
+        sh -eu /tmp/qits-slot.sh
+      fi

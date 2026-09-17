@@ -155,6 +155,83 @@ public class CiReleaseComposerTest {
     golden("bespoke-release.yml", composed.releaseDocument());
   }
 
+  /**
+   * The one repository that cannot run on a platform step image: it BUILDS them.
+   *
+   * <p>qits-build-images-oci would bootstrap itself on {@code qits/build-images/*}, so it runs on
+   * upstream {@code docker:28-dind} — {@code /bin/sh} and {@code /bin/ash}, no {@code /bin/bash};
+   * {@code wget}, no {@code curl}. Composed against that image the wrapper used to die at {@code
+   * bash: not found} before building anything, in the one repository whose bad release breaks every
+   * other pipeline's step images.
+   */
+  @Test
+  public void anImageWithoutBashRunsTheDeclaredScriptUnderSh() {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            CiRepoRef.of("77777777-6666-5555-4444-333333333333", "qits", "qits-build-images-oci"),
+            slots(
+                """
+                release:
+                  - image: docker:28-dind
+                    docker: true
+                    timeout-seconds: 3600
+                    script: |
+                      docker build -t "$QITS_BUILD_REGISTRY/qits/build-images/ci-base:$QITS_VERSION" ci-base
+                      docker push "$QITS_BUILD_REGISTRY/qits/build-images/ci-base:$QITS_VERSION"
+                artifacts:
+                  - { type: docker, name: qits/build-images/ci-base, sbom: out/sbom.json }
+                """),
+            null);
+
+    golden("no-bash-image-release.yml", composed.releaseDocument());
+
+    // The two run-time checks, as behaviour rather than as text: nothing in the composed step may
+    // reach bash or curl without having asked for them first, on ANY image — the composer cannot
+    // see inside one, so there is no per-image arm here to get wrong.
+    String document = composed.releaseDocument();
+    assertTrue(
+        document.contains("if command -v bash > /dev/null 2>&1; then")
+            && document.contains("  sh -eu /tmp/qits-slot.sh"),
+        document);
+    assertTrue(
+        document.contains("elif command -v wget > /dev/null 2>&1; then")
+            && document.contains("wget -q -O /tmp/qits-bin/qits"),
+        document);
+    // And the refusal names the image, so an author reads a sentence about their own file rather
+    // than `curl: not found` out of a line they never wrote.
+    assertTrue(
+        document.contains("the image for this step (docker:28-dind) has neither curl nor wget"),
+        document);
+    // Each named program is reached exactly once and only from inside its own test, so neither can
+    // become an unguarded line again while the assertions above still pass.
+    assertEquals(1, occurrences(document, "bash -eu"), document);
+    assertEquals(1, occurrences(document, "curl -fsSL"), document);
+    assertTrue(
+        document.indexOf("command -v bash") < document.indexOf("bash -eu")
+            && document.indexOf("command -v curl") < document.indexOf("curl -fsSL"),
+        document);
+  }
+
+  @Test
+  public void aBashImageStillRunsTheSameInvocationsItRanBefore() {
+    // THE OTHER HALF, and the reason the fallback is a run-time check rather than a compose-time
+    // one: for the 48 repositories whose images do have bash, the chosen arm is byte-identical to
+    // what the composer emitted before the fallback existed. The goldens hold the whole documents;
+    // this pins the two lines that a careless "portability" change would rewrite.
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO, slots("archetype: java-service\n"), archetype("java-service", JAVA_SERVICE));
+
+    assertTrue(composed.releaseRequestDocument().contains("  bash -eu /tmp/qits-slot.sh\n"));
+    assertTrue(
+        composed
+            .releaseDocument()
+            .contains(
+                "curl -fsSL --retry 2 --retry-delay 2 -o /tmp/qits-bin/qits"
+                    + " \"$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n"),
+        composed.releaseDocument());
+  }
+
   // --- the properties the goldens are there to hold ------------------------------------------------
 
   @Test
@@ -310,6 +387,14 @@ public class CiReleaseComposerTest {
   }
 
   // --- goldens -------------------------------------------------------------------------------------
+
+  private static int occurrences(String text, String needle) {
+    int count = 0;
+    for (int at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length())) {
+      count++;
+    }
+    return count;
+  }
 
   private void golden(String name, String actual) {
     assertNotNull(actual, "nothing was composed for " + name);

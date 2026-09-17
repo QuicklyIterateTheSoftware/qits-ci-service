@@ -23,4 +23,8 @@ steps:
       cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
       buildctl build --frontend dockerfile.v0 --opt target=binary
       QITS_SLOT_EOF
-      bash -eu /tmp/qits-slot.sh
+      if command -v bash > /dev/null 2>&1; then
+        bash -eu /tmp/qits-slot.sh
+      else
+        sh -eu /tmp/qits-slot.sh
+      fi

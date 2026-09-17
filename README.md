@@ -1095,10 +1095,19 @@ order is a thing nobody can read off a file. Parameterisation is environment onl
 
 **What the composer adds to every step** is a platform prelude and, on the release phase, a postlude.
 The repository's own script is written to `/tmp/qits-slot.sh` through a **quoted heredoc** and run as
-a child `bash -eu`, so it is data on its way in and cannot turn the wrapper's `set -eu` off; a script
-containing the delimiter is a parse error naming the file, never a corrupted wrapper. Running it as a
-child rather than sourcing it is what makes **SBOM-before-green structural**: a script that calls
-`exit 0` ends itself, and the postlude still runs before the step's own exit code.
+a child shell under `-eu`, so it is data on its way in and cannot turn the wrapper's `set -eu` off; a
+script containing the delimiter is a parse error naming the file, never a corrupted wrapper. Running
+it as a child rather than sourcing it is what makes **SBOM-before-green structural**: a script that
+calls `exit 0` ends itself, and the postlude still runs before the step's own exit code.
+
+**Which shell is decided in the step, not by the composer** — `if command -v bash …; then bash -eu …;
+else sh -eu …; fi` — because the composer cannot see inside an image. Nearly every step image is a
+`qits/build-images/*` the platform builds and can guarantee; qits-build-images-oci is the one that
+cannot be, since it *builds* those images, and runs on upstream `docker:28-dind`, which has `/bin/sh`
+and no `/bin/bash`. The consequence is the repository's own: a declared script using a bashism fails
+on an image with no bash, and the wrapper runs a script rather than translating one. A per-repository
+flag was rejected — it asks an author to restate a fact about an image they usually did not build,
+and it is wrong the moment that image changes underneath the declaration.
 
 - always — `set -eu`
 - release phase — `${QITS_VERSION:?}`, the tag fetch and `git checkout --detach`, and the qits CLI
@@ -1109,7 +1118,11 @@ child rather than sourcing it is what makes **SBOM-before-green structural**: a 
   on 2026-09-13 one bad release broke all of them with no line anybody could revert. It is a pom pin
   now (`eu.wohlben.qits:qits-platform-access-cli-binary`), injected as
   `$QITS_ARTIFACTS_CLI_VERSION`, moved by qits-platform-maintenance and gated by this repository's
-  own release request. A release step's image therefore no longer needs `jq` for the CLI's sake.
+  own release request. A release step's image therefore no longer needs `jq` for the CLI's sake —
+  there is no JSON left in the emitted text to parse. The fetch itself degrades the same way the
+  runner does: `curl` where the image has it, `wget -O` where it does not, and a refusal **naming the
+  image** where neither exists rather than an obscure `not found`. Only the fetch is at issue; the
+  CLI is a static binary, so the postlude's `qits artifacts publish …` works whichever arm ran.
 - `build: true` — `${BUILDKIT_HOST:?}` and `${QITS_BUILD_REGISTRY:?}`, the kill switch's loud half
 - `build:`/`docker:` — the commissioned pair written to `/tmp/qits-client-*` under `umask 077`, in a
   subshell so the umask bounds those two files and nothing after them

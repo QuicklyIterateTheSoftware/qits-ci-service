@@ -52,11 +52,40 @@ import java.util.List;
  *
  * <p>Every composed step is <b>platform prelude + the declared script as DATA + platform
  * postlude</b>. The script is written to {@value #SLOT_SCRIPT} through a quoted heredoc and executed
- * as a child {@code bash -eu}, which buys three things at once: the wrapper's own {@code set -eu} is
- * not something a repository can turn off, nothing in the script is expanded on its way into the
- * file, and a script that calls {@code exit 0} ends itself rather than the step — so the postlude
- * still runs, which is what makes "SBOM before green" true by construction rather than by ordering
- * discipline in 47 repositories.
+ * as a child shell under {@code -eu}, which buys three things at once: the wrapper's own {@code set
+ * -eu} is not something a repository can turn off, nothing in the script is expanded on its way into
+ * the file, and a script that calls {@code exit 0} ends itself rather than the step — so the
+ * postlude still runs, which is what makes "SBOM before green" true by construction rather than by
+ * ordering discipline in 47 repositories.
+ *
+ * <h2>An image without bash</h2>
+ *
+ * <p><b>The composer cannot see inside an image, so every dependency the wrapper has on the image's
+ * contents is decided at RUN time, in the emitted text itself.</b> Nearly every step image on the
+ * platform is a {@code qits/build-images/*} the platform builds and can guarantee. One repository
+ * legitimately is not: qits-build-images-oci builds those images, so it cannot run on one without
+ * bootstrapping itself, and runs on upstream {@code docker:28-dind} — which carries {@code /bin/sh}
+ * and {@code /bin/ash} but no {@code /bin/bash}, and {@code wget} but no {@code curl}.
+ *
+ * <p>So the runner is {@code bash} where bash exists and {@code sh} where it does not, and the CLI
+ * fetch is {@code curl} then {@code wget} then a named refusal. Both checks are {@code command -v},
+ * which is POSIX and present in every shell either arm can be running under. The consequence is
+ * stated rather than hidden: <b>a declared script that uses a bashism will fail on an image with no
+ * bash</b>, and that is the repository's own business — the wrapper runs a script, it does not
+ * translate one. A per-repository flag would have been the wrong shape twice over: it asks an author
+ * to restate a fact about an image they usually did not build, and it is wrong the moment the image
+ * changes underneath the declaration.
+ *
+ * <p><b>This is the second half of a pair, not a new idea.</b> qits-ci-daemon already probes for
+ * bash and runs the step's outer script under {@code sh} when it is absent — same fallback, same
+ * argument, named after the same image ({@code Workspace.probeTooling}). What was left was the text
+ * INSIDE that script, which said {@code bash} and {@code curl} unconditionally and so died on the
+ * one image the daemon had been taught to accept.
+ *
+ * <p>Nothing here needs {@code jq} any more, and that is deliberate rather than lucky: the CLI's
+ * version used to be read out of qits-artifacts' daemons listing with it, and became a pom pin
+ * injected as {@code $QITS_ARTIFACTS_CLI_VERSION}. There is no JSON left in the emitted text to
+ * parse, so there is no {@code jq} fallback to write.
  *
  * <p><b>A script containing the delimiter is a {@link CiConfigException}, never a corrupted
  * wrapper.</b> That is the one way a quoted heredoc can be escaped from, so it is refused at
@@ -287,9 +316,10 @@ public final class CiReleaseComposer {
   private static String script(
       CiStepDecl step, boolean releasePhase, List<SlotArtifact> postlude, String sourcePath) {
     StringBuilder out = new StringBuilder();
-    // The daemon runs a step with `bash -c` and no -e, so this line is what makes an early failure
-    // a failure. -u is load-bearing too: an unset injected variable must stop the step rather than
-    // resolve to nothing halfway through a publish.
+    // The daemon runs a step with `<shell> -c` and no -e — bash where the image has it, sh where it
+    // does not — so this line is what makes an early failure a failure. -u is load-bearing too: an
+    // unset injected variable must stop the step rather than resolve to nothing halfway through a
+    // publish.
     out.append("set -eu\n");
     out.append("# --- platform prelude ---------------------------------------------------------\n");
     if (releasePhase) {
@@ -326,11 +356,33 @@ public final class CiReleaseComposer {
           "  : \"${QITS_ARTIFACTS_CLI_VERSION:?the qits CLI package is configured but no version was"
               + " injected; the qits-ci that launched this step predates the CLI pin}\"\n");
       out.append("  mkdir -p ").append(CLI_DIR).append('\n');
-      out.append("  curl -fsSL --retry 2 --retry-delay 2 -o ")
+      // curl, then wget, then a refusal that names the image. An image with neither is a real
+      // shape in the fleet's neighbourhood — docker:28-dind has wget and no curl — and the one
+      // thing it must not produce is `curl: not found` from a line nobody can see the reason for.
+      // Only the FETCH degrades: the CLI itself is a static binary, so everything downstream of
+      // this block, the postlude's `qits artifacts publish` included, is unaffected by which arm
+      // ran.
+      String cliUrl =
+          " \"$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
+      out.append("  if command -v curl > /dev/null 2>&1; then\n");
+      out.append("    curl -fsSL --retry 2 --retry-delay 2 -o ")
           .append(CLI_DIR)
+          .append("/qits")
+          .append(cliUrl)
+          .append('\n');
+      out.append("  elif command -v wget > /dev/null 2>&1; then\n");
+      out.append("    wget -q -O ").append(CLI_DIR).append("/qits").append(cliUrl).append('\n');
+      out.append("  else\n");
+      out.append("    echo ")
           .append(
-              "/qits"
-                  + " \"$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n");
+              shellQuote(
+                  "qits-ci: the image for this step ("
+                      + step.image()
+                      + ") has neither curl nor wget, so the qits CLI cannot be fetched into it —"
+                      + " add one to the image, or take the qits calls out of this step"))
+          .append(" >&2\n");
+      out.append("    exit 1\n");
+      out.append("  fi\n");
       out.append("  chmod +x ").append(CLI_DIR).append("/qits\n");
       out.append("  ln -sf ").append(CLI_DIR).append("/qits ").append(CLI_DIR).append("/qits-publish\n");
       out.append(
@@ -364,7 +416,15 @@ public final class CiReleaseComposer {
     out.append("cat > ").append(SLOT_SCRIPT).append(" <<'").append(HEREDOC_DELIMITER).append("'\n");
     out.append(slotScript(step.script(), sourcePath));
     out.append(HEREDOC_DELIMITER).append('\n');
-    out.append("bash -eu ").append(SLOT_SCRIPT).append('\n');
+    // Under bash where the image has bash, under sh where it does not — decided HERE, at run time,
+    // because the composer cannot see inside an image. A declared script that uses a bashism will
+    // fail on an image with no bash; that is the repository's own business, and its alternative was
+    // a flag asking an author to restate a fact about an image they did not build.
+    out.append("if command -v bash > /dev/null 2>&1; then\n");
+    out.append("  bash -eu ").append(SLOT_SCRIPT).append('\n');
+    out.append("else\n");
+    out.append("  sh -eu ").append(SLOT_SCRIPT).append('\n');
+    out.append("fi\n");
     if (!postlude.isEmpty()) {
       out.append("# --- platform postlude --------------------------------------------------------\n");
       out.append(
@@ -416,6 +476,19 @@ public final class CiReleaseComposer {
   /** A shell single-quoted word. The charset guard has already refused every {@code '}. */
   private static String quote(String value) {
     return "'" + value + "'";
+  }
+
+  /**
+   * A shell single-quoted string for a value that has NOT been through {@link
+   * CiReleaseSlotParser#SCRIPT_SAFE} — a step's {@code image:}, which is free text.
+   *
+   * <p>It appears in one place, the diagnostic that names the image when neither fetcher exists, and
+   * a message is still a place a {@code "} or a {@code $} would change what the shell does. The
+   * close-reopen dance is the only way out of single quotes, so a quote in an image name ends up
+   * literal rather than structural.
+   */
+  private static String shellQuote(String value) {
+    return "'" + value.replace("'", "'\\''") + "'";
   }
 
   /**

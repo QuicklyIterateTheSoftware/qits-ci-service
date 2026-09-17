@@ -1866,8 +1866,19 @@ same, and what keeps this feature out of every reader keyed on a phase.
   longer needs `jq` for the CLI's sake: the listing read, its best-effort bearer and the jq that
   parsed it are all gone. `qits.ci.artifacts-cli-version-override` is an emergency door that ships
   unset and must stay that way; setting it runs a CLI nothing gated.
+- **An image without bash is a real shape, and the fallback is a RUN-time check.** The composer
+  cannot see inside an image, so every dependency the wrapper has on an image's contents is decided
+  in the emitted text: `if command -v bash …; then bash -eu …; else sh -eu …; fi` for the declared
+  script, and `curl` → `wget -O` → a refusal naming the image for the CLI fetch. qits-build-images-oci
+  is the one repository that cannot run on a `qits/build-images/*` — it builds them — and runs on
+  upstream `docker:28-dind`, which has `/bin/sh` and `/bin/ash` but no `/bin/bash`, and `wget` but no
+  `curl`. A declared script using a bashism fails there, and that is the repository's own business.
+  A per-repository flag was rejected twice over: it asks an author to restate a fact about an image
+  they did not build, and it is wrong the moment the image changes underneath the declaration. Only
+  the CLI *fetch* degrades — the binary is static, so the postlude is unaffected by which arm ran —
+  and there is no `jq` fallback to write because the pom pin left no JSON in the text to parse.
 - **The heredoc is the security-shaped part.** A repository's script is data: quoted heredoc to
-  `/tmp/qits-slot.sh`, run as a child `bash -eu`. The only way out of a quoted heredoc is a line
+  `/tmp/qits-slot.sh`, run as a child shell under `-eu`. The only way out of a quoted heredoc is a line
   carrying the delimiter, so a script containing `QITS_SLOT_EOF` is a `CiConfigException` naming the
   file the script came from — the repository's, or the archetype's, whichever really wrote it. Note
   this is not a new execution path: qits-ci still executes nothing, and the composed text leaves this
