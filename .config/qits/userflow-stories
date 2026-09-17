@@ -1,0 +1,9 @@
+# The stories the release request runs, and the whole of them. Without this file `-DskipITs=false`
+# pulls in CiDaemonHandshakeIT, CiDaemonGateIT and CiPackagedSurfaceIT, which want a docker daemon,
+# a published daemon binary and a host-gateway route back to the JVM — none of which a step
+# container is. The archetype turns these lines into `-Dit.test=<list>`.
+TokenValidationBootstrapIT
+BuildExecutionIT
+BuildTriggerIT
+QitsCliPinIT
+CiDaemonPinIT
