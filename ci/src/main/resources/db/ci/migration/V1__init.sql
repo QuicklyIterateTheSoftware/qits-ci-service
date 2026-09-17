@@ -38,11 +38,6 @@
 --     being named, the day it ever needs widening costs one line of SQL with nothing to measure.
 --     That is precisely what V1's two anonymous inline checks could not offer, and why they became
 --     a java migration reading INFORMATION_SCHEMA.
---     THE TABLE AND THIS CHECK ARE DROPPED IN V18. The reasoning above is left standing because it
---     is what V1 decided and why, and it was right on its own terms — being named is exactly what
---     made the constraint cost nothing to remove. What lapsed is not the argument but its subject:
---     there are no probes any more, so there are no verdicts to constrain. V18's header has the
---     retirement.
 --
 -- No column here holds another context's key: repo_id, trigger_event_id and superseded_by_run_id are
 -- plain strings. The one FK is inside this context's own database, which the cross-context rule
@@ -157,15 +152,8 @@ create index idx_ci_step_run_id on ci_step (run_id);
 -- keys belonging to another context.
 alter table ci_step add constraint fk_ci_step_run foreign key (run_id) references ci_run;
 
--- --- the daemon pin ladder (RETIRED IN V18) -----------------------------------------------------
---
--- WHAT FOLLOWS DESCRIBES WHAT V1 CREATED, and it is deliberately not rewritten: a migration says
--- what it did, and this one really did create this table for the reasons below. The table is
--- DROPPED by V18, so a database at the head of this lineage does not have it; read the paragraphs
--- underneath as history, and V18's header for why the ladder went. The short form: a daemon
--- release reached every step container without qits-ci's own suite ever running against it, and
--- the version comes from the pinned protocol dependency now.
---
+-- --- the daemon pin ladder --------------------------------------------------------------------
+
 -- A durable, ordered list of qits-ci-daemon versions this instance has seen released, each with a
 -- verdict from a container probe. The CONFIGURED qits.ci.daemon-version pin is never a row here: it
 -- is the ladder's bottom rung, read straight from config and never demoted. Only adopted

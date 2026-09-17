@@ -2225,8 +2225,23 @@ A decision procedure that no longer exists has no current state, and kept rows w
 about candidate versions that nothing can produce, nothing will read, and nothing can explain.
 What *is* history is untouched: `ci_run.daemon_version` still records what each run really launched,
 and the `SoftwareRelease` frames the adoptions were derived from are still on the event log. The
-file's header carries all of this; `V1`'s ladder block is amended to say the table ended here rather
-than rewritten into a claim about what V1 did.
+file's header carries all of this, **and `V1` is not touched at all** — which is the half that cost a
+release to learn twice. V18's first cut added five comment lines to `V1`'s ladder block saying the
+table ended here; 2026.917.45603 would not boot, the deployment rolled back to 2026.917.40824 and the
+schema stayed at 17, so the drop never ran. Flyway checksums a migration over its whole file, prose
+included, and validates every applied one at boot: an annotation on `V1` is a different `V1` to every
+database that has already run it. The same edit, the same rollback, had happened on 2026-08-23
+(2026.823.164332, reverted by `7bc1dc6`). **Say it in the newest migration.** A reader who finds the
+ladder described in `V1` finds its retirement two entries later, which is how a lineage is read
+anyway.
+
+**`MigrationChecksumTest` is what makes that rule mechanical rather than remembered.** It pins the
+SHA-256 of every file in this directory, so editing an applied one is a red build here instead of a
+rollback in the deployment, and adding a migration is adding its pin in the same commit. It hashes
+the bytes rather than reproducing Flyway's own CRC32: that one lives in an internal class and
+normalises line endings, so it is both a moving target across upgrades and weaker than byte identity.
+A pin therefore fails on edits Flyway would have tolerated, which is the right direction — a version
+that genuinely has not shipped is a one-line pin update beside the content change.
 
 The locations list is shipped **once**, in the jar's `META-INF/microprofile-config.properties`, with
 no copy in either test resources file — and it names one directory now that there is no Java

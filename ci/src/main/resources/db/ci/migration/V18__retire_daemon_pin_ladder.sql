@@ -9,7 +9,23 @@
 -- probe: qits-ci launched a throwaway container running whatever had just been published, kept the
 -- version if the container dialled back and spoke a capability version it recognised, and answered
 -- GET /ci/api/daemon with the newest PROVEN rung. V1's header describes it at length and that
--- description is left standing, amended to say it ended here.
+-- description is left standing EXACTLY AS IT IS, not one character amended to say it ended here.
+--
+-- WHY V1 IS NOT ANNOTATED, WHICH IS THE ONE THING THIS FILE HAS TO GET RIGHT. Flyway checksums a
+-- migration over its whole file, comments included, and validates every applied one at boot. An
+-- edit to V1 therefore does not read as documentation on a database that has already run it: it
+-- reads as a different V1, and Flyway refuses to start against the lineage it finds. That is not a
+-- hypothetical. A first cut of this retirement added five comment lines to V1 saying the table
+-- ended here, released as 2026.917.45603, and the container died before the validate line ever
+-- printed — the deployment rolled back to 2026.917.40824 and the schema stayed at 17, so V18 never
+-- ran at all. The identical mistake had already been made and reverted once, on 2026-08-23
+-- (release 2026.823.164332). So the annotation lives HERE, in the file whose checksum has never
+-- been written to a schema history table, and V1 keeps the bytes every database on the platform
+-- already ran. A reader who finds the ladder described in V1 finds this file two entries later,
+-- which is how a lineage is meant to be read anyway: forwards.
+--
+-- MigrationChecksumTest is the guard. It pins the SHA-256 of every file here, so an edit to an
+-- applied one is a red build in this repository rather than a rollback in the deployment.
 --
 -- WHY THE LADDER WENT. A daemon release reached every CI step container on the platform without
 -- qits-ci's own test suite ever having run against it. The only gate on a protocol break was that
