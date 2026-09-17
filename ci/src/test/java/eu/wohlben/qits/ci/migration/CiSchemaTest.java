@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.migration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.entity.CiRunStatus;
@@ -54,12 +55,30 @@ public class CiSchemaTest {
   }
 
   @Test
-  public void theVerdictCheckIsTheOneThatStays() throws SQLException {
-    // The other way round, and deliberately: a verdict is a closed statement about one probe's
-    // outcome with an UNKNOWN arm already in it, so it is an invariant rather than a catalogue. It
-    // is also NAMED, which is what the two anonymous inline checks in the H2 V1 were not — the day
-    // it ever needs widening costs one line of SQL with nothing to measure.
-    assertEquals(List.of("ck_ci_daemon_pin_verdict"), constraints("ci_daemon_pin", 'c'));
+  public void theDaemonPinLadderIsGoneFromTheSchemaEntirely() throws SQLException {
+    // This used to be theVerdictCheckIsTheOneThatStays, asserting ck_ci_daemon_pin_verdict — the one
+    // check constraint V1 kept, on the grounds that a verdict is a closed statement about one
+    // probe's outcome rather than a growing catalogue, and named so a widening would cost one line.
+    // That was right and is now moot: there are no probes, so V18 drops the table and the check and
+    // the unique index with it.
+    //
+    // Asserted as the table's ABSENCE rather than by deleting the case. A drop is the exception in
+    // this lineage — every migration since V1 has added a nullable column and kept what was there —
+    // and a migration that silently failed to apply is exactly the kind of thing that shows up
+    // months later as an ORM mapping error nobody can place. This is one query and it says so now.
+    assertFalse(tableExists("ci_daemon_pin"), "V18 drops ci_daemon_pin");
+  }
+
+  private boolean tableExists(String table) throws SQLException {
+    try (Connection connection = ci.getConnection();
+        PreparedStatement statement =
+            connection.prepareStatement("select to_regclass(?) is not null")) {
+      statement.setString(1, table);
+      try (ResultSet rows = statement.executeQuery()) {
+        rows.next();
+        return rows.getBoolean(1);
+      }
+    }
   }
 
   @Test
@@ -69,9 +88,7 @@ public class CiSchemaTest {
     // schema clean of constraints would have taken both.
     assertEquals(1, constraints("ci_run", 'p').size());
     assertEquals(1, constraints("ci_step", 'p').size());
-    assertEquals(1, constraints("ci_daemon_pin", 'p').size());
     assertTrue(constraints("ci_run", 'u').contains("uq_ci_run_event_trigger"));
-    assertTrue(constraints("ci_daemon_pin", 'u').contains("uq_ci_daemon_pin_version"));
     assertTrue(constraints("ci_step", 'f').contains("fk_ci_step_run"));
   }
 
@@ -120,7 +137,6 @@ public class CiSchemaTest {
     assertEquals("text", columnType("ci_step", "output"));
     assertEquals("text", columnType("ci_run", "trigger_event_payload"));
     assertEquals("text", columnType("ci_run", "trigger_config"));
-    assertEquals("text", columnType("ci_daemon_pin", "detail"));
     // V15's half of the same rule: the closure is a canonical JSON array whose length is the
     // platform's dependency graph, so it is text for trigger_event_payload's reason exactly.
     assertEquals("text", columnType("ci_run", "downstream_repos"));

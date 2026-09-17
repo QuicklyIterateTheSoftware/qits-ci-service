@@ -15,6 +15,7 @@ import eu.wohlben.qits.containers.client.ContainersWire.Spec;
 import eu.wohlben.qits.ci.daemonhost.CiDaemonLauncher.LaunchSpec;
 import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.idp.StubIdp;
+import eu.wohlben.qits.platformaccess.cli.PlatformAccessCliBinary;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,9 +33,8 @@ import org.junit.jupiter.api.Test;
  * for it.
  *
  * <p><b>Deliberately does not exercise {@link CiDaemonLauncher#daemonVersion()}.</b> That method
- * delegates to the injected {@code CiDaemonPins} ladder (ci-daemon-autoadopt-plan.md, workstream
- * BV), a real CDI bean this plain-construction test never wires up; its coverage lives in
- * {@code CiDaemonPinsTest} and {@code CiDaemonPinTest} instead. This class stays about pure spec
+ * delegates to the injected {@code CiDaemonPins}, a real CDI bean this plain-construction test never
+ * wires up; its coverage lives in {@code CiDaemonPinsTest} and {@code CiDaemonPinTest} instead. This class stays about pure spec
  * assembly, which is why it can be {@code new CiDaemonLauncher()} with fields set by hand rather
  * than a {@code @QuarkusTest} — and why it needs no client at all: nothing here sends anything.
  */
@@ -78,6 +78,10 @@ public class CiDaemonLauncherTest {
     launcher.artifactsDocsUrl = "http://qits-artifacts:8080/artifacts/docs/docs";
     launcher.artifactsUrl = java.util.Optional.of("http://qits-artifacts:8080");
     launcher.artifactsCliPackage = "qits-platform-access-cli";
+    // The shipped state of the CLI pin: no override, so the version is the pinned dependency's
+    // own constant. A field write rather than a left-null Optional — these launchers are hand-built,
+    // so nothing injects it and `null` would NPE where the real bean cannot.
+    launcher.artifactsCliVersionOverride = java.util.Optional.empty();
     launcher.workspacesUrl = "http://qits-workspaces:8080";
     // The shipped state of the push credential: an oidc client that is off, so nothing is
     // commissioned and nothing is injected. Written out rather than left null, because "this
@@ -195,10 +199,13 @@ public class CiDaemonLauncherTest {
         "QITS_MAVEN_CENTRAL_MIRROR_URL", "http://mirror.dev.localhost:8080/mirror/maven/central");
     env.put("QITS_MAVEN_PROXY_URL", "http://qits-platform-mirror:8080/mirror/maven/central");
     env.put("QITS_DOCS_URL", "http://qits-artifacts:8080/artifacts/docs/docs");
-    // The store's root, and the daemon package a composed release prelude resolves the qits CLI's
-    // latest version from.
+    // The store's root, and the coordinate a composed release prelude downloads the qits CLI at. The
+    // version is qits-ci's own pinned dependency's constant rather than a literal, because a literal
+    // here would be a second place the pin is written down and the pin moving would be a red suite
+    // rather than a moved pin.
     env.put("QITS_ARTIFACTS_URL", "http://qits-artifacts:8080");
     env.put("QITS_ARTIFACTS_CLI_PACKAGE", "qits-platform-access-cli");
+    env.put("QITS_ARTIFACTS_CLI_VERSION", PlatformAccessCliBinary.VERSION);
     env.put("QITS_WORKSPACES_URL", "http://qits-workspaces:8080");
     return env;
   }
@@ -547,13 +554,54 @@ public class CiDaemonLauncherTest {
     // daemon binary or a docs bundle today takes one of the package roots and cuts the path off with
     // its own sed expression; there is one origin, and one variable says so. Same reading of
     // "reachable from where" as the npm and maven roots — the step container dials it over qits-net.
-    // The CLI's own version is never handed down: a release-phase step resolves it for itself, at
-    // every step start, off the root above.
+    // AND THE CLI'S VERSION TRAVELS TOO, which is the half that used to be missing. It is qits-ci's
+    // pinned dependency's constant, so which qits CLI a composed release step runs is a pom line
+    // this repository's release request gated — not whatever was latest in the store at the moment
+    // the step started, which is what broke every composed release on the platform at once on
+    // 2026-09-13.
     for (LaunchSpec each : List.of(spec, publishing())) {
       Map<String, String> env = launcher().buildWorkloadSpec(each).spec().env();
       assertEquals("http://qits-artifacts:8080", env.get("QITS_ARTIFACTS_URL"));
       assertEquals("qits-platform-access-cli", env.get("QITS_ARTIFACTS_CLI_PACKAGE"));
+      assertEquals(PlatformAccessCliBinary.VERSION, env.get("QITS_ARTIFACTS_CLI_VERSION"));
     }
+  }
+
+  @Test
+  public void theCliVersionIsThePinUnlessAnOperatorOverridesIt() {
+    // THE PIN IS THE DEFAULT AND THE OVERRIDE IS THE EXCEPTION, which is the whole posture: an
+    // absent or blank override is the ordinary state, and a set one is an operator deliberately
+    // running a CLI this repository's gate never saw.
+    CiDaemonLauncher pinned = launcher();
+    assertEquals(PlatformAccessCliBinary.VERSION, pinned.artifactsCliVersion());
+
+    CiDaemonLauncher blank = launcher();
+    blank.artifactsCliVersionOverride = java.util.Optional.of("   ");
+    assertEquals(
+        PlatformAccessCliBinary.VERSION,
+        blank.artifactsCliVersion(),
+        "a blank override is the same as none — it must never download a version named ''");
+
+    CiDaemonLauncher overridden = launcher();
+    overridden.artifactsCliVersionOverride = java.util.Optional.of("2026.101.1");
+    assertEquals("2026.101.1", overridden.artifactsCliVersion());
+    assertEquals(
+        "2026.101.1",
+        overridden.buildWorkloadSpec(spec).spec().env().get("QITS_ARTIFACTS_CLI_VERSION"),
+        "and it is what the step container is really told, not just what the method answers");
+  }
+
+  @Test
+  public void theCliVersionIsNeverBlankEvenWithTheCliSwitchedOff() {
+    // THE PRELUDE RELIES ON THIS. Its `:?` guard on $QITS_ARTIFACTS_CLI_VERSION is meant to name one
+    // cause only — a qits-ci older than the pin launched this step — so this side must never be the
+    // one that sends an empty value. The package's off state is the package's alone; the version is
+    // a constant and has no off state.
+    CiDaemonLauncher off = launcher();
+    off.artifactsCliPackage = "";
+    Map<String, String> env = off.buildWorkloadSpec(spec).spec().env();
+    assertEquals("", env.get("QITS_ARTIFACTS_CLI_PACKAGE"));
+    assertEquals(PlatformAccessCliBinary.VERSION, env.get("QITS_ARTIFACTS_CLI_VERSION"));
   }
 
   @Test
@@ -814,9 +862,9 @@ public class CiDaemonLauncherTest {
   @Test
   public void theBinaryUrlIsTheVersionResolvedIntoTheTemplate() {
     // One template rather than two free values, so the version pin and the download address cannot
-    // drift apart. {version} is a version-addressed pin, not a digest, since the template flip
-    // (ci-daemon-autoadopt-plan.md); resolveBinaryUrl itself does not care which spelling it is
-    // handed.
+    // drift apart. {version} is a version-addressed pin rather than a digest since the template
+    // flip; resolveBinaryUrl itself does not care which spelling it is handed, which is why it is
+    // unchanged by the version moving from a config key to the pinned protocol dependency.
     assertEquals(
         "http://qits-artifacts:8080/artifacts/daemons/qits-ci-daemon/abc123",
         launcher().resolveBinaryUrl("abc123"));
@@ -897,17 +945,18 @@ public class CiDaemonLauncherTest {
   }
 
   @Test
-  public void twoFreshProbeRunIdsNeverCollide() {
-    // The concrete case this incident hit, with CiDaemonContainerProbe's own (now bare-UUID) runId
-    // generation: two distinct random UUIDs must not collide on the resulting container name. Not a
-    // guarantee about UUID collisions in general -- just that containerName does not throw the
-    // entropy away the way the old blind prefix did.
+  public void twoFreshRunIdsNeverCollide() {
+    // The concrete case this incident hit -- it was the pin ladder's probe, which minted a bare UUID
+    // per candidate, and the property is the launcher's rather than the probe's so it outlives it:
+    // two distinct random UUIDs must not collide on the resulting container name. Not a guarantee
+    // about UUID collisions in general -- just that containerName does not throw the entropy away
+    // the way the old blind prefix did.
     String runIdA = java.util.UUID.randomUUID().toString();
     String runIdB = java.util.UUID.randomUUID().toString();
     assertFalse(runIdA.equals(runIdB), "test setup: the two random UUIDs must differ");
     assertFalse(
         CiDaemonLauncher.containerName(runIdA, 0).equals(CiDaemonLauncher.containerName(runIdB, 0)),
-        "two distinct probe runIds must not collide on the container name");
+        "two distinct runIds must not collide on the container name");
   }
 
   // The docker-is-down WARN that used to live here went with the CLI it was about: there is no
@@ -918,8 +967,10 @@ public class CiDaemonLauncherTest {
 
   // The boot-time shape check that used to live here (daemonVersionComplaint) is gone with the
   // template flip: it warned only while the shipped template still addressed the binary by digest,
-  // and it would have gone silent by construction the moment that stopped being true
-  // (ci-daemon-autoadopt-plan.md §1.5). Its replacement, CiIdentifiers.requireDaemonVersion, is
-  // enforced where a version now actually arrives untrusted — at adoption, in CiDaemonPinsTest —
-  // rather than warned about at boot.
+  // and it would have gone silent by construction the moment that stopped being true. Its
+  // replacement, CiIdentifiers.requireDaemonVersion, was enforced where a version really did arrive
+  // untrusted — at adoption, off a SoftwareRelease frame. There is no adoption any more: the version
+  // is a constant compiled into the protocol jar, or an override typed into this deployment's own
+  // configuration, and neither is attacker-shaped. The check is kept unused rather than deleted, for
+  // the reason its own javadoc gives.
 }

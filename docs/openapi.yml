@@ -376,8 +376,10 @@ paths:
       summary: The daemon binary this instance is configured to launch
       responses:
         "200":
-          description: The ladder's top rung; daemonVersion and source are blank/"none"
-            when this deployment has adopted or pinned no daemon
+          description: "The pinned daemon binary. daemonVersion is the version of\
+            \ the protocol dependency this service is built against, with source \"\
+            pinned\"; source is \"override\" when a deployment has set qits.ci.daemon-version-override.\
+            \ previousDaemonVersion is always blank: a pin has no fallback rung."
           content:
             application/json:
               schema:
@@ -837,4 +839,4 @@ paths:
         - qits:admin
 info:
   title: qits-ci API
-  version: 2026.916.165359
+  version: 2026.917.40824

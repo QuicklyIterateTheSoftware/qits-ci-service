@@ -43,18 +43,22 @@ import org.junit.jupiter.api.Test;
  * reusing one hands a listener another's claims. A literal in this test is what makes either show up
  * as a red build rather than as a quiet gap in what was consumed.
  *
- * <p><b>And one of the five asks to be initialized at the EPOCH</b>, which is the other half of the
+ * <p><b>And one of the four asks to be initialized at the EPOCH</b>, which is the other half of the
  * same storage fact and is asserted here beside the ids. {@code replayFromEpoch} is consulted once, at
  * the moment a consumer id first gets a watermark, and never again — so it is not a setting that can
  * be corrected later, and the difference between the two answers is the whole history of an event or
  * none of it.
  *
- * <p><b>There were five before that, and {@code ci-push-runs} retired with per-push CI on
- * 2026-09-05.</b> Its
- * {@code consumed_event} rows and its watermark are left where they are rather than migrated away —
- * a retired consumer id is abandoned, which is what qits-platform-deployments did with {@code
- * pd-build-succeeded} — and the id must never be handed to a new listener, which would inherit a
- * watermark saying it had already handled every push ever announced.
+ * <p><b>TWO ABANDONED CONSUMER IDS, and the list only ever grows.</b> {@code ci-push-runs} retired
+ * with per-push CI on 2026-09-05; {@code ci-daemon-adopt} retired with the daemon pin ladder — that
+ * one was {@code DaemonReleaseListener}, which read a {@code SoftwareRelease} for the daemon off the
+ * bus and adopted the version it named, so a daemon release reached every step container without
+ * this repository's own tests ever running against it. The version is the pinned protocol
+ * dependency's now. Both ids' {@code consumed_event} rows and watermarks are left where they are
+ * rather than migrated away — a retired consumer id is abandoned, which is what
+ * qits-platform-deployments did with {@code pd-build-succeeded} — and neither may ever be handed to
+ * a new listener, which would inherit a watermark saying it had already handled everything the old
+ * one was ever offered.
  */
 @QuarkusTest
 public class EventstreamDarknessTest {
@@ -73,7 +77,7 @@ public class EventstreamDarknessTest {
   }
 
   @Test
-  public void allFiveDurableListenersAreRegisteredBeans() {
+  public void allFourDurableListenersAreRegisteredBeans() {
     Set<Class<?>> registered =
         StreamSupport.stream(listeners.spliterator(), false)
             .map(listener -> (Class<?>) ClientProxy.unwrap(listener).getClass())
@@ -83,7 +87,6 @@ public class EventstreamDarknessTest {
             Set.of(
                 BuildSuccessfulListener.class,
                 CiEventTriggerListener.class,
-                DaemonReleaseListener.class,
                 ScmReleaseListener.class,
                 RepositoryRenamedListener.class)),
         "a listener removed as unused subscribes to nothing and is never swept: " + registered);
@@ -93,33 +96,44 @@ public class EventstreamDarknessTest {
   public void theConsumerIdsAreTheOnesTheStoredWatermarksAreKeyedOn() {
     assertEquals("ci-release-train", BuildSuccessfulListener.CONSUMER_ID);
     assertEquals("ci-event-triggers", CiEventTriggerListener.CONSUMER_ID);
-    assertEquals("ci-daemon-adopt", DaemonReleaseListener.CONSUMER_ID);
     assertEquals("ci-release-facts", ScmReleaseListener.CONSUMER_ID);
     assertEquals("ci-repository-rename", RepositoryRenamedListener.CONSUMER_ID);
     assertEquals(
-        5,
+        4,
         StreamSupport.stream(listeners.spliterator(), false)
             .map(QitsDurableEventListener::consumerId)
             .distinct()
             .count(),
         "two listeners sharing an id share a watermark and each other's claims");
-    assertTrue(
-        StreamSupport.stream(listeners.spliterator(), false)
-            .map(QitsDurableEventListener::consumerId)
-            .noneMatch("ci-push-runs"::equals),
-        "ci-push-runs is a RETIRED consumption: its watermark says every push ever announced was"
-            + " handled, so a listener inheriting it would silently skip everything in between");
+    for (String abandoned : ABANDONED_CONSUMER_IDS) {
+      assertTrue(
+          StreamSupport.stream(listeners.spliterator(), false)
+              .map(QitsDurableEventListener::consumerId)
+              .noneMatch(abandoned::equals),
+          abandoned
+              + " is a RETIRED consumption: its watermark says everything it was ever offered had"
+              + " already been handled, so a listener inheriting it would silently skip everything"
+              + " in between");
+    }
   }
+
+  /**
+   * Ids whose listeners are deleted and whose rows are left where they are. <b>This list only ever
+   * grows</b>: a retirement adds a name and nothing ever removes one, because what makes the name
+   * dangerous — a stored watermark near the head of the log — outlives every process and is never
+   * cleaned up.
+   */
+  private static final Set<String> ABANDONED_CONSUMER_IDS = Set.of("ci-push-runs", "ci-daemon-adopt");
 
   /**
    * <b>Exactly one listener replays from the epoch, and it is the repair.</b>
    *
    * <p>{@code RepositoryRenamedListener} is a projection being built after the fact — the renames that
    * made this service's rows stale are already on the log — so a consumer initialized at the head
-   * would subscribe correctly and repair nothing, which is the failure with no symptom. The other four
-   * act on arrivals and must not: a first deployment of any of them replaying the whole log would
-   * re-adopt every daemon release the platform ever published and re-evaluate every event any
-   * repository ever declared an interest in.
+   * would subscribe correctly and repair nothing, which is the failure with no symptom. The other
+   * three act on arrivals and must not: a first deployment of any of them replaying the whole log
+   * would re-evaluate every event any repository ever declared an interest in and re-announce every
+   * release the platform ever made.
    *
    * <p>Asserted as a partition rather than as one flag, because the risk is a later listener copying
    * this one's shape without its reason.

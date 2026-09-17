@@ -227,8 +227,9 @@ public class CiDaemonHandshakeIT {
         (launcher, sha, servedBinaryUrl) -> {
           String runId = UUID.randomUUID().toString();
           CiDaemonRegistry.Credentials credentials = registry.registerLaunch(runId, 0, null);
-          // A binary url that 404s — the shape a blank qits.ci.daemon-version or a botched publish
-          // produces. The container comes up, the bootstrap cannot fetch, nothing ever dials.
+          // A binary url that 404s — the shape a botched publish, or an override naming a version
+          // nothing ever pushed, produces. The container comes up, the bootstrap cannot fetch,
+          // nothing ever dials.
           // A 404 is permanent, but the bootstrap does not know that: it retries 10 times 12s apart
           // like any other failed fetch, so this case now costs its whole ~108s budget before the
           // container gives up. That is what the wait below is sized for.

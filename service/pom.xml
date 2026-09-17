@@ -7,7 +7,7 @@
     <parent>
         <groupId>eu.wohlben.qits</groupId>
         <artifactId>qits-ci</artifactId>
-        <version>2026.916.195223</version>
+        <version>2026.917.45603</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -41,10 +41,25 @@
             <artifactId>qits-ci-domain</artifactId>
         </dependency>
         <dependency>
-            <!-- The ci-daemon wire contract. Vendored into this repo (see that module's pom)
-                 because it is published to no registry. -->
+            <!-- The ci-daemon wire contract, and the daemon BINARY's version with it
+                 (CiDaemonBinary). A released sibling artifact, no longer a vendored module of this
+                 reactor — see qits.ci-daemon-protocol.version in the root pom for why this one
+                 dependency decides what runs inside every step container. Restated here rather
+                 than left to arrive transitively through qits-ci-domain, because this module's
+                 daemonhost package imports the protocol records directly. -->
             <groupId>${project.groupId}</groupId>
             <artifactId>qits-ci-daemon-protocol</artifactId>
+        </dependency>
+        <dependency>
+            <!-- WHICH qits CLI EVERY COMPOSED RELEASE STEP RUNS. Three strings and no bytes:
+                 PlatformAccessCliBinary.VERSION is what CiDaemonLauncher injects as
+                 $QITS_ARTIFACTS_CLI_VERSION, and the composed prelude downloads exactly that
+                 coordinate. Declared here and not in `ci/` because the launcher — the one thing
+                 that has to state a version — lives in this module; the composer only reads the
+                 variable out of the step's environment and needs no constant at all.
+                 The pin itself is the root pom's property; see it for why. -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-platform-access-cli-binary</artifactId>
         </dependency>
         <dependency>
             <!-- The platform event bus client. Joining it here is what turns three library modules

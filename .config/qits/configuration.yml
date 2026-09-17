@@ -93,9 +93,21 @@ keys:
     type: number
     description: "CPU cap for one step container, as docker's --cpus reads it."
 
-  env.QITS_CI_DAEMON_VERSION:
+  # The version itself is NOT configuration any more: it is the version of the pinned dependency
+  # eu.wohlben.qits:qits-ci-daemon-protocol, whose release also published the binary. This entry is
+  # the emergency hatch and is expected to stay blank — set, it runs a binary no release request of
+  # qits-ci has run against this host.
+  #
+  # It is a RENAME of env.QITS_CI_DAEMON_VERSION, and the rename is the mechanism rather than
+  # tidiness: nothing on this platform deletes a configuration entry (qits-configuration reports an
+  # orphan and never cleans it up, and DELETE …/entries/{key} needs qits:admin or qits:system), and
+  # the standing platform still holds QITS_CI_DAEMON_VERSION carrying a sha256 digest qits-bootstrap
+  # wrote. Reading a different name is what makes that residue stop deciding without deleting
+  # anything. It also gives the hatch a name no automation has ever written, so a value in it was
+  # put there by a person. The service WARNs once at boot about the old entry and never refuses.
+  env.QITS_CI_DAEMON_VERSION_OVERRIDE:
     type: string
-    description: "The qits-ci-daemon version a run uses when no adopted release outranks it. Blank means none is pinned."
+    description: "Emergency override for the qits-ci-daemon version. Blank (the expected state) uses the version of the protocol dependency qits-ci is built against."
 
   env.QITS_CI_DAEMON_BINARY_URL_TEMPLATE:
     type: string
@@ -133,7 +145,11 @@ keys:
 
   env.QITS_CI_ARTIFACTS_CLI_PACKAGE:
     type: string
-    description: "The daemon package a release-phase step resolves the qits CLI's latest version from. Blank turns the fetch off."
+    description: "The daemon package a release-phase step downloads the qits CLI from. The package only — the version is a pinned dependency of qits-ci, not configuration. Blank turns the fetch off."
+
+  env.QITS_CI_ARTIFACTS_CLI_VERSION_OVERRIDE:
+    type: string
+    description: "Emergency door: the qits CLI version every release-phase step downloads, overriding qits-ci's own pin. Normally UNSET — the real mechanism is the qits-platform-access-cli-binary dependency in qits-ci's pom, which this repository's release request gates. Setting this runs a CLI nothing gated."
 
   # --- what arrives here: the inbound identity -----------------------------------------------------
 

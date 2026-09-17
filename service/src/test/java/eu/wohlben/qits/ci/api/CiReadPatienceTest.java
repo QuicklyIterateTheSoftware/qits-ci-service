@@ -4,11 +4,9 @@ import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.hasItem;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import eu.wohlben.qits.ci.entity.CiDaemonPin;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
-import eu.wohlben.qits.ci.persistence.CiDaemonPinRepository;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusMock;
@@ -29,10 +27,16 @@ import org.junit.jupiter.api.Test;
  * <p>The pool opens every connection through {@code PatientPgDriver}, so a request that has executed
  * nothing waits for postgres to come back. This is the other half — a connection severed <i>after</i>
  * the statements ran, which no patience at creation time can undo — and it is why the caller-facing
- * reads in {@code CiRunService} and {@code CiDaemonPins} are wrapped in {@code DbRetry}. The
- * incident shape is a postgres cutover mid-poll: qits-spa-ci polls {@code /ci/api/runs/active}
- * every few seconds and the container healthcheck reads the daemon pin ladder on its own cadence, so
- * both surfaces sit exactly where a severed pool is most likely to be found.
+ * reads in {@code CiRunService} are wrapped in {@code DbRetry}. The incident shape is a postgres
+ * cutover mid-poll: qits-spa-ci polls {@code /ci/api/runs/active} every few seconds, which is
+ * exactly where a severed pool is most likely to be found.
+ *
+ * <p><b>There were two surfaces here and now there is one.</b> {@code GET /ci/api/daemon} and the
+ * daemon readiness check read the pin ladder's table on the container healthcheck's own cadence, so
+ * a cutover found them mid-read more often than anything else — and that case had its own fake
+ * repository and its own case in this class. The ladder is retired: {@code CiDaemonPins} reads two
+ * constants and trims a config string, touching no database at all, so there is no connection there
+ * left to sever. A retry that cannot be exercised is not a retry worth asserting.
  *
  * <p><b>Patience precedes the honest failure; it does not replace it.</b> What is under the deadline
  * is served, what outlives it is a 500, and the second case is here so the first cannot pass by
@@ -48,7 +52,6 @@ import org.junit.jupiter.api.Test;
 public class CiReadPatienceTest {
 
   private static final String ACTIVE_RUNS = "/ci/api/runs/active";
-  private static final String DAEMON = "/ci/api/daemon";
   private static final String REPO = "read-patience-repo";
 
   @Inject CiRunRepository runs;
@@ -110,24 +113,6 @@ public class CiReadPatienceTest {
     }
   }
 
-  /** The daemon ladder's half of the same fault. */
-  public static class FlakyPinRepository extends CiDaemonPinRepository {
-
-    private final AtomicInteger reads = new AtomicInteger();
-
-    @Override
-    public List<CiDaemonPin> listNewestFirst() {
-      if (reads.incrementAndGet() == 1) {
-        throw connectionLost();
-      }
-      return List.of();
-    }
-
-    int reads() {
-      return reads.get();
-    }
-  }
-
   @Test
   public void anActiveRunListingWhoseDatabaseComesBackIsWaitedFor() {
     // The incident's own request shape, with the outage short enough to survive: a run that exists,
@@ -147,18 +132,6 @@ public class CiReadPatienceTest {
     QuarkusMock.installMockForType(new SeveredRunRepository(), CiRunRepository.class);
 
     given().when().get(ACTIVE_RUNS).then().statusCode(500);
-  }
-
-  @Test
-  public void theDaemonPinLadderIsWaitedForToo() {
-    // GET /ci/api/daemon and the readiness check read this ladder on a healthcheck's cadence, so a
-    // cutover finds them mid-read more often than it finds anything else here.
-    FlakyPinRepository flaky = new FlakyPinRepository();
-    QuarkusMock.installMockForType(flaky, CiDaemonPinRepository.class);
-
-    given().when().get(DAEMON).then().statusCode(200);
-
-    assertTrue(flaky.reads() > 1, "the severed ladder read was not retried at all");
   }
 
   private String seedQueuedRun() {

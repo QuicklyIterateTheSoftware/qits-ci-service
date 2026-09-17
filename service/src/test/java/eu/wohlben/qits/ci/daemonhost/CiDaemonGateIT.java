@@ -212,7 +212,14 @@ public class CiDaemonGateIT {
       // No {version} placeholder: the fixture serves one binary, and the version is what lands on
       // the run row. The two still travel together, which is the point of the template.
       overrides.put("qits.ci.daemon-binary-url-template", fixture.containerBinaryUrl());
-      overrides.put("qits.ci.daemon-version", DAEMON_VERSION);
+      // THE OVERRIDE, and this fixture is the one caller that legitimately sets it. The shipped
+      // answer is the version of the pinned protocol dependency, which is a real released calver
+      // naming a binary in qits-artifacts — and this gate serves its own binary (whatever
+      // -Dqits.ci.daemon-binary points at) off a local fixture, so the version that lands on the run
+      // row has to be this fixture's word rather than the pom's. That is exactly what an override is
+      // for: run a binary this build did not pin. Nothing else in the suite sets it, which is what
+      // keeps every other test asserting the shipped behaviour.
+      overrides.put("qits.ci.daemon-version-override", DAEMON_VERSION);
       overrides.put("qits.ci.network", NETWORK);
       // The orchestrator this gate drives its containers through. See the class javadoc's recipe;
       // the cases skip when nothing answers there.

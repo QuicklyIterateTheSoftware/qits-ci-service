@@ -69,8 +69,8 @@ public class ScmReleaseListener implements QitsDurableEventListener {
    */
   static final String CONSUMER_ID = "ci-release-facts";
 
-  /** No reflection needed — a plain read of already-parsed platform data, {@code
-   *  DaemonReleaseListener}'s own precedent. */
+  /** No reflection needed — a plain read of already-parsed platform data. {@code readTree} binds
+   *  nothing, which is why this listener owes no {@code @RegisterForReflection}. */
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
   static final String REPOSITORY_FIELD = "repository";

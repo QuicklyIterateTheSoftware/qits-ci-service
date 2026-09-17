@@ -18,8 +18,8 @@ import java.util.List;
  * </pre>
  *
  * <p>An interface rather than a call so {@code ci} stays free of {@code java.net.http} and of
- * another service's wire shape — the same reason {@link CiConfigSource}, {@link GitHostRepoListing}
- * and {@link DaemonReleaseLog} are ports here and hand-rolled clients in {@code service}.
+ * another service's wire shape — the same reason {@link CiConfigSource} and {@link
+ * GitHostRepoListing} are ports here and hand-rolled clients in {@code service}.
  *
  * <p><b>Two answers, and they mean different things.</b> {@link #configured()} says whether this
  * deployment names a qits-projects at all; {@link #repositories()} says what it holds. An

@@ -20,7 +20,9 @@ import org.junit.jupiter.api.Test;
 /**
  * {@link HttpGitHostRepoListing} on its own -- plain JUnit against a real server on a real socket,
  * no Quarkus, since its only collaborators are a plain {@code ObjectMapper} and a config string.
- * Same shape as {@code bus/EventsDaemonReleaseLogTest}, one port over.
+ * A plain JUnit test against a real server on a real socket: no Quarkus, no augmentation, because
+ * everything under test is the url shape, the filtering, the cache and the failure arms of one
+ * hand-rolled client.
  *
  * <p>What is under test is the port's contract rather than the happy path alone: every way the read
  * can fail answers the <b>empty</b> set, because the caller ({@code ListedAndKnownCiRepos}) turns

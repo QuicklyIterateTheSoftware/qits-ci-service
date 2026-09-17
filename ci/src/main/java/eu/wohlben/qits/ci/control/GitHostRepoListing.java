@@ -7,8 +7,8 @@ import java.util.Set;
  * {@link ListedAndKnownCiRepos}.
  *
  * <p>An interface rather than a call so {@code ci} stays free of {@code java.net.http} and of the
- * git host's wire shape — the same reason {@link CiConfigSource} and {@link DaemonReleaseLog} are ports
- * here and hand-rolled clients in {@code service}. <b>Zero implementations is a supported
+ * git host's wire shape — the same reason {@link CiConfigSource} and {@link CiRepositoryListing} are
+ * ports here and hand-rolled clients in {@code service}. <b>Zero implementations is a supported
  * configuration</b>, the same precedent: {@link ListedAndKnownCiRepos} injects an {@code Instance}
  * and a deployment with no implementation simply answers from what qits-ci already knows, which is
  * exactly what this platform did before the listing existed.

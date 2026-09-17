@@ -5,7 +5,7 @@
     <parent>
         <groupId>eu.wohlben.qits</groupId>
         <artifactId>qits-ci</artifactId>
-        <version>2026.916.195223</version>
+        <version>2026.917.45603</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -67,6 +67,21 @@
                  quarkus-jdbc-postgresql above; this jar brings it provided-scope only. -->
             <groupId>${project.groupId}</groupId>
             <artifactId>qits-db-core</artifactId>
+        </dependency>
+        <dependency>
+            <!-- For ONE class, CiDaemonBinary: the version of the qits-ci-daemon binary this
+                 deployment's step containers download, which CiDaemonPins answers with. The rest
+                 of the jar is the control-socket wire contract and belongs to `service` (which
+                 restates this dependency for its own imports rather than taking it transitively
+                 from here).
+
+                 It does not breach this module's framework-free rule: CiDaemonBinary is a
+                 Properties load off the classpath — no JAX-RS, no websockets, no java.net.http, no
+                 config system — which is exactly the shape a capability constant has to have to be
+                 readable from a native binary and a Quarkus service alike. See
+                 qits.ci-daemon-protocol.version in the root pom. -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-ci-daemon-protocol</artifactId>
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>

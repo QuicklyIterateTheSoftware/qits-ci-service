@@ -20,23 +20,12 @@ steps:
       git fetch "$QITS_CI_REPOSITORY_URL" "refs/tags/$QITS_VERSION:refs/tags/$QITS_VERSION"
       git checkout --detach "$QITS_VERSION"
       if [ -n "${QITS_ARTIFACTS_CLI_PACKAGE:-}" ]; then
+        : "${QITS_ARTIFACTS_CLI_VERSION:?the qits CLI package is configured but no version was injected; the qits-ci that launched this step predates the CLI pin}"
         mkdir -p /tmp/qits-bin
-        command -v jq >/dev/null 2>&1 || { echo "qits-ci: this image has no jq, so the qits CLI's latest version cannot be resolved" >&2; exit 1; }
-        cli_token=""
-        if [ -n "${QITS_COMMISSIONED_CLIENT_ID:-}" ] && [ -n "${QITS_COMMISSIONED_CLIENT_SECRET:-}" ] && [ -n "${QITS_GIT_AUTH_TOKEN_URL:-}" ]; then
-          cli_token=$(curl -fsS --connect-timeout 2 --max-time 10 -u "$QITS_COMMISSIONED_CLIENT_ID:$QITS_COMMISSIONED_CLIENT_SECRET" -H 'Content-Type: application/x-www-form-urlencoded' --data "grant_type=client_credentials&audience=qits-platform" "$QITS_GIT_AUTH_TOKEN_URL" | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') || cli_token=""
-        fi
-        if [ -n "$cli_token" ]; then
-          curl -fsSL --retry 2 --retry-delay 2 -H "Authorization: Bearer $cli_token" -o /tmp/qits-bin/.qits-daemons.json "$QITS_ARTIFACTS_URL/artifacts/api/repositories/daemons/daemons"
-        else
-          curl -fsSL --retry 2 --retry-delay 2 -o /tmp/qits-bin/.qits-daemons.json "$QITS_ARTIFACTS_URL/artifacts/api/repositories/daemons/daemons"
-        fi
-        cli_version=$(jq -r --arg n "$QITS_ARTIFACTS_CLI_PACKAGE" '(.daemons[] | select(.name == $n) | .latestVersion) // empty' /tmp/qits-bin/.qits-daemons.json)
-        : "${cli_version:?no published version of $QITS_ARTIFACTS_CLI_PACKAGE at $QITS_ARTIFACTS_URL}"
-        curl -fsSL --retry 2 --retry-delay 2 -o /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$cli_version"
+        curl -fsSL --retry 2 --retry-delay 2 -o /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
         chmod +x /tmp/qits-bin/qits
         ln -sf /tmp/qits-bin/qits /tmp/qits-bin/qits-publish
-        echo "qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $cli_version" >&2
+        echo "qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
         PATH="/tmp/qits-bin:$PATH"
         export PATH
       fi

@@ -22,8 +22,10 @@ import java.time.Instant;
  *
  * <p>{@code @Uncaused} by decision: {@link #triggerEventId} IS the cause — the event that triggered
  * the run, already on the row because it is what the published event is stamped with as its parent —
- * so a generic causation column would be that column again under a second name. The {@link
- * CiDaemonPin} argument, applied to a row that names its cause for a different reason.
+ * so a generic causation column would be that column again under a second name. The same argument
+ * {@link CiScmRelease} makes, applied to a row that names its cause for a different reason. (It was
+ * first made by {@code CiDaemonPin}, whose {@code event_id} was the adopting release; that entity
+ * and its table went with the daemon pin ladder.)
  */
 @Entity
 @Table(name = "ci_release_announcement")

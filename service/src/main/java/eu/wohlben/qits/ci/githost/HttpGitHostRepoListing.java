@@ -37,8 +37,7 @@ import org.jboss.logging.Logger;
  * one. The evaluation it precedes then reads the git host per candidate, so the listing is the
  * cheapest part of the work and must never be the slowest: {@link #CONNECT_TIMEOUT} 2s and {@link
  * #REQUEST_TIMEOUT} 3s, after which the known set is a correct answer and waiting longer buys
- * nothing. Same 2s connect bound {@code HttpGitConfigSource} and {@code EventsDaemonReleaseLog}
- * carry.
+ * nothing. Same 2s connect bound {@code HttpGitConfigSource} carries.
  *
  * <h2>The cache</h2>
  *

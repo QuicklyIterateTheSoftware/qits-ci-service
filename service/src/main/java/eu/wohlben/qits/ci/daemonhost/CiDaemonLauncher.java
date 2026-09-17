@@ -15,6 +15,7 @@ import eu.wohlben.qits.ci.control.CiIdentifiers;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
+import eu.wohlben.qits.platformaccess.cli.PlatformAccessCliBinary;
 import io.quarkus.runtime.LaunchMode;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.annotation.Priority;
@@ -323,10 +324,15 @@ public class CiDaemonLauncher {
   String containerDaemonUrl;
 
   /**
-   * The daemon pin ladder (ci-daemon-autoadopt-plan.md, workstream BV): the top adopted candidate
-   * that has proven itself, or the deployment's configured {@code qits.ci.daemon-version} pin when
-   * none has, or blank. {@link #daemonVersion()} delegates to it entirely — this class no longer
-   * reads {@code qits.ci.daemon-version} itself.
+   * Which daemon binary a run started right now downloads: the version of the protocol dependency
+   * this reactor pins, or {@code qits.ci.daemon-version-override} when a person set one.
+   * {@link #daemonVersion()} delegates to it entirely, and this class reads no version key itself.
+   *
+   * <p>It was a <b>ladder</b> until the pin retirement — a durable table of candidate versions
+   * adopted off {@code SoftwareRelease} frames and probed in throwaway containers, with an adopted
+   * rung outranking the deployment's own pin. That is why this is still an injected collaborator
+   * rather than a config field: the answer is one place's to give, and which sources it has is that
+   * place's business.
    */
   @Inject CiDaemonPins pins;
 
@@ -552,22 +558,65 @@ public class CiDaemonLauncher {
   Optional<String> artifactsUrl;
 
   /**
-   * The daemon package a step resolves and downloads the qits CLI from — {@code qits}, which also
-   * answers to the name {@code qits-publish} — at its LATEST published version, every release-phase
-   * step, never a pin.
+   * The daemon package a release-phase step downloads the qits CLI from — {@code qits}, which also
+   * answers to the name {@code qits-publish}. <b>The package, and only the package.</b>
    *
-   * <p><b>No version travels from here at all.</b> The composed prelude reads qits-artifacts' own
-   * listing (its {@code latestVersion} field) to find the version and downloads it version-addressed,
-   * the way {@link #daemonBinaryUrlTemplate} still does for the ci-daemon; the CLI carries no such
-   * template because there is no pin left to hold.
+   * <p><b>The VERSION is a pinned dependency now, not a resolution.</b> This key used to be the
+   * whole of what qits-ci said about the CLI, and the composed prelude read qits-artifacts' own
+   * listing (its {@code latestVersion} field) at every step start to find out what to download —
+   * which made one CLI release a shared, unversioned, unreviewed input to every release on the
+   * platform at once. On 2026-09-13 one bad CLI broke all of them, with nothing changed in any
+   * consumer's tree and no line anybody could revert. The version comes from {@code
+   * eu.wohlben.qits:qits-platform-access-cli-binary} instead ({@link #artifactsCliVersion()}), so
+   * the pom decides, the dependency has to resolve for this reactor to build, and a bad CLI is one
+   * repository's red gate. {@code QitsCliPinIT} is what proves the pinned coordinate really exists.
    *
-   * <p><b>Blank sends the variable EMPTY rather than a package with nothing behind it.</b> Empty is
-   * the off state every mirror pair here already uses: a composed release-phase prelude skips the
-   * fetch, and a composed postlude that needs the CLI fails on its own {@code :?} guard naming this
-   * key, rather than a curl error nobody can place.
+   * <p><b>Blank is still the off state, and still sends the variable EMPTY rather than a package
+   * with nothing behind it.</b> Empty is the off state every mirror pair here already uses: a
+   * composed release-phase prelude skips the fetch, and a composed postlude that needs the CLI fails
+   * on its own {@code :?} guard naming this key, rather than a curl error nobody can place. The
+   * version travels regardless — it is a constant, not a deployment fact, and there is nothing for a
+   * deployment to switch off about it.
+   *
+   * <p>The shipped default and {@link PlatformAccessCliBinary#DAEMON_NAME} are the same string, and
+   * {@code ArtifactsCliPackageDefaultTest} is what keeps them from drifting.
    */
   @ConfigProperty(name = "qits.ci.artifacts-cli-package")
   String artifactsCliPackage;
+
+  /**
+   * The emergency door over the pin, and it is normally UNSET.
+   *
+   * <p>Set, it is the version every release-phase step on this deployment downloads, whatever the
+   * pom says — which is what an operator needs at 03:00 when a pinned CLI turns out to be broken and
+   * the fix is a release of this repository they cannot wait for. Unset or blank, the pinned
+   * dependency's constant stands, which is the ordinary state and the one every test here is in.
+   *
+   * <p>{@link Optional} with no shipped default, {@code WorkspaceContainerFactory.imageVersion()}'s
+   * shape exactly: absent is the ordinary state, and setting one pins a CLI nothing gated.
+   */
+  @ConfigProperty(name = "qits.ci.artifacts-cli-version-override")
+  Optional<String> artifactsCliVersionOverride;
+
+  /**
+   * Which qits CLI a release-phase step runs: the pinned dependency's version, unless an operator
+   * has deliberately overridden it.
+   *
+   * <p>A method rather than a field resolved at injection, so a test can call it — and so the
+   * environment builder below has one expression rather than a ternary nobody can name.
+   *
+   * <p><b>It can never answer blank.</b> {@link PlatformAccessCliBinary} refuses a missing or
+   * unfiltered version at class-init, so the constant is either a real calver or the class does not
+   * load at all; the override is only consulted when it is non-blank. That is what lets {@code
+   * QITS_ARTIFACTS_CLI_VERSION} be relied on downstream as always-present-and-non-empty, and what
+   * makes the composed prelude's {@code :?} guard a statement about an OLD qits-ci rather than about
+   * a misconfiguration here.
+   */
+  String artifactsCliVersion() {
+    return artifactsCliVersionOverride
+        .filter(value -> !value.isBlank())
+        .orElse(PlatformAccessCliBinary.VERSION);
+  }
 
   /**
    * qits-workspaces' root, injected into every step container so the release train's maintenance
@@ -687,16 +736,16 @@ public class CiDaemonLauncher {
   }
 
   /**
-   * The daemon version a run started right now would pin — the top of {@link #pins}'s ladder;
-   * blank when neither an adopted candidate nor the configured pin exists.
+   * The daemon version a run started right now would pin, and it is <b>never blank</b>: the pinned
+   * protocol dependency's own version, which refuses to exist rather than resolve to {@code ""}.
    *
-   * <p><b>Delegates entirely, and that is the whole of the flip.</b> Before
-   * ci-daemon-autoadopt-plan.md workstream BV this read {@code qits.ci.daemon-version} itself and a
-   * boot-time check (long since deleted, {@code daemonVersionComplaint}) warned when the value could
-   * not be a sha256 the old digest-addressed template needed. That check went silent by construction
-   * the moment {@code qits.ci.daemon-binary-url-template} stopped saying {@code sha256:{version}} —
-   * see {@code CiIdentifiers.requireDaemonVersion}, its replacement, enforced where a version now
-   * actually arrives untrusted: at adoption, not at boot.
+   * <p><b>Delegates entirely, and the delegate has changed twice.</b> This class read
+   * {@code qits.ci.daemon-version} directly to begin with, with a boot-time check (long since
+   * deleted, {@code daemonVersionComplaint}) warning when the value could not be the sha256 the old
+   * digest-addressed template needed. It then read a pin ladder, which could still answer blank when
+   * every adopted candidate had been rejected and no pin was configured — a state a whole readiness
+   * check existed to report. It now reads a constant off the classpath, so the blank case has no
+   * way to arise and nothing downstream needs to defend against it.
    */
   public String daemonVersion() {
     return pins.answer().version();
@@ -706,10 +755,11 @@ public class CiDaemonLauncher {
    * How long a launch may take, which is mostly how long an image pull may take.
    *
    * <p><b>It is {@code qits.ci.daemon-register-timeout-seconds} on purpose, not a key of its own.</b>
-   * That one key drives all three deadlines a container may spend on becoming a daemon — {@code
-   * CiDaemonStepRunner}'s register wait, this {@code ensure} call, and {@code
-   * CiDaemonContainerProbe}'s probe deadline — because they are three halves of one question and
-   * three keys would be three ways to disagree about the answer. It moved from 60s to 180s with
+   * That one key drives both deadlines a container may spend on becoming a daemon — {@code
+   * CiDaemonStepRunner}'s register wait and this {@code ensure} call — because they are two halves
+   * of one question and two keys would be two ways to disagree about the answer. It drove a third
+   * until the pin ladder was retired, the probe container's own deadline, which is one fewer reader
+   * and no change to the number. It moved from 60s to 180s with
    * {@link #BOOTSTRAP}'s fetch retry, whose ~108s budget has to fit inside it; see the key's own
    * comment in the {@code ci} jar's {@code microprofile-config.properties}.
    */
@@ -1144,11 +1194,19 @@ public class CiDaemonLauncher {
     env.put("QITS_MAVEN_PROXY_URL",
         mavenCentralMirrorEnabled ? value(mavenCentralMirrorStepUrl) : "");
     env.put("QITS_DOCS_URL", value(artifactsDocsUrl));
-    // The store's own root, and the daemon package a composed release prelude resolves the qits CLI's
-    // latest version from. Both EMPTY-never-absent, so a deployment that has switched the CLI off
-    // hands every step one shape to read.
+    // The store's own root, and the coordinate a composed release prelude downloads the qits CLI at.
+    // The first two are EMPTY-never-absent, so a deployment that has switched the CLI off hands
+    // every step one shape to read.
+    //
+    // THE VERSION IS A PIN AND IS NEVER EMPTY. It comes from this reactor's own dependency on
+    // qits-platform-access-cli-binary, so which CLI every composed release step on the platform runs
+    // is a line in a pom that a release request gated — not whatever was latest in the store at the
+    // moment the step started. The constant cannot be blank (PlatformAccessCliBinary refuses that at
+    // class-init), so the prelude's `:?` guard on it can only ever fire against a qits-ci that
+    // predates the pin.
     env.put("QITS_ARTIFACTS_URL", resolvedArtifactsUrl());
     env.put("QITS_ARTIFACTS_CLI_PACKAGE", value(artifactsCliPackage).trim());
+    env.put("QITS_ARTIFACTS_CLI_VERSION", artifactsCliVersion());
     // And where a step asks for its own repository to be released — same network, same reading of
     // "reachable from where" as the npm pair.
     env.put("QITS_WORKSPACES_URL", value(workspacesUrl));
