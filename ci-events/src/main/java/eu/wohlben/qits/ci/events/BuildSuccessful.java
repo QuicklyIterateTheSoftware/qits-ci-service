@@ -39,7 +39,7 @@ import java.util.UUID;
  * — and a null field is omitted from the canonical payload rather than written as an explicit null,
  * so an id-addressed push stays byte-identical on the wire.
  *
- * <p><b>{@code phase} says which half of a RELEASE this run was</b> — {@code "RELEASE_REQUEST"} for
+ * <p><b>{@code phase} says which PHASE of a release this run was</b> — {@code "RELEASE_REQUEST"} for
  * the QA run of a release request, {@code "RELEASE"} for the publish run of a released tag — and it
  * is null for every run that is no part of a release, which is the ordinary one. A null is omitted
  * from the canonical payload, so an ordinary build's bytes are identical to what they were before

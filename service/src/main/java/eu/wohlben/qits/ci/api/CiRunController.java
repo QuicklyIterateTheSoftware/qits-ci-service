@@ -149,7 +149,7 @@ public class CiRunController {
 
   /**
    * What qits-projects sends to re-ask one phase of one release request: the repository, the request,
-   * and which half of the release. All three are required — see {@link #rerunReleaseRequestPhase}
+   * and which phase of the release. All three are required — see {@link #rerunReleaseRequestPhase}
    * for why this triple and not a run id.
    */
   public record RerunReleaseRequestPhaseRequest(
@@ -602,7 +602,22 @@ public class CiRunController {
   @Path("/rerun")
   @Consumes(MediaType.APPLICATION_JSON)
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:system"})
-  @Operation(summary = "Run one phase of a release request's CI again")
+  @Operation(
+      summary = "Run one phase of a release request's CI again",
+      description =
+          "A release is one pipeline of three phases and a PHASE is a unit of work with a state and"
+              + " a rerun. Two of them are runs here — RELEASE_REQUEST is phase one, the QA run at"
+              + " release/<id>@mergedSha, and RELEASE is phase two, the publish run at"
+              + " <version>@commitSha. Phase three is the deploy and is qits-deployments' own"
+              + " release request, so it is not a word this door takes. A step inside a run is not a"
+              + " phase and neither is a gating: false part of one, so neither can be re-fired"
+              + " separately. Which phase a run is was decided by the event that triggered it and"
+              + " never by which config file produced it, so this addresses a run the same way for a"
+              + " repository on a hand-written ci-event-release*.yml pair and for one on a composed"
+              + " release.yml. This decides nothing about the release: the pipeline is the release"
+              + " request in qits-projects, the new run announces its verdict on the bus exactly as"
+              + " the first one did, and the gate between the two phases goes on holding the release"
+              + " where it is until that verdict arrives — a gate delays, it does not fail.")
   @APIResponse(
       responseCode = "202",
       description = "A new run has been accepted and queued",

@@ -2889,7 +2889,7 @@ public class CiRunService {
    *
    * <p><b>Addressed by the triple because that is the only identity the asker holds.</b> The release
    * request lives in qits-projects and IS the pipeline; what it knows is a repository, its own id
-   * and which half of the release it is talking about. It holds no run id — qits-ci mints those —
+   * and which phase of the release it is talking about. It holds no run id — qits-ci mints those —
    * and the sha cannot stand in for one, since a QA run's commit is a fold nobody pushed that the
    * next re-fold replaces. It is the same pair {@link #cancelReleaseRequestRuns} takes with the
    * phase added, for that method's reason exactly: the id alone reaches another repository's run and

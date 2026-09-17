@@ -465,7 +465,19 @@ public class CiRepositoryController {
   @Operation(
       summary =
           "What a candidate release.yml would compose at a rev, beside what that rev commits (a"
-              + " read; POST only because it takes a body)")
+              + " read; POST only because it takes a body)",
+      description =
+          "Reported per PHASE, because the slot file's two keys are the release pipeline's first two"
+              + " phases: release-request: is phase one, the QA a release request is gated on, and"
+              + " release: is phase two, the publish at the released tag. Phase three is the deploy"
+              + " and belongs to qits-deployments, so no slot file declares it and this read has"
+              + " nothing to say about it. A phase is a unit of work with a state and a rerun; the"
+              + " composed text names none of them, since which phase a run is, is decided by the"
+              + " event that triggered it and never by the slot it was composed from. And this is"
+              + " not a GATE — a gate is the condition between two phases and it delays rather than"
+              + " fails, whereas this door refuses nothing and returns no verdict: it reports both"
+              + " sides and compares neither, for a person's judgement before the file is"
+              + " committed.")
   @APIResponse(
       responseCode = "200",
       description =

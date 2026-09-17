@@ -43,7 +43,7 @@ import java.util.UUID;
  * {@code occurredAt} <b>only</b> and appears nowhere in the payload. A mirror reads it off the
  * envelope, which is where an event's time has always been.
  *
- * <p><b>{@code phase} is the run's half of a release</b> — {@code "RELEASE_REQUEST"} or {@code
+ * <p><b>{@code phase} is the run's phase of a release</b> — {@code "RELEASE_REQUEST"} or {@code
  * "RELEASE"}, null for a run that is no part of one — carried as a plain string for {@link
  * BuildFailed#outcome}'s reason and omitted from the payload when null, so an ordinary run's
  * transitions stay byte-identical on the wire. <b>It does not turn this into a statement about a

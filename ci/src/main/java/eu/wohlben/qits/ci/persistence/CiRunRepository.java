@@ -181,7 +181,7 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
    * phase has never run there.
    *
    * <p><b>The triple is the identity, and it is the only one the caller holds.</b> qits-projects
-   * knows a repository and a release request and which half of the release it is asking about; it
+   * knows a repository and a release request and which phase of the release it is asking about; it
    * does not know a run id, and the sha cannot stand in for one — a QA run's commit is a fold nobody
    * pushed and the next re-fold replaces it. So the rerun door addresses work exactly as {@link
    * #listUnfinishedForReleaseRequest} does, with the phase as the third term, and both halves of

@@ -1,7 +1,7 @@
 package eu.wohlben.qits.ci.entity;
 
 /**
- * Which phase of a release pipeline a run is — the QA half or the publish half — or, by being null
+ * Which phase of a release pipeline a run is — the QA phase or the publish phase — or, by being null
  * on the row, no phase at all.
  *
  * <p><b>A release is one pipeline of three phases and the release request is the pipeline.</b> P1 is
@@ -13,7 +13,7 @@ package eu.wohlben.qits.ci.entity;
  *
  * <p><b>There is no pipeline table and no pipeline id in this service, deliberately.</b> The release
  * request in qits-projects is the pipeline; this enum is qits-ci's entire share of the model, which
- * is that a run knows which half it is, that word goes on the wire, and a rerun can be addressed by
+ * is that a run knows which phase it is, that word goes on the wire, and a rerun can be addressed by
  * phase rather than by a run id nobody over there holds.
  *
  * <p><b>The decision is the TRIGGER EVENT'S NAME and nothing else.</b> {@code ReleaseRequestChanged}

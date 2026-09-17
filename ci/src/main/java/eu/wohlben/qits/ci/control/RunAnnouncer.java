@@ -47,7 +47,7 @@ public interface RunAnnouncer {
    * quality gate reads it as data; green-and-non-gating still announces, because a verdict is a
    * verdict whichever way a reader weighs it.
    *
-   * <p><b>{@code phase} is which half of a release this run was</b> — {@code "RELEASE_REQUEST"} for
+   * <p><b>{@code phase} is which phase of a release this run was</b> — {@code "RELEASE_REQUEST"} for
    * the QA run a {@code ReleaseRequestChanged} caused, {@code "RELEASE"} for the publish run an
    * {@code SCMRelease} caused — and <b>null for every run that is no part of a release</b>, which is
    * the ordinary one. A {@code CiRunPhase} word carried as a plain {@code String}, exactly as {@code
