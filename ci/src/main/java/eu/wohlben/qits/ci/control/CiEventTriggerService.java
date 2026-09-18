@@ -1245,9 +1245,9 @@ public class CiEventTriggerService {
    * and a postlude no hand-written file ever had, so the two texts are <em>never</em> byte-equal and
    * an equality check over them could only ever answer "different" — a signal with no information in
    * it, which is worse than none because somebody would come to trust it. What is comparable is what
-   * <em>decides behaviour</em>: the event, the selection, the checkout, the file-level and per-step
-   * gating, each step's image and flags, and what the pipeline declares it publishes. Those are what
-   * the two summaries carry, and a person compares them.
+   * <em>decides behaviour</em>: the event, the selection, the checkout, each step's image and flags,
+   * and what the pipeline declares it publishes. Those are what the two summaries carry, and a
+   * person compares them.
    *
    * <h2>What a script publishes is the DECLARATION, never the script</h2>
    *
@@ -1516,7 +1516,6 @@ public class CiEventTriggerService {
           new StepSummary(
               i,
               step.image(),
-              step.gating(),
               step.build(),
               step.docker(),
               step.user(),
@@ -1539,7 +1538,6 @@ public class CiEventTriggerService {
                 trigger.checkout().branchPath(),
                 trigger.checkout().shaPath(),
                 trigger.checkout().optional()),
-        trigger.gating(),
         List.copyOf(steps),
         List.copyOf(artifacts));
   }
@@ -1708,14 +1706,11 @@ public class CiEventTriggerService {
    * @param selection the {@code when:} as one line; see {@link #rendered(CiEventSelection)}
    * @param checkout null when the document declares none, which means the run builds {@code main}'s
    *     head — a difference between the two sides worth seeing rather than deducing
-   * @param gating the FILE-level flag: whether a red run of this pipeline stands in the way of
-   *     releasing its commit
    */
   public record DocumentSummary(
       String event,
       String selection,
       CheckoutSummary checkout,
-      boolean gating,
       List<StepSummary> steps,
       List<ArtifactSummary> artifacts) {}
 
@@ -1734,7 +1729,6 @@ public class CiEventTriggerService {
   public record StepSummary(
       int index,
       String image,
-      boolean gating,
       boolean build,
       boolean docker,
       String user,

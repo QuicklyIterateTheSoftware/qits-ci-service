@@ -68,9 +68,9 @@ import java.util.UUID;
  * named here: {@code eventId} is generated when absent, final once set, and travels in the envelope
  * rather than the payload; {@code repoId} is the storage id and is always set, while {@code
  * projectId} and {@code repoName} are the public {@code (project, name)} pair and ride together or
- * not at all; {@code gating} is <b>null for a gating run</b> and an explicit {@code false} only for a
- * non-gating one, so absent reads as gating; and every null field is omitted from the canonical
- * payload rather than written as an explicit null.
+ * not at all; and every null field is omitted from the canonical payload rather than written as an
+ * explicit null. There is no {@code gating}, and {@link BuildSuccessful} says why: every step of a
+ * pipeline gates, so a run's verdict is its outcome (ticket 9441bc6e).
  */
 public record BuildStatusChanged(
     UUID eventId,
@@ -80,7 +80,6 @@ public record BuildStatusChanged(
     String repoName,
     String branch,
     String commitSha,
-    Boolean gating,
     String phase,
     String releaseRequestId,
     String status,
@@ -102,14 +101,13 @@ public record BuildStatusChanged(
       String repoName,
       String branch,
       String commitSha,
-      Boolean gating,
       String phase,
       String releaseRequestId,
       String status,
       String previousStatus,
       Instant occurredAt) {
     this(
-        null, runId, repoId, projectId, repoName, branch, commitSha, gating, phase, releaseRequestId,
+        null, runId, repoId, projectId, repoName, branch, commitSha, phase, releaseRequestId,
         status, previousStatus, occurredAt);
   }
 }

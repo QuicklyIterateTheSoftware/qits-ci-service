@@ -325,7 +325,6 @@ steps:
   - image: qits/build-images/ci-base:latest
     docker: true                               # optional, default false — see the warning below
     timeout-seconds: 3600                      # optional — else 30 minutes (qits.ci.step-timeout-seconds)
-    gating: false                              # optional, default true — see "Gating"
     script: |
       ref="$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/qits-gateway:$QITS_CI_SHA"
       docker build -t "$ref" -f docker/Dockerfile .
@@ -336,9 +335,10 @@ steps:
 Unknown **per-step** keys are never read, so a repo may carry config for a newer qits-ci; unknown
 **top-level** keys are a parse error, because at that level an unread key is a selection that
 silently widens (see "The file every repository commits"). Keys that *are* known and unreadable
-(`timeout-seconds: soon`, `docker: yes-please`, `gating: "false"`, `user: build:root`) name the file
-and record no run: a repo that meant to bound a step, to ask for a socket, to classify a failure or
-to drop root must find out.
+(`timeout-seconds: soon`, `docker: yes-please`, `user: build:root`) name the file and record no run:
+a repo that meant to bound a step, to ask for a socket or to drop root must find out. **`gating:` is
+refused at both levels** rather than ignored — the key is retired (ticket 9441bc6e), every step of a
+pipeline gates, and a run's verdict is its outcome; the refusal says so and names the ticket.
 
 **A step could once declare `branches:`** — a list of matchers over the run's branch, absent meaning
 every branch, with a skipped step recorded `[step not bound to branch <branch>]`. It was a
@@ -585,14 +585,12 @@ steps:                          # the `steps:` grammar above
 - **A file without `event:` is a parse error**, rather than a trigger that never matches: a trigger
   that names no event can never fire, and it must not look like one whose selection simply never
   held.
-- `steps:` is the grammar above, `docker: true`, `timeout-seconds:` and the step-level `gating:`
-  included. The one key it refuses is **`branches:`** — see the note there.
+- `steps:` is the grammar above, `docker: true` and `timeout-seconds:` included. The two keys it
+  refuses are **`branches:`** and **`gating:`** — see the notes there.
 - The one key it **adds** is **`artifacts:`**, optional, which turns the file into a *release
   pipeline* — see below.
 - The other added key is **`checkout:`**, optional, which makes the run build the event's own
   commit — see "Building the commit the event names".
-- The third added key is **`gating:`**, optional, default `true`: whether a red run of this pipeline
-  should stand in the way of releasing its commit — see "Gating: what a red run is worth".
 
 ### Building the commit the event names — `checkout:`
 
@@ -651,39 +649,30 @@ steps:
   literals, so `exact: "false"` matches the boolean. It used to be honoured by the push listener,
   which is gone, so **every `SCMPublishCommit` trigger must carry it** — nothing else will.
 
-### Gating: what a red run is worth
+### Every step gates, and a red run is a red verdict
 
-A run's verdict travels on `BuildSuccessful`/`BuildFailed` as a `gating` flag, and a release gate
-reads it to decide whether a red run holds the commit. Two keys spell it, at two levels, and the
-run's verdict is the **AND** of them:
+A run's verdict is its **outcome**: green announces `BuildSuccessful`, red announces `BuildFailed`,
+and nothing qualifies either. A failing step fails the run, everything after it is `SKIPPED`, and
+the row is `FAILED` whichever step it was.
 
-```yaml
-gating: false                   # THE FILE — a red run of this pipeline gates nothing
-steps:
-  - image: qits/build-images/maven-base:latest
-    script: ./mvnw verify       # a step is gating unless it says otherwise
-  - image: qits/build-images/maven-base:latest
-    gating: false               # THE STEP — this one's failure gates nothing
-    script: ./publish-docs.sh
-```
+**There was a `gating:` key, at two levels, and it is gone** — retired by ticket 9441bc6e, and
+declaring it at either level is now a **parse error** naming the file and the ticket. A file or a
+step could say `gating: false`, the run's announced verdict was the two flags ANDed, and a release
+gate read the result. QA that does not gate is pointless, and it did not merely fail to gate: a run
+whose gating step passed and whose non-gating step went red announced no `BuildSuccessful` at all,
+only a `BuildFailed{gating:false}` that qits-projects' release gate could neither accept nor refuse,
+so the release request parked on "Waiting for a gating CI verdict" indefinitely. Measured once at
+fourteen hours, on a single flaky test.
 
-- **Absent is `true` at both levels**, so every pipeline written before either key existed keeps its
-  behaviour byte for byte, and a gating build's event payload stays byte-identical too: `gating` is
-  omitted from the wire when it is true and written as an explicit `false` only when it is not.
-- **There are two levels and the run's verdict is the AND of them.** The file-level key says what a
-  whole pipeline is worth to a release gate; the step-level one says what one step is worth. A
-  non-gating file cannot be made gating by a step, and a gating file's non-gating step produces a
-  non-gating red.
-- **A non-gating step that fails still fails the run.** The row is `FAILED`, a person sees the red,
-  the remaining steps are `SKIPPED` — what changes is only what a release gate reads. That is why
-  **the non-gating steps go last**: everything after a failure is skipped, which is right for a
-  publish and wrong for a build.
-- **Only a YAML boolean is accepted** at either level. `gating: "false"` is a parse error rather
-  than a truthy default, because both directions of a silent misread are expensive: one holds a
-  commit for a failure nobody meant to gate on, the other waves one through.
-- **A finished run's `gating` on the API is what the verdict was worth**, not only what the pipeline
-  declared: a gating file whose failure landed in a `gating: false` step reads `false`, which is the
-  value its build event carried.
+**Work that must not block a release does not belong in a release-request pipeline.** That is the
+replacement, and it is a placement decision rather than a flag. What does survive from the two-files-
+into-one merge the flag was invented for is the ordering rule: the steps that must run first go
+first, because everything after a failure is skipped.
+
+It is a parse error rather than an ignored key deliberately. Unknown *per-step* keys are lenient
+here, so deleting the declaration without leaving a refusal behind would have left every repository's
+committed `gating: false` quietly read as nothing — which is exactly how the 2026-09-07 retirement of
+this same flag came back. `branches:` is the precedent: the key is gone and its refusal stayed.
 
 ### The release-request QA pipeline — `ci-event-release-request.yml`
 
@@ -706,9 +695,8 @@ checkout:
   sha: mergedSha                 # the fold this run is about
 steps:
   - image: qits/build-images/maven-base:latest
-    script: ./mvnw -B -ntp verify          # the GATING half
+    script: ./mvnw -B -ntp verify
   - image: qits/build-images/maven-base:latest
-    gating: false                          # the NON-GATING half
     script: ./publish-userflows.sh
 ```
 
@@ -740,8 +728,11 @@ already has, unchanged and still read by the grammar above.
 - **The verdict returns keyed on the fold**: `BuildSuccessful`/`BuildFailed` with `commitSha` =
   the `mergedSha` this run received, which is what qits-projects matches on together with `repoId`.
 - **This one file replaces `ci-event-build.yml` and `ci-event-userflows.yml`.** The two existed
-  because a red userflow round must not cost the image and two files cannot share a verdict; one
-  file buys the same property with ordering plus the per-step `gating:` above.
+  because a red userflow round must not cost the image and two files cannot share a verdict. The
+  second half of that arrangement — a `gating: false` step inside the merged file — is retired
+  (ticket 9441bc6e): every step of a release-request pipeline gates, so work that must not block a
+  release does not belong in one. What survives is the ordering rule the merge also bought: the
+  steps that must run first go first, because everything after a failure is `SKIPPED`.
 
 ### The selection
 
@@ -1066,9 +1057,8 @@ share a file.** A release is one pipeline with three phases and four gates in it
 `release/<id>@mergedSha`, behind the CI gate and then a person's approval gate; **P2 publish**, a run
 at `<version>@commitSha`, behind the publish gate; **P3 deploy**, which is qits-deployments' own
 release request, behind the deployment gate, and past it the request is FINALIZED. A **phase** is a
-unit of work with a state and a rerun — a step is not a phase, and the `gating: false` half of a
-phase is not a second phase — and a **gate** is the condition between two phases: **it delays, it
-does not fail.** Phase three is in no slot file because it is not this repository's work to declare.
+unit of work with a state and a rerun — a step is not a phase — and a **gate** is the condition
+between two phases: **it delays, it does not fail.** Phase three is in no slot file because it is not this repository's work to declare.
 
 **The pipeline itself is the release request in qits-projects, and qits-ci deliberately holds no
 table of one.** What qits-ci learns is one word per run — which phase this run is — and it is decided

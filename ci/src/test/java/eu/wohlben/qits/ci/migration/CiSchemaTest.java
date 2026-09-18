@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.migration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.entity.CiRunStatus;
@@ -69,6 +70,18 @@ public class CiSchemaTest {
     assertFalse(tableExists("ci_daemon_pin"), "V18 drops ci_daemon_pin");
   }
 
+  @Test
+  public void theGatingColumnIsGoneFromCiRun() throws SQLException {
+    // V19, and asserted as an absence for the reason above: a drop is the exception here, and a
+    // migration that silently failed to apply surfaces months later as a mapping error nobody can
+    // place. The column held a CLASSIFICATION of a verdict — the file's `gating:` flag ANDed with
+    // the failing step's — and the concept is ruled out (ticket 9441bc6e). What really happened to
+    // each run is untouched: `status` says whether it was green and `ci_step` says which step ended
+    // it. Note V7 is NOT edited to say any of this; a comment there is a different V7 to every
+    // database that has already run it, which has cost two releases on this lineage.
+    assertNull(columnType("ci_run", "gating"), "V19 drops ci_run.gating");
+  }
+
   private boolean tableExists(String table) throws SQLException {
     try (Connection connection = ci.getConnection();
         PreparedStatement statement =
@@ -101,8 +114,8 @@ public class CiSchemaTest {
       connection.setAutoCommit(false);
       try (PreparedStatement run =
           connection.prepareStatement(
-              "insert into ci_run (id, repo_id, branch, commit_sha, gating, status, created_at,"
-                  + " trigger_type, config_path) values (?, 'schema-probe', 'main', '0', true, ?,"
+              "insert into ci_run (id, repo_id, branch, commit_sha, status, created_at,"
+                  + " trigger_type, config_path) values (?, 'schema-probe', 'main', '0', ?,"
                   + " current_timestamp, ?, '.config/qits/ci-post-receive.yml')")) {
         int i = 0;
         for (CiRunStatus status : CiRunStatus.values()) {
@@ -156,9 +169,9 @@ public class CiSchemaTest {
       connection.setAutoCommit(false);
       try (PreparedStatement run =
           connection.prepareStatement(
-              "insert into ci_run (id, repo_id, branch, commit_sha, gating, status, created_at,"
+              "insert into ci_run (id, repo_id, branch, commit_sha, status, created_at,"
                   + " trigger_type, config_path, expected_step_durations) values (?,"
-                  + " 'schema-probe', 'main', '0', true, 'QUEUED', current_timestamp, 'EVENT',"
+                  + " 'schema-probe', 'main', '0', 'QUEUED', current_timestamp, 'EVENT',"
                   + " '.config/qits/ci-event-release-request.yml', ?)")) {
         run.setString(1, "duration-probe-predicted");
         run.setString(2, "[10000,90000]");
@@ -183,9 +196,9 @@ public class CiSchemaTest {
       connection.setAutoCommit(false);
       try (PreparedStatement run =
           connection.prepareStatement(
-              "insert into ci_run (id, repo_id, branch, commit_sha, gating, status, created_at,"
+              "insert into ci_run (id, repo_id, branch, commit_sha, status, created_at,"
                   + " trigger_type, config_path, priority, downstream_repos) values (?,"
-                  + " 'schema-probe', 'main', '0', true, 'QUEUED', current_timestamp, 'EVENT',"
+                  + " 'schema-probe', 'main', '0', 'QUEUED', current_timestamp, 'EVENT',"
                   + " '.config/qits/ci-event-release-request.yml', ?, ?)")) {
         run.setString(1, "ordering-probe-stated");
         run.setString(2, "BLOCKING");
@@ -212,9 +225,9 @@ public class CiSchemaTest {
       connection.setAutoCommit(false);
       try (PreparedStatement run =
           connection.prepareStatement(
-              "insert into ci_run (id, repo_id, project_id, repo_name, branch, commit_sha, gating,"
+              "insert into ci_run (id, repo_id, project_id, repo_name, branch, commit_sha,"
                   + " status, created_at, trigger_type, config_path) values (?, 'schema-probe', ?,"
-                  + " ?, 'main', '0', true, 'QUEUED', current_timestamp, 'POST_RECEIVE',"
+                  + " ?, 'main', '0', 'QUEUED', current_timestamp, 'POST_RECEIVE',"
                   + " '.config/qits/ci-post-receive.yml')")) {
         run.setString(1, "identity-probe-named");
         run.setString(2, "qits");

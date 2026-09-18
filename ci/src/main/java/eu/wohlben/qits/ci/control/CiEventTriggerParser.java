@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.jboss.logging.Logger;
 
 /**
  * Parses a repo-committed {@code .config/qits/ci-event-*.yml}: the pipeline schema ({@link
@@ -95,6 +96,8 @@ import java.util.Set;
 @ApplicationScoped
 public class CiEventTriggerParser {
 
+  private static final Logger LOG = Logger.getLogger(CiEventTriggerParser.class);
+
   /** The directory both trigger types live in. */
   public static final String CONFIG_DIR = ".config/qits/";
 
@@ -123,7 +126,6 @@ public class CiEventTriggerParser {
           CiConfigSchema.WHEN_KEY,
           CiConfigSchema.STEPS_KEY,
           CiConfigSchema.ARTIFACTS_KEY,
-          CiConfigSchema.GATING_KEY,
           CiConfigSchema.CHECKOUT_KEY);
 
   /** The whole of an artifact declaration. Anything else in that mapping is an error. */
@@ -183,8 +185,64 @@ public class CiEventTriggerParser {
     return name.length() <= 64 && name.matches("[A-Za-z0-9][A-Za-z0-9._-]*");
   }
 
-  /** Parses one trigger file's content. {@code configPath} is carried through onto the result. */
+  /**
+   * Parses one trigger file's content, read out of a repository. {@code configPath} is carried
+   * through onto the result.
+   *
+   * <p>This is the <b>strict</b> entry, and it is the only way a declaration gets into the engine:
+   * trigger discovery, the composition and config-read doors, and everything else that reads a
+   * {@code release.yml} or a composed pipeline out of a repository comes through here. A file
+   * declaring {@code gating:} at either scope is refused — see {@link #parseSnapshot} for the one
+   * caller that is not.
+   */
   public CiEventTrigger parse(String configPath, String content) {
+    return parse(configPath, content, CiConfigSchema.Origin.COMMITTED_FILE);
+  }
+
+  /**
+   * Parses a run's <b>stored</b> trigger document — {@code ci_run.trigger_config}, the immutable
+   * snapshot an accepted run is rebuilt from. It is {@link #parse} with one difference: a snapshot
+   * that still carries {@code gating:} parses, the key is ignored, and one WARN names the run.
+   *
+   * <h2>Why this seam is asymmetric, and why the tolerant branch is not the bug it looks like</h2>
+   *
+   * <p>{@code gating:} was removed as a concept (ticket 9441bc6e, and see {@link
+   * CiConfigSchema#REFUSED_GATING_KEY} for what it cost): every step of a pipeline gates, a failing
+   * step fails the run, and a run's verdict is its outcome. Making the key a <b>parse error</b> is
+   * the whole of how it stays removed — the 2026-09-07 retirement of the same flag deleted the
+   * declarations and left the documents prescribing it, and it came back within days.
+   *
+   * <p>But a parse error on a trigger document is not one thing, because this parser serves two
+   * kinds of caller. On the <b>file-read path</b> a refusal is a repository being told to fix a line
+   * it committed, which is exactly right. On the <b>snapshot-replay path</b> the text is not a file
+   * anybody can fix: {@code CiRunService.reconstructEventRun} re-parses it to rebuild a run that was
+   * <em>already accepted</em>, and {@code predictFromHistory} parses it to predict step durations.
+   * Neither catches a parse failure, and neither has anything to offer a repository. A single strict
+   * parser would therefore have killed every run queued across the deploy that ships this change,
+   * and every retry of a historical run whose stored snapshot still carries the key — punishing runs
+   * for a declaration that was legal when they were accepted.
+   *
+   * <p><b>The tolerant path drains to empty on its own, and nothing refills it.</b> A snapshot is
+   * written from a document that came through {@link #parse}, so once the composer stops emitting
+   * the key and the strict path refuses it, no NEW snapshot can carry it. What is left is a finite,
+   * shrinking set of rows accepted before this deploy. The strict path is the only way in, which is
+   * what makes the leniency here a migration and not a second, quieter version of the feature: this
+   * branch cannot make a run non-gating, because there is no such thing to be any more. It reads a
+   * key and throws it away.
+   *
+   * @param owner what the snapshot belongs to, for the warning — a run id where there is one
+   */
+  public CiEventTrigger parseSnapshot(String configPath, String content, String owner) {
+    if (content != null && content.contains(CiConfigSchema.REFUSED_GATING_KEY + ":")) {
+      LOG.warnf(
+          "%s: the stored trigger snapshot of %s still declares '%s' — the key is ignored, every"
+              + " step gates (ticket 9441bc6e)",
+          owner, configPath, CiConfigSchema.REFUSED_GATING_KEY);
+    }
+    return parse(configPath, content, CiConfigSchema.Origin.STORED_SNAPSHOT);
+  }
+
+  private CiEventTrigger parse(String configPath, String content, CiConfigSchema.Origin origin) {
     // Strict about duplicate keys, unlike ci-post-receive.yml: a silently dropped condition widens
     // a selection, which is the one failure mode this file may not have. CiConfigSchema#load argues
     // the asymmetry in full.
@@ -193,47 +251,59 @@ public class CiEventTriggerParser {
       throw new CiConfigException(
           configPath + " is empty — an event trigger must at least declare 'event'");
     }
+    rejectGating(root, configPath, origin);
     rejectUnknownTopLevelKeys(root, configPath);
     return new CiEventTrigger(
         configPath,
         requireEventName(root, configPath),
         parseWhen(root.get(CiConfigSchema.WHEN_KEY), configPath),
-        // The step schema is CiConfigSchema's, which refuses `branches:` — the one key a step
-        // could declare that can mean nothing on this path. See CiConfigSchema#steps.
-        CiConfigSchema.steps(root, configPath),
+        // The step schema is CiConfigSchema's, which refuses `branches:` and `gating:` — the two
+        // keys a step could declare that can mean nothing on this path. See CiConfigSchema#steps.
+        CiConfigSchema.steps(root, configPath, origin),
         parseArtifacts(root.get(CiConfigSchema.ARTIFACTS_KEY), configPath),
-        parseGating(root.get(CiConfigSchema.GATING_KEY), configPath),
         parseCheckout(root.get(CiConfigSchema.CHECKOUT_KEY), configPath));
   }
 
   private static void rejectUnknownTopLevelKeys(Map<?, ?> root, String configPath) {
     for (Object key : root.keySet()) {
+      if (CiConfigSchema.REFUSED_GATING_KEY.equals(key)) {
+        // Only reachable on the snapshot path, which has already decided to ignore it; the
+        // file path was refused above with a message that says what replaced the key.
+        continue;
+      }
       if (!(key instanceof String name) || !TOP_LEVEL_KEYS.contains(name)) {
         throw new CiConfigException(
             configPath
                 + ": unknown top-level key '"
                 + key
-                + "' — an event trigger declares only 'event', 'when', 'steps', 'artifacts',"
-                + " 'gating' and 'checkout'");
+                + "' — an event trigger declares only 'event', 'when', 'steps', 'artifacts'"
+                + " and 'checkout'");
       }
     }
   }
 
   /**
-   * {@code gating: false} is the whole of what the key may say — absent is {@code true}, and on
-   * this file's standing rule anything that is not a YAML boolean is an error rather than a guess:
-   * a gating flag that silently parsed to a default would let a red pipeline block releases nobody
-   * meant it to block, or wave through one somebody did.
+   * A file declaring {@code gating:} is refused, and with a sentence rather than with the generic
+   * "unknown top-level key" this would otherwise get. The key was written deliberately by every
+   * repository that had a non-gating half to keep out of its verdict, so the refusal owes an author
+   * what replaced it — {@link CiConfigSchema#REFUSED_GATING_KEY} carries the argument, and {@link
+   * #parseSnapshot} is why the refusal is not unconditional.
    */
-  private static boolean parseGating(Object raw, String configPath) {
-    if (raw == null) {
-      return true;
-    }
-    if (raw instanceof Boolean gating) {
-      return gating;
+  private static void rejectGating(
+      Map<?, ?> root, String configPath, CiConfigSchema.Origin origin) {
+    if (origin == CiConfigSchema.Origin.STORED_SNAPSHOT
+        || !root.containsKey(CiConfigSchema.REFUSED_GATING_KEY)) {
+      return;
     }
     throw new CiConfigException(
-        configPath + ": 'gating' must be true or false, got: " + raw);
+        configPath
+            + ": '"
+            + CiConfigSchema.REFUSED_GATING_KEY
+            + "' is not a key any more — every step of a pipeline gates, and a run's verdict is its"
+            + " outcome. QA that does not gate is pointless, and a run that died in a non-gating"
+            + " step announced a verdict no release gate could accept or refuse, so the release"
+            + " request never finished. Delete the key; work that must not block a release does not"
+            + " belong in a release-request pipeline at all. (ticket 9441bc6e)");
   }
 
   /**
@@ -295,8 +365,8 @@ public class CiEventTriggerParser {
 
   /**
    * {@code optional: true} is the whole of what the key may say — absent is {@code false}, and
-   * anything that is not a YAML boolean is an error rather than a guess, exactly as {@code gating:}
-   * is. The two failures either way are silent ones: a value that parsed to true by accident would
+   * anything that is not a YAML boolean is an error rather than a guess, on this file's standing
+   * rule. The two failures either way are silent ones: a value that parsed to true by accident would
    * let a release pipeline build main's head believing it built a tag, and one that parsed to false
    * by accident would lose the runs this flag exists to keep.
    */

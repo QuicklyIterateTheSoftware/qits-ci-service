@@ -443,7 +443,7 @@ public class CiDaemonPinIT {
    * test and a coincidence.</b> {@link ProcessBuilder} seeds the child from this process's
    * environment, and this process runs somewhere with opinions: a workspace container carries a full
    * commissioned credential set, and a CI step container carries {@code QITS_COMMISSIONED_CLIENT_ID}
-   * / {@code …_SECRET} and little else — including, on the gating run, {@code QITS_CI_DAEMON_URL},
+   * / {@code …_SECRET} and little else — including, on a release-request run, {@code QITS_CI_DAEMON_URL},
    * {@code QITS_CI_BRANCH} and {@code QITS_CI_SHA} of the build this very test is part of, which name
    * a different host, a different branch and a different commit. A pin test whose result depends on
    * where it runs proves nothing about the pin, which is the same class of defect as the

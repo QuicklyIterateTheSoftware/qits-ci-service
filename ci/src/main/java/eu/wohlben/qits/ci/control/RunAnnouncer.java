@@ -42,11 +42,6 @@ public interface RunAnnouncer {
    * nothing did — which after the push retirement is only a historical push row, and one publishing
    * a chain root is correct.
    *
-   * <p>{@code gating} is the run row's own flag: whether a red outcome of this pipeline should
-   * stand in the way of releasing the commit. Carried on both announcements so the release
-   * quality gate reads it as data; green-and-non-gating still announces, because a verdict is a
-   * verdict whichever way a reader weighs it.
-   *
    * <p><b>{@code phase} is which phase of a release this run was</b> — {@code "RELEASE_REQUEST"} for
    * the QA run a {@code ReleaseRequestChanged} caused, {@code "RELEASE"} for the publish run an
    * {@code SCMRelease} caused — and <b>null for every run that is no part of a release</b>, which is
@@ -95,7 +90,6 @@ public interface RunAnnouncer {
       String repoName,
       String branch,
       String commitSha,
-      boolean gating,
       String phase,
       String releaseRequestId,
       Instant finishedAt,
@@ -117,7 +111,6 @@ public interface RunAnnouncer {
       String repoName,
       String branch,
       String commitSha,
-      boolean gating,
       String phase,
       String releaseRequestId,
       String outcome,
@@ -163,7 +156,6 @@ public interface RunAnnouncer {
       String repoName,
       String branch,
       String commitSha,
-      boolean gating,
       String phase,
       String releaseRequestId,
       String status,

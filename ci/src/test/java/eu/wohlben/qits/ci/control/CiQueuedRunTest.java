@@ -321,29 +321,12 @@ public class CiQueuedRunTest extends CiTestSupport {
     assertEquals(CiRunStatus.SUCCESS, soleRun(repoId).status);
   }
 
-  // --- gating, as data on the row ---
-
-  @Test
-  public void aTriggersGatingFlagLandsOnTheRowAndDefaultsToGating() throws Exception {
-    // The userflows case: a trigger saying `gating: false` records a run whose red outcome must not
-    // stand in the way of releasing the commit. A file that says nothing is gating, which is the
-    // safe direction and the one every ordinary pipeline relies on.
-    String eventRepo = "consumer-" + UUID.randomUUID();
-    service.onEventTrigger(eventRun(eventRepo, UUID.randomUUID().toString(), false));
-    service.awaitIdle();
-    assertFalse(soleRun(eventRepo).gating, "the trigger said gating: false");
-
-    String silentRepo = seedRepo();
-    accept(silentRepo);
-    service.awaitIdle();
-    assertTrue(soleRun(silentRepo).gating, "a file that declares nothing is gating");
-  }
+  // A `gating` column used to be asserted here — a trigger declaring `gating: false` recording a run
+  // whose red outcome did not stand in the way of releasing the commit, and an absent key defaulting
+  // to gating. Both the key and the column are gone (ticket 9441bc6e): every step gates, a failing
+  // step fails the run, and there is nothing on the row left to record about what that is worth.
 
   private CiRunService.EventRun eventRun(String repoId, String eventId) {
-    return eventRun(repoId, eventId, true);
-  }
-
-  private CiRunService.EventRun eventRun(String repoId, String eventId, boolean gating) {
     return new CiRunService.EventRun(
         CiRepoRef.of(repoId),
         "main",
@@ -354,10 +337,8 @@ public class CiQueuedRunTest extends CiTestSupport {
             null, // the selection already matched; nothing below this seam reads it
             new CiPipeline(
                 List.of(
-                    new CiPipeline.CiStepDecl(
-                        "alpine:3", "echo bump", null, false, false, "", true))),
+                    new CiPipeline.CiStepDecl("alpine:3", "echo bump", null, false, false, ""))),
             List.of(), // declares no artifact: this run announces a build and nothing more
-            gating,
             null), // no checkout: builds main's head, as every trigger did before the key
         eventId,
         "BuildSuccessful",

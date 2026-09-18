@@ -72,11 +72,12 @@ import java.util.UUID;
  * and a wire vocabulary that imported it would make every subscriber depend on this service's
  * storage model.
  *
- * <p>{@code gating} rides the same convention pointed the other way: <b>null means gating</b> — a
- * red outcome of this pipeline would have stood in the way of releasing the commit — and only a
- * non-gating run (a trigger file saying {@code gating: false}; the userflow pipelines) writes an
- * explicit {@code false}. So every gating build's payload is byte-identical to what shipped before
- * the field existed, and a subscriber reads absent as gating.
+ * <p><b>There is no {@code gating} component and there is nothing it could say.</b> It was a {@code
+ * Boolean} riding a null-means-gating convention — absent for an ordinary run, an explicit {@code
+ * false} for one whose trigger file said {@code gating: false} — and it went with the concept
+ * (ticket 9441bc6e). Every step of a pipeline gates, so a green run is a green verdict and a red one
+ * is a red verdict, full stop. The convention it rode is unchanged for the components that remain,
+ * so the payload of a build that never declared the flag is what it always was.
  */
 public record BuildSuccessful(
     UUID eventId,
@@ -87,7 +88,6 @@ public record BuildSuccessful(
     String branch,
     String commitSha,
     String imageDigest,
-    Boolean gating,
     String phase,
     String releaseRequestId,
     Instant finishedAt)
@@ -108,12 +108,11 @@ public record BuildSuccessful(
       String branch,
       String commitSha,
       String imageDigest,
-      Boolean gating,
       String phase,
       String releaseRequestId,
       Instant finishedAt) {
     this(
-        null, runId, repoId, projectId, repoName, branch, commitSha, imageDigest, gating, phase,
+        null, runId, repoId, projectId, repoName, branch, commitSha, imageDigest, phase,
         releaseRequestId, finishedAt);
   }
 

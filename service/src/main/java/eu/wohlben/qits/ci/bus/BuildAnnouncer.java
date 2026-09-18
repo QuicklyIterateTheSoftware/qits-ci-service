@@ -54,6 +54,22 @@ import java.time.Instant;
  * superseded ones the others deliberately never see. Nothing about that widens what a per-commit
  * subscriber is told: those readers subscribe by name, and a name they do not subscribe to costs
  * them nothing. See {@link RunAnnouncer#onRunStatusChanged} for the reader it exists for.
+ *
+ * <p><b>Every component is passed straight through, and null straight through with it.</b> The phase
+ * and the release request id arrive from the port already null-together-or-set-together — the engine
+ * derives the phase from the id it read — so nothing here has to reconcile them, and nothing here
+ * may: a defaulting or a validation at this seam would be a second opinion about a fact the run row
+ * already holds. The phase in particular is the word {@code CiRunPhase} spells, already turned into
+ * a plain {@code String} by the caller, so nothing here maps, defaults or validates it — a wire
+ * vocabulary that held an opinion about another module's enum would be the coupling {@code
+ * ci-events/} exists to avoid. Null is a run that is no part of a release, which is most of them,
+ * and {@code CanonicalJson}'s NON_NULL inclusion leaves the key out entirely: such a build's payload
+ * is byte-identical to what it was before the component existed.
+ *
+ * <p>There was one component this class did not pass through, {@code gating}, mapped by a private
+ * {@code wireGating} onto a null-means-gating convention. Both went with the concept (ticket
+ * 9441bc6e): every step of a pipeline gates and a run's verdict is its outcome, so there is nothing
+ * left to qualify one with.
  */
 @ApplicationScoped
 public class BuildAnnouncer implements RunAnnouncer {
@@ -68,15 +84,14 @@ public class BuildAnnouncer implements RunAnnouncer {
       String repoName,
       String branch,
       String commitSha,
-      boolean gating,
       String phase,
       String releaseRequestId,
       Instant finishedAt,
       String triggerEventId) {
     bus.publish(
         new BuildSuccessful(
-            runId, repoId, projectId, repoName, branch, commitSha, null, wireGating(gating), phase,
-            releaseRequestId, finishedAt),
+            runId, repoId, projectId, repoName, branch, commitSha, null, phase, releaseRequestId,
+            finishedAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 
@@ -88,7 +103,6 @@ public class BuildAnnouncer implements RunAnnouncer {
       String repoName,
       String branch,
       String commitSha,
-      boolean gating,
       String phase,
       String releaseRequestId,
       String outcome,
@@ -96,8 +110,8 @@ public class BuildAnnouncer implements RunAnnouncer {
       String triggerEventId) {
     bus.publish(
         new BuildFailed(
-            runId, repoId, projectId, repoName, branch, commitSha, wireGating(gating), phase,
-            releaseRequestId, outcome, finishedAt),
+            runId, repoId, projectId, repoName, branch, commitSha, phase, releaseRequestId, outcome,
+            finishedAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 
@@ -109,7 +123,6 @@ public class BuildAnnouncer implements RunAnnouncer {
       String repoName,
       String branch,
       String commitSha,
-      boolean gating,
       String phase,
       String releaseRequestId,
       String status,
@@ -118,30 +131,8 @@ public class BuildAnnouncer implements RunAnnouncer {
       String triggerEventId) {
     bus.publish(
         new BuildStatusChanged(
-            runId, repoId, projectId, repoName, branch, commitSha, wireGating(gating), phase,
-            releaseRequestId, status, previousStatus, occurredAt),
+            runId, repoId, projectId, repoName, branch, commitSha, phase, releaseRequestId, status,
+            previousStatus, occurredAt),
         CausingEvent.parentOf(triggerEventId, runId));
-  }
-
-  /**
-   * <b>The phase and the release request id are passed straight through, and null straight through
-   * with them.</b> The pair arrives from the port already null-together-or-set-together — the engine
-   * derives the phase from the id it read — so nothing here has to reconcile them, and nothing here
-   * may: a defaulting or a validation at this seam would be a second opinion about a fact the run
-   * row already holds. The paragraph below is the phase's and the id rides every word of it.
-   *
-   * <p>The port hands
-   * this class the word {@code CiRunPhase} spells, already turned into a plain {@code String} by the
-   * caller, so nothing here maps, defaults or validates it — a wire vocabulary that held an opinion
-   * about another module's enum would be the coupling {@code ci-events/} exists to avoid. Null is a
-   * run that is no part of a release, which is most of them, and {@code CanonicalJson}'s NON_NULL
-   * inclusion leaves the key out entirely: such a build's payload is byte-identical to what it was
-   * before the component existed.
-   *
-   * <p>Null means gating on the wire, so every gating build's canonical payload stays byte-identical
-   * to what shipped before the field existed; only a non-gating run writes {@code false}.
-   */
-  private static Boolean wireGating(boolean gating) {
-    return gating ? null : Boolean.FALSE;
   }
 }

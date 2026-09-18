@@ -113,7 +113,6 @@ public class CiReleaseComposerTest {
                       git submodule update --init
                       ./mvnw -q verify
                   - image: qits/build-images/maven-base:latest
-                    gating: false
                     script: ./mvnw -q verify -Dit.test=BuildTriggerIT
                 artifacts:
                   - { type: docker, name: qits/qits-ci, sbom: out/sbom.json }
@@ -370,7 +369,6 @@ public class CiReleaseComposerTest {
                     build: true
                     script: buildctl build --opt target=binary
                   - image: qits/build-images/node-base:latest
-                    gating: false
                     script: npm run docs
                 artifacts:
                   - { type: docker, name: qits/qits-ci, sbom: out/sbom.json }

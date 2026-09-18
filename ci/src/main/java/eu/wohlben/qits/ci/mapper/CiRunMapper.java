@@ -44,7 +44,6 @@ public interface CiRunMapper {
         bare.repoName(),
         bare.branch(),
         bare.commitSha(),
-        bare.gating(),
         bare.status(),
         bare.createdAt(),
         bare.startedAt(),

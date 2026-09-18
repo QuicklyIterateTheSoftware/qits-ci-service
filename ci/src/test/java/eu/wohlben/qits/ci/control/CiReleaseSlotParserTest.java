@@ -60,7 +60,6 @@ public class CiReleaseSlotParserTest {
                 timeout-seconds: 1800
                 script: ./mvnw verify
               - image: qits/build-images/node-base:latest
-                gating: false
                 script: npm run stories
             release:
               - image: qits/build-images/ci-base:latest
@@ -74,10 +73,9 @@ public class CiReleaseSlotParserTest {
 
     assertEquals(2, slots.releaseRequest().steps().size());
     assertEquals(1800, slots.releaseRequest().steps().get(0).timeoutSeconds());
-    assertTrue(slots.releaseRequest().steps().get(0).gating());
     // Per-step leniency and per-step strictness both come from CiConfigSchema, unchanged: a step
-    // means the same thing here as in a trigger file, which is what makes the composition ordinary.
-    assertEquals(false, slots.releaseRequest().steps().get(1).gating());
+    // means the same thing here as in a trigger file, which is what makes the composition ordinary
+    // — and it is why `gating:` is refused in a slot file too (ticket 9441bc6e), asserted below.
     assertTrue(slots.release().steps().get(0).build());
 
     assertEquals(2, slots.artifacts().size());
@@ -167,6 +165,20 @@ public class CiReleaseSlotParserTest {
     assertThrows(
         CiConfigException.class,
         () -> parser.parse(PATH, "release:\n  - {image: a, script: b}\nrelease:\n  - {image: c, script: d}\n"));
+  }
+
+  @Test
+  public void aStepDeclaringGatingIsRefusedHereToo() {
+    // The step schema is CiConfigSchema's verbatim, so a slot file is held to exactly the trigger
+    // file's rule: `gating:` is a parse error (ticket 9441bc6e), and the refusal names the file and
+    // the slot rather than saying "Step 1" about one of two lists.
+    CiConfigException refused =
+        refused(
+            "release-request:\n  - {image: a, script: b}\n"
+                + "  - {image: c, script: d, gating: false}\n");
+    assertTrue(refused.getMessage().contains("release-request"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("gating"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("9441bc6e"), refused.getMessage());
   }
 
   @Test

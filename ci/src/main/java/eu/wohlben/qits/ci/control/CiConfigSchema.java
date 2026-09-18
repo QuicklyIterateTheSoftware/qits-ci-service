@@ -54,12 +54,24 @@ final class CiConfigSchema {
   static final String CHECKOUT_KEY = "checkout";
 
   /**
-   * Whether a red run of this pipeline should stand in the way of releasing its commit — trigger
-   * files only, default {@code true}. The platform's userflow pipelines are the reason it exists:
-   * they are non-gating by design ("a red story costs a fix-forward cycle, not an image"), and the
-   * release-quality-gates build gate needs that stated as data rather than known by file name.
+   * The key that no longer exists, kept as a constant for exactly one purpose: so that both scopes
+   * that used to read it now <b>refuse</b> it by the same name.
+   *
+   * <p>It used to say whether a red run of this pipeline — or, one level down, of this step — should
+   * stand in the way of releasing its commit. The concept is gone (ticket 9441bc6e): QA that does not
+   * gate is pointless, and worse than pointless, because a run whose gating step passed and whose
+   * non-gating step went red announced no {@code BuildSuccessful} at all — only a {@code
+   * BuildFailed} a release gate could neither accept nor refuse, so the release request parked
+   * forever. Measured once at fourteen hours on a single flaky test. Every step of a pipeline gates
+   * now, and a run's verdict is simply its outcome.
+   *
+   * <p>Deleting the constant with the feature would have made the key <em>unknown</em> rather than
+   * <em>refused</em> at the step scope, where unknown keys are lenient — so a repository that still
+   * carried the line would have had it quietly ignored, which is how the 2026-09-07 retirement of
+   * this same flag came back. {@code branches:} is the precedent: the key is gone and its refusal
+   * stayed.
    */
-  static final String GATING_KEY = "gating";
+  static final String REFUSED_GATING_KEY = "gating";
 
   static final String CHECKOUT_BRANCH = "branch";
 
@@ -111,6 +123,22 @@ final class CiConfigSchema {
   private CiConfigSchema() {}
 
   /**
+   * Where the text being parsed came from, and therefore how strict this schema is about {@link
+   * #REFUSED_GATING_KEY}.
+   *
+   * <p>It is a parameter rather than an ambient flag on purpose. The argument for the asymmetry is
+   * {@link CiEventTriggerParser#parseSnapshot}'s, in full, and it is the one thing a reader must not
+   * take for the bug ticket 9441bc6e removed.
+   */
+  enum Origin {
+    /** A file read out of a repository, at a branch head or at a commit. Strict. */
+    COMMITTED_FILE,
+
+    /** {@code ci_run.trigger_config}, re-parsed to rebuild a run already accepted. Tolerant. */
+    STORED_SNAPSHOT
+  }
+
+  /**
    * Loads the document root, or null for blank content and an empty document. A non-mapping root is
    * a config error — every schema this repo has is a mapping.
    *
@@ -158,8 +186,12 @@ final class CiConfigSchema {
    * Allow-but-inert is the trap the whole schema refuses. Per-push CI retired on 2026-09-05 and the
    * filter went with it entirely, so what is left here is the refusal: a repository that still
    * carries the key is told, rather than having it quietly ignored.
+   *
+   * <p><b>{@code gating:} on a step is now a parse error for the same reason and by the same
+   * mechanism</b> — see {@link #REFUSED_GATING_KEY} for why the concept went, and {@code origin} for
+   * the one caller that is allowed to find the key and ignore it.
    */
-  static CiPipeline steps(Map<?, ?> root, String configPath) {
+  static CiPipeline steps(Map<?, ?> root, String configPath, Origin origin) {
     Object rawSteps = root.get(STEPS_KEY);
     if (rawSteps == null) {
       return new CiPipeline(List.of());
@@ -174,6 +206,7 @@ final class CiConfigSchema {
         throw new CiConfigException("Step " + i + ": expected a mapping, got: " + typeOf(entry));
       }
       rejectBranches(step, i, configPath);
+      rejectGating(step, i, configPath, origin);
       boolean docker = optionalDocker(step, i);
       boolean build = optionalBuild(step, i, docker);
       steps.add(
@@ -183,8 +216,7 @@ final class CiConfigSchema {
               optionalTimeoutSeconds(step, i),
               docker,
               build,
-              optionalUser(step, i, docker),
-              optionalStepGating(step, i)));
+              optionalUser(step, i, docker)));
     }
     return new CiPipeline(List.copyOf(steps));
   }
@@ -271,36 +303,29 @@ final class CiConfigSchema {
   }
 
   /**
-   * The optional per-step {@code gating}: whether a failure of <b>this step</b> is a verdict about
-   * the commit. Absent means true, which is every pipeline written before the key existed.
+   * A step declaring {@code gating:} is refused — see {@link #REFUSED_GATING_KEY} for why the key is
+   * gone, and {@link CiEventTriggerParser#parseSnapshot} for why a stored snapshot is the one text
+   * that may still carry it.
    *
-   * <p><b>It is the same word as the top-level {@link #GATING_KEY} one level down, and that is the
-   * point rather than a collision.</b> The file-level key says what the whole pipeline is worth to a
-   * release gate; this one says what one step is worth, and the run's verdict is the AND of the two
-   * — a non-gating file cannot be made gating by a step, and a gating file's non-gating step
-   * produces a non-gating red. That is what lets a repository's single QA pipeline carry the build
-   * and its tests as the gating half and the userflow publish as the non-gating half in ONE file,
-   * which is what replaced the two-file split (see {@link CiPipeline.CiStepDecl}).
-   *
-   * <p>It was legal in <b>both</b> file kinds while there were two, unlike {@code checkout:} and the
-   * file-level {@code gating:} — the step schema is one implementation on purpose, a step must not
-   * mean two things, and a push pipeline whose last step published docs was the identical "this half
-   * must not cost the image" case.
-   *
-   * <p>Held to the {@code timeout-seconds}/{@code docker} standard, and for the sharper of the two
-   * reasons: {@code gating: "false"} silently parsing as truthy would hold a commit for a failure
-   * nobody meant to gate on, and the other direction would wave one through.
+   * <p>The message is better than "unknown key" deliberately. This key was written on purpose by
+   * every repository that had a userflow publish to keep out of its verdict, so the refusal has to
+   * say what replaced it rather than only that it is no longer read.
    */
-  private static boolean optionalStepGating(Map<?, ?> step, int index) {
-    Object value = step.get(GATING_KEY);
-    if (value == null) {
-      return true;
+  private static void rejectGating(Map<?, ?> step, int index, String configPath, Origin origin) {
+    if (origin == Origin.STORED_SNAPSHOT || !step.containsKey(REFUSED_GATING_KEY)) {
+      return;
     }
-    if (!(value instanceof Boolean gating)) {
-      throw new CiConfigException(
-          "Step " + index + ": '" + GATING_KEY + "' must be a boolean, got: " + typeOf(value));
-    }
-    return gating;
+    throw new CiConfigException(
+        configPath
+            + ": step "
+            + index
+            + " declares '"
+            + REFUSED_GATING_KEY
+            + "' — every step of a pipeline gates, and a run's verdict is its outcome. QA that does"
+            + " not gate is pointless, and a run that died in a non-gating step announced a verdict"
+            + " no release gate could accept or refuse, so the release request never finished."
+            + " Delete the key; work that must not block a release does not belong in a"
+            + " release-request pipeline at all. (ticket 9441bc6e)");
   }
 
   /**

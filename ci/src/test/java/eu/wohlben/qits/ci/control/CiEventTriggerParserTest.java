@@ -41,31 +41,81 @@ public class CiEventTriggerParserTest {
     assertEquals(1, trigger.selection().groups().size());
     Group group = trigger.selection().groups().get(0);
     assertEquals(2, group.conditions().size(), "a group's map entries are AND'd");
-    assertTrue(trigger.gating(), "absent gating is true — the conservative default");
   }
 
-  // --- gating ---
+  // --- gating: is refused, at both scopes, and a stored snapshot is the one exception ------------
 
   @Test
-  public void gatingFalseParsesAndAnythingElseIsAParseError() {
-    // The userflow pipelines' key: a red story must not stand in the way of releasing the commit.
-    CiEventTrigger nonGating =
-        parser.parse(
-            PATH,
-            """
-            event: BuildSuccessful
-            gating: false
-            steps: []
-            """);
-    assertFalse(nonGating.gating());
-
-    // Strict on this file's standing reason: a gating flag that silently parsed to a default would
-    // decide who may release with nobody having said so.
-    CiConfigException e =
+  public void aFileLevelGatingIsAParseErrorWhateverItSays() {
+    // The key is gone as a concept (ticket 9441bc6e): every step of a pipeline gates and a run's
+    // verdict is its outcome. It has to be a PARSE ERROR rather than an ignored key, because the
+    // 2026-09-07 retirement of this same flag deleted the declarations, left the documents
+    // prescribing it, and it came back — so a file that still carries the line is told.
+    CiConfigException refused =
         assertThrows(
             CiConfigException.class,
-            () -> parser.parse(PATH, "event: BuildSuccessful\ngating: nope\nsteps: []\n"));
-    assertTrue(e.getMessage().contains("gating"), e.getMessage());
+            () ->
+                parser.parse(
+                    PATH,
+                    """
+                    event: BuildSuccessful
+                    gating: false
+                    steps: []
+                    """));
+    assertTrue(refused.getMessage().contains("gating"), refused.getMessage());
+    // Better than the generic "unknown top-level key": the key was written on purpose, so the
+    // refusal owes the author what replaced it.
+    assertTrue(refused.getMessage().contains("every step"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("9441bc6e"), refused.getMessage());
+
+    // `gating: true` is refused identically. There is no "harmless" spelling of a retired key: one
+    // that parsed would be a line a repository keeps, and keeps meaning something by.
+    assertThrows(
+        CiConfigException.class,
+        () -> parser.parse(PATH, "event: BuildSuccessful\ngating: true\nsteps: []\n"));
+    assertThrows(
+        CiConfigException.class,
+        () -> parser.parse(PATH, "event: BuildSuccessful\ngating: nope\nsteps: []\n"));
+  }
+
+  @Test
+  public void aStoredSnapshotStillCarryingGatingParsesAndIgnoresIt() {
+    // THE CROSSING CONTRACT, and the thing most likely to be broken later. `parse` is the file-read
+    // path: a refusal there is a repository being told to fix a line it committed. `parseSnapshot`
+    // is `ci_run.trigger_config`, re-parsed to rebuild a run that was ALREADY ACCEPTED — nobody can
+    // fix that text, and neither caller catches a parse failure, so a strict parser here would kill
+    // every run queued across the deploy that ships this change and every retry of a historical run.
+    // The key is read and thrown away; nothing can write a NEW snapshot carrying it once the
+    // composer stops emitting it and `parse` refuses it, so this path drains to empty on its own.
+    CiEventTrigger snapshot =
+        parser.parseSnapshot(
+            PATH,
+            """
+            event: ReleaseRequestChanged
+            gating: false
+            steps:
+              - image: alpine:3
+                gating: false
+                script: publish-userflows
+            """,
+            "Run 0f2c");
+
+    assertEquals("ReleaseRequestChanged", snapshot.eventName());
+    assertEquals(1, snapshot.pipeline().steps().size());
+    assertEquals("publish-userflows", snapshot.pipeline().steps().get(0).script());
+  }
+
+  @Test
+  public void aStoredSnapshotIsOtherwiseAsStrictAsAFile() {
+    // The leniency is EXACTLY the one key. A snapshot with a mistyped `wehn:` still widens a
+    // selection to every event of that name, which is the failure this parser may not have — and a
+    // snapshot is not a second, quieter grammar.
+    assertThrows(
+        CiConfigException.class,
+        () -> parser.parseSnapshot(PATH, "event: E\nwehn:\n  - a: { exact: b }\n", "Run 0f2c"));
+    assertThrows(
+        CiConfigException.class,
+        () -> parser.parseSnapshot(PATH, "steps: []\n", "Run 0f2c"));
   }
 
   // --- the two-way rule ---
@@ -649,9 +699,9 @@ public class CiEventTriggerParserTest {
   }
 
   /**
-   * {@code optional} is a YAML boolean or an error, {@code gating:}'s rule and for the same reason:
-   * both ways of guessing are silent. A stray {@code "true"} that parsed as false would lose exactly
-   * the runs the key exists to keep.
+   * {@code optional} is a YAML boolean or an error, on this file's standing rule: both ways of
+   * guessing are silent. A stray {@code "true"} that parsed as false would lose exactly the runs the
+   * key exists to keep.
    */
   @Test
   public void aNonBooleanCheckoutOptionalIsAParseErrorNamingTheFile() {
@@ -696,7 +746,6 @@ public class CiEventTriggerParserTest {
     assertEquals(declared.eventName(), stripped.eventName());
     assertEquals(declared.configPath(), stripped.configPath());
     assertEquals(declared.artifacts(), stripped.artifacts());
-    assertEquals(declared.gating(), stripped.gating());
     assertEquals(
         declared.pipeline().steps().size(),
         stripped.pipeline().steps().size(),
@@ -747,44 +796,32 @@ public class CiEventTriggerParserTest {
     assertTrue(refused.getMessage().contains("'checkout'"), refused.getMessage());
   }
 
-  // --- per-step gating: ------------------------------------------------------------------------
+  // --- per-step gating: is refused too ----------------------------------------------------------
 
   @Test
-  public void aStepDeclaresItsOwnGatingAndAbsenceIsGating() {
-    // The one-file QA pipeline's shape: a gating build followed by a non-gating publish. What the
-    // two halves used to buy with two files, ordering plus this key buys inside one.
-    CiEventTrigger trigger =
-        parser.parse(
-            PATH,
-            """
-            event: ReleaseRequestChanged
-            checkout:
-              branch: backingBranch
-              sha: mergedSha
-            steps:
-              - image: alpine:3
-                script: verify
-              - image: alpine:3
-                gating: false
-                script: publish-userflows
-            """);
-    assertTrue(trigger.gating(), "the FILE is gating; only the second step is not");
-    assertTrue(trigger.pipeline().steps().get(0).gating());
-    assertFalse(trigger.pipeline().steps().get(1).gating());
-  }
-
-  @Test
-  public void aStepGatingThatIsNotABooleanIsAParseError() {
-    // The sharper of the two standing reasons: `gating: "false"` parsing as truthy would hold a
-    // commit for a failure nobody meant to gate on, and the other direction waves one through.
+  public void aStepDeclaringGatingIsAParseErrorNamingTheFile() {
+    // The step scope matters more than the file scope, not less: unknown per-step keys are LENIENT
+    // here (a forward-compatible pipeline must not be a parse error), so deleting the key without
+    // leaving a refusal behind would have made `gating: false` on a step quietly ignored — which is
+    // exactly how the 2026-09-07 retirement came back. `branches:` is the precedent.
     CiConfigException refused =
         assertThrows(
             CiConfigException.class,
             () ->
                 parser.parse(
                     PATH,
-                    "event: X\nsteps:\n  - image: alpine:3\n    gating: \"false\"\n"
-                        + "    script: \"true\"\n"));
-    assertTrue(refused.getMessage().contains("gating"), refused.getMessage());
+                    """
+                    event: ReleaseRequestChanged
+                    steps:
+                      - image: alpine:3
+                        script: verify
+                      - image: alpine:3
+                        gating: false
+                        script: publish-userflows
+                    """));
+    assertTrue(refused.getMessage().contains(PATH), refused.getMessage());
+    assertTrue(refused.getMessage().contains("step 1"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("every step"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("9441bc6e"), refused.getMessage());
   }
 }

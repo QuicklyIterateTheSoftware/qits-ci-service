@@ -21,10 +21,10 @@ import java.util.List;
  * {@code main}, as every event trigger always has. Declared, the run builds <b>the commit the
  * event names</b>: the two paths are dot-paths into the payload, resolved per event.
  *
- * <p>{@code gating} is {@code true} unless the file says {@code gating: false} — whether a red run
- * of this pipeline should stand in the way of releasing its commit. It rides the run row onto the
- * build events, where the release-quality-gates build gate reads it; the userflow pipelines are the
- * ones that say false.
+ * <p><b>A trigger says nothing about what a red run of it is worth</b>, and there is nothing left
+ * for it to say. There was a {@code gating} component here, {@code true} unless the file declared
+ * {@code gating: false}, and it went with the concept (ticket 9441bc6e; {@link
+ * CiConfigSchema#REFUSED_GATING_KEY} carries the argument). A red run is a red verdict.
  */
 public record CiEventTrigger(
     String configPath,
@@ -32,7 +32,6 @@ public record CiEventTrigger(
     CiEventSelection selection,
     CiPipeline pipeline,
     List<CiArtifact> artifacts,
-    boolean gating,
     Checkout checkout) {
 
   /**
@@ -73,7 +72,6 @@ public record CiEventTrigger(
   public CiEventTrigger withoutCheckout() {
     return checkout == null
         ? this
-        : new CiEventTrigger(
-            configPath, eventName, selection, pipeline, artifacts, gating, null);
+        : new CiEventTrigger(configPath, eventName, selection, pipeline, artifacts, null);
   }
 }

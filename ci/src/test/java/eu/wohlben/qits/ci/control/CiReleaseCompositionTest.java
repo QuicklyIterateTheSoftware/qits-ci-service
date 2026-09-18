@@ -48,7 +48,6 @@ public class CiReleaseCompositionTest extends CiTestSupport {
         - image: qits/build-images/maven-base:latest
           script: ./mvnw -B -ntp verify
         - image: qits/build-images/maven-base:latest
-          gating: false
           script: ./publish-userflows.sh
       """;
 
@@ -160,12 +159,10 @@ public class CiReleaseCompositionTest extends CiTestSupport {
     assertEquals("backingBranch", qa.composed().summary().checkout().branchPath());
     assertEquals("mergedSha", qa.composed().summary().checkout().shaPath());
 
-    // The committed QA pipeline's second step is the non-gating userflows half; the archetype's is
-    // one gating step. A person reads that off the summaries without opening either document.
+    // The committed QA pipeline runs two steps and the archetype's runs one. A person reads the
+    // difference off the summaries without opening either document.
     assertEquals(2, qa.committed().summary().steps().size());
     assertEquals(1, qa.composed().summary().steps().size());
-    assertTrue(qa.committed().summary().steps().get(0).gating());
-    assertTrue(!qa.committed().summary().steps().get(1).gating());
 
     CiEventTriggerService.PhaseComparison release = answer.releasePhase();
     assertEquals("release", release.phase());

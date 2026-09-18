@@ -157,7 +157,7 @@ argv.
 
 **The fetch in it is retried, not a single attempt.** qits-artifacts serves the daemon binary and
 deploys `stop-first`, so it refuses connections for a window on every deploy; one attempt turned
-that window into a red gating verdict on 2026-09-15 (hazard 2 under `CiDaemonHandshakeIT` has the
+that window into a red release-request verdict on 2026-09-15 (hazard 2 under `CiDaemonHandshakeIT` has the
 measurement). The loop is explicit shell — the platform's step images are Alpine, and busybox `wget`
 has neither a retry nor `--tries` — and its literals stay typed into the text, because a Java
 constant folded in here would end the zero-interpolation property. Ten attempts twelve seconds
@@ -1145,7 +1145,7 @@ Four things about that second seam are worth having in front of you:
 
 **Two words carry across this section and the release-slots one below, and they mean exactly one
 thing in all three services.** A **phase** is a unit of work with a state and a rerun — QA, publish,
-deploy — so a step is not a phase and a `gating: false` half of one is not a second phase. A **gate**
+deploy — so a step is not a phase. A **gate**
 is the condition between two phases, and there are four (CI, approval, publish, deployment): **a gate
 delays, it does not fail.** The pipeline those phases belong to is the release request in
 qits-projects, not a table here; what qits-ci learns is which phase a run is, from the triggering
@@ -1619,31 +1619,34 @@ names"), and what follows is what biting it feels like.
   re-minted — `causation_id` is copied from the run being re-fired, and `CiRunService.causingEventId`
   is the one place that is read back, for the announcers and for a step's `$QITS_EVENT_ID`, so a
   retried run's `BuildSuccessful` hangs off the domain event that started it rather than off a root
-  of its own. And **`gating` is re-derived from `trigger_config` rather than copied**: the column on
-  a *finished* run is what that run's verdict was worth (the file's flag ANDed with the failing
-  step's), so copying it would start a re-run of a gating pipeline off as non-gating and publish a
-  verdict no release gate holds a commit for.
+  of its own. A `gating` column used to be re-derived here from `trigger_config` rather than copied,
+  because the column on a *finished* run was what that run's verdict had been worth; both the column
+  and the concept went with ticket 9441bc6e, and a retry is now worth exactly what the work is worth
+  like every other column it copies.
 
   Only a **terminal** run is retryable (409 otherwise): two runs racing for one verdict is not what
   was asked for. Cancelled runs are retryable, which is the point — a re-fire is what a cancellation
   invites.
-- **A step declares its own `gating:`, and that is what let two files become one.** The file-level
-  flag says what a whole pipeline is worth to a release gate; the step-level one says what one step
-  is worth, and a run's announced `gating` is the **AND** of the file's flag and the failing step's
-  (`runSteps`, written to the row as well so the two can never disagree). Nothing else about failure
-  moved: a non-gating step that fails still fails the run, still skips what follows, still shows red.
+- **Every step gates, and `gating:` is a parse error at both scopes.** A file and a step could each
+  declare it, the run's announced verdict was the two ANDed, and that is what let
+  `ci-event-build.yml` and `ci-event-userflows.yml` become one file. The two-files-into-one story
+  survives; the flag does not (ticket 9441bc6e). QA that does not gate is pointless, and it did not
+  merely fail to gate: a run whose gating step passed and whose non-gating step went red announced
+  no `BuildSuccessful` at all, only a `BuildFailed{gating:false}` qits-projects' release gate could
+  neither accept nor refuse, so the request parked forever — measured once at fourteen hours on one
+  flaky test.
 
-  The property it has to preserve is the sentence the old `ci-event-build.yml`/`ci-event-userflows.yml`
-  split was built on — *a red verify must not cost the image*. Two files bought it by never sharing a
-  verdict; one file buys it by **ordering plus classification**, since the gating half runs first and
-  has published whatever it publishes before a non-gating step can fail. So the non-gating steps go
-  **last**, and that is a rule rather than a style: everything after a failure is `SKIPPED`.
+  Two rules replace it and both were already true underneath it. **Non-blocking work does not belong
+  in a release-request pipeline at all**, which is a placement decision rather than a flag; and **the
+  steps that must run first go first**, because everything after a failure is `SKIPPED`. That
+  ordering rule is what the merged file really bought, and it is unchanged.
 
-  It was legal in **both** file kinds while there were two, unlike `checkout:` and the file-level
-  `gating:`: the `steps:` schema is one implementation on purpose, and a push pipeline whose last
-  step published docs was the identical case. Only a YAML boolean is accepted, on the standing reason
-  with its sharpest edge: `gating: "false"` parsing as truthy would hold a commit for a failure
-  nobody meant to gate on.
+  It is a **parse error** rather than an ignored key, and at the step scope that matters more rather
+  than less: unknown per-step keys are lenient, so deleting the declaration and leaving nothing
+  behind would have made every repository's committed `gating: false` quietly read as nothing —
+  which is exactly how the 2026-09-07 retirement of this same flag came back. `branches:` is the
+  precedent. The one text allowed to still carry the key is a run's **stored snapshot**; see
+  `CiEventTriggerParser.parseSnapshot`, whose javadoc argues the asymmetry in full.
 - **The trigger file is strict about unknown TOP-LEVEL keys and lenient about unknown per-step ones**,
   and the asymmetry is the point rather than an inconsistency. In a pipeline an unread key costs a
   feature that was not there yet; in a *selection* it costs correctness, because an absent `when:`
@@ -1834,8 +1837,8 @@ same, and what keeps this feature out of every reader keyed on a phase.
   — **falls back to the stored snapshot** with a WARN naming the reason, because a retry that refused
   is worse than a retry of the old document. And the reads happen **outside** `DbRetry.inNewTx`, like
   every other IO on this class's write paths. A run from a hand-written `ci-event-*.yml` has no
-  platform half and is replayed byte for byte, as it always was; `gating` and the predicted step
-  durations are then derived from whichever document the retry really ends up with.
+  platform half and is replayed byte for byte, as it always was; the predicted step durations are
+  then derived from whichever document the retry really ends up with.
 - **The qits CLI a composed release step runs is a POM PIN, not a resolution.** The prelude
   downloads `$QITS_ARTIFACTS_CLI_PACKAGE` at `$QITS_ARTIFACTS_CLI_VERSION`, and the version comes
   from `eu.wohlben.qits:qits-platform-access-cli-binary` — one class, three strings, no bytes of the
@@ -2083,9 +2086,13 @@ did before names existed. `repo_id` is untouched and stays the key: the dedupe c
 it and every existing row is found by it.
 
 `V6`, `V7__run_gating.sql`, `V8__run_release_request.sql` and `V9__run_retry.sql` continue it too,
-and the last three are the release-flow set. `ci_run.gating` is the data form of "userflows are non-gating" — added with a
-default so every historical row fills as gating, then the default dropped, which is the V3-era
-lesson followed. `ci_run.release_request_id` is nullable with **no** default and no backfill,
+and the last three are the release-flow set. `ci_run.gating` was the data form of "userflows are
+non-gating" — added with a default so every historical row filled as gating, then the default
+dropped, which is the V3-era lesson followed. **`V19__run_drop_gating.sql` drops that column**, the
+second drop in this lineage after V18 and for a reason of the same shape: the column held a
+classification of a verdict rather than a statement about something that happened, and the
+classification is ruled out (ticket 9441bc6e). V7 is not touched, for V18's measured reason.
+`ci_run.release_request_id` is nullable with **no** default and no backfill,
 because null is the ordinary value rather than a value to be filled: every event run not triggered by
 a `ReleaseRequestChanged` has none, as does every historical push row, so there is nothing for an existing row to
 be and no reading of "absent" to get wrong. It carries a **partial** index (`where … is not null`),
@@ -2534,11 +2541,11 @@ contract, tested where it lives.
   request to exactly one story, so the startup JWKS fetch lands in whichever story drains first and
   that must be the story about it. The class orderer is installed the one way Quarkus
   permits, `junit.quarkus.orderer.secondary-orderer` in this module's test properties; a local
-  `junit-platform.properties` hard-fails surefire. The **non-gating half of
+  `junit-platform.properties` hard-fails surefire. The **userflow half of
   `.config/qits/ci-event-release-request.yml`** is what regenerates and publishes them as the docs
   bundle `@userflows/qits-ci`, versioned by the fold's merged sha — it was a separate
-  `ci-event-userflows.yml` until the single QA pipeline absorbed it, and `gating: false` on the step
-  is the whole of what that file was.
+  `ci-event-userflows.yml` until the single QA pipeline absorbed it. That step gates like every
+  other step now (ticket 9441bc6e): a red userflow round is a red release-request run.
   <br>**`skipITs` stays `true` and this IT does not flip it.** The three docker-backed gates bind to
   the same failsafe run, and `qits.it.excluded-groups` — which would drop them by their `extended`
   tag — is empty by default on purpose. So the opt-in is per-run and per-class,

@@ -30,7 +30,6 @@ steps:
         sh -eu /tmp/qits-slot.sh
       fi
   - image: 'qits/build-images/maven-base:latest'
-    gating: false
     script: |
       set -eu
       # --- platform prelude ---------------------------------------------------------

@@ -158,7 +158,7 @@ public class CiDaemonLauncher {
    * window on <em>every</em> deploy — the one service the bootstrap depends on before it can do
    * anything at all is also one that is deliberately absent now and then. On 2026-09-15 at 01:05 UTC
    * a step container landed 7 seconds into such a window, got {@code Connection refused} from
-   * busybox wget, exited, and the gating run went red with {@code NEVER_STARTED} a minute later:
+   * busybox wget, exited, and the release-request run went red with {@code NEVER_STARTED} a minute later:
    * a one-attempt fetch turned a routine redeploy into a rejected release request on somebody's
    * commit. The loop is explicit shell rather than a downloader flag because the platform's step
    * images are Alpine, so the {@code wget} that is probed first is <b>busybox wget</b>, which has

@@ -1,7 +1,6 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -19,8 +18,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The release-request QA pipeline, end to end: a {@code ReleaseRequestChanged} builds the fold it
- * names, the run records which request it serves, and one file carries a gating half and a
- * non-gating half whose failures are worth different things to a release gate.
+ * names, the run records which request it serves, and the run's verdict is its outcome.
  *
  * <p><b>The trigger needs no engine knowledge and this file is where that is pinned.</b> {@code
  * event:} is matched against the frame's name as a string and {@code checkout:} resolves two dot
@@ -34,7 +32,7 @@ public class CiReleaseRequestRunTest extends CiTestSupport {
 
   private static final String QA_PATH = ".config/qits/ci-event-release-request.yml";
 
-  /** The reference file's shape: gating build first, non-gating publish after. */
+  /** The reference file's shape: two steps, both of which gate, because every step gates. */
   private static final String QA_TRIGGER =
       """
       event: ReleaseRequestChanged
@@ -47,7 +45,6 @@ public class CiReleaseRequestRunTest extends CiTestSupport {
         - image: qits/build-images/maven-base:latest
           script: ./mvnw verify
         - image: qits/build-images/maven-base:latest
-          gating: false
           script: ./publish-userflows.sh
       """;
 
@@ -100,7 +97,6 @@ public class CiReleaseRequestRunTest extends CiTestSupport {
     assertEquals(1, announcer.announced().size());
     assertEquals(MERGED, announcer.announced().get(0).commitSha());
     assertEquals("release/" + REQUEST_ID, announcer.announced().get(0).branch());
-    assertTrue(announcer.announced().get(0).gating(), "a green QA run is a gating verdict");
   }
 
   @Test
@@ -178,32 +174,35 @@ public class CiReleaseRequestRunTest extends CiTestSupport {
     assertEquals(CiRunStatus.SUCCESS, run.status);
   }
 
-  // --- the gating / non-gating split inside ONE file ---------------------------------------------
+  // --- a failing step is a failed run, and that is the whole verdict ----------------------------
 
   @Test
-  public void aFailureInTheNonGatingHalfIsRedAndIsNotAGatingVerdict() throws Exception {
+  public void anyFailingStepFailsTheRunAndAnnouncesBuildFailed() throws Exception {
+    // What the four cases here used to pin was an AND: the file's `gating:` flag and the failing
+    // step's, and which half the run died in decided what the verdict was worth. The concept is gone
+    // (ticket 9441bc6e) and the fact that remains is the one worth pinning — ANY failing step fails
+    // the run, and a red run announces BuildFailed. The second step is the one that goes red here
+    // precisely because it is the one that used to be exempt.
     seedQa();
-    // The build passed and published; the userflow step is what went red.
     fakeRunner.script(1, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
 
     deliver(arrival(UUID.randomUUID().toString(), payload(REQUEST_ID, MERGED)));
 
     CiRun run = runService.runsFor(repoId).get(0);
-    assertEquals(CiRunStatus.FAILED, run.status, "a red step is a red run, whatever it is worth");
-    assertFalse(run.gating, "the row records what the verdict was worth, not only what was declared");
+    assertEquals(CiRunStatus.FAILED, run.status, "a red step is a red run");
+    assertEquals(REQUEST_ID, run.releaseRequestId);
 
-    assertEquals(List.of(), announcer.announced());
+    assertEquals(List.of(), announcer.announced(), "a red run announces no BuildSuccessful");
     assertEquals(1, announcer.failed().size());
     FakeRunAnnouncer.AnnouncedFailure failure = announcer.failed().get(0);
     assertEquals("FAILED", failure.outcome());
     assertEquals(MERGED, failure.commitSha());
-    assertFalse(
-        failure.gating(),
-        "a red userflow publish must not hold the commit — this is the whole of the one-file split");
   }
 
   @Test
-  public void aFailureInTheGatingHalfIsAGatingVerdict() throws Exception {
+  public void aFailureInTheFirstStepFailsTheRunIdentically() throws Exception {
+    // The mirror of the case above, and it is here to say that the two are the SAME case now. Which
+    // step died decided the verdict's worth while `gating:` existed; it decides nothing any more.
     seedQa();
     fakeRunner.script(0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
 
@@ -211,68 +210,21 @@ public class CiReleaseRequestRunTest extends CiTestSupport {
 
     CiRun run = runService.runsFor(repoId).get(0);
     assertEquals(CiRunStatus.FAILED, run.status);
-    assertTrue(run.gating);
+    assertEquals(List.of(), announcer.announced());
     assertEquals(1, announcer.failed().size());
-    assertTrue(announcer.failed().get(0).gating(), "the build and its tests are the gating half");
-    assertEquals(REQUEST_ID, run.releaseRequestId);
+    assertEquals("FAILED", announcer.failed().get(0).outcome());
   }
 
   @Test
-  public void aNonGatingFileIsNotMadeGatingByItsSteps() throws Exception {
-    // The AND, from the other side: the run's verdict is the file's flag ANDed with the failing
-    // step's, so a `gating: false` file stays non-gating however its steps are declared.
-    fakeConfig.putTriggers(
-        repoId,
-        "main",
-        HEAD,
-        new EventTriggerFile(
-            QA_PATH,
-            """
-            event: ReleaseRequestChanged
-            gating: false
-            checkout:
-              branch: backingBranch
-              sha: mergedSha
-            steps:
-              - image: alpine:3
-                script: "true"
-            """));
-    fakeRunner.script(0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
+  public void aGreenRunAnnouncesBuildSuccessfulAndNothingElse() throws Exception {
+    seedQa();
 
     deliver(arrival(UUID.randomUUID().toString(), payload(REQUEST_ID, MERGED)));
 
-    assertFalse(runService.runsFor(repoId).get(0).gating);
-    assertFalse(announcer.failed().get(0).gating());
-  }
-
-  @Test
-  public void aNonGatingStepAlsoWorksInAFileThatDeclaresNoFileLevelFlag() throws Exception {
-    // The AND, with the file's half left at its default: a gating file whose failing step said
-    // `gating: false` announces a non-gating red. This is the "this half must not cost the image"
-    // case the two-file split used to buy with a second file, and it is what lets a single QA
-    // pipeline carry both halves.
-    String repo = UUID.randomUUID().toString();
-    String sha = UUID.randomUUID().toString().replace("-", "");
-    fakeRunner.script(1, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
-
-    executePipeline(
-        repo,
-        "main",
-        sha,
-        """
-        steps:
-          - image: alpine:3
-            script: build
-          - image: alpine:3
-            gating: false
-            script: publish-docs
-        """);
-    forgetLoadedEntities();
-
-    CiRun run = runService.runsFor(repo).get(0);
-    assertEquals(CiRunStatus.FAILED, run.status);
-    assertFalse(run.gating);
-    assertFalse(announcer.failed().get(0).gating());
+    assertEquals(CiRunStatus.SUCCESS, runService.runsFor(repoId).get(0).status);
+    assertEquals(1, announcer.announced().size());
+    assertEquals(MERGED, announcer.announced().get(0).commitSha());
+    assertEquals(List.of(), announcer.failed());
   }
 
   // --- fixture -----------------------------------------------------------------------------------

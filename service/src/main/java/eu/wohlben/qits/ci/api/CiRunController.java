@@ -382,7 +382,7 @@ public class CiRunController {
    * left in flight is a 202 with an empty list rather than a 404: the caller asked for a state — this
    * request's work is not running — and that state holds. Repeating the call is therefore safe.
    *
-   * <p><b>Nothing cancelled here publishes a gating verdict.</b> A {@code CANCELLED} run announces
+   * <p><b>Nothing cancelled here publishes a verdict.</b> A {@code CANCELLED} run announces
    * neither {@code BuildSuccessful} nor {@code BuildFailed}, so the release gate on the other side
    * never sees a withdrawn request's stopped build as a failure. That is {@code CiRunService}'s
    * standing contract, and it is the property this endpoint depends on.
@@ -610,8 +610,7 @@ public class CiRunController {
               + " release/<id>@mergedSha, and RELEASE is phase two, the publish run at"
               + " <version>@commitSha. Phase three is the deploy and is qits-deployments' own"
               + " release request, so it is not a word this door takes. A step inside a run is not a"
-              + " phase and neither is a gating: false part of one, so neither can be re-fired"
-              + " separately. Which phase a run is was decided by the event that triggered it and"
+              + " phase, so it cannot be re-fired separately. Which phase a run is was decided by the event that triggered it and"
               + " never by which config file produced it, so this addresses a run the same way for a"
               + " repository on a hand-written ci-event-release*.yml pair and for one on a composed"
               + " release.yml. This decides nothing about the release: the pipeline is the release"

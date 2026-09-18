@@ -251,10 +251,14 @@ public final class CiReleaseComposer {
    * The step list.
    *
    * <p><b>The declared flags are carried through unchanged</b> — {@code timeout-seconds}, {@code
-   * docker}, {@code build}, {@code user}, {@code gating} — because they are the residue the whole
-   * migration exists to keep per-repository, and rewriting one here would be the composer having an
-   * opinion about a thing the author already stated. What the composer adds is the prelude and the
-   * postlude; what it never does is reorder, drop or re-flag.
+   * docker}, {@code build}, {@code user} — because they are the residue the whole migration exists
+   * to keep per-repository, and rewriting one here would be the composer having an opinion about a
+   * thing the author already stated. What the composer adds is the prelude and the postlude; what it
+   * never does is reorder, drop or re-flag.
+   *
+   * <p>{@code gating: false} used to be on that list and is not a flag any more — the key is a parse
+   * error at both scopes now (ticket 9441bc6e), so emitting it would compose a document this
+   * service's own parser refuses.
    */
   private static void steps(
       StringBuilder out, Slot slot, boolean releasePhase, List<SlotArtifact> artifacts) {
@@ -275,9 +279,6 @@ public final class CiReleaseComposer {
       }
       if (!step.user().isEmpty()) {
         out.append("    user: ").append(scalar(step.user())).append('\n');
-      }
-      if (!step.gating()) {
-        out.append("    gating: false\n");
       }
       out.append("    script: |\n");
       block(

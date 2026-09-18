@@ -1,0 +1,35 @@
+-- Drop ci_run.gating: `gating: false` is gone as a concept, so the column has nothing left to say.
+--
+-- This is the second migration in this lineage that drops anything (V18 was the first), and it owes
+-- the same argument the additive ones do not. The rule this lineage keeps is that history stays
+-- wherever a row is a STATEMENT ABOUT SOMETHING THAT HAPPENED — which is why CiRunStatus keeps
+-- POST_RECEIVE and CONFIG_ERROR as constants nothing writes. This column is not that. It was a
+-- CLASSIFICATION of a verdict, computed from a declaration, and the classification has been ruled
+-- out: every step of a pipeline gates, a failing step fails the run, and a run's verdict is its
+-- outcome. What really happened to each run is untouched — ci_run.status says whether it was green,
+-- ci_step says which step ended it, and the BuildSuccessful/BuildFailed frames those runs published
+-- are still on the event log carrying whatever they carried.
+--
+-- WHY THE CONCEPT WENT (ticket 9441bc6e, "Remove `gating: false` entirely"). QA that does not gate
+-- is pointless, and it did not merely fail to gate. A run whose gating step passed and whose
+-- non-gating step went red announced NO BuildSuccessful at all — only a BuildFailed{gating:false},
+-- which qits-projects' release gate could neither accept nor refuse, so the release request parked
+-- on "Waiting for a gating CI verdict" indefinitely. Measured once at fourteen hours, on a single
+-- flaky test. Work that must not block a release does not belong in a release-request pipeline.
+--
+-- V7__run_gating.sql IS NOT TOUCHED, and that is the one thing this file has to get right. Flyway
+-- checksums a migration over its whole file, prose included, and validates every applied one at
+-- boot: a comment added to V7 saying the column ended here is a DIFFERENT V7 to every database that
+-- has already run it, and the process dies before it serves anything. That mistake has been made
+-- and rolled back twice on this lineage — 2026-08-23 (2026.823.164332, reverted by 7bc1dc6) and
+-- 2026-09-17 (2026.917.45603, the first cut of V18) — so the retirement is said HERE, in the file
+-- whose checksum no schema history table has ever seen. A reader who finds the flag described in V7
+-- finds its removal twelve entries later, which is how a lineage is read anyway: forwards.
+--
+-- MigrationChecksumTest pins the SHA-256 of every file here, including this one, so the rule is
+-- mechanical rather than remembered.
+--
+-- ORDER OF OPERATIONS. The deploy that carries this also carries a qits-ci that neither reads nor
+-- writes the column, and qits-projects stopped binding the field on the wire and was released
+-- first, so nothing on either side of the bus is left asking for it.
+alter table ci_run drop column gating;

@@ -160,7 +160,6 @@ public class RunLifecycleAnnounceSeamTest extends CiTestSupport {
       assertEquals(repoId, status.repoId());
       assertEquals("main", status.branch());
       assertEquals(sha, status.commitSha());
-      assertTrue(status.gating(), "a file that declares nothing is gating");
       assertNotNull(status.triggerEventId(), "an event-triggered run names what caused it");
     }
   }

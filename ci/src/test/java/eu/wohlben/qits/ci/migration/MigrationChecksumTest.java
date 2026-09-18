@@ -103,6 +103,9 @@ public class MigrationChecksumTest {
     PINS.put(
         "V18__retire_daemon_pin_ladder.sql",
         "ec9ee9652b2065af25b12dd1c30368cba0c0dafcba11422c1215fab28f8acf99");
+    PINS.put(
+        "V19__run_drop_gating.sql",
+        "a7e59a1ffb694caa689cf67c08958a90f7709a12c6ef6ad45390faad21ee33dc");
   }
 
   @Test

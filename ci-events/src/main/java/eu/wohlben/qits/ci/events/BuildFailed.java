@@ -20,10 +20,10 @@ import java.util.UUID;
  * here: {@code occurredAt} is {@code finishedAt}; {@code eventId} is generated when absent, final
  * once set, and travels in the envelope rather than the payload; {@code repoId} is the storage id
  * and always set, while {@code projectId} and {@code repoName} ride together when the announcing
- * push arrived name-addressed and are omitted from the canonical payload when it did not; {@code
- * gating} is <b>null for a gating run</b> and an explicit {@code false} only for a non-gating one,
- * so absent reads as gating. There is no {@code imageDigest}: a failed run published nothing worth
- * naming.
+ * push arrived name-addressed and are omitted from the canonical payload when it did not. There is
+ * no {@code imageDigest}: a failed run published nothing worth naming. There is no {@code gating}
+ * either, and {@link BuildSuccessful} says why: every step of a pipeline gates, so a red run is a
+ * red verdict and there is nothing left to qualify it with (ticket 9441bc6e).
  *
  * <p><b>{@code phase} and {@code releaseRequestId} are {@link BuildSuccessful}'s too, including the
  * invariant that binds them: they are null together or set together</b> on every event qits-ci
@@ -45,7 +45,6 @@ public record BuildFailed(
     String repoName,
     String branch,
     String commitSha,
-    Boolean gating,
     String phase,
     String releaseRequestId,
     String outcome,
@@ -66,13 +65,12 @@ public record BuildFailed(
       String repoName,
       String branch,
       String commitSha,
-      Boolean gating,
       String phase,
       String releaseRequestId,
       String outcome,
       Instant finishedAt) {
     this(
-        null, runId, repoId, projectId, repoName, branch, commitSha, gating, phase, releaseRequestId,
+        null, runId, repoId, projectId, repoName, branch, commitSha, phase, releaseRequestId,
         outcome, finishedAt);
   }
 

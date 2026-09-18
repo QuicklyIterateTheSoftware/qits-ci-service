@@ -47,20 +47,14 @@ public record CiPipeline(List<CiStepDecl> steps) {
    * step could not use it anyway; refusing the pair is what keeps that from being discovered as a
    * permission denied halfway through a publish.
    *
-   * <p><b>{@code gating} is whether THIS step's failure is a verdict about the commit</b>, and it is
-   * what lets one file carry a gating half and a non-gating half. Absent means true, which is every
-   * pipeline written before the key existed, byte for byte. A step declaring {@code gating: false}
-   * still fails the run — the row is red and a person sees it — but the build event the run
-   * announces carries {@code gating: false}, so a release gate reading per-commit verdicts does not
-   * hold the commit for it.
-   *
-   * <p>The reason it is per step rather than per file is the sentence the old two-file split was
-   * built on: <em>a red verify must not cost the image</em>. Two files bought that by never letting
-   * the two halves share a verdict; one file buys it by <b>ordering plus classification</b> — the
-   * gating half runs first and has already published whatever it publishes by the time a non-gating
-   * step can fail, and the failure it produces is classified as the non-gating one. Put the
-   * non-gating steps last; a non-gating step that fails still stops the run, exactly as any failing
-   * step always has.
+   * <p><b>A step declares nothing about what its failure is worth, and there is nothing to
+   * declare.</b> There was a {@code gating} component here, whether THIS step's failure counted as a
+   * verdict about the commit, and it is gone with the concept (ticket 9441bc6e; {@link
+   * CiConfigSchema#REFUSED_GATING_KEY} carries the argument). Every step of a pipeline gates: a
+   * failing step fails the run, everything after it is {@code SKIPPED}, and the run's verdict is its
+   * outcome. What used to be the non-gating half of a file — a userflow publish that must not cost
+   * the image — belongs in no release-request pipeline at all, and the ordering rule that came with
+   * it survives it: the steps that must run first go first.
    */
   public record CiStepDecl(
       String image,
@@ -68,8 +62,7 @@ public record CiPipeline(List<CiStepDecl> steps) {
       Integer timeoutSeconds,
       boolean docker,
       boolean build,
-      String user,
-      boolean gating) {}
+      String user) {}
 
   // A step could also declare `branches:` — a list of matchers over the run's branch, entries OR'd,
   // absent meaning "every branch" — and it is GONE with per-push CI (2026-09-05). It was a pipeline

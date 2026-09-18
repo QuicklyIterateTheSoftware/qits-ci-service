@@ -85,22 +85,6 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   public String commitSha;
 
   /**
-   * Whether a red outcome of this run should stand in the way of releasing its commit. True for
-   * every event run whose trigger file does not say {@code gating: false} — the userflow pipelines
-   * are the ones that do — and on every historical push row, which had no file-level flag to say
-   * otherwise. Initialized true so no writer can forget it into
-   * the primitive default, which points the wrong way.
-   *
-   * <p><b>It is written twice on a run whose failure was non-gating.</b> Accept time records what
-   * the trigger file declared; the terminal transition records what the <em>verdict</em> is worth,
-   * which is the file's flag ANDed with the failing step's own {@code gating:} — see {@code
-   * CiPipeline.CiStepDecl}. So the row and the build event it publishes never disagree, and reading
-   * this column off a finished run answers the question a release gate asks.
-   */
-  @Column(nullable = false)
-  public boolean gating = true;
-
-  /**
    * The release request this run serves, or null for every run that serves none — which is every
    * event run not triggered by a {@code ReleaseRequestChanged}, and every historical push row.
    *

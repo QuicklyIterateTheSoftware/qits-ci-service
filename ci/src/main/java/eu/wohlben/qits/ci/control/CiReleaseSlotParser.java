@@ -228,7 +228,12 @@ public class CiReleaseSlotParser {
     try {
       // The step schema, verbatim and by construction: the map handed over is exactly the shape
       // CiConfigSchema.steps reads, so a step means the same thing here as in a trigger file.
-      return CiConfigSchema.steps(Map.of(CiConfigSchema.STEPS_KEY, raw), configPath);
+      return CiConfigSchema.steps(
+          Map.of(CiConfigSchema.STEPS_KEY, raw),
+          configPath,
+          // A slot file is committed bytes a person can fix, so it is held to the strict schema:
+          // `gating:` is refused here exactly as it is in a trigger file.
+          CiConfigSchema.Origin.COMMITTED_FILE);
     } catch (CiConfigException e) {
       // Re-thrown naming the file and the slot: the shared schema's messages are per step, and a
       // document with two slots would otherwise say "Step 0" about one of two lists.

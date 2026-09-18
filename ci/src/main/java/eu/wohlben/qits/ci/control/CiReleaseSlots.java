@@ -78,8 +78,8 @@ public record CiReleaseSlots(
    * fact is data.
    *
    * <p><b>The composer emits no step for it</b>, deliberately: how a userflow bundle is built and
-   * uploaded is the archetype's business (a {@code gating: false} step, last), and inventing one
-   * here would be a guess Phase 3 has to undo. What this key is for is the reader on the other side
+   * uploaded is the archetype's business, and inventing one here would be a guess Phase 3 has to
+   * undo. What this key is for is the reader on the other side
    * of the release — see the plan's Phase 4.
    *
    * @param site the site name, or {@code ""} for {@code userflows: true} — "the repository's own

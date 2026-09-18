@@ -27,7 +27,7 @@ import org.junit.jupiter.api.condition.OS;
  * points the bootstrap at a url that 404s forever, which proves the give-up arm and nothing about
  * recovery: no number of attempts would have fetched it. The incident of 2026-09-15 01:05 UTC was
  * the opposite shape — qits-artifacts deploys {@code update_order: stop-first}, a step container
- * landed 7 seconds into that refusal window, got {@code Connection refused}, and a gating run went
+ * landed 7 seconds into that refusal window, got {@code Connection refused}, and a release-request run went
  * red with {@code NEVER_STARTED} over a blip that was over a minute later. So this test refuses the
  * first connection and then serves, and the thing it asserts is that the shell recovered.
  *

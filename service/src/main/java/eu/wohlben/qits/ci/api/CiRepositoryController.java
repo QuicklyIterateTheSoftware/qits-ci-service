@@ -279,7 +279,6 @@ public class CiRepositoryController {
   public record StepResponse(
       int index,
       String image,
-      boolean gating,
       boolean build,
       boolean docker,
       String user,
@@ -311,13 +310,11 @@ public class CiRepositoryController {
    *     release of every repository on the platform
    * @param checkout null when the document declares none, which means the run builds {@code main}'s
    *     head
-   * @param gating the FILE-level flag: whether a red run stands in the way of releasing its commit
    */
   public record SummaryResponse(
       String event,
       String selection,
       CheckoutResponse checkout,
-      boolean gating,
       List<StepResponse> steps,
       List<ArtifactResponse> artifacts) {}
 
@@ -377,8 +374,8 @@ public class CiRepositoryController {
       "This is for judgement, not a pass/fail gate. A composed document carries a platform prelude"
           + " and postlude the hand-written pair never had, so the two sides are NEVER byte-equal and"
           + " no comparison of their texts would mean anything; qits-ci therefore reports both sides"
-          + " and compares neither. Read the summaries — event, selection, checkout, file-level and"
-          + " per-step gating, each step's image and flags, the script digests, and the declared"
+          + " and compares neither. Read the summaries — event, selection, checkout, each step's"
+          + " image and flags, the script digests, and the declared"
           + " artifacts — and decide whether the candidate says what the committed pair says. A"
           + " step's script is reported as a digest and a line count only: what a pipeline publishes"
           + " is answered by its declared artifacts, never by reading its script. And note that a"
@@ -557,14 +554,12 @@ public class CiRepositoryController {
                 summary.checkout().branchPath(),
                 summary.checkout().shaPath(),
                 summary.checkout().optional()),
-        summary.gating(),
         summary.steps().stream()
             .map(
                 step ->
                     new StepResponse(
                         step.index(),
                         step.image(),
-                        step.gating(),
                         step.build(),
                         step.docker(),
                         step.user(),

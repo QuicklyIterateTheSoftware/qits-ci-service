@@ -1247,9 +1247,16 @@ public class CiRunService {
     return run.id;
   }
 
-  /** Rebuilds an accepted event run solely from its durable row. */
+  /**
+   * Rebuilds an accepted event run solely from its durable row.
+   *
+   * <p>The parse is {@link CiEventTriggerParser#parseSnapshot}'s, not the file-read one's, and the
+   * distinction is load-bearing: this row was accepted already, nobody can edit it, and a refusal
+   * here is not caught anywhere — it would cost the run. That seam's javadoc argues it in full.
+   */
   private EventRun reconstructEventRun(CiRun run) {
-    CiEventTrigger trigger = triggerParser.parse(run.configPath, run.triggerConfig);
+    CiEventTrigger trigger =
+        triggerParser.parseSnapshot(run.configPath, run.triggerConfig, "Run " + run.id);
     return new EventRun(
         repoOf(run),
         run.branch,
@@ -1436,18 +1443,17 @@ public class CiRunService {
    * per-push CI on 2026-09-05; the only skip left is the one this loop's remainder writes, so a
    * {@code SKIPPED} row is "an earlier step failed" and its null output says so.
    *
-   * <h2>Which half the run died in decides what the verdict is worth</h2>
+   * <h2>What the verdict is worth is not a question any more</h2>
    *
-   * <p>A step may declare {@code gating: false} ({@code CiPipeline.CiStepDecl}), and the run's
-   * announced {@code gating} is <b>the file's flag ANDed with the failing step's</b>. That is the
-   * whole mechanism behind putting a repository's gating build and its non-gating userflow publish
-   * in ONE file: ordering does the rest, because the gating half runs first and has published
-   * whatever it publishes before a non-gating step can fail. "A red verify must not cost the image"
-   * therefore survives the merge of the two files it used to require.
+   * <p>Every step of a pipeline gates. A failing step fails the run, everything after it is {@code
+   * SKIPPED}, and the run's verdict is its outcome — green announces {@code BuildSuccessful}, red
+   * announces {@code BuildFailed}, and nothing classifies either.
    *
-   * <p>Nothing else about failure moved. A non-gating step that fails <b>still stops the run</b> and
-   * still leaves it {@code FAILED}, so a person sees the red exactly as before; what changes is only
-   * what a release gate reads off the event.
+   * <p>There used to be a classification here: a file and a step could each declare {@code gating:
+   * false}, and the announced verdict was the two ANDed. It went with the concept (ticket 9441bc6e;
+   * {@code CiConfigSchema.REFUSED_GATING_KEY} carries the argument). The loop itself is unchanged —
+   * the same failure stops the run, leaves it {@code FAILED} and skips the remainder — because none
+   * of that was ever the flag's; only the announcement's classification was.
    */
   private void runSteps(
       CiRun run,
@@ -1459,9 +1465,6 @@ public class CiRunService {
     int index = 0;
     boolean failed = false;
     boolean timedOut = false;
-    // Which half the run died in, and it is a Boolean because "no step failed" is a third answer:
-    // a green run's verdict is worth what the FILE says and there is no step to ask.
-    Boolean failedStepGating = null;
 
     try {
       while (index < declared.size() && !failed && !cancelled.contains(run.id)) {
@@ -1536,9 +1539,6 @@ public class CiRunService {
             stamps.startedAt(),
             stamps.finishedAt());
         failed = !ok;
-        if (failed) {
-          failedStepGating = decl.gating();
-        }
         timedOut = stepTimedOut;
         index++;
       }
@@ -1547,9 +1547,6 @@ public class CiRunService {
       // Record it against the step it happened on so no declared step vanishes from the run.
       LOG.errorf(e, "CI run %s: step %d failed unexpectedly", run.id, index);
       if (index < declared.size()) {
-        // An infrastructure failure OF a non-gating step is still the non-gating half's: the run
-        // died where the declaration says a death costs no gate.
-        failedStepGating = declared.get(index).gating();
         Instant now = Instant.now();
         insertStep(
             run.id,
@@ -1585,13 +1582,7 @@ public class CiRunService {
             : timedOut
                 ? CiRunStatus.TIMED_OUT
                 : red ? CiRunStatus.FAILED : CiRunStatus.SUCCESS;
-    // The verdict's own worth: the FILE's flag ANDed with the failing step's. A non-gating file
-    // cannot be made gating by a step, and a gating file's non-gating half produces a red that no
-    // release gate holds a commit for. It is written to the row as well as announced, so the two can
-    // never disagree — and the detached copy is updated because the announcers read it off there.
-    boolean verdictGating = run.gating && (failedStepGating == null || failedStepGating);
-    Instant finishedAt = finishRun(run.id, outcome, verdictGating);
-    run.gating = verdictGating;
+    Instant finishedAt = finishRun(run.id, outcome);
     // First, and unconditionally: the run has left the active listing whichever way it ended, and
     // that is true of the CANCELLED outcome the two verdict announcements below deliberately skip.
     announceStatus(run, outcome, CiRunStatus.RUNNING, finishedAt);
@@ -1644,7 +1635,6 @@ public class CiRunService {
             run.repoName,
             run.branch,
             run.commitSha,
-            run.gating,
             phaseWord(run),
             run.releaseRequestId,
             finishedAt,
@@ -1714,7 +1704,6 @@ public class CiRunService {
             run.repoName,
             run.branch,
             run.commitSha,
-            run.gating,
             phaseWord(run),
             run.releaseRequestId,
             outcome.name(),
@@ -1769,7 +1758,6 @@ public class CiRunService {
             run.repoName,
             run.branch,
             run.commitSha,
-            run.gating,
             phaseWord(run),
             run.releaseRequestId,
             status.name(),
@@ -2108,7 +2096,6 @@ public class CiRunService {
     run.triggerEventOccurredAt = request.occurredAt();
     run.triggerEventPayload = request.payload();
     run.triggerConfig = request.triggerConfig();
-    run.gating = request.trigger().gating();
     run.releaseRequestId = releaseRequestOf(request);
     // Which half of that release this is, read off the same gate that just read the id — see
     // phaseOf. Null whenever the id is null, which is every run that is no part of a release.
@@ -2487,10 +2474,19 @@ public class CiRunService {
     }
   }
 
-  /** {@link #predictedStepDurations}' body, inside a transaction and free to throw. */
+  /**
+   * {@link #predictedStepDurations}' body, inside a transaction and free to throw.
+   *
+   * <p>A snapshot parse ({@link CiEventTriggerParser#parseSnapshot}) rather than a file-read one:
+   * the text is a stored document on its way onto a row, and a prediction is a convenience that must
+   * never cost a run — the standing rule this whole path is written to.
+   */
   private String predictFromHistory(String repoId, String configPath, String triggerConfig) {
     List<CiPipeline.CiStepDecl> declared =
-        triggerParser.parse(configPath, triggerConfig).pipeline().steps();
+        triggerParser
+            .parseSnapshot(configPath, triggerConfig, "The run being accepted for " + repoId)
+            .pipeline()
+            .steps();
     List<Long> millis = new ArrayList<>(declared.size());
     for (int index = 0; index < declared.size(); index++) {
       String image = stepImage(declared.get(index));
@@ -2614,16 +2610,6 @@ public class CiRunService {
    * on when the run ended.
    */
   private Instant finishRun(String runId, CiRunStatus status) {
-    return finishRun(runId, status, null);
-  }
-
-  /**
-   * The same, also writing what the <b>verdict</b> is worth to a release gate. Null leaves the
-   * column alone, which is every terminal transition that is not the step loop's own: a config
-   * error, a cancellation and a swept orphan have no failing step to classify, so the file's own
-   * flag stands.
-   */
-  private Instant finishRun(String runId, CiRunStatus status, Boolean gating) {
     Instant finishedAt = Instant.now();
     QuarkusTransaction.requiringNew()
         .run(
@@ -2631,9 +2617,6 @@ public class CiRunService {
               CiRun run = runs.findById(runId);
               run.status = status;
               run.finishedAt = finishedAt;
-              if (gating != null) {
-                run.gating = gating;
-              }
             });
     return finishedAt;
   }
@@ -2784,7 +2767,7 @@ public class CiRunService {
    * would reach work that belongs to something else — cancelling another request's build is exactly
    * the failure this endpoint must not have.
    *
-   * <p><b>Nothing it cancels publishes a gating verdict.</b> That is not arranged here: a {@code
+   * <p><b>Nothing it cancels publishes a verdict.</b> That is not arranged here: a {@code
    * CANCELLED} run announces nothing at all, which is {@link #announceFailedRun}'s contract and the
    * property qits-projects' release gate depends on — a cancelled run must never be read as a
    * failure, because a person withdrawing a question is not an answer to it.
@@ -3038,14 +3021,11 @@ public class CiRunService {
    * touches has to come from the database on each attempt and the row it persists has to be a fresh
    * instance with no memory of a rolled-back one.
    *
-   * <p><b>{@code gating} is re-derived from the trigger file rather than copied.</b> The column on a
-   * finished run is what that run's <em>verdict</em> was worth — the file's flag ANDed with whichever
-   * step failed — so copying it would start a green retry of a gating pipeline off as non-gating and
-   * publish a verdict no release gate holds a commit for. The declaration is on the row as {@code
-   * triggerConfig}, so the answer is one parse away; a historical push row carries none and is
-   * gating, which is what every push run was. <b>It is derived from the document this retry will
-   * really run</b> — the re-composed one where there is one — because a flag read off a document the
-   * retry is not running is a statement about a pipeline nobody is about to execute.
+   * <p><b>There is nothing here to re-derive from the trigger file any more.</b> A retry used to
+   * re-read the document's {@code gating:} flag rather than copy the source run's column, because
+   * that column held what the finished run's <em>verdict</em> had been worth. Both went with the
+   * concept (ticket 9441bc6e): every step gates, so a re-fire is worth exactly what the work is
+   * worth, which is what every other column copied here already says.
    *
    * @param pipeline the trigger document handed in by {@link #retriedPipeline}, computed outside
    *     this transaction because it reads the git host
@@ -3064,7 +3044,6 @@ public class CiRunService {
     retry.commitSha = source.commitSha;
     retry.status = CiRunStatus.QUEUED;
     retry.createdAt = Instant.now();
-    retry.gating = declaredGating(source, pipeline);
     retry.releaseRequestId = source.releaseRequestId;
     // Copied beside it, and for the same reason the id is: a retry asks for the SAME work, so it is
     // the same half of the same release. Re-deriving it from the stored payload would answer
@@ -3094,26 +3073,6 @@ public class CiRunService {
     runs.persist(retry);
     runs.flush();
     return retry;
-  }
-
-  /** What a run's trigger file declared the pipeline to be worth, before any step narrowed it. */
-  private boolean declaredGating(CiRun source, String pipeline) {
-    if (pipeline == null) {
-      return true;
-    }
-    try {
-      return triggerParser.parse(source.configPath, pipeline).gating();
-    } catch (RuntimeException unparseable) {
-      // The snapshot parsed once, at accept, so this is unreachable through the engine. If it ever
-      // is not, the run's own recorded value is the closest true statement available — never a
-      // widening to gating, which would hold a commit for a verdict nobody declared gating.
-      LOG.warnf(
-          unparseable,
-          "Retry of run %s could not re-read %s — keeping the recorded gating flag",
-          source.id,
-          source.configPath);
-      return source.gating;
-    }
   }
 
   private static String cancellationReason(String requestedReason) {

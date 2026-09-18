@@ -56,7 +56,7 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
 
   private static final String QA_PATH = ".config/qits/ci-event-release-request.yml";
 
-  /** The reference QA file's shape: a gating build, then a non-gating publish. */
+  /** The reference QA file's shape: a build, then a publish. Both gate, because every step does. */
   private static final String QA_TRIGGER =
       """
       event: ReleaseRequestChanged
@@ -67,7 +67,6 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
         - image: alpine:3
           script: ./mvnw verify
         - image: alpine:3
-          gating: false
           script: ./publish-userflows.sh
       """;
 
@@ -236,32 +235,27 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
   }
 
   @Test
-  public void aRetryIsWorthWhatTheFileDeclaresRatherThanWhatTheLastVerdictWasWorth()
-      throws Exception {
-    // The row's `gating` on a FINISHED run is what that run's verdict was worth — the file's flag
-    // ANDed with the failing step's. Copying it onto the retry would start a re-run of a gating
-    // pipeline off as non-gating, and a green one would then announce a verdict no release gate
-    // holds a commit for.
+  public void aRetryOfAFailedRunIsAnOrdinaryRunAndItsVerdictIsItsOwnOutcome() throws Exception {
+    // This case used to be about re-deriving `gating` from the trigger file instead of copying the
+    // source run's column, because that column held what the FINISHED run's verdict had been worth.
+    // Both went with the concept (ticket 9441bc6e), and what is left is the fact the re-derivation
+    // was protecting: a retry of a red run that goes green announces a plain BuildSuccessful.
     String repo = "consumer-" + UUID.randomUUID();
     fakeRunner.script(1, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
     String original = accept(repo, "rr-a");
     service.awaitIdle();
     forgetLoadedEntities();
-    assertFalse(service.requireRun(original).gating, "the non-gating half is what went red");
+    assertEquals(CiRunStatus.FAILED, service.requireRun(original).status);
 
     fakeRunner.reset();
     CiRun retry = service.retry(original);
     service.awaitIdle();
     forgetLoadedEntities();
 
-    assertTrue(service.requireRun(retry.id).gating, "the file is gating, and the retry re-reads it");
+    assertEquals(CiRunStatus.SUCCESS, service.requireRun(retry.id).status);
     assertTrue(
-        announcer.announced().stream()
-            .filter(a -> a.runId().equals(retry.id))
-            .findFirst()
-            .orElseThrow()
-            .gating(),
-        "and the verdict it publishes says so");
+        announcer.announced().stream().anyMatch(a -> a.runId().equals(retry.id)),
+        "a green retry is a green verdict, and there is nothing left to qualify it with");
   }
 
   @Test
@@ -370,11 +364,10 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
             new CiPipeline(
                 List.of(
                     new CiPipeline.CiStepDecl(
-                        "alpine:3", "./mvnw verify", null, false, false, "", true),
+                        "alpine:3", "./mvnw verify", null, false, false, ""),
                     new CiPipeline.CiStepDecl(
-                        "alpine:3", "./publish-userflows.sh", null, false, false, "", false))),
+                        "alpine:3", "./publish-userflows.sh", null, false, false, ""))),
             List.of(), // declares no artifact: a QA run announces a build and nothing more
-            true,
             // Not optional: a release REQUEST event that names no fold is a refusal, never a run at
             // main's head — the fold is the entire subject of the gate.
             new CiEventTrigger.Checkout("backingBranch", "mergedSha", false)),

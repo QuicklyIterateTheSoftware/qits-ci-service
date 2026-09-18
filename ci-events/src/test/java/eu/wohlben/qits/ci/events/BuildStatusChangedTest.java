@@ -37,8 +37,8 @@ class BuildStatusChangedTest {
 
   private static BuildStatusChanged anEvent() {
     return new BuildStatusChanged(
-        "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null, null,
-        "RUNNING", "QUEUED", STARTED);
+        "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null, "RUNNING",
+        "QUEUED", STARTED);
   }
 
   @Test
@@ -109,8 +109,8 @@ class BuildStatusChangedTest {
     // null, the convention every nullable field on this bus follows.
     BuildStatusChanged accepted =
         new BuildStatusChanged(
-            "run-2", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null, null,
-            "QUEUED", null, STARTED);
+            "run-2", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null, "QUEUED",
+            null, STARTED);
 
     String payload = CanonicalJson.payload(accepted);
 
@@ -127,8 +127,8 @@ class BuildStatusChangedTest {
   void anIdAddressedRunOmitsTheNamePairRatherThanNullingIt() {
     BuildStatusChanged idOnly =
         new BuildStatusChanged(
-            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, null,
-            "CANCELLED", "QUEUED", STARTED);
+            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, "CANCELLED",
+            "QUEUED", STARTED);
 
     String payload = CanonicalJson.payload(idOnly);
 
@@ -142,20 +142,22 @@ class BuildStatusChangedTest {
   }
 
   @Test
-  void aGatingRunOmitsTheFlagAndOnlyANonGatingOneWritesIt() {
-    // Null means gating, the convention BuildSuccessful set and this event carries unchanged.
+  void theCanonicalPayloadCarriesNoGatingKeyAtAll() {
+    // There was a `gating` component riding BuildSuccessful's null-means-gating convention, and this
+    // case asserted both arms of it. The concept is gone (ticket 9441bc6e): a run's verdict is its
+    // outcome, so there is nothing to qualify a transition with. What is pinned now is the absence.
     assertFalse(CanonicalJson.payload(anEvent()).contains("gating"));
 
-    BuildStatusChanged nonGating =
+    BuildStatusChanged bare =
         new BuildStatusChanged(
-            "run-4", "qits-ci", null, null, "main", "0123456789abcdef", false, null, null,
-            "SUCCESS", "RUNNING", STARTED);
+            "run-4", "qits-ci", null, null, "main", "0123456789abcdef", null, null, "SUCCESS",
+            "RUNNING", STARTED);
 
     assertEquals(
-        "{\"branch\":\"main\",\"commitSha\":\"0123456789abcdef\",\"gating\":false,"
+        "{\"branch\":\"main\",\"commitSha\":\"0123456789abcdef\","
             + "\"previousStatus\":\"RUNNING\",\"repoId\":\"qits-ci\",\"runId\":\"run-4\","
             + "\"status\":\"SUCCESS\"}",
-        CanonicalJson.payload(nonGating));
+        CanonicalJson.payload(bare));
   }
 
   @Test
@@ -169,7 +171,7 @@ class BuildStatusChangedTest {
 
     BuildStatusChanged qa =
         new BuildStatusChanged(
-            "run-5", "qits-ci", null, null, "release/rr-1", "0123456789abcdef", null,
+            "run-5", "qits-ci", null, null, "release/rr-1", "0123456789abcdef",
             "RELEASE_REQUEST", "rr-1", "RUNNING", "QUEUED", STARTED);
 
     assertEquals(
@@ -193,7 +195,7 @@ class BuildStatusChangedTest {
     String publish =
         CanonicalJson.payload(
             new BuildStatusChanged(
-                "run-6", "qits-ci", null, null, "2026.916.101112", "0123456789abcdef", null,
+                "run-6", "qits-ci", null, null, "2026.916.101112", "0123456789abcdef",
                 "RELEASE", "rr-1", "QUEUED", null, STARTED));
     assertTrue(publish.contains("\"phase\":\"RELEASE\""), publish);
     assertTrue(publish.contains("\"releaseRequestId\":\"rr-1\""), publish);
@@ -208,7 +210,7 @@ class BuildStatusChangedTest {
     // releaseRequestId were components, because a null is omitted rather than written.
     BuildStatusChanged ordinary =
         new BuildStatusChanged(
-            "run-7", "qits-ci", null, null, "main", "0123456789abcdef", null, null, null, "RUNNING",
+            "run-7", "qits-ci", null, null, "main", "0123456789abcdef", null, null, "RUNNING",
             "QUEUED", STARTED);
 
     assertEquals(

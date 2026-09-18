@@ -71,8 +71,6 @@ components:
           type: string
         commitSha:
           type: string
-        gating:
-          type: boolean
         status:
           $ref: "#/components/schemas/CiRunStatus"
         createdAt:
@@ -295,8 +293,6 @@ components:
           format: int32
         image:
           type: string
-        gating:
-          type: boolean
         build:
           type: boolean
         docker:
@@ -320,8 +316,6 @@ components:
           type: string
         checkout:
           $ref: "#/components/schemas/CheckoutResponse"
-        gating:
-          type: boolean
         steps:
           type: array
           items:
@@ -702,16 +696,15 @@ paths:
         \ is phase one, the QA run at release/<id>@mergedSha, and RELEASE is phase\
         \ two, the publish run at <version>@commitSha. Phase three is the deploy and\
         \ is qits-deployments' own release request, so it is not a word this door\
-        \ takes. A step inside a run is not a phase and neither is a gating: false\
-        \ part of one, so neither can be re-fired separately. Which phase a run is\
-        \ was decided by the event that triggered it and never by which config file\
-        \ produced it, so this addresses a run the same way for a repository on a\
-        \ hand-written ci-event-release*.yml pair and for one on a composed release.yml.\
-        \ This decides nothing about the release: the pipeline is the release request\
-        \ in qits-projects, the new run announces its verdict on the bus exactly as\
-        \ the first one did, and the gate between the two phases goes on holding the\
-        \ release where it is until that verdict arrives — a gate delays, it does\
-        \ not fail."
+        \ takes. A step inside a run is not a phase, so it cannot be re-fired separately.\
+        \ Which phase a run is was decided by the event that triggered it and never\
+        \ by which config file produced it, so this addresses a run the same way for\
+        \ a repository on a hand-written ci-event-release*.yml pair and for one on\
+        \ a composed release.yml. This decides nothing about the release: the pipeline\
+        \ is the release request in qits-projects, the new run announces its verdict\
+        \ on the bus exactly as the first one did, and the gate between the two phases\
+        \ goes on holding the release where it is until that verdict arrives — a gate\
+        \ delays, it does not fail."
       requestBody:
         content:
           application/json:
@@ -839,4 +832,4 @@ paths:
         - qits:admin
 info:
   title: qits-ci API
-  version: 2026.917.72012
+  version: 2026.917.191914

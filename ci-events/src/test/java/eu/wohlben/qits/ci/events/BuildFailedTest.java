@@ -26,8 +26,8 @@ class BuildFailedTest {
 
   private static BuildFailed anEvent() {
     return new BuildFailed(
-        "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null, null,
-        "FAILED", FINISHED);
+        "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null, "FAILED",
+        FINISHED);
   }
 
   @Test
@@ -89,8 +89,8 @@ class BuildFailedTest {
   void anIdAddressedPushOmitsTheNamePairRatherThanNullingIt() {
     BuildFailed idOnly =
         new BuildFailed(
-            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, null,
-            "TIMED_OUT", FINISHED);
+            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, "TIMED_OUT",
+            FINISHED);
 
     String payload = CanonicalJson.payload(idOnly);
 
@@ -105,19 +105,22 @@ class BuildFailedTest {
   }
 
   @Test
-  void aGatingRunOmitsTheFlagAndOnlyANonGatingOneWritesIt() {
-    // Null means gating: every gating build's payload stays byte-identical to what shipped before
-    // the field existed, and a subscriber reads absent as gating.
+  void theCanonicalPayloadCarriesNoGatingKeyAtAll() {
+    // There was a `gating` component riding a null-means-gating convention, and this case asserted
+    // both arms of it. The concept is gone (ticket 9441bc6e) — every step of a pipeline gates, so a
+    // red run is a red verdict — and what is pinned now is the absence: no spelling of the key
+    // reaches the wire, on a fully-populated event as much as on a bare one.
     assertFalse(CanonicalJson.payload(anEvent()).contains("gating"));
 
-    BuildFailed nonGating =
+    BuildFailed full =
         new BuildFailed(
-            "run-4", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", false, null, null,
+            "run-4", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null,
             "FAILED", FINISHED);
-    String payload = CanonicalJson.payload(nonGating);
+    String payload = CanonicalJson.payload(full);
+    assertFalse(payload.contains("gating"), payload);
     assertEquals(
         "{\"branch\":\"main\",\"commitSha\":\"0123456789abcdef\","
-            + "\"finishedAt\":\"2026-07-31T12:46:03Z\",\"gating\":false,\"outcome\":\"FAILED\","
+            + "\"finishedAt\":\"2026-07-31T12:46:03Z\",\"outcome\":\"FAILED\","
             + "\"projectId\":\"qits\",\"repoId\":\"repo-uuid\",\"repoName\":\"qits-ci\","
             + "\"runId\":\"run-4\"}",
         payload);
@@ -134,8 +137,8 @@ class BuildFailedTest {
 
     BuildFailed publish =
         new BuildFailed(
-            "run-5", "qits-ci", null, null, "2026.916.101112", "0123456789abcdef", null, "RELEASE",
-            "rr-1", "FAILED", FINISHED);
+            "run-5", "qits-ci", null, null, "2026.916.101112", "0123456789abcdef", "RELEASE", "rr-1",
+            "FAILED", FINISHED);
     assertEquals(
         "{\"branch\":\"2026.916.101112\",\"commitSha\":\"0123456789abcdef\","
             + "\"finishedAt\":\"2026-07-31T12:46:03Z\",\"outcome\":\"FAILED\","
@@ -155,7 +158,7 @@ class BuildFailedTest {
     String qa =
         CanonicalJson.payload(
             new BuildFailed(
-                "run-6", "qits-ci", null, null, "release/rr-1", "0123456789abcdef", null,
+                "run-6", "qits-ci", null, null, "release/rr-1", "0123456789abcdef",
                 "RELEASE_REQUEST", "rr-1", "FAILED", FINISHED));
     assertTrue(qa.contains("\"phase\":\"RELEASE_REQUEST\""), qa);
     assertTrue(qa.contains("\"releaseRequestId\":\"rr-1\""), qa);
@@ -167,7 +170,7 @@ class BuildFailedTest {
     // releaseRequestId were components, because a null is omitted rather than written.
     BuildFailed ordinary =
         new BuildFailed(
-            "run-7", "qits-ci", null, null, "main", "0123456789abcdef", null, null, null, "FAILED",
+            "run-7", "qits-ci", null, null, "main", "0123456789abcdef", null, null, "FAILED",
             FINISHED);
 
     assertEquals(

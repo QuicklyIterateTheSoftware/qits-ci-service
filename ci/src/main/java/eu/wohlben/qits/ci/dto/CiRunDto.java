@@ -49,10 +49,6 @@ import java.util.List;
  * and reads it as "this row is a re-fire" — the {@code triggerEventId} beside it is then a synthetic
  * token rather than a foreign event id, so nothing should be matched against the event log by it.
  *
- * <p><b>{@code gating} on a FINISHED run is what the verdict was worth</b>, not only what the
- * pipeline declared: a gating pipeline whose failure happened in a step declaring {@code gating:
- * false} reads {@code false} here, which is the same value its build event carried.
- *
  * <p><b>{@code priority} is why the queue reorders</b>, and it is here for exactly that reason. It
  * is the triggering event's own word — the release request's effective priority, folded in
  * qits-projects — recorded verbatim at accept, and it is one of the two inputs the claim loop ranks
@@ -95,7 +91,6 @@ public record CiRunDto(
     String repoName,
     String branch,
     String commitSha,
-    boolean gating,
     CiRunStatus status,
     Instant createdAt,
     Instant startedAt,
