@@ -235,8 +235,9 @@ public class CiPipelineBoundaryTest {
     // The door exists because (repoId, releaseRequestId, phase) is the ONLY identity qits-projects
     // holds: it mints no run ids, and a QA run's sha is a fold nobody pushed that the next re-fold
     // replaces. The trigger file here is a HAND-WRITTEN ci-event-release-request.yml — the shape
-    // most of the estate is still on — so the door is decoupled from the release.yml migration at
-    // the HTTP surface too, not only at the accept.
+    // the estate was on when this was written, and which no repository is on any more — so the door
+    // was decoupled from the release.yml migration at the HTTP surface too, not only at the accept.
+    // The fixture stays on it because the generic trigger grammar outlived that migration.
     String repoId = seedReleaseRequestOrigin();
     String requestId = "rr-" + UUID.randomUUID();
     // A step that fails, so the phase's newest run is one there is something to re-ask about.

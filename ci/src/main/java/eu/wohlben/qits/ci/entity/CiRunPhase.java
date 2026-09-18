@@ -19,10 +19,9 @@ package eu.wohlben.qits.ci.entity;
  * <p><b>The decision is the TRIGGER EVENT'S NAME and nothing else.</b> {@code ReleaseRequestChanged}
  * carrying a release request id is {@link #RELEASE_REQUEST}; {@code SCMRelease} carrying one is
  * {@link #RELEASE}; an event naming no request has no phase. Nothing reads {@code
- * CiRun#configPath} to decide it, which is what makes the two rollouts independent: the 46
- * repositories still on a hand-written {@code ci-event-release-request.yml}/{@code
- * ci-event-release.yml} pair record their phases exactly as a repository on a composed {@code
- * release.yml} does, and the file migration can finish whenever it finishes.
+ * CiRun#configPath} to decide it, which is what made the two rollouts independent while the fleet
+ * was migrating to {@code release.yml}, and what still keeps a run from a repository's own {@code
+ * ci-event-*.yml} recording its phase exactly as a composed one does.
  *
  * <p><b>Not {@code CiEventTriggerService.ReleasePhase}</b>, which is a different question with an
  * unfortunately similar name: that record and its {@code Verdict} answer "does this rev compose a

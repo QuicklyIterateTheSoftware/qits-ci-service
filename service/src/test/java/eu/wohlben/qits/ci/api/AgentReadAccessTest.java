@@ -145,16 +145,6 @@ class AgentReadAccessTest {
         .get("/ci/api/repositories/agent-read-no-such-repo/release-phase?rev=refs/tags/2026.9.1")
         .then()
         .statusCode(503);
-    // And the composed-versus-committed read, which is a POST only because it takes a body: it is a
-    // READ, so the house rule "a new read route names qits:agent too" covers it. Same repository and
-    // same 503 for the same reason — what the case rules out is 401 and 403.
-    given()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body("{\"candidateSlotFile\":\"archetype: java-service\\n\"}")
-        .when()
-        .post("/ci/api/repositories/agent-read-no-such-repo/release-composition?rev=main")
-        .then()
-        .statusCode(503);
   }
 
   @Test

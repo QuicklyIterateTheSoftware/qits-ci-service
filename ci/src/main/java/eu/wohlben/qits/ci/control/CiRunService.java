@@ -2279,10 +2279,10 @@ public class CiRunService {
    * same length rule, same blank rule, same "too long is recorded as none" — one seam reading one
    * name, rather than a second reader that would drift from this one. It is this method's gate and
    * NOT any condition on {@link CiRun#configPath} that decides both the column and {@link
-   * #phaseOf}, and that is deliberate: a phase is a fact about which event caused the run, so the
-   * 46 repositories still on a hand-written {@code ci-event-release-request.yml}/{@code
-   * ci-event-release.yml} pair get it exactly as a repository on a composed {@code release.yml}
-   * does, and neither rollout waits on the other.
+   * #phaseOf}, and that is deliberate: a phase is a fact about which event caused the run, so a run
+   * from a repository's own {@code ci-event-*.yml} gets it exactly as a run composed from {@code
+   * release.yml} does. That decoupling is what let the file migration finish on its own schedule —
+   * it did, on 2026-09-17, and this rule is why nothing here had to move with it.
    *
    * <p>Walked rather than bound, the trigger engine's rule and the one that keeps this path free of
    * native-image reflection metadata. A value too long for the column is recorded as <b>none</b>

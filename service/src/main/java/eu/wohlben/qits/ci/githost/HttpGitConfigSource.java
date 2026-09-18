@@ -161,8 +161,8 @@ public class HttpGitConfigSource implements CiConfigSource {
    * <p><b>A 404 is ABSENT and nothing else is.</b> Both callers read at a rev they have already had
    * resolved (the trigger listing's own head, or the wrapper's {@code main} that the platform pass
    * reads beside this one), so "the rev does not resolve" is not a live case — and if it ever became
-   * one, answering ABSENT for it would be the safe direction anyway: the caller falls back to the
-   * legacy trigger files rather than inventing a composition.
+   * one, answering ABSENT for it would be the safe direction anyway: the caller records no run
+   * rather than inventing a composition out of bytes it never read.
    *
    * <p>Past {@link #MAX_CONFIG_BYTES} the answer is UNREACHABLE rather than the bytes: a truncated
    * slot file is a different slot file, and half a release recipe must never compile.

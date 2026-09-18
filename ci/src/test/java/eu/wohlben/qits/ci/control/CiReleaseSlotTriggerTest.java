@@ -9,6 +9,7 @@ import eu.wohlben.qits.ci.control.CiConfigSource.EventTriggerFile;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.time.Instant;
@@ -21,17 +22,21 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The engine's half of the release-slot feature: a repository that commits {@code
- * .config/qits/release.yml} gets its two release pipelines <b>composed</b>, and the legacy trigger
- * files it may still carry are skipped rather than fired beside them.
+ * .config/qits/release.yml} gets its two release pipelines <b>composed</b>, and nothing else about
+ * the generic trigger grammar changes around it.
  *
  * <p>Everything below the bus is real, exactly as in {@code CiEventTriggerServiceTest}: the slot
  * parser, the archetype read through the same {@link CiConfigSource} port the platform pipelines use,
  * the composer, the trigger parser reading the composed text back, the run service and the unique
  * constraint. What is faked is the git host and the frame.
  *
- * <p>The case that matters most is the last one: <b>a repository with no slot file behaves exactly
- * as it did before this feature existed</b>. That is what makes shipping the engine ahead of the
- * fleet safe, and it is worth an assertion rather than an argument.
+ * <p><b>The contrast this class exists to hold is the last two sections' against each other.</b>
+ * Broken committed content — an archetype that does not exist, a slot file that will not parse — is
+ * no run <em>and the event is settled</em>: a person declared that, the declaration is final, and
+ * retrying it forever would be asking a git host to change somebody's mind. A slot file that could
+ * not be READ is no run and the event <em>stays owed</em>: nothing was learned, and every repository
+ * in the estate now keeps its whole release cycle in that one file, so settling on a blip is what
+ * silently costs a release request its QA verdict.
  */
 @QuarkusTest
 public class CiReleaseSlotTriggerTest extends CiTestSupport {
@@ -43,12 +48,15 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
   /** The commit the release event names, and therefore the ref a composed release run builds. */
   private static final String RELEASED_SHA = "f".repeat(40);
 
-  private static final String LEGACY_QA_PATH = ".config/qits/ci-event-release-request.yml";
+  /**
+   * A repository's own hand-written trigger file, which is the escape hatch the generic grammar
+   * still is: a bespoke pipeline on a release event, declared on purpose, beside whatever {@code
+   * release.yml} composes. Nothing supersedes it and nothing ever did except the two canonical
+   * release paths, which no repository commits any more.
+   */
+  private static final String BESPOKE_PATH = ".config/qits/ci-event-upstream.yml";
 
-  private static final String LEGACY_RELEASE_PATH = ".config/qits/ci-event-release.yml";
-
-  /** The shape a repository really commits today — the thing release.yml replaces. */
-  private static final String LEGACY_QA =
+  private static final String BESPOKE =
       """
       event: ReleaseRequestChanged
       when:
@@ -58,7 +66,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
         sha: mergedSha
       steps:
         - image: alpine:3
-          script: echo legacy-qa
+          script: echo bespoke
       """;
 
   private static final String SPA_FRONTEND =
@@ -122,7 +130,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
         wrapperId, "main", CiReleaseSlotParser.archetypePath(name), content);
   }
 
-  private void seedLegacy(String path, String content) {
+  private void seedTrigger(String path, String content) {
     fakeConfig.putTriggers(repoId, "main", HEAD, new EventTriggerFile(path, content));
   }
 
@@ -130,6 +138,28 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     engine.evaluate(arrival);
     runService.awaitIdle();
     forgetLoadedEntities();
+  }
+
+  /**
+   * The same evaluation <b>through the owed-event ledger</b>, which is the only way to see whether
+   * an event was settled.
+   *
+   * <p>{@link #deliver} calls {@code evaluate} directly and the ledger never hears about it — right
+   * for every case that is about which runs were recorded, and useless for the ones below that are
+   * about whether the event is still owed afterwards. This goes in at {@code onEvent}, which is the
+   * door the bus listener uses: the row is written before the acceptance is reported, the evaluation
+   * happens on {@code ci-trigger-worker}, and whether the row survives is the assertion.
+   */
+  private void deliverThroughTheLedger(CiEventTriggerService.Arrival arrival) throws Exception {
+    assertTrue(engine.onEvent(arrival), "the accept writes the owed row and reports it");
+    engine.awaitIdle();
+    runService.awaitIdle();
+    forgetLoadedEntities();
+  }
+
+  /** Whether the ledger still owes this event — the whole subject of the last two sections. */
+  private boolean stillOwed(String eventId) {
+    return QuarkusTransaction.requiringNew().call(() -> owedEvents.findById(eventId) != null);
   }
 
   // --- the composed run ---------------------------------------------------------------------------
@@ -222,56 +252,22 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
         2, recorded.stream().map(run -> run.triggerEventName).distinct().count());
   }
 
-  // --- precedence ---------------------------------------------------------------------------------
-
-  @Test
-  public void theSlotFileSupersedesTheLegacyReleaseTriggers() throws Exception {
-    seedSlots("archetype: spa-frontend\n");
-    seedArchetype("spa-frontend", SPA_FRONTEND);
-    seedLegacy(LEGACY_QA_PATH, LEGACY_QA);
-
-    deliver(releaseRequest());
-
-    List<CiRun> recorded = runService.runsFor(repoId);
-    // ONE run, not two. Both files match this event and would each be a run under the ordinary
-    // "two files, two pipelines" rule; the whole point of the migration window is that the legacy
-    // one is skipped instead — loudly, with a WARN naming both paths.
-    assertEquals(1, recorded.size());
-    assertEquals(CiReleaseSlotParser.CONFIG_PATH, recorded.get(0).configPath);
-    assertTrue(
-        fakeRunner.executed().get(0).image().endsWith("qits/build-images/node-base:latest"),
-        fakeRunner.executed().get(0).image());
-  }
+  // --- the composed pipeline beside a repository's own ---------------------------------------------
 
   @Test
   public void anUnrelatedTriggerFileIsUnaffected() throws Exception {
-    // Only the two canonical release paths are superseded. The generic mechanism survives as the
-    // escape hatch it is, and a repository's bump pipeline is nobody's business but its own.
+    // A composed pipeline supersedes nothing. The generic mechanism survives as the escape hatch it
+    // is — two files, two declared pipelines, two runs — and a repository's bespoke pipeline on a
+    // release event is nobody's business but its own.
     seedSlots("archetype: spa-frontend\n");
     seedArchetype("spa-frontend", SPA_FRONTEND);
-    fakeConfig.putTriggers(
-        repoId,
-        "main",
-        HEAD,
-        new EventTriggerFile(LEGACY_QA_PATH, LEGACY_QA),
-        new EventTriggerFile(
-            ".config/qits/ci-event-upstream.yml",
-            """
-            event: ReleaseRequestChanged
-            when:
-              - repoName: { exact: qits-target }
-            steps:
-              - image: alpine:3
-                script: echo bespoke
-            """));
+    seedTrigger(BESPOKE_PATH, BESPOKE);
 
     deliver(releaseRequest());
 
     List<CiRun> recorded = runService.runsFor(repoId);
     assertEquals(2, recorded.size(), "the composed pipeline and the repository's own bespoke one");
-    assertTrue(
-        recorded.stream()
-            .anyMatch(run -> ".config/qits/ci-event-upstream.yml".equals(run.configPath)));
+    assertTrue(recorded.stream().anyMatch(run -> BESPOKE_PATH.equals(run.configPath)));
     assertTrue(
         recorded.stream()
             .anyMatch(run -> CiReleaseSlotParser.CONFIG_PATH.equals(run.configPath)));
@@ -281,7 +277,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
   public void anOrdinaryEventNeitherReadsTheSlotFileNorSkipsAnything() throws Exception {
     // The gate that keeps this feature free for the other 99% of the bus: no blob read at all.
     seedSlots("archetype: spa-frontend\n");
-    seedLegacy(
+    seedTrigger(
         ".config/qits/ci-event-upstream.yml",
         """
         event: BuildSuccessful
@@ -305,59 +301,90 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
             + fakeConfig.fileReads());
   }
 
-  // --- no slot file: byte-identical legacy behaviour ------------------------------------------------
+  // --- no slot file: the generic grammar, untouched -------------------------------------------------
 
   @Test
-  public void aRepositoryWithNoSlotFileRunsItsLegacyPipelineExactlyAsBefore() throws Exception {
-    seedLegacy(LEGACY_QA_PATH, LEGACY_QA);
+  public void aRepositoryWithNoSlotFileStillRunsItsOwnTriggerFiles() throws Exception {
+    // release.yml is additive and always was: a repository that commits none is evaluated by the
+    // generic grammar exactly as it was before the feature existed, and its file reaches the row
+    // verbatim rather than through a composer.
+    seedTrigger(BESPOKE_PATH, BESPOKE);
 
     deliver(releaseRequest());
 
     List<CiRun> recorded = runService.runsFor(repoId);
     assertEquals(1, recorded.size());
-    assertEquals(LEGACY_QA_PATH, recorded.get(0).configPath);
-    assertEquals(LEGACY_QA, recorded.get(0).triggerConfig, "the file, verbatim, as it always was");
+    assertEquals(BESPOKE_PATH, recorded.get(0).configPath);
+    assertEquals(BESPOKE, recorded.get(0).triggerConfig, "the file, verbatim, as it always was");
     assertEquals("alpine:3", fakeRunner.executed().get(0).image());
   }
 
+  // --- a read that did not happen: no run, and the event STAYS OWED ---------------------------------
+
   @Test
-  public void anUnreadableSlotFileFallsBackToTheLegacyPipeline() throws Exception {
-    // ABSENT and UNREACHABLE are not the same answer, and the direction chosen here is the one that
-    // cannot cost a release request its verdict: a migrated repository has no legacy file for the
-    // fallback to find, so falling back is free — while reading a blip as "release.yml exists" would
-    // leave an unmigrated repository's request hanging PENDING with no QA run at all.
+  public void anUnreadableSlotFileRecordsNoRunAndLeavesTheEventOwedForTheSweep() throws Exception {
+    // THE CASE THE SPLIT PIPELINE'S RETIREMENT TURNED INTO A DEFECT. While every repository still
+    // committed a hand-written pair, an UNREACHABLE read of release.yml was read as "this repository
+    // has not migrated" and the evaluation fell through to those files — costing a migrated
+    // repository nothing, because it had no such file for the fallback to find. There is no fallback
+    // and no such file anywhere now: release.yml IS the release pipeline, so the old reading answers
+    // "this repository declares no QA" about a repository whose release request is at that moment
+    // waiting for exactly that QA's verdict, settles the owed row, and hangs it PENDING forever with
+    // nothing anywhere to re-drive it. One blip, one release.
+    seedSlots("archetype: spa-frontend\n");
+    seedArchetype("spa-frontend", SPA_FRONTEND);
     fakeConfig.putFileUnreachable(repoId, HEAD, CiReleaseSlotParser.CONFIG_PATH);
-    seedLegacy(LEGACY_QA_PATH, LEGACY_QA);
 
-    deliver(releaseRequest());
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
 
-    assertEquals(1, runService.runsFor(repoId).size());
-    assertEquals(LEGACY_QA_PATH, runService.runsFor(repoId).get(0).configPath);
+    assertEquals(List.of(), runService.runsFor(repoId), "nothing was learned, so nothing ran");
+    assertTrue(
+        stillOwed(arrival.eventId()),
+        "and the event is NOT settled — the whole point: a sweep is what recovers the QA run");
+
+    // The git host comes back, and the sweep is what a deployed qits-ci runs at boot and on a tick.
+    seedSlots("archetype: spa-frontend\n");
+    engine.sweepOwed(Instant.now().plusSeconds(60));
+    runService.awaitIdle();
+    forgetLoadedEntities();
+
+    List<CiRun> recovered = runService.runsFor(repoId);
+    assertEquals(1, recovered.size(), "the composed QA run the release request was owed");
+    assertEquals(CiReleaseSlotParser.CONFIG_PATH, recovered.get(0).configPath);
+    assertEquals(arrival.eventId(), recovered.get(0).triggerEventId, "under the original event");
+    assertFalse(stillOwed(arrival.eventId()), "and the ledger is clear again");
   }
 
-  // --- the ways a slot file records nothing ---------------------------------------------------------
+  // --- broken committed content: no run, and the event IS settled -----------------------------------
 
   @Test
-  public void anUnknownArchetypeIsNoRunAndNoFallback() throws Exception {
-    // The engine's standing rule: an unreadable candidate is skipped, never run. And the legacy file
-    // stays superseded — a repository that has migrated must not silently start running a file it
-    // has stopped maintaining because the wrapper is momentarily unreadable.
+  public void anUnknownArchetypeIsNoRunAndIsSettled() throws Exception {
+    // The contrast with the case above, and it is the whole reason that one needs a ledger seam to
+    // be asserted at all. This failure is a person's declaration: the slot file names an archetype
+    // the wrapper does not carry, and it will name it just as wrongly on the next sweep and the one
+    // after. No run — the engine's standing rule that an unreadable candidate is never a run — and
+    // the event is settled, because retrying it is asking a git host to change somebody's mind.
     seedSlots("archetype: does-not-exist\n");
-    seedLegacy(LEGACY_QA_PATH, LEGACY_QA);
 
-    deliver(releaseRequest());
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
 
     assertEquals(List.of(), runService.runsFor(repoId));
+    assertFalse(stillOwed(arrival.eventId()), "broken committed content is final, not retryable");
   }
 
   @Test
-  public void anUnparseableSlotFileIsNoRunAndNoFallback() throws Exception {
+  public void anUnparseableSlotFileIsNoRunAndIsSettled() throws Exception {
+    // The same contrast, one failure earlier: these bytes are committed and will not parse today or
+    // on any sweep. The fix is a commit, and a commit arrives as its own event.
     seedSlots("archetpye: spa-frontend\n");
-    seedLegacy(LEGACY_QA_PATH, LEGACY_QA);
 
-    deliver(releaseRequest());
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
 
     assertEquals(List.of(), runService.runsFor(repoId));
+    assertFalse(stillOwed(arrival.eventId()), "broken committed content is final, not retryable");
   }
 
   @Test
