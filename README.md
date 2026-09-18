@@ -3,12 +3,13 @@
 The **in-repo CI pipeline**: a repository opts in by committing `.config/qits/ci-event-*.yml` files,
 each naming a domain event on the platform's bus and a selection over its payload; a matching event
 runs that file's pipeline, one fresh container per step of the step's declared image, and records a
-per-step pass/fail — queryable over REST. Two of those files carry the platform's whole build story:
-**`ci-event-release-request.yml`**, the QA pipeline a release request's fold runs and whose verdict
-the release gate holds that fold on, and **`ci-event-release.yml`**, the release build that publishes
-the artifacts off an `SCMRelease`. Beside them runs the release train — a library releases, the
-repositories that declared an interest build themselves — and every hop of it is recorded, with the
-event that caused it, on the run and in the event log.
+per-step pass/fail — queryable over REST. The platform's whole build story is carried by a *fourth*
+file that is not a trigger file at all: **`.config/qits/release.yml`** declares the two phases of a
+release as *slots*, and qits-ci composes them into two ordinary trigger documents at evaluation time
+— the QA pipeline a release request's fold runs and whose verdict the release gate holds that fold
+on, and the release build that publishes the artifacts off an `SCMRelease`. Beside them runs the
+release train — a library releases, the repositories that declared an interest build themselves —
+and every hop of it is recorded, with the event that caused it, on the run and in the event log.
 
 **An ordinary push triggers nothing.** There was a second trigger — `.config/qits/ci-post-receive.yml`,
 read back out of a pushed commit and run for the push — and per-push CI was retired on 2026-09-04 in
@@ -685,7 +686,7 @@ steps:
   declared: a gating file whose failure landed in a `gating: false` step reads `false`, which is the
   value its build event carried.
 
-### The release-request QA pipeline — `ci-event-release-request.yml`
+### The release-request QA phase
 
 The platform runs **no CI outside release requests**. qits-projects keeps, per open release request,
 a backing branch `release/<id>` — an octopus merge of the request's sources, refolded whenever the
@@ -694,10 +695,13 @@ written by qits-githost's merge primitive, which fires no server-side hook and t
 `SCMPublishCommit`: without this event the fold exists and nothing builds it. (And a push would build
 nothing anyway — see the top of this file.)
 
-So a repository commits **one** QA pipeline, and it is an ordinary event trigger:
+So a repository declares **one** QA pipeline, as the `release-request:` slot of
+`.config/qits/release.yml` — see "The fourth file" below for the format. What qits-ci composes out of
+it is an ordinary event trigger, and it is worth having the composed shape in front of you because
+everything downstream reads it rather than the slot file:
 
 ```yaml
-# .config/qits/ci-event-release-request.yml
+# composed from .config/qits/release.yml's release-request: slot
 event: ReleaseRequestChanged
 when:
   - repoName: { exact: qits-ci-service }
@@ -712,13 +716,14 @@ steps:
     script: ./publish-userflows.sh
 ```
 
-**There is no reference template to copy any more, and that is the point of "The fourth file"
-below.** `docs/ci-event-release-request.yml` was one — a whole pipeline with
-`<THIS REPOSITORY'S NAME>` holes, a copy-paste macro pretending to be documentation, and the thing
-that made a change to the release cycle a 47-repository sweep. It is deleted. A repository that has
-migrated declares `.config/qits/release.yml` and the steps come from a wrapper archetype recipe
-(`qits-qits`' `.config/qits/release-archetypes/<name>.yml`); one that has not keeps the file it
-already has, unchanged and still read by the grammar above.
+**It used to be committed by hand, one `ci-event-release-request.yml` per repository, and there was
+a `docs/` template to copy it from.** Both are gone: the template was a copy-paste macro pretending
+to be documentation and the thing that made a change to the release cycle a 47-repository sweep, and
+the hand-written pair itself was retired in the migration that finished on **2026-09-17**. Zero
+repositories in the estate carry either half of it, and the engine has no code left that would read
+one — the supersession rule, the fallback and the composed-versus-committed read all went with them
+on 2026-09-18. A repository that wants a pipeline on a release event *outside* the slot file writes
+an ordinary `ci-event-*.yml`, which is the generic grammar and not a special case.
 
 - **The engine learns nothing new.** `event:` is matched against the frame's name as a string and
   `checkout:` resolves two dot-paths, so this is the existing grammar pointed at a new event —
@@ -739,9 +744,9 @@ already has, unchanged and still read by the grammar above.
   as `DEDUPED`. A fold already `RUNNING` keeps running.
 - **The verdict returns keyed on the fold**: `BuildSuccessful`/`BuildFailed` with `commitSha` =
   the `mergedSha` this run received, which is what qits-projects matches on together with `repoId`.
-- **This one file replaces `ci-event-build.yml` and `ci-event-userflows.yml`.** The two existed
+- **This one phase replaces `ci-event-build.yml` and `ci-event-userflows.yml`.** The two existed
   because a red userflow round must not cost the image and two files cannot share a verdict; one
-  file buys the same property with ordering plus the per-step `gating:` above.
+  pipeline buys the same property with ordering plus the per-step `gating:` above.
 
 ### The selection
 
@@ -819,11 +824,13 @@ repository's others.**
 > with its own UX; nothing in this feature guesses at it. The provenance columns a triggered run
 > records are the trail it will consume.
 
-### The release pipeline, and what it declares
+### The release phase, and what it declares
 
 A **release pipeline** is an ordinary event trigger with two things added: it selects its own
 repository's `SCMRelease` — qits-projects publishes that the moment the release tag is created —
-and it declares the artifacts it publishes.
+and it declares the artifacts it publishes. It is composed from `.config/qits/release.yml`'s
+`release:` slot; the shape below is what that composition produces, which is what the engine, the
+run row and the announcer all see.
 
 > **Build the tag, never the event's branch.** The event's `branch` is the release request's backing
 > branch, and that branch is deleted in the same operation that creates the tag, so it does not exist
@@ -835,7 +842,7 @@ and it declares the artifacts it publishes.
 > a step script went and found the released tree.
 
 ```yaml
-# .config/qits/ci-event-release.yml
+# composed from .config/qits/release.yml's release: slot
 event: SCMRelease
 when:
   - repository: { exact: qits-spa-ui-components }   # its OWN id, exact — see the loop warning
@@ -1074,9 +1081,10 @@ does not fail.** Phase three is in no slot file because it is not this repositor
 table of one.** What qits-ci learns is one word per run — which phase this run is — and it is decided
 by the **triggering event**, never by which config file produced the document. A
 `ReleaseRequestChanged` run is phase one whether its document was composed from `release-request:` or
-committed by hand as `ci-event-release-request.yml`, and an `SCMRelease` run is phase two on the same
-terms. That is what keeps the migration invisible to every reader: `config_path` says where the bytes
-came from, the phase says what the run is for, and a half-migrated estate reads the same either way.
+written by hand as an ordinary `ci-event-*.yml`, and an `SCMRelease` run is phase two on the same
+terms. That is what kept the migration invisible to every reader while it was running, and it is
+still what keeps the escape hatch free: `config_path` says where the bytes came from, the phase says
+what the run is for, and the two answers are independent.
 
 Nothing downstream knows the document was composed. `config_path` is `.config/qits/release.yml` for
 both derived runs — the dedupe is `(trigger_event_id, repo_id, config_path)` and the two runs come
@@ -1134,17 +1142,34 @@ Everything else reaches a script as environment. Those three are held at parse t
 `[A-Za-z0-9._:/@+-]+` — an allow-list, so quotes, whitespace, `$` and backticks are refused rather
 than escaped — and single-quoted in the composed text anyway.
 
-**Precedence, and the migration window.** When `release.yml` is present at a candidate's `main`, the
-composed documents are the pipelines for those two events and a still-present
-`ci-event-release-request.yml` / `ci-event-release.yml` is **skipped with a WARN naming both paths** —
-never a parse error, never silent. Every other `ci-event-*.yml` evaluates exactly as before, so the
-generic mechanism survives as the escape hatch. An unknown archetype, an unreadable recipe or an
-unparseable slot file is a WARN and **no run**, and the legacy files stay superseded: a repository
-that has migrated must not silently start running files it has stopped maintaining.
+**There is no precedence rule and no migration window left.** While the fleet was migrating, a
+present `release.yml` *superseded* a still-committed `ci-event-release-request.yml` /
+`ci-event-release.yml` — skipped with a WARN naming both paths, so the two could not fire beside each
+other for one release. The migration finished on **2026-09-17** and zero repositories in the estate
+carry either file; the supersession, the two path constants and the fallback were deleted on
+**2026-09-18**. A composed document now supersedes nothing: every `ci-event-*.yml` evaluates beside
+it under the ordinary "two files, two declared pipelines, two runs" rule, which is what makes the
+generic mechanism a real escape hatch rather than a rule with an exception in it.
 
-**Rollout safety is structural.** Discovery is prefix-based and `release.yml` matches neither prefix,
-so an engine that predates this feature never reads it — invisible, not a parse error. The extra blob
-read is gated on the two release event names, so every other event costs exactly what it always did.
+**What the slot file's three failures do, and the one that is not a failure of the file.** An unknown
+archetype, an unreadable recipe or an unparseable slot file is a WARN and **no run**: those are the
+repository's own committed bytes, the declaration is final, and the triggering event is settled
+because re-asking cannot change anybody's mind. A read of `release.yml` that comes back
+**UNREACHABLE** is the opposite case and is handled the opposite way — nothing was learned, so the
+evaluation records no run **and leaves the event owed**, and the owed-event sweep evaluates it again
+against a git host that has come back. That direction is the retirement's own correction: with a
+hand-written pair behind it, treating a blip as "no slot file" cost a migrated repository nothing,
+because it had no such file for the fallback to find. With the pair gone, `release.yml` *is* the
+release cycle, so the same reading answers "this repository declares no QA" about a release request
+that is at that moment waiting for exactly that QA's verdict — and hangs it PENDING forever, since
+nothing downstream re-asks.
+
+**`ABSENT` stays a real answer and is settled**: a repository that commits no `release.yml` declares
+no release cycle, which is honest and final, and its ordinary `ci-event-*.yml` files are evaluated as
+they always were.
+
+**The extra blob read is gated on the two release event names**, so every other event on the bus
+costs exactly what it cost before this feature existed.
 
 ### The third file: `.config/qits/ci-platform-event-*.yml`
 

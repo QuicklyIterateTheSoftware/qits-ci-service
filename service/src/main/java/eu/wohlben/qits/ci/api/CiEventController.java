@@ -140,7 +140,10 @@ public class CiEventController {
    *     {@code triggerEventId} on {@code GET /ci/api/runs}.
    * @param repositoriesRead how many candidate repositories answered and were evaluated
    * @param repositoriesSkipped the candidates that did not answer — unreachable, gone, no {@code
-   *     main}, or not reached before the deadline
+   *     main}, not reached before the deadline, or (on a release event) unable to have their {@code
+   *     .config/qits/release.yml} read. The last of those is the only one a bus-delivered event
+   *     would be retried for; a hand-supplied event has no ledger behind it, so the honest thing
+   *     this door can do is name the repository and let the caller fire again.
    */
   public record TriggerEventResult(
       String eventId, List<String> runIds, int repositoriesRead, List<String> repositoriesSkipped) {}

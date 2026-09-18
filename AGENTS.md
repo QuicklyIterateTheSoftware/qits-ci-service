@@ -833,8 +833,8 @@ web stack present. Check that before adding any extension that sounds like a web
   passes `-Dquarkus.quinoa.package-manager-install=true` and a pinned `node-version` — on the command
   line rather than in `application.properties`, so a developer machine keeps using its own node.
 - **This repo's own CI.** The step container's clone is `--depth 50` and does not recurse, so both
-  pipeline files initialise the submodule themselves — `.config/qits/ci-event-release-request.yml`
-  before the QA image build, `.config/qits/ci-event-release.yml` before the publish, each with a
+  phases of `.config/qits/release.yml` initialise the submodule themselves — the `release-request:`
+  slot before the QA image build, the `release:` slot before the publish, each with a
   `-c submodule.qits-ci-frontend.url` override deriving the sibling's address from
   `$QITS_CI_REPOSITORY_URL`. Without those lines the step fails on the empty directory, and the run is
   red for a reason that has nothing to do with the change under test.
@@ -1181,7 +1181,7 @@ WP2; the class javadoc carries the argument in full and the short form is:
   no `checkout:` at all: its run was recorded at `main`, the daemon cloned `main`, and the step
   script fetched `refs/tags/$version` and checked it out detached — so every release run on the
   platform displayed as `main@<head>`, a run recorded against a commit it did not build. qits-projects
-  publishes the tag's commit now, and `.config/qits/ci-event-release.yml` spends it on
+  publishes the tag's commit now, and the composed release phase spends it on
   `checkout: { branch: version, sha: commitSha, optional: true }`. **A tag is a ref and that is the
   whole mechanism** — `checkout.branch` resolves to a *ref name*, `git clone --branch` takes a tag,
   and neither the engine nor the daemon learned anything about tags. `optional: true` is the
@@ -1556,10 +1556,9 @@ names"), and what follows is what biting it feels like.
 - **`ReleaseRequestChanged` is a trigger this engine needed no code to accept, and exactly one
   column to serve.** The platform runs no CI outside release requests: qits-projects folds a
   request's sources onto `release/<id>` and announces every successful re-fold, and a repository's
-  single QA pipeline (`ci-event-release-request.yml` on an unmigrated repository, or the composed
-  `release-request:` slot of `release.yml` on a migrated one; `README.md` has both shapes, and the
-  placeholder template `docs/ci-event-release-request.yml` is deleted rather than kept in step with
-  two of them) selects it with
+  single QA pipeline — the composed `release-request:` slot of `.config/qits/release.yml`, which is
+  the only shape left: the hand-written `ci-event-release-request.yml` and its `docs/` template both
+  retired with the migration that finished 2026-09-17 — selects it with
   `checkout: { branch: backingBranch, sha: mergedSha }`. Matching, selection and checkout are the
   generic grammar — the branch that gets built is a branch nobody pushed, which is the whole reason
   the event has to exist, and "decide at main, build at the payload's commit" answers it unchanged.
@@ -1784,8 +1783,9 @@ appears in no slot file. A phase is a unit of work with a state and a rerun, a *
 condition between two phases (CI, approval, publish, deployment), and **a gate delays, it does not
 fail**. **Nothing in the composed text names a phase**: the DSL declares slots, and which phase a run
 is, is the engine's word, taken from the triggering event and never from which config file produced
-the document — which is exactly what makes a migrated and an unmigrated repository's runs read the
-same, and what keeps this feature out of every reader keyed on a phase.
+the document — which is what made a migrated and an unmigrated repository's runs read the same
+while the fleet was converting, and what still keeps this feature out of every reader keyed on a
+phase.
 
 - **Four classes, and the split is the usual one.** `CiReleaseSlotParser` and `CiReleaseSlots` are
   the document; `CiReleaseArchetypes` is the wrapper read, through the existing `CiConfigSource`
@@ -1796,13 +1796,19 @@ same, and what keeps this feature out of every reader keyed on a phase.
   where those live, and a missing golden writes the produced document to `target/composed/` and fails
   naming both paths rather than offering an `-Dupdate.goldens` that would let the test agree with
   itself.
-- **`CiConfigSource` grew a fourth answer, `readFile`, and its three statuses are load-bearing.**
-  `ABSENT` is a 404 at a rev the host has already resolved — "this repository has not migrated",
-  which is every repository today. `UNREACHABLE` is a blip. **The engine falls back to the legacy
-  trigger files on both**, and that direction is chosen rather than defaulted to: a migrated
-  repository has no legacy file for the fallback to find, so falling back is free, while reading a
-  blip as "release.yml exists" would cost an unmigrated repository's release request its QA verdict —
-  the exact failure the owed-event ledger exists to end.
+- **`CiConfigSource` grew a fourth answer, `readFile`, and its three statuses are load-bearing —
+  and the direction the engine reads them in INVERTED when the fleet finished migrating.** `ABSENT`
+  is a 404 at a rev the host has already resolved: the repository declares no release cycle, which is
+  final. `UNREACHABLE` is a blip. Both used to fall back to the hand-written trigger pair, on the
+  argument that a migrated repository had no such file for the fallback to find and so paid nothing.
+  There is no pair anywhere now, so that reading answers "this repository declares no QA" about a
+  release request that is waiting for exactly that QA's verdict — and settles the owed row, hanging
+  it PENDING forever with nothing to re-drive it. So `UNREACHABLE` is now its own outcome all the way
+  out: `ReleaseSlots.UNREADABLE` → `Evaluation.repositoriesUnreadable` → **the event is not settled**,
+  and the owed-event sweep evaluates it again. `ABSENT` and every failure of committed BYTES (unknown
+  archetype, unparseable slot file, uncomposable pair) are no run and ARE settled — a person's
+  declaration is final, and re-asking a git host cannot change it. `CiReleaseSlotTriggerTest` holds
+  the contrast from both sides.
 - **The extra read is gated on the two release event names.** `ReleaseRequestChanged` and
   `SCMRelease` and nothing else, so a `BuildSuccessful` costs precisely what it cost before this
   feature existed. `CiReleaseSlotTriggerTest` asserts the *absence* of the read for an ordinary event.
@@ -1811,10 +1817,13 @@ same, and what keeps this feature out of every reader keyed on a phase.
   pass; `CiReleaseArchetypes` takes the reference as an argument rather than injecting the key a
   second time. A second injection point would be a second thing to arm in a test and a second thing
   to keep in step.
-- **A slot file that is present but cannot be used still supersedes.** Unknown archetype, unreadable
-  recipe, unparseable slot file, uncomposable slots: WARN and **no run**, and the legacy files stay
-  skipped. Falling back there would mean a repository that has migrated silently resumes running
-  files it stopped maintaining, on the strength of the wrapper being briefly unreadable.
+- **A composed document supersedes nothing, and the rule that said otherwise is gone.** While the
+  fleet was migrating, a present `release.yml` skipped a still-committed
+  `ci-event-release-request.yml`/`ci-event-release.yml` with a WARN naming both paths, so the two
+  could not fire beside each other for one release. Zero repositories carry either file and the
+  supersession, both path constants and the fallback were deleted on 2026-09-18. Every
+  `ci-event-*.yml` now evaluates beside the composed documents under the ordinary "two files, two
+  declared pipelines, two runs" rule.
 - **`ci/` gained no HTTP and no new dependency.** The composer emits strings; the one read is the
   port's. There is no migration, no bus change, no endpoint and nothing in `qits-ci-daemon`.
 - **A RETRY of a composed run re-composes the platform's half, and that is the one place a run's
@@ -1911,19 +1920,14 @@ same, and what keeps this feature out of every reader keyed on a phase.
   direction, since the run that would satisfy the gate would be composed now too. The endpoint is in
   `docs/openapi.yml` for `GET /ci/api/daemon`'s reason — a machine consumer whose contract is written
   down here and nowhere else.
-- **`POST /ci/api/repositories/{repoId}/release-composition?rev=` is the door beside it, and it is a
-  READ** — a POST only because it takes a request body, the `release.yml` a person is about to commit
-  and has not. It composes at the rev, from supplied bytes or from the committed ones, and reports
-  **per phase and per side** — composed and committed — the document text and a structured summary of
-  what decides behaviour. **It emits no boolean `matches`, and that is the design rather than an
-  omission**: a composed document carries a platform prelude and postlude the hand-written pair never
-  had, so the two can never be byte-equal and an equality answer would be a false negative somebody
-  then chases. It is for judgement, not a pass/fail gate, and nothing gates on it. The
-  UNKNOWN-shaped failures are `release-phase`'s exactly — the repository is in no catalogue here, a
-  read came back `UNREACHABLE`, the archetype is unreadable — and answer **503** for that bullet's
-  reason, while a slot file that will not parse is the repository's own committed bytes and is a
-  **200** saying so. It exists because 46 repositories have still to migrate and a person has to be
-  able to look before they commit.
+- **`POST /ci/api/repositories/{repoId}/release-composition?rev=` was the door beside it and is
+  GONE.** It composed a candidate `release.yml` at a rev and reported it per phase and per side
+  against the two hand-written trigger files that rev committed, for a person about to write a
+  migration commit. Both halves of the question retired with the split pipeline on 2026-09-18: there
+  is no committed pair to hold a candidate against, and nobody is writing a migration commit. It is
+  mentioned here only so that a reader who finds it in the log knows it was removed rather than
+  moved; the summariser stack it needed (`phase`, `described`, `summarise`, the script digests) and
+  `ComposeAttempt.declaredArtifacts`, which existed for it alone, went with it.
 - **`userflows:` composes no step, deliberately.** It replaces qits-projects' substring grep for
   `@userflows/<site>` in a QA recipe — a search inside a shell script, which stops working the moment
   the script is composed — so it is a declaration for the reader on the other side of the release.
@@ -2534,8 +2538,8 @@ contract, tested where it lives.
   request to exactly one story, so the startup JWKS fetch lands in whichever story drains first and
   that must be the story about it. The class orderer is installed the one way Quarkus
   permits, `junit.quarkus.orderer.secondary-orderer` in this module's test properties; a local
-  `junit-platform.properties` hard-fails surefire. The **non-gating half of
-  `.config/qits/ci-event-release-request.yml`** is what regenerates and publishes them as the docs
+  `junit-platform.properties` hard-fails surefire. The **non-gating half of the QA phase composed
+  from `.config/qits/release.yml`** is what regenerates and publishes them as the docs
   bundle `@userflows/qits-ci`, versioned by the fold's merged sha — it was a separate
   `ci-event-userflows.yml` until the single QA pipeline absorbed it, and `gating: false` on the step
   is the whole of what that file was.
@@ -2613,8 +2617,8 @@ contract, tested where it lives.
   supported mode. **Not a `@QuarkusIntegrationTest`**: nothing in the assertion needs the
   application, and a second `@TestProfile` would be a second launched qits-ci for no assertion a
   plain JUnit class cannot make — `WorkspaceDaemonPinIT` over in qits-workspaces makes the same
-  judgement in the same words. It is named in `.config/qits/ci-event-release-request.yml`'s
-  `-Dit.test` comma list, needs no docker, and needs qits-artifacts reachable through
+  judgement in the same words. It is named in the `-Dit.test` comma list of
+  `.config/qits/release.yml`'s `release-request:` slot, needs no docker, and needs qits-artifacts reachable through
   `$QITS_MAVEN_REPOSITORY_URL` — which that recipe's verify step already exports. A class not named
   there never runs at all, silently, so the two move together.
   <br>The store is stubbed for the PUT and real for the GET, and the split is the point: "the pinned
@@ -2635,8 +2639,8 @@ contract, tested where it lives.
   supported mode. **Not a `@QuarkusIntegrationTest`**: nothing in the assertion needs the
   application, and a second `@TestProfile` would be a second launched qits-ci for no assertion a
   plain JUnit class cannot make — `WorkspaceDaemonPinIT` over in qits-workspaces makes the same
-  judgement in the same words. It is named in `.config/qits/ci-event-release-request.yml`'s
-  `-Dit.test` comma list, needs no docker, and needs qits-artifacts reachable through
+  judgement in the same words. It is named in the `-Dit.test` comma list of
+  `.config/qits/release.yml`'s `release-request:` slot, needs no docker, and needs qits-artifacts reachable through
   `$QITS_MAVEN_REPOSITORY_URL` — which that recipe's verify step already exports. A class not named
   there never runs at all, silently, so the two move together.
   <br>The store is stubbed for the PUT and real for the GET, and the split is the point: "the pinned

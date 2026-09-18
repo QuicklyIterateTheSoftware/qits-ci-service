@@ -128,10 +128,9 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
    * ReleaseRequestChanged} that names a release request writes {@code RELEASE_REQUEST}; an {@code
    * SCMRelease} that names one writes {@code RELEASE} <em>and</em> fills {@link #releaseRequestId},
    * which the QA half alone used to. That is {@code CiRunService.releaseRequestOf}'s rule with one
-   * more name in it, and keeping it there is what decouples this column from the trigger-file
-   * migration: a repository on a hand-written {@code ci-event-release-request.yml}/{@code
-   * ci-event-release.yml} pair records both phases exactly as one on a composed {@code release.yml}
-   * does.
+   * more name in it, and keeping it there is what decoupled this column from the trigger-file
+   * migration: a repository writing its own {@code ci-event-*.yml} records both phases exactly as
+   * one on a composed {@code release.yml} does.
    *
    * <p><b>Null is the ordinary value and it is permanent.</b> A dependency-bump run is not part of a
    * release; neither is any other run whose event names no request, which includes every {@code

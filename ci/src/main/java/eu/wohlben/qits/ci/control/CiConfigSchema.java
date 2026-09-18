@@ -71,8 +71,8 @@ final class CiConfigSchema {
    *
    * <p>Without it, a declared {@code checkout:} whose paths resolve to nothing costs that file its
    * run, which is right for a pipeline whose whole subject is the commit the event names — {@code
-   * ci-event-release-request.yml} gates a FOLD, and an event naming no fold has nothing truthful to
-   * record a row against. It is <b>wrong for a pipeline whose event grew the coordinate</b>. A release pipeline anchored at the tag reads {@code commitSha},
+   * release.yml}'s {@code release-request:} slot gates a FOLD, and an event naming no fold has
+   * nothing truthful to record a row against. It is <b>wrong for a pipeline whose event grew the coordinate</b>. A release pipeline anchored at the tag reads {@code commitSha},
    * a field {@code SCMRelease} did not always carry, and every event published before it — a replay,
    * an older publisher, a rolled-back one — carries no such key at all. Refusing those would turn a
    * strictly additive event change into releases that silently never build.

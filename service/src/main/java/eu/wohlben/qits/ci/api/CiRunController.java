@@ -612,9 +612,10 @@ public class CiRunController {
               + " release request, so it is not a word this door takes. A step inside a run is not a"
               + " phase and neither is a gating: false part of one, so neither can be re-fired"
               + " separately. Which phase a run is was decided by the event that triggered it and"
-              + " never by which config file produced it, so this addresses a run the same way for a"
-              + " repository on a hand-written ci-event-release*.yml pair and for one on a composed"
-              + " release.yml. This decides nothing about the release: the pipeline is the release"
+              + " never by which config file produced it, so this addresses a run the same way"
+              + " whatever the repository's release.yml composed for it — and the same way for a run"
+              + " from a bespoke ci-event-*.yml, which is the escape hatch the grammar still has."
+              + " This decides nothing about the release: the pipeline is the release"
               + " request in qits-projects, the new run announces its verdict on the bus exactly as"
               + " the first one did, and the gate between the two phases goes on holding the release"
               + " where it is until that verdict arrives — a gate delays, it does not fail.")

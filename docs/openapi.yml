@@ -4,15 +4,6 @@
 openapi: 3.1.0
 components:
   schemas:
-    ArtifactResponse:
-      type: object
-      properties:
-        type:
-          type: string
-        name:
-          type: string
-        sbomPath:
-          type: string
     CancelReleaseRequestRunsRequest:
       type: object
       required:
@@ -37,15 +28,6 @@ components:
       properties:
         reason:
           type: string
-    CheckoutResponse:
-      type: object
-      properties:
-        branchPath:
-          type: string
-        shaPath:
-          type: string
-        optional:
-          type: boolean
     CiLiveStepDto:
       type: object
       properties:
@@ -166,17 +148,6 @@ components:
           type: string
         source:
           type: string
-    DocumentResponse:
-      type: object
-      properties:
-        path:
-          type: string
-        document:
-          type: string
-        detail:
-          type: string
-        summary:
-          $ref: "#/components/schemas/SummaryResponse"
     Instant:
       type: string
       format: date-time
@@ -203,41 +174,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CiRunDto"
-    PhaseResponse:
-      type: object
-      properties:
-        phase:
-          type: string
-        event:
-          type: string
-        composed:
-          $ref: "#/components/schemas/DocumentResponse"
-        committed:
-          $ref: "#/components/schemas/DocumentResponse"
-    ReleaseCompositionRequest:
-      type: object
-      properties:
-        candidateSlotFile:
-          type: string
-    ReleaseCompositionResponse:
-      type: object
-      properties:
-        repositoryId:
-          type: string
-        rev:
-          type: string
-        slotFileSource:
-          type: string
-        slotFilePath:
-          type: string
-        detail:
-          type: string
-        guidance:
-          type: string
-        releaseRequestPhase:
-          $ref: "#/components/schemas/PhaseResponse"
-        releasePhase:
-          $ref: "#/components/schemas/PhaseResponse"
     ReleasePhaseResponse:
       type: object
       properties:
@@ -287,49 +223,6 @@ components:
       properties:
         runId:
           type: string
-    StepResponse:
-      type: object
-      properties:
-        index:
-          type: integer
-          format: int32
-        image:
-          type: string
-        gating:
-          type: boolean
-        build:
-          type: boolean
-        docker:
-          type: boolean
-        user:
-          type: string
-        timeoutSeconds:
-          type: integer
-          format: int32
-        scriptSha256:
-          type: string
-        scriptLines:
-          type: integer
-          format: int32
-    SummaryResponse:
-      type: object
-      properties:
-        event:
-          type: string
-        selection:
-          type: string
-        checkout:
-          $ref: "#/components/schemas/CheckoutResponse"
-        gating:
-          type: boolean
-        steps:
-          type: array
-          items:
-            $ref: "#/components/schemas/StepResponse"
-        artifacts:
-          type: array
-          items:
-            $ref: "#/components/schemas/ArtifactResponse"
     TriggerEventRequest:
       type: object
       properties:
@@ -462,70 +355,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListRepositorySummariesResponse"
-        "401":
-          description: Not Authorized
-        "403":
-          description: Not Allowed
-      tags:
-      - Ci Repository Controller
-      security:
-      - SecurityScheme:
-        - qits:admin
-        - qits:system
-        - qits:agent
-  /ci/api/repositories/{repoId}/release-composition:
-    post:
-      summary: "What a candidate release.yml would compose at a rev, beside what that\
-        \ rev commits (a read; POST only because it takes a body)"
-      description: "Reported per PHASE, because the slot file's two keys are the release\
-        \ pipeline's first two phases: release-request: is phase one, the QA a release\
-        \ request is gated on, and release: is phase two, the publish at the released\
-        \ tag. Phase three is the deploy and belongs to qits-deployments, so no slot\
-        \ file declares it and this read has nothing to say about it. A phase is a\
-        \ unit of work with a state and a rerun; the composed text names none of them,\
-        \ since which phase a run is, is decided by the event that triggered it and\
-        \ never by the slot it was composed from. And this is not a GATE — a gate\
-        \ is the condition between two phases and it delays rather than fails, whereas\
-        \ this door refuses nothing and returns no verdict: it reports both sides\
-        \ and compares neither, for a person's judgement before the file is committed."
-      parameters:
-      - name: repoId
-        in: path
-        required: true
-        schema:
-          type: string
-      - description: A git rev the host can resolve — in practice main or the branch
-          a migration is being written on
-        required: true
-        name: rev
-        in: query
-        schema:
-          type: string
-      requestBody:
-        description: "The candidate release.yml to compose. Omit it — or send a blank\
-          \ one — to compose the repository's own file at that ref, which is what\
-          \ a caller with no draft asks for."
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ReleaseCompositionRequest"
-      responses:
-        "200":
-          description: "Both sides, per phase, with the guidance that says this is\
-            \ for judgement rather than a gate. A candidate that will not parse or\
-            \ compose is reported here, not as a 503."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ReleaseCompositionResponse"
-        "400":
-          description: "Missing or blank rev, or no release.yml at the ref and no\
-            \ candidate supplied — an empty request rather than an empty answer"
-        "503":
-          description: "Not answered — the repository is in no catalogue here, or\
-            \ the slot file, a legacy trigger file or the archetype could not be read.\
-            \ Retry."
         "401":
           description: Not Authorized
         "403":
@@ -705,13 +534,13 @@ paths:
         \ takes. A step inside a run is not a phase and neither is a gating: false\
         \ part of one, so neither can be re-fired separately. Which phase a run is\
         \ was decided by the event that triggered it and never by which config file\
-        \ produced it, so this addresses a run the same way for a repository on a\
-        \ hand-written ci-event-release*.yml pair and for one on a composed release.yml.\
-        \ This decides nothing about the release: the pipeline is the release request\
-        \ in qits-projects, the new run announces its verdict on the bus exactly as\
-        \ the first one did, and the gate between the two phases goes on holding the\
-        \ release where it is until that verdict arrives — a gate delays, it does\
-        \ not fail."
+        \ produced it, so this addresses a run the same way whatever the repository's\
+        \ release.yml composed for it — and the same way for a run from a bespoke\
+        \ ci-event-*.yml, which is the escape hatch the grammar still has. This decides\
+        \ nothing about the release: the pipeline is the release request in qits-projects,\
+        \ the new run announces its verdict on the bus exactly as the first one did,\
+        \ and the gate between the two phases goes on holding the release where it\
+        \ is until that verdict arrives — a gate delays, it does not fail."
       requestBody:
         content:
           application/json:
@@ -839,4 +668,4 @@ paths:
         - qits:admin
 info:
   title: qits-ci API
-  version: 2026.917.72012
+  version: 2026.917.191914

@@ -76,10 +76,13 @@ public interface CiConfigSource {
    * One file read by path, and the three answers a caller has to keep apart.
    *
    * <p>{@link Status#ABSENT} is "this repository declares no such file", which for {@code
-   * .config/qits/release.yml} is every repository that has not migrated and is the ordinary case.
-   * {@link Status#UNREACHABLE} is "nothing was learned", and collapsing the two would turn a git-host
-   * blip into a repository that suddenly declares nothing — the same rule {@link CommitHeld#UNKNOWN}
-   * states one method up.
+   * .config/qits/release.yml} is a repository that declares no release cycle at all — honest, final,
+   * and the ordinary answer for anything the platform does not release. {@link Status#UNREACHABLE}
+   * is "nothing was learned", and collapsing the two would turn a git-host blip into a repository
+   * that suddenly declares nothing — the same rule {@link CommitHeld#UNKNOWN} states one method up,
+   * and since every repository keeps its whole release cycle in that one file, the cost of getting
+   * it wrong is a release request hung on a QA verdict nobody will record. {@code
+   * CiEventTriggerService} answers the third case by leaving the event OWED.
    */
   record FileLookup(Status status, String content) {
 

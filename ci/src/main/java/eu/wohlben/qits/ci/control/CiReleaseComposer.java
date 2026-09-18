@@ -19,9 +19,9 @@ import java.util.List;
  * <p><b>Nothing in the composed text names a phase, and that is the DSL's boundary.</b> {@link
  * CiReleaseSlots} declares slots and these documents declare events; which phase a run is, is the
  * <b>engine's</b> word, recorded when the run is accepted and derived from the triggering event
- * alone. So a run composed from {@code release:} and a run from a hand-written {@code
- * ci-event-release.yml} are the same phase, which is what makes a half-migrated estate read
- * identically — and why a phase must never be inferred here from which slot produced a document.
+ * alone. So a run composed from {@code release:} and a run from a repository's own hand-written
+ * {@code ci-event-*.yml} on the same event are the same phase — which is why a phase must never be
+ * inferred here from which slot produced a document.
  *
  * <p><b>A pure function.</b> No clock, no config, no lookup, no logging — inputs in, two strings
  * out, the same two strings every time. That is what makes the golden-file tests a regression net
@@ -134,8 +134,8 @@ public final class CiReleaseComposer {
   /**
    * The two composed documents. Either may be null: a phase this repository and its archetype
    * declare no steps for gets <b>no trigger document and therefore no run</b>, which is the honest
-   * reading of "nothing is declared" and is exactly what an SPA frontend's missing {@code
-   * ci-event-release.yml} means today.
+   * reading of "nothing is declared" — an SPA frontend publishes nothing, so it declares no {@code
+   * release:} slot and no release run of it is ever recorded.
    */
   public record Composed(String releaseRequestDocument, String releaseDocument) {}
 

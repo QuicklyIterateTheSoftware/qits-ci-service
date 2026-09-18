@@ -32,11 +32,13 @@ import org.junit.jupiter.api.Test;
  * <p><b>The file this repository committed has no say in it, and that is the claim this class is
  * really here to state.</b> Every case below drives a repository whose trigger files are a
  * <em>hand-written</em> {@code .config/qits/ci-event-release-request.yml} / {@code
- * ci-event-release.yml} pair — the shape 46 repositories on this platform are still on — and both
- * phases are recorded exactly as they are for a repository on a composed {@code release.yml} (which
- * {@code CiReleaseSlotTriggerTest} drives). So the phase feature and the trigger-file migration are
- * independent, and neither rollout waits on the other. A condition on {@code config_path} anywhere
- * in the accept path would make that false, silently, for the majority of the estate.
+ * ci-event-release.yml} pair — the shape the whole estate was on when this class was written, and
+ * which no repository is on any more — and both phases are recorded exactly as they are for a
+ * repository on a composed {@code release.yml} (which {@code CiReleaseSlotTriggerTest} drives). So
+ * the phase feature and the trigger-file migration were independent, and neither rollout waited on
+ * the other. The fixture is kept on the retired shape deliberately: it is the generic trigger
+ * grammar, which survives the split pipeline's retirement as the escape hatch it always was, and a
+ * condition on {@code config_path} anywhere in the accept path would still make this false.
  *
  * <p><b>The third arm is the one live traffic takes.</b> An {@code SCMRelease} that names no release
  * request — every one published before qits-projects grew the field, and every replay of one out of
