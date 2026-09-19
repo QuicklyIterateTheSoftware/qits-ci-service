@@ -766,12 +766,25 @@ all — so a fixture that mints a token without `groups` authenticates perfectly
 403, which is a stale fixture rather than a regression. A method-level role list **replaces** the
 class-level one rather than adding to it; a route both a person and a machine read must name both.
 
-**Every read route also takes `qits:agent`, and no write does.** Agents keep all read access and
-lose write access (user ruling, 2026-09-12). So `CiRepositoryController` and `CiDaemonController`
-name it on the class, and `CiRunController` names it on each of its four reads: its class list
-also guards the `cancellations` write. Nothing filters what an agent reads. The daemon socket is
-not a read route (step daemons write run records through it) and is unchanged.
+**Every read route also takes `qits:agent`, and exactly ONE write does.** Agents keep all read
+access and lost write access wholesale (user ruling, 2026-09-12). So `CiRepositoryController` and
+`CiDaemonController` name it on the class, and `CiRunController` names it on each of its four
+reads: its class list also guards the `cancellations` write. Nothing filters what an agent reads.
+The daemon socket is not a read route (step daemons write run records through it) and is unchanged.
 `AgentReadAccessTest` holds this. A new read route names `qits:agent` too.
+
+**The exception is `POST /ci/api/runs/{runId}/retry`, and it is scoped rather than blanket** (owner
+ruling, 2026-09-19). An agent is the caller standing in front of a release-request gate that went
+red for a reason that is the platform's rather than the code's, and it can neither re-ask the gate
+nor explain it away: its only other door was an empty commit on a source branch and a second full
+gate. So `retryRun` takes `{qits:admin, qits:agent}` and then runs `cancellationScope()` /
+`requireRepositoryInProject` against the **run's own** repository, exactly as the cancellation and
+the phase rerun do — an agent re-fires in its own project and is 403 in anybody else's, and the
+run is read first so a bad run id is still a 404 rather than a 403. It does **not** take
+`qits:system`: no peer service presses this button (qits-projects re-asks through `/ci/api/runs/rerun`,
+addressed by the triple it actually holds). The claim the check reads is real — qits-idp states
+`project` on every commissioned agent credential — and an agent arriving without one holds no
+platform-wide role either, so it is refused. `AgentRetryAccessTest` is the case file.
 
 ## The Angular client
 

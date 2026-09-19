@@ -651,19 +651,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RetryRunResponse"
+        "403":
+          description: "The token covers this run's repository for nobody — no project\
+            \ claim and no platform-wide role, or a project claim this instance cannot\
+            \ place the repository in"
         "404":
           description: No such run
         "409":
           description: "The run has not finished, so there is nothing to retry yet"
         "401":
           description: Not Authorized
-        "403":
-          description: Not Allowed
       tags:
       - Ci Run Controller
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:agent
 info:
   title: qits-ci API
-  version: 2026.918.100331
+  version: 2026.919.82631

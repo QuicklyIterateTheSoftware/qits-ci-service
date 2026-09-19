@@ -27,7 +27,12 @@ import org.junit.jupiter.api.Test;
 
 /**
  * A {@code qits:agent} reads every read route {@code qits:admin} or {@code qits:system} reads, with no
- * filter, and writes nothing. One case per changed controller, and one for the writes.
+ * filter, and writes nothing but a retry. One case per changed controller, and one for the writes.
+ *
+ * <p><b>The one write an agent may press is {@code POST /ci/api/runs/{runId}/retry}</b> (owner
+ * ruling, 2026-09-19), and it is project-scoped rather than open. It is therefore not asserted here
+ * at all: {@code AgentRetryAccessTest} owns both of its sides, and this file keeps saying what it
+ * always said about every other write.
  *
  * <p>The agent's token names a project, and the run it reads is in another one: agents lose no read
  * access, so the project claim narrows nothing here.
@@ -165,9 +170,11 @@ class AgentReadAccessTest {
         @Claim(key = "aud", value = OWN_AUDIENCE),
         @Claim(key = QitsClaims.PROJECT, value = "*")
       })
-  void anAgentWritesNothing() {
+  void anAgentWritesNothingButARetry() {
+    // The retry left this list on 2026-09-19 and is the single exception: an agent may re-fire a
+    // run whose repository its project claim covers, and is refused one in anybody else's.
+    // AgentRetryAccessTest holds both sides. Everything below is still shut.
     given().when().post("/ci/api/runs/" + foreignRun + "/cancel").then().statusCode(403);
-    given().when().post("/ci/api/runs/" + foreignRun + "/retry").then().statusCode(403);
     given()
         .contentType(MediaType.APPLICATION_JSON)
         .body("{\"repoId\":\"" + REPO + "\",\"releaseRequestId\":\"rr-agent\"}")

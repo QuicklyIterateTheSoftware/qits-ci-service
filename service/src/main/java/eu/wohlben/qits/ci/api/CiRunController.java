@@ -50,8 +50,9 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * not exist, and put three services under one gateway prefix. {@code {runId}} stays in the path:
  * there it is identity, not scope.
  *
- * <p><b>The reads take the pair {@code qits:admin, qits:system}; the two run-scoped writes take
- * {@code qits:admin} alone.</b> qits:system is the machine role and qits:admin the human one, and a
+ * <p><b>The reads take the pair {@code qits:admin, qits:system}; of the two run-scoped writes the
+ * cancel takes {@code qits:admin} alone and the retry adds {@code qits:agent}</b> (see {@link
+ * #retryRun} for why an agent presses that one and what scopes it). qits:system is the machine role and qits:admin the human one, and a
  * machine that has to poll a run it asked for — qits-platform-maintenance waits out every bump this
  * way — must not be granted a person's role to do it. What mutates is not widened: {@link #cancelRun}
  * and {@link #retryRun} carry their own method-level list, which replaces the class's rather than
@@ -551,21 +552,56 @@ public class CiRunController {
    * like it does after a trigger. Retrying a run that has not finished is a 409 — the question is
    * still being answered, and two runs racing for one verdict is not what was asked for.
    *
-   * <p>It is a write, so it carries the same {@code qits:admin} the cancel does rather than the
-   * class's read pair: starting somebody's build is not a thing a peer service does either.
+   * <p><b>It is a person's write that an agent may also press, and the widening is scoped rather
+   * than blanket.</b> The roles are {@code qits:admin} and {@code qits:agent}. A coding agent is the
+   * caller standing in front of the case this endpoint exists for: a release-request gate that went
+   * red for a reason that is the platform's and not the code's, which the agent can neither re-ask
+   * nor explain away — its only other door is an empty commit on a source branch and a second full
+   * gate. An agent holds {@code qits:agent} and nothing else, so without this it was answered 403
+   * on the one button that fixes what it is looking at.
+   *
+   * <p><b>What makes that safe is the scope check, not the role.</b> A caller that is not
+   * platform-wide is judged exactly as {@link #cancelReleaseRequestRuns} and {@link
+   * #rerunReleaseRequestPhase} judge one — {@link #cancellationScope()} for the arms, then {@link
+   * #requireRepositoryInProject} against the <em>run's own</em> repository — so an agent may
+   * re-fire a build in its own project and is refused one in somebody else's, and a repository the
+   * catalogue cannot place is in no project at all. qits-idp states a {@code project} claim on
+   * every commissioned agent credential (qits-projects' {@code IdpAgentCredentials} and
+   * qits-workspaces' {@code IdpCredentialCommissioner} both send it), so this is the claim such a
+   * token really carries rather than one invented for the check; an agent arriving without one
+   * holds no platform-wide role either and is refused, which is the fail-closed direction.
+   *
+   * <p><b>{@code qits:system} is deliberately absent</b>, and that half of the old rule stands: no
+   * peer service presses this button. qits-projects re-asks a release request's CI through {@link
+   * #rerunReleaseRequestPhase}, which is addressed by the triple a peer actually holds; a run id is
+   * qits-ci's own. Adding the machine role here would grant every service on the platform a door
+   * none of them has a caller for.
+   *
+   * <p>The order of the answers is part of the contract: the run is read first, so an id that names
+   * no run is a 404 rather than a 403 that would tell an uncovered caller whether it exists.
    */
   @POST
   @Path("/{runId}/retry")
-  @jakarta.annotation.security.RolesAllowed("qits:admin")
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:agent"})
   @Consumes(MediaType.WILDCARD)
   @Operation(summary = "Run a finished CI run's pipeline again, at the same commit")
   @APIResponse(
       responseCode = "202",
       description = "A new run has been accepted and queued",
       content = @Content(schema = @Schema(implementation = RetryRunResponse.class)))
+  @APIResponse(
+      responseCode = "403",
+      description =
+          "The token covers this run's repository for nobody — no project claim and no platform-wide"
+              + " role, or a project claim this instance cannot place the repository in")
   @APIResponse(responseCode = "404", description = "No such run")
   @APIResponse(responseCode = "409", description = "The run has not finished, so there is nothing to retry yet")
   public Response retryRun(@PathParam("runId") String runId) {
+    CiRun run = runService.requireRun(runId);
+    String projectScope = cancellationScope();
+    if (projectScope != null) {
+      requireRepositoryInProject(run.repoId, projectScope);
+    }
     return Response.accepted().entity(new RetryRunResponse(runService.retry(runId).id)).build();
   }
 

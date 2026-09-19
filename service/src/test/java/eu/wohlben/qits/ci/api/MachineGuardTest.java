@@ -46,8 +46,12 @@ import org.junit.jupiter.api.Test;
  * is the case that must never go back to 403; the two beside it keep the widening where the ruling
  * put it.
  *
- * <p>{@code POST /ci/api/runs/{runId}/retry} is beside the cancel, in the other category: a person's
- * write, {@code qits:admin} only, and a machine granted every project is refused.
+ * <p>{@code POST /ci/api/runs/{runId}/retry} is beside the cancel and is the one write here that a
+ * non-person may press: {@code qits:admin} plus {@code qits:agent}, with the run's repository
+ * checked against the token's project claim (owner ruling, 2026-09-19 — an agent in front of a red
+ * release-request gate is the caller it exists for). {@code qits:system} is still absent, so a peer
+ * service granted every project is refused, which is the case kept here; the agent's own two sides
+ * are {@code AgentRetryAccessTest}'s.
  *
  * <p>The rule they enforced is unchanged, and is why this file stays: a NEW write method that simply
  * omits {@code machineAuth.require*} ships unguarded and nothing says so. Add a write endpoint, add
@@ -493,10 +497,14 @@ class MachineGuardTest {
         @Claim(key = "aud", value = OWN_AUDIENCE),
         @Claim(key = QitsClaims.PROJECT, value = "*")
       })
-  void retryingARunStaysAPersonsAndRefusesAMachine() {
-    // The second write on the read resource, and it takes the same method-level qits:admin the
-    // cancel does for the same reason: starting somebody's build is not a thing a peer service does
-    // either. A machine holding every project is still 403 here.
+  void retryingARunRefusesAPeerServicesMachineRole() {
+    // The second write on the read resource. It is no longer qits:admin alone — it names
+    // {qits:admin, qits:agent} since 2026-09-19, because the caller standing in front of a red
+    // release-request gate is an agent — but qits:system is deliberately NOT in that list: no peer
+    // service presses this button, and qits-projects re-asks a release request's CI through
+    // /ci/api/runs/rerun, addressed by the triple it actually holds. So a machine granted every
+    // project is still 403 here, before the run is ever read. What an agent may do, and the project
+    // scope that bounds it, is AgentRetryAccessTest's.
     given().when().post("/ci/api/runs/no-such-run/retry").then().statusCode(403);
   }
 
