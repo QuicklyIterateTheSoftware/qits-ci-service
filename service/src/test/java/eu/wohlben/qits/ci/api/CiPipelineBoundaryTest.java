@@ -122,7 +122,15 @@ public class CiPipelineBoundaryTest {
     assertEquals("SUCCESS", run.get("status"));
     assertEquals("ci-green", run.get("branch"));
     assertEquals(sha, run.get("commitSha"));
-    assertNull(run.get("steps"), "listing must not carry step output");
+    // A listing carries a step's BOUNDARIES and never its output — the two instants and the index
+    // are what a segmented bar needs, and the transcript is the single-run read's business.
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> listedSteps = (List<Map<String, Object>>) run.get("steps");
+    assertEquals(2, listedSteps.size(), "both steps of a green run really ran");
+    assertNotNull(listedSteps.get(0).get("finishedAt"));
+    assertTrue(
+        listedSteps.stream().allMatch(step -> step.get("output") == null),
+        "listing must not carry step output");
     // Every run is pinned to one daemon build, resolved before the first container.
     assertEquals("fake-daemon", run.get("daemonVersion"));
 
@@ -579,6 +587,27 @@ public class CiPipelineBoundaryTest {
   }
 
   @Test
+  public void theQueueRouteIsTheQueueEnvelopeAndNotASingleRunNamedQueue() {
+    // The third literal under /runs/{runId}, and it inherits the hazard /active and /finished carry
+    // exactly: JAX-RS ranks a literal above a template, so this must resolve to the queue envelope
+    // rather than to requireRun("queue") — which would 404, and would surface in a client as a
+    // queue panel that simply never loads. Asserted rather than believed, for that reason.
+    given()
+        .when()
+        .get("/ci/api/runs/queue")
+        .then()
+        .statusCode(200)
+        .contentType(ContentType.JSON)
+        // The queue envelope's own four keys, and not the single-run shape.
+        .body("$", org.hamcrest.Matchers.hasKey("running"))
+        .body("$", org.hamcrest.Matchers.hasKey("queued"))
+        .body("generatedAt", org.hamcrest.Matchers.notNullValue())
+        .body("concurrentBuilds", org.hamcrest.Matchers.greaterThanOrEqualTo(1))
+        .body("id", org.hamcrest.Matchers.nullValue())
+        .body("commitSha", org.hamcrest.Matchers.nullValue());
+  }
+
+  @Test
   public void theActiveListingHoldsTheQueuedAndRunningRunsAndDropsThemWhenTheyFinish()
       throws Exception {
     // Staged against a genuinely occupied worker rather than a sleep: the run worker is
@@ -626,9 +655,18 @@ public class CiPipelineBoundaryTest {
                       List.of("SUCCESS", "FAILED", "CONFIG_ERROR", "TIMED_OUT")
                           .contains(run.get("status"))),
           "a finished run has no business in the active listing");
-      // The list shape excludes step output, exactly as the run listing does.
-      assertNull(queued.get("steps"), "the active listing must not carry step output");
-      assertNull(queued.get("live"));
+      // The list shape carries step BOUNDARIES and never step output. A queued run has no step rows
+      // at all — nothing has ended — so the empty list is the honest answer rather than a null.
+      assertEquals(List.of(), queued.get("steps"), "a queued run has ended no step");
+      assertNull(queued.get("live"), "and there is nothing in flight to be live about");
+      // The running one is where the widening is visible, and where the omission is asserted: the
+      // bolt panel needs real step boundaries to draw a boundary-true bar, and needs none of what a
+      // step printed. CiQueueSurfaceTest is where that is proven against a step that has ENDED.
+      @SuppressWarnings("unchecked")
+      Map<String, Object> liveStep = (Map<String, Object>) runIn(active, busy).get("live");
+      assertNotNull(liveStep, "the parked run's step has been handed over, so it is live");
+      assertEquals(0, liveStep.get("stepIndex"));
+      assertNull(liveStep.get("output"), "a listing carries no output, live or recorded");
     } finally {
       release.countDown();
     }
@@ -694,9 +732,19 @@ public class CiPipelineBoundaryTest {
             firedInOrder.get(1));
     assertEquals(expected, finished.stream().map(run -> run.get("id")).toList());
 
-    // The list shape, exactly as the other two listings: no step output, no live object.
-    assertNull(finished.get(0).get("steps"), "the finished listing must not carry step output");
+    // The list shape, exactly as the other two listings: step boundaries, never step output, and
+    // no live object on a run that has nothing in flight.
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> finishedSteps = (List<Map<String, Object>>) finished.get(0).get("steps");
+    assertNotNull(finishedSteps, "a finished run draws an empty bar without its real boundaries");
+    assertTrue(
+        finishedSteps.stream().allMatch(step -> step.get("output") == null),
+        "the finished listing must not carry step output");
     assertNull(finished.get(0).get("live"));
+    // And no forecast: it has left the queue, so there is no position it could hold.
+    assertNull(finished.get(0).get("queuePosition"));
+    assertNull(finished.get(0).get("expectedFinishInMillis"));
+    assertNull(finished.get(0).get("ordering"));
     assertNotNull(finished.get(0).get("finishedAt"), "a finished run has a finish");
     assertTrue(
         finished.stream().noneMatch(run -> ACTIVE.contains(run.get("status"))),

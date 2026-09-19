@@ -690,6 +690,99 @@ about the JVM is the loop's business, not the row's.
 and `CiRunWorkerPoolTest` holds `supervised` on its own — a supervisor nothing exercises is a
 supervisor nobody knows resubmits.
 
+### The queue is a surface, and the order explains itself
+
+**The claim order used to be computed and thrown away.** `CiRunOrdering` had exactly one production
+caller — the loop above — and `/ci/api/runs/active` answers newest-first, which is a *different
+question with a plausible-looking answer*. There was no queue position, no `/queue` route and no ETA
+anywhere, so "which build is next" and "when does it get to mine" had no reader at all.
+
+Three classes carry it now and the first two are **pure**: no I/O, no clock, no CDI, no state.
+
+- **`CiRunOrdering.explain(List<CiRun>)`** is the same pass `suggestedOrder` was, answering with its
+  reasons attached, and `suggestedOrder` is now that answer mapped. **There is one implementation of
+  the ordering** — the alternative, a second pass deriving "why" beside the one that decides, is a
+  copy that drifts in the direction nobody notices, because an explanation that disagrees with the
+  order is worse than no explanation: it is believed.
+- **`CiQueueForecast.forecast(running, queuedInClaimOrder, concurrentBuilds, now)`** is the
+  arithmetic. `now` is a **parameter** and there is no `Instant.now()` below that line, which is what
+  makes the restart doctrine hold here too — the same rows and the same instant produce the same
+  forecast in whichever process is asked, so a redeploy mid-queue moves nobody's ETA. It takes
+  `OrderedRun`s rather than `CiRun`s deliberately: this arithmetic is only meaningful over the claim
+  order, and a `List<CiRun>` parameter would accept a listing's order silently and answer
+  confidently about the wrong build.
+- **`CiRunService.queueSnapshot()`** is the one impure step: one read of `listActiveNewestFirst`,
+  partitioned, then those two functions. **One `Instant` is stamped per response and every row in it
+  is relative to that one** — two rows of one body relative to two instants would be two durations
+  that cannot be compared. It is stamped *after* the read, so the instant never precedes the rows it
+  describes, and the read is *one* transaction so a run cannot appear in both halves or in neither.
+
+**Queue-wait prediction is this service's to compute, and that is the binding rule.** A client
+reconstructing the order from a listing would be a second `CiRunOrdering` — four criteria, a
+topological pass and a private rank table, over rows that do not carry half of what the decision
+reads. So the order rides the rows as `queuePosition` and the reasoning rides beside it as
+`ordering`, and `/ci/api/runs/active` **keeps its newest-first contract** rather than being re-sorted:
+putting the claim order on the rows is strictly better than changing the meaning of a listing.
+
+**A prediction is an estimate and must never read as a promise.** Two consequences are load-bearing
+and both are the kind that get quietly dropped:
+
+- **Every duration on the wire is RELATIVE.** `expectedStartInMillis`/`expectedFinishInMillis` are
+  milliseconds from the response's own instant (`generatedAt` on `/queue`), never a predicted clock
+  time. A clock time is read in the reader's timezone, compared to a watch, and wrong by however long
+  the page has been open. `CiQueueSurfaceTest` asserts the absolute fields *do not exist* on the
+  wire, because "we decided not to add one" is not a property a reviewer can check twice.
+- **An absence carries its reason all the way to the wire.** `Eta` is a `(Long, Unknown)` record with
+  two factories rather than a nullable long, and `predictionUnavailable` is that reason's enum name.
+  The three values name **whose** prediction was missing — the run's own, a run ahead of it, or a run
+  in flight — because those are three different sentences to the person waiting, one permanent until
+  the pipeline has history and two self-healing. A run ahead with no prediction makes every ETA
+  behind it unknown too, **and that must be said rather than silently skipped**: a row that
+  disappears reads as "finished" and a blank duration reads as "instant". Both forecast lists are
+  total for exactly that reason, so their lengths really are the queue's.
+
+**The forecast is attached to every non-terminal row of a response and to no terminal one**,
+whichever route produced it — `CiRunController.listing` is the one place that rule lives. A `QUEUED`
+or `RUNNING` run therefore carries the same position and ETAs in a repository's own listing as it
+does on `/active` or `/queue`, since an ETA that depended on which page asked would be a different
+number for the same fact; a finished run carries none anywhere, which is also what keeps it cheap —
+a response holding nothing in flight reads no queue at all.
+
+**Every run listing carries step boundaries now, and none carries step output.** All three —
+`?repositoryId=`, `/active`, `/finished` — answer `steps` with `output` null and `live` with `output`
+null, through `CiRunMapper.toDtoWithoutStepOutput` and `toDtoWithoutOutput`; the single-run read is
+unchanged. Their contract was always "without step *output*", and the output was the only reason the
+whole object was dropped: it is unbounded, repository-controlled and the only heavy part of a row,
+while a step's two instants and its index are a few dozen bytes. Those bytes are what make a
+segmented bar *boundary-true*, and carrying them on one listing only would make the bar's
+truthfulness depend on which page you are on.
+
+The step DTO is produced output-free by an **explicit mapping** rather than by nulling the field at
+the call site: which listings omit the output is a property of the surface and belongs where the
+surface's shapes are made, not one refactor away from carrying a repository's logs into a response
+with no affordance for them. And the relay-snapshot filter — *a step must never be handed over twice,
+once as a row and once as live* — is `CiRunController.liveStep`, one implementation reached by both
+reads, because that reasoning is exactly what gets left behind when a second listing starts reading
+the relay.
+
+**The one cost worth knowing before widening these rows further**: `?repositoryId=` is unbounded when
+`?limit=` is absent, and qits-ci-frontend re-asks without a limit once a limited answer comes back
+full. So the step widening is paid per historical run on that route — one indexed read per run with a
+`startedAt`, which is why `CiRunService.stepsForAll` skips a run that never started rather than
+querying for rows that cannot exist.
+
+**The consumer is qits-ui-components' `QitsStepProgress`**, drawn by both the platform chrome and
+qits-ci-frontend. It matches a timing to its predicted step **by `stepIndex`, never by array
+position**, because a step is persisted at its end. `stepIndex`/`startedAt`/`finishedAt` on a step
+row and `stepIndex`/`startedAt` on `live` are the contract; both objects are optional on that side,
+so an older qits-ci draws empty bubbles rather than nothing.
+
+**`CiRunDto.phase` landed with all this and is the smallest part of it.** The column has existed
+since `V17__run_phase.sql` and the mapper had simply never copied it, so a client holding a release
+request's runs could not tell P1 from P2 except by matching `triggerEventName` against two strings it
+had to know. Null means *no phase* — not part of a release — and never *unknown*: the decision is the
+trigger event's name and nothing else.
+
 ## Addressing
 
 `README.md` has the shape; two things bite when you change a path here.
@@ -698,14 +791,15 @@ supervisor nobody knows resubmits.
 suite inherits it.** So a resource's `@Path` is relative to `/ci/api` and must never repeat `ci`.
 Tests address the absolute path, which is what makes them catch a prefix regression.
 
-**`/ci/api/runs/active` and `/ci/api/runs/finished` sit under `/ci/api/runs/{runId}`, and only
-JAX-RS' sorting rule keeps them apart.** A literal segment outranks a template, so the listing wins —
-but a regression there would show up as the client's rail 404ing and nothing else, so
-`CiPipelineBoundaryTest` asserts each route resolves to the listing envelope rather than to a lookup
-for a run named `active` or `finished`. Same for `/ci/api/repositories/summary` under
-`/ci/api/repositories`, which is the easier case (that one has no template to lose to). None of them
-adds a literal Vert.x route, so `quarkus.quinoa.ignored-path-prefixes` is unchanged — `/api` already
-covers them.
+**`/ci/api/runs/active`, `/ci/api/runs/finished` and `/ci/api/runs/queue` sit under
+`/ci/api/runs/{runId}`, and only JAX-RS' sorting rule keeps them apart.** A literal segment outranks
+a template, so the listing wins — but a regression there would show up as the client's rail 404ing
+and nothing else, so `CiPipelineBoundaryTest` asserts each route resolves to its own envelope rather
+than to a lookup for a run named `active`, `finished` or `queue`. Same for
+`/ci/api/repositories/summary` under `/ci/api/repositories`, which is the easier case (that one has
+no template to lose to). None of them adds a literal Vert.x route, so
+`quarkus.quinoa.ignored-path-prefixes` is unchanged — `/api` already covers them; that was checked
+against the key rather than assumed when `/queue` landed.
 
 **The two run listings are complements, and the predicate is written that way on purpose.**
 `/active` is `status in (QUEUED, RUNNING)` and `/finished` is `status NOT in (QUEUED, RUNNING)` —
@@ -2791,6 +2885,29 @@ contract, tested where it lives.
   Quarkus instance. So a trigger file in a test fixture must select something **unique to the
   repository that committed it**, or one test method's event fires an earlier method's repository and
   "exactly two runs, exactly two publishes" stops being a statement about the test making it.
+- **`api/CiQueueSurfaceTest` is the queue's read surface, and it shares the default application on
+  purpose.** A `@TestProfile` is one extra Quarkus boot and this class needs no configuration
+  nothing else has, so it declares none — the rule this repo states for `MachineGuardTest.GateOn`
+  and `TokenValidationBootstrapIT`'s profile, applied the other way round. Four cases: the claim
+  order with its positions and an ETA chain asserted *exactly* (one build slot in the suite, so the
+  queue is plain addition and each start equals the previous finish to the millisecond); a run
+  behind an unpredicted one reporting `RUN_AHEAD_HAS_NO_PREDICTION` with null ETAs, which is the
+  "say so rather than skip" rule and the one most likely to be quietly dropped; a listing carrying a
+  recorded step's boundaries with its output null while the single-run read still carries it; and
+  `phase` on a release-request run, a release run and an ordinary one.
+  <br>**Every case waits the queue quiet first, and that is load-bearing rather than hygiene.** The
+  suite shares one application, so a run another class left in flight is a real member of the queue
+  under test — and if it carried no prediction it would poison every ETA behind it with
+  `RUN_AHEAD_HAS_NO_PREDICTION`, which is *correct behaviour* and a failed assertion. Waiting for an
+  empty queue is what makes the positions absolute and the ETA chain assertable exactly rather than
+  approximately. The states themselves are staged the way `CiPipelineBoundaryTest` established —
+  `FakeCiStepRunner.during` parks the sole worker inside a step — and the third case parks inside
+  step **one**, so step zero really has a row and the assertion is that a listing *drops* an
+  output rather than that it had none.
+  <br>The arithmetic itself is not here: `CiQueueForecastTest` and `CiRunOrderingTest` in the `ci`
+  module stage overrunning runs, shrunk slot counts, cycles and every unknown against rows built in
+  memory, with no database and no worker — which is only possible because both classes are pure and
+  take `now` as a parameter.
 - `CiPipelineBoundaryTest` is the whole loop at the seams this repo owns: a repository committing a
   trigger file on `main`, an event supplied through `POST /ci/api/events/trigger`, and the run read
   back over HTTP. It **started at a push** until 2026-09-05, when the intake retired; what is left of

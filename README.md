@@ -107,6 +107,7 @@ rest of qits it reaches over a URL it is configured with:
 | in | `POST /ci/api/events/trigger` — `{name, payload, occurredAt?, eventId?}` → 200 `{eventId, runIds, repositoriesRead, repositoriesSkipped}`, one domain event supplied by hand instead of by the bus; it **evaluates before it answers**, and a 503 means it could not ("Triggering one by hand") | two real callers, like the cancellation below: an operator on the edge's forwarded session (`qits:admin`), and a machine token of this service's audience. `project=*` evaluates the whole catalogue; a token scoped to **one project** is admitted and the evaluation is narrowed to that project's repositories, so a cross-project trigger is impossible rather than refused. A project this instance can place no repository in is a 403 |
 | in | `GET /ci/api/runs?repositoryId={repoId}[&limit={n}]`, `GET /ci/api/runs/{runId}` | not machine-guarded; they carry build logs, so a deployment must keep them behind its auth policy. **Every read here takes `qits:admin` OR `qits:system`** — `qits:system` is the machine role and `qits:admin` the human one, and a peer polling a run it asked for (qits-platform-maintenance waits out a bump this way) must not be granted a person's role to do it. **`qits:agent` reads them too**, with no filter: every read route here takes it, and no write does. `POST /ci/api/runs/{runId}/cancel` is not widened with them and stays `qits:admin` |
 | in | `GET /ci/api/runs/active` → `{"runs": [...]}` — every `QUEUED` or `RUNNING` run on the instance, all repositories, newest first, no parameters | same; unscoped, because "what is CI doing right now" has no repository to scope to |
+| in | `GET /ci/api/runs/queue` → `{concurrentBuilds, generatedAt, running: [...], queued: [...]}` — the queue in **claim order**, each queued row carrying its `queuePosition`, its `ordering` and its ETAs. `generatedAt` is the instant every millisecond in the body is relative to | same; the one read whose order is not chronological, because "which build is next" is not "which build is newest" |
 | in | `GET /ci/api/repositories` → `{"repositoryIds": [...]}` — the distinct repo ids this instance has runs for, ascending | same; it is the one read here that is not scoped to a repository, because it answers *which* |
 | in | `GET /ci/api/repositories/summary` → `{"repositories": [{repositoryId, projectId, repoName, lastRun, lastMainRun}]}` — ascending by id, full run objects, `lastMainRun` null when there is none, and the name pair null for a repository whose pushes were id-addressed | same; it is the id listing plus the two runs a client would otherwise make a request per repository to find |
 | in | `GET /ci/api/daemon` → `{"daemonName", "daemonVersion", "previousDaemonVersion", "source"}` — what a run started right now would download, never a run row. `source` is `"pinned"` (the version of the protocol dependency this service is built against — the ordinary answer) or `"override"`; `daemonVersion` is never blank and `previousDaemonVersion` is always blank, a pin having no fallback rung | same; read fail-closed by qits-artifacts' daemon GC and readable by the client |
@@ -167,6 +168,102 @@ and asking per repository would mean knowing the repositories first and still se
 instant in each answer. It needs no `?limit=`: what is active is bounded by accepted work and the
 configured worker pool, not by uptime. It became answerable only when a queued run became a row
 (below).
+
+### The queue, in claim order, with an ETA
+
+`GET /ci/api/runs/queue` answers the question no other route here does: **which build is next, and
+when does the queue get to mine.** `/active` is newest-first and that is a documented contract; the
+order a worker actually claims in was computed by `CiRunOrdering`, walked by the claim loop and
+thrown away.
+
+    { "concurrentBuilds": 1,
+      "generatedAt": "2026-09-19T12:00:00Z",
+      "running": [ CiRunDto, … ],     # newest first, as /active is
+      "queued":  [ CiRunDto, … ] }   # suggested claim order; index 0 is claimed next
+
+**Queue-wait prediction is qits-ci's to compute, not a client's.** A client reconstructing the order
+from a listing would be a second implementation of four ordering criteria, a topological pass and a
+private priority rank table — against rows that do not carry half of what the decision reads. It
+would not crash; it would quietly disagree with the order the claim loop acts on, and be believed.
+So the order travels on the rows, as `queuePosition`, and the reasoning travels beside it as
+`ordering` (`{position, kindTier, priority, priorityRank, topologyBlockers: [{runId, repoName}],
+selection}`) — because two runs sit in a given order for one of four completely different reasons and
+the list itself distinguishes none of them.
+
+**Every duration is relative and there is no predicted clock time anywhere.**
+`expectedStartInMillis` and `expectedFinishInMillis` are milliseconds from `generatedAt`; a client
+renders "in about 48 min". An absolute instant reads as a promise, is rendered in a timezone this
+service knows nothing about, and is wrong by however long the page has been open. One stamp per
+response is what makes two rows' durations comparable to each other.
+
+**A prediction is an estimate and must never read as a promise, so an absence says why.**
+`predictionUnavailable` carries one of three reasons rather than leaving a bare null:
+`RUN_HAS_NO_PREDICTION` (this run's own pipeline has never been measured — about the reader's
+repository, and it heals the first time it runs green), `RUN_AHEAD_HAS_NO_PREDICTION` (a run earlier
+in the claim order has none, so nobody knows when the slot frees) and `RUNNING_RUN_HAS_NO_PREDICTION`
+(a run in flight has none, so the whole timeline is unknown). Those are three different sentences to
+the person waiting. **Nothing is silently skipped**: both lists are total, so their lengths really
+are the queue's — a row that disappeared would read as "finished" to every client that has not read
+the source, and a blank duration would read as "instant".
+
+The rows are ordinary `CiRunDto`s. A queue-specific run shape would drift from `CiRunDto` exactly as
+a second copy of the ordering math would, and for the same reason: nobody notices until they
+disagree.
+
+**The forecast is attached to every non-terminal row of a response and to no terminal one**,
+whichever route produced it. So a `QUEUED` or `RUNNING` run carries its position and its ETAs in a
+repository's own listing exactly as it does here — an ETA that depended on which page asked would be
+a different number for the same fact — while a finished run carries none on any route, because it has
+left the queue and there is no position it could hold. That is also what keeps it cheap: a response
+holding nothing in flight reads no queue at all.
+
+### Every run listing carries step boundaries now, and none carries step output
+
+`GET /ci/api/runs?repositoryId=`, `GET /ci/api/runs/active` and `GET /ci/api/runs/finished` all carry
+`steps` (as `{stepIndex, image, status, exitCode, startedAt, finishedAt}`, with `output` **null**)
+and `live` (as `{stepIndex, startedAt}`, with `output` **null**). The single-run read,
+`GET /ci/api/runs/{runId}`, is unchanged and still carries both outputs.
+
+Their contract was always "without step **output**", and the output was the only reason the whole
+object was dropped: it is unbounded, repository-controlled and the only heavy part of a row. A step's
+two host-stamped instants and its index are a few dozen bytes, and they are what makes a segmented
+progress bar *boundary-true* — one bubble per planned step, each filling against its own expected
+duration, none of them beginning to fill before its step really started.
+
+**Consumed by qits-ui-components.** `QitsStepProgress` in
+`components/qits-ui-components/qits-ui-components-jslib` reads `expectedStepDurationsMillis` for the
+widths and these two fields for the fills, and qits-ci-frontend draws the same component. It matches
+a timing to its predicted step **by `stepIndex`, never by array position**, because qits-ci persists
+a step at its end and a mid-run listing legitimately holds fewer step rows than the pipeline
+declared. Both fields are optional on that side, so an older qits-ci draws a track of empty bubbles
+showing only the expectations. **The field names above are the contract**: `stepIndex`, `startedAt`,
+`finishedAt` on a step row and `stepIndex`, `startedAt` on `live`.
+
+Carrying them on one listing and not the others was the worst of the three options — a run tree
+drawing a *finished* run as an entirely empty bar is not a cautious answer but a wrong-looking one,
+and a bar whose truthfulness depends on which page you are looking at is worse than either answer
+applied consistently.
+
+**The one real cost, stated rather than discovered.** `GET /ci/api/runs?repositoryId=` is unbounded
+when `?limit=` is absent, and qits-ci-frontend deliberately re-asks without a limit once a limited
+answer comes back full. So this widening is paid per historical run on that one route: one indexed
+step read per run with a `startedAt`, plus a few dozen bytes per step on the wire. Still the right
+trade — what is carried is a step's timings and not its logs — but weigh any *further* widening of
+these rows against that multiplier rather than against the bounded listings'.
+
+`GET /ci/api/repositories/summary` is deliberately outside all of this: its two run slots stay
+step-free, since a summary is a rail of "how is each repository doing" and not a place a bar is
+drawn.
+
+### A run says which phase of a release it is
+
+`CiRunDto.phase` is `RELEASE_REQUEST` (P1, the QA run at `release/<id>@mergedSha`), `RELEASE` (P2,
+the publish run at `<version>@commitSha`) or **null** for a run that is not part of a release at all.
+The column has existed since `V17__run_phase.sql`; the mapper simply never copied it, which left a
+client holding a release request's runs unable to tell phase one from phase two except by matching
+`triggerEventName` against two strings it had to know. Null means *no phase*, never *unknown phase*:
+the decision is the trigger event's name and nothing else. There is no value for the deploy phase,
+because qits-ci does not execute it.
 
 **There is no push intake, and the two it used to be are both gone.** It was `POST
 /ci/api/events/post-receive` — fire-and-forget, so a qits-ci that was down when a push landed simply

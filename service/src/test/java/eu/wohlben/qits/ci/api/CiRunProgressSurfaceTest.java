@@ -114,7 +114,16 @@ public class CiRunProgressSurfaceTest {
           List.of(2_000, 5_000),
           listed.get("expectedStepDurationsMillis"),
           "one entry per planned step, in declaration order");
-      assertNull(listed.get("live"), "a listing carries no live step, prediction or not");
+      // The active listing carries `live` now, because a boundary-true bar needs to know which step
+      // is in flight and when it was handed over. What it does NOT carry is what that step has
+      // printed: the output is the only heavy part of the object and no header affordance renders
+      // it. The single-run read below is where the transcript still lands.
+      @SuppressWarnings("unchecked")
+      Map<String, Object> listedLive = (Map<String, Object>) listed.get("live");
+      assertNotNull(listedLive, "a listing says which step is in flight");
+      assertEquals(0, listedLive.get("stepIndex"));
+      assertNotNull(listedLive.get("startedAt"));
+      assertNull(listedLive.get("output"), "but never what it printed");
 
       Map<String, Object> detail = run(runId);
       assertEquals(List.of(2_000, 5_000), detail.get("expectedStepDurationsMillis"));

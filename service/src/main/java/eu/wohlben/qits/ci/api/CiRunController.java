@@ -7,11 +7,14 @@ import eu.wohlben.qits.auth.MachineIdentity;
 import eu.wohlben.qits.auth.QitsClaims;
 import eu.wohlben.qits.ci.control.CiCandidateRepos;
 import eu.wohlben.qits.ci.control.CiIdentifiers;
+import eu.wohlben.qits.ci.control.CiQueueForecast;
 import eu.wohlben.qits.ci.control.CiRepoRef;
+import eu.wohlben.qits.ci.control.CiRunOrdering;
 import eu.wohlben.qits.ci.control.CiRunService;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import eu.wohlben.qits.ci.dto.CiLiveStepDto;
 import eu.wohlben.qits.ci.dto.CiRunDto;
+import eu.wohlben.qits.ci.dto.CiRunOrderingDto;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
@@ -30,7 +33,9 @@ import io.quarkus.security.ForbiddenException;
 import io.quarkus.security.identity.SecurityIdentity;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.enums.SchemaType;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
@@ -85,6 +90,13 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * that client depends on, and a breaking change to {@link CiRunDto} would have landed with an empty
  * diff. The intake in {@code CiEventController} stays hidden: it really is machine-only,
  * token-guarded, and has a cross-repo wire contract with qits-artifacts.
+ *
+ * <p><b>Three of the four reads are literal segments under {@link #getRun}'s template</b> — {@code
+ * /active}, {@code /finished} and now {@code /queue} — and only JAX-RS' rule that a literal outranks
+ * a template keeps them from resolving to a lookup for a run of that name. Each has a case in {@code
+ * CiPipelineBoundaryTest}, because a ranking regression surfaces as a client 404 and nothing else.
+ * None of them adds a Vert.x route, so {@code quarkus.quinoa.ignored-path-prefixes} is unchanged:
+ * {@code /api} already covers the lot.
  */
 @Path("/runs")
 @Produces(MediaType.APPLICATION_JSON)
@@ -176,6 +188,15 @@ public class CiRunController {
    * run — are both already covered. A real history walk wants {@code before=<createdAt>}, and that
    * waits for a requirement.
    *
+   * <p><b>This is the one route where the step widening is paid per historical run, and the figure
+   * belongs here beside the unboundedness that causes it.</b> The rows carry {@code steps} now, and
+   * this listing is unbounded when {@code ?limit=} is absent — and qits-ci-frontend deliberately
+   * re-asks without a limit once a limited answer comes back full. So an absent limit costs one
+   * indexed step read per run in the repository's whole history, plus a few dozen bytes per step on
+   * the wire. It is still the right trade, because what is carried is a step's two instants and its
+   * index and not its log, but anyone weighing a <em>further</em> widening of these rows should
+   * weigh it against that multiplier rather than against the bounded listings'.
+   *
    * <p>The parameter is taken as a {@code String} and parsed here rather than bound to an {@code
    * Integer}, because JAX-RS answers a query-parameter conversion failure with a <b>404</b>. A
    * mistyped limit is a bad request, and it must arrive as one through {@link CiExceptionMapper}'s
@@ -188,7 +209,10 @@ public class CiRunController {
   // class list also guards the cancellations write, and agents do not write here.
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:system", "qits:agent"})
   @Operation(summary = "List a repository's CI runs, newest first")
-  @APIResponse(responseCode = "200", description = "The repository's runs, without step output")
+  @APIResponse(
+      responseCode = "200",
+      description =
+          "The repository's runs with their step boundaries, without step output")
   @APIResponse(responseCode = "400", description = "The repository id is missing or invalid, or the limit is not a positive integer")
   public ListRunsResponse listRuns(
       @Parameter(description = "The repository whose runs to list — required", required = true)
@@ -202,8 +226,71 @@ public class CiRunController {
           @QueryParam("limit")
           String limit) {
     CiIdentifiers.requireRepoId(repositoryId);
+    return listing(runService.runsFor(repositoryId, parseLimit(limit)));
+  }
+
+  /**
+   * <b>The one shape every run LISTING on this surface answers with</b>: each row with its step
+   * boundaries and its live step, both without output, and — for whichever rows are not finished —
+   * the queue's answers about them.
+   *
+   * <p><b>The three listings carry the same thing now, and that is the change rather than an
+   * accident.</b> Their documented contract was always "without step <em>output</em>", and output
+   * was the only reason the whole step object was dropped: it is unbounded, repository-controlled
+   * and the only heavy part of a row. A step's two host-stamped instants and its index are a few
+   * dozen bytes, and they are what makes a segmented progress bar <em>boundary-true</em> — one
+   * bubble per planned step, each filling against its own expected duration, none of them beginning
+   * to fill before its step really started. Carrying them on one listing and not the others was the
+   * worst of the three options: a run tree drawing a finished run as an entirely empty bar is not a
+   * conservative answer, it is a wrong-looking one, and a bar whose truthfulness depends on which
+   * page you are looking at is worse than either answer applied consistently.
+   *
+   * <p><b>The forecast is attached to every non-terminal row of a response and to no terminal
+   * one.</b> That is the whole rule, and it holds whichever route produced the response: a {@code
+   * QUEUED} or {@code RUNNING} run in a repository's own listing gets the same position and the
+   * same ETAs it would get from {@code /active} or {@code /queue}, because an ETA that depended on
+   * which page asked for it would be the same inconsistency the paragraph above refuses. A finished
+   * run gets none — it has left the queue, so there is no position it could hold — which is also
+   * what keeps this cheap: the extra read happens only when the response really holds something in
+   * flight, so a page of history pays for nothing.
+   *
+   * <p><b>One {@code Instant} per response, and it is the snapshot's.</b> Every millisecond on every
+   * row below is relative to the same moment; two rows of one body relative to two instants would
+   * be two durations that cannot be compared to each other.
+   */
+  private ListRunsResponse listing(List<CiRun> forRuns) {
+    boolean anythingInFlight = forRuns.stream().anyMatch(CiRunController::unfinished);
+    return listing(forRuns, anythingInFlight ? runService.queueSnapshot() : null);
+  }
+
+  /**
+   * {@link #listing(List)} against a snapshot the caller already holds — which {@code /active} does,
+   * because the snapshot is also where it got its rows and their order from. Re-reading the queue
+   * for the same response would be a second read of the same table and, worse, a second instant.
+   *
+   * @param queue the queue this response's durations are relative to, or null when the response
+   *     holds nothing unfinished and no forecast was worth computing
+   */
+  private ListRunsResponse listing(List<CiRun> forRuns, CiRunService.Snapshot queue) {
+    Map<String, List<CiStep>> stepsByRun = runService.stepsForAll(forRuns);
     return new ListRunsResponse(
-        runService.runsFor(repositoryId, parseLimit(limit)).stream().map(mapper::toDto).toList());
+        forRuns.stream()
+            .map(
+                run -> {
+                  List<CiStep> steps = stepsByRun.getOrDefault(run.id, List.of());
+                  CiRunDto dto =
+                      mapper.toDtoWithoutStepOutput(run, steps, liveStep(run, steps, false));
+                  // withQueueFacts leaves a row the snapshot does not name untouched, so "no
+                  // terminal row is forecast" holds by construction rather than by a second test
+                  // of the status here: a finished run is in neither half of the queue.
+                  return queue == null ? dto : withQueueFacts(run, dto, queue);
+                })
+            .toList());
+  }
+
+  /** Whether the run is still in the queue's world — {@code QUEUED} or {@code RUNNING}. */
+  private static boolean unfinished(CiRun run) {
+    return run.status == CiRunStatus.QUEUED || run.status == CiRunStatus.RUNNING;
   }
 
   /** {@code null} for absent or blank; a positive int; otherwise a 400. */
@@ -240,9 +327,177 @@ public class CiRunController {
   @Path("/active")
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:system", "qits:agent"})
   @Operation(summary = "Every queued or running CI run, all repositories, newest first")
-  @APIResponse(responseCode = "200", description = "The active runs, without step output")
+  @APIResponse(
+      responseCode = "200",
+      description =
+          "The active runs with their step boundaries and queue position, without step output")
   public ListRunsResponse listActiveRuns() {
-    return new ListRunsResponse(runService.activeRuns().stream().map(mapper::toDto).toList());
+    // The snapshot is both the rows and the forecast, so this route reads the table once. The
+    // listing keeps its documented newest-first order and the CLAIM order rides the rows as
+    // queuePosition — which is strictly better than re-sorting a listing whose order is a contract.
+    CiRunService.Snapshot queue = runService.queueSnapshot();
+    return listing(queue.activeNewestFirst(), queue);
+  }
+
+  /**
+   * The run queue as qits-ci itself sees it: what is executing, and what is waiting <b>in claim
+   * order</b>, each row carrying where it sits and when the queue is expected to reach it.
+   *
+   * <p><b>No other route answers this, and the gap was not cosmetic.</b> The order was computed and
+   * thrown away — {@link eu.wohlben.qits.ci.control.CiRunOrdering}'s only production caller is the
+   * claim loop — and {@code /active} deliberately answers newest-first, which is a different
+   * question with a plausible-looking answer. So "which build is next" had no reader, and the only
+   * way a client could have one was to re-implement four ordering criteria, a topological pass and a
+   * private rank table against rows that do not carry half of what the decision reads. That second
+   * implementation would not crash; it would disagree, quietly, with the order the claim loop acts
+   * on. <b>Queue-wait prediction is this service's to compute.</b>
+   *
+   * <p><b>{@code generatedAt} is what makes the durations interpretable, and it is why it is on the
+   * envelope rather than on each row.</b> Every {@code expectedStartInMillis} and {@code
+   * expectedFinishInMillis} below is a number of milliseconds <em>from that instant</em> — never a
+   * clock time, which would read as a promise, be rendered in a timezone this service knows nothing
+   * about and be wrong by however long the page has been open. One stamp per response is what lets
+   * two rows' durations be compared to each other; a per-row instant would be two answers to "now".
+   *
+   * <p><b>{@code running} is newest-first</b>, the same order {@code /active} documents, so a client
+   * holding both sees one repository's run in the same place in each. <b>{@code queued} is in
+   * suggested claim order</b> — position 0 is the run a free worker would take next — which is the
+   * whole reason this route exists and is the one listing here whose order is not chronological.
+   *
+   * <p><b>The rows are {@link CiRunDto}, not a queue-specific shape.</b> A third copy of a run's
+   * wire shape would drift from this one exactly as a second copy of the ordering math would, and
+   * for the same reason: nobody notices until the two disagree. They carry no {@code steps} and no
+   * {@code live} — this route is about <em>when</em>, and a client that wants a run's progress has
+   * {@code /active} for the bar and {@code /runs/{runId}} for the transcript.
+   *
+   * <p><b>A prediction is an estimate and never a promise.</b> A run with no ETA says so in {@code
+   * predictionUnavailable} rather than simply lacking one, and a run behind an unpredicted one is
+   * unknown too — with {@code RUN_AHEAD_HAS_NO_PREDICTION}, which is a different sentence to the
+   * person waiting than "your pipeline has never been measured". Nothing is silently skipped: both
+   * lists are total, so their lengths really are the queue's.
+   *
+   * <p>{@code /queue} is a literal segment under {@link #getRun}'s template, exactly as {@code
+   * /active} and {@code /finished} are, and only JAX-RS' ranking of a literal above a template keeps
+   * them apart. {@code CiPipelineBoundaryTest} asserts that rather than assuming it, because the
+   * regression would surface as a client 404 and nothing else. It adds no Vert.x route, so {@code
+   * quarkus.quinoa.ignored-path-prefixes} is unchanged — {@code /api} already covers it.
+   */
+  @GET
+  @Path("/queue")
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:system", "qits:agent"})
+  @Operation(summary = "The run queue in claim order, with each run's expected start and finish")
+  @APIResponse(
+      responseCode = "200",
+      description = "The queue at one instant",
+      content = @Content(schema = @Schema(implementation = QueueResponse.class)))
+  public QueueResponse queue() {
+    CiRunService.Snapshot queue = runService.queueSnapshot();
+    return new QueueResponse(
+        queue.concurrentBuilds(),
+        queue.generatedAt(),
+        queue.running().stream().map(run -> withQueueFacts(run, mapper.toDto(run), queue)).toList(),
+        queue.queuedInClaimOrder().stream()
+            .map(ordered -> withQueueFacts(ordered.run(), mapper.toDto(ordered.run()), queue))
+            .toList());
+  }
+
+  /**
+   * The queue envelope: how many slots there are, the instant every duration in it is relative to,
+   * and the two halves of the queue.
+   *
+   * @param concurrentBuilds how many runs this deployment executes at once — the number the
+   *     forecast really modelled with, so a reader can see why the queue moves as slowly as it does
+   * @param generatedAt the instant every {@code expectedStartInMillis} and {@code
+   *     expectedFinishInMillis} in this body is measured from. <b>It is the only absolute instant
+   *     here, and that is deliberate</b>: one stamp makes a relative duration interpretable without
+   *     any row having to carry a predicted clock time
+   * @param running the {@code RUNNING} runs, newest first
+   * @param queued the {@code QUEUED} runs in suggested claim order, each carrying its {@code
+   *     queuePosition}, its {@code ordering} and its ETAs
+   */
+  public record QueueResponse(
+      int concurrentBuilds, Instant generatedAt, List<CiRunDto> running, List<CiRunDto> queued) {}
+
+  /**
+   * The run's row stamped with what the queue says about it, or unchanged when the queue says
+   * nothing — which is what a run that finished between the snapshot and this call looks like.
+   *
+   * <p>A queued run gets its position, its ordering and both ETAs; a running one gets only an
+   * expected finish, because it has started and there is nothing left to forecast about its start.
+   */
+  private CiRunDto withQueueFacts(CiRun run, CiRunDto dto, CiRunService.Snapshot queue) {
+    CiRunOrdering.OrderedRun ordered = queue.orderingOf(run.id);
+    if (ordered != null) {
+      CiQueueForecast.QueuedForecast forecast = queue.queuedForecastOf(run.id);
+      return dto.withQueueFacts(
+          ordered.position(),
+          forecast == null ? null : forecast.expectedStartInMillis(),
+          forecast == null ? null : forecast.expectedFinishInMillis(),
+          forecast == null
+              ? null
+              : unavailability(forecast.expectedStart(), forecast.expectedFinish()),
+          CiRunOrderingDto.of(ordered));
+    }
+    CiQueueForecast.RunningForecast inFlight = queue.runningForecastOf(run.id);
+    if (inFlight != null) {
+      return dto.withQueueFacts(
+          null,
+          null,
+          inFlight.expectedFinishInMillis(),
+          unavailability(null, inFlight.expectedFinish()),
+          null);
+    }
+    return dto;
+  }
+
+  /**
+   * Why this run has no ETA, as the reason's own enum name, or null when it has one.
+   *
+   * <p><b>The finish's reason wins where both are absent</b>, and that is not arbitrary: the
+   * forecast already resolves own-unknown in favour of the finish, so the finish carries the more
+   * specific fact — "this pipeline has never been measured" rather than "the queue ahead of you is
+   * unknowable" — and it is the one the run's owner can do something about. "When will this be
+   * done" is also the question actually being asked.
+   */
+  private static String unavailability(CiQueueForecast.Eta start, CiQueueForecast.Eta finish) {
+    if (finish != null && !finish.isKnown()) {
+      return finish.reason().name();
+    }
+    if (start != null && !start.isKnown()) {
+      return start.reason().name();
+    }
+    return null;
+  }
+
+  /**
+   * The step a run is executing right now, or null — the in-memory relay, filtered so that no step
+   * is ever handed over twice.
+   *
+   * <p><b>Factored rather than copied, because the filter is the subtle half.</b> A step's buffer
+   * outlives it by the one transaction that writes its row, and the next step's buffer replaces it;
+   * {@code live} means "the step with no row yet", so during that window it means nothing and a
+   * client handed the same step once as a row and once as live would draw it twice. That reasoning
+   * is easy to leave behind when a second listing starts reading the relay, which is exactly what
+   * {@code /active} now does — so there is one implementation of it and both callers use it.
+   *
+   * @param withOutput whether to carry what the step has printed. The single-run read is a person
+   *     following one build and says yes; a listing draws boundaries and says no, since the output
+   *     is the only heavy part of the object and no listing has an affordance that renders it
+   */
+  private CiLiveStepDto liveStep(CiRun run, List<CiStep> steps, boolean withOutput) {
+    if (run.status != CiRunStatus.RUNNING) {
+      return null;
+    }
+    return relay
+        .snapshot(run.id)
+        .filter(snapshot -> steps.stream().noneMatch(s -> s.stepIndex == snapshot.stepIndex()))
+        .map(
+            snapshot ->
+                new CiLiveStepDto(
+                    snapshot.stepIndex(),
+                    snapshot.startedAt(),
+                    withOutput ? snapshot.output() : null))
+        .orElse(null);
   }
 
   /**
@@ -274,7 +529,9 @@ public class CiRunController {
   @Path("/finished")
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:system", "qits:agent"})
   @Operation(summary = "The newest finished CI runs, all repositories, newest first")
-  @APIResponse(responseCode = "200", description = "The finished runs, without step output")
+  @APIResponse(
+      responseCode = "200",
+      description = "The finished runs with their step boundaries, without step output")
   @APIResponse(responseCode = "400", description = "The limit is not a positive integer")
   public ListRunsResponse listFinishedRuns(
       @Parameter(
@@ -282,8 +539,9 @@ public class CiRunController {
               schema = @Schema(type = SchemaType.INTEGER, minimum = "1", maximum = "100"))
           @QueryParam("limit")
           String limit) {
-    return new ListRunsResponse(
-        runService.finishedRuns(parseLimit(limit)).stream().map(mapper::toDto).toList());
+    // Every row here is terminal by this listing's own predicate, so nothing in it is forecast and
+    // the queue is never read — the rule stated on `listing`, arriving at its cheap case.
+    return listing(runService.finishedRuns(parseLimit(limit)));
   }
 
   /**
@@ -295,6 +553,12 @@ public class CiRunController {
    * run with holes in it. It comes from memory rather than the database and is dropped the moment
    * the run closes — after that the persisted tails are the whole record. Following along is
    * polling this endpoint; there is no SSE and no WebSocket for it.
+   *
+   * <p><b>A run that has not finished also carries the queue's answers about it</b> — its {@code
+   * queuePosition} and {@code ordering} while it is {@code QUEUED}, and its expected finish while it
+   * is {@code QUEUED} or {@code RUNNING}, all relative to this response's own instant. That costs
+   * one extra read of the active rows and is paid only where there is something to say: a finished
+   * run has left the queue, so it is not forecast at all and every one of those fields is null.
    */
   @GET
   @Path("/{runId}")
@@ -305,22 +569,12 @@ public class CiRunController {
   public CiRunDto getRun(@PathParam("runId") String runId) {
     CiRun run = runService.requireRun(runId);
     List<CiStep> steps = runService.stepsFor(runId);
-    CiLiveStepDto live =
-        run.status == CiRunStatus.RUNNING
-            ? relay
-                .snapshot(runId)
-                // A step's buffer outlives it by the one transaction that writes its row, and the
-                // next step's buffer replaces it. `live` means "the step with no row yet", so
-                // during that window it means nothing — a client must never be handed the same
-                // step twice, once as a row and once as live.
-                .filter(snapshot -> steps.stream().noneMatch(s -> s.stepIndex == snapshot.stepIndex()))
-                .map(
-                    snapshot ->
-                        new CiLiveStepDto(
-                            snapshot.stepIndex(), snapshot.startedAt(), snapshot.output()))
-                .orElse(null)
-            : null;
-    return mapper.toDto(run, steps, live);
+    CiRunDto dto = mapper.toDto(run, steps, liveStep(run, steps, true));
+    // Only an unfinished run has a queue to be placed in, and only then is the extra read made.
+    if (run.status != CiRunStatus.QUEUED && run.status != CiRunStatus.RUNNING) {
+      return dto;
+    }
+    return withQueueFacts(run, dto, runService.queueSnapshot());
   }
 
   /**
