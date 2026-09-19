@@ -107,6 +107,10 @@ class AgentReadAccessTest {
             .getList("runs.id", String.class);
     assertTrue(byRepository.contains(foreignRun), byRepository.toString());
     given().when().get("/ci/api/runs/active").then().statusCode(200);
+    // The queue is a read like every other one here, so it names qits:agent too. A route added to
+    // this resource without that role ships refusing every agent and nothing says so — which is the
+    // whole reason this file has one case per read rather than one case for the class.
+    given().when().get("/ci/api/runs/queue").then().statusCode(200);
     List<String> finished =
         given()
             .when()

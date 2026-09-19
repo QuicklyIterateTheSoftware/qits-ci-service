@@ -55,6 +55,22 @@ import java.util.Set;
  * a fact about the estate, not an error this class may raise on a run worker: the best-ranked
  * remaining run is emitted and the pass continues, so the answer is still total, still
  * deterministic, and merely no longer topological.
+ *
+ * <h2>The order explains itself</h2>
+ *
+ * <p>{@link #explain(List)} is the same pass, answering with its reasons attached; {@link
+ * #suggestedOrder(List)} is that answer with the reasons dropped. <b>There is exactly one
+ * implementation of the ordering logic and the claim loop's contract is the thin one</b> — the
+ * alternative, a second pass that re-derives "why" beside the one that decides, is a copy that
+ * drifts in the direction nobody notices: an explanation that disagrees with the order is worse
+ * than no explanation, because it is believed.
+ *
+ * <p>What an operator gets out of it is the four criteria named per run rather than inferred from a
+ * list: which tier the run was in, what its priority word ranked as, <em>which queued runs actually
+ * held it back</em>, and whether the pass was still topological when it chose. None of that is
+ * derivable from the ordered list itself — two runs may sit in that order because of an edge, a
+ * priority or a timestamp, and the three have completely different answers to "why is my build not
+ * starting".
  */
 public final class CiRunOrdering {
 
@@ -115,15 +131,118 @@ public final class CiRunOrdering {
     if (queued == null || queued.size() < 2) {
       return queued == null ? List.of() : List.copyOf(queued);
     }
+    return explain(queued).stream().map(OrderedRun::run).toList();
+  }
+
+  /**
+   * One queued run, in claim order, with the four criteria's answers for <em>this</em> run attached.
+   *
+   * <p>Every component is a fact the pass already had and threw away. Nothing here is recomputed
+   * afterwards and nothing here is a second opinion: an {@code OrderedRun} is emitted by the walk at
+   * the moment it emits the run, which is the only instant at which "what was holding it" is still
+   * knowable — one step later the edges have been decremented and the evidence is gone.
+   *
+   * @param run the row itself, untouched
+   * @param position its 0-based index in the suggested order, counted across <em>both</em> tiers, so
+   *     it is the number an operator can compare to "how far down the queue am I"
+   * @param kindTier 0 for a release being built, 1 for everything else — {@link #kindRank(CiRun)}'s
+   *     answer, and the outermost criterion
+   * @param priority the priority word <b>as recorded on the row</b>: null, blank or a word this
+   *     table has never heard of, kept verbatim and never normalised, because the point of showing
+   *     it is to show what the run really states — a normalised {@code "MEDIUM"} here would hide the
+   *     typo that is the whole reason somebody is reading this
+   * @param priorityRank what that word resolved to, which is {@link #DEFAULT_RANK} — the rank {@code
+   *     MEDIUM} carries — for all three of those cases. "Unknown ranks middle, not lowest" is argued
+   *     on {@link #DEFAULT_RANK} and is not restated here; what this component adds is that the
+   *     argument is now <em>visible</em>, so a queue ordered by a rank nobody expected can be read
+   *     rather than guessed at
+   * @param topologyBlockers the queued runs that really held this run's in-degree above zero — those
+   *     emitted before it <em>because of</em> an edge into it — in emission order. <b>Empty, never
+   *     null</b>, when topology said nothing about this run, which is the ordinary case on a
+   *     platform where no event carries a closure
+   * @param selection how the run was chosen out of the pass; see {@link Selection}
+   */
+  public record OrderedRun(
+      CiRun run,
+      int position,
+      int kindTier,
+      String priority,
+      int priorityRank,
+      List<Blocker> topologyBlockers,
+      Selection selection) {}
+
+  /**
+   * One queued run that held another back, named the two ways a run is addressed here.
+   *
+   * <p>A record rather than a bare id, because an id alone answers the wrong question: the edge
+   * exists because of a <em>repository name</em> appearing in a closure, so the name is the reason
+   * and the id is the handle. {@code repoName} is nullable for the same reason {@link
+   * CiRun#repoName} is — the id-addressed compatibility arm — but a run with no name is nobody's
+   * blocker, so in practice a {@code Blocker} carries one.
+   */
+  public record Blocker(String runId, String repoName) {}
+
+  /**
+   * How a run was chosen out of the pass: the ordinary way, or the way a cycle forces.
+   *
+   * <p><b>An enum rather than a boolean, and surfaced rather than swallowed.</b> {@link
+   * #CYCLE_DEGRADED} is exactly the {@code best(…, false)} arm — every remaining run in the tier was
+   * still held by an edge, so the pass stopped being topological and emitted the best-ranked one
+   * instead. The class javadoc argues why that must not throw; this says why it must not be silent
+   * either. It is an honest fact about the <em>estate</em>: two repositories naming each other
+   * downstream is a mistake in a pin or a genuine mutual dependency, and the only symptom it has
+   * ever had is a queue that quietly stopped honouring an ordering somebody declared. A person
+   * reading the queue should be able to see that the topology was abandoned, on which runs, without
+   * reading this source.
+   */
+  public enum Selection {
+    /** Chosen with an in-degree of zero: every upstream this run declares is already emitted. */
+    UNBLOCKED,
+
+    /**
+     * Chosen while still held by an edge, because every remaining run in the tier was. The run's
+     * place is the next criteria's answer — priority, then queue time — and not topology's.
+     *
+     * <p><b>It marks the run the pass gave up on, not every run in the cycle.</b> Emitting this one
+     * decrements its own edges, so the run it was pointing at is genuinely unblocked by the time it
+     * is chosen and is reported as {@link #UNBLOCKED} — which is the truth. Flagging a whole cycle
+     * would report degradations that did not happen and would bury the one run whose place really
+     * was decided by ignoring an edge.
+     */
+    CYCLE_DEGRADED
+  }
+
+  /**
+   * The suggested claim order with its reasons: the same total, deterministic, permutation-stable
+   * pass {@link #suggestedOrder(List)} answers with, one {@link OrderedRun} per queued row.
+   *
+   * <p>Pure in exactly the sense the class javadoc means it — <b>no I/O, no clock, no CDI, no
+   * state</b> — and that is load-bearing here for a second reason on top of the restart doctrine: an
+   * explanation of a queue must be derivable from the rows alone, or two readers of one queue get
+   * two answers and neither is wrong.
+   *
+   * <p>It answers for the short cases too, which is what lets {@code suggestedOrder} be written in
+   * terms of it: a null input is an empty list, and a single row is one {@code OrderedRun} at
+   * position 0 with no blockers and {@link Selection#UNBLOCKED} — a queue of one has nothing to be
+   * held back by.
+   *
+   * @param queued the {@code QUEUED} rows, in any order, exactly as {@link #suggestedOrder(List)}
+   *     takes them; the input is not modified
+   * @return one entry per input row, in claim order
+   */
+  public static List<OrderedRun> explain(List<CiRun> queued) {
+    if (queued == null) {
+      return List.of();
+    }
     List<CiRun> releases = new ArrayList<>();
     List<CiRun> rest = new ArrayList<>();
     for (CiRun run : queued) {
       (kindRank(run) == 0 ? releases : rest).add(run);
     }
-    List<CiRun> ordered = new ArrayList<>(queued.size());
-    ordered.addAll(sequence(releases));
-    ordered.addAll(sequence(rest));
-    return List.copyOf(ordered);
+    List<OrderedRun> explained = new ArrayList<>(queued.size());
+    explained.addAll(sequence(releases, 0));
+    explained.addAll(sequence(rest, explained.size()));
+    return List.copyOf(explained);
   }
 
   /**
@@ -144,11 +263,28 @@ public final class CiRunOrdering {
    * <p>Edges are computed inside the tier only. A release run is never held back by a release
    * request's downstream list, and it does not have to be: the tier above it has already been
    * emitted in full.
+   *
+   * <p><b>The blockers are recorded here because here is the only place they exist.</b> When a node
+   * is emitted, every edge out of it that is still standing is decremented — and each such
+   * decrement is precisely one real contribution to a downstream's in-degree, so the emitted node is
+   * recorded as a blocker of that downstream at the same statement. A node's list is therefore
+   * complete and frozen at the instant it is itself emitted: everything after that moment held it
+   * back no longer, and everything before it that is not in the list was ordered ahead of it by a
+   * criterion other than topology.
+   *
+   * @param firstPosition the global position the first run of this tier takes, so positions run
+   *     across both tiers rather than restarting at zero in the second — a run's position is what an
+   *     operator compares to the length of the queue, and two zeroth runs would answer a question
+   *     nobody asked
    */
-  private static List<CiRun> sequence(List<CiRun> tier) {
+  private static List<OrderedRun> sequence(List<CiRun> tier, int firstPosition) {
     int size = tier.size();
     if (size < 2) {
-      return tier;
+      List<OrderedRun> single = new ArrayList<>(size);
+      for (int index = 0; index < size; index++) {
+        single.add(describe(tier.get(index), firstPosition + index, List.of(), Selection.UNBLOCKED));
+      }
+      return single;
     }
 
     // Parsed ONCE per run per pass — the reason ci_run.downstream_repos holds the array text rather
@@ -180,10 +316,18 @@ public final class CiRunOrdering {
       }
     }
 
+    // One list per node, appended to as the edges into it are really decremented — so it holds the
+    // runs that held THIS run, in emission order, and nothing that merely preceded it.
+    List<List<Blocker>> heldBy = new ArrayList<>(size);
+    for (int index = 0; index < size; index++) {
+      heldBy.add(new ArrayList<>());
+    }
+
     Comparator<CiRun> ranking = ranking();
     boolean[] emitted = new boolean[size];
-    List<CiRun> ordered = new ArrayList<>(size);
+    List<OrderedRun> ordered = new ArrayList<>(size);
     for (int step = 0; step < size; step++) {
+      Selection selection = Selection.UNBLOCKED;
       int chosen = best(tier, emitted, inDegree, ranking, true);
       if (chosen < 0) {
         // Every remaining node is inside a cycle (or downstream of one). Nothing here is allowed to
@@ -191,17 +335,27 @@ public final class CiRunOrdering {
         // criteria — the best-ranked remaining run — and continues. Deterministic, total, and no
         // longer topological, which is the honest answer.
         chosen = best(tier, emitted, inDegree, ranking, false);
+        selection = Selection.CYCLE_DEGRADED;
       }
       emitted[chosen] = true;
-      ordered.add(tier.get(chosen));
+      CiRun run = tier.get(chosen);
+      ordered.add(describe(run, firstPosition + step, List.copyOf(heldBy.get(chosen)), selection));
       for (int to = 0; to < size; to++) {
         if (edge[chosen][to]) {
           edge[chosen][to] = false;
           inDegree[to]--;
+          heldBy.get(to).add(new Blocker(run.id, run.repoName));
         }
       }
     }
     return ordered;
+  }
+
+  /** One emitted run, with the criteria's answers read off it; see {@link OrderedRun}. */
+  private static OrderedRun describe(
+      CiRun run, int position, List<Blocker> topologyBlockers, Selection selection) {
+    return new OrderedRun(
+        run, position, kindRank(run), run.priority, priorityRank(run), topologyBlockers, selection);
   }
 
   /**

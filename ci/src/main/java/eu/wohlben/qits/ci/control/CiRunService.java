@@ -3103,6 +3103,154 @@ public class CiRunService {
   }
 
   /**
+   * <b>The queue as this service sees it, at one instant, with its order and its forecast.</b> What
+   * is running, what is queued <em>in claim order</em>, and when the queue is expected to get to
+   * each of them — everything {@code GET /ci/api/runs/queue} answers with, and the same answers the
+   * two run reads stamp onto their rows.
+   *
+   * <p><b>Queue-wait prediction is qits-ci's to compute, and this method is where that is made
+   * true.</b> A client reconstructing the order from a listing would be a second {@link
+   * CiRunOrdering} — four criteria, a topological pass and a private rank table, re-implemented
+   * against rows that do not carry half of what the decision reads — and the failure mode is not a
+   * crash but a plausible answer that disagrees with the one the claim loop acts on. So the order
+   * is computed here, by the same pure function the claim loop walks, and travels to the wire.
+   *
+   * <p><b>One instant per snapshot, and it is stamped once.</b> Every millisecond in the forecast is
+   * relative to {@link Snapshot#generatedAt()}, so two runs in one response are relative to one
+   * moment rather than two — a response whose rows disagreed about "now" is a response whose
+   * durations cannot be compared to each other. It is taken <b>after</b> the read rather than
+   * before, so the instant never precedes the rows it describes.
+   *
+   * <p><b>One read, partitioned, rather than two.</b> {@code listActiveNewestFirst} already answers
+   * exactly {@code QUEUED ∪ RUNNING}, so splitting its answer gives both halves of the queue from
+   * one transaction. Reading the two lists separately would let a run move from one to the other in
+   * between and appear twice, or in neither — a forecast whose input is not a single moment is a
+   * forecast about a queue that never existed.
+   *
+   * <p>It reads no clock other than the one stamp and computes nothing itself: {@link
+   * CiRunOrdering#explain(List)} and {@link CiQueueForecast#forecast} are both pure, so this method
+   * is a read plus two function calls, and a restart re-derives the same answer from the same rows.
+   */
+  public Snapshot queueSnapshot() {
+    List<CiRun> active = activeRuns();
+    Instant generatedAt = Instant.now();
+    List<CiRun> running = new ArrayList<>();
+    List<CiRun> queued = new ArrayList<>();
+    for (CiRun run : active) {
+      (run.status == CiRunStatus.QUEUED ? queued : running).add(run);
+    }
+    // The listing is newest-first and `explain` is permutation-stable, so what comes back is the
+    // claim order regardless of which order the rows arrived in — the ordering's own guarantee, and
+    // the reason nothing has to sort the input here.
+    List<CiRunOrdering.OrderedRun> ordered = CiRunOrdering.explain(queued);
+    return new Snapshot(
+        generatedAt,
+        Math.max(1, concurrentBuilds),
+        active,
+        List.copyOf(running),
+        ordered,
+        CiQueueForecast.forecast(running, ordered, concurrentBuilds, generatedAt));
+  }
+
+  /**
+   * One read of the queue: the rows, their claim order and their forecast, all about {@link
+   * #generatedAt()}.
+   *
+   * <p>The three lists are <b>lookups</b> as far as a boundary is concerned, which is why the two
+   * {@code …ForOf} accessors exist rather than leaving a caller to index by position: a boundary
+   * stamps rows it got from a listing in whatever order <em>that</em> listing documents, and
+   * matching by index across two differently-ordered lists is the bug this shape removes. The lists
+   * are short — bounded by accepted work and the worker pool — so a linear scan is the whole of
+   * what a map would buy.
+   *
+   * @param generatedAt the instant every millisecond in {@link #forecast()} is relative to
+   * @param concurrentBuilds how many runs this deployment executes at once, as the forecast modelled
+   *     it: the configured value clamped up to 1, so it is the number the arithmetic really used
+   *     rather than the number somebody configured
+   * @param activeNewestFirst both halves together in {@link CiRunService#activeRuns()}' own order,
+   *     which is the order {@code GET /ci/api/runs/active} documents and must keep. It is carried
+   *     beside the partition rather than reassembled from it, because re-interleaving two lists by
+   *     {@code createdAt} would be a second implementation of an ordering this service already has
+   *     — and because the claim order belongs on the ROWS as {@code queuePosition}, never as a
+   *     re-sort of a listing whose order is a contract
+   * @param running the {@code RUNNING} rows, newest first — {@code activeRuns}' own order, kept so
+   *     that a caller re-ordering nothing is consistent with every other listing on this surface
+   * @param queuedInClaimOrder the {@code QUEUED} rows in suggested claim order, each with the
+   *     ordering's reasons attached
+   * @param forecast when the queue is expected to reach each of them
+   */
+  public record Snapshot(
+      Instant generatedAt,
+      int concurrentBuilds,
+      List<CiRun> activeNewestFirst,
+      List<CiRun> running,
+      List<CiRunOrdering.OrderedRun> queuedInClaimOrder,
+      CiQueueForecast.Forecast forecast) {
+
+    /** This run's place in the claim order and why, or null when it is not queued here. */
+    public CiRunOrdering.OrderedRun orderingOf(String runId) {
+      return queuedInClaimOrder.stream()
+          .filter(ordered -> ordered.run().id.equals(runId))
+          .findFirst()
+          .orElse(null);
+    }
+
+    /** This queued run's forecast, or null when it is not queued here. */
+    public CiQueueForecast.QueuedForecast queuedForecastOf(String runId) {
+      return forecast.queued().stream()
+          .filter(queued -> queued.runId().equals(runId))
+          .findFirst()
+          .orElse(null);
+    }
+
+    /** This running run's forecast, or null when it is not running here. */
+    public CiQueueForecast.RunningForecast runningForecastOf(String runId) {
+      return forecast.running().stream()
+          .filter(live -> live.runId().equals(runId))
+          .findFirst()
+          .orElse(null);
+    }
+  }
+
+  /**
+   * The steps of several runs at once, keyed by run id — what a <b>listing</b> needs in order to
+   * carry real step boundaries.
+   *
+   * <p><b>A read per run inside one transaction, not a join.</b> That is {@link
+   * #repositorySummaries}' judgement applied one route over and for its reasons: every one of these
+   * is an index-hit read on {@code (run_id, step_index)}, and holding them in one transaction is
+   * what lets a connection lost halfway through be answered by re-reading the lot rather than by
+   * half a listing.
+   *
+   * <p><b>A run that never started is skipped without a query, and that is exact rather than an
+   * optimisation.</b> A step row is written at its step's end, and no step can have ended before
+   * {@code startQueued} flipped the row {@code RUNNING} and stamped {@link CiRun#startedAt} — so a
+   * null stamp means "no step rows" by construction, not "probably none". It is what keeps a
+   * hundred-row backlog from costing a hundred reads on every poll of a listing whose queued half
+   * has nothing to show.
+   */
+  public Map<String, List<CiStep>> stepsForAll(List<CiRun> forRuns) {
+    List<String> withSteps =
+        forRuns.stream().filter(run -> run.startedAt != null).map(run -> run.id).toList();
+    if (withSteps.isEmpty()) {
+      return Map.of();
+    }
+    return DbRetry.call(
+        "step listing for " + withSteps.size() + " run(s)",
+        () ->
+            QuarkusTransaction.requiringNew()
+                .call(
+                    () -> {
+                      Map<String, List<CiStep>> byRun = new java.util.LinkedHashMap<>();
+                      for (String runId : withSteps) {
+                        byRun.put(runId, steps.listByRunIdOrdered(runId));
+                      }
+                      return byRun;
+                    }),
+        retryDeadline());
+  }
+
+  /**
    * The configured deadline, or the library's default for an instance nobody injected — which is how
    * a hand-built test subclass arrives, constructed with {@code new} and calling {@code super} for
    * the part it does not fake.

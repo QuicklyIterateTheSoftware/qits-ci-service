@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import eu.wohlben.qits.ci.entity.CiRun;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -193,6 +194,147 @@ public class CiRunOrderingTest {
     assertEquals(
         List.of("upper", "lower"),
         order(withPriority(run("lower", 10), "high"), withPriority(run("upper", 20), "HIGH")));
+  }
+
+  // --- the order explains itself ------------------------------------------------------------------
+
+  @Test
+  public void theExplainedPassAndTheClaimOrderAreTheSameAnswerOnAQueueExercisingAllFourCriteria() {
+    // The one claim the whole arrangement rests on. `suggestedOrder` is the claim loop's contract
+    // and `explain` is what a person reads, and they are the same pass rather than two passes that
+    // agree today — so this is asserted over a queue where every criterion says something, because
+    // a set with no signals in it would agree whatever the second implementation was.
+    CiRun release = run("release", 40);
+    release.triggerEventName = ReleaseJoin.RELEASE_EVENT_NAME;
+    CiRun lib = withDownstream(withPriority(run("lib", 30), "LOWEST"), "app");
+    CiRun app = withPriority(run("app", 20), "BLOCKING");
+    CiRun other = run("other", 10);
+    List<CiRun> queued = List.of(app, lib, other, release);
+
+    assertEquals(
+        CiRunOrdering.suggestedOrder(queued).stream().map(run -> run.id).toList(),
+        CiRunOrdering.explain(queued).stream().map(ordered -> ordered.run().id).toList());
+  }
+
+  @Test
+  public void thePositionsRunAcrossBothTiersRatherThanRestartingInTheSecond() {
+    // A position is what an operator compares to the length of the queue, so there is exactly one
+    // zeroth run. The release tier is emitted first and the rest tier continues its numbering; two
+    // runs at position 0 would answer a question nobody asked.
+    CiRun release = run("release", 40);
+    release.triggerEventName = ReleaseJoin.RELEASE_EVENT_NAME;
+
+    assertEquals(
+        List.of(0, 1, 2),
+        CiRunOrdering.explain(List.of(run("second", 20), release, run("third", 30))).stream()
+            .map(CiRunOrdering.OrderedRun::position)
+            .toList());
+  }
+
+  @Test
+  public void aHeldBackRunNamesTheQueuedRunThatReallyHeldIt() {
+    // The component nothing else can supply. Given the ordered list alone, "the frontend is behind
+    // the library" is indistinguishable from a priority or a timestamp saying so — and the three
+    // have completely different answers to "why is my build not starting". The blocker is recorded
+    // at the moment the edge into this run is decremented, so it names the run that really held it
+    // rather than whatever happened to precede it.
+    CiRun lib = withDownstream(run("qits-ui-components-jslib", 30), "qits-ci-frontend");
+    CiRun frontend = run("qits-ci-frontend", 20);
+
+    CiRunOrdering.OrderedRun held = CiRunOrdering.explain(List.of(frontend, lib)).get(1);
+
+    assertEquals("qits-ci-frontend", held.run().id);
+    assertEquals(
+        List.of(new CiRunOrdering.Blocker("qits-ui-components-jslib", "qits-ui-components-jslib")),
+        held.topologyBlockers());
+  }
+
+  @Test
+  public void aRunNothingSequencesCarriesAnEmptyBlockerListAndNotANull() {
+    // "Topology said nothing" is the ordinary case on a platform where no event carries a closure,
+    // so it is the case that must not need a null check at every reader. An empty immutable list is
+    // the same shape as a full one and reads the same way.
+    CiRunOrdering.OrderedRun first =
+        CiRunOrdering.explain(List.of(run("first", 10), run("second", 20))).get(0);
+
+    assertEquals(List.of(), first.topologyBlockers());
+    assertEquals(CiRunOrdering.Selection.UNBLOCKED, first.selection());
+  }
+
+  @Test
+  public void aCycleIsReportedAsDegradedRatherThanLeftLookingLikeAnOrdinaryChoice() {
+    // The degradation is a fact about the ESTATE — a mistake in a pin, or a genuine mutual
+    // dependency — and until now its only symptom was a queue that had quietly stopped honouring an
+    // ordering somebody declared. `free` is genuinely unblocked and says so.
+    //
+    // The flag marks the RUN THE PASS GAVE UP ON, not everything in the cycle, and that precision is
+    // the point: emitting `b` decrements its edge into `a`, so by the time `a` is chosen it really
+    // does have an in-degree of zero and really was chosen topologically. Flagging it too would
+    // report a degradation that did not happen, and the one run whose place was decided by ignoring
+    // an edge is exactly the one an operator has to be told about.
+    CiRun a = withDownstream(withPriority(run("a", 10), "LOW"), "b");
+    CiRun b = withDownstream(withPriority(run("b", 20), "BLOCKING"), "a");
+    CiRun free = run("free", 30);
+
+    assertEquals(
+        List.of(
+            CiRunOrdering.Selection.UNBLOCKED,
+            CiRunOrdering.Selection.CYCLE_DEGRADED,
+            CiRunOrdering.Selection.UNBLOCKED),
+        CiRunOrdering.explain(List.of(a, b, free)).stream()
+            .map(CiRunOrdering.OrderedRun::selection)
+            .toList());
+  }
+
+  @Test
+  public void thePriorityWordIsCarriedVerbatimBesideTheRankItResolvedTo() {
+    // Both halves, because either alone hides the interesting case. The rank is what the queue was
+    // really ordered by; the word is what the run states — and normalising an unknown word to
+    // "MEDIUM" here would hide the typo that is the whole reason somebody is reading this. Absent
+    // and unrecognised resolve to the same middle rank and keep their different words.
+    List<CiRunOrdering.OrderedRun> explained =
+        CiRunOrdering.explain(
+            List.of(
+                withPriority(run("stated", 10), "BLOCKING"),
+                withPriority(run("invented", 20), "SOMEDAY_MAYBE"),
+                run("silent", 30)));
+
+    assertEquals(
+        List.of("stated", "invented", "silent"),
+        explained.stream().map(ordered -> ordered.run().id).toList());
+    assertEquals(
+        Arrays.asList("BLOCKING", "SOMEDAY_MAYBE", null),
+        explained.stream().map(CiRunOrdering.OrderedRun::priority).toList());
+    assertEquals(
+        List.of(0, 3, 3), explained.stream().map(CiRunOrdering.OrderedRun::priorityRank).toList());
+  }
+
+  @Test
+  public void theKindTierIsReportedPerRunSoTheOutermostCriterionIsReadableToo() {
+    // Kind cannot be outvoted and it is also the criterion an operator is least able to infer: a
+    // release run and a release-request run look identical in a list of ids.
+    CiRun release = run("release", 90);
+    release.triggerEventName = ReleaseJoin.RELEASE_EVENT_NAME;
+
+    assertEquals(
+        List.of(0, 1),
+        CiRunOrdering.explain(List.of(run("request", 10), release)).stream()
+            .map(CiRunOrdering.OrderedRun::kindTier)
+            .toList());
+  }
+
+  @Test
+  public void theShortCasesAnswerToo() {
+    // `suggestedOrder` short-circuits null and a queue of one, and it is written in terms of this
+    // method — so this method has to have an answer for both or the two would be one implementation
+    // in name only. A queue of one has nothing to be held back by.
+    assertEquals(List.of(), CiRunOrdering.explain(null));
+
+    List<CiRunOrdering.OrderedRun> single = CiRunOrdering.explain(List.of(run("alone", 10)));
+    assertEquals(1, single.size());
+    assertEquals(0, single.get(0).position());
+    assertEquals(List.of(), single.get(0).topologyBlockers());
+    assertEquals(CiRunOrdering.Selection.UNBLOCKED, single.get(0).selection());
   }
 
   // --- determinism --------------------------------------------------------------------------------
