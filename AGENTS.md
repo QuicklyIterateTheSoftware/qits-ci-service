@@ -1744,6 +1744,20 @@ names"), and what follows is what biting it feels like.
   and the concept went with ticket 9441bc6e, and a retry is now worth exactly what the work is worth
   like every other column it copies.
 
+  **`retry_of_run_id` leaves this service on the two terminal build events, and that is what makes a
+  retry worth anything downstream.** `BuildSuccessful` and `BuildFailed` carry a `retryOfRunId`
+  component, populated off the row by `announceRun`/`announceFailedRun` through `RunAnnouncer`, null
+  for every run that is not a retry and therefore an absent key on every ordinary build's canonical
+  payload. It had to be its own component because neither of the ids already on the event says it:
+  the `trigger_event_id` is the synthetic local token the paragraph above mints, and the causation
+  parent is the *original's* inherited cause, so both are silent about which **run** was re-asked.
+  The reader is qits-projects, which records one verdict per runId for a fold and reads
+  any-red-wins — so without the lineage the re-fire's green lands beside the original's red and the
+  release request stays REJECTED forever, which is the loop `qits ci retry` exists to close. What
+  qits-ci owes is the fact; superseding is the consumer's own business, exactly as with every other
+  component on those events. `BuildStatusChanged` deliberately does **not** carry it: that event is
+  a statement about the row for a listing mirror, and a mirror supersedes nothing.
+
   Only a **terminal** run is retryable (409 otherwise): two runs racing for one verdict is not what
   was asked for. Cancelled runs are retryable, which is the point — a re-fire is what a cancellation
   invites.

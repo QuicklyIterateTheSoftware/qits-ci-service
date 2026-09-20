@@ -72,6 +72,22 @@ import java.util.UUID;
  * and a wire vocabulary that imported it would make every subscriber depend on this service's
  * storage model.
  *
+ * <p><b>{@code retryOfRunId} is the run this run re-fires</b> — the id of the earlier run a {@code
+ * qits ci retry} re-asked the question of — and it is <b>null for every run that is not a retry</b>,
+ * which is nearly all of them. A run id, carried as a String like {@code runId} itself, because a
+ * run is a String id across this boundary and never a reference into this service's tables.
+ *
+ * <p>It exists so that a consumer can <b>supersede the verdict the earlier run left</b> rather than
+ * stack a second one beside it. A retry is a second answer to one question, not a second question:
+ * a reader keeping one verdict per run — qits-projects' release gate is the one this was written
+ * for, and it reads any-red-wins over a fold — would otherwise hold the retry's green next to the
+ * original's red and keep the commit refused forever. The lineage is a fact qits-ci alone has, so
+ * qits-ci is what has to say it; what a reader does with it is its own business, exactly as with
+ * every other component here.
+ *
+ * <p>A null is omitted from the canonical payload rather than written as an explicit null, so an
+ * ordinary build's bytes are identical to what they were before this component existed.
+ *
  * <p><b>There is no {@code gating} component and there is nothing it could say.</b> It was a {@code
  * Boolean} riding a null-means-gating convention — absent for an ordinary run, an explicit {@code
  * false} for one whose trigger file said {@code gating: false} — and it went with the concept
@@ -82,6 +98,7 @@ import java.util.UUID;
 public record BuildSuccessful(
     UUID eventId,
     String runId,
+    String retryOfRunId,
     String repoId,
     String projectId,
     String repoName,
@@ -102,6 +119,7 @@ public record BuildSuccessful(
   /** The constructor a publisher uses: the facts, with the identity taken care of. */
   public BuildSuccessful(
       String runId,
+      String retryOfRunId,
       String repoId,
       String projectId,
       String repoName,
@@ -112,8 +130,8 @@ public record BuildSuccessful(
       String releaseRequestId,
       Instant finishedAt) {
     this(
-        null, runId, repoId, projectId, repoName, branch, commitSha, imageDigest, phase,
-        releaseRequestId, finishedAt);
+        null, runId, retryOfRunId, repoId, projectId, repoName, branch, commitSha, imageDigest,
+        phase, releaseRequestId, finishedAt);
   }
 
   @Override

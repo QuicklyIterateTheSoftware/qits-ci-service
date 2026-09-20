@@ -235,6 +235,51 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
   }
 
   @Test
+  public void aRetrysGreenVerdictSaysWhichRunItSupersedesAndAnOrdinaryRunSaysNothing()
+      throws Exception {
+    // The lineage the causation edge above cannot carry. A retry inherits the original's cause, so
+    // the parent says nothing about which RUN was re-asked — and qits-projects records one verdict
+    // per runId over a fold and reads any-red-wins, so without this the re-fire's green lands beside
+    // the original's red and the release request stays refused forever.
+    String repo = "consumer-" + UUID.randomUUID();
+    String original = accept(repo, "rr-a");
+    service.awaitIdle();
+    forgetLoadedEntities();
+
+    CiRun retry = service.retry(original);
+    service.awaitIdle();
+
+    assertEquals(
+        original,
+        announcedFor(retry.id).retryOfRunId(),
+        "the retry's green names the run whose verdict it supersedes");
+    assertNull(
+        announcedFor(original).retryOfRunId(),
+        "and an ordinary run supersedes nothing, so it carries nothing");
+  }
+
+  @Test
+  public void aRetryThatGoesRedCarriesTheLineageToo() throws Exception {
+    // The failure twin, and the case that bites: a red run is what somebody retries, so a retry that
+    // comes back red still has to say whose verdict it replaces — or the two reds stack and the
+    // second one is indistinguishable from a second repository failing.
+    String repo = "consumer-" + UUID.randomUUID();
+    fakeRunner.script(0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
+    String original = accept(repo, "rr-a");
+    service.awaitIdle();
+    forgetLoadedEntities();
+    assertEquals(CiRunStatus.FAILED, service.requireRun(original).status);
+
+    CiRun retry = service.retry(original);
+    service.awaitIdle();
+    forgetLoadedEntities();
+    assertEquals(CiRunStatus.FAILED, service.requireRun(retry.id).status, "red again, on purpose");
+
+    assertEquals(original, failureFor(retry.id).retryOfRunId());
+    assertNull(failureFor(original).retryOfRunId());
+  }
+
+  @Test
   public void aRetryOfAFailedRunIsAnOrdinaryRunAndItsVerdictIsItsOwnOutcome() throws Exception {
     // This case used to be about re-deriving `gating` from the trigger file instead of copying the
     // source run's column, because that column held what the FINISHED run's verdict had been worth.
@@ -316,6 +361,20 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
   }
 
   // --- fixture -----------------------------------------------------------------------------------
+
+  private FakeRunAnnouncer.Announced announcedFor(String runId) {
+    return announcer.announced().stream()
+        .filter(a -> a.runId().equals(runId))
+        .findFirst()
+        .orElseThrow();
+  }
+
+  private FakeRunAnnouncer.AnnouncedFailure failureFor(String runId) {
+    return announcer.failed().stream()
+        .filter(f -> f.runId().equals(runId))
+        .findFirst()
+        .orElseThrow();
+  }
 
   /**
    * Accepts a run that parks inside its first step until {@link #release}, so everything accepted
