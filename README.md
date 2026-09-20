@@ -645,6 +645,26 @@ service alias that service checks as its `QITS_AUTH_MACHINE_AUDIENCE`. A step th
 commissioned pair should send no header rather than fail — a deployment that commissions nothing
 has machine auth off too.
 
+**A step does not have to compose that exchange itself, and a publish must not.** Every step of a
+commissioned run is handed the token twice over:
+
+- **`$QITS_PUBLISH_TOKEN`** — an access token for this run's own client, audience `qits-platform`,
+  minted by the container's bootstrap before the daemon starts.
+- **`$QITS_PUBLISH_TOKEN_COMMAND`** (`/tmp/qits-publish-token`) — an executable script that mints a
+  **fresh** one on every invocation and prints the raw token on stdout, with no `Bearer ` prefix. It
+  exits non-zero and says why on stderr when it cannot; a publish that would otherwise continue
+  anonymously therefore fails loudly.
+
+Both, because `qits.idp.token-ttl-seconds` and a step's own `timeout-seconds` are both 3600: a
+token minted when the container started can be expired by the time a long step reaches its publish,
+which is always the last thing it does. Read the variable in a short recipe and run the command in
+one that is far from its container's start — `curl -H "Authorization: Bearer $($QITS_PUBLISH_TOKEN_COMMAND)"`.
+Neither is gated on the run's phase or on `docker:`: a release-request (QA) run publishes too. Both
+are absent whole on a deployment that commissions nothing, which is how a recipe tells that it
+cannot authenticate at all. The script is the **one** token exchange in a step container —
+`qits-git-credential` calls it rather than carrying a second copy, and differs only in swallowing
+its failure, because a missing credential must not break an unrelated fetch.
+
 ## The file every repository commits: `.config/qits/ci-event-*.yml`
 
 This is the only thing that runs a pipeline. A repository commits **event triggers**: files that name

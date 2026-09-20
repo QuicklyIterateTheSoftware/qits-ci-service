@@ -692,6 +692,61 @@ public class CiDaemonLauncherTest {
   }
 
   @Test
+  public void theBootstrapWritesTheOneTokenExchangeAndExportsWhatItMinted() {
+    // The mechanism, as a property of BOOTSTRAP alone: an executable script under /tmp, chmod 0700,
+    // an exported variable holding one mint of it — all under the SAME commission guard the git
+    // helper is under, and all before the daemon becomes PID 1, or a step would run before either
+    // existed. What the exchange answers is CiDaemonBootstrapPublishTokenTest's subject.
+    String bootstrap = CiDaemonLauncher.BOOTSTRAP;
+    assertTrue(CiDaemonLauncher.PUBLISH_TOKEN_COMMAND.startsWith("/tmp/"),
+        CiDaemonLauncher.PUBLISH_TOKEN_COMMAND);
+    assertTrue(bootstrap.contains("cat > " + CiDaemonLauncher.PUBLISH_TOKEN_COMMAND), bootstrap);
+    assertTrue(bootstrap.contains("chmod 0700 " + CiDaemonLauncher.PUBLISH_TOKEN_COMMAND), bootstrap);
+    assertTrue(
+        bootstrap.contains(
+            "if QITS_PUBLISH_TOKEN=$(" + CiDaemonLauncher.PUBLISH_TOKEN_COMMAND + ")"),
+        bootstrap);
+    assertTrue(bootstrap.contains("export QITS_PUBLISH_TOKEN"), bootstrap);
+
+    // Under the guard, and the whole block is inside it: the last `fi` before the exec closes it,
+    // so a deployment that commissions nothing writes no script and exports nothing.
+    int guard = bootstrap.indexOf("if [ -n \"$QITS_COMMISSIONED_CLIENT_ID\" ]");
+    assertTrue(guard >= 0, bootstrap);
+    assertTrue(guard < bootstrap.indexOf("cat > " + CiDaemonLauncher.PUBLISH_TOKEN_COMMAND), bootstrap);
+    assertTrue(
+        bootstrap.indexOf("export QITS_PUBLISH_TOKEN")
+            < bootstrap.indexOf("exec /tmp/qits-ci-daemon"),
+        bootstrap);
+
+    // ONE exchange in this text, never two: the git helper calls the script rather than repeating
+    // it, which is what keeps the curl/BusyBox-wget split in one place.
+    assertEquals(
+        1,
+        countOf(bootstrap, "-u \"$QITS_COMMISSIONED_CLIENT_ID:$QITS_COMMISSIONED_CLIENT_SECRET\""),
+        "one curl arm");
+    assertEquals(1, countOf(bootstrap, "Authorization: Basic $auth"), "one BusyBox wget arm");
+    assertEquals(
+        1,
+        countOf(bootstrap, "\"access_token\"[[:space:]]*:[[:space:]]*"),
+        "one place parses the answer");
+    assertTrue(
+        bootstrap.contains("token=$(" + CiDaemonLauncher.PUBLISH_TOKEN_COMMAND + " 2>/dev/null) || exit 0"),
+        bootstrap);
+
+    // And nothing prints the value. `set -x` is not on in this text either.
+    assertFalse(bootstrap.contains("echo \"$QITS_PUBLISH_TOKEN\""), bootstrap);
+    assertFalse(bootstrap.contains("set -x"), bootstrap);
+  }
+
+  private static int countOf(String text, String needle) {
+    int count = 0;
+    for (int at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length())) {
+      count++;
+    }
+    return count;
+  }
+
+  @Test
   public void aDeploymentThatCannotCommissionSendsExactlyWhatItAlwaysSent() {
     // The byte-identical case, and the reason the fallback arm exists: a registry that answers an
     // anonymous push is the shape this platform shipped with, and a deployment with no oidc client

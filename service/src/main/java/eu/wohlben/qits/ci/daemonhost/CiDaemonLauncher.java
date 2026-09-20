@@ -188,6 +188,35 @@ public class CiDaemonLauncher {
    * stays zero-interpolation like the rest of this text: the credential is a value the shell reads
    * from its own environment, never a word in this string.
    *
+   * <p><b>It is where a step's platform credential becomes usable at all, and there is exactly ONE
+   * token exchange in this text.</b> Under the commission guard it writes {@link
+   * #PUBLISH_TOKEN_COMMAND} — an executable script that exchanges {@code
+   * $QITS_COMMISSIONED_CLIENT_ID}/{@code $QITS_COMMISSIONED_CLIENT_SECRET} for an access token at
+   * {@code $QITS_GIT_AUTH_TOKEN_URL} and prints the raw token, nothing else — and the Git credential
+   * helper beside it <em>calls</em> that script rather than carrying a second copy of the exchange.
+   * The two callers want opposite failure behaviour and that is where they differ: the script itself
+   * fails loudly, because a publish that quietly loses its credential is the failure it exists to
+   * prevent, while the Git helper swallows the failure with {@code exit 0}, because a missing
+   * credential must not break an unrelated fetch.
+   *
+   * <p><b>The token is handed over TWICE, as a variable and as a command, and both are needed.</b>
+   * {@code qits.idp.token-ttl-seconds} is 3600 and a step's {@code timeout-seconds} may be 3600 too,
+   * so a token minted at container start can be expired by the time a long step reaches its publish
+   * — which is always the last thing it does. A short recipe reads {@code $QITS_PUBLISH_TOKEN}; one
+   * far from its container's start runs {@code $QITS_PUBLISH_TOKEN_COMMAND} and gets a fresh one. A
+   * mint that fails at bootstrap is a line on stderr and not a refusal: the daemon has to start
+   * whatever happens, or the step reports nothing at all, and the variable is then simply unset.
+   * Nothing echoes the value, here or anywhere: it is a secret, and this text runs under no
+   * {@code set -x}.
+   *
+   * <p><b>The audience and the endpoint are the git-named pair on purpose.</b> {@code
+   * $QITS_GIT_AUTH_AUDIENCE} is {@link #CONTAINER_GIT_AUDIENCE}, {@code qits-platform} — one
+   * audience for every service on the platform, not a fact about git — and {@code
+   * $QITS_GIT_AUTH_TOKEN_URL} is the idp's plain token endpoint, which git's helper was merely the
+   * first caller of. A second variable carrying the same two values under a better name would be one
+   * more thing to keep in step for no new fact, so the names stay historical and this paragraph is
+   * the correction.
+   *
    * <p>{@code exec} rather than a plain call, so the daemon is PID 1 and the removal signals the
    * process that owns the step rather than a shell wrapping it.
    *
@@ -229,6 +258,39 @@ public class CiDaemonLauncher {
         printf '%s' "$QITS_CI_REGISTRY_AUTH_CONFIG" > "$DOCKER_CONFIG/config.json"
       fi
       if [ -n "$QITS_COMMISSIONED_CLIENT_ID" ] && [ -n "$QITS_COMMISSIONED_CLIENT_SECRET" ]; then
+        cat > /tmp/qits-publish-token <<'EOF'
+      #!/bin/sh
+      # The ONE token exchange a step container has. It prints this run's own access token on
+      # stdout and nothing else, so a step can authenticate to a platform service — the artifacts
+      # store above all, which no longer accepts an anonymous publish.
+      #
+      # It FAILS LOUDLY, unlike the Git helper below that calls it: a publish which silently loses
+      # its credential is the failure this script exists to prevent, while a Git fetch that cannot
+      # be authenticated must not be broken by this helper's absence.
+      if command -v curl >/dev/null 2>&1; then
+        response=$(curl -fsS --connect-timeout 2 --max-time 10 -u "$QITS_COMMISSIONED_CLIENT_ID:$QITS_COMMISSIONED_CLIENT_SECRET" \\
+          -H 'Content-Type: application/x-www-form-urlencoded' --data "grant_type=client_credentials&audience=$QITS_GIT_AUTH_AUDIENCE" "$QITS_GIT_AUTH_TOKEN_URL") || {
+          echo "qits-ci: the token endpoint could not be reached, so no token was minted" >&2
+          exit 1
+        }
+      else
+        # BusyBox wget knows neither --user nor --password, so the wget arm authenticates
+        # with a composed Basic header. base64 may wrap long input; tr joins it.
+        auth=$(printf '%s:%s' "$QITS_COMMISSIONED_CLIENT_ID" "$QITS_COMMISSIONED_CLIENT_SECRET" | base64 | tr -d '\\n')
+        response=$(wget -qO- -T 10 --header "Authorization: Basic $auth" \\
+          --post-data="grant_type=client_credentials&audience=$QITS_GIT_AUTH_AUDIENCE" "$QITS_GIT_AUTH_TOKEN_URL") || {
+          echo "qits-ci: the token endpoint could not be reached, so no token was minted" >&2
+          exit 1
+        }
+      fi
+      token=$(printf '%s' "$response" | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')
+      if [ -z "$token" ]; then
+        echo "qits-ci: the token endpoint answered without an access_token" >&2
+        exit 1
+      fi
+      printf '%s\\n' "$token"
+      EOF
+        chmod 0700 /tmp/qits-publish-token
         cat > /tmp/qits-git-credential <<'EOF'
       #!/bin/sh
       # This helper deliberately answers only qits-githost. Git may invoke it for any remote in a
@@ -242,22 +304,29 @@ public class CiDaemonLauncher {
       done
       [ "$host" = "$QITS_GIT_AUTH_HOST" ] || exit 0
       case "$protocol" in http|https) ;; *) exit 0;; esac
-      if command -v curl >/dev/null 2>&1; then
-        response=$(curl -fsS --connect-timeout 2 --max-time 10 -u "$QITS_COMMISSIONED_CLIENT_ID:$QITS_COMMISSIONED_CLIENT_SECRET" \\
-          -H 'Content-Type: application/x-www-form-urlencoded' --data "grant_type=client_credentials&audience=$QITS_GIT_AUTH_AUDIENCE" "$QITS_GIT_AUTH_TOKEN_URL") || exit 0
-      else
-        # BusyBox wget knows neither --user nor --password, so the wget arm authenticates
-        # with a composed Basic header. base64 may wrap long input; tr joins it.
-        auth=$(printf '%s:%s' "$QITS_COMMISSIONED_CLIENT_ID" "$QITS_COMMISSIONED_CLIENT_SECRET" | base64 | tr -d '\\n')
-        response=$(wget -qO- -T 10 --header "Authorization: Basic $auth" \\
-          --post-data="grant_type=client_credentials&audience=$QITS_GIT_AUTH_AUDIENCE" "$QITS_GIT_AUTH_TOKEN_URL") || exit 0
-      fi
-      token=$(printf '%s' "$response" | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')
+      # The exchange itself is the script above — one implementation of it in this text, never two.
+      # Its failure is swallowed here on purpose: a missing credential must not break an unrelated
+      # fetch, which is the opposite of what a publish wants.
+      token=$(/tmp/qits-publish-token 2>/dev/null) || exit 0
       [ -n "$token" ] || exit 0
       printf 'username=oauth2\\npassword=%s\\n\\n' "$token"
       EOF
         chmod 0700 /tmp/qits-git-credential
         printf '[credential]\n\thelper = /tmp/qits-git-credential\n' > "$GIT_CONFIG_GLOBAL"
+        # And the token as a VARIABLE, beside the command that re-mints it. Both, because
+        # qits.idp.token-ttl-seconds and a step's own timeout-seconds are both 3600: a token minted
+        # here can be expired by the time a long step reaches its publish, which is always the last
+        # thing it does. A short recipe reads $QITS_PUBLISH_TOKEN; one far from its container's
+        # start runs $QITS_PUBLISH_TOKEN_COMMAND and gets a fresh one.
+        #
+        # A mint that fails HERE is a warning and not a refusal: the daemon has to start whatever
+        # happens, or the step reports nothing at all. The variable is then simply unset, and the
+        # command is still there to be run. The value is never echoed — it is a secret.
+        if QITS_PUBLISH_TOKEN=$(/tmp/qits-publish-token); then
+          export QITS_PUBLISH_TOKEN
+        else
+          echo "qits-ci: no publish token at container start; a step may re-mint one with /tmp/qits-publish-token" >&2
+        fi
       fi
       exec /tmp/qits-ci-daemon
       """;
@@ -276,6 +345,19 @@ public class CiDaemonLauncher {
    * docker CLI reads {@code config.json} inside it.
    */
   static final String REGISTRY_AUTH_DIR = "/tmp/qits-ci-registry-auth";
+
+  /**
+   * The script {@link #BOOTSTRAP} writes and {@code $QITS_PUBLISH_TOKEN_COMMAND} names: one
+   * invocation, one freshly minted access token for this run's commissioned client on stdout.
+   *
+   * <p>Under {@code /tmp} for {@link #REGISTRY_AUTH_DIR}'s reason — outside the checkout, so it is
+   * in no {@code build} context and confuses no {@code git status} — and gone with the container.
+   *
+   * <p>The path is spelled here <em>and</em> typed into {@code BOOTSTRAP}, because that text
+   * interpolates nothing at all; this constant is what a caller and a test may name, and
+   * {@code CiDaemonLauncherTest} asserts the two still agree.
+   */
+  static final String PUBLISH_TOKEN_COMMAND = "/tmp/qits-publish-token";
 
   /**
    * The one client, produced by {@code containers/ContainersClientProducer}. Every call it makes is
@@ -1224,6 +1306,15 @@ public class CiDaemonLauncher {
       env.put("QITS_GIT_AUTH_HOST", gitAuthority(containerGitUrl));
       env.put("QITS_GIT_AUTH_AUDIENCE", CONTAINER_GIT_AUDIENCE);
       env.put("GIT_CONFIG_GLOBAL", "/tmp/qits-gitconfig");
+      // And the same credential in the form a PUBLISHING step needs: the script BOOTSTRAP writes,
+      // named so a recipe can re-mint whenever it likes. $QITS_PUBLISH_TOKEN itself is exported by
+      // that same bootstrap rather than sent from here — it is minted inside the container, where
+      // the short-lived value belongs, and this service never holds one.
+      //
+      // NOT gated on the run's phase. A release-request (QA) run publishes too — the java-service
+      // archetype PUTs its userflows bundle to the docs store from a QA step — so the only honest
+      // gate is the one above: has this run a commission to mint with.
+      env.put("QITS_PUBLISH_TOKEN_COMMAND", PUBLISH_TOKEN_COMMAND);
     }
     if (spec.docker() || spec.build()) {
       // The two flags are the two generations of the same declaration — `docker: true` mounts the

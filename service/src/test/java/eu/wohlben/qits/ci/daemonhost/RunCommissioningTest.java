@@ -224,6 +224,46 @@ public class RunCommissioningTest {
     // The wire value, spelled out: one audience for every service, and no key can change it.
     assertEquals("qits-platform", first.get("QITS_GIT_AUTH_AUDIENCE"));
     assertEquals("/tmp/qits-gitconfig", first.get("GIT_CONFIG_GLOBAL"));
+    // The same commissioned pair is what a PUBLISH authenticates with, and the command that turns
+    // it into a bearer is named for every step of the run — the token itself is minted inside the
+    // container, so this service never holds one.
+    assertEquals("/tmp/qits-publish-token", first.get("QITS_PUBLISH_TOKEN_COMMAND"));
+    assertEquals("/tmp/qits-publish-token", second.get("QITS_PUBLISH_TOKEN_COMMAND"));
+  }
+
+  @Test
+  public void everyCommissionedStepIsToldHowToMintAPublishToken() {
+    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
+
+    // Not gated on the phase and not gated on `docker:`. A release-request (QA) run publishes too —
+    // the java-service archetype PUTs its userflows bundle to the docs store from a QA step — so
+    // the only gate is the commission, exactly as the git credential helper's is.
+    for (LaunchSpec each :
+        List.of(
+            step(RUN, 0, false),
+            step(RUN, 1, true),
+            step(
+                RUN,
+                2,
+                false,
+                event(
+                    "ReleaseRequestChanged",
+                    "{\"backingBranch\":\"release/4711\",\"mergedSha\":\"cafebabe\"}")))) {
+      assertEquals(
+          CiDaemonLauncher.PUBLISH_TOKEN_COMMAND,
+          launcher.buildWorkloadSpec(each).spec().env().get("QITS_PUBLISH_TOKEN_COMMAND"));
+    }
+  }
+
+  @Test
+  public void theTokenItselfIsNeverSentFromHere() {
+    // qits-ci mints nothing for a container: BOOTSTRAP does, inside it, from the pair. A token on
+    // this wire would be a credential recorded in an orchestrator's spec and expired by the time a
+    // long step reached its publish.
+    Map<String, String> env =
+        launcher(idp.runCommissions(PATIENCE)).buildWorkloadSpec(step(RUN, 1, true)).spec().env();
+
+    assertFalse(env.containsKey("QITS_PUBLISH_TOKEN"));
   }
 
   @Test
@@ -422,6 +462,10 @@ public class RunCommissioningTest {
     assertFalse(env.containsKey("QITS_CI_REGISTRY_AUTH_CONFIG"));
     assertFalse(env.containsKey("QITS_COMMISSIONED_CLIENT_ID"));
     assertFalse(env.containsKey("QITS_COMMISSIONED_CLIENT_SECRET"));
+    // Including the publish token's command: with nothing to mint from, naming a script that cannot
+    // work would be worse than naming none — a recipe reads the variable to decide whether it can
+    // authenticate at all.
+    assertFalse(env.containsKey("QITS_PUBLISH_TOKEN_COMMAND"));
     // The BuildKit pair is not a credential and rides along regardless.
     assertEquals("1", env.get("DOCKER_BUILDKIT"));
   }
