@@ -487,9 +487,12 @@ public class CiDaemonLauncher {
    * the mirror vhost, because a document naming only the push registry leaves the pull
    * unauthenticated and the build dies on a 401 nothing in the pipeline mentions.
    *
-   * <p><b>The default is exactly {@code qits.artifacts.registry-host}</b>, so a deployment that has
-   * not widened it sends the document it always sent. A deployment behind the edge sets both vhosts
-   * — {@code registry.dev.localhost:8080,mirror.dev.localhost:8080} — and every entry shares the one
+   * <p><b>This key is not the whole document, and it is deliberately not asked to be.</b> Its
+   * default is {@code qits.artifacts.registry-host}; {@link #authHosts} adds {@link
+   * #buildkitRegistryHost} on top, because that is the host a converted recipe's push actually goes
+   * to and a login is picked by hostname. What this key is for is the hosts only a deployment
+   * knows: behind the edge it sets both vhosts — {@code
+   * registry.dev.localhost:8080,mirror.dev.localhost:8080} — and every entry shares the one
    * commissioned pair, because it is one identity at one idp whatever hostname fronts it.
    */
   @ConfigProperty(name = "qits.ci.docker-auth-hosts")
@@ -1481,15 +1484,17 @@ public class CiDaemonLauncher {
    * The docker {@code config.json} a publishing step logs in with, built from this run's own
    * commissioned pair.
    *
-   * <p><b>The scope is the decision that survived the cutover.</b> Only a step that declared {@code
-   * docker: true} is handed this: the credential exists for a push over the mounted socket, and a
-   * step without the socket has nothing to push with — so the narrow scope costs nothing and keeps
-   * the secret out of every container that cannot use it.
+   * <p><b>The scope is the decision that survived the cutover.</b> Only a step in BUILD MODE is
+   * handed this — {@code docker: true} or {@code build: true}, which is the shape the archetypes
+   * publish images from: the credential exists for a push, and a step that cannot build has nothing
+   * to push with, so the narrow scope costs nothing and keeps the secret out of every container
+   * that cannot use it.
    *
-   * <p><b>One entry per host in {@link #dockerAuthHosts}, all carrying the same pair.</b> The docker
-   * client picks a login by registry hostname, so a build that pulls from one host and pushes to
-   * another needs both named — see that field for what widened this and why the default is still
-   * the one address the step reads as {@code $QITS_REGISTRY}.
+   * <p><b>One entry per host in {@link #authHosts}, all carrying the same pair.</b> The docker
+   * client picks a login by registry hostname and buildctl does the same, so a build that pulls
+   * from one host and pushes to another needs both named — which is exactly the shipped shape
+   * rather than an edge case, since {@code $QITS_REGISTRY} and {@code $QITS_BUILD_REGISTRY} are two
+   * network positions of one registry and only the second is where a push goes.
    *
    * <p><b>Hand-written JSON, and it stays that way.</b> The document is fixed keys around one base64
    * value per host, and base64 has no character JSON escapes — so the only values that could need
@@ -1531,6 +1536,16 @@ public class CiDaemonLauncher {
    * <p>An unset list means the registry host alone, which is both the shipped default's value and
    * the tolerance the hand-wired launchers in the ITs rely on: an unset field is a test's silence
    * rather than a wiring failure.
+   *
+   * <p><b>{@link #buildkitRegistryHost} is added on top, and that is where a push GOES.</b> The two
+   * are separate config keys for an unchanged reason — one registry, two network positions — but
+   * one document: a converted recipe composes its push reference from {@code $QITS_BUILD_REGISTRY},
+   * so a document without that host leaves buildctl holding no login for the only address it
+   * addresses. Harmless for exactly as long as the store lets an anonymous {@code /v2} publish
+   * through, and every image push on the estate the moment it answers one with a Bearer challenge.
+   * It follows {@link #buildkitEnabled} rather than the key alone: off, {@code $QITS_BUILD_REGISTRY}
+   * is sent empty and a login for that alias would be an entry for an address nothing addresses.
+   * The two keys may legitimately hold one value, which the duplicate check collapses.
    */
   private List<String> authHosts() {
     List<String> hosts = new ArrayList<>();
