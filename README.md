@@ -532,8 +532,14 @@ credential helper trades the pair for a short-lived git-host token. A step that 
 `config.json` the CLI reads, and can use the pair for a BuildKit secret mount. Every later step of
 the same run reuses the pair; the run's end deletes it. The file lives under `/tmp`, never in the
 checkout, so it can never reach a `docker build` context. It carries **one entry per host in
-`qits.ci.docker-auth-hosts`** — the docker client picks a login by hostname, so a build that pulls
-its base image from the mirror vhost and pushes to the registry vhost needs both named.
+`qits.ci.docker-auth-hosts` plus `qits.ci.buildkit.registry-host`** — the docker client picks a
+login by hostname and buildctl does the same, so a build that pulls its base image from the mirror
+vhost and pushes to the registry vhost needs both named. **The builder's host is in there whether a
+deployment asks for it or not**, because it is the address a converted recipe's push actually goes
+to (`$QITS_BUILD_REGISTRY`) while the auth list defaults to the host daemon's view of the same
+registry (`$QITS_REGISTRY`): one registry, two network positions, two keys, one document. It
+follows the buildkit kill switch — off, that host is not in the document, because nothing pushes
+through it — and a deployment whose two keys hold one value gets one entry.
 
 **There are no `qits.ci.registry-auth.*` keys any more.** The credential used to be one static pair
 in a deployment's environment, shared by every run of every repository; a deployment still setting
@@ -644,6 +650,26 @@ audience is not injected; a step derives it from the host of the service's URL, 
 service alias that service checks as its `QITS_AUTH_MACHINE_AUDIENCE`. A step that finds no
 commissioned pair should send no header rather than fail — a deployment that commissions nothing
 has machine auth off too.
+
+**A step does not have to compose that exchange itself, and a publish must not.** Every step of a
+commissioned run is handed the token twice over:
+
+- **`$QITS_PUBLISH_TOKEN`** — an access token for this run's own client, audience `qits-platform`,
+  minted by the container's bootstrap before the daemon starts.
+- **`$QITS_PUBLISH_TOKEN_COMMAND`** (`/tmp/qits-publish-token`) — an executable script that mints a
+  **fresh** one on every invocation and prints the raw token on stdout, with no `Bearer ` prefix. It
+  exits non-zero and says why on stderr when it cannot; a publish that would otherwise continue
+  anonymously therefore fails loudly.
+
+Both, because `qits.idp.token-ttl-seconds` and a step's own `timeout-seconds` are both 3600: a
+token minted when the container started can be expired by the time a long step reaches its publish,
+which is always the last thing it does. Read the variable in a short recipe and run the command in
+one that is far from its container's start — `curl -H "Authorization: Bearer $($QITS_PUBLISH_TOKEN_COMMAND)"`.
+Neither is gated on the run's phase or on `docker:`: a release-request (QA) run publishes too. Both
+are absent whole on a deployment that commissions nothing, which is how a recipe tells that it
+cannot authenticate at all. The script is the **one** token exchange in a step container —
+`qits-git-credential` calls it rather than carrying a second copy, and differs only in swallowing
+its failure, because a missing credential must not break an unrelated fetch.
 
 ## The file every repository commits: `.config/qits/ci-event-*.yml`
 
@@ -1818,8 +1844,8 @@ a repository's own listing will show.
 - **Set `qits.ci.docker-auth-hosts` to every registry host a step build touches, if that is more
   than one.** The docker client sends a login per hostname, so the `config.json` needs an entry per
   host — the push registry *and* whatever a step image is pulled from. The default is
-  `qits.artifacts.registry-host` alone, which is right for a deployment that pulls and pushes at one
-  address; behind the edge it is
+  `qits.artifacts.registry-host`, and **`qits.ci.buildkit.registry-host` is added on top without
+  being asked for**, since that is the address a converted recipe pushes to; behind the edge it is
   `QITS_CI_DOCKER_AUTH_HOSTS=registry.dev.localhost:8080,mirror.dev.localhost:8080`. All entries
   share the run's one commissioned pair.
 - Leave `qits.artifacts.npm.hosted-url` / `qits.artifacts.npm.proxy-url` and

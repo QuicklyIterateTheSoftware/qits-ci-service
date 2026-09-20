@@ -250,14 +250,28 @@ Three decisions worth keeping in front of you:
   writing a layer. `RunCommissioningTest` asserts that list is exactly one environment entry long and
   that nothing else sent — argv, entrypoint, labels, the container name, the bootstrap — contains it.
 
-**The document names every host in `qits.ci.docker-auth-hosts`, not just the push registry.** The
-docker client picks a login by registry hostname, so one entry is one host's worth of auth — which
-was enough while a step pulled and pushed against the same address, and stopped being enough when a
-step image started arriving `FROM mirror.dev.localhost:8080/…`: a document naming only the registry
-leaves the *pull* unauthenticated and the build dies on a 401 no pipeline mentions. The default is
-exactly `qits.artifacts.registry-host`, so an unwidened deployment sends the document it always sent;
-behind the edge it is both vhosts, and every entry carries the same commissioned pair because it is
-one identity at one idp whatever hostname fronts it.
+**The document names every host in `qits.ci.docker-auth-hosts` AND `qits.ci.buildkit.registry-host`,
+not just the push registry.** The docker client picks a login by registry hostname and buildctl does
+the same, so one entry is one host's worth of auth — which was enough while a step pulled and pushed
+against the same address, and stopped being enough when a step image started arriving `FROM
+mirror.dev.localhost:8080/…`: a document naming only the registry leaves the *pull* unauthenticated
+and the build dies on a 401 no pipeline mentions. Behind the edge the key is both vhosts, and every
+entry carries the same commissioned pair because it is one identity at one idp whatever hostname
+fronts it.
+
+**The builder's host is the half a deployment never has to ask for, and the half that would fail
+silently.** `$QITS_BUILD_REGISTRY` (`qits.ci.buildkit.registry-host`) is where a converted recipe's
+push actually GOES, while the auth list defaults to `$QITS_REGISTRY` (`qits.artifacts.registry-host`),
+the host daemon's view of the same registry — one registry, two network positions, two keys, one
+document. So `CiDaemonLauncher.authHosts` unions them rather than the config expression doing it,
+which is what makes the union follow the buildkit kill switch: off, `$QITS_BUILD_REGISTRY` is sent
+empty and a login for that alias would be an entry for an address nothing addresses. Duplicates
+collapse, so two keys holding one value are one entry and never a duplicate JSON key. **A document
+missing the builder's host costs nothing for exactly as long as the store lets an anonymous `/v2`
+publish through** — which is why `RunCommissioningTest` now fixtures the SHIPPED buildkit state
+(it left the fields at `false`/`null` until 2026-09-20, so every document assertion was made
+against a deployment state the fleet is not in) and pins the two-host document, the collapse, the
+kill switch's arm and the `build: true` step that gets the document with no socket.
 
 **`DOCKER_BUILDKIT=1` and `BUILDX_NO_DEFAULT_ATTESTATIONS=1` ride along on the same docker-only
 scope.** Every step image ships buildx as of qits-build-images-oci 2026.814.110556, so a legacy

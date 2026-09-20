@@ -72,6 +72,12 @@ public class RunCommissioningTest {
     // The shipped default: the push registry alone, which is what the key's own default expression
     // resolves to. The widened case is its own test below.
     launcher.dockerAuthHosts = List.of("qits-artifacts:8080");
+    // AND THE SHIPPED BUILDKIT STATE, which the document depends on. This fixture left both at the
+    // field defaults (false/null) until 2026-09-20, so every assertion about the auth document here
+    // was made against a deployment state the fleet is not in — buildkit ships ON, and the host
+    // buildctl pushes to is in the document for that reason (authHosts).
+    launcher.buildkitEnabled = true;
+    launcher.buildkitRegistryHost = "dev-qits-artifacts:8080";
     launcher.artifactsNpmHostedUrl = "http://qits-artifacts:8080/artifacts/npm/npm/";
     launcher.artifactsNpmProxyUrl = "http://qits-artifacts:8080/artifacts/npm/npmjs/";
     launcher.artifactsMavenRegistryUrl = "http://qits-artifacts:8080/artifacts/maven/maven";
@@ -110,6 +116,28 @@ public class RunCommissioningTest {
             + "\",\"branch\":\""
             + branch
             + "\",\"baseRef\":\"main\",\"changes\":[]}");
+  }
+
+  /**
+   * A {@code build: true} step: build mode with no socket, which is the shape the java-service, oci
+   * and daemon archetypes publish images from.
+   */
+  private static LaunchSpec buildStep(String runId, int index) {
+    return new LaunchSpec(
+        runId,
+        index,
+        CiRepoRef.of("repo-1"),
+        "main",
+        "cafebabe",
+        "maven:3.9",
+        "daemon-7",
+        "s3cr3t",
+        "http://qits-artifacts:8080/artifacts/daemons/deadbeef",
+        0,
+        false,
+        true,
+        "",
+        Map.of());
   }
 
   /** One step of a run with its run-scoped environment. */
@@ -224,6 +252,46 @@ public class RunCommissioningTest {
     // The wire value, spelled out: one audience for every service, and no key can change it.
     assertEquals("qits-platform", first.get("QITS_GIT_AUTH_AUDIENCE"));
     assertEquals("/tmp/qits-gitconfig", first.get("GIT_CONFIG_GLOBAL"));
+    // The same commissioned pair is what a PUBLISH authenticates with, and the command that turns
+    // it into a bearer is named for every step of the run — the token itself is minted inside the
+    // container, so this service never holds one.
+    assertEquals("/tmp/qits-publish-token", first.get("QITS_PUBLISH_TOKEN_COMMAND"));
+    assertEquals("/tmp/qits-publish-token", second.get("QITS_PUBLISH_TOKEN_COMMAND"));
+  }
+
+  @Test
+  public void everyCommissionedStepIsToldHowToMintAPublishToken() {
+    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
+
+    // Not gated on the phase and not gated on `docker:`. A release-request (QA) run publishes too —
+    // the java-service archetype PUTs its userflows bundle to the docs store from a QA step — so
+    // the only gate is the commission, exactly as the git credential helper's is.
+    for (LaunchSpec each :
+        List.of(
+            step(RUN, 0, false),
+            step(RUN, 1, true),
+            step(
+                RUN,
+                2,
+                false,
+                event(
+                    "ReleaseRequestChanged",
+                    "{\"backingBranch\":\"release/4711\",\"mergedSha\":\"cafebabe\"}")))) {
+      assertEquals(
+          CiDaemonLauncher.PUBLISH_TOKEN_COMMAND,
+          launcher.buildWorkloadSpec(each).spec().env().get("QITS_PUBLISH_TOKEN_COMMAND"));
+    }
+  }
+
+  @Test
+  public void theTokenItselfIsNeverSentFromHere() {
+    // qits-ci mints nothing for a container: BOOTSTRAP does, inside it, from the pair. A token on
+    // this wire would be a credential recorded in an orchestrator's spec and expired by the time a
+    // long step reached its publish.
+    Map<String, String> env =
+        launcher(idp.runCommissions(PATIENCE)).buildWorkloadSpec(step(RUN, 1, true)).spec().env();
+
+    assertFalse(env.containsKey("QITS_PUBLISH_TOKEN"));
   }
 
   @Test
@@ -247,13 +315,19 @@ public class RunCommissioningTest {
     Map<String, String> env =
         launcher(idp.runCommissions(PATIENCE)).buildWorkloadSpec(step(RUN, 1, true)).spec().env();
 
-    // The document, byte for byte: the CLI's own base64 of id:secret, against the same address the
-    // step reads as $QITS_REGISTRY, in a directory under /tmp rather than in the checkout.
+    // The document, byte for byte: the CLI's own base64 of id:secret, against the address the step
+    // reads as $QITS_REGISTRY **and** the one it reads as $QITS_BUILD_REGISTRY, in a directory
+    // under /tmp rather than in the checkout. Two entries on a shipped deployment, not one — see
+    // theDocumentNamesTheHostThePushGoesTo below for why the second is not optional.
     String auth =
         Base64.getEncoder()
             .encodeToString("run-client-1:run-s3cr3t-1".getBytes(StandardCharsets.UTF_8));
     assertEquals(
-        "{\"auths\":{\"qits-artifacts:8080\":{\"auth\":\"" + auth + "\"}}}",
+        "{\"auths\":{\"qits-artifacts:8080\":{\"auth\":\""
+            + auth
+            + "\"},\"dev-qits-artifacts:8080\":{\"auth\":\""
+            + auth
+            + "\"}}}",
         env.get("QITS_CI_REGISTRY_AUTH_CONFIG"));
     assertEquals("/tmp/qits-ci-registry-auth", env.get("DOCKER_CONFIG"));
     assertEquals("qits-artifacts:8080", env.get("QITS_REGISTRY"));
@@ -284,6 +358,8 @@ public class RunCommissioningTest {
             + auth
             + "\"},\"mirror.dev.localhost:8080\":{\"auth\":\""
             + auth
+            + "\"},\"dev-qits-artifacts:8080\":{\"auth\":\""
+            + auth
             + "\"}}}",
         document);
     // Still one commission: the hosts are vhosts of one platform and the credential is one identity
@@ -304,7 +380,72 @@ public class RunCommissioningTest {
     String auth =
         Base64.getEncoder()
             .encodeToString("run-client-1:run-s3cr3t-1".getBytes(StandardCharsets.UTF_8));
+    assertEquals(
+        "{\"auths\":{\"qits-artifacts:8080\":{\"auth\":\""
+            + auth
+            + "\"},\"dev-qits-artifacts:8080\":{\"auth\":\""
+            + auth
+            + "\"}}}",
+        document);
+  }
+
+  @Test
+  public void theDocumentNamesTheHostThePushActuallyGoesTo() {
+    // THE HOST A PUSH GOES TO IS NOT THE HOST THE DOCUMENT WOULD OTHERWISE NAME. A converted
+    // recipe composes its push reference from $QITS_BUILD_REGISTRY — qits.ci.buildkit.registry-host,
+    // the qits-net alias buildkitd pushes through — while qits.ci.docker-auth-hosts defaults to
+    // qits.artifacts.registry-host, the HOST DAEMON's view of the same registry. Two network
+    // positions, two keys, on purpose. A document naming only the second leaves buildctl with no
+    // login for the address it is pushing to, which costs nothing for exactly as long as the store
+    // lets an anonymous /v2 publish through and fails every image push on the estate the moment it
+    // answers one with a Bearer challenge.
+    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
+
+    Map<String, String> env = launcher.buildWorkloadSpec(buildStep(RUN, 1)).spec().env();
+    String document = env.get("QITS_CI_REGISTRY_AUTH_CONFIG");
+
+    assertTrue(document.contains("\"" + env.get("QITS_BUILD_REGISTRY") + "\""), document);
+    assertTrue(document.contains("\"" + env.get("QITS_REGISTRY") + "\""), document);
+    // A `build: true` step is the archetypes' publishing shape and holds no socket, so the document
+    // has to reach it on the same terms as a `docker: true` one.
+    assertEquals("/tmp/qits-ci-registry-auth", env.get("DOCKER_CONFIG"));
+  }
+
+  @Test
+  public void oneAddressUnderTwoKeysIsStillOneEntry() {
+    // The two keys are separate because the two network positions are, not because the values must
+    // differ: a deployment whose host daemon and whose builder resolve the registry by the same
+    // name is legitimate. Naming it twice would be a duplicate JSON key — legal, useless, and one
+    // typo away from a document a client reads differently than it looks.
+    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
+    launcher.buildkitRegistryHost = "qits-artifacts:8080";
+
+    String document =
+        launcher.buildWorkloadSpec(step(RUN, 1, true)).spec().env().get("QITS_CI_REGISTRY_AUTH_CONFIG");
+
+    String auth =
+        Base64.getEncoder()
+            .encodeToString("run-client-1:run-s3cr3t-1".getBytes(StandardCharsets.UTF_8));
     assertEquals("{\"auths\":{\"qits-artifacts:8080\":{\"auth\":\"" + auth + "\"}}}", document);
+  }
+
+  @Test
+  public void theKillSwitchTakesTheBuildersHostOutOfTheDocumentToo() {
+    // QITS_CI_BUILDKIT_ENABLED=false sends $QITS_BUILD_REGISTRY empty, so no step pushes through
+    // that alias and a login for it would be an entry for an address nothing addresses. The
+    // document follows the switch rather than the key.
+    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
+    launcher.buildkitEnabled = false;
+
+    Map<String, String> env = launcher.buildWorkloadSpec(step(RUN, 1, true)).spec().env();
+
+    String auth =
+        Base64.getEncoder()
+            .encodeToString("run-client-1:run-s3cr3t-1".getBytes(StandardCharsets.UTF_8));
+    assertEquals(
+        "{\"auths\":{\"qits-artifacts:8080\":{\"auth\":\"" + auth + "\"}}}",
+        env.get("QITS_CI_REGISTRY_AUTH_CONFIG"));
+    assertEquals("", env.get("QITS_BUILD_REGISTRY"));
   }
 
   @Test
@@ -422,6 +563,10 @@ public class RunCommissioningTest {
     assertFalse(env.containsKey("QITS_CI_REGISTRY_AUTH_CONFIG"));
     assertFalse(env.containsKey("QITS_COMMISSIONED_CLIENT_ID"));
     assertFalse(env.containsKey("QITS_COMMISSIONED_CLIENT_SECRET"));
+    // Including the publish token's command: with nothing to mint from, naming a script that cannot
+    // work would be worse than naming none — a recipe reads the variable to decide whether it can
+    // authenticate at all.
+    assertFalse(env.containsKey("QITS_PUBLISH_TOKEN_COMMAND"));
     // The BuildKit pair is not a credential and rides along regardless.
     assertEquals("1", env.get("DOCKER_BUILDKIT"));
   }
