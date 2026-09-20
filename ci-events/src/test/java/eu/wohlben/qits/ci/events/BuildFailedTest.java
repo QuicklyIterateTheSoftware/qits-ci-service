@@ -26,7 +26,7 @@ class BuildFailedTest {
 
   private static BuildFailed anEvent() {
     return new BuildFailed(
-        "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null, "FAILED",
+        "run-1", null, "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null, "FAILED",
         FINISHED);
   }
 
@@ -89,7 +89,7 @@ class BuildFailedTest {
   void anIdAddressedPushOmitsTheNamePairRatherThanNullingIt() {
     BuildFailed idOnly =
         new BuildFailed(
-            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, "TIMED_OUT",
+            "run-3", null, "qits-ci", null, null, "main", "0123456789abcdef", null, null, "TIMED_OUT",
             FINISHED);
 
     String payload = CanonicalJson.payload(idOnly);
@@ -114,7 +114,7 @@ class BuildFailedTest {
 
     BuildFailed full =
         new BuildFailed(
-            "run-4", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null,
+            "run-4", null, "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", null, null,
             "FAILED", FINISHED);
     String payload = CanonicalJson.payload(full);
     assertFalse(payload.contains("gating"), payload);
@@ -137,7 +137,7 @@ class BuildFailedTest {
 
     BuildFailed publish =
         new BuildFailed(
-            "run-5", "qits-ci", null, null, "2026.916.101112", "0123456789abcdef", "RELEASE", "rr-1",
+            "run-5", null, "qits-ci", null, null, "2026.916.101112", "0123456789abcdef", "RELEASE", "rr-1",
             "FAILED", FINISHED);
     assertEquals(
         "{\"branch\":\"2026.916.101112\",\"commitSha\":\"0123456789abcdef\","
@@ -158,7 +158,7 @@ class BuildFailedTest {
     String qa =
         CanonicalJson.payload(
             new BuildFailed(
-                "run-6", "qits-ci", null, null, "release/rr-1", "0123456789abcdef",
+                "run-6", null, "qits-ci", null, null, "release/rr-1", "0123456789abcdef",
                 "RELEASE_REQUEST", "rr-1", "FAILED", FINISHED));
     assertTrue(qa.contains("\"phase\":\"RELEASE_REQUEST\""), qa);
     assertTrue(qa.contains("\"releaseRequestId\":\"rr-1\""), qa);
@@ -170,7 +170,7 @@ class BuildFailedTest {
     // releaseRequestId were components, because a null is omitted rather than written.
     BuildFailed ordinary =
         new BuildFailed(
-            "run-7", "qits-ci", null, null, "main", "0123456789abcdef", null, null, "FAILED",
+            "run-7", null, "qits-ci", null, null, "main", "0123456789abcdef", null, null, "FAILED",
             FINISHED);
 
     assertEquals(
@@ -181,6 +181,25 @@ class BuildFailedTest {
   }
 
   @Test
+  void anOrdinaryRunOmitsTheRetryLineageAndARetryNamesTheRunItReFires() {
+    // {@link BuildSuccessfulTest}'s case, and the one that matters most on this event: a red run is
+    // what somebody retries, so this is the verdict a consumer has to be able to supersede. Null is
+    // the ordinary value and is omitted rather than written.
+    assertFalse(CanonicalJson.payload(anEvent()).contains("retryOfRunId"));
+
+    BuildFailed retry =
+        new BuildFailed(
+            "run-8", "run-7", "qits-ci", null, null, "release/rr-1", "0123456789abcdef",
+            "RELEASE_REQUEST", "rr-1", "FAILED", FINISHED);
+    assertEquals(
+        "{\"branch\":\"release/rr-1\",\"commitSha\":\"0123456789abcdef\","
+            + "\"finishedAt\":\"2026-07-31T12:46:03Z\",\"outcome\":\"FAILED\","
+            + "\"phase\":\"RELEASE_REQUEST\",\"releaseRequestId\":\"rr-1\","
+            + "\"repoId\":\"qits-ci\",\"retryOfRunId\":\"run-7\",\"runId\":\"run-8\"}",
+        CanonicalJson.payload(retry));
+  }
+
+  @Test
   void aSubscriberReadsThePayloadBackIntoTheEvent() {
     BuildFailed published = anEvent();
 
@@ -188,6 +207,7 @@ class BuildFailedTest {
         CanonicalJson.payloadTo(CanonicalJson.payload(published), BuildFailed.class);
 
     assertEquals(published.runId(), received.runId());
+    assertEquals(published.retryOfRunId(), received.retryOfRunId());
     assertEquals(published.repoId(), received.repoId());
     assertEquals(published.projectId(), received.projectId());
     assertEquals(published.repoName(), received.repoName());

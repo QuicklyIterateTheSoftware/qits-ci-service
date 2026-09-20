@@ -1624,12 +1624,19 @@ public class CiRunService {
    * context because there is none to read here: the engine consumed the frame on the bus's dispatch
    * thread and this is {@code ci-run-worker}, minutes later. Null only on a historical push row,
    * which publishes a root — correctly, since a push was not caused by an event.
+   *
+   * <p><b>{@link CiRun#retryOfRunId} rides along too, and it is the only lineage the causation edge
+   * cannot carry.</b> A retry inherits its original's cause, so the parent above says nothing about
+   * which <em>run</em> was re-asked — and a consumer holding one verdict per run needs exactly that
+   * to supersede the earlier verdict rather than stack a second one beside it. Null for every run
+   * that is not a retry, straight off the row.
    */
   private void announceRun(CiRun run, Instant finishedAt) {
     for (RunAnnouncer announcer : runAnnouncers) {
       try {
         announcer.onRunSucceeded(
             run.id,
+            run.retryOfRunId,
             run.repoId,
             run.projectId,
             run.repoName,
@@ -1699,6 +1706,7 @@ public class CiRunService {
       try {
         announcer.onRunFailed(
             run.id,
+            run.retryOfRunId,
             run.repoId,
             run.projectId,
             run.repoName,

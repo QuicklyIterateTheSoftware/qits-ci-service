@@ -79,6 +79,7 @@ public class BuildAnnouncer implements RunAnnouncer {
   @Override
   public void onRunSucceeded(
       String runId,
+      String retryOfRunId,
       String repoId,
       String projectId,
       String repoName,
@@ -90,14 +91,15 @@ public class BuildAnnouncer implements RunAnnouncer {
       String triggerEventId) {
     bus.publish(
         new BuildSuccessful(
-            runId, repoId, projectId, repoName, branch, commitSha, null, phase, releaseRequestId,
-            finishedAt),
+            runId, retryOfRunId, repoId, projectId, repoName, branch, commitSha, null, phase,
+            releaseRequestId, finishedAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 
   @Override
   public void onRunFailed(
       String runId,
+      String retryOfRunId,
       String repoId,
       String projectId,
       String repoName,
@@ -110,8 +112,8 @@ public class BuildAnnouncer implements RunAnnouncer {
       String triggerEventId) {
     bus.publish(
         new BuildFailed(
-            runId, repoId, projectId, repoName, branch, commitSha, phase, releaseRequestId, outcome,
-            finishedAt),
+            runId, retryOfRunId, repoId, projectId, repoName, branch, commitSha, phase,
+            releaseRequestId, outcome, finishedAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 

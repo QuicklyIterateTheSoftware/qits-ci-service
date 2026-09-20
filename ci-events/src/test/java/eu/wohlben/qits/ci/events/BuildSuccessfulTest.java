@@ -28,7 +28,7 @@ class BuildSuccessfulTest {
 
   private static BuildSuccessful anEvent() {
     return new BuildSuccessful(
-        "run-1", "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", "sha256:deadbeef", null,
+        "run-1", null, "repo-uuid", "qits", "qits-ci", "main", "0123456789abcdef", "sha256:deadbeef", null,
         null, FINISHED);
   }
 
@@ -95,7 +95,7 @@ class BuildSuccessfulTest {
   void aPipelineThatPublishedNoImageOmitsTheDigestRatherThanNullingIt() {
     BuildSuccessful noImage =
         new BuildSuccessful(
-            "run-2", "qits-ci", "qits", "qits-ci", "main", "0123456789abcdef", null, null, null,
+            "run-2", null, "qits-ci", "qits", "qits-ci", "main", "0123456789abcdef", null, null, null,
             FINISHED);
 
     String payload = CanonicalJson.payload(noImage);
@@ -123,7 +123,7 @@ class BuildSuccessfulTest {
     // existed.
     BuildSuccessful idOnly =
         new BuildSuccessful(
-            "run-3", "qits-ci", null, null, "main", "0123456789abcdef", null, null, null,
+            "run-3", null, "qits-ci", null, null, "main", "0123456789abcdef", null, null, null,
             FINISHED);
 
     String payload = CanonicalJson.payload(idOnly);
@@ -147,7 +147,7 @@ class BuildSuccessfulTest {
 
     BuildSuccessful bare =
         new BuildSuccessful(
-            "run-4", "qits-ci", null, null, "main", "0123456789abcdef", null, null, null, FINISHED);
+            "run-4", null, "qits-ci", null, null, "main", "0123456789abcdef", null, null, null, FINISHED);
     assertEquals(
         "{\"branch\":\"main\",\"commitSha\":\"0123456789abcdef\","
             + "\"finishedAt\":\"2026-07-31T12:46:03Z\","
@@ -169,7 +169,7 @@ class BuildSuccessfulTest {
 
     BuildSuccessful qa =
         new BuildSuccessful(
-            "run-5", "qits-ci", null, null, "release/rr-1", "0123456789abcdef", null,
+            "run-5", null, "qits-ci", null, null, "release/rr-1", "0123456789abcdef", null,
             "RELEASE_REQUEST", "rr-1", FINISHED);
     assertEquals(
         "{\"branch\":\"release/rr-1\",\"commitSha\":\"0123456789abcdef\","
@@ -192,7 +192,7 @@ class BuildSuccessfulTest {
     String release =
         CanonicalJson.payload(
             new BuildSuccessful(
-                "run-6", "qits-ci", null, null, "2026.916.101112", "0123456789abcdef", null,
+                "run-6", null, "qits-ci", null, null, "2026.916.101112", "0123456789abcdef", null,
                 "RELEASE", "rr-1", FINISHED));
     assertTrue(release.contains("\"phase\":\"RELEASE\""), release);
     assertTrue(release.contains("\"releaseRequestId\":\"rr-1\""), release);
@@ -208,7 +208,7 @@ class BuildSuccessfulTest {
     // were components at all, because CanonicalJson omits a null rather than writing one.
     BuildSuccessful ordinary =
         new BuildSuccessful(
-            "run-7", "qits-ci", null, null, "main", "0123456789abcdef", null, null, null,
+            "run-7", null, "qits-ci", null, null, "main", "0123456789abcdef", null, null, null,
             FINISHED);
 
     assertEquals(
@@ -219,6 +219,25 @@ class BuildSuccessfulTest {
   }
 
   @Test
+  void anOrdinaryRunOmitsTheRetryLineageAndARetryNamesTheRunItReFires() {
+    // The component a consumer supersedes a verdict by. Null is the ordinary value — nearly every
+    // run is not a retry — so an ordinary green build's payload is byte-identical to what it was
+    // before the component existed, and a re-fire carries the earlier run's id beside its own.
+    assertFalse(CanonicalJson.payload(anEvent()).contains("retryOfRunId"));
+
+    BuildSuccessful retry =
+        new BuildSuccessful(
+            "run-8", "run-7", "qits-ci", null, null, "release/rr-1", "0123456789abcdef", null,
+            "RELEASE_REQUEST", "rr-1", FINISHED);
+    assertEquals(
+        "{\"branch\":\"release/rr-1\",\"commitSha\":\"0123456789abcdef\","
+            + "\"finishedAt\":\"2026-07-31T12:46:03Z\",\"phase\":\"RELEASE_REQUEST\","
+            + "\"releaseRequestId\":\"rr-1\",\"repoId\":\"qits-ci\","
+            + "\"retryOfRunId\":\"run-7\",\"runId\":\"run-8\"}",
+        CanonicalJson.payload(retry));
+  }
+
+  @Test
   void aSubscriberReadsThePayloadBackIntoTheEvent() {
     BuildSuccessful published = anEvent();
 
@@ -226,6 +245,7 @@ class BuildSuccessfulTest {
         CanonicalJson.payloadTo(CanonicalJson.payload(published), BuildSuccessful.class);
 
     assertEquals(published.runId(), received.runId());
+    assertEquals(published.retryOfRunId(), received.retryOfRunId());
     assertEquals(published.repoId(), received.repoId());
     assertEquals(published.projectId(), received.projectId());
     assertEquals(published.repoName(), received.repoName());

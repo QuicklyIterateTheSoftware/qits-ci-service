@@ -18,6 +18,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
 
   public record Announced(
       String runId,
+      String retryOfRunId,
       String repoId,
       String projectId,
       String repoName,
@@ -30,6 +31,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
 
   public record AnnouncedFailure(
       String runId,
+      String retryOfRunId,
       String repoId,
       String projectId,
       String repoName,
@@ -113,6 +115,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
   @Override
   public void onRunSucceeded(
       String runId,
+      String retryOfRunId,
       String repoId,
       String projectId,
       String repoName,
@@ -125,6 +128,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
     announced.add(
         new Announced(
             runId,
+            retryOfRunId,
             repoId,
             projectId,
             repoName,
@@ -139,6 +143,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
   @Override
   public void onRunFailed(
       String runId,
+      String retryOfRunId,
       String repoId,
       String projectId,
       String repoName,
@@ -152,6 +157,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
     failed.add(
         new AnnouncedFailure(
             runId,
+            retryOfRunId,
             repoId,
             projectId,
             repoName,

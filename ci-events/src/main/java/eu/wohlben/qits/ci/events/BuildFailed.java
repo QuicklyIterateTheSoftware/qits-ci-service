@@ -33,6 +33,14 @@ import java.util.UUID;
  * payload when null, so such a build's bytes are identical to what they were before either component
  * existed.
  *
+ * <p><b>{@code retryOfRunId} is {@link BuildSuccessful}'s too, and it matters most here</b>: the id
+ * of the earlier run a {@code qits ci retry} re-asked the question of, null for every run that is
+ * not a retry, and carried so a consumer can <b>supersede the verdict that earlier run left</b>
+ * rather than stack a second one beside it. This is the event whose verdict usually needs
+ * superseding — a red run is what somebody retries — and a reader holding one verdict per run would
+ * otherwise keep the original's red forever, however green the re-fire came back. Null is omitted
+ * from the canonical payload, so an ordinary red build's bytes are what they always were.
+ *
  * <p><b>Carrying the request id does not make this a verdict about the release request.</b> A red P1
  * says this commit failed QA; what that is worth to the release is the release request's own
  * business in qits-projects. The id says which release the run belonged to, and nothing more.
@@ -40,6 +48,7 @@ import java.util.UUID;
 public record BuildFailed(
     UUID eventId,
     String runId,
+    String retryOfRunId,
     String repoId,
     String projectId,
     String repoName,
@@ -60,6 +69,7 @@ public record BuildFailed(
   /** The constructor a publisher uses: the facts, with the identity taken care of. */
   public BuildFailed(
       String runId,
+      String retryOfRunId,
       String repoId,
       String projectId,
       String repoName,
@@ -70,8 +80,8 @@ public record BuildFailed(
       String outcome,
       Instant finishedAt) {
     this(
-        null, runId, repoId, projectId, repoName, branch, commitSha, phase, releaseRequestId,
-        outcome, finishedAt);
+        null, runId, retryOfRunId, repoId, projectId, repoName, branch, commitSha, phase,
+        releaseRequestId, outcome, finishedAt);
   }
 
   @Override

@@ -62,7 +62,21 @@ public interface RunAnnouncer {
    * whenever the id is null, so no row can hold one without the other — and the published events say
    * so, which is what lets a consumer key a pipeline read model on the pair without a second lookup.
    *
-   * <p><b>What neither does is change what this announcement is.</b> A green run is still a
+   * <p><b>{@code retryOfRunId} is the run this one re-fires</b> — {@link
+   * eu.wohlben.qits.ci.entity.CiRun#retryOfRunId}, off the row, and <b>null for every run that is
+   * not a retry</b>, which is nearly all of them. It is the one piece of a retry's lineage that had
+   * nowhere else to travel: {@code triggerEventId} above is the synthetic local token a re-fire
+   * mints so the dedupe constraint can stay as it is, and the causation the bus stamps is the
+   * original run's inherited cause, so neither of them says which <em>run</em> was re-asked.
+   *
+   * <p>It rides so a consumer can <b>supersede the verdict the earlier run left</b> rather than
+   * stack a second one beside it. A retry is a second answer to one question, and a reader keeping
+   * one verdict per run — qits-projects' release gate, which reads any-red-wins over a fold — would
+   * otherwise hold the re-fire's green next to the original's red forever. Which is also the whole
+   * of qits-ci's part in it: the lineage is a fact only this service has, so this service states it,
+   * and what the far side does with it is the far side's business.
+   *
+   * <p><b>What none of them does is change what this announcement is.</b> A green run is still a
    * statement about a <em>commit</em>; the phase is an attribute of the run that made it and the
    * request id says which release the run belonged to, never a verdict about the release as a whole
    * — P1 going green says the fold passed QA, not that the release succeeded. A subscriber reading
@@ -85,6 +99,7 @@ public interface RunAnnouncer {
    */
   void onRunSucceeded(
       String runId,
+      String retryOfRunId,
       String repoId,
       String projectId,
       String repoName,
@@ -106,6 +121,7 @@ public interface RunAnnouncer {
    */
   void onRunFailed(
       String runId,
+      String retryOfRunId,
       String repoId,
       String projectId,
       String repoName,
