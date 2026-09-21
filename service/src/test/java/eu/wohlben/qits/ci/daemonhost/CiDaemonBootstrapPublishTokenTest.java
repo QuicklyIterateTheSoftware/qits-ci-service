@@ -52,6 +52,10 @@ public class CiDaemonBootstrapPublishTokenTest {
   private static final int TOKEN_SCRIPT_PATH_USES = 5;
   private static final String GIT_HELPER_PATH = "/tmp/qits-git-credential";
   private static final int GIT_HELPER_PATH_USES = 3;
+  /** Not this test's subject, but written under the same guard — so it moves out of /tmp too. */
+  private static final String SETTINGS_PATH = CiDaemonLauncher.DEPLOY_SETTINGS_FILE;
+
+  private static final int SETTINGS_PATH_USES = 2;
 
   private static final String CLIENT_ID = "run-client-1";
   private static final String CLIENT_SECRET = "run-s3cr3t-1";
@@ -203,7 +207,9 @@ public class CiDaemonBootstrapPublishTokenTest {
         TOKEN_SCRIPT_PATH_USES, occurrences(shipped, TOKEN_SCRIPT_PATH), TOKEN_SCRIPT_PATH + " moved");
     assertEquals(
         GIT_HELPER_PATH_USES, occurrences(shipped, GIT_HELPER_PATH), GIT_HELPER_PATH + " moved");
+    assertEquals(SETTINGS_PATH_USES, occurrences(shipped, SETTINGS_PATH), SETTINGS_PATH + " moved");
     return shipped
+        .replace(SETTINGS_PATH, work.resolve("qits-deploy-settings.xml").toString())
         .replace(TOKEN_SCRIPT_PATH, scriptPath().toString())
         .replace(GIT_HELPER_PATH, work.resolve("qits-git-credential").toString())
         .replace(DAEMON_PATH, work.resolve("qits-ci-daemon").toString());

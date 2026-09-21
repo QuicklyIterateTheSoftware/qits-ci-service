@@ -217,6 +217,22 @@ public class CiDaemonLauncher {
    * more thing to keep in step for no new fact, so the names stay historical and this paragraph is
    * the correction.
    *
+   * <p><b>It is also where every {@code mvn deploy} on the estate gets its credential, with no
+   * recipe change anywhere.</b> Beside the two handovers above it writes {@link
+   * #DEPLOY_SETTINGS_FILE} — a {@code <server id=qits>} whose {@code Authorization} header is this
+   * run's bearer, plus a re-declared {@code maven-default-http-blocker} mirror — and <em>appends</em>
+   * {@code -gs} for it to {@code MAVEN_ARGS}. The id is {@code qits} because that is what {@code
+   * -DaltDeploymentRepository="qits::default::…"} names, and it is an HTTP header rather than a
+   * {@code <username>}/{@code <password>} pair because Maven does not authenticate preemptively, so
+   * a password would never be sent. The blocker is re-declared because {@code -gs} <em>replaces</em>
+   * Maven's {@code conf/settings.xml}, whose only live element it is. Two facts measured on Maven
+   * 3.9.12: the merge with a {@code -s} user settings keeps both files' servers, and {@code
+   * MAVEN_ARGS} beats an explicit {@code -gs} on the command line — so this silently overrides the
+   * seven recipes that pass their own, which is accepted because both carry a valid credential and
+   * every maven-deploy step is capped at 1800s against a 3600s TTL. A mint that failed writes no
+   * file and leaves {@code MAVEN_ARGS} untouched, so a deploy runs exactly as it does today rather
+   * than with an empty {@code Bearer }.
+   *
    * <p>{@code exec} rather than a plain call, so the daemon is PID 1 and the removal signals the
    * process that owns the step rather than a shell wrapping it.
    *
@@ -324,8 +340,62 @@ public class CiDaemonLauncher {
         # command is still there to be run. The value is never echoed — it is a secret.
         if QITS_PUBLISH_TOKEN=$(/tmp/qits-publish-token); then
           export QITS_PUBLISH_TOKEN
+          # AND THE SAME TOKEN AS MAVEN'S CREDENTIAL FOR THE ARTIFACTS STORE, so that every
+          # `mvn deploy` in every step authenticates without one recipe changing. The deployment
+          # repository id is `qits` — what -DaltDeploymentRepository="qits::default::..." names —
+          # and no .qits-maven-settings.xml on this estate declares a <server> with that id. It has
+          # to be an Authorization HTTP header rather than a <username>/<password> pair, because
+          # maven does not authenticate preemptively: a password would simply never be sent.
+          #
+          # THE BLOCKER IS RE-DECLARED ON PURPOSE. -gs REPLACES maven's conf/settings.xml, whose
+          # only live element is the maven-default-http-blocker mirror. Omitting it here would
+          # silently remove the block on plain-http external repositories for every maven run in
+          # the step, which is a security regression handed out estate-wide.
+          #
+          # MAVEN_ARGS IS APPENDED TO, NEVER ASSIGNED: a step image may already set it, and
+          # clobbering it would break that image's builds.
+          #
+          # MEASURED ON MAVEN 3.9.12 (the version every wrapper here pins):
+          #   - MAVEN_ARGS="-gs A" together with an explicit -s user.xml yields effective settings
+          #     carrying BOTH files' servers. The merge works.
+          #   - MAVEN_ARGS BEATS THE COMMAND LINE: with MAVEN_ARGS="-gs A" and an explicit -gs B
+          #     on the command line, the effective settings carried A. So this injection silently
+          #     overrides the seven recipes that mint a token and pass their own -gs. That is
+          #     ACCEPTED: both paths carry a valid credential for the same store. Theirs is minted
+          #     at the call site, this one at container start, and every maven-deploy step on the
+          #     estate is capped at timeout-seconds: 1800 against an idp TTL of 3600 — so the
+          #     ambient token has at least 1800s of headroom whenever a step reaches its publish.
+          (umask 077; printf '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+          <servers>
+            <server>
+              <id>qits</id>
+              <configuration>
+                <httpHeaders>
+                  <property>
+                    <name>Authorization</name>
+                    <value>Bearer %s</value>
+                  </property>
+                </httpHeaders>
+              </configuration>
+            </server>
+          </servers>
+          <mirrors>
+            <mirror>
+              <id>maven-default-http-blocker</id>
+              <mirrorOf>external:http:*</mirrorOf>
+              <name>Pseudo repository to mirror external repositories initially using HTTP.</name>
+              <url>http://0.0.0.0/</url>
+              <blocked>true</blocked>
+            </mirror>
+          </mirrors>
+        </settings>
+        ' "$QITS_PUBLISH_TOKEN" > /tmp/qits-deploy-settings.xml)
+          MAVEN_ARGS="${MAVEN_ARGS:+$MAVEN_ARGS }-gs /tmp/qits-deploy-settings.xml"
+          export MAVEN_ARGS
         else
-          echo "qits-ci: no publish token at container start; a step may re-mint one with /tmp/qits-publish-token" >&2
+          # No file is written and MAVEN_ARGS is left alone, so a deploy runs exactly as it does
+          # today rather than against an empty `Bearer `. One line on stderr, never the token.
+          echo "qits-ci: no publish token at container start; a step may re-mint one with /tmp/qits-publish-token, and no maven deploy settings were written" >&2
         fi
       fi
       exec /tmp/qits-ci-daemon
@@ -358,6 +428,21 @@ public class CiDaemonLauncher {
    * {@code CiDaemonLauncherTest} asserts the two still agree.
    */
   static final String PUBLISH_TOKEN_COMMAND = "/tmp/qits-publish-token";
+
+  /**
+   * The maven global settings {@link #BOOTSTRAP} writes and appends to {@code MAVEN_ARGS}: one
+   * {@code <server id=qits>} carrying this run's token as an {@code Authorization} header, and the
+   * re-declared {@code maven-default-http-blocker} mirror that {@code -gs} would otherwise remove.
+   *
+   * <p>Under {@code /tmp} for {@link #REGISTRY_AUTH_DIR}'s reason — outside the checkout, so it is
+   * in no build context and confuses no {@code git status} — mode 0600, and gone with the
+   * container. Written only when the mint succeeded: no file at all is better than a file carrying
+   * an empty bearer, because the second would break a publish that works today.
+   *
+   * <p>The path is spelled here <em>and</em> typed into {@code BOOTSTRAP}, because that text
+   * interpolates nothing at all; this constant is what a caller and a test may name.
+   */
+  static final String DEPLOY_SETTINGS_FILE = "/tmp/qits-deploy-settings.xml";
 
   /**
    * The one client, produced by {@code containers/ContainersClientProducer}. Every call it makes is
