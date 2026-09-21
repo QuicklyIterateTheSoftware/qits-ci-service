@@ -440,6 +440,7 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
             + "\",\"mergedSha\":\""
             + MERGED
             + "\"}",
-        QA_TRIGGER);
+        QA_TRIGGER,
+        null);
   }
 }

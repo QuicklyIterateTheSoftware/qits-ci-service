@@ -86,6 +86,12 @@ components:
           type: string
         configPath:
           type: string
+        archetypeName:
+          type: string
+        archetypeConfigPath:
+          type: string
+        archetypeRev:
+          type: string
         priority:
           type: string
         expectedStepDurationsMillis:
@@ -761,4 +767,4 @@ paths:
         - qits:agent
 info:
   title: qits-ci API
-  version: 2026.919.82631
+  version: 2026.921.80307

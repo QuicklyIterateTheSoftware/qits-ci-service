@@ -106,6 +106,9 @@ public class MigrationChecksumTest {
     PINS.put(
         "V19__run_drop_gating.sql",
         "a7e59a1ffb694caa689cf67c08958a90f7709a12c6ef6ad45390faad21ee33dc");
+    PINS.put(
+        "V20__run_archetype.sql",
+        "459ac9444f4210e0f69d5836dde0d8de43ef82b878efd113dc5d349b23ad9d02");
   }
 
   @Test

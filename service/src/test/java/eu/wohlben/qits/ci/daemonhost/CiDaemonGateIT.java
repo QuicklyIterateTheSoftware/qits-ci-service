@@ -528,7 +528,8 @@ public class CiDaemonGateIT {
             EVENT_NAME,
             Instant.now(),
             "{}",
-            content));
+            content,
+            null));
   }
 
   // --- polling the read surface, which is the only way this test looks at anything ---------------

@@ -1206,10 +1206,22 @@ reparses the composed text off the row exactly as it reparses a committed file.
 
 **The archetype recipes live in the wrapper**, at
 `.config/qits/release-archetypes/<name>.yml` in the repository
-`qits.ci.platform-pipelines-repository` names, read at its `main` per evaluation through the same
-content route the platform pipelines use. So **a change to the release cycle is one wrapper commit**:
-no qits-ci deploy, no 47-repository sweep. A recipe is this same document minus `archetype:` —
+`qits.ci.platform-pipelines-repository` names, read through the same content route the platform
+pipelines use — **at the sha that repository's `main` resolved to for this evaluation**, not at the
+branch name. The wrapper's trigger listing is what resolves it, once per evaluation, so every
+repository composed in one pass sees one recipe and the run records which one. So **a change to the
+release cycle is still one wrapper commit**: no qits-ci deploy, no 47-repository sweep, effective on
+the next event, which resolves the head again. A recipe is this same document minus `archetype:` —
 recipes do not chain.
+
+**A wrapper that cannot be listed composes nothing.** There is then no sha to read a recipe at, and
+qits-ci does not fall back to `main` — a repository naming an archetype gets no release run and the
+triggering event is left owed for the sweep, exactly as it is when the recipe file itself cannot be
+read. The run row records what was used: `archetypeName`, `archetypeConfigPath` and `archetypeRev`
+on `GET /ci/api/runs/{runId}`, all three null on a run composed from no recipe — a committed
+`ci-event-*.yml`, a platform pipeline, or a `release.yml` that names no `archetype:`. A **retry**
+records its own re-composition rather than the source run's, so two rows at one `commitSha` with
+different `archetypeRev`s are the record of a platform fix landing between them.
 
 **A repository slot replaces the archetype's entirely.** Whole slot, never per-step merging: a merge
 order is a thing nobody can read off a file. Parameterisation is environment only.

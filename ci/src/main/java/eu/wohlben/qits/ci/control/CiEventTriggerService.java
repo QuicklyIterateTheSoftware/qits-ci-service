@@ -110,7 +110,11 @@ import org.jboss.logging.Logger;
  * recorded its runs a no-op. That constraint is what lets this ledger be at-least-once.
  *
  * <p><b>Two outcomes leave a row owed: a throw, and a release evaluation that could not read a
- * candidate's slot file.</b> Everything else settles when the evaluation returns — including an
+ * candidate's release pipeline.</b> The second covers both halves of that pipeline — the
+ * repository's {@code .config/qits/release.yml} coming back {@code UNREACHABLE}, and the wrapper
+ * repository's own trigger listing failing, which leaves no revision to read an archetype recipe at.
+ * They are one case because they are one sentence: nothing was learned, so nothing about this
+ * repository's release cycle is known. Everything else settles when the evaluation returns — including an
  * evaluation that reached no readable repository at all, which is the git host's answer about every
  * candidate rather than about one, behaves exactly as a live frame's does, and would otherwise keep
  * rows for a platform that simply has no candidates yet.
@@ -153,6 +157,16 @@ public class CiEventTriggerService {
    * at the event's commit"): discovery, parsing and selection read this branch's head, so a pushed
    * branch cannot alter the CI that gates it; only the recorded run's branch/sha come from the
    * payload.
+   *
+   * <p><b>It is a branch name only where a head has to be RESOLVED, and the wrapper half now follows
+   * that same discipline.</b> Both listings — a candidate's own trigger files and the platform
+   * repository's — are made at this branch and answer the sha they resolved; everything read
+   * afterwards is read at that sha. The repository half has always worked that way ({@code
+   * release.yml} at {@code lookup.headSha()}), and the wrapper's archetype recipes used to be the
+   * exception: they were read at the literal string, once per candidate, so a push to the wrapper
+   * mid-evaluation could compose two repositories of one archetype from two different recipes and
+   * nothing anywhere recorded which. They are read at {@code ArchetypeReads.rev()} now — the sha
+   * the wrapper's own listing resolved this branch to, once for the whole evaluation.
    */
   public static final String TRIGGER_BRANCH = "main";
 
@@ -547,10 +561,15 @@ public class CiEventTriggerService {
     // against the repository the payload names, at the commit that repository's main was on for THIS
     // evaluation. Reading it again would be a second read of a branch that may have moved.
     Map<String, String> heads = new HashMap<>();
-    // Resolved once for the whole evaluation and used twice: the platform pass reads its trigger
-    // files out of it, and a candidate's release.yml reads its archetype recipe out of it. One
-    // catalogue lookup, no extra listing.
-    CiRepoRef platformRepo = platformRepo(candidates);
+    // Resolved AND LISTED once for the whole evaluation, and used twice: the platform pass reads its
+    // trigger files out of this listing, and a candidate's release.yml reads its archetype recipe at
+    // the sha this listing resolved. One catalogue lookup, one listing, no second read.
+    //
+    // Unconditional, including when projectScope narrows the evaluation and no platform pass will
+    // run at all: a project-scoped evaluation composes release pipelines like any other, and those
+    // need the wrapper's sha. The listing is where the sha comes from, so skipping it here would
+    // leave a scoped evaluation with no rev and — under the fail-closed rule — no release run.
+    ArchetypeReads wrapper = readWrapper(candidates);
     for (CiRepoRef repo : candidates) {
       if (deadlineNanos != null && System.nanoTime() - deadlineNanos >= 0) {
         // Out of time rather than out of answers, and the two must not look alike to the caller —
@@ -559,7 +578,7 @@ public class CiEventTriggerService {
         continue;
       }
       try {
-        if (!evaluateRepo(repo, arrival, payload, runIds, heads, platformRepo, unreadable)) {
+        if (!evaluateRepo(repo, arrival, payload, runIds, heads, wrapper, unreadable)) {
           skipped.add(repo.repoId());
         }
       } catch (RuntimeException e) {
@@ -571,7 +590,7 @@ public class CiEventTriggerService {
     }
     if (projectScope == null) {
       try {
-        evaluatePlatform(arrival, payload, candidates, platformRepo, heads, runIds);
+        evaluatePlatform(arrival, payload, candidates, wrapper, heads, runIds);
       } catch (RuntimeException e) {
         // Never out of the evaluation: the candidates' own runs are already recorded and a platform
         // pipeline's failure is not theirs.
@@ -637,7 +656,7 @@ public class CiEventTriggerService {
       JsonNode payload,
       List<String> runIds,
       Map<String, String> heads,
-      CiRepoRef platformRepo,
+      ArchetypeReads wrapper,
       List<String> unreadable) {
     String repoId = repo.display();
     EventTriggerLookup lookup =
@@ -649,9 +668,12 @@ public class CiEventTriggerService {
       return false;
     }
     heads.put(repo.repoId(), lookup.headSha());
-    ReleaseSlots slots = releaseSlots(repo, repoId, arrival, lookup.headSha(), platformRepo);
+    ReleaseSlots slots = releaseSlots(repo, repoId, arrival, lookup.headSha(), wrapper);
     for (EventTriggerFile file : lookup.files()) {
-      evaluateTrigger(repo, repoId, file.path(), file.content(), arrival, payload, lookup, runIds);
+      // A committed trigger file has no archetype: its bytes are the repository's own word about its
+      // own pipeline, with no platform share in them to record the provenance of.
+      evaluateTrigger(
+          repo, repoId, file.path(), file.content(), arrival, payload, lookup, null, runIds);
     }
     if (slots.document() != null) {
       evaluateTrigger(
@@ -662,6 +684,7 @@ public class CiEventTriggerService {
           arrival,
           payload,
           lookup,
+          slots.archetype(),
           runIds);
     }
     if (slots.unreadable()) {
@@ -692,6 +715,7 @@ public class CiEventTriggerService {
       Arrival arrival,
       JsonNode payload,
       EventTriggerLookup lookup,
+      CiReleaseArchetypes.ArchetypeRef archetype,
       List<String> runIds) {
     EventTriggerFile file = new EventTriggerFile(configPath, content);
     {
@@ -798,7 +822,8 @@ public class CiEventTriggerService {
                   arrival.eventName(),
                   arrival.occurredAt(),
                   arrival.payload(),
-                  file.content()));
+                  file.content(),
+                  archetype));
       if (runId != null) {
         runIds.add(runId);
       }
@@ -820,14 +845,18 @@ public class CiEventTriggerService {
    * @param unreadable the read came back {@code UNREACHABLE}. Nothing is known about this
    *     repository's release cycle, so the evaluation is incomplete and the event stays owed
    * @param document the composed trigger document for this event, or null when there is none to run
+   * @param archetype which wrapper recipe the document was composed from, at which revision — null
+   *     when there is no document, and equally null when the slot file names no archetype at all,
+   *     which four repositories on the estate do today
    */
-  private record ReleaseSlots(boolean unreadable, String document) {
+  private record ReleaseSlots(
+      boolean unreadable, String document, CiReleaseArchetypes.ArchetypeRef archetype) {
 
     /**
      * Not a release event, or the repository commits no slot file: nothing composes, and that is
      * final.
      */
-    static final ReleaseSlots NONE = new ReleaseSlots(false, null);
+    static final ReleaseSlots NONE = new ReleaseSlots(false, null, null);
 
     /**
      * The file is there and composes no run for this event — a declaration, and equally final.
@@ -839,10 +868,10 @@ public class CiEventTriggerService {
      * one repository, and a reader of {@link #releaseSlots} should be able to tell "declares
      * nothing" from "declares nothing for THIS event" without counting nulls.
      */
-    static final ReleaseSlots NO_RUN = new ReleaseSlots(false, null);
+    static final ReleaseSlots NO_RUN = new ReleaseSlots(false, null, null);
 
     /** The question could not be asked. The only answer a later sweep can improve on. */
-    static final ReleaseSlots UNREADABLE = new ReleaseSlots(true, null);
+    static final ReleaseSlots UNREADABLE = new ReleaseSlots(true, null, null);
   }
 
   /**
@@ -869,7 +898,7 @@ public class CiEventTriggerService {
    * stays owed, and a sweep asks again.
    */
   private ReleaseSlots releaseSlots(
-      CiRepoRef repo, String repoId, Arrival arrival, String headSha, CiRepoRef platformRepo) {
+      CiRepoRef repo, String repoId, Arrival arrival, String headSha, ArchetypeReads wrapper) {
     if (!RELEASE_EVENTS.contains(arrival.eventName())) {
       return ReleaseSlots.NONE;
     }
@@ -885,30 +914,27 @@ public class CiEventTriggerService {
     if (found.status() != CiConfigSource.FileLookup.Status.FOUND) {
       return ReleaseSlots.NONE;
     }
-    CiReleaseComposer.Composed composed =
-        compose(repo, repoId, found.content(), platformRepo, "no release run");
-    return composed == null
+    ComposeAttempt attempt =
+        attemptCompose(repo, repoId, found.content(), wrapper, "no release run");
+    if (attempt.outcome() == ComposeOutcome.ARCHETYPE_UNREADABLE && wrapper.unlistable()) {
+      // THE WRAPPER COULD NOT BE READ AT ALL, which is a verdict about nothing — the {@code
+      // UNREACHABLE} slot file's case one repository over. Every other ARCHETYPE_UNREADABLE is
+      // committed content (the slot file names a recipe the wrapper does not carry, or carries a
+      // broken one) and is final and settled; this one is a git host that did not answer, so the
+      // evaluation is incomplete and the event stays owed for the sweep. Collapsing the two would
+      // hang a release request on a blip exactly as reading an UNREACHABLE release.yml as ABSENT
+      // used to.
+      return ReleaseSlots.UNREADABLE;
+    }
+    if (attempt.composed() == null) {
+      return ReleaseSlots.NO_RUN;
+    }
+    String document = documentFor(attempt.composed(), arrival.eventName());
+    // No document is no run, and a run that does not exist records no archetype: the identity is
+    // carried only where there is a row to carry it onto.
+    return document == null
         ? ReleaseSlots.NO_RUN
-        : new ReleaseSlots(false, documentFor(composed, arrival.eventName()));
-  }
-
-  /**
-   * Parses one repository's slot file, reads whatever archetype it names at the wrapper's {@code
-   * main}, and compiles the pair — or answers null, having already said which of the three ways it
-   * failed.
-   *
-   * <p><b>The consequence is the caller's to state and travels in as a word</b>, because the two
-   * callers do different things with a null: an evaluation records no run at all, while a retry
-   * replays the pipeline stored on the run it re-fires. A shared WARN that named only one of them
-   * would be a log line that is wrong half the time.
-   */
-  private CiReleaseComposer.Composed compose(
-      CiRepoRef repo,
-      String repoId,
-      String slotFile,
-      CiRepoRef platformRepo,
-      String consequence) {
-    return attemptCompose(repo, repoId, slotFile, platformRepo, consequence).composed();
+        : new ReleaseSlots(false, document, attempt.archetype());
   }
 
   /**
@@ -946,27 +972,51 @@ public class CiEventTriggerService {
    * table by coordinate — for exactly one reader, the composed-versus-committed read that retired
    * with the split release pipeline. Nothing else ever wanted it: a composed {@code artifacts:}
    * block is what the run really declares, and that travels on the document.
+   *
+   * <p><b>{@code archetype} is what the composition really used, and it is what a run records.</b>
+   * Null on every failure — nothing was composed, so nothing was used — and <b>also null on a
+   * successful composition whose slot file names no {@code archetype:} at all</b>, which is a
+   * legitimate shape rather than a gap: four repositories on the estate declare both their slots
+   * themselves today. A reader must not conflate that null with "unknown"; the run either was
+   * composed from a recipe, in which case all three of the recipe's strings are there, or it was
+   * composed from the repository's own document alone.
    */
   public record ComposeAttempt(
-      ComposeOutcome outcome, CiReleaseComposer.Composed composed, String detail) {}
+      ComposeOutcome outcome,
+      CiReleaseComposer.Composed composed,
+      String detail,
+      CiReleaseArchetypes.ArchetypeRef archetype) {
+
+    /** One of the three failures: no pair, no archetype used, and the sentence behind it. */
+    static ComposeAttempt failed(ComposeOutcome outcome, String detail) {
+      return new ComposeAttempt(outcome, null, detail, null);
+    }
+  }
 
   /**
-   * Parses one repository's slot file, reads whatever archetype it names at the wrapper's {@code
-   * main}, and compiles the pair — saying which of the three ways it failed rather than only that it
-   * did.
+   * Parses one repository's slot file, reads whatever archetype it names <b>at the wrapper's
+   * resolved sha</b>, and compiles the pair — saying which of the three ways it failed rather than
+   * only that it did, and which recipe it used when it did not fail.
    *
-   * <p><b>Extracted from {@link #compose} rather than copied.</b> The two evaluation callers want a
-   * null and a WARN; the release-phase read wants the distinction, because "this repository's
-   * pipeline is broken" and "qits-ci could not read the wrapper" are opposite answers there — one is
-   * a pipeline somebody must fix, the other is a question this instance could not ask at all. A
-   * second copy of the parse/read/compile sequence would be a second place for the archetype branch
-   * to drift.
+   * <p><b>Extracted rather than copied.</b> The two evaluation callers want a null and a WARN; the
+   * release-phase read wants the distinction, because "this repository's pipeline is broken" and
+   * "qits-ci could not read the wrapper" are opposite answers there — one is a pipeline somebody
+   * must fix, the other is a question this instance could not ask at all. A second copy of the
+   * parse/read/compile sequence would be a second place for the archetype branch to drift.
+   *
+   * <p><b>No wrapper sha is {@link ComposeOutcome#ARCHETYPE_UNREADABLE}, and there is deliberately
+   * no fallback.</b> A wrapper whose listing did not answer has no head this evaluation can name, so
+   * a repository that asks for a recipe gets the same outcome it gets when the recipe file itself
+   * cannot be read: no run, and — on the evaluation path — an event left owed for the sweep. The
+   * tempting alternative is to read at {@link #TRIGGER_BRANCH} instead, which is exactly the moving
+   * ref this arrangement removes: it would reintroduce it silently, only under a flaky git host, and
+   * only for the repositories whose composition mattered most.
    */
   private ComposeAttempt attemptCompose(
       CiRepoRef repo,
       String repoId,
       String slotFile,
-      CiRepoRef platformRepo,
+      ArchetypeReads wrapper,
       String consequence) {
     CiReleaseSlots slots;
     try {
@@ -975,41 +1025,66 @@ public class CiEventTriggerService {
       LOG.warnf(
           "%s: %s is not a usable release slot file: %s — %s",
           repoId, CiReleaseSlotParser.CONFIG_PATH, e.getMessage(), consequence);
-      return new ComposeAttempt(
+      return ComposeAttempt.failed(
           ComposeOutcome.UNPARSEABLE,
-          null,
           CiReleaseSlotParser.CONFIG_PATH + " is not a usable release slot file: " + e.getMessage());
     }
-    CiReleaseSlots archetype = null;
+    CiReleaseSlots archetypeSlots = null;
+    CiReleaseArchetypes.ArchetypeRef used = null;
     if (slots.namesArchetype()) {
-      Optional<CiReleaseArchetypes.Archetype> recipe =
-          archetypes.read(platformRepo, TRIGGER_BRANCH, slots.archetype());
+      if (wrapper.repo() != null && wrapper.rev() == null) {
+        // FAIL CLOSED. There is a wrapper and its listing did not answer, so no sha exists to read
+        // the recipe at. Reading at the branch name would compose from whatever main happens to be
+        // when the read lands, which is the thing this whole path stopped doing.
+        LOG.warnf(
+            "%s: %s names release archetype '%s', but %s@%s could not be listed, so there is no"
+                + " revision to read the recipe at — %s",
+            repoId,
+            CiReleaseSlotParser.CONFIG_PATH,
+            slots.archetype(),
+            wrapper.repo().display(),
+            TRIGGER_BRANCH,
+            consequence);
+        return ComposeAttempt.failed(
+            ComposeOutcome.ARCHETYPE_UNREADABLE,
+            CiReleaseSlotParser.CONFIG_PATH
+                + " names release archetype '"
+                + slots.archetype()
+                + "', and the platform-pipelines repository could not be read at all, so there is no"
+                + " revision to read that recipe at");
+      }
+      // A null wrapper repository falls through here on purpose: CiReleaseArchetypes.read already
+      // owns that case — "this deployment has no platform-pipelines repository" — and never touches
+      // the rev to say it.
+      Optional<CiReleaseArchetypes.Archetype> recipe = wrapper.read(slots.archetype());
       if (recipe.isEmpty()) {
         // CiReleaseArchetypes has already said which of the four ways it failed; this line is what
         // names the repository that asked, which that class deliberately does not hold.
         LOG.warnf(
             "%s: %s names release archetype '%s', which could not be read — %s",
             repoId, CiReleaseSlotParser.CONFIG_PATH, slots.archetype(), consequence);
-        return new ComposeAttempt(
+        return ComposeAttempt.failed(
             ComposeOutcome.ARCHETYPE_UNREADABLE,
-            null,
             CiReleaseSlotParser.CONFIG_PATH
                 + " names release archetype '"
                 + slots.archetype()
                 + "', which could not be read from the platform-pipelines repository");
       }
-      archetype = recipe.get().slots();
+      archetypeSlots = recipe.get().slots();
+      used = recipe.get().ref();
     }
     try {
       return new ComposeAttempt(
-          ComposeOutcome.COMPOSED, CiReleaseComposer.compose(repo, slots, archetype), null);
+          ComposeOutcome.COMPOSED,
+          CiReleaseComposer.compose(repo, slots, archetypeSlots),
+          null,
+          used);
     } catch (CiConfigException e) {
       LOG.warnf(
           "%s: %s could not be composed into a release pipeline: %s — %s",
           repoId, CiReleaseSlotParser.CONFIG_PATH, e.getMessage(), consequence);
-      return new ComposeAttempt(
+      return ComposeAttempt.failed(
           ComposeOutcome.UNCOMPOSABLE,
-          null,
           CiReleaseSlotParser.CONFIG_PATH
               + " could not be composed into a release pipeline: "
               + e.getMessage());
@@ -1048,11 +1123,19 @@ public class CiEventTriggerService {
    * all, since the run being re-fired is the one thing the caller definitely has. Each is a WARN
    * naming the reason, so a retry that quietly kept the old prelude is readable from the log.
    *
+   * <p><b>The wrapper's head is resolved AT RETRY TIME, and that is the point rather than an
+   * accident of where the code sits.</b> The repository's half is pinned to the commit the source
+   * run built; the platform's half is deliberately today's, so the recipe is read at whatever sha
+   * the wrapper's {@code main} names <em>now</em>. Pinning a retry to the source run's archetype
+   * revision would re-run the broken prelude and close exactly the loop this method exists to open.
+   * The two revisions on the two rows are therefore the answer to "did the recipe move", which is
+   * the reason they are recorded at all.
+   *
    * @param repo the repository the run was recorded against
    * @param rev the run's own commit — never a branch name, which moves
    * @param eventName the run's triggering event, which picks the QA half or the release half
    */
-  public String recomposedReleaseDocument(CiRepoRef repo, String rev, String eventName) {
+  public ComposedPipeline recomposedReleaseDocument(CiRepoRef repo, String rev, String eventName) {
     if (!RELEASE_EVENTS.contains(eventName)) {
       // A composed document exists only for the two release events; anything else on this path is a
       // row nobody composed, so there is nothing to re-derive.
@@ -1068,15 +1151,29 @@ public class CiEventTriggerService {
           repoId, CiReleaseSlotParser.CONFIG_PATH, rev, found.status());
       return null;
     }
-    CiReleaseComposer.Composed composed =
-        compose(
+    ComposeAttempt attempt =
+        attemptCompose(
             repo,
             repoId,
             found.content(),
-            platformRepo(candidateRepos.candidates()),
+            readWrapper(candidateRepos.candidates()),
             "this retry replays the pipeline stored on the run it re-fires");
-    return composed == null ? null : documentFor(composed, eventName);
+    if (attempt.composed() == null) {
+      return null;
+    }
+    String document = documentFor(attempt.composed(), eventName);
+    return document == null ? null : new ComposedPipeline(document, attempt.archetype());
   }
+
+  /**
+   * A composed trigger document and the recipe it came from — what a caller writing a run row needs,
+   * which is both halves rather than the text alone.
+   *
+   * <p>{@code archetype} is null when the slot file names none, and a caller records three nulls for
+   * such a run rather than treating the absence as a failure to look it up.
+   */
+  public record ComposedPipeline(
+      String document, CiReleaseArchetypes.ArchetypeRef archetype) {}
 
   /**
    * Whether a repository's composed release cycle has a <b>release phase</b> at one rev — three
@@ -1114,8 +1211,10 @@ public class CiEventTriggerService {
    *
    * <h2>Two things the answer is NOT about</h2>
    *
-   * <p><b>The repository's half is read at {@code rev}, the platform's at the wrapper's {@code
-   * main}</b> — {@link #recomposedReleaseDocument}'s split, for its reason. So this is an answer
+   * <p><b>The repository's half is read at {@code rev}, the platform's at the sha the wrapper's
+   * {@code main} resolves to when this read is made</b> — {@link #recomposedReleaseDocument}'s
+   * split, for its reason, and this door resolves that head itself with one listing of its own,
+   * since it is outside any evaluation. So this is an answer
    * about the pipeline <em>as it composes now</em>, not as it composed when the tag was cut: an
    * archetype that gains or loses its {@code release:} slot changes what this read says about a tag
    * whose own bytes never moved. That is the wanted direction, since the run that would satisfy the
@@ -1173,7 +1272,7 @@ public class CiEventTriggerService {
             repo,
             repoId,
             found.content(),
-            platformRepo(candidates),
+            readWrapper(candidates),
             "this release-phase read answers on which failure it was");
     return switch (attempt.outcome()) {
       case UNPARSEABLE, UNCOMPOSABLE ->
@@ -1236,6 +1335,95 @@ public class CiEventTriggerService {
     return configured.isEmpty() ? null : find(candidates, configured);
   }
 
+  /**
+   * <b>The wrapper half of one composition pass: which repository, at which sha, and what has
+   * already been read out of it.</b>
+   *
+   * <p>It exists so that the wrapper is resolved and listed <b>once</b> and then travels as one
+   * value. The alternative was a {@code CiRepoRef} and a {@code String rev} threaded side by side
+   * through five signatures, which is two things that must always agree and nothing to make them.
+   *
+   * <p><b>{@link #rev()} null is the fail-closed state and the whole of the discipline.</b> There is
+   * a sha only when the wrapper's own trigger listing came back {@code FOUND}; an {@code
+   * UNREACHABLE} one leaves no sha, and a caller that finds none must refuse to compose rather than
+   * fall back to the literal branch name. Falling back would silently reintroduce the moving ref
+   * this whole arrangement removes — and it would do so exactly when the git host is flaky, which is
+   * when two candidates are most likely to see two different recipes.
+   *
+   * <p><b>The memo is free and is the reason this is a class rather than a record.</b> Twenty
+   * repositories on {@code java-service} were twenty identical HTTP fetches of one file per
+   * evaluation. With a moving ref memoising them would have been a lie about what was read; with a
+   * resolved sha the bytes cannot change under it, so one read per {@code (wrapper, sha, name)} is
+   * the same answer by construction. It is scoped to one pass and thrown away with it — there is no
+   * cache here to invalidate, no clock and no bean.
+   */
+  private final class ArchetypeReads {
+
+    private final CiRepoRef platformRepo;
+
+    /** The wrapper's platform-scope trigger listing, or null when there is no wrapper to list. */
+    private final EventTriggerLookup listing;
+
+    private final Map<String, Optional<CiReleaseArchetypes.Archetype>> memo = new HashMap<>();
+
+    private ArchetypeReads(CiRepoRef platformRepo, EventTriggerLookup listing) {
+      this.platformRepo = platformRepo;
+      this.listing = listing;
+    }
+
+    CiRepoRef repo() {
+      return platformRepo;
+    }
+
+    EventTriggerLookup listing() {
+      return listing;
+    }
+
+    /** The sha {@link #TRIGGER_BRANCH} resolved to, or null when the wrapper could not be read. */
+    String rev() {
+      return listing == null || listing.status() != EventTriggerLookup.Status.FOUND
+          ? null
+          : listing.headSha();
+    }
+
+    /**
+     * There <b>is</b> a wrapper and it could not be read — the one state that is a statement about
+     * the git host rather than about anybody's committed bytes, and therefore the one an evaluation
+     * leaves its event owed for. No wrapper at all is not this: that is a deployment's own decision
+     * and is as final as a declaration.
+     */
+    boolean unlistable() {
+      return platformRepo != null && rev() == null;
+    }
+
+    /** One recipe, read at {@link #rev()} and remembered for the rest of this pass. */
+    Optional<CiReleaseArchetypes.Archetype> read(String name) {
+      return memo.computeIfAbsent(name, asked -> archetypes.read(platformRepo, rev(), asked));
+    }
+  }
+
+  /**
+   * Resolves the wrapper and lists it — <b>one</b> listing, which is the whole cost of this.
+   *
+   * <p>Factored out because three callers need a wrapper sha and none of them may invent one: the
+   * evaluation (which also uses the listing for its platform pass, so nothing is read twice), the
+   * retry's re-composition, and the release-phase read. The two outside the evaluation each pay
+   * their own listing, which is accepted: they are one operator or peer request each, not a fan-out.
+   *
+   * <p><b>A null platform repository lists nothing.</b> The feature is off, or this deployment's
+   * configured repository is not in the catalogue — either way there is nothing to ask, and {@code
+   * CiReleaseArchetypes.read} already says what a null wrapper means to a repository that asked for
+   * a recipe.
+   */
+  private ArchetypeReads readWrapper(List<CiRepoRef> candidates) {
+    CiRepoRef platformRepo = platformRepo(candidates);
+    return new ArchetypeReads(
+        platformRepo,
+        platformRepo == null
+            ? null
+            : configSource.readEventTriggers(platformRepo, TRIGGER_BRANCH, CiTriggerScope.PLATFORM));
+  }
+
   /** A checkout path resolved against the payload; null when the path leads nowhere or to blank. */
   private static String checkoutField(JsonNode payload, String path) {
     JsonNode node = CiEventSelectionEvaluator.resolve(payload, path);
@@ -1248,6 +1436,11 @@ public class CiEventTriggerService {
 
   /**
    * The platform pass: the files one configured repository declares for the whole catalogue.
+   *
+   * <p><b>The listing is handed in rather than made here</b>, because the same one resolves the sha
+   * every archetype read of this evaluation is made at — see {@code ArchetypeReads}. It used to be
+   * read at the top of this method, which is what made the wrapper's head a fact only the platform
+   * pass held and left the archetype reads with nothing but the branch name to go on.
    *
    * <p>Read at that repository's {@code main} head, parsed by the same parser and selected by the
    * same grammar as a repository's own trigger — but the run is recorded against, and cloned from,
@@ -1268,7 +1461,7 @@ public class CiEventTriggerService {
       Arrival arrival,
       JsonNode payload,
       List<CiRepoRef> candidates,
-      CiRepoRef platformRepo,
+      ArchetypeReads wrapper,
       Map<String, String> heads,
       List<String> runIds) {
     String configured = platformPipelinesRepository;
@@ -1276,7 +1469,7 @@ public class CiEventTriggerService {
       // Off, and off means no read at all.
       return;
     }
-    if (platformRepo == null) {
+    if (wrapper.repo() == null) {
       // WARN rather than DEBUG, unlike the per-candidate reads: this repository is named in this
       // deployment's own config, so a missing one is a misconfiguration that silently disables every
       // platform pipeline, and it can be acted on.
@@ -1286,8 +1479,7 @@ public class CiEventTriggerService {
           configured, arrival.eventId());
       return;
     }
-    EventTriggerLookup lookup =
-        configSource.readEventTriggers(platformRepo, TRIGGER_BRANCH, CiTriggerScope.PLATFORM);
+    EventTriggerLookup lookup = wrapper.listing();
     if (lookup.status() != EventTriggerLookup.Status.FOUND) {
       LOG.warnf(
           "Could not read %s@%s for platform triggers — no platform pipeline was evaluated for"
@@ -1366,7 +1558,10 @@ public class CiEventTriggerService {
                   arrival.eventName(),
                   arrival.occurredAt(),
                   arrival.payload(),
-                  file.content()));
+                  file.content(),
+                  // A platform pipeline is a committed file like a repository's own: no composition,
+                  // so no archetype to record.
+                  null));
       if (runId != null) {
         runIds.add(runId);
       }

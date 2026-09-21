@@ -1204,6 +1204,13 @@ public class CiRunService {
    * then record a sha it did not build. (The retired push path was the other shape: it named its own
    * commit and parsed the file on the run worker, which is why a broken config was a {@code
    * CONFIG_ERROR} row there and is a WARN with no row here.)
+   *
+   * <p><b>{@code archetype} is provenance rather than an input</b>: nothing here reads it to decide
+   * anything, it is recorded on the row and that is all. It is non-null only for a document {@code
+   * CiEventTriggerService} composed from a wrapper recipe — null for every committed trigger file,
+   * for every platform pipeline, and for a composed document whose slot file names no {@code
+   * archetype:}. It travels on this record rather than being looked up here because the engine has
+   * already read it and a second read would be a second answer.
    */
   public record EventRun(
       CiRepoRef repo,
@@ -1214,7 +1221,8 @@ public class CiRunService {
       String eventName,
       Instant occurredAt,
       String payload,
-      String triggerConfig) {}
+      String triggerConfig,
+      CiReleaseArchetypes.ArchetypeRef archetype) {}
 
   /**
    * The async entry the trigger engine calls. Like the intake's, the row is written before this
@@ -1269,7 +1277,11 @@ public class CiRunService {
         run.triggerEventName,
         run.triggerEventOccurredAt,
         run.triggerEventPayload,
-        run.triggerConfig);
+        run.triggerConfig,
+        // Off the row, like everything else here: a reconstruction re-reads nothing, and the
+        // recipe this run really used is already recorded.
+        new CiReleaseArchetypes.ArchetypeRef(
+            run.archetypeName, run.archetypeConfigPath, run.archetypeRev));
   }
 
   /**
@@ -2104,6 +2116,11 @@ public class CiRunService {
     run.triggerEventOccurredAt = request.occurredAt();
     run.triggerEventPayload = request.payload();
     run.triggerConfig = request.triggerConfig();
+    // Which wrapper recipe, at which wrapper commit, produced the platform half of that document —
+    // all three null for a committed file, which is what most runs are. Recorded and read by nothing
+    // in this service: it is what a person or a client compares between two runs to see whether the
+    // environment moved under them.
+    archetypeOnto(run, request.archetype());
     run.releaseRequestId = releaseRequestOf(request);
     // Which half of that release this is, read off the same gate that just read the id — see
     // phaseOf. Null whenever the id is null, which is every run that is no part of a release.
@@ -2854,14 +2871,15 @@ public class CiRunService {
       throw new ConflictException(
           "CI run " + runId + " has not finished (" + source.status + ") — nothing to retry yet");
     }
-    String pipeline = retriedPipeline(source);
+    RetriedPipeline pipeline = retriedPipeline(source);
     // Predicted rather than copied, unlike priority and the downstream closure beside it: those are
     // what the run is WORTH and a re-fire must be worth what it re-fires, while this is how long the
     // work TAKES and the honest answer is the one the history gives now. The source's own value may
     // be months old, and every run it has had since is evidence the source row cannot carry.
     // Predicted against the pipeline this retry will really run, since a re-composed document is
     // what its steps come out of.
-    String expected = predictedStepDurations(source.repoId, source.configPath, pipeline);
+    String expected =
+        predictedStepDurations(source.repoId, source.configPath, pipeline.document());
     CiRun retry =
         DbRetry.inNewTx(
             "run retry accept", () -> insertRetry(source.id, expected, pipeline), retryDeadline());
@@ -2999,26 +3017,50 @@ public class CiRunService {
    * and for a publish run that is a released tag, whose bytes cannot move under it. Reading at the
    * branch would compose a retry from a declaration the run never built.
    */
-  private String retriedPipeline(CiRun source) {
+  private RetriedPipeline retriedPipeline(CiRun source) {
     if (!CiReleaseSlotParser.CONFIG_PATH.equals(source.configPath)
         || source.commitSha == null
         || source.commitSha.isBlank()) {
-      return source.triggerConfig;
+      return storedPipelineOf(source);
     }
-    String recomposed =
+    CiEventTriggerService.ComposedPipeline recomposed =
         triggerService.recomposedReleaseDocument(
             repoOf(source), source.commitSha, source.triggerEventName);
     if (recomposed == null) {
-      return source.triggerConfig;
+      return storedPipelineOf(source);
     }
-    if (!recomposed.equals(source.triggerConfig)) {
+    if (!recomposed.document().equals(source.triggerConfig)) {
       // Worth one line at INFO: the retry is deliberately not the same bytes as the run it re-fires,
       // and that is the difference somebody comparing the two rows will otherwise have to guess at.
       LOG.infof(
           "Retry of run %s re-composes %s at %s — the platform prelude has moved since that run",
           source.id, source.configPath, source.commitSha);
     }
-    return recomposed;
+    return new RetriedPipeline(recomposed.document(), recomposed.archetype());
+  }
+
+  /**
+   * The document a retry will run and the recipe it came from — the two halves of what gets written
+   * onto the retry row, kept together so a caller cannot record one without the other.
+   */
+  private record RetriedPipeline(
+      String document, CiReleaseArchetypes.ArchetypeRef archetype) {}
+
+  /**
+   * The fallback: the pipeline stored on the run being re-fired, <b>with that run's own archetype
+   * values</b>.
+   *
+   * <p>This is the one arm where a retry copies rather than re-derives, and it is not an exception
+   * to the rule so much as the rule applied honestly: what the retry will actually execute is the
+   * source's stored bytes, so the recipe that produced those bytes is what the row must name. Naming
+   * today's wrapper commit here would claim a composition that never happened, and leaving all three
+   * null would lose the provenance the source row had.
+   */
+  private static RetriedPipeline storedPipelineOf(CiRun source) {
+    return new RetriedPipeline(
+        source.triggerConfig,
+        new CiReleaseArchetypes.ArchetypeRef(
+            source.archetypeName, source.archetypeConfigPath, source.archetypeRev));
   }
 
   /**
@@ -3035,10 +3077,11 @@ public class CiRunService {
    * concept (ticket 9441bc6e): every step gates, so a re-fire is worth exactly what the work is
    * worth, which is what every other column copied here already says.
    *
-   * @param pipeline the trigger document handed in by {@link #retriedPipeline}, computed outside
-   *     this transaction because it reads the git host
+   * @param pipeline the trigger document and its archetype provenance, handed in by {@link
+   *     #retriedPipeline} and computed outside this transaction because it reads the git host
    */
-  private CiRun insertRetry(String sourceRunId, String expectedStepDurations, String pipeline) {
+  private CiRun insertRetry(
+      String sourceRunId, String expectedStepDurations, RetriedPipeline pipeline) {
     CiRun source = runs.findById(sourceRunId);
     if (source == null) {
       return null;
@@ -3077,10 +3120,30 @@ public class CiRunService {
     retry.triggerEventName = source.triggerEventName;
     retry.triggerEventOccurredAt = source.triggerEventOccurredAt;
     retry.triggerEventPayload = source.triggerEventPayload;
-    retry.triggerConfig = pipeline;
+    retry.triggerConfig = pipeline.document();
+    // NOT copied from the source row, unlike almost everything above it, and that is what makes the
+    // two rows worth comparing: a retry re-composes the platform half with the wrapper as it is NOW,
+    // so a differing archetype_rev beside an identical commit_sha is the record of the recipe having
+    // moved. The one arm that does copy is the fallback to the stored document — see
+    // storedPipelineOf, where the source's values are what will really run.
+    archetypeOnto(retry, pipeline.archetype());
     runs.persist(retry);
     runs.flush();
     return retry;
+  }
+
+  /**
+   * Writes one composition's provenance onto a run row — all three columns or none of them.
+   *
+   * <p>One place rather than three assignments at each of the two insert sites, because the three
+   * columns are only meaningful together: a name with no rev says which recipe but not which version
+   * of it. A null reference writes three nulls, which is the ordinary case (every committed trigger
+   * file) and is a statement rather than a gap — see {@link CiRun#archetypeName}.
+   */
+  private static void archetypeOnto(CiRun run, CiReleaseArchetypes.ArchetypeRef archetype) {
+    run.archetypeName = archetype == null ? null : archetype.name();
+    run.archetypeConfigPath = archetype == null ? null : archetype.configPath();
+    run.archetypeRev = archetype == null ? null : archetype.rev();
   }
 
   private static String cancellationReason(String requestedReason) {

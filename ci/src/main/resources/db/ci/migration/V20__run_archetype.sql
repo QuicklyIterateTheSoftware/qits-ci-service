@@ -1,0 +1,46 @@
+-- Which release archetype recipe a composed run was built from, and WHICH REVISION of it.
+--
+-- A composed release pipeline is half the repository's and half the platform's. The repository's
+-- half is pinned by ci_run.commit_sha — the slot file is read at the commit the run builds — and
+-- the platform's half had no such pin at all: the archetype recipe
+-- (.config/qits/release-archetypes/<name>.yml in the wrapper repository) was read at the literal
+-- moving ref `main`, once per candidate, and nothing anywhere recorded which bytes came back. Two
+-- repositories on one archetype in one evaluation could be composed from two different recipes if
+-- somebody pushed to the wrapper in between, and a run that failed on the prelude could not be told
+-- apart from one that failed on the repository's own script by reading its row.
+--
+-- The read is now made at the sha the wrapper's own trigger listing resolved `main` to, once per
+-- evaluation, and these three columns are what says so on the row.
+--
+-- THREE COLUMNS AND NOT ONE. archetype_name is what release.yml asked for, archetype_config_path is
+-- the file that turned out to be, and archetype_rev is the wrapper commit whose bytes were used.
+-- The last is the one the feature is for; the first two are what makes a row readable without a
+-- lookup, and are cheap because they are short and null on most rows.
+--
+-- NULLABLE, NO DEFAULT, NO BACKFILL, part of no constraint and carrying no index — V8's shape an
+-- eighth time, and the "no backfill" half matters more here than usual. Null means three different
+-- things and none of them is a value that could be filled in: a run from a committed
+-- ci-event-*.yml or a platform pipeline was composed from no recipe at all; a composed run whose
+-- slot file names no `archetype:` declares both its slots itself (four repositories on the estate
+-- today, and a legitimate shape rather than a gap); and every row written before this migration
+-- genuinely does not know. A default would assert a recipe and a revision nobody can stand behind,
+-- which is worse than an absence that says so.
+--
+-- WIDTHS. archetype_name is 64 because the charset is already bounded at parse time by
+-- CiReleaseSlotParser.ARCHETYPE_NAME, "[a-z0-9][a-z0-9-]{0,63}", so the column cannot refuse a name
+-- the parser accepts. archetype_config_path is 512, ci_run.config_path's width, because it is the
+-- same kind of value — a path in a repository. archetype_rev is 64, ci_run.commit_sha's width,
+-- because it is the same kind of value again — a git sha.
+--
+-- A RETRY RECORDS ITS OWN COMPOSITION rather than copying the source row's, and that is what makes
+-- these columns worth having on a pair of rows: a retry deliberately re-composes the platform half
+-- with today's wrapper, so a differing archetype_rev beside an identical commit_sha is exactly the
+-- record of a platform fix healing an earlier failed release. The one arm that copies is a retry
+-- that fell back to the stored pipeline, since those are then the bytes that will really run.
+--
+-- MigrationChecksumTest pins the SHA-256 of this file, so editing it after it has shipped is a red
+-- build here rather than a refused boot in the deployment. Nothing earlier in the lineage is
+-- touched: V1's header is not annotated, for the reason V19's header spells out twice over.
+alter table ci_run add column archetype_name varchar(64);
+alter table ci_run add column archetype_config_path varchar(512);
+alter table ci_run add column archetype_rev varchar(64);

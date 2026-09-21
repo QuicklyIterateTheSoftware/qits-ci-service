@@ -312,4 +312,42 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
    */
   @Column(name = "config_path", nullable = false, length = 512)
   public String configPath;
+
+  /**
+   * Which release archetype recipe this run's pipeline was composed from, which file in the wrapper
+   * repository that recipe is, and <b>the revision it was read at</b> — or all three null.
+   *
+   * <p>They are three columns rather than one because they answer three different questions and two
+   * of them are asked separately: {@code archetypeName} is what the repository's {@code
+   * release.yml} asked for, {@code archetypeConfigPath} is where that turned out to live, and {@code
+   * archetypeRev} is the wrapper commit whose bytes were actually used. The last is the one the
+   * feature is for — the wrapper half of a composed pipeline is <em>environment</em>, moved by one
+   * commit for 47 repositories at once, and until this column existed no run recorded which version
+   * of that environment produced it.
+   *
+   * <p><b>All three null is the ordinary value and it means three different things, none of them
+   * "unknown for this run".</b> A run from a committed {@code ci-event-*.yml} or a platform pipeline
+   * was composed from nothing. A composed run whose slot file names no {@code archetype:} declares
+   * both its slots itself, which four repositories on the estate do today. And every row recorded
+   * before this migration genuinely does not know — which is exactly why there is no backfill: a
+   * default would assert a recipe and a revision that nobody can stand behind.
+   *
+   * <p><b>A retry records its OWN composition, never the source row's.</b> That is what makes
+   * comparing the two rows the answer to "did the recipe move between these two runs": a retry
+   * re-composes the platform half with today's wrapper on purpose (see {@code
+   * CiEventTriggerService#recomposedReleaseDocument}), so a differing {@code archetypeRev} beside an
+   * identical {@code commitSha} is the whole story of a platform fix healing an earlier failure. The
+   * one exception is a retry that fell back to the stored pipeline, which copies the source's three
+   * values because those are what will really run.
+   *
+   * <p>Part of no constraint and carrying no index: nothing looks a run up by any of them.
+   */
+  @Column(name = "archetype_name", length = 64)
+  public String archetypeName;
+
+  @Column(name = "archetype_config_path", length = 512)
+  public String archetypeConfigPath;
+
+  @Column(name = "archetype_rev", length = 64)
+  public String archetypeRev;
 }

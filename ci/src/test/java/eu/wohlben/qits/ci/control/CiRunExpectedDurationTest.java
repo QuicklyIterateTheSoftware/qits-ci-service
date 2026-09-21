@@ -208,7 +208,8 @@ public class CiRunExpectedDurationTest extends CiTestSupport {
                 request.eventName(),
                 request.occurredAt(),
                 request.payload(),
-                "steps: [ this is not a pipeline"));
+                "steps: [ this is not a pipeline",
+                null));
 
     assertNotNull(accepted, "the run is accepted whatever the prediction could not do");
     assertEquals(CiRunStatus.SUCCESS, accepted.status, "and it runs to its ordinary verdict");

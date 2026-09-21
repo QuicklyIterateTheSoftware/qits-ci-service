@@ -160,7 +160,8 @@ public class CiRunProgressSurfaceTest {
             EVENT_NAME,
             Instant.now(),
             "{}",
-            TRIGGER_FILE));
+            TRIGGER_FILE,
+            null));
   }
 
   private Map<String, Object> run(String runId) {

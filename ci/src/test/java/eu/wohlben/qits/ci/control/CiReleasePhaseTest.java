@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -29,6 +30,9 @@ public class CiReleasePhaseTest extends CiTestSupport {
 
   /** What the caller really sends: a released tag's ref, never a branch. */
   private static final String REV = "refs/tags/2026.916.114057";
+
+  /** The sha the wrapper's {@code main} resolves to when this door asks — never the branch name. */
+  private static final String WRAPPER_HEAD = "d".repeat(40);
 
   /** An archetype that publishes — a service's shape. */
   private static final String JAVA_SERVICE =
@@ -60,6 +64,10 @@ public class CiReleasePhaseTest extends CiTestSupport {
     wrapperId = "wrapper-" + UUID.randomUUID().toString().substring(0, 8);
     fakeCandidates.setRefs(
         CiRepoRef.of(repoId, "qits", "qits-target"), CiRepoRef.of(wrapperId, "qits", "qits-qits"));
+    // This door resolves the wrapper's head itself, with one listing of its own, and reads the
+    // recipe at whatever that answers. A fixture that never lists the wrapper leaves no revision to
+    // read at, which is the fail-closed case rather than the ordinary one.
+    fakeConfig.putTriggers(wrapperId, "main", CiTriggerScope.PLATFORM, WRAPPER_HEAD);
     engine.platformPipelinesRepository("qits-qits");
   }
 
@@ -73,7 +81,7 @@ public class CiReleasePhaseTest extends CiTestSupport {
   }
 
   private void seedArchetype(String name, String content) {
-    fakeConfig.putFile(wrapperId, "main", CiReleaseSlotParser.archetypePath(name), content);
+    fakeConfig.putFile(wrapperId, WRAPPER_HEAD, CiReleaseSlotParser.archetypePath(name), content);
   }
 
   private CiEventTriggerService.ReleasePhase phase() {
@@ -195,11 +203,15 @@ public class CiReleasePhaseTest extends CiTestSupport {
   }
 
   @Test
-  public void theSlotFileIsReadAtTheRevAndTheArchetypeAtTheWrappersMain() {
+  public void theSlotFileIsReadAtTheRevAndTheArchetypeAtTheWrappersResolvedHead() {
     // The split every composition on this service makes, asserted rather than argued: the
     // repository's half is the tag's immutable bytes, the platform's is today's recipe — so the
     // answer is about the pipeline as it composes NOW, which is how the run that would satisfy the
     // gate would be composed too.
+    //
+    // "Now" is a SHA and no longer the branch name. This door lists the wrapper itself and reads at
+    // what that listing resolved, which is the same discipline the repository half has always had;
+    // the absence assertion is what stands between that and a silent fall back to the moving ref.
     seedSlots("archetype: java-service\n");
     seedArchetype("java-service", JAVA_SERVICE);
 
@@ -211,7 +223,31 @@ public class CiReleasePhaseTest extends CiTestSupport {
         fakeConfig
             .fileReads()
             .contains(
-                wrapperId + "@main/" + CiReleaseSlotParser.archetypePath("java-service")),
+                wrapperId
+                    + "@"
+                    + WRAPPER_HEAD
+                    + "/"
+                    + CiReleaseSlotParser.archetypePath("java-service")),
         fakeConfig.fileReads().toString());
+    assertFalse(
+        fakeConfig
+            .fileReads()
+            .contains(wrapperId + "@main/" + CiReleaseSlotParser.archetypePath("java-service")),
+        fakeConfig.fileReads().toString());
+  }
+
+  @Test
+  public void aWrapperThatCannotBeListedIsUnknown() {
+    // Fail closed, and the same answer an unreadable recipe file gets: there is no revision to read
+    // the recipe at, so the question was not asked and the caller must retry rather than be told
+    // something about the repository. Reading at the literal branch name instead would answer
+    // confidently from whatever main happened to be, which is the moving ref this read left behind.
+    seedSlots("archetype: java-service\n");
+    seedArchetype("java-service", JAVA_SERVICE);
+    fakeConfig.putTriggersUnreachable(wrapperId, "main", CiTriggerScope.PLATFORM);
+
+    CiEventTriggerService.ReleasePhase answer = phase();
+    assertEquals(CiEventTriggerService.Verdict.UNKNOWN, answer.verdict());
+    assertTrue(answer.detail().contains("java-service"), answer.detail());
   }
 }

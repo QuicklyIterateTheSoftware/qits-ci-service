@@ -80,7 +80,9 @@ public abstract class CiTestSupport {
         TEST_EVENT_NAME,
         Instant.now(),
         "{}",
-        content);
+        content,
+        // No archetype: this is a committed trigger file, composed from nothing.
+        null);
   }
 
   /** Accept and run one pipeline synchronously, with no worker timing to wait out. */
