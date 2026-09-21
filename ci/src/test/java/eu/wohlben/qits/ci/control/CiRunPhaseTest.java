@@ -309,6 +309,40 @@ public class CiRunPhaseTest extends CiTestSupport {
   }
 
   @Test
+  public void theRerunDoorsVerdictNamesTheRunTheDoorChoseToReFire() throws Exception {
+    // The row carrying `retryOfRunId` is asserted one case up; this is the ANNOUNCEMENT, and the two
+    // are different claims. `qits ci retry` and this door are one code path today — the triple is
+    // resolved to a run and handed to `retry(...)` — so "the rerun door behaves identically" is
+    // argued rather than checked unless something on THIS side reads the verdict. The announce takes
+    // the field off the row it re-loads, which is exactly the seam a refactor moves silently: a
+    // `retry` that stopped copying the column, or an announcer that stopped reading it, leaves
+    // qits-projects recording the re-fire's red beside the original's red as two repositories
+    // failing, with every test of the by-id door still green.
+    //
+    // And the expectation is the run the DOOR resolved, never a run this test picked: asserting a
+    // hard-coded id would pass just as happily if the triple had re-fired somebody else's phase.
+    fakeRunner.script(0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
+    deliver(releaseRequest(REQUEST_ID, MERGED));
+    CiRun failed = runService.runsFor(repoId).get(0);
+    assertEquals(CiRunStatus.FAILED, failed.status);
+
+    CiRun refired =
+        runService.retryReleaseRequestPhase(repoId, REQUEST_ID, CiRunPhase.RELEASE_REQUEST);
+    runService.awaitIdle();
+    forgetLoadedEntities();
+
+    String chosen = runService.requireRun(refired.id).retryOfRunId;
+    assertEquals(failed.id, chosen, "the door re-fired the phase's own failed run");
+    assertEquals(
+        chosen,
+        failureFor(refired.id).retryOfRunId(),
+        "and the re-fire's red verdict says whose verdict it supersedes");
+    assertNull(
+        failureFor(failed.id).retryOfRunId(),
+        "while the run it re-fires supersedes nothing and carries nothing");
+  }
+
+  @Test
   public void aSucceededQaPhaseIsRefusedBecauseItsVerdictWasSpentOnTheTag() throws Exception {
     deliver(releaseRequest(REQUEST_ID, MERGED));
     assertEquals(CiRunStatus.SUCCESS, runService.runsFor(repoId).get(0).status);
@@ -368,6 +402,14 @@ public class CiRunPhaseTest extends CiTestSupport {
   }
 
   // --- fixture -------------------------------------------------------------------------------------
+
+  /** The {@code BuildFailed} announced for one run — {@code CiRunCancelAndRetryTest}'s helper. */
+  private FakeRunAnnouncer.AnnouncedFailure failureFor(String runId) {
+    return announcer.failed().stream()
+        .filter(failure -> failure.runId().equals(runId))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("no failure announced for run " + runId));
+  }
 
   private static CiRun newestOf(List<CiRun> runs, String configPath) {
     return runs.stream()
