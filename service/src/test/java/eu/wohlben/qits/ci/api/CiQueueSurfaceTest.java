@@ -498,7 +498,8 @@ public class CiQueueSurfaceTest {
             EVENT_NAME,
             Instant.now(),
             "{}",
-            TRIGGER_FILE));
+            TRIGGER_FILE,
+            null));
   }
 
   // ---------------------------------------------------------------------------------------------

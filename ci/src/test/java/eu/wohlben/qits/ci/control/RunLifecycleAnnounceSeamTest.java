@@ -280,6 +280,7 @@ public class RunLifecycleAnnounceSeamTest extends CiTestSupport {
         TAG_EVENT,
         Instant.now(),
         "{\"tagName\":\"" + tagName + "\"}",
-        content);
+        content,
+        null);
   }
 }

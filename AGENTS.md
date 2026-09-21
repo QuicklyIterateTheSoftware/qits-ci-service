@@ -1950,11 +1950,37 @@ phase.
 - **The extra read is gated on the two release event names.** `ReleaseRequestChanged` and
   `SCMRelease` and nothing else, so a `BuildSuccessful` costs precisely what it cost before this
   feature existed. `CiReleaseSlotTriggerTest` asserts the *absence* of the read for an ordinary event.
-- **The archetype repository is resolved ONCE per evaluation and handed down.** `CiEventTriggerService`
-  already resolves `qits.ci.platform-pipelines-repository` against the catalogue for the platform
-  pass; `CiReleaseArchetypes` takes the reference as an argument rather than injecting the key a
-  second time. A second injection point would be a second thing to arm in a test and a second thing
-  to keep in step.
+- **The archetype repository is resolved ONCE per evaluation, LISTED once, and handed down.**
+  `CiEventTriggerService` already resolves `qits.ci.platform-pipelines-repository` against the
+  catalogue for the platform pass; `CiReleaseArchetypes` takes the reference as an argument rather
+  than injecting the key a second time. A second injection point would be a second thing to arm in a
+  test and a second thing to keep in step.
+  <br>**The wrapper half follows the repository half's resolve-once discipline now, and it did not
+  until ticket qits-336.** A candidate's `release.yml` has always been read at the sha its own
+  trigger listing resolved; the archetype recipe was read at the literal string `main`, once per
+  candidate, so twenty repositories on `java-service` were twenty fetches of a moving ref and a push
+  to the wrapper mid-evaluation could compose two of them from two different recipes with nothing on
+  either row to say so. The platform listing — one per evaluation either way — is hoisted beside the
+  `platformRepo` resolution and its `headSha()` is what every archetype read of that evaluation uses.
+  It is hoisted **unconditionally**, including for a project-scoped evaluation that runs no platform
+  pass at all, because such an evaluation still composes release pipelines and still needs the sha.
+  `ArchetypeReads` is the one value that travels (repository, sha, and a per-evaluation memo of what
+  has been read — safe only because the sha is resolved, and worth having because of those twenty
+  identical fetches).
+  <br>**No sha is no run, and there is no fallback to `main`.** A wrapper listing that comes back
+  `UNREACHABLE` leaves nothing to read at, so a repository naming an archetype gets
+  `ARCHETYPE_UNREADABLE` — no release run, event left owed for the sweep — exactly as it does when
+  the recipe file itself cannot be read. Reading at the branch name instead would reintroduce the
+  moving ref silently, under a flaky git host, for the compositions that matter most.
+  `CiReleaseSlotTriggerTest` asserts the absence of any read at the literal `main`, which is the only
+  form that assertion can take: a silent fallback passes every other test in the suite.
+  <br>**`ci_run` records what was used** — `archetype_name`, `archetype_config_path` and
+  `archetype_rev` (`V20__run_archetype.sql`), nullable, no backfill. All three null is three
+  different legitimate statements and never "unknown for this run": a committed trigger file composed
+  from nothing, a slot file naming no `archetype:`, or a row older than the columns. **A retry
+  records its own re-composition rather than copying the source row's**, which is what makes the pair
+  of rows the answer to "did the recipe move" — the one arm that copies is a retry that fell back to
+  the stored document, since those bytes are what will really run.
 - **A composed document supersedes nothing, and the rule that said otherwise is gone.** While the
   fleet was migrating, a present `release.yml` skipped a still-committed
   `ci-event-release-request.yml`/`ci-event-release.yml` with a WARN naming both paths, so the two
@@ -2051,11 +2077,12 @@ phase.
   not parse, and a pair that will not compile, answer `declared: true`**: those are the repository's
   own committed bytes, the fix is a commit, and waiting is recoverable where publishing past an
   unchecked pipeline is not. `detail` says which case it was, and it is contract rather than log.
-  <br>`attemptCompose` is `compose` with the outcome named — extracted rather than copied, because
-  the two evaluation callers want a null and a WARN while this one needs "the file is broken" and
-  "the wrapper is unreadable" to be opposite answers. The archetype is still read at the wrapper's
-  `main` **at ask time**, so the answer is about the pipeline as it composes now; that is the wanted
-  direction, since the run that would satisfy the gate would be composed now too. The endpoint is in
+  <br>`attemptCompose` is the composition with the outcome named — extracted rather than copied,
+  because the two evaluation callers want a null and a WARN while this one needs "the file is broken"
+  and "the wrapper is unreadable" to be opposite answers. The archetype is still read at the
+  wrapper's head **as it is at ask time** — this door resolves that head with a listing of its own —
+  so the answer is about the pipeline as it composes now; that is the wanted direction, since the run
+  that would satisfy the gate would be composed now too. The endpoint is in
   `docs/openapi.yml` for `GET /ci/api/daemon`'s reason — a machine consumer whose contract is written
   down here and nowhere else.
 - **`POST /ci/api/repositories/{repoId}/release-composition?rev=` was the door beside it and is

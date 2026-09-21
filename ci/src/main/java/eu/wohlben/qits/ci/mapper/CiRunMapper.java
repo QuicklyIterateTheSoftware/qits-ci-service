@@ -37,6 +37,13 @@ public interface CiRunMapper {
   // component no source property matched, so the gap was invisible in the source and visible only
   // as a null in every client. A named mapping is what makes a future rename a build failure.
   @Mapping(target = "phase", source = "phase")
+  // The three archetype columns, spelled out for `phase`'s reason rather than left to name matching:
+  // they are provenance nothing in this service reads back, so a rename that quietly stopped copying
+  // them would show up only as a null in a client, months later. They map by name today; naming them
+  // is what makes that a build failure tomorrow.
+  @Mapping(target = "archetypeName", source = "archetypeName")
+  @Mapping(target = "archetypeConfigPath", source = "archetypeConfigPath")
+  @Mapping(target = "archetypeRev", source = "archetypeRev")
   CiRunDto toDto(CiRun entity);
 
   CiStepDto toDto(CiStep entity);

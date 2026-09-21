@@ -349,7 +349,8 @@ public class CiQueuedRunTest extends CiTestSupport {
         steps:
           - image: alpine:3
             script: echo bump
-        """);
+        """,
+        null);
   }
 
   // --- the restart ---

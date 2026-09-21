@@ -85,6 +85,23 @@ import java.util.List;
  * by {@code stepIndex} — but it describes the pipeline as ACCEPTED, and comparing its length to the
  * number of {@code steps} rows mid-run is exactly the gap {@code live} explains.
  *
+ * <p><b>{@code archetypeName}, {@code archetypeConfigPath} and {@code archetypeRev} say which
+ * release archetype recipe this run's pipeline was composed from, and at which wrapper commit.</b> A
+ * composed release pipeline is half the repository's — pinned by {@code commitSha}, since the slot
+ * file is read at the commit the run builds — and half the platform's, which is a recipe in the
+ * wrapper repository that one commit moves for every repository at once. {@code archetypeRev} is
+ * that half's pin: two runs of one repository at one {@code commitSha} whose {@code archetypeRev}
+ * differs were composed from two different recipes, which is the difference a retry after a platform
+ * fix is made of.
+ *
+ * <p>All three are <b>null together</b>, and null is not "unknown for this run": a run from a
+ * committed {@code ci-event-*.yml} or a platform pipeline was composed from no recipe at all, and a
+ * composed run whose {@code release.yml} names no {@code archetype:} declares both its slots itself
+ * — a legitimate shape several repositories are in. Every row recorded before the columns existed
+ * carries null too, and there is no backfill, because a default would assert a recipe nobody can
+ * stand behind. {@code triggerConfig}, the composed text itself, is deliberately still not on this
+ * DTO.
+ *
  * <p><b>{@code phase} is which half of a release pipeline the run is</b>, {@code RELEASE_REQUEST}
  * for the QA run at {@code release/<id>@mergedSha} and {@code RELEASE} for the publish run at
  * {@code <version>@commitSha}. The column has existed since {@code V17__run_phase.sql} and the
@@ -182,6 +199,9 @@ public record CiRunDto(
     String releaseRequestId,
     String retryOfRunId,
     String configPath,
+    String archetypeName,
+    String archetypeConfigPath,
+    String archetypeRev,
     String priority,
     List<Long> expectedStepDurationsMillis,
     List<CiStepDto> steps,
@@ -221,6 +241,9 @@ public record CiRunDto(
         releaseRequestId,
         retryOfRunId,
         configPath,
+        archetypeName,
+        archetypeConfigPath,
+        archetypeRev,
         priority,
         expectedStepDurationsMillis,
         steps,
@@ -270,6 +293,9 @@ public record CiRunDto(
         releaseRequestId,
         retryOfRunId,
         configPath,
+        archetypeName,
+        archetypeConfigPath,
+        archetypeRev,
         priority,
         expectedStepDurationsMillis,
         steps,

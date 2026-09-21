@@ -104,7 +104,8 @@ public class CiRunServiceTest extends CiTestSupport {
             eventName,
             Instant.now(),
             payload,
-            content));
+            content,
+            null));
     return fakeRunner.executed().get(fakeRunner.executed().size() - 1).env().get("QITS_VERSION");
   }
 

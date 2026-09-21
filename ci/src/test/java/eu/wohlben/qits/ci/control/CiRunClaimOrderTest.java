@@ -118,7 +118,8 @@ public class CiRunClaimOrderTest extends CiTestSupport {
             eventName,
             Instant.now(),
             payload,
-            content));
+            content,
+            null));
     return repoId;
   }
 
