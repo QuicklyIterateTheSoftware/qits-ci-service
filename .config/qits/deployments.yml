@@ -40,7 +40,7 @@ routes: /ci
 # same change — this file, qits-githost, qits-artifacts, qits-configuration and qits-workspaces, one
 # line each. The order is stated in integers rather than left to the edge's position-then-label
 # tie-break so that renaming a row cannot silently reorder the group.
-navigation-entries: services.details.CI:5, daemons.details.CI:5, libs.details.CI:5, frontends.details.CI:5, cli.details.CI:5, images.details.CI:5
+navigation-entries: services.details.CI:5, daemons.details.CI:5, libs.details.CI:5, apps.details.CI:5, frontends.details.CI:5, cli.details.CI:5, images.details.CI:5
 
 # TWO DATABASES, because this deployable joins two jars that each own a store, and each one maps the
 # generic contract in its own shipped defaults. qits-platform-deployments creates a role and a
