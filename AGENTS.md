@@ -1971,9 +1971,19 @@ phase.
   `release.yml` was ever exercised by the release that carried it. **The ARCHETYPE recipe stays at
   the wrapper's own `main`**: that is a different repository, it is no part of the release request,
   and keeping it there is what keeps the platform prelude/postlude and the shared recipes
-  non-tamperable by a branch. A payload with no usable sha falls back to `main`'s head, which is
-  exactly the checkout fallback the run itself takes. `CiReleaseSlotTriggerTest` asserts both halves
-  as absences — never the repository's file at `main`, never the recipe at the fold.
+  non-tamperable by a branch. **A payload with no usable sha composes NOTHING — there is no
+  fallback to `main`'s head any more.** It used to answer the head, on the argument that the
+  composed `optional:` checkout would build the head anyway; that justified the defect with the
+  defect, since a pipeline composed from `main` gates a commit nobody released. It is also
+  unreachable by construction: qits-projects announces a release request from the fold path
+  alone, and a request whose fold could not be made is CONFLICTED — frozen, never re-folded,
+  never re-announced until a push clears it — so nothing live emits a release event with no
+  revision. So it is reported as the broken invariant it is (one ERROR naming the event, its
+  name and the field), no file is read, no run is recorded, and the event is **settled** rather
+  than left owed: a payload cannot grow a field afterwards, so an owed row for it is a row
+  nothing could ever clear, with the watermark stuck behind it. `CiReleaseSlotTriggerTest`
+  asserts both halves as absences — never the repository's file at `main`, never the recipe at
+  the fold — and the missing and the malformed sha as two more.
   <br>**The wrapper half follows the repository half's resolve-once discipline now, and it did not
   until ticket qits-336.** A candidate's `release.yml` has always been read at a resolved sha rather
   than a branch name; the archetype recipe was read at the literal string `main`, once per

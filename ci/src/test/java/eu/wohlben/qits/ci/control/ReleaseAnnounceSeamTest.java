@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -63,6 +64,30 @@ public class ReleaseAnnounceSeamTest extends CiTestSupport {
           script: ./publish-daemon.sh
       """;
 
+  /**
+   * The release pipeline again, declaring its checkout against the payload's own {@code branch}
+   * rather than leaning on the default.
+   *
+   * <p>It exists for one case: a release event that states no {@code version}. The version is what a
+   * release run's default checkout names its ref from, so such an event records no run at all — and
+   * the case below is about a green run whose DECLARATION cannot be announced, not about a run that
+   * never happened. Declaring the checkout is how the run is kept and the version made irrelevant to
+   * it.
+   */
+  private static final String RELEASE_TRIGGER_AT_THE_PAYLOADS_BRANCH =
+      """
+      event: SCMRelease
+      checkout:
+        branch: branch
+        sha: commitSha
+      artifacts:
+        - { type: npm, name: "@qits/ui-components" }
+        - { type: docker, name: qits/qits-stt }
+      steps:
+        - image: alpine:3
+          script: ./publish-tag.sh
+      """;
+
   /** The same file without the declaration — an ordinary event pipeline, which publishes nothing. */
   private static final String PLAIN_TRIGGER =
       """
@@ -72,12 +97,35 @@ public class ReleaseAnnounceSeamTest extends CiTestSupport {
           script: echo bump
       """;
 
+  /** The commit the released tag points at, which is what a release run is now anchored at. */
+  private static final String RELEASED_SHA = "c".repeat(40);
+
+  /**
+   * <b>Every release payload here states the revision it is about</b>, and that is the shape of the
+   * event rather than a convenience of the fixture: a release event carries the commit its tag
+   * points at, and a trigger file declaring no {@code checkout:} is recorded at that pair. It used
+   * to be recorded at {@code main}'s head — a commit the release was not about — which is the
+   * fallback this ticket removed.
+   */
   private static final String RELEASED =
-      "{\"branch\":\"main\",\"projectId\":\"p-1\",\"repository\":\"qits-spa-ui-components\","
+      "{\"branch\":\"main\",\"commitSha\":\""
+          + RELEASED_SHA
+          + "\",\"projectId\":\"p-1\",\"repository\":\"qits-spa-ui-components\","
           + "\"version\":\"1.4.0\"}";
 
+  /**
+   * A release event that states its revision and no version — which is what this class's one case
+   * about a missing version is: the run happens, and the DECLARATION is what goes unannounced.
+   *
+   * <p>The version is also the ref a release run is recorded at, so a payload missing both would
+   * record no run at all and the case would pass for a reason that is not the one it is about. The
+   * trigger for it therefore declares its checkout explicitly, against the payload's own {@code
+   * branch} — see {@link #RELEASE_TRIGGER_AT_THE_PAYLOADS_BRANCH}.
+   */
   private static final String NO_VERSION =
-      "{\"branch\":\"main\",\"projectId\":\"p-1\",\"repository\":\"qits-spa-ui-components\"}";
+      "{\"branch\":\"main\",\"commitSha\":\""
+          + RELEASED_SHA
+          + "\",\"projectId\":\"p-1\",\"repository\":\"qits-spa-ui-components\"}";
 
   /**
    * The same release, cut the way the release-request flow cuts one: {@code branch} names the
@@ -85,7 +133,9 @@ public class ReleaseAnnounceSeamTest extends CiTestSupport {
    * at tag creation, so it no longer exists by the time this event is evaluated.
    */
   private static final String RELEASED_FROM_A_BACKING_BRANCH =
-      "{\"branch\":\"release/9f2c1a7e-4b31-4c8e-9a11-6d0f5c2e8b44\",\"projectId\":\"p-1\","
+      "{\"branch\":\"release/9f2c1a7e-4b31-4c8e-9a11-6d0f5c2e8b44\",\"commitSha\":\""
+          + RELEASED_SHA
+          + "\",\"projectId\":\"p-1\","
           + "\"repository\":\"qits-spa-ui-components\",\"repositoryName\":\"qits-spa-ui-components\","
           + "\"version\":\"1.4.0\"}";
 
@@ -228,12 +278,18 @@ public class ReleaseAnnounceSeamTest extends CiTestSupport {
    * moment the tag is created, so it is gone before this event is ever evaluated. <b>Nothing about
    * the release pipeline may depend on it.</b>
    *
-   * <p>This is the unit-level pin of that. The run is recorded at {@code main} and {@code main}'s
-   * head, because a trigger file with no {@code checkout:} builds the tracked branch by construction
-   * ({@code CiEventTriggerService.TRIGGER_BRANCH}) — the payload's branch reaches neither the row nor
-   * the clone, and is never validated as an identifier either. What drives the announcement is the
-   * <b>version</b>, exactly as it did before, so the coordinates of the published artifacts are byte
-   * for byte what a {@code branch: main} payload produces.
+   * <p>This is the unit-level pin of that. The run is recorded at the <b>tag</b> and the commit the
+   * release states — {@code version}@{@code commitSha} — because a trigger file with no {@code
+   * checkout:} on a release event is recorded at the revision the event is about. The payload's
+   * {@code branch} reaches neither the row nor the clone and is never validated as an identifier,
+   * which is the claim this case is really about: {@code release/<id>} is deleted at tag creation
+   * and nothing here may depend on it. What drives the announcement is the <b>version</b>, exactly
+   * as it did before, so the coordinates of the published artifacts are byte for byte what a {@code
+   * branch: main} payload produces.
+   *
+   * <p><b>It used to be recorded at {@code main}'s head</b>, which is the fallback this ticket
+   * removed: a release run said {@code main@<head>} about a commit the release was not about, and
+   * the released tree was named only inside a step script.
    *
    * <p>The step's own checkout is the other half and lives in the recipe rather than here: {@code
    * .config/qits/ci-event-release.yml} fetches {@code refs/tags/$version} and checks it out detached,
@@ -245,11 +301,9 @@ public class ReleaseAnnounceSeamTest extends CiTestSupport {
     String eventId = deliver(RELEASE_TRIGGER, RELEASED_FROM_A_BACKING_BRANCH);
 
     CiRun run = runService.runsFor(repoId).get(0);
-    assertEquals(
-        CiEventTriggerService.TRIGGER_BRANCH,
-        run.branch,
-        "the run builds the tracked branch, never the ref the payload names");
-    assertEquals(HEAD, run.commitSha, "and its head, which is what the trigger decided at");
+    assertEquals("1.4.0", run.branch, "the run builds the tag, never the backing branch");
+    assertEquals(RELEASED_SHA, run.commitSha, "and the commit that tag points at");
+    assertNotEquals(HEAD, run.commitSha, "never main's head: that is a commit this release is not about");
 
     List<FakeReleaseAnnouncer.Published> published = releaseAnnouncer.published();
     assertEquals(2, published.size(), "two declarations are two announcements, as ever");
@@ -262,7 +316,7 @@ public class ReleaseAnnounceSeamTest extends CiTestSupport {
 
   @Test
   public void aDeclarationWhoseTriggerCarriesNoVersionAnnouncesNothing() throws Exception {
-    deliver(RELEASE_TRIGGER, NO_VERSION);
+    deliver(RELEASE_TRIGGER_AT_THE_PAYLOADS_BRANCH, NO_VERSION);
 
     // The version is not qits-ci's to invent: announcing a blank one would publish a package
     // reference nothing can resolve. The run is green and says so on the other port; the declaration

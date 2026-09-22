@@ -293,12 +293,16 @@ public class CiEventTriggerCausationTest {
    * a {@code branch} that names the release request's backing branch rather than a branch anybody
    * pushed. That branch is deleted when the tag is created, so it is already gone when this frame is
    * dispatched — which is exactly why it is spelled that way here. Nothing on this path reads it:
-   * the trigger matches on {@code repository}, the run builds {@code main}, and the announcement's
-   * coordinates come from {@code version}.
+   * the trigger matches on {@code repository}, the run builds the revision the release names
+   * ({@code version}@{@code commitSha}, which a trigger declaring no {@code checkout:} is recorded
+   * at now rather than {@code main}'s head), and the announcement's coordinates come from {@code
+   * version}.
    */
   private String scmReleaseFrame(String eventId, String released) throws Exception {
     String payload =
-        "{\"branch\":\"release/9f2c1a7e-4b31-4c8e-9a11-6d0f5c2e8b44\",\"projectId\":\"p-1\","
+        "{\"branch\":\"release/9f2c1a7e-4b31-4c8e-9a11-6d0f5c2e8b44\",\"commitSha\":\""
+            + "c".repeat(40)
+            + "\",\"projectId\":\"p-1\","
             + "\"repository\":\""
             + released
             + "\",\"version\":\"1.4.0\"}";

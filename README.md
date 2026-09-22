@@ -695,9 +695,18 @@ steps:                          # the `steps:` grammar above
   have any number of these files; each is an independent trigger with its own pipeline, and two of
   them matching one event are two runs by design.
 - **They are read from the head of `main`**, not from a commit — the trigger DECIDES at `main`, so
-  a pushed branch cannot alter the CI that gates it. What the run *builds* is also `main`'s head,
+  a pushed branch cannot alter the CI that gates it. What the run *builds* is `main`'s head too,
   unless the file declares **`checkout:`** (below), in which case the run builds the commit the
   event names. Either way the run records the branch and sha it built.
+- **The two release events are the exception, and they need no `checkout:` to be.** A
+  `ReleaseRequestChanged` and an `SCMRelease` each name the revision they are about — the fold
+  (`backingBranch`@`mergedSha`) and the tag (`version`@`commitSha`) — so a trigger file of
+  theirs is recorded at that revision whether it declares the pair or not. A release run is
+  never dispatched at `main`: the fold lives on a branch nobody pushed, a tag's commit need not
+  be on `main` at all, and a pipeline that gates a revision runs at that revision. An event of
+  those two names carrying no usable revision records **no run** and is reported as the broken
+  invariant it is. Every OTHER event names no revision in this repository, so `main`'s head is
+  not a fallback there but the only revision that exists.
 - **Which repositories an event is evaluated against**: the union of what the git host lists (`GET
   <qits.ci.git-host-url>/git` → `{"repositories": [...]}`) and what qits-ci already knows — the
   repositories it has runs for. So a repository seeded straight onto the
@@ -955,7 +964,8 @@ run row and the announcer all see.
 > at: `{ branch: version, sha: commitSha }` anchors the run at the tag's own ref and the commit it
 > points to. Before that field existed a release pipeline could declare no `checkout:` at all; its
 > run was recorded at `main`, and every release run on the platform displayed as `main@<head>` while
-> a step script went and found the released tree.
+> a step script went and found the released tree. **A file declaring no `checkout:` is anchored at
+> the same pair now**, so that shape is gone rather than merely discouraged.
 
 ```yaml
 # composed from .config/qits/release.yml's release: slot
@@ -1303,8 +1313,11 @@ another. It used to be read at `main`'s head, which meant a repository could nev
 `release.yml` (the tag declared a `release:` slot, the gate stamped the request publish-gated from
 that tag, the run composed from a `main` that had no such file — no run, event settled, request
 RELEASED forever) and that no edit to `release.yml` was ever exercised by the release carrying it.
-A payload with no usable sha falls back to `main`'s head, which is the fallback the run's own
-`optional:` checkout takes. **The archetype recipe is the exception and stays at the WRAPPER
+A payload with no usable sha composes **nothing**: no read, no run, one ERROR naming the event and
+the missing or refused field, and the event settled rather than left owed. There is no fallback to
+`main`'s head — a pipeline composed from `main` gates a commit nobody released — and the state is
+unreachable on the live path anyway, since a release request whose fold could not be made is
+CONFLICTED and announces nothing at all. **The archetype recipe is the exception and stays at the WRAPPER
 repository's `main`**: it is another repository's file, no part of the release request, and that is
 what keeps the platform prelude/postlude out of a branch's reach.
 

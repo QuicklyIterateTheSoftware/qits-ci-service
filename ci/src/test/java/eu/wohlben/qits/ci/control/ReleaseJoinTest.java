@@ -62,6 +62,9 @@ public class ReleaseJoinTest extends CiTestSupport {
       """;
 
   /** The same recipe before that switch — still in the fleet, and it must not regress. */
+  /** The commit the released tag points at — what a release run is anchored at. */
+  private static final String RELEASED_SHA = "c".repeat(40);
+
   private static final String RELEASE_TRIGGER =
       """
       event: SCMRelease
@@ -555,12 +558,23 @@ public class ReleaseJoinTest extends CiTestSupport {
         .orElseThrow(() -> new AssertionError("no release pipeline run was recorded"));
   }
 
+  /**
+   * The release event, carrying the commit its tag points at.
+   *
+   * <p><b>{@code commitSha} is not decoration here.</b> A release event states the revision it is
+   * about, and a trigger file declaring no {@code checkout:} is recorded at exactly that pair now —
+   * where it used to be recorded at {@code main}'s head, composing and gating a commit the release
+   * was not about. An event without it composes no run at all, so every release payload in this
+   * class states one.
+   */
   private String releasePayload() {
     return "{\"repository\":\""
         + repoId
         + "\",\"repositoryName\":\""
         + repoId
-        + "\",\"branch\":\"main\",\"version\":\""
+        + "\",\"branch\":\"main\",\"commitSha\":\""
+        + RELEASED_SHA
+        + "\",\"version\":\""
         + VERSION
         + "\"}";
   }

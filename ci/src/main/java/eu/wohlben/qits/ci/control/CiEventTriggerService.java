@@ -151,12 +151,19 @@ public class CiEventTriggerService {
   private static final Logger LOG = Logger.getLogger(CiEventTriggerService.class);
 
   /**
-   * The branch an event trigger reads, and — unless the file declares {@code checkout:} — the one
-   * its run builds. The platform's one tracked branch, supplied by convention because most events
-   * name no ref. A trigger with {@code checkout:} still <b>decides</b> here ("decide at main, build
-   * at the event's commit"): discovery, parsing and selection read this branch's head, so a pushed
-   * branch cannot alter the CI that gates it; only the recorded run's branch/sha come from the
-   * payload.
+   * The branch an event trigger is READ at, and the one its run builds when the event names no
+   * revision of its own. The platform's one tracked branch, supplied by convention because most
+   * events name no ref. A trigger with {@code checkout:} still <b>decides</b> here ("decide at main,
+   * build at the event's commit"): discovery, parsing and selection read this branch's head, so a
+   * pushed branch cannot alter the CI that gates it; only the recorded run's branch/sha come from
+   * the payload.
+   *
+   * <p><b>It is no longer what a trigger with no {@code checkout:} builds on a RELEASE event.</b>
+   * Those two events each name the revision they are about, so that revision is what their runs are
+   * recorded at whether the file declares the pair or not — see {@link #defaultCheckout}. This
+   * constant is the answer for every other event, where no revision exists in this repository to
+   * name; that is a different question with one defined answer rather than the same fallback under
+   * another name.
    *
    * <p><b>It is a branch name only where a head has to be RESOLVED, and nothing is ever read at the
    * literal string.</b> Both listings — a candidate's own trigger files and the platform
@@ -170,8 +177,8 @@ public class CiEventTriggerService {
    * .config/qits/release.yml} used to be read at this branch's resolved head, which composed a
    * release pipeline out of a commit the run would never build. It is read at the revision the
    * event is about — the fold, or the released tag — so that <b>the pipeline that gates a revision
-   * is read from that revision</b>. See {@link #releaseRev}. The wrapper's half of that composition
-   * is still this branch's, deliberately: see {@link #releaseSlots}.
+   * is read from that revision</b>. See {@link #releaseRevision}. The wrapper's half of that
+   * composition is still this branch's, deliberately: see {@link #releaseSlots}.
    */
   public static final String TRIGGER_BRANCH = "main";
 
@@ -575,6 +582,11 @@ public class CiEventTriggerService {
     // need the wrapper's sha. The listing is where the sha comes from, so skipping it here would
     // leave a scoped evaluation with no rev and — under the fail-closed rule — no release run.
     ArchetypeReads wrapper = readWrapper(candidates);
+    // THE REVISION THIS EVENT IS ABOUT, resolved once for the whole evaluation and never per
+    // candidate: it is a property of the event's payload, so a second resolution per repository
+    // would be the same answer arrived at N times and N copies of the same log line. Null for every
+    // event that is not one of the two release events — see releaseRevision.
+    ReleaseRevision revision = releaseRevision(arrival, payload);
     for (CiRepoRef repo : candidates) {
       if (deadlineNanos != null && System.nanoTime() - deadlineNanos >= 0) {
         // Out of time rather than out of answers, and the two must not look alike to the caller —
@@ -583,7 +595,7 @@ public class CiEventTriggerService {
         continue;
       }
       try {
-        if (!evaluateRepo(repo, arrival, payload, runIds, heads, wrapper, unreadable)) {
+        if (!evaluateRepo(repo, arrival, payload, revision, runIds, heads, wrapper, unreadable)) {
           skipped.add(repo.repoId());
         }
       } catch (RuntimeException e) {
@@ -659,6 +671,7 @@ public class CiEventTriggerService {
       CiRepoRef repo,
       Arrival arrival,
       JsonNode payload,
+      ReleaseRevision revision,
       List<String> runIds,
       Map<String, String> heads,
       ArchetypeReads wrapper,
@@ -674,16 +687,23 @@ public class CiEventTriggerService {
     }
     heads.put(repo.repoId(), lookup.headSha());
     // THE REVISION THIS EVENT IS ABOUT, which for the two release events is the fold or the tag and
-    // never main — see releaseRev. The repository's own committed trigger files above are read at
-    // main, exactly as they always were; only the release SLOTS move.
-    ReleaseSlots slots =
-        releaseSlots(
-            repo, repoId, arrival, releaseRev(arrival, payload, lookup.headSha()), wrapper);
+    // never main — see releaseRevision. The repository's own committed trigger files above are read
+    // at main, exactly as they always were; only the release SLOTS move.
+    ReleaseSlots slots = releaseSlots(repo, repoId, arrival, revision, wrapper);
     for (EventTriggerFile file : lookup.files()) {
       // A committed trigger file has no archetype: its bytes are the repository's own word about its
       // own pipeline, with no platform share in them to record the provenance of.
       evaluateTrigger(
-          repo, repoId, file.path(), file.content(), arrival, payload, lookup, null, runIds);
+          repo,
+          repoId,
+          file.path(),
+          file.content(),
+          arrival,
+          payload,
+          revision,
+          lookup,
+          null,
+          runIds);
     }
     if (slots.document() != null) {
       evaluateTrigger(
@@ -693,6 +713,7 @@ public class CiEventTriggerService {
           slots.document(),
           arrival,
           payload,
+          revision,
           lookup,
           slots.archetype(),
           runIds);
@@ -724,6 +745,7 @@ public class CiEventTriggerService {
       String content,
       Arrival arrival,
       JsonNode payload,
+      ReleaseRevision revision,
       EventTriggerLookup lookup,
       CiReleaseArchetypes.ArchetypeRef archetype,
       List<String> runIds) {
@@ -747,15 +769,44 @@ public class CiEventTriggerService {
             repoId, file.path(), trigger.eventName(), arrival.eventId());
         return;
       }
-      // Absent checkout: today's behavior byte-for-byte — the run builds main's head. Declared,
-      // the ref and sha come out of the payload instead; the trigger DECIDED at main above.
-      String branch = TRIGGER_BRANCH;
-      String sha = lookup.headSha();
+      // THE DEFAULT CHECKOUT — what a trigger that declares no `checkout:` is recorded at. Two
+      // answers, and the split is the whole of what makes it correct rather than a special case:
+      //
+      //   * A RELEASE event is about a revision, and that revision is the only honest answer. The
+      //     pair comes out of the payload through the same paths CiReleaseComposer emits into a
+      //     composed `checkout:`, so a run that declares none and a run that declares the canonical
+      //     one are recorded at one commit. Recording such a run at main's head was the defect: the
+      //     fold lives on a branch nobody pushed and a tag's commit need not be on main at all, so
+      //     the row named a revision the pipeline was never about and the clone could not reach.
+      //     A release event that names no usable pair is NO RUN — see defaultCheckout.
+      //   * Every OTHER event names no revision in this repository. A BuildSuccessful, or an
+      //     SCMRelease from a DIFFERENT repository, says nothing about what this repository should
+      //     build, so main's head is not a fallback but the only revision that exists — the tracked
+      //     branch, supplied by convention exactly as TRIGGER_BRANCH's javadoc says. That is not
+      //     the rule above weakened; it is a different question with one defined answer.
+      DefaultCheckout dflt = defaultCheckout(revision, lookup.headSha());
       // The trigger AS THIS RUN IS ACCEPTED UNDER, which is the declared one except on the
       // compatibility arm below — see there for why the difference has to be carried rather than
       // merely logged.
       CiEventTrigger accepted = trigger;
-      if (trigger.checkout() != null) {
+      String branch;
+      String sha;
+      if (trigger.checkout() == null) {
+        if (dflt == null) {
+          // The event is a release event and names no revision this run could be about. One WARN
+          // and no run, which is the same answer a declared-but-unresolvable checkout gets a few
+          // lines down and for the identical reason: there is no truthful (ref, sha) pair to record
+          // a row against, and main's head is not one — it is a different commit wearing this
+          // event's name. The missing or refused field itself was named once for the whole
+          // evaluation by releaseRevision; this line says which file went without a run.
+          LOG.warnf(
+              "%s: %s declares no checkout and event %s (%s) names no usable revision — no run",
+              repoId, file.path(), arrival.eventId(), arrival.eventName());
+          return;
+        }
+        branch = dflt.branch();
+        sha = dflt.sha();
+      } else {
         String declaredBranch = checkoutField(payload, trigger.checkout().branchPath());
         String declaredSha = checkoutField(payload, trigger.checkout().shaPath());
         if (declaredBranch != null && declaredSha != null) {
@@ -793,6 +844,17 @@ public class CiEventTriggerService {
           // older one would be deduped away, publishing no image for a version that really released.
           // Rewriting the value is how that stays true of every such question, including ones added
           // later, rather than of the one we remembered.
+          //
+          // NOTE, AND IT IS A KNOWN SURVIVING FALLBACK TO MAIN'S HEAD. The default above no longer
+          // has one — a release event that names no usable revision records no run at all — and
+          // this arm is the one path by which a RELEASE run can still be dispatched at main. It is
+          // reachable for a composed release document (`checkout: { branch: version, sha:
+          // commitSha, optional: true }`) whose payload carries a usable `commitSha` and no usable
+          // `version`: the sha half is what the slot file is composed at, so the document exists,
+          // and the branch half is what is missing here. Left deliberately rather than overlooked —
+          // removing it is a decision about the compatibility this flag exists for, not a tidy-up.
+          branch = TRIGGER_BRANCH;
+          sha = lookup.headSha();
           accepted = trigger.withoutCheckout();
           LOG.infof(
               "%s: %s declares an optional checkout { %s, %s } and event %s (%s) does not carry it"
@@ -880,6 +942,40 @@ public class CiEventTriggerService {
      */
     static final ReleaseSlots NO_RUN = new ReleaseSlots(false, null, null);
 
+    /**
+     * A release event that names no revision: nothing was read, nothing composes, and the event is
+     * <b>settled</b>.
+     *
+     * <h2>Why this settles where {@link #UNREADABLE} does not</h2>
+     *
+     * <p>The three outcomes beside it divide on one question — <em>can asking again produce a
+     * different answer?</em> — and this one divides with the finals rather than with the blip.
+     * {@link #UNREADABLE} is a git host that did not answer: the question stands, nothing was
+     * learned, and a sweep minutes later is a different question with a different answer, so the
+     * event stays owed. This is a payload that carries no usable sha — the field is absent, or it is
+     * there and {@link CiIdentifiers#requireSha} refuses it. <b>An event is a record of something
+     * that happened and its bytes are immutable</b>: the field will be absent on the ten thousandth
+     * offer exactly as it was on the first, so leaving the event owed hands the consumer a row
+     * nothing can ever clear, with the watermark stuck behind it and every later event of the stream
+     * re-evaluated on every sweep for as long as the deployment lives. That is the opposite failure
+     * to the one the owed ledger exists for, and a strictly worse one: the QA verdict is lost either
+     * way, and the estate gets a wedged consumer with it.
+     *
+     * <p>So it is the same verdict {@link #NONE} and {@link #NO_RUN} are — final, no run, settled —
+     * and it is spelled separately for their reason: three call sites saying three different things
+     * about one evaluation, and a reader should be able to tell "this repository declares no release
+     * cycle" from "this EVENT named no revision to read one at" without counting nulls. The
+     * difference matters to a person reading the log, because only one of the three is a defect
+     * somewhere else on the platform — a publisher that stopped carrying its own commit.
+     *
+     * <p><b>Settled is not "handled".</b> This state is unreachable by construction on the live
+     * path ({@link #releaseRevision} carries the argument, including why a conflicted release
+     * request emits nothing at all), so it is reported at ERROR as a broken invariant. Settling is
+     * only about not spinning on it: a malformed event that cannot be evaluated must not be offered
+     * forever, and it is the one choice here that is about the ledger rather than about the run.
+     */
+    static final ReleaseSlots NO_REVISION = new ReleaseSlots(false, null, null);
+
     /** The question could not be asked. The only answer a later sweep can improve on. */
     static final ReleaseSlots UNREADABLE = new ReleaseSlots(true, null, null);
   }
@@ -890,11 +986,12 @@ public class CiEventTriggerService {
    * <p><b>Gated on the two release event names</b>, which is the whole of what this feature costs an
    * ordinary event: nothing. A {@code BuildSuccessful} evaluates exactly the reads it always did.
    *
-   * <p><b>Read at the revision the event is about</b>, which {@link #releaseRev} resolves: the
-   * request's fold for a {@code ReleaseRequestChanged}, the released tag's commit for an {@code
-   * SCMRelease}, and {@link #TRIGGER_BRANCH}'s resolved head for everything else and for a release
-   * event that carries no usable coordinate. Never a branch NAME — the listing's own discipline,
-   * for the listing's own reason: a run must never be recorded against one commit with a
+   * <p><b>Read at the revision the event is about</b>, which {@link #releaseRevision} resolves once
+   * per evaluation: the request's fold for a {@code ReleaseRequestChanged}, the released tag's
+   * commit for an {@code SCMRelease}, and <b>nothing at all</b> for a release event that names
+   * neither — such an event reads no file and composes no run ({@link ReleaseSlots#NO_REVISION}),
+   * where it used to fall back to {@code main}'s head. Never a branch NAME — the listing's own
+   * discipline, for the listing's own reason: a run must never be recorded against one commit with a
    * declaration from another. <b>The pipeline that gates a revision is read from that revision</b>,
    * and it is the same revision the run checks out, so nothing is composed from one commit and
    * executed against another.
@@ -929,13 +1026,28 @@ public class CiEventTriggerService {
    * release event names answers exactly this way, since the payload's commit lives in one repository
    * only. A blip is the other status and is the one that leaves the event owed.
    *
-   * @param rev the revision to read the repository's own declaration at — {@link #releaseRev}'s
-   *     answer, and the revision the run this composes will check out
+   * @param revision the revision this event is about — {@link #releaseRevision}'s answer, resolved
+   *     once for the whole evaluation, and the revision the run this composes will check out. Null
+   *     for every event that is not a release event; carrying no sha when the release event named
+   *     none
    */
   private ReleaseSlots releaseSlots(
-      CiRepoRef repo, String repoId, Arrival arrival, String rev, ArchetypeReads wrapper) {
-    if (!RELEASE_EVENTS.contains(arrival.eventName())) {
+      CiRepoRef repo,
+      String repoId,
+      Arrival arrival,
+      ReleaseRevision revision,
+      ArchetypeReads wrapper) {
+    if (revision == null) {
       return ReleaseSlots.NONE;
+    }
+    String rev = revision.sha();
+    if (rev == null) {
+      // NO REVISION, NO READ, NO RUN — and the reasoning is ReleaseSlots.NO_REVISION's. There is
+      // nowhere to read the repository's declaration AT: the event named no commit, and the one
+      // thing this must never do is answer "main" to that question, because the pipeline that gates
+      // a revision is read from that revision and main is a different one. The field that was
+      // missing or refused was named in one ERROR by releaseRevision, once for the evaluation.
+      return ReleaseSlots.NO_REVISION;
     }
     CiConfigSource.FileLookup found =
         configSource.readFile(repo, rev, CiReleaseSlotParser.CONFIG_PATH);
@@ -973,8 +1085,31 @@ public class CiEventTriggerService {
   }
 
   /**
+   * The revision ONE arriving release event is about: the ref it names and the commit that ref
+   * points at, as the payload states them.
+   *
+   * <p>Both halves are nullable and they are missing independently, which is why this is a pair
+   * rather than two calls: {@code sha} is what a candidate's {@code release.yml} is read at, {@code
+   * ref} is only needed by a trigger that declares no {@code checkout:}, and a payload carrying one
+   * and not the other is a real shape of both events.
+   *
+   * <p><b>Both are validated before they exist.</b> A payload is attacker-shaped — a durable claim
+   * establishes delivery, never content — and both values reach a git-host URL, a clone argv and a
+   * run row, so a component of this record has already been through {@link CiIdentifiers}. A value
+   * that was refused is null here and is indistinguishable from one that was absent, deliberately:
+   * every caller owes the same answer to both, and a "present but refused" third state would be a
+   * distinction only a caller that wanted to use it anyway could spend.
+   *
+   * @param ref the ref name the event is about — a release request's backing branch, or a release's
+   *     tag, whose name IS the version
+   * @param sha the commit that ref points at
+   */
+  private record ReleaseRevision(String ref, String sha) {}
+
+  /**
    * <b>The revision a release event is about — the one the run this evaluation may record will
-   * really check out.</b> Anything else answers {@code headSha} unchanged.
+   * really check out — or nothing at all.</b> Null for every event that is not one of the two
+   * release events.
    *
    * <h2>The invariant</h2>
    *
@@ -1005,46 +1140,159 @@ public class CiEventTriggerService {
    * <p><b>The wrapper's archetype recipe stays at the WRAPPER's own {@code main}</b>, and that split
    * is deliberate rather than an omission — see {@link #releaseSlots}.
    *
-   * <h2>Falling back to the head is the run's own fallback, not a second rule</h2>
+   * <h2>There is NO fallback to the head, and that parameter is gone</h2>
    *
-   * <p>A payload carrying no usable sha answers {@code headSha}, which is <b>exactly</b> what {@link
-   * #evaluateTrigger} resolves for the same event: an {@code SCMRelease} published before {@code
-   * commitSha} existed takes the composed {@code optional: true} arm and the run builds main's head,
-   * so reading the file there is reading it at the rev the run builds. A {@code
-   * ReleaseRequestChanged} with no fold composes a document whose non-optional checkout is then
-   * refused, one WARN and no run — unchanged, and the read that preceded it cost one blob either
-   * way.
+   * <p>This method took a {@code headSha} and answered it whenever the payload carried no usable
+   * sha, on the argument that the composed {@code optional: true} arm would build main's head
+   * anyway, so reading the file there was reading it at the rev the run builds. <b>That argument
+   * justified the defect with the defect.</b> A release pipeline composed from {@code main} is a
+   * pipeline nobody released reviewing a commit nobody released, and it gates — or waves through —
+   * the revision that really was released. Owner ruling, twice: the pipeline is composed from the
+   * revision actually being built, and no per-step case falls back to {@code main} or synthesises a
+   * revision that corresponds to nothing real.
    *
-   * <p><b>The value is validated before it can reach a URL.</b> An event payload is
-   * attacker-shaped — a durable claim establishes delivery, never content — and this one becomes a
-   * path segment in a git-host read, so it goes through {@link CiIdentifiers#requireSha} first. A
-   * refused value falls back to the head rather than throwing: the checkout resolution refuses the
-   * same value a moment later and records no run, so the refusal is already said once and saying it
-   * twice would cost this candidate its other trigger files.
+   * <p>So a release event with no usable revision composes <b>nothing</b>: no read, no document, no
+   * run, one ERROR naming the event, its name and the field that was missing or refused. The
+   * parameter is deleted rather than passed and ignored, so the fallback cannot come back by
+   * somebody reaching for a value that is in scope.
+   *
+   * <h2>A release event with no sha is a BROKEN INVARIANT, not a state to handle</h2>
+   *
+   * <p><b>It is unreachable by construction on the live path, and the fallback invented the
+   * scenario it then resolved wrongly.</b> For {@code ReleaseRequestChanged}, qits-projects
+   * announces from the fold path alone — {@code ReleaseRequestAnnouncer} calls {@code mergedSha}
+   * "the tip of the fold: what to build, gate and release" — so a fold that produced nothing
+   * announces nothing, and a fold that could not be made at all leaves the request {@code
+   * CONFLICTED}: no ref moved, the conflict is stored, and {@code ReleaseRequests} never re-folds or
+   * re-announces such a request until a push clears it. A frozen request emits nothing that could
+   * run. So the old fallback did not protect a real scenario; it turned "nothing should run" into "a
+   * pipeline composed from {@code main} ran against a tree the request is not, and reported a
+   * verdict about it".
+   *
+   * <p>The one genuinely absent case is a legacy {@code SCMRelease} minted before {@code commitSha}
+   * existed — <b>schema evolution, not a live state</b> — and it gets the same answer for the same
+   * reason: a release run at {@code main}'s head is a run about a commit nobody released.
+   *
+   * <p><b>Do not add a defensive default here.</b> Every value this could fall back to is a
+   * revision the event is not about, and the whole point of the read below is that the pipeline
+   * gating a revision comes from that revision.
+   *
+   * <p><b>The event is SETTLED rather than left owed</b>, and the reasoning is {@link
+   * ReleaseSlots#NO_REVISION}'s: a payload is immutable, so a missing field is missing forever and
+   * an owed row for it is a row nothing can ever clear.
+   *
+   * <p><b>Both values are validated before they can reach a URL.</b> An event payload is
+   * attacker-shaped — a durable claim establishes delivery, never content — and the sha becomes a
+   * path segment in a git-host read while the ref becomes a clone argument, so both go through
+   * {@link CiIdentifiers} here. A refused value is reported as absent rather than thrown: this runs
+   * once for the whole evaluation and a throw would cost every candidate its other trigger files.
    */
-  private String releaseRev(Arrival arrival, JsonNode payload, String headSha) {
+  private ReleaseRevision releaseRevision(Arrival arrival, JsonNode payload) {
     if (!RELEASE_EVENTS.contains(arrival.eventName())) {
-      return headSha;
+      return null;
     }
+    boolean releaseRequest = CiReleaseComposer.RELEASE_REQUEST_EVENT.equals(arrival.eventName());
+    String refPath =
+        releaseRequest
+            ? CiReleaseComposer.RELEASE_REQUEST_BRANCH_PATH
+            : CiReleaseComposer.RELEASE_BRANCH_PATH;
     String shaPath =
-        CiReleaseComposer.RELEASE_REQUEST_EVENT.equals(arrival.eventName())
+        releaseRequest
             ? CiReleaseComposer.RELEASE_REQUEST_SHA_PATH
             : CiReleaseComposer.RELEASE_SHA_PATH;
-    String declared = checkoutField(payload, shaPath);
+    String ref =
+        usable(arrival, refPath, checkoutField(payload, refPath), CiIdentifiers::requireBranch);
+    String sha =
+        usable(arrival, shaPath, checkoutField(payload, shaPath), CiIdentifiers::requireSha);
+    if (sha == null) {
+      // A BROKEN INVARIANT, said out loud, and the only line this method makes. A release event is
+      // expected to carry the revision it is about — see this method's javadoc for why no live
+      // emitter produces one without it — so this is not a shape to accommodate. It names the
+      // event, its name and the field, so the cause is readable from this line alone: a publisher
+      // that stopped carrying its own commit is somebody else's defect and this is where the
+      // platform notices it, instead of quietly gating whatever main happened to hold.
+      LOG.errorf(
+          "Event %s (%s) carries no usable %s: a release event is expected to carry the revision it"
+              + " is about. No release pipeline is composed for any candidate, and the event is"
+              + " settled rather than owed — a payload cannot grow the field later",
+          arrival.eventId(), arrival.eventName(), shaPath);
+    }
+    return new ReleaseRevision(ref, sha);
+  }
+
+  /**
+   * One payload field, or null when it is absent or refused — the shared half of {@link
+   * #releaseRevision}, so that a ref and a sha are read and validated by one piece of code.
+   *
+   * <p>A refused value is a DEBUG rather than a second WARN: the caller warns once per event about
+   * what it could not resolve, and a value that is there and hostile is worth naming in a log
+   * somebody turns up rather than in the line everybody reads.
+   */
+  private static String usable(
+      Arrival arrival, String path, String declared, java.util.function.Consumer<String> guard) {
     if (declared == null) {
-      return headSha;
+      return null;
     }
     try {
-      CiIdentifiers.requireSha(declared);
+      guard.accept(declared);
     } catch (RuntimeException refused) {
       LOG.debugf(
-          "Event %s (%s) carries an unusable %s — the release pipeline is read at %s's head, where"
-              + " the checkout resolution refuses the same value",
-          arrival.eventId(), arrival.eventName(), shaPath, TRIGGER_BRANCH);
-      return headSha;
+          "Event %s (%s) carries an unusable %s: %s",
+          arrival.eventId(), arrival.eventName(), path, refused.getMessage());
+      return null;
     }
     return declared;
   }
+
+  /**
+   * What a trigger declaring no {@code checkout:} is recorded at, or null when there is no such
+   * revision and the file therefore gets no run.
+   *
+   * <p><b>Two answers, and the second is not the first weakened.</b>
+   *
+   * <ul>
+   *   <li><b>A release event</b> is about one revision, and that revision is what its run builds —
+   *       the pair {@link #releaseRevision} resolved, which is the same pair {@link
+   *       CiReleaseComposer} emits into a composed {@code checkout:}. So a repository's bespoke
+   *       release pipeline and the composed one are recorded at one commit, and a release run can
+   *       never be dispatched at {@code main}: a fold lives on a branch nobody pushed and a tag's
+   *       commit need not be on {@code main} at all, so a row saying {@code main@<head>} named a
+   *       revision the event was not about and a clone the daemon could not resolve the sha in.
+   *       Null when the event named no usable pair, which is one WARN and no run at the call site.
+   *   <li><b>Every other event</b> names no revision in THIS repository, so {@code main}'s head is
+   *       not a fallback — it is the only revision that exists. A {@code BuildSuccessful}, or an
+   *       {@code SCMRelease} from a <em>different</em> repository, says nothing whatever about what
+   *       this repository should build; the tracked branch supplied by convention is the defined
+   *       answer and {@link #TRIGGER_BRANCH}'s javadoc is where that convention lives. Reading this
+   *       arm as the same thing that was removed above is the mistake worth guarding against: there
+   *       the event DID name a revision and the code ignored it.
+   * </ul>
+   *
+   * <p><b>One consequence is worth knowing before writing a bespoke trigger.</b> The split is by
+   * event NAME, so a file that selects {@code SCMRelease} in order to react to ANOTHER repository's
+   * release — a downstream bump, say — and declares no {@code checkout:} is now recorded at that
+   * other repository's tag and commit, which are not refs of its own. No recipe on the estate has
+   * that shape today (a composed release document's {@code when:} always names its own repository,
+   * and the bespoke files that exist select their own), and such a file should declare the checkout
+   * it really wants. {@code SoftwareRelease} — the event a downstream consumer actually reacts to —
+   * is not a release event here and takes the second arm unchanged.
+   *
+   * @param revision {@link #releaseRevision}'s answer — null for every non-release event
+   * @param headSha the head {@link #TRIGGER_BRANCH} resolved to for this candidate. Read by the
+   *     second arm only; the release arm never sees it, which is what keeps the deleted fallback
+   *     deleted rather than one line away
+   */
+  private static DefaultCheckout defaultCheckout(ReleaseRevision revision, String headSha) {
+    if (revision == null) {
+      return new DefaultCheckout(TRIGGER_BRANCH, headSha);
+    }
+    return revision.ref() == null || revision.sha() == null
+        ? null
+        : new DefaultCheckout(revision.ref(), revision.sha());
+  }
+
+  /** The {@code (ref, sha)} pair a run with no declared checkout is accepted at. */
+  private record DefaultCheckout(String branch, String sha) {}
 
   /**
    * Which of the four ways a composition attempt ended. The three failures are one {@code null} to
@@ -1334,7 +1582,7 @@ public class CiEventTriggerService {
    * run composition read the repository's {@code release.yml} at {@code main} — so a tag that
    * declared a {@code release:} slot {@code main} did not was stamped publish-gated here and
    * composed nothing there, and the request sat RELEASED with a gate nothing would ever answer.
-   * {@link #releaseRev} put the evaluation on the event's own revision; both halves of the split are
+   * {@link #releaseRevision} put the evaluation on the event's own revision; both halves of the split are
    * now identical on both sides (the repository's declaration at the rev under test, the wrapper's
    * recipe at the wrapper's {@code main}), which is what makes this answer a prediction of what the
    * run will do rather than a second opinion about it. Nothing here changed to get there.

@@ -66,6 +66,28 @@ public class CiEventCheckoutTest extends CiTestSupport {
           script: "true"
       """;
 
+  /**
+   * A bespoke release pipeline that declares NO checkout — the escape hatch's shape, and what every
+   * hand-written {@code ci-event-release.yml} on the estate looked like before {@code commitSha}
+   * existed. Its run is recorded at the revision the event names all the same.
+   */
+  private static final String NO_CHECKOUT_RELEASE_TRIGGER =
+      """
+      event: SCMRelease
+      steps:
+        - image: alpine:3
+          script: "true"
+      """;
+
+  /** The same for the QA half of the cycle. */
+  private static final String NO_CHECKOUT_QA_TRIGGER =
+      """
+      event: ReleaseRequestChanged
+      steps:
+        - image: alpine:3
+          script: "true"
+      """;
+
   private static final String HEAD = "a".repeat(40);
   private static final String PUSHED = "b".repeat(40);
   private static final String RELEASED = "c0ffee1".repeat(5) + "abcde";
@@ -381,6 +403,98 @@ public class CiEventCheckoutTest extends CiTestSupport {
 
     assertEquals(List.of(), evaluation.runIds());
     assertEquals(List.of(), runService.runsFor(repoId));
+  }
+
+  // --- the DEFAULT checkout on a release event: the event's revision, never main -----------------
+
+  /**
+   * <b>A release pipeline that declares no {@code checkout:} is recorded at the revision the event
+   * is about</b>, exactly as the composed one that declares the canonical pair is.
+   *
+   * <p>It used to be recorded at {@code main}@{@code head}: a run about a commit the release was not
+   * about, on a branch whose head moves under it, whose clone need not even contain the released
+   * commit. The pipeline that gates a revision is read from that revision and the run that gates it
+   * is dispatched at it — and a file declaring nothing must not be the one exception.
+   *
+   * <p>Both halves are asserted, and the {@code assertNotEquals} is the one that catches the
+   * regression: seeding {@code HEAD} is what a reintroduced fallback would answer with, and a suite
+   * that only asserted the tag would pass against a row whose sha was main's.
+   */
+  @Test
+  public void aReleaseTriggerWithNoCheckoutIsRecordedAtTheReleasedRevision() throws Exception {
+    fakeConfig.putTriggers(
+        repoId, "main", HEAD, new EventTriggerFile(PLAIN_PATH, NO_CHECKOUT_RELEASE_TRIGGER));
+
+    deliver(releaseEvent(UUID.randomUUID().toString(), "2026.905.60215", RELEASED));
+
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(1, recorded.size());
+    assertEquals(
+        "2026.905.60215", recorded.get(0).branch, "the tag the release names, not the tracked branch");
+    assertEquals(RELEASED, recorded.get(0).commitSha, "and the commit that tag points at");
+    assertNotEquals(HEAD, recorded.get(0).commitSha, "never main's head — that is the removed fallback");
+    assertEquals(CiRunStatus.SUCCESS, recorded.get(0).status);
+  }
+
+  /** The same for the QA half: the fold, which is a branch nobody pushed and no head of main. */
+  @Test
+  public void aReleaseRequestTriggerWithNoCheckoutIsRecordedAtTheFold() throws Exception {
+    fakeConfig.putTriggers(
+        repoId, "main", HEAD, new EventTriggerFile(PLAIN_PATH, NO_CHECKOUT_QA_TRIGGER));
+
+    deliver(
+        new CiEventTriggerService.Arrival(
+            UUID.randomUUID().toString(),
+            "ReleaseRequestChanged",
+            Instant.parse("2026-09-05T06:02:15Z"),
+            "{\"backingBranch\":\"release/r-1\",\"mergedSha\":\"" + PUSHED + "\"}"));
+
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(1, recorded.size());
+    assertEquals("release/r-1", recorded.get(0).branch, "the fold's own branch");
+    assertEquals(PUSHED, recorded.get(0).commitSha, "at the tip the request announced");
+    assertNotEquals(HEAD, recorded.get(0).commitSha);
+  }
+
+  /**
+   * A release event that names no revision costs such a file its run — <b>no fallback</b>.
+   *
+   * <p>The state is unreachable on the live path (a conflicted release request is frozen and
+   * announces nothing; an {@code SCMRelease} without {@code commitSha} predates the field), which is
+   * exactly why the answer is "no run" rather than a default: the alternative is composing and
+   * gating {@code main} on behalf of an event that says nothing about it.
+   */
+  @Test
+  public void aReleaseEventNamingNoRevisionCostsACheckoutlessTriggerItsRun() throws Exception {
+    fakeConfig.putTriggers(
+        repoId, "main", HEAD, new EventTriggerFile(PLAIN_PATH, NO_CHECKOUT_RELEASE_TRIGGER));
+
+    CiEventTriggerService.Evaluation evaluation =
+        engine.evaluate(releaseEvent(UUID.randomUUID().toString(), "2026.905.60215", null));
+    runService.awaitIdle();
+    forgetLoadedEntities();
+
+    assertEquals(List.of(), evaluation.runIds());
+    assertEquals(List.of(), runService.runsFor(repoId), "no revision is no run, never main's head");
+  }
+
+  /**
+   * <b>And the other events are untouched, which is the half that must not be read as the same
+   * thing.</b> An event that names no revision in this repository — here an ordinary push event the
+   * file declares no checkout for — is still recorded at the tracked branch's head, because that is
+   * the only revision that exists rather than a fallback from one that does.
+   */
+  @Test
+  public void aNonReleaseEventWithNoCheckoutStillRunsAtMainsHead() throws Exception {
+    fakeConfig.putTriggers(
+        repoId, "main", HEAD, new EventTriggerFile(PLAIN_PATH, PLAIN_TRIGGER));
+
+    deliver(arrival(UUID.randomUUID().toString(), push("feature/x", PUSHED)));
+
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(1, recorded.size());
+    assertEquals("main", recorded.get(0).branch);
+    assertEquals(HEAD, recorded.get(0).commitSha, "the convention, and the only answer there is");
   }
 
   // --- fixture ---------------------------------------------------------------------------------

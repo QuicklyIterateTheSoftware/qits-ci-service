@@ -67,6 +67,18 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
   private static final String PAYLOAD =
       "{\"branch\":\"main\",\"commitSha\":\"cafebabe\",\"repoId\":\"qits-spa-ui-components\"}";
 
+  /**
+   * A release request's re-fold, as it is announced: the backing branch and the tip of the fold.
+   *
+   * <p>Both halves are what the QA pipeline above is recorded at, because a release event names the
+   * revision it is about and a trigger declaring no {@code checkout:} is recorded at exactly that —
+   * never at {@code main}'s head, which is a commit the request's fold is not.
+   */
+  private static final String RELEASE_REQUEST_PAYLOAD =
+      "{\"backingBranch\":\"release/r-1\",\"mergedSha\":\""
+          + "b".repeat(40)
+          + "\",\"releaseRequestId\":\"r-1\"}";
+
   private static final String HEAD = "a".repeat(40);
 
   @Inject CiEventTriggerService engine;
@@ -195,8 +207,12 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
           - image: alpine:3
             script: echo publish
         """);
+    // It carries `commitSha` because the event does: a release event states the revision it is
+    // about, and a file declaring no `checkout:` is recorded at that revision rather than at main's
+    // head. Without it this event composes and records nothing at all.
     String scmRelease =
         "{\"branch\":\"release/maintenance-service\","
+            + "\"commitSha\":\"" + "d".repeat(40) + "\","
             + "\"projectId\":\"b03b7c4e-1d2f-4a5b-8c9d-0e1f2a3b4c5d\","
             + "\"repository\":\"764e8bf9-3a2b-4c1d-9e8f-7a6b5c4d3e2f\","
             + "\"repositoryName\":\"qits-platform-maintenance\","
@@ -645,7 +661,7 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
   public void anEventClaimedByADeadProcessIsRecoveredBySweepingWhatItLeftOwed() throws Exception {
     seedTrigger(RELEASE_REQUEST_PATH, RELEASE_REQUEST_TRIGGER);
     String eventId = UUID.randomUUID().toString();
-    ownedByADeadProcess(eventId, "ReleaseRequestChanged");
+    ownedByADeadProcess(eventId, "ReleaseRequestChanged", RELEASE_REQUEST_PAYLOAD);
     assertEquals(List.of(), runService.runsFor(repoId), "nothing ran: that is the loss");
 
     engine.sweepOwed(Instant.now());
@@ -669,7 +685,7 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
     String eventId = UUID.randomUUID().toString();
     deliver(arrival(eventId, "BuildSuccessful", PAYLOAD));
     assertEquals(1, runService.runsFor(repoId).size());
-    ownedByADeadProcess(eventId, "BuildSuccessful");
+    ownedByADeadProcess(eventId, "BuildSuccessful", PAYLOAD);
 
     engine.sweepOwed(Instant.now());
 
@@ -689,12 +705,12 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
   }
 
   /** The state a process that died between the claim and the run leaves in ci's own store. */
-  private void ownedByADeadProcess(String eventId, String eventName) {
+  private void ownedByADeadProcess(String eventId, String eventName, String payload) {
     QuarkusTransaction.requiringNew()
         .run(
             () -> {
               owedEvents.record(
-                  eventId, eventName, Instant.parse("2026-07-31T12:46:03Z"), PAYLOAD);
+                  eventId, eventName, Instant.parse("2026-07-31T12:46:03Z"), payload);
               // Aged past any grace, which is what makes it the periodic sweep's business as well as
               // the boot sweep's.
               owedEvents.findById(eventId).acceptedAt = Instant.now().minus(Duration.ofMinutes(30));

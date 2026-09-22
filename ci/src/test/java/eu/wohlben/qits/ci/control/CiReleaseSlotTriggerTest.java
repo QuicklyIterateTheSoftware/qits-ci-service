@@ -513,6 +513,87 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     assertFalse(stillOwed(arrival.eventId()), "and the ledger is clear again");
   }
 
+  // --- an event that names no revision: nothing is read, nothing composes, and it IS settled -------
+
+  /**
+   * <b>A release event with no sha composes nothing and reads nothing</b>, where it used to compose
+   * a release pipeline out of {@code main}.
+   *
+   * <p>That fallback invented the scenario it then resolved wrongly. qits-projects announces a
+   * release request from the fold path alone, and a request whose fold could not be made is
+   * CONFLICTED — frozen, never re-folded, never re-announced until a push clears it — so nothing on
+   * the live path emits an event with no revision. What the fallback did was turn "nothing should
+   * run" into "a pipeline composed from {@code main} ran against a tree this release is not, and
+   * reported a verdict about it".
+   *
+   * <p>The assertion is therefore an ABSENCE as much as a count: no read at {@code main}, no read
+   * anywhere, no run. A fallback passes the run count of a suite that only asserts what ran.
+   */
+  @Test
+  public void aReleaseEventThatNamesNoShaComposesNothingAndIsSettled() throws Exception {
+    seedSlots("archetype: spa-frontend\n");
+    seedArchetype("spa-frontend", SPA_FRONTEND);
+    // And the slot file at main too, so a fallback to main's head would SUCCEED and compose a run.
+    // Only the assertions below stand between that and a green suite.
+    fakeConfig.putFile(repoId, HEAD, CiReleaseSlotParser.CONFIG_PATH, "archetype: spa-frontend\n");
+
+    CiEventTriggerService.Arrival arrival =
+        new CiEventTriggerService.Arrival(
+            UUID.randomUUID().toString(),
+            CiReleaseComposer.RELEASE_REQUEST_EVENT,
+            Instant.parse("2026-09-06T09:00:00Z"),
+            "{\"repoName\":\"qits-target\",\"backingBranch\":\"release/abc\","
+                + "\"releaseRequestId\":\"a1b2c3\"}");
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(List.of(), runService.runsFor(repoId), "no revision, no pipeline, no run");
+    assertFalse(
+        fakeConfig
+            .fileReads()
+            .contains(repoId + "@" + HEAD + "/" + CiReleaseSlotParser.CONFIG_PATH),
+        "and NOTHING is read at main's head — the fallback this removed: " + fakeConfig.fileReads());
+    assertTrue(
+        fakeConfig.fileReads().stream()
+            .noneMatch(read -> read.contains(CiReleaseSlotParser.CONFIG_PATH)),
+        "there is nowhere to read the declaration AT, so it is not read at all: "
+            + fakeConfig.fileReads());
+    assertFalse(
+        stillOwed(arrival.eventId()),
+        "and the event is settled: a payload cannot grow the field later, so an owed row for it"
+            + " would be a row nothing could ever clear");
+  }
+
+  /**
+   * The same answer for a sha that is THERE and refused, which is the half a "the field is missing"
+   * check would miss. {@code CiIdentifiers.requireSha} refuses it, and a refused value must not be
+   * quietly downgraded to {@code main}'s head — that is the fallback arriving through the other
+   * door, and it would let a hostile payload choose to have main gated in place of the commit it
+   * claims to be about.
+   */
+  @Test
+  public void aReleaseEventWhoseShaIsMalformedComposesNothingAndIsSettled() throws Exception {
+    seedSlots("archetype: spa-frontend\n");
+    seedArchetype("spa-frontend", SPA_FRONTEND);
+    fakeConfig.putFile(repoId, HEAD, CiReleaseSlotParser.CONFIG_PATH, "archetype: spa-frontend\n");
+
+    CiEventTriggerService.Arrival arrival =
+        new CiEventTriggerService.Arrival(
+            UUID.randomUUID().toString(),
+            CiReleaseComposer.RELEASE_EVENT,
+            Instant.parse("2026-09-06T10:00:00Z"),
+            "{\"repository\":\"qits-target\",\"version\":\"2026.906.100732\","
+                + "\"commitSha\":\"$(rm -rf /)\"}");
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(List.of(), runService.runsFor(repoId), "a refused sha is no revision at all");
+    assertFalse(
+        fakeConfig
+            .fileReads()
+            .contains(repoId + "@" + HEAD + "/" + CiReleaseSlotParser.CONFIG_PATH),
+        "and never at main's head instead: " + fakeConfig.fileReads());
+    assertFalse(stillOwed(arrival.eventId()), "settled, for the same reason the missing half is");
+  }
+
   // --- broken committed content: no run, and the event IS settled -----------------------------------
 
   @Test

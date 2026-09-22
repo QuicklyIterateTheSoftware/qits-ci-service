@@ -125,7 +125,7 @@ public final class CiReleaseComposer {
    * all: the repository's {@code release.yml} is read at the rev the composed run will check out,
    * which is the rev these paths resolve to in the payload. Spelling them twice — once in the text
    * emitted here, once in that resolution — is two things that must always agree and nothing to make
-   * them agree. See {@code CiEventTriggerService.releaseRev}.
+   * them agree. See {@code CiEventTriggerService.releaseRevision}.
    */
   public static final String RELEASE_REQUEST_BRANCH_PATH = "backingBranch";
 
