@@ -92,6 +92,8 @@ components:
           type: string
         archetypeRev:
           type: string
+        archetypeVersion:
+          type: string
         priority:
           type: string
         expectedStepDurationsMillis:

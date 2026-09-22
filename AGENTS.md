@@ -2038,10 +2038,11 @@ phase.
   `releasePhaseAt` has always read at the rev it was asked about — and the run composed from a `main`
   with no such file, so no run was recorded, the event settled and the request sat RELEASED forever
   with `main` unable to move; measured 2026-09-22 on qits-landing-app), and no change to
-  `release.yml` was ever exercised by the release that carried it. **The ARCHETYPE recipe stays at
-  the wrapper's own `main`**: that is a different repository, it is no part of the release request,
-  and keeping it there is what keeps the platform prelude/postlude and the shared recipes
-  non-tamperable by a branch. **A payload with no usable sha composes NOTHING — there is no
+  `release.yml` was ever exercised by the release that carried it. **The ARCHETYPE recipe is not
+  read from that revision either, and is read at the wrapper's newest RELEASED version**: that is a
+  different repository, it is no part of the release request, and keeping it out of the revision
+  under test is what keeps the platform prelude/postlude and the shared recipes non-tamperable by a
+  branch. **A payload with no usable sha composes NOTHING — there is no
   fallback to `main`'s head any more.** It used to answer the head, on the argument that the
   composed `optional:` checkout would build the head anyway; that justified the defect with the
   defect, since a pipeline composed from `main` gates a commit nobody released. It is also
@@ -2054,29 +2055,69 @@ phase.
   nothing could ever clear, with the watermark stuck behind it. `CiReleaseSlotTriggerTest`
   asserts both halves as absences — never the repository's file at `main`, never the recipe at
   the fold — and the missing and the malformed sha as two more.
-  <br>**The wrapper half follows the repository half's resolve-once discipline now, and it did not
-  until ticket qits-336.** A candidate's `release.yml` has always been read at a resolved sha rather
-  than a branch name; the archetype recipe was read at the literal string `main`, once per
-  candidate, so twenty repositories on `java-service` were twenty fetches of a moving ref and a push
-  to the wrapper mid-evaluation could compose two of them from two different recipes with nothing on
-  either row to say so. The platform listing — one per evaluation either way — is hoisted beside the
-  `platformRepo` resolution and its `headSha()` is what every archetype read of that evaluation uses.
-  It is hoisted **unconditionally**, including for a project-scoped evaluation that runs no platform
-  pass at all, because such an evaluation still composes release pipelines and still needs the sha.
-  `ArchetypeReads` is the one value that travels (repository, sha, and a per-evaluation memo of what
-  has been read — safe only because the sha is resolved, and worth having because of those twenty
-  identical fetches).
-  <br>**No sha is no run, and there is no fallback to `main`.** A wrapper listing that comes back
-  `UNREACHABLE` leaves nothing to read at, so a repository naming an archetype gets
-  `ARCHETYPE_UNREADABLE` — no release run, event left owed for the sweep — exactly as it does when
-  the recipe file itself cannot be read. Reading at the branch name instead would reintroduce the
-  moving ref silently, under a flaky git host, for the compositions that matter most.
-  `CiReleaseSlotTriggerTest` asserts the absence of any read at the literal `main`, which is the only
-  form that assertion can take: a silent fallback passes every other test in the suite.
-  <br>**`ci_run` records what was used** — `archetype_name`, `archetype_config_path` and
-  `archetype_rev` (`V20__run_archetype.sql`), nullable, no backfill. All three null is three
-  different legitimate statements and never "unknown for this run": a committed trigger file composed
-  from nothing, a slot file naming no `archetype:`, or a row older than the columns. **A retry
+  <br>**The recipe comes from a version somebody RELEASED, which is the last thing on this path
+  that came from a `main` head.** It was read at the literal string `main`, once per candidate;
+  then, briefly, at the sha the wrapper's own trigger listing resolved `main` to, once per
+  evaluation (which fixed a moving ref *inside* one evaluation — twenty repositories on
+  `java-service` were twenty fetches of a moving ref, and a push to the wrapper mid-evaluation could
+  compose two of them from two different recipes). It is read at the sha of the wrapper's **newest
+  released version** now: these recipes contribute most of the steps of every release pipeline on
+  the estate, and `main`'s head is content nobody gated. Owner ruling, stated repeatedly: nothing in
+  a release pipeline may come from "whatever is on main". A released wrapper version is a
+  `YYYY.MMDD.HHMMSS` tag a release request carried, CI gated and a person approved, and it cannot
+  move afterwards.
+  <br>**The cost is real and is the point: a new archetype is not usable until a wrapper RELEASE
+  carries it.** `.config/qits/release-archetypes/<name>.yml` landing on the wrapper's main changes
+  nothing for anybody; the wrapper's own release request, and somebody's approval of it, is what
+  makes the recipe live. A change to the release cycle is one wrapper commit **plus a wrapper
+  release**.
+  <br>**Resolved once per evaluation, exactly as the listing is.** `readWrapper` gets two reads of
+  the wrapper out of one value — the platform trigger listing at `main` (a trigger is discovered at
+  `main` like every other trigger on this platform) and `CiConfigSource.readTags`, whose answer
+  `CiReleasedVersions` picks the newest release-shaped tag out of by `VersionSort`. One repository,
+  two questions, two revisions. The listing is made **unconditionally**, as it always was; the tag
+  read is made by `ArchetypeReads.released()` on **first use** and then fixed, so an evaluation in
+  which nothing names an archetype pays nothing for it — the same gate the `release.yml` blob read
+  is behind, and the reason a `BuildSuccessful` still costs exactly what it cost before any of this
+  existed. Lazy is still once-per-evaluation: one pass runs on one thread, and `ArchetypeReads` is
+  the one value that travels (repository, listing, the resolved released version, and a
+  per-evaluation memo of what has been read — safe only because the sha is resolved).
+  <br>**Which tag is a release is qits-ci's own reading and it is NARROW.** `CiReleasedVersions`
+  admits `[0-9]{4}\.[0-9]{3,4}\.[0-9]{1,6}` and nothing else, so `latest`, `v2` and
+  `release/2026.922.161358` are not releases — a repository can push a tag of any name, and a
+  permissive reading would let an unreviewed name out-sort every real release and pin the estate's
+  recipes to it. The policy is pure and lives in `ci/control`; the port answers refs and judges
+  none of them.
+  <br>**No released version is no run, and BOTH ways of having none leave the event OWED.** The git
+  host could not be asked, or the wrapper has genuinely never released: either way a repository
+  naming an archetype gets `ARCHETYPE_UNREADABLE` — no release run, event left owed for the sweep —
+  exactly as it does when the recipe file itself cannot be read. The second is the decision worth
+  knowing, and it turns on the standing "can asking again change the answer" test: a wrapper with no
+  release is **not** a person's declaration about the candidate repository the way an absent
+  `release.yml` is. Nobody wrote "this estate has no approved recipes"; the next wrapper release
+  makes the same question answer differently with nothing in the candidate repository having moved,
+  and settling it would answer "no QA run" to a release request waiting for exactly that verdict,
+  with nothing to re-drive it. Reading at a branch name or at `main`'s head instead would
+  reintroduce the unapproved ref silently, for the compositions that matter most.
+  `CiReleaseSlotTriggerTest` asserts the absence of any read at `main` or at `main`'s head, which is
+  the only form that assertion can take: a silent fallback passes every other test in the suite, and
+  it seeds readable decoy recipes at both wrong revisions so a regression composes successfully.
+  <br>**The bootstrap case is reachable and does not deadlock, for one reason.** An estate whose
+  wrapper has never been released composes no release pipeline for any repository that names an
+  archetype. Only a repository that ASKS for one needs one — and the wrapper's own
+  `.config/qits/release.yml` names no `archetype:`, declaring its single QA slot itself — so the
+  wrapper's own release request composes, gates and is approved with no archetype read anywhere, and
+  that first wrapper release is what makes every other repository's release pipeline composable. On
+  this estate the question is moot (qits-qits carries 141 released tags), but a fresh one starts
+  there.
+  <br>**`ci_run` records what was used** — `archetype_name`, `archetype_config_path`,
+  `archetype_rev` (`V20__run_archetype.sql`) and `archetype_version`
+  (`V22__run_archetype_version.sql`), nullable, no backfill. The last is the legible half and is not
+  derivable from the sha: a commit does not carry the names of the tags pointing at it and no git
+  host answers "which release was this", while a person reading a run row is holding
+  `2026.922.161358`. All four null is three different legitimate statements and never "unknown for
+  this run": a committed trigger file composed from nothing, a slot file naming no `archetype:`, or
+  a row older than the columns. **A retry
   records its own re-composition rather than copying the source row's**, which is what makes the pair
   of rows the answer to "did the recipe move" — the one arm that copies is a retry that fell back to
   the stored document, since those bytes are what will really run.
@@ -2512,6 +2553,16 @@ column genuinely does not know — a digest written for a run that already happe
 about bytes nobody can now check. What is *not* a null is a platform image the registry would not
 answer about: that refuses the accept outright, so there is no row. See "A run is fixed to one
 toolchain".
+
+`V22__run_archetype_version.sql` is V8's shape a **tenth** time: `ci_run.archetype_version
+varchar(64)`, nullable, no default, no backfill, part of no constraint and carrying no index. It is
+V20's other half: that migration records WHICH WRAPPER COMMIT composed a run, this records which
+released wrapper VERSION that commit is — the name a release request carried and a person approved,
+which no git host will answer back from a sha. It landed with the change that moved the archetype
+read off the wrapper's `main` head and onto the wrapper's newest released version; null means what
+V20's three nulls mean, plus every row composed while the recipe still came from `main`, and there
+is nothing those rows could be filled in with. 64 characters, `archetype_rev`'s width, so a value
+one of the pair could hold and the other could not can never exist.
 
 `V18__retire_daemon_pin_ladder.sql` is the **first migration in this lineage that drops anything**,
 and it owes an argument the additive ones do not. Every file since V1 has added a nullable column and

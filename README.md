@@ -1283,21 +1283,32 @@ reparses the composed text off the row exactly as it reparses a committed file.
 **The archetype recipes live in the wrapper**, at
 `.config/qits/release-archetypes/<name>.yml` in the repository
 `qits.ci.platform-pipelines-repository` names, read through the same content route the platform
-pipelines use — **at the sha that repository's `main` resolved to for this evaluation**, not at the
-branch name. The wrapper's trigger listing is what resolves it, once per evaluation, so every
-repository composed in one pass sees one recipe and the run records which one. So **a change to the
-release cycle is still one wrapper commit**: no qits-ci deploy, no 47-repository sweep, effective on
-the next event, which resolves the head again. A recipe is this same document minus `archetype:` —
-recipes do not chain.
+pipelines use — **at the newest version that repository has RELEASED**, never at its `main` head and
+never at the branch name. qits-ci reads the wrapper's tags off the git host's own ref advertisement
+(`GET …/info/refs?service=git-upload-pack`), takes the highest `YYYY.MMDD.HHMMSS` tag by version
+order, and reads every recipe of that evaluation at that tag's commit — so every repository composed
+in one pass sees one recipe, and that recipe is one a release request carried, CI gated and a person
+approved. These recipes are most of the steps of a release pipeline, and a release pipeline may not
+be composed out of content nobody gated. A recipe is this same document minus `archetype:` — recipes
+do not chain.
 
-**A wrapper that cannot be listed composes nothing.** There is then no sha to read a recipe at, and
-qits-ci does not fall back to `main` — a repository naming an archetype gets no release run and the
-triggering event is left owed for the sweep, exactly as it is when the recipe file itself cannot be
-read. The run row records what was used: `archetypeName`, `archetypeConfigPath` and `archetypeRev`
-on `GET /ci/api/runs/{runId}`, all three null on a run composed from no recipe — a committed
+**So a change to the release cycle is one wrapper commit *and a wrapper release*.** It used to take
+effect on the next event; it now takes effect when the wrapper release carrying it lands. A brand
+new archetype file is invisible to every repository until then.
+
+**A wrapper with no released version composes nothing**, and that covers both a git host that could
+not be asked and a wrapper that has never released. There is then no approved revision to read a
+recipe at, and qits-ci does not fall back to `main` — a repository naming an archetype gets no
+release run and the triggering event is left **owed** for the sweep, exactly as it is when the recipe
+file itself cannot be read. (Owed rather than settled in both cases: the wrapper's next release makes
+the question answerable, so a release request waiting for a verdict must still be there to receive
+it.) A repository whose `release.yml` names no `archetype:` is unaffected — which is how an estate
+whose wrapper has never released still gets its first wrapper release gated. The run row records what
+was used: `archetypeName`, `archetypeConfigPath`, `archetypeRev` and `archetypeVersion` on `GET
+/ci/api/runs/{runId}`, all four null on a run composed from no recipe — a committed
 `ci-event-*.yml`, a platform pipeline, or a `release.yml` that names no `archetype:`. A **retry**
 records its own re-composition rather than the source run's, so two rows at one `commitSha` with
-different `archetypeRev`s are the record of a platform fix landing between them.
+different `archetypeVersion`s are the record of a platform fix landing between them.
 
 **A repository slot replaces the archetype's entirely.** Whole slot, never per-step merging: a merge
 order is a thing nobody can read off a file. Parameterisation is environment only.
@@ -1381,9 +1392,11 @@ A payload with no usable sha composes **nothing**: no read, no run, one ERROR na
 the missing or refused field, and the event settled rather than left owed. There is no fallback to
 `main`'s head — a pipeline composed from `main` gates a commit nobody released — and the state is
 unreachable on the live path anyway, since a release request whose fold could not be made is
-CONFLICTED and announces nothing at all. **The archetype recipe is the exception and stays at the WRAPPER
-repository's `main`**: it is another repository's file, no part of the release request, and that is
-what keeps the platform prelude/postlude out of a branch's reach.
+CONFLICTED and announces nothing at all. **The archetype recipe is the exception and is read at the WRAPPER
+repository's newest RELEASED version**: it is another repository's file, no part of the release
+request, and that is what keeps the platform prelude/postlude out of a branch's reach — while
+reading it at a release rather than at the wrapper's `main` is what keeps it out of the reach of
+whatever landed on the wrapper a minute ago.
 
 **The extra blob read is gated on the two release event names**, so every other event on the bus
 costs exactly what it cost before this feature existed.

@@ -176,10 +176,16 @@ public class CiEventTriggerService {
    * <p><b>It is a branch name only where a head has to be RESOLVED, and nothing is ever read at the
    * literal string.</b> Both listings — a candidate's own trigger files and the platform
    * repository's — are made at this branch and answer the sha they resolved; everything read
-   * afterwards is read at a sha. The wrapper's archetype recipes used to be the exception (read at
-   * the literal string, once per candidate, so a push to the wrapper mid-evaluation could compose
-   * two repositories of one archetype from two different recipes with nothing recording which);
-   * they are read at {@code ArchetypeReads.rev()} now, once for the whole evaluation.
+   * afterwards is read at a sha.
+   *
+   * <p><b>The wrapper's archetype recipes are not read at this branch at all any more.</b> They were
+   * read at the literal string, once per candidate; then at the sha this branch resolved to, once
+   * per evaluation; and now at the sha of the newest version the wrapper has <b>released</b>, once
+   * per evaluation ({@code ArchetypeReads.rev()}). The first step fixed a moving ref inside one
+   * evaluation, this one fixes the ref itself: those recipes are most of the steps of every release
+   * pipeline on the platform, and {@code main}'s head is content nobody gated. A released version is
+   * a tag CI gated and a person approved. Owner ruling: nothing in a release pipeline may come from
+   * "whatever is on main".
    *
    * <p><b>A repository's release SLOTS are the one thing not read here at all.</b> {@code
    * .config/qits/release.yml} used to be read at this branch's resolved head, which composed a
@@ -1085,14 +1091,17 @@ public class CiEventTriggerService {
    * and it is the same revision the run checks out, so nothing is composed from one commit and
    * executed against another.
    *
-   * <p><b>The WRAPPER's archetype recipe is not part of that and stays at the wrapper's own {@code
-   * main}</b> ({@code wrapper}, resolved once per evaluation by {@link #readWrapper}). That is a
-   * different repository: it is no part of the release request, nobody approves it through this
-   * request's gate, and the prelude and postlude it contributes are platform process. Reading it at
-   * the revision under test would let a branch rewrite the platform's half of its own gate. So the
-   * repository's declaration moves with the repository and the platform's share does not, and the
-   * run row records both revisions — {@code branch}/{@code commit_sha} for the first, {@code
-   * archetype_rev} for the second — so which recipe met which commit is readable afterwards.
+   * <p><b>The WRAPPER's archetype recipe is not part of that, and it is read at the wrapper's newest
+   * RELEASED version</b> ({@code wrapper}, resolved once per evaluation by {@link #readWrapper}).
+   * That is a different repository: it is no part of the release request, nobody approves it through
+   * this request's gate, and the prelude and postlude it contributes are platform process. Reading
+   * it at the revision under test would let a branch rewrite the platform's half of its own gate —
+   * and reading it at the wrapper's {@code main} let whatever landed on the wrapper a minute ago do
+   * the same thing to every repository at once. So the repository's declaration comes from the
+   * revision being gated, the platform's share comes from a version somebody released, and the run
+   * row records both — {@code branch}/{@code commit_sha} for the first, {@code archetype_rev} and
+   * {@code archetype_version} for the second — so which recipe met which commit is readable
+   * afterwards.
    *
    * <p><b>ABSENT and UNREACHABLE are still different answers, and the distinction is more
    * load-bearing now rather than less.</b> {@code ABSENT} is a 404 at a rev the host has already
@@ -1450,13 +1459,25 @@ public class CiEventTriggerService {
    * must fix, the other is a question this instance could not ask at all. A second copy of the
    * parse/read/compile sequence would be a second place for the archetype branch to drift.
    *
-   * <p><b>No wrapper sha is {@link ComposeOutcome#ARCHETYPE_UNREADABLE}, and there is deliberately
-   * no fallback.</b> A wrapper whose listing did not answer has no head this evaluation can name, so
-   * a repository that asks for a recipe gets the same outcome it gets when the recipe file itself
-   * cannot be read: no run, and — on the evaluation path — an event left owed for the sweep. The
-   * tempting alternative is to read at {@link #TRIGGER_BRANCH} instead, which is exactly the moving
-   * ref this arrangement removes: it would reintroduce it silently, only under a flaky git host, and
-   * only for the repositories whose composition mattered most.
+   * <p><b>No released wrapper version is {@link ComposeOutcome#ARCHETYPE_UNREADABLE}, and there is
+   * deliberately no fallback.</b> A wrapper whose tags could not be read, and one that has never
+   * released, both leave no revision this evaluation may read a recipe at — so a repository that
+   * asks for one gets the same outcome it gets when the recipe file itself cannot be read: no run,
+   * and, on the evaluation path, an event left owed for the sweep. The tempting alternative is to
+   * read at {@link #TRIGGER_BRANCH} instead, which is exactly the unapproved moving ref this
+   * arrangement removes: it would reintroduce it silently, only when the estate is in a state
+   * nobody is watching, and only for the repositories whose composition mattered most.
+   *
+   * <p><b>Both of those are OWED rather than settled, and the reasoning is the "can asking again
+   * change the answer" test this file applies everywhere else.</b> A transport failure obviously
+   * can. A wrapper that has never released can too — and that is the half worth stating, because it
+   * is not a person's declaration about the candidate repository the way an absent {@code
+   * release.yml} is. Nobody wrote "this estate has no approved recipes"; the estate simply has not
+   * released its wrapper yet, and the very next wrapper release makes the same question answer
+   * differently with nothing in the candidate repository having moved. Settling it would answer "no
+   * release run" to a release request that is at that moment waiting for exactly that run's verdict,
+   * and nothing would ever re-drive it — the failure {@code ReleaseSlots.UNREADABLE} exists to
+   * prevent, arrived at from the wrapper's side.
    */
   private ComposeAttempt attemptCompose(
       CiRepoRef repo,
@@ -1479,25 +1500,25 @@ public class CiEventTriggerService {
     CiReleaseArchetypes.ArchetypeRef used = null;
     if (slots.namesArchetype()) {
       if (wrapper.repo() != null && wrapper.rev() == null) {
-        // FAIL CLOSED. There is a wrapper and its listing did not answer, so no sha exists to read
-        // the recipe at. Reading at the branch name would compose from whatever main happens to be
-        // when the read lands, which is the thing this whole path stopped doing.
+        // FAIL CLOSED. There is a wrapper and no released version of it could be resolved, so no
+        // approved revision exists to read the recipe at. Reading at the branch name would compose
+        // from whatever main happens to be when the read lands, which is the thing this whole path
+        // stopped doing — and the whole of what this ticket closes.
         LOG.warnf(
-            "%s: %s names release archetype '%s', but %s@%s could not be listed, so there is no"
-                + " revision to read the recipe at — %s",
+            "%s: %s names release archetype '%s', but no released version of %s could be resolved,"
+                + " so there is no approved revision to read the recipe at — %s",
             repoId,
             CiReleaseSlotParser.CONFIG_PATH,
             slots.archetype(),
             wrapper.repo().display(),
-            TRIGGER_BRANCH,
             consequence);
         return ComposeAttempt.failed(
             ComposeOutcome.ARCHETYPE_UNREADABLE,
             CiReleaseSlotParser.CONFIG_PATH
                 + " names release archetype '"
                 + slots.archetype()
-                + "', and the platform-pipelines repository could not be read at all, so there is no"
-                + " revision to read that recipe at");
+                + "', and no released version of the platform-pipelines repository could be"
+                + " resolved, so there is no approved revision to read that recipe at");
       }
       // A null wrapper repository falls through here on purpose: CiReleaseArchetypes.read already
       // owns that case — "this deployment has no platform-pipelines repository" — and never touches
@@ -1569,11 +1590,14 @@ public class CiEventTriggerService {
    * all, since the run being re-fired is the one thing the caller definitely has. Each is a WARN
    * naming the reason, so a retry that quietly kept the old prelude is readable from the log.
    *
-   * <p><b>The wrapper's head is resolved AT RETRY TIME, and that is the point rather than an
-   * accident of where the code sits.</b> The repository's half is pinned to the commit the source
-   * run built; the platform's half is deliberately today's, so the recipe is read at whatever sha
-   * the wrapper's {@code main} names <em>now</em>. Pinning a retry to the source run's archetype
-   * revision would re-run the broken prelude and close exactly the loop this method exists to open.
+   * <p><b>The wrapper's released version is resolved AT RETRY TIME, and that is the point rather
+   * than an accident of where the code sits.</b> The repository's half is pinned to the commit the
+   * source run built; the platform's half is deliberately today's, so the recipe is read at whatever
+   * version the wrapper has most recently <em>released</em> now. Pinning a retry to the source run's
+   * archetype revision would re-run the broken prelude and close exactly the loop this method exists
+   * to open. What changed with the released-version rule is only how far "today's" reaches: a
+   * platform fix heals an earlier failed release by retry once the wrapper release carrying it has
+   * landed, rather than the moment it is merged.
    * The two revisions on the two rows are therefore the answer to "did the recipe move", which is
    * the reason they are recorded at all.
    *
@@ -1657,10 +1681,10 @@ public class CiEventTriggerService {
    *
    * <h2>Two things the answer is NOT about</h2>
    *
-   * <p><b>The repository's half is read at {@code rev}, the platform's at the sha the wrapper's
-   * {@code main} resolves to when this read is made</b> — {@link #recomposedReleaseDocument}'s
-   * split, for its reason, and this door resolves that head itself with one listing of its own,
-   * since it is outside any evaluation. So this is an answer
+   * <p><b>The repository's half is read at {@code rev}, the platform's at the sha of the newest
+   * version the wrapper has RELEASED when this read is made</b> — {@link
+   * #recomposedReleaseDocument}'s split, for its reason, and this door resolves that version itself
+   * with reads of its own, since it is outside any evaluation. So this is an answer
    * about the pipeline <em>as it composes now</em>, not as it composed when the tag was cut: an
    * archetype that gains or loses its {@code release:} slot changes what this read says about a tag
    * whose own bytes never moved. That is the wanted direction, since the run that would satisfy the
@@ -1673,8 +1697,10 @@ public class CiEventTriggerService {
    * composed nothing there, and the request sat RELEASED with a gate nothing would ever answer.
    * {@link #releaseRevision} put the evaluation on the event's own revision; both halves of the split are
    * now identical on both sides (the repository's declaration at the rev under test, the wrapper's
-   * recipe at the wrapper's {@code main}), which is what makes this answer a prediction of what the
-   * run will do rather than a second opinion about it. Nothing here changed to get there.
+   * recipe at the wrapper's newest released version), which is what makes this answer a prediction
+   * of what the run will do rather than a second opinion about it. Nothing here changed to get
+   * there, and nothing had to change when the wrapper's half moved off {@code main} either: both
+   * sides read it through {@link #readWrapper}.
    *
    * <p><b>{@code false} is a real answer and not an absence.</b> {@code spa-frontend} and {@code
    * cli} declare no {@code release:} slot on purpose, and a rev with no {@code release.yml} at all
@@ -1792,19 +1818,28 @@ public class CiEventTriggerService {
   }
 
   /**
-   * <b>The wrapper half of one composition pass: which repository, at which sha, and what has
-   * already been read out of it.</b>
+   * <b>The wrapper half of one composition pass: which repository, at which RELEASED version, and
+   * what has already been read out of it.</b>
    *
-   * <p>It exists so that the wrapper is resolved and listed <b>once</b> and then travels as one
-   * value. The alternative was a {@code CiRepoRef} and a {@code String rev} threaded side by side
-   * through five signatures, which is two things that must always agree and nothing to make them.
+   * <p>It exists so that the wrapper is resolved <b>once</b> and then travels as one value. The
+   * alternative was a {@code CiRepoRef} and a {@code String rev} threaded side by side through five
+   * signatures, which is two things that must always agree and nothing to make them.
+   *
+   * <p><b>It holds two reads of one repository and they are at two different revisions, which is
+   * deliberate rather than untidy.</b> The platform-scope trigger LISTING is made at {@link
+   * #TRIGGER_BRANCH}, because a {@code ci-platform-event-*.yml} is a trigger — the question it
+   * answers is "does this arriving event match anything", which is the same question every
+   * candidate's own files are asked at {@code main}. The archetype RECIPE is read at the newest
+   * version the wrapper has released, because it is not a trigger at all: it is most of the steps of
+   * a release pipeline, and a release pipeline may not be composed out of content nobody gated. One
+   * repository, two questions, two revisions.
    *
    * <p><b>{@link #rev()} null is the fail-closed state and the whole of the discipline.</b> There is
-   * a sha only when the wrapper's own trigger listing came back {@code FOUND}; an {@code
-   * UNREACHABLE} one leaves no sha, and a caller that finds none must refuse to compose rather than
-   * fall back to the literal branch name. Falling back would silently reintroduce the moving ref
-   * this whole arrangement removes — and it would do so exactly when the git host is flaky, which is
-   * when two candidates are most likely to see two different recipes.
+   * a sha only when the tag read answered and carried a released version; a git host that said
+   * nothing and a wrapper that has never released both leave none, and a caller that finds none must
+   * refuse to compose rather than fall back to a branch name. Falling back would silently
+   * reintroduce the moving ref this whole arrangement removes — and it would do so exactly when the
+   * git host is flaky, which is when two candidates are most likely to see two different recipes.
    *
    * <p><b>The memo is free and is the reason this is a class rather than a record.</b> Twenty
    * repositories on {@code java-service} were twenty identical HTTP fetches of one file per
@@ -1819,6 +1854,21 @@ public class CiEventTriggerService {
 
     /** The wrapper's platform-scope trigger listing, or null when there is no wrapper to list. */
     private final EventTriggerLookup listing;
+
+    /**
+     * The wrapper's newest released version, or null when there is none to be had — which is a git
+     * host that could not be asked, a wrapper that has never released, and no wrapper at all.
+     *
+     * <p><b>Resolved on first use and then fixed</b>, which is once per evaluation either way: the
+     * resolution costs a git-host read, and an evaluation that composes nothing must not pay for
+     * it. That is the same gate {@code releaseSlots} puts on the {@code release.yml} blob read —
+     * an ordinary event costs exactly what it cost before this feature existed — and the laziness
+     * is safe for the reason the memo beside it is: one pass runs on one thread, and what it
+     * answers first is what it answers for the rest of the pass.
+     */
+    private boolean resolvedReleased;
+
+    private CiReleasedVersions.ReleasedVersion released;
 
     private final Map<String, Optional<CiReleaseArchetypes.Archetype>> memo = new HashMap<>();
 
@@ -1835,18 +1885,28 @@ public class CiEventTriggerService {
       return listing;
     }
 
-    /** The sha {@link #TRIGGER_BRANCH} resolved to, or null when the wrapper could not be read. */
+    /** The released version every archetype read of this pass is made at, or null when there is none. */
+    CiReleasedVersions.ReleasedVersion released() {
+      if (!resolvedReleased) {
+        resolvedReleased = true;
+        released = platformRepo == null ? null : newestReleasedWrapperVersion(platformRepo);
+      }
+      return released;
+    }
+
+    /** The sha of that released version, which is the one revision a recipe is ever read at. */
     String rev() {
-      return listing == null || listing.status() != EventTriggerLookup.Status.FOUND
-          ? null
-          : listing.headSha();
+      CiReleasedVersions.ReleasedVersion version = released();
+      return version == null ? null : version.sha();
     }
 
     /**
-     * There <b>is</b> a wrapper and it could not be read — the one state that is a statement about
-     * the git host rather than about anybody's committed bytes, and therefore the one an evaluation
-     * leaves its event owed for. No wrapper at all is not this: that is a deployment's own decision
-     * and is as final as a declaration.
+     * There <b>is</b> a wrapper and no released version of it could be resolved — the one state an
+     * evaluation leaves its event owed for. It covers the git host that did not answer and the
+     * wrapper that has never released alike, and that is a decision rather than an oversight: see
+     * {@link #attemptCompose}, where the two are told apart in the log and answered the same way.
+     * No wrapper at all is not this — that is a deployment's own decision and is as final as a
+     * declaration.
      */
     boolean unlistable() {
       return platformRepo != null && rev() == null;
@@ -1854,19 +1914,29 @@ public class CiEventTriggerService {
 
     /** One recipe, read at {@link #rev()} and remembered for the rest of this pass. */
     Optional<CiReleaseArchetypes.Archetype> read(String name) {
-      return memo.computeIfAbsent(name, asked -> archetypes.read(platformRepo, rev(), asked));
+      return memo.computeIfAbsent(name, asked -> archetypes.read(platformRepo, released(), asked));
     }
   }
 
   /**
-   * Resolves the wrapper and lists it — <b>one</b> listing, which is the whole cost of this.
+   * Resolves the wrapper and lists its triggers, and stands ready to resolve its newest RELEASED
+   * version — <b>one</b> listing now and at most <b>one</b> tag read later, which is the whole cost
+   * of this. The tag read is made by {@code ArchetypeReads.released()} on first use, so an
+   * evaluation in which nothing asks for a recipe pays nothing for it.
    *
-   * <p>Factored out because three callers need a wrapper sha and none of them may invent one: the
-   * evaluation (which also uses the listing for its platform pass, so nothing is read twice), the
-   * retry's re-composition, and the release-phase read. The two outside the evaluation each pay
-   * their own listing, which is accepted: they are one operator or peer request each, not a fan-out.
+   * <p>Factored out because three callers need a wrapper revision and none of them may invent one:
+   * the evaluation (which also uses the listing for its platform pass, so nothing is read twice),
+   * the retry's re-composition, and the release-phase read. The two outside the evaluation each pay
+   * their own pair of reads, which is accepted: they are one operator or peer request each, not a
+   * fan-out.
    *
-   * <p><b>A null platform repository lists nothing.</b> The feature is off, or this deployment's
+   * <p><b>Resolved once per evaluation, exactly as the listing is</b>, and for the same reason one
+   * seam over: every candidate of one evaluation must compose from one wrapper revision. A release
+   * landing mid-evaluation would otherwise compose two repositories of one archetype from two
+   * different recipes, with only the differing {@code archetype_rev} on two rows to say so
+   * afterwards.
+   *
+   * <p><b>A null platform repository reads nothing.</b> The feature is off, or this deployment's
    * configured repository is not in the catalogue — either way there is nothing to ask, and {@code
    * CiReleaseArchetypes.read} already says what a null wrapper means to a repository that asked for
    * a recipe.
@@ -1878,6 +1948,48 @@ public class CiEventTriggerService {
         platformRepo == null
             ? null
             : configSource.readEventTriggers(platformRepo, TRIGGER_BRANCH, CiTriggerScope.PLATFORM));
+  }
+
+  /**
+   * The newest version the wrapper has released, or null when the question has no answer right now.
+   *
+   * <p><b>Two ways there is none and they are logged apart.</b> A tag read that could not be made is
+   * the git host's, and asking again can change it; a wrapper whose tags carry no released version
+   * at all is the estate's, and asking again can change that too — the wrapper releases like any
+   * other repository, and the next release is what makes this answerable. Both therefore leave the
+   * evaluation's event owed rather than settled (see {@link #attemptCompose}), and both are named in
+   * their own sentence, because "qits-ci could not reach the git host" and "this estate has never
+   * released its wrapper" are two very different things to be told at three in the morning.
+   *
+   * <p><b>The second of those is the bootstrap case and it is real.</b> An estate whose wrapper has
+   * never been released composes no release pipeline for any repository that names an archetype —
+   * deliberately, since there is no approved recipe to compose from. The way out is not a fallback:
+   * it is that the wrapper's own {@code release.yml} names no {@code archetype:} (it declares its
+   * one QA slot itself), so the wrapper's first release request composes and gates with no archetype
+   * read at all, and every other repository's release pipeline becomes composable the moment that
+   * first wrapper release lands.
+   */
+  private CiReleasedVersions.ReleasedVersion newestReleasedWrapperVersion(CiRepoRef platformRepo) {
+    CiConfigSource.TagLookup tags = configSource.readTags(platformRepo);
+    if (tags.status() != CiConfigSource.TagLookup.Status.FOUND) {
+      LOG.warnf(
+          "The tags of %s could not be read, so this evaluation has no released wrapper version to"
+              + " compose release pipelines from — an event that needed one stays owed",
+          platformRepo.display());
+      return null;
+    }
+    CiReleasedVersions.ReleasedVersion newest = CiReleasedVersions.newest(tags.tags()).orElse(null);
+    if (newest == null) {
+      LOG.warnf(
+          "%s holds no released version (%d tags, none of them a platform release stamp), so no"
+              + " release archetype can be read from a revision anybody approved",
+          platformRepo.display(), tags.tags().size());
+      return null;
+    }
+    LOG.debugf(
+        "Release archetypes for this evaluation are read from %s at %s (%s)",
+        platformRepo.display(), newest.version(), newest.sha());
+    return newest;
   }
 
   /** A checkout path resolved against the payload; null when the path leads nowhere or to blank. */

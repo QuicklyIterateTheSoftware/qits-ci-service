@@ -1289,7 +1289,7 @@ public class CiRunService {
         // Off the row, like everything else here: a reconstruction re-reads nothing, and the
         // recipe this run really used is already recorded.
         new CiReleaseArchetypes.ArchetypeRef(
-            run.archetypeName, run.archetypeConfigPath, run.archetypeRev));
+            run.archetypeName, run.archetypeConfigPath, run.archetypeRev, run.archetypeVersion));
   }
 
   /**
@@ -3204,7 +3204,10 @@ public class CiRunService {
     return new RetriedPipeline(
         source.triggerConfig,
         new CiReleaseArchetypes.ArchetypeRef(
-            source.archetypeName, source.archetypeConfigPath, source.archetypeRev));
+            source.archetypeName,
+            source.archetypeConfigPath,
+            source.archetypeRev,
+            source.archetypeVersion));
   }
 
   /**
@@ -3284,17 +3287,18 @@ public class CiRunService {
   }
 
   /**
-   * Writes one composition's provenance onto a run row — all three columns or none of them.
+   * Writes one composition's provenance onto a run row — all four columns or none of them.
    *
-   * <p>One place rather than three assignments at each of the two insert sites, because the three
+   * <p>One place rather than four assignments at each of the two insert sites, because the four
    * columns are only meaningful together: a name with no rev says which recipe but not which version
-   * of it. A null reference writes three nulls, which is the ordinary case (every committed trigger
+   * of it. A null reference writes four nulls, which is the ordinary case (every committed trigger
    * file) and is a statement rather than a gap — see {@link CiRun#archetypeName}.
    */
   private static void archetypeOnto(CiRun run, CiReleaseArchetypes.ArchetypeRef archetype) {
     run.archetypeName = archetype == null ? null : archetype.name();
     run.archetypeConfigPath = archetype == null ? null : archetype.configPath();
     run.archetypeRev = archetype == null ? null : archetype.rev();
+    run.archetypeVersion = archetype == null ? null : archetype.version();
   }
 
   private static String cancellationReason(String requestedReason) {

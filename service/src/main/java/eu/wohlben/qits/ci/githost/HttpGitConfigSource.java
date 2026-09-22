@@ -16,7 +16,9 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -27,7 +29,12 @@ import org.jboss.logging.Logger;
  * <pre>
  *   GET {qits.ci.git-host-url}/git/&lt;projectId&gt;/&lt;repoName&gt;/blob/&lt;rev&gt;/&lt;path&gt;  → the raw bytes
  *   GET {qits.ci.git-host-url}/git/&lt;projectId&gt;/&lt;repoName&gt;/tree/&lt;rev&gt;[/&lt;path&gt;] → {"entries":[…]}
+ *   GET {qits.ci.git-host-url}/git/&lt;projectId&gt;/&lt;repoName&gt;/info/refs?service=git-upload-pack
  * </pre>
+ *
+ * <p>The third is the git protocol's own ref advertisement rather than a content route, and it is
+ * here because one question is about the repository rather than about a revision of it: which
+ * versions it has released. See {@link #readTags}.
  *
  * <p>…or the id-addressed {@code /git/&lt;repoId&gt;/…} of the same two routes for a repository whose
  * public name qits-ci does not know — see {@link #repoUrl}, which is the one place that choice is
@@ -89,6 +96,12 @@ public class HttpGitConfigSource implements CiConfigSource {
 
   /** The header both content routes answer the resolved commit in. */
   static final String COMMIT_SHA_HEADER = "Git-Commit-Sha";
+
+  /** Where a tag lives in the ref namespace, which is what the advertisement spells. */
+  static final String TAG_REF_PREFIX = "refs/tags/";
+
+  /** git's own spelling of "and this is what that tag points AT". */
+  static final String PEELED_SUFFIX = "^{}";
 
   /** A config file larger than this is not a config file; refuse it rather than parse a head. */
   static final int MAX_CONFIG_BYTES = 1024 * 1024;
@@ -188,6 +201,75 @@ public class HttpGitConfigSource implements CiConfigSource {
       return FileLookup.unreachable();
     }
     return FileLookup.found(answer.text());
+  }
+
+  /**
+   * Every tag the repository holds, read off the git host's <b>ref advertisement</b>.
+   *
+   * <pre>
+   *   GET &lt;repo&gt;/info/refs?service=git-upload-pack → the v0 pkt-line advertisement
+   * </pre>
+   *
+   * <p><b>An existing route rather than a new one</b>, which is the whole reason this method is
+   * eleven lines of parsing. qits-githost serves the three smart-HTTP endpoints on both addressing
+   * schemes and serves no tag listing of its own; the advertisement is the git protocol's answer to
+   * "which refs do you have", it is what every {@code git ls-remote} on the estate already reads,
+   * and adding a JSON tags route to another service to avoid parsing it would be a cross-repository
+   * change for a wire shape that is already defined. {@link PktLine} is the parser and it is the
+   * only thing here that knows the protocol.
+   *
+   * <p><b>Peeled first.</b> An annotated tag advertises its own object and then a {@code <name>^{}}
+   * line carrying the commit it points at, so the peeled line WINS where there is one — a recipe is
+   * read at a commit, and a tag object is not one. A lightweight tag advertises the commit directly
+   * and has no peeled line, which is the same answer by a shorter route.
+   *
+   * <p><b>Every failure is {@link TagLookup#unreachable()} and never an empty listing.</b> A host
+   * that did not answer, a 403 from the id-addressed scheme (the advertisement is not one of the two
+   * content reads {@code qits.githost.content-readers} opens, so an id-addressed wrapper is refused
+   * here and a name-addressed one is not), a body that is not pkt-line — none of them is a statement
+   * that the repository has no tags, and the caller must not read one as "this repository has never
+   * released". {@code CommitHeld.UNKNOWN}'s rule, applied to the one read that enumerates.
+   */
+  @Override
+  public TagLookup readTags(CiRepoRef repo) {
+    CiIdentifiers.requireRepo(repo);
+
+    Answer answer = get(repoUrl(repo) + "/info/refs?service=git-upload-pack");
+    if (!answer.ok()) {
+      LOG.debugf("ci could not read the refs of %s: HTTP %d", repo.display(), answer.status());
+      return TagLookup.unreachable();
+    }
+    Map<String, String> byName = new LinkedHashMap<>();
+    for (String ref : PktLine.refLines(answer.body())) {
+      // "<sha> <refname>" with the first line carrying "\0<capabilities>" after the name.
+      int space = ref.indexOf(' ');
+      if (space < 0) {
+        continue;
+      }
+      String sha = ref.substring(0, space);
+      String name = ref.substring(space + 1);
+      int nul = name.indexOf('\0');
+      if (nul >= 0) {
+        name = name.substring(0, nul);
+      }
+      name = name.strip();
+      if (!name.startsWith(TAG_REF_PREFIX)) {
+        continue;
+      }
+      String tag = name.substring(TAG_REF_PREFIX.length());
+      boolean peeled = tag.endsWith(PEELED_SUFFIX);
+      if (peeled) {
+        tag = tag.substring(0, tag.length() - PEELED_SUFFIX.length());
+      }
+      // The peeled line comes after the tag object's own and is the one that names a commit, so it
+      // overwrites; a lightweight tag never produces one and its single line stands.
+      if (peeled || !byName.containsKey(tag)) {
+        byName.put(tag, sha);
+      }
+    }
+    List<RepoTag> tags = new ArrayList<>();
+    byName.forEach((name, sha) -> tags.add(new RepoTag(name, sha)));
+    return TagLookup.found(tags);
   }
 
   /**

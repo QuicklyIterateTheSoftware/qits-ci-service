@@ -1,0 +1,37 @@
+-- Which RELEASED version of the wrapper repository composed a run's pipeline: the legible half of
+-- the revision V20's archetype_rev already records.
+--
+-- WHAT CHANGED ABOVE THIS COLUMN, and the reason it is worth a migration. A composed release
+-- pipeline is half the repository's — its release.yml, read at the commit the run builds — and half
+-- the platform's, an archetype recipe in the wrapper repository that contributes most of the steps.
+-- That half was read at the WRAPPER'S MAIN HEAD: the steps of every release on the estate came from
+-- whatever landed on the wrapper a minute ago, gated by nobody and approved by nobody. It is read
+-- at the newest version the wrapper has RELEASED now — a YYYY.MMDD.HHMMSS tag that a release
+-- request carried, CI gated and a person approved, and which cannot move afterwards. Owner ruling,
+-- stated repeatedly: nothing in a release pipeline may come from "whatever is on main".
+--
+-- WHY THE VERSION AND NOT ONLY THE SHA. archetype_rev holds the sha, and it is the value that can
+-- be checked out again, so it stays the anchor. But a commit does not carry the names of the tags
+-- that point at it, and no git host answers "which release was this" — so with the sha alone,
+-- "which approved wrapper release composed this run" is a question nobody could answer from the
+-- row. The version is what a person actually holds: it is what the release request said, what the
+-- approval was recorded against, and what somebody reading a red release at three in the morning
+-- types into a search. Two columns because they are two facts, exactly as archetype_name and
+-- archetype_config_path are.
+--
+-- NULLABLE, NO DEFAULT, NO BACKFILL, part of no constraint and carrying no index — V8's shape a
+-- tenth time, and the no-backfill half is load-bearing again. Null means the same three things the
+-- three columns beside it mean: a run composed from no recipe at all (a committed ci-event-*.yml or
+-- a platform pipeline), a composed run whose release.yml names no archetype: and declares both its
+-- slots itself, and every row written before this migration. There is nothing a historical row
+-- could be filled in with: those runs really were composed from a main head, and naming a released
+-- version for them would assert an approval that never happened.
+--
+-- 64 CHARACTERS, archetype_rev's width. A platform release stamp is fourteen characters and the
+-- shape is CiReleasedVersions.RELEASED_VERSION's; matching the column beside it is what keeps a
+-- value one of the pair could hold and the other could not from ever existing.
+--
+-- MigrationChecksumTest pins the SHA-256 of this file, so editing it after it has shipped is a red
+-- build here rather than a refused boot in the deployment. Nothing earlier in the lineage is
+-- touched: V20's header is not annotated, for the reason V19's header spells out twice over.
+alter table ci_run add column archetype_version varchar(64);

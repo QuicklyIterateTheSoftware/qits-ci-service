@@ -315,17 +315,27 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
 
   /**
    * Which release archetype recipe this run's pipeline was composed from, which file in the wrapper
-   * repository that recipe is, and <b>the revision it was read at</b> — or all three null.
+   * repository that recipe is, <b>the revision it was read at</b> and <b>which released wrapper
+   * version that revision is</b> — or all four null.
    *
-   * <p>They are three columns rather than one because they answer three different questions and two
-   * of them are asked separately: {@code archetypeName} is what the repository's {@code
-   * release.yml} asked for, {@code archetypeConfigPath} is where that turned out to live, and {@code
-   * archetypeRev} is the wrapper commit whose bytes were actually used. The last is the one the
-   * feature is for — the wrapper half of a composed pipeline is <em>environment</em>, moved by one
-   * commit for 47 repositories at once, and until this column existed no run recorded which version
-   * of that environment produced it.
+   * <p>They are four columns rather than one because they answer four different questions and they
+   * are asked separately: {@code archetypeName} is what the repository's {@code release.yml} asked
+   * for, {@code archetypeConfigPath} is where that turned out to live, {@code archetypeRev} is the
+   * wrapper commit whose bytes were actually used, and {@code archetypeVersion} is the wrapper
+   * RELEASE that commit is. The last two are what the feature is for — the wrapper half of a
+   * composed pipeline is <em>environment</em>, and until these columns existed no run recorded which
+   * version of that environment produced it.
    *
-   * <p><b>All three null is the ordinary value and it means three different things, none of them
+   * <p><b>{@code archetypeVersion} is the legible half and it is not derivable from the sha.</b>
+   * The recipe is read at the newest version the wrapper has released, so the revision always IS a
+   * release — but a commit does not carry the names of the tags pointing at it, and asking a git
+   * host "which version was this" is a question it does not answer. A person reading a run row, or
+   * a release request's verdict, is holding {@code 2026.922.161358} rather than a sha. It is null
+   * on every row recorded before the column existed, which is the same no-backfill statement the
+   * three beside it make and for the same reason: naming a version for a run that already happened
+   * would assert which release composed it on no evidence at all.
+   *
+   * <p><b>All four null is the ordinary value and it means three different things, none of them
    * "unknown for this run".</b> A run from a committed {@code ci-event-*.yml} or a platform pipeline
    * was composed from nothing. A composed run whose slot file names no {@code archetype:} declares
    * both its slots itself, which four repositories on the estate do today. And every row recorded
@@ -334,7 +344,7 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
    *
    * <p><b>A retry records its OWN composition, never the source row's.</b> That is what makes
    * comparing the two rows the answer to "did the recipe move between these two runs": a retry
-   * re-composes the platform half with today's wrapper on purpose (see {@code
+   * re-composes the platform half with the wrapper's newest released version on purpose (see {@code
    * CiEventTriggerService#recomposedReleaseDocument}), so a differing {@code archetypeRev} beside an
    * identical {@code commitSha} is the whole story of a platform fix healing an earlier failure. The
    * one exception is a retry that fell back to the stored pipeline, which copies the source's three
@@ -350,6 +360,9 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
 
   @Column(name = "archetype_rev", length = 64)
   public String archetypeRev;
+
+  @Column(name = "archetype_version", length = 64)
+  public String archetypeVersion;
 
   /**
    * <b>Which bytes the tools that ran this pipeline really were</b>: a JSON object mapping each

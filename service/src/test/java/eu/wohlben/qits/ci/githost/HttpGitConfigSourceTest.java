@@ -438,6 +438,134 @@ public class HttpGitConfigSourceTest {
     }
   }
 
+  // --- the tags: which versions a repository has released ------------------------------------------
+  //
+  // The one read here that is about the repository rather than about a revision of it, and the one
+  // that made this class need a third git host route. An archetype recipe is read at the newest
+  // version the WRAPPER has released, so something has to enumerate tags — and the route it
+  // enumerates them over is the ref advertisement every clone on the estate already uses, rather
+  // than a JSON listing another service would have had to grow.
+
+  @Test
+  public void aLightweightTagIsAnsweredWithTheCommitItNames() throws Exception {
+    String repoId = "repo-with-a-tag";
+    String sha = seed(repoId, "steps: []\n");
+    tag(repoId, "2026.922.161358", false);
+
+    CiConfigSource.TagLookup tags = source.readTags(id(repoId));
+
+    assertEquals(CiConfigSource.TagLookup.Status.FOUND, tags.status());
+    assertEquals(
+        List.of(new CiConfigSource.RepoTag("2026.922.161358", sha)),
+        tags.tags().stream()
+            .filter(t -> t.name().startsWith("2026."))
+            .toList());
+  }
+
+  @Test
+  public void anAnnotatedTagIsAnsweredPEELED() throws Exception {
+    // The case that decides whether the answer is usable at all: an annotated tag advertises its own
+    // TAG OBJECT first and the commit it points at on a `^{}` line afterwards. A reader that took
+    // the first would hand a recipe read an object that is not a commit.
+    String repoId = "repo-with-an-annotated-tag";
+    String sha = seed(repoId, "steps: []\n");
+    tag(repoId, "2026.922.161358", true);
+
+    CiConfigSource.TagLookup tags = source.readTags(id(repoId));
+
+    CiConfigSource.RepoTag answered =
+        tags.tags().stream().filter(t -> t.name().equals("2026.922.161358")).findFirst().orElseThrow();
+    assertEquals(sha, answered.commitSha(), "the COMMIT, not the tag object");
+    assertNotEquals(
+        sha,
+        git(bare(repoId), "rev-parse", "refs/tags/2026.922.161358").strip(),
+        "and the fixture really is an annotated tag, whose own object is a different id");
+  }
+
+  @Test
+  public void everyTagIsAnsweredAndBranchesAreNot() throws Exception {
+    String repoId = "repo-with-tags-and-branches";
+    seed(repoId, "steps: []\n");
+    tag(repoId, "2026.921.85624", false);
+    tag(repoId, "2026.922.161358", true);
+    tag(repoId, "latest", false);
+    branchOff(repoId, "feature/x");
+
+    List<String> names = source.readTags(id(repoId)).tags().stream().map(CiConfigSource.RepoTag::name).sorted().toList();
+
+    assertEquals(List.of("2026.921.85624", "2026.922.161358", "latest"), names);
+  }
+
+  @Test
+  public void aRepositoryWithNoTagsIsFOUNDWithNoneRatherThanUnreachable() throws Exception {
+    // The distinction the caller's whole decision rests on: "this repository has never released" is
+    // a fact about the repository, and it must never be answered by a read that did not happen.
+    String repoId = "repo-with-no-tags";
+    seed(repoId, "steps: []\n");
+
+    CiConfigSource.TagLookup tags = source.readTags(id(repoId));
+
+    assertEquals(CiConfigSource.TagLookup.Status.FOUND, tags.status());
+    assertEquals(List.of(), tags.tags());
+  }
+
+  @Test
+  public void aRepositoryTheHostDoesNotHoldIsUNREACHABLE() throws Exception {
+    // A 404 on this route is not "no tags": the question was not answered at all. Reading it as an
+    // empty listing would say "this wrapper has never released" about a host that never looked.
+    assertEquals(
+        CiConfigSource.TagLookup.Status.UNREACHABLE,
+        source.readTags(id("no-such-repository")).status());
+  }
+
+  @Test
+  public void aHostThatIsNotThereIsUNREACHABLEAndNeverThrows() throws Exception {
+    HttpGitConfigSource dead = new HttpGitConfigSource();
+    dead.gitHostUrl = "http://127.0.0.1:1";
+    dead.objectMapper = new ObjectMapper();
+    dead.gitHostBearer = java.util.Optional::empty;
+
+    assertEquals(CiConfigSource.TagLookup.Status.UNREACHABLE, dead.readTags(id("anything")).status());
+  }
+
+  @Test
+  public void theTagsAreReadNameAddressedWhenTheReferenceCarriesTheNamePair() throws Exception {
+    // The same addressing rule every other read here follows, and it matters more on this route than
+    // on the content ones: the advertisement is NOT one of the two reads qits-githost's
+    // content-readers list opens to a storage id, so a name-addressed wrapper is served and an
+    // id-addressed one is refused — which is UNREACHABLE and therefore owed, never "no releases".
+    String repoId = "named-repo-with-a-tag";
+    String sha = seed(repoId, "steps: []\n");
+    tag(repoId, "2026.922.161358", false);
+    StubGitHost.alias("qits", "qits-qits", repoId);
+
+    CiConfigSource.TagLookup tags = source.readTags(CiRepoRef.of(repoId, "qits", "qits-qits"));
+
+    assertEquals(CiConfigSource.TagLookup.Status.FOUND, tags.status());
+    assertTrue(
+        tags.tags().contains(new CiConfigSource.RepoTag("2026.922.161358", sha)), tags.toString());
+  }
+
+  /** Tags {@code main}'s tip, annotated or lightweight — two different advertisements. */
+  private void tag(String repoId, String name, boolean annotated) throws Exception {
+    if (annotated) {
+      git(
+          bare(repoId),
+          "-c",
+          "user.email=ci@test",
+          "-c",
+          "user.name=ci",
+          "tag",
+          "-a",
+          name,
+          "-m",
+          "release " + name,
+          BRANCH);
+    } else {
+      git(bare(repoId), "tag", name, BRANCH);
+    }
+  }
+
   /** A second push onto {@code main}. */
   private void advance(String repoId) throws Exception {
     inAClone(

@@ -27,6 +27,8 @@ import java.util.stream.Stream;
  *   GET /git/&lt;projectId&gt;/&lt;repoName&gt;/blob/&lt;rev&gt;/&lt;path&gt;  → the same, name-addressed
  *   GET /git/&lt;projectId&gt;/&lt;repoName&gt;/tree/&lt;rev&gt;[/…]     → the same, name-addressed
  *   GET /git                                            → {"repositories":[…]}
+ *   GET /git/&lt;repoId&gt;/info/refs?service=git-upload-pack → the v0 pkt-line ref advertisement
+ *   GET /git/&lt;projectId&gt;/&lt;repoName&gt;/info/refs           → the same, name-addressed
  * </pre>
  *
  * <p>The name-addressed pair is what the host serves publicly after the repository identity cutover,
@@ -162,6 +164,13 @@ public class StubGitHost implements QuarkusTestResourceLifecycleManager {
       // exactly how the real host routes them, and it is why the two can share one prefix.
       // Peek at the second segment to learn the scheme, THEN split with the limit that scheme
       // needs: the trailing file path must stay one element, whichever of the two it is.
+      // The ref advertisement, on both schemes: /git/<repoId>/info/refs and
+      // /git/<projectId>/<repoName>/info/refs. It is matched before the content verbs because
+      // `info` sits exactly where `blob`/`tree` do and would otherwise be read as an unknown verb.
+      if (path.endsWith(INFO_REFS)) {
+        advertiseRefs(root, exchange, path.substring(1, path.length() - INFO_REFS.length()));
+        return;
+      }
       String[] head = path.substring(1).split("/", 3);
       boolean idAddressed = head.length >= 2 && isVerb(head[1]);
       int verb = idAddressed ? 1 : 2;
@@ -200,6 +209,91 @@ public class StubGitHost implements QuarkusTestResourceLifecycleManager {
 
   private static boolean isVerb(String segment) {
     return segment.equals("blob") || segment.equals("tree");
+  }
+
+  /** The smart-HTTP ref advertisement's path tail, on either addressing scheme. */
+  private static final String INFO_REFS = "/info/refs";
+
+  /**
+   * {@code GET …/info/refs?service=git-upload-pack} — the v0 pkt-line ref advertisement, which is
+   * how qits-ci learns which versions a repository has released.
+   *
+   * <p><b>Built here rather than shelled out of {@code git upload-pack}</b>, unlike the two content
+   * routes. What the real host writes is JGit's {@code PacketLineOutRefAdvertiser} output behind a
+   * {@code # service=…} line and a flush, and that shape — not whichever advertisement the local git
+   * binary happens to produce this year — is the contract under test. So the refs come out of {@code
+   * git for-each-ref}, which is a question about the repository, and the framing is spelled out
+   * here, which is the wire shape this stub exists to own. An annotated tag gets its peeled {@code
+   * ^{}} line exactly as the protocol requires, since telling the two apart is the whole of what the
+   * parser on the other side has to get right.
+   *
+   * <p>Anything but {@code service=git-upload-pack} is a 403, which is what the real host answers to
+   * dumb HTTP; a repository that is not there is a 404, as everywhere else here.
+   */
+  private static void advertiseRefs(Path root, HttpExchange exchange, String repoPath)
+      throws Exception {
+    String service = query(exchange, "service");
+    if (!"git-upload-pack".equals(service)) {
+      send(exchange, 403, "only smart HTTP is supported".getBytes(StandardCharsets.UTF_8), null);
+      return;
+    }
+    String[] segments = repoPath.split("/");
+    Path bare =
+        root.resolve("git")
+            .resolve(segments.length == 1 ? segments[0] : resolve(segments[0], segments[1]));
+    if (!Files.isDirectory(bare)) {
+      send(exchange, 404, new byte[0], null);
+      return;
+    }
+    ByteArrayOutputStream body = new ByteArrayOutputStream();
+    body.write(pkt("# service=git-upload-pack\n"));
+    body.write("0000".getBytes(StandardCharsets.UTF_8));
+    String refs =
+        git(bare, "for-each-ref", "--format=%(objectname) %(refname) %(*objectname)");
+    boolean first = true;
+    for (String line : refs == null ? new String[0] : refs.split("\\R")) {
+      if (line.isBlank()) {
+        continue;
+      }
+      String[] parts = line.strip().split(" ");
+      String sha = parts[0];
+      String name = parts[1];
+      // The capabilities ride on the first ref line after a NUL, which is the one shape a parser is
+      // most likely to get wrong — so this stub always writes them.
+      body.write(pkt(sha + " " + name + (first ? "\0side-band-64k agent=stub" : "") + "\n"));
+      first = false;
+      if (parts.length > 2 && !parts[2].isBlank()) {
+        // An annotated tag: the object above is the tag, this is the commit it points at.
+        body.write(pkt(parts[2] + " " + name + "^{}\n"));
+      }
+    }
+    body.write("0000".getBytes(StandardCharsets.UTF_8));
+    send(exchange, 200, body.toByteArray(), null);
+  }
+
+  /** One pkt-line: a four-hex length counting itself, then the payload. */
+  private static byte[] pkt(String payload) {
+    byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
+    String length = String.format("%04x", bytes.length + 4);
+    ByteArrayOutputStream line = new ByteArrayOutputStream();
+    line.writeBytes(length.getBytes(StandardCharsets.UTF_8));
+    line.writeBytes(bytes);
+    return line.toByteArray();
+  }
+
+  /** One query parameter of the request, or null. */
+  private static String query(HttpExchange exchange, String name) {
+    String raw = exchange.getRequestURI().getRawQuery();
+    if (raw == null) {
+      return null;
+    }
+    for (String pair : raw.split("&")) {
+      int eq = pair.indexOf('=');
+      if (eq > 0 && URLDecoder.decode(pair.substring(0, eq), StandardCharsets.UTF_8).equals(name)) {
+        return URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8);
+      }
+    }
+    return null;
   }
 
   /**

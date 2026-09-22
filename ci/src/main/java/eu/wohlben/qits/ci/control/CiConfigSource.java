@@ -73,6 +73,45 @@ public interface CiConfigSource {
   record EventTriggerFile(String path, String content) {}
 
   /**
+   * One tag a repository holds, and the commit it resolves to.
+   *
+   * <p>The commit is the <b>peeled</b> one — what the tag really names in the tree — because the
+   * only thing qits-ci does with a tag is read a file at it, and reading at an annotated tag's own
+   * object would be reading at something that is not a commit at all.
+   *
+   * @param name the tag's short name, {@code refs/tags/} stripped: {@code 2026.922.161358}
+   * @param commitSha the commit that name resolves to
+   */
+  record RepoTag(String name, String commitSha) {}
+
+  /**
+   * Every tag a repository holds, or the statement that it could not be asked.
+   *
+   * <p><b>Two answers, and the second is not an empty first.</b> {@code FOUND} with no tags is a
+   * repository that has never been tagged, which is a real and final fact about it; {@code
+   * UNREACHABLE} is a git host that said nothing, which is a fact about the moment. {@link
+   * CommitHeld#UNKNOWN}'s rule one method up, and the caller that collapsed them would read a blip
+   * as "this repository has never released" — see {@code CiReleasedVersions}.
+   */
+  record TagLookup(Status status, List<RepoTag> tags) {
+
+    public enum Status {
+      /** The repository was read. {@code tags} is what it carries, possibly nothing. */
+      FOUND,
+      /** The git host could not be asked, or answered something that is not an answer. */
+      UNREACHABLE
+    }
+
+    public static TagLookup found(List<RepoTag> tags) {
+      return new TagLookup(Status.FOUND, List.copyOf(tags));
+    }
+
+    public static TagLookup unreachable() {
+      return new TagLookup(Status.UNREACHABLE, List.of());
+    }
+  }
+
+  /**
    * One file read by path, and the three answers a caller has to keep apart.
    *
    * <p>{@link Status#ABSENT} is "this repository declares no such file", which for {@code
@@ -120,6 +159,26 @@ public interface CiConfigSource {
    * CiReleaseSlotParser} bounds to a plain slug before it can reach a URL.
    */
   FileLookup readFile(CiRepoRef repo, String rev, String path);
+
+  /**
+   * Every tag {@code repo} holds — the one question this port asks about a repository as a whole
+   * rather than about one revision of it.
+   *
+   * <p><b>One caller, and it is the wrapper's half of a composed release pipeline.</b> An archetype
+   * recipe is read out of the platform-pipelines repository at the newest version that repository
+   * has <em>released</em> — a tag a person gated and approved — rather than at whatever {@code main}
+   * happens to hold, so something has to enumerate the tags and {@code CiReleasedVersions} has to
+   * pick among them. Nothing else here enumerates anything: a trigger listing lists one directory
+   * of one revision, and both content reads are addressed at a rev the caller already has.
+   *
+   * <p><b>It asks the git host for refs, not for releases.</b> Which tag names are released versions
+   * is qits-ci's own reading of a platform convention and lives in {@code CiReleasedVersions}, a
+   * pure function over this answer; an implementation here reports what the host advertises and
+   * judges none of it. Keeping the policy out of the adapter is what lets the shape of a version be
+   * changed without touching a second module, and what keeps this method testable against a real
+   * repository rather than against a convention.
+   */
+  TagLookup readTags(CiRepoRef repo);
 
   /**
    * Does {@code repo} still hold {@code sha}? Asked in exactly one place — {@code

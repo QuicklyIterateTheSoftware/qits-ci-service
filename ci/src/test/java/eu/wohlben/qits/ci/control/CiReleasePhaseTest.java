@@ -31,8 +31,13 @@ public class CiReleasePhaseTest extends CiTestSupport {
   /** What the caller really sends: a released tag's ref, never a branch. */
   private static final String REV = "refs/tags/2026.916.114057";
 
-  /** The sha the wrapper's {@code main} resolves to when this door asks — never the branch name. */
+  /** The wrapper's {@code main} head: a revision this door must never read a recipe at. */
   private static final String WRAPPER_HEAD = "d".repeat(40);
+
+  /** The newest version the wrapper has RELEASED when this door asks, and its commit. */
+  private static final String WRAPPER_VERSION = "2026.922.161358";
+
+  private static final String WRAPPER_RELEASED_SHA = "a".repeat(40);
 
   /** An archetype that publishes — a service's shape. */
   private static final String JAVA_SERVICE =
@@ -64,10 +69,11 @@ public class CiReleasePhaseTest extends CiTestSupport {
     wrapperId = "wrapper-" + UUID.randomUUID().toString().substring(0, 8);
     fakeCandidates.setRefs(
         CiRepoRef.of(repoId, "qits", "qits-target"), CiRepoRef.of(wrapperId, "qits", "qits-qits"));
-    // This door resolves the wrapper's head itself, with one listing of its own, and reads the
-    // recipe at whatever that answers. A fixture that never lists the wrapper leaves no revision to
-    // read at, which is the fail-closed case rather than the ordinary one.
+    // This door resolves the wrapper's newest RELEASED version itself, outside any evaluation, and
+    // reads the recipe at that version's commit. A fixture whose wrapper has released nothing leaves
+    // no approved revision to read at, which is the fail-closed case rather than the ordinary one.
     fakeConfig.putTriggers(wrapperId, "main", CiTriggerScope.PLATFORM, WRAPPER_HEAD);
+    fakeConfig.putReleasedVersion(wrapperId, WRAPPER_VERSION, WRAPPER_RELEASED_SHA);
     engine.platformPipelinesRepository("qits-qits");
   }
 
@@ -81,7 +87,8 @@ public class CiReleasePhaseTest extends CiTestSupport {
   }
 
   private void seedArchetype(String name, String content) {
-    fakeConfig.putFile(wrapperId, WRAPPER_HEAD, CiReleaseSlotParser.archetypePath(name), content);
+    fakeConfig.putFile(
+        wrapperId, WRAPPER_RELEASED_SHA, CiReleaseSlotParser.archetypePath(name), content);
   }
 
   private CiEventTriggerService.ReleasePhase phase() {
@@ -203,17 +210,20 @@ public class CiReleasePhaseTest extends CiTestSupport {
   }
 
   @Test
-  public void theSlotFileIsReadAtTheRevAndTheArchetypeAtTheWrappersResolvedHead() {
+  public void theSlotFileIsReadAtTheRevAndTheArchetypeAtTheWrappersReleasedVersion() {
     // The split every composition on this service makes, asserted rather than argued: the
     // repository's half is the tag's immutable bytes, the platform's is today's recipe — so the
     // answer is about the pipeline as it composes NOW, which is how the run that would satisfy the
     // gate would be composed too.
     //
-    // "Now" is a SHA and no longer the branch name. This door lists the wrapper itself and reads at
-    // what that listing resolved, which is the same discipline the repository half has always had;
-    // the absence assertion is what stands between that and a silent fall back to the moving ref.
+    // "Now" is a RELEASED VERSION and no longer main's head, let alone the branch name. This door
+    // resolves the wrapper's newest release itself and reads at that release's commit; the two
+    // absence assertions are what stand between that and a silent fall back to either moving ref.
+    // Main's head carries a perfectly readable recipe here on purpose, so reading it would PASS.
     seedSlots("archetype: java-service\n");
     seedArchetype("java-service", JAVA_SERVICE);
+    fakeConfig.putFile(
+        wrapperId, WRAPPER_HEAD, CiReleaseSlotParser.archetypePath("java-service"), JAVA_SERVICE);
 
     assertEquals(CiEventTriggerService.Verdict.DECLARED, phase().verdict());
     assertTrue(
@@ -225,7 +235,7 @@ public class CiReleasePhaseTest extends CiTestSupport {
             .contains(
                 wrapperId
                     + "@"
-                    + WRAPPER_HEAD
+                    + WRAPPER_RELEASED_SHA
                     + "/"
                     + CiReleaseSlotParser.archetypePath("java-service")),
         fakeConfig.fileReads().toString());
@@ -234,17 +244,42 @@ public class CiReleasePhaseTest extends CiTestSupport {
             .fileReads()
             .contains(wrapperId + "@main/" + CiReleaseSlotParser.archetypePath("java-service")),
         fakeConfig.fileReads().toString());
+    assertFalse(
+        fakeConfig
+            .fileReads()
+            .contains(
+                wrapperId + "@" + WRAPPER_HEAD + "/" + CiReleaseSlotParser.archetypePath("java-service")),
+        "and never at the wrapper's main HEAD either: " + fakeConfig.fileReads());
   }
 
   @Test
-  public void aWrapperThatCannotBeListedIsUnknown() {
-    // Fail closed, and the same answer an unreadable recipe file gets: there is no revision to read
-    // the recipe at, so the question was not asked and the caller must retry rather than be told
-    // something about the repository. Reading at the literal branch name instead would answer
-    // confidently from whatever main happened to be, which is the moving ref this read left behind.
+  public void aWrapperWhoseTagsCannotBeReadIsUnknown() {
+    // Fail closed, and the same answer an unreadable recipe file gets: there is no approved revision
+    // to read the recipe at, so the question was not asked and the caller must retry rather than be
+    // told something about the repository. Reading at the literal branch name, or at main's head,
+    // would answer confidently from content nobody released — which is what this read left behind.
     seedSlots("archetype: java-service\n");
     seedArchetype("java-service", JAVA_SERVICE);
-    fakeConfig.putTriggersUnreachable(wrapperId, "main", CiTriggerScope.PLATFORM);
+    fakeConfig.putFile(
+        wrapperId, WRAPPER_HEAD, CiReleaseSlotParser.archetypePath("java-service"), JAVA_SERVICE);
+    fakeConfig.putTagsUnreachable(wrapperId);
+
+    CiEventTriggerService.ReleasePhase answer = phase();
+    assertEquals(CiEventTriggerService.Verdict.UNKNOWN, answer.verdict());
+    assertTrue(answer.detail().contains("java-service"), answer.detail());
+  }
+
+  @Test
+  public void aWrapperThatHasNeverReleasedIsUnknownRatherThanNotDeclared() {
+    // THE OTHER HALF OF THE DECISION, at the door qits-projects polls. A wrapper with no released
+    // version is not this repository saying it publishes nothing — it is the question having no
+    // answer yet — and answering NOT_DECLARED would wave a release through a publish gate whose
+    // pipeline was never composed. UNKNOWN is a 503 and the caller asks again, which is exactly what
+    // it should do while the estate waits for its first wrapper release.
+    seedSlots("archetype: java-service\n");
+    fakeConfig.putFile(
+        wrapperId, WRAPPER_HEAD, CiReleaseSlotParser.archetypePath("java-service"), JAVA_SERVICE);
+    fakeConfig.putTags(wrapperId);
 
     CiEventTriggerService.ReleasePhase answer = phase();
     assertEquals(CiEventTriggerService.Verdict.UNKNOWN, answer.verdict());

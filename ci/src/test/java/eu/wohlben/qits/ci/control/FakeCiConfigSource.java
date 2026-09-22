@@ -62,6 +62,17 @@ public class FakeCiConfigSource implements CiConfigSource {
   private final List<String> triggerReads = Collections.synchronizedList(new ArrayList<>());
 
   /**
+   * The tags per repository. An unseeded repository answers {@link TagLookup#found} with none —
+   * "this repository has never been tagged", which is the honest default and the interesting one:
+   * it is exactly the state a fresh estate's wrapper is in, so the never-released case needs no
+   * staging and a test that wants an archetype read has to say which version it was released at.
+   */
+  private final Map<String, TagLookup> tagsByRepo = new HashMap<>();
+
+  /** Every {@code readTags} this fake was asked, in order — one per evaluation is the assertion. */
+  private final List<String> tagReads = Collections.synchronizedList(new ArrayList<>());
+
+  /**
    * Every reference this fake was addressed with, in order — how a test says whether a read went out
    * name-addressed or id-addressed without standing up an HTTP server for it. The url shapes
    * themselves are {@code HttpGitConfigSourceTest}'s.
@@ -105,6 +116,25 @@ public class FakeCiConfigSource implements CiConfigSource {
     return repoId + "@" + branch + "#" + scope;
   }
 
+  /** Seeds the tags a repository holds, exactly as a git host would advertise them. */
+  public void putTags(String repoId, RepoTag... tags) {
+    tagsByRepo.put(repoId, TagLookup.found(List.of(tags)));
+  }
+
+  /**
+   * Seeds a repository at one released version: the tag a release cut, pointing at {@code sha}.
+   * The shorthand every test that wants an archetype read uses, since what it needs is one released
+   * version and not a tag namespace.
+   */
+  public void putReleasedVersion(String repoId, String version, String sha) {
+    putTags(repoId, new RepoTag(version, sha));
+  }
+
+  /** Seeds a repository whose tags the git host could not answer for — not an empty listing. */
+  public void putTagsUnreachable(String repoId) {
+    tagsByRepo.put(repoId, TagLookup.unreachable());
+  }
+
   /** Seeds one file readable by path at a rev. */
   public void putFile(String repoId, String rev, String path, String content) {
     filesByPath.put(fileKey(repoId, rev, path), FileLookup.found(content));
@@ -131,6 +161,10 @@ public class FakeCiConfigSource implements CiConfigSource {
     return List.copyOf(triggerReads);
   }
 
+  public List<String> tagReads() {
+    return List.copyOf(tagReads);
+  }
+
   public List<CiRepoRef> addressed() {
     return List.copyOf(addressed);
   }
@@ -142,6 +176,8 @@ public class FakeCiConfigSource implements CiConfigSource {
     commitProbes.clear();
     triggerReads.clear();
     fileReads.clear();
+    tagsByRepo.clear();
+    tagReads.clear();
     addressed.clear();
   }
 
@@ -175,5 +211,14 @@ public class FakeCiConfigSource implements CiConfigSource {
     triggerReads.add(key(repoId, branch, scope));
     EventTriggerLookup seeded = triggersByBranch.get(key(repoId, branch, scope));
     return seeded == null ? EventTriggerLookup.found("0".repeat(40), List.of()) : seeded;
+  }
+
+  @Override
+  public TagLookup readTags(CiRepoRef repo) {
+    String repoId = repo.repoId();
+    addressed.add(repo);
+    tagReads.add(repoId);
+    TagLookup seeded = tagsByRepo.get(repoId);
+    return seeded == null ? TagLookup.found(List.of()) : seeded;
   }
 }

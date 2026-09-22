@@ -85,16 +85,19 @@ import java.util.List;
  * by {@code stepIndex} — but it describes the pipeline as ACCEPTED, and comparing its length to the
  * number of {@code steps} rows mid-run is exactly the gap {@code live} explains.
  *
- * <p><b>{@code archetypeName}, {@code archetypeConfigPath} and {@code archetypeRev} say which
- * release archetype recipe this run's pipeline was composed from, and at which wrapper commit.</b> A
- * composed release pipeline is half the repository's — pinned by {@code commitSha}, since the slot
- * file is read at the commit the run builds — and half the platform's, which is a recipe in the
- * wrapper repository that one commit moves for every repository at once. {@code archetypeRev} is
- * that half's pin: two runs of one repository at one {@code commitSha} whose {@code archetypeRev}
- * differs were composed from two different recipes, which is the difference a retry after a platform
- * fix is made of.
+ * <p><b>{@code archetypeName}, {@code archetypeConfigPath}, {@code archetypeRev} and {@code
+ * archetypeVersion} say which release archetype recipe this run's pipeline was composed from, and
+ * at which RELEASED wrapper version.</b> A composed release pipeline is half the repository's —
+ * pinned by {@code commitSha}, since the slot file is read at the commit the run builds — and half
+ * the platform's, which is a recipe in the wrapper repository. That half is read at the newest
+ * version the wrapper has released, never at its {@code main} head, because those recipes are most
+ * of the steps of a release pipeline and a release pipeline may not be composed out of content
+ * nobody gated. {@code archetypeRev} is that half's pin and {@code archetypeVersion} is the same
+ * pin as a person holds it: two runs of one repository at one {@code commitSha} whose {@code
+ * archetypeVersion} differs were composed from two different approved wrapper releases, which is the
+ * difference a retry after a platform fix is made of.
  *
- * <p>All three are <b>null together</b>, and null is not "unknown for this run": a run from a
+ * <p>All four are <b>null together</b>, and null is not "unknown for this run": a run from a
  * committed {@code ci-event-*.yml} or a platform pipeline was composed from no recipe at all, and a
  * composed run whose {@code release.yml} names no {@code archetype:} declares both its slots itself
  * — a legitimate shape several repositories are in. Every row recorded before the columns existed
@@ -202,6 +205,7 @@ public record CiRunDto(
     String archetypeName,
     String archetypeConfigPath,
     String archetypeRev,
+    String archetypeVersion,
     String priority,
     List<Long> expectedStepDurationsMillis,
     List<CiStepDto> steps,
@@ -244,6 +248,7 @@ public record CiRunDto(
         archetypeName,
         archetypeConfigPath,
         archetypeRev,
+        archetypeVersion,
         priority,
         expectedStepDurationsMillis,
         steps,
@@ -296,6 +301,7 @@ public record CiRunDto(
         archetypeName,
         archetypeConfigPath,
         archetypeRev,
+        archetypeVersion,
         priority,
         expectedStepDurationsMillis,
         steps,

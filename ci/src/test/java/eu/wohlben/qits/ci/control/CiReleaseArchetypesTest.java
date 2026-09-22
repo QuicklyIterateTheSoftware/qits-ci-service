@@ -27,6 +27,10 @@ public class CiReleaseArchetypesTest {
 
   private static final String WRAPPER_SHA = "d".repeat(40);
 
+  /** The released wrapper version that sha is — what a recipe read is now addressed by. */
+  private static final CiReleasedVersions.ReleasedVersion RELEASED =
+      new CiReleasedVersions.ReleasedVersion("2026.922.161358", WRAPPER_SHA);
+
   private static final String RECIPE =
       """
       release-request:
@@ -48,12 +52,12 @@ public class CiReleaseArchetypesTest {
   }
 
   @Test
-  public void aRecipeIsReadAtTheRevItWasAskedFor() {
+  public void aRecipeIsReadAtTheReleasedVersionItWasAskedFor() {
     config.putFile(
         wrapper.repoId(), WRAPPER_SHA, CiReleaseSlotParser.archetypePath("java-service"), RECIPE);
 
     Optional<CiReleaseArchetypes.Archetype> found =
-        archetypes.read(wrapper, WRAPPER_SHA, "java-service");
+        archetypes.read(wrapper, RELEASED, "java-service");
 
     assertTrue(found.isPresent());
     assertEquals("java-service", found.get().name());
@@ -61,7 +65,11 @@ public class CiReleaseArchetypesTest {
     // The rev rides back out on the answer, which is the whole of what a run row records: a recipe
     // name without the revision it was read at says which recipe and not which version of it.
     assertEquals(WRAPPER_SHA, found.get().rev());
+    // And the VERSION beside it, which is that revision as a person holds it. A sha alone cannot be
+    // read back as "which approved wrapper release was this" — no git host answers that question.
+    assertEquals("2026.922.161358", found.get().version());
     assertEquals(found.get().ref().rev(), found.get().rev(), "ref() is the identity half, verbatim");
+    assertEquals(found.get().ref().version(), found.get().version());
     assertEquals(
         wrapper.repoId() + "@" + WRAPPER_SHA + "/" + CiReleaseSlotParser.archetypePath("java-service"),
         config.fileReads().get(0),
@@ -75,7 +83,7 @@ public class CiReleaseArchetypesTest {
     // that it must not touch the rev: there is no repository to address, so there is nothing a
     // revision could be a revision OF, and a read attempted here would go out against null.
     Optional<CiReleaseArchetypes.Archetype> found =
-        archetypes.read(null, WRAPPER_SHA, "java-service");
+        archetypes.read(null, RELEASED, "java-service");
 
     assertTrue(found.isEmpty());
     assertEquals(
@@ -93,10 +101,10 @@ public class CiReleaseArchetypesTest {
         ".config/qits/release-archetypes/../../../etc/passwd.yml",
         RECIPE);
 
-    assertTrue(archetypes.read(wrapper, WRAPPER_SHA, "../../../etc/passwd").isEmpty());
-    assertTrue(archetypes.read(wrapper, WRAPPER_SHA, "Java-Service").isEmpty());
-    assertTrue(archetypes.read(wrapper, WRAPPER_SHA, "").isEmpty());
-    assertTrue(archetypes.read(wrapper, WRAPPER_SHA, null).isEmpty());
+    assertTrue(archetypes.read(wrapper, RELEASED, "../../../etc/passwd").isEmpty());
+    assertTrue(archetypes.read(wrapper, RELEASED, "Java-Service").isEmpty());
+    assertTrue(archetypes.read(wrapper, RELEASED, "").isEmpty());
+    assertTrue(archetypes.read(wrapper, RELEASED, null).isEmpty());
     assertEquals(
         java.util.List.of(),
         config.fileReads(),
@@ -108,8 +116,25 @@ public class CiReleaseArchetypesTest {
     // The ordinary broken-declaration case: release.yml names a recipe the wrapper does not carry.
     // Empty, so the caller records no run — never a throw, which would cost the candidates beside it
     // their evaluation.
-    assertTrue(archetypes.read(wrapper, WRAPPER_SHA, "does-not-exist").isEmpty());
+    assertTrue(archetypes.read(wrapper, RELEASED, "does-not-exist").isEmpty());
     assertFalse(config.fileReads().isEmpty(), "it did ask, and the answer was ABSENT");
+  }
+
+  @Test
+  public void noReleasedVersionReadsNOTHINGRatherThanFallingBack() {
+    // The fail-closed belt, here rather than only in the caller: with no released wrapper version
+    // there is no approved revision to read at, and the one thing this must never do is build a url
+    // out of a null rev or reach for a branch name. The caller (CiEventTriggerService) states the
+    // same refusal in its own terms and leaves the event owed; this is what happens if it ever
+    // stops.
+    config.putFile(
+        wrapper.repoId(), WRAPPER_SHA, CiReleaseSlotParser.archetypePath("java-service"), RECIPE);
+
+    assertTrue(archetypes.read(wrapper, null, "java-service").isEmpty());
+    assertEquals(
+        java.util.List.of(),
+        config.fileReads(),
+        "nothing is read at all — no null rev, no branch name: " + config.fileReads());
   }
 
   @Test
@@ -122,6 +147,6 @@ public class CiReleaseArchetypesTest {
         CiReleaseSlotParser.archetypePath("java-service"),
         "archetype: another\n");
 
-    assertTrue(archetypes.read(wrapper, WRAPPER_SHA, "java-service").isEmpty());
+    assertTrue(archetypes.read(wrapper, RELEASED, "java-service").isEmpty());
   }
 }
