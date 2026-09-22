@@ -750,7 +750,9 @@ steps:
   `commitSha`, and a replay of an older one must not turn a strictly additive field into releases
   that silently never build. Garbage is still refused; this arm is about **absence**.
 - **Decide at main, build at the event's commit.** Discovery, parsing and `when:` still read
-  `main`'s head — a branch cannot change its own event pipeline until merged. Per-commit pipeline
+  `main`'s head — a branch cannot change its own event pipeline until merged. **This is about a
+  committed `ci-event-*.yml` and is not the rule for `release.yml`**, whose slots are read at the
+  revision the release event names ("the fourth file", below). Per-commit pipeline
   self-description is what the retired `ci-post-receive.yml` gave, since it read config at the pushed
   sha; nothing offers that trade any more, and nothing asked for it.
 - **A payload the paths do not resolve in is one WARN and no run** — there is no truthful
@@ -1292,6 +1294,19 @@ nothing downstream re-asks.
 **`ABSENT` stays a real answer and is settled**: a repository that commits no `release.yml` declares
 no release cycle, which is honest and final, and its ordinary `ci-event-*.yml` files are evaluated as
 they always were.
+
+**Which revision the file is read at: the one the event is about.** A `ReleaseRequestChanged` reads
+it at the request's fold (`payload.mergedSha`), an `SCMRelease` at the released tag's commit
+(`payload.commitSha`) — the same commit the composed run checks out, so **the pipeline that gates a
+revision is read from that revision** and nothing is composed from one commit and executed against
+another. It used to be read at `main`'s head, which meant a repository could never ship its own first
+`release.yml` (the tag declared a `release:` slot, the gate stamped the request publish-gated from
+that tag, the run composed from a `main` that had no such file — no run, event settled, request
+RELEASED forever) and that no edit to `release.yml` was ever exercised by the release carrying it.
+A payload with no usable sha falls back to `main`'s head, which is the fallback the run's own
+`optional:` checkout takes. **The archetype recipe is the exception and stays at the WRAPPER
+repository's `main`**: it is another repository's file, no part of the release request, and that is
+what keeps the platform prelude/postlude out of a branch's reach.
 
 **The extra blob read is gated on the two release event names**, so every other event on the bus
 costs exactly what it cost before this feature existed.

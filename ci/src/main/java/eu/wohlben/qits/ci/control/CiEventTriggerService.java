@@ -158,15 +158,20 @@ public class CiEventTriggerService {
    * branch cannot alter the CI that gates it; only the recorded run's branch/sha come from the
    * payload.
    *
-   * <p><b>It is a branch name only where a head has to be RESOLVED, and the wrapper half now follows
-   * that same discipline.</b> Both listings — a candidate's own trigger files and the platform
+   * <p><b>It is a branch name only where a head has to be RESOLVED, and nothing is ever read at the
+   * literal string.</b> Both listings — a candidate's own trigger files and the platform
    * repository's — are made at this branch and answer the sha they resolved; everything read
-   * afterwards is read at that sha. The repository half has always worked that way ({@code
-   * release.yml} at {@code lookup.headSha()}), and the wrapper's archetype recipes used to be the
-   * exception: they were read at the literal string, once per candidate, so a push to the wrapper
-   * mid-evaluation could compose two repositories of one archetype from two different recipes and
-   * nothing anywhere recorded which. They are read at {@code ArchetypeReads.rev()} now — the sha
-   * the wrapper's own listing resolved this branch to, once for the whole evaluation.
+   * afterwards is read at a sha. The wrapper's archetype recipes used to be the exception (read at
+   * the literal string, once per candidate, so a push to the wrapper mid-evaluation could compose
+   * two repositories of one archetype from two different recipes with nothing recording which);
+   * they are read at {@code ArchetypeReads.rev()} now, once for the whole evaluation.
+   *
+   * <p><b>A repository's release SLOTS are the one thing not read here at all.</b> {@code
+   * .config/qits/release.yml} used to be read at this branch's resolved head, which composed a
+   * release pipeline out of a commit the run would never build. It is read at the revision the
+   * event is about — the fold, or the released tag — so that <b>the pipeline that gates a revision
+   * is read from that revision</b>. See {@link #releaseRev}. The wrapper's half of that composition
+   * is still this branch's, deliberately: see {@link #releaseSlots}.
    */
   public static final String TRIGGER_BRANCH = "main";
 
@@ -668,7 +673,12 @@ public class CiEventTriggerService {
       return false;
     }
     heads.put(repo.repoId(), lookup.headSha());
-    ReleaseSlots slots = releaseSlots(repo, repoId, arrival, lookup.headSha(), wrapper);
+    // THE REVISION THIS EVENT IS ABOUT, which for the two release events is the fold or the tag and
+    // never main — see releaseRev. The repository's own committed trigger files above are read at
+    // main, exactly as they always were; only the release SLOTS move.
+    ReleaseSlots slots =
+        releaseSlots(
+            repo, repoId, arrival, releaseRev(arrival, payload, lookup.headSha()), wrapper);
     for (EventTriggerFile file : lookup.files()) {
       // A committed trigger file has no archetype: its bytes are the repository's own word about its
       // own pipeline, with no platform share in them to record the provenance of.
@@ -880,9 +890,23 @@ public class CiEventTriggerService {
    * <p><b>Gated on the two release event names</b>, which is the whole of what this feature costs an
    * ordinary event: nothing. A {@code BuildSuccessful} evaluates exactly the reads it always did.
    *
-   * <p><b>Read at the head the trigger listing just resolved</b>, never at the branch again — the
-   * listing's own discipline, for the listing's own reason: a run must never be recorded against one
-   * commit with a declaration from another.
+   * <p><b>Read at the revision the event is about</b>, which {@link #releaseRev} resolves: the
+   * request's fold for a {@code ReleaseRequestChanged}, the released tag's commit for an {@code
+   * SCMRelease}, and {@link #TRIGGER_BRANCH}'s resolved head for everything else and for a release
+   * event that carries no usable coordinate. Never a branch NAME — the listing's own discipline,
+   * for the listing's own reason: a run must never be recorded against one commit with a
+   * declaration from another. <b>The pipeline that gates a revision is read from that revision</b>,
+   * and it is the same revision the run checks out, so nothing is composed from one commit and
+   * executed against another.
+   *
+   * <p><b>The WRAPPER's archetype recipe is not part of that and stays at the wrapper's own {@code
+   * main}</b> ({@code wrapper}, resolved once per evaluation by {@link #readWrapper}). That is a
+   * different repository: it is no part of the release request, nobody approves it through this
+   * request's gate, and the prelude and postlude it contributes are platform process. Reading it at
+   * the revision under test would let a branch rewrite the platform's half of its own gate. So the
+   * repository's declaration moves with the repository and the platform's share does not, and the
+   * run row records both revisions — {@code branch}/{@code commit_sha} for the first, {@code
+   * archetype_rev} for the second — so which recipe met which commit is readable afterwards.
    *
    * <p><b>ABSENT and UNREACHABLE are still different answers, and the distinction is more
    * load-bearing now rather than less.</b> {@code ABSENT} is a 404 at a rev the host has already
@@ -896,19 +920,30 @@ public class CiEventTriggerService {
    * whose release request is at that moment waiting for exactly that QA's verdict — every repository
    * on the platform, not the unmigrated ones. So the read is reported as unread, the evaluation
    * stays owed, and a sweep asks again.
+   *
+   * <p><b>A 404 at the event's own revision is still {@code ABSENT} and still final</b>, and that is
+   * the same sentence rather than a new leniency. The host answered; it holds no {@code release.yml}
+   * at that commit — because the repository declares none there, or because the commit itself is not
+   * one it holds, which for a fold that was announced and a tag that was cut means the ref is gone
+   * rather than late. Neither improves by asking again, and every candidate that is not the one this
+   * release event names answers exactly this way, since the payload's commit lives in one repository
+   * only. A blip is the other status and is the one that leaves the event owed.
+   *
+   * @param rev the revision to read the repository's own declaration at — {@link #releaseRev}'s
+   *     answer, and the revision the run this composes will check out
    */
   private ReleaseSlots releaseSlots(
-      CiRepoRef repo, String repoId, Arrival arrival, String headSha, ArchetypeReads wrapper) {
+      CiRepoRef repo, String repoId, Arrival arrival, String rev, ArchetypeReads wrapper) {
     if (!RELEASE_EVENTS.contains(arrival.eventName())) {
       return ReleaseSlots.NONE;
     }
     CiConfigSource.FileLookup found =
-        configSource.readFile(repo, headSha, CiReleaseSlotParser.CONFIG_PATH);
+        configSource.readFile(repo, rev, CiReleaseSlotParser.CONFIG_PATH);
     if (found.status() == CiConfigSource.FileLookup.Status.UNREACHABLE) {
       LOG.warnf(
           "%s: %s could not be read at %s — no release pipeline was composed and this event stays"
               + " owed, so a sweep evaluates it again",
-          repoId, CiReleaseSlotParser.CONFIG_PATH, headSha);
+          repoId, CiReleaseSlotParser.CONFIG_PATH, rev);
       return ReleaseSlots.UNREADABLE;
     }
     if (found.status() != CiConfigSource.FileLookup.Status.FOUND) {
@@ -935,6 +970,80 @@ public class CiEventTriggerService {
     return document == null
         ? ReleaseSlots.NO_RUN
         : new ReleaseSlots(false, document, attempt.archetype());
+  }
+
+  /**
+   * <b>The revision a release event is about — the one the run this evaluation may record will
+   * really check out.</b> Anything else answers {@code headSha} unchanged.
+   *
+   * <h2>The invariant</h2>
+   *
+   * <p><b>The pipeline that gates a revision is read from that revision.</b> A run must never be
+   * composed from one commit and executed against another. The two release events each name the
+   * commit they are about, the composed {@code checkout:} spends exactly that pair, and this method
+   * is what puts the {@code release.yml} read on the same commit:
+   *
+   * <ul>
+   *   <li>{@code ReleaseRequestChanged} → the request's FOLD, {@code payload.mergedSha} ({@link
+   *       CiReleaseComposer#RELEASE_REQUEST_SHA_PATH}) — the branch nobody pushed that the QA run
+   *       clones.
+   *   <li>{@code SCMRelease} → the released TAG's commit, {@code payload.commitSha} ({@link
+   *       CiReleaseComposer#RELEASE_SHA_PATH}). The tag ref and that commit are one revision, and
+   *       the sha is the one the run records and the daemon detaches at.
+   * </ul>
+   *
+   * <p>It used to read {@code main}'s head, which broke in two directions at once. A repository
+   * could never ship its own <em>first</em> {@code release.yml}: the tag declared a {@code release:}
+   * slot, qits-projects stamped the request publish-gated on the strength of it ({@link
+   * #releasePhaseAt}, which has always read at the rev it was asked about), and the run was composed
+   * from a {@code main} that carried no such file — no document, no run, the event settled, and the
+   * request RELEASED forever with nothing left to re-drive it. Measured 2026-09-22 on
+   * qits-landing-app. And in the ordinary case a change to {@code release.yml} was never exercised
+   * by the release that carried it; it took effect on the next one, which is a gate reviewing a
+   * pipeline nobody ran.
+   *
+   * <p><b>The wrapper's archetype recipe stays at the WRAPPER's own {@code main}</b>, and that split
+   * is deliberate rather than an omission — see {@link #releaseSlots}.
+   *
+   * <h2>Falling back to the head is the run's own fallback, not a second rule</h2>
+   *
+   * <p>A payload carrying no usable sha answers {@code headSha}, which is <b>exactly</b> what {@link
+   * #evaluateTrigger} resolves for the same event: an {@code SCMRelease} published before {@code
+   * commitSha} existed takes the composed {@code optional: true} arm and the run builds main's head,
+   * so reading the file there is reading it at the rev the run builds. A {@code
+   * ReleaseRequestChanged} with no fold composes a document whose non-optional checkout is then
+   * refused, one WARN and no run — unchanged, and the read that preceded it cost one blob either
+   * way.
+   *
+   * <p><b>The value is validated before it can reach a URL.</b> An event payload is
+   * attacker-shaped — a durable claim establishes delivery, never content — and this one becomes a
+   * path segment in a git-host read, so it goes through {@link CiIdentifiers#requireSha} first. A
+   * refused value falls back to the head rather than throwing: the checkout resolution refuses the
+   * same value a moment later and records no run, so the refusal is already said once and saying it
+   * twice would cost this candidate its other trigger files.
+   */
+  private String releaseRev(Arrival arrival, JsonNode payload, String headSha) {
+    if (!RELEASE_EVENTS.contains(arrival.eventName())) {
+      return headSha;
+    }
+    String shaPath =
+        CiReleaseComposer.RELEASE_REQUEST_EVENT.equals(arrival.eventName())
+            ? CiReleaseComposer.RELEASE_REQUEST_SHA_PATH
+            : CiReleaseComposer.RELEASE_SHA_PATH;
+    String declared = checkoutField(payload, shaPath);
+    if (declared == null) {
+      return headSha;
+    }
+    try {
+      CiIdentifiers.requireSha(declared);
+    } catch (RuntimeException refused) {
+      LOG.debugf(
+          "Event %s (%s) carries an unusable %s — the release pipeline is read at %s's head, where"
+              + " the checkout resolution refuses the same value",
+          arrival.eventId(), arrival.eventName(), shaPath, TRIGGER_BRANCH);
+      return headSha;
+    }
+    return declared;
   }
 
   /**
@@ -1219,6 +1328,16 @@ public class CiEventTriggerService {
    * archetype that gains or loses its {@code release:} slot changes what this read says about a tag
    * whose own bytes never moved. That is the wanted direction, since the run that would satisfy the
    * gate would be composed now too.
+   *
+   * <p><b>This side was always the correct one and the evaluation now agrees with it.</b> The gate
+   * asks about {@code refs/tags/<version>} and this read has always composed at that rev, while the
+   * run composition read the repository's {@code release.yml} at {@code main} — so a tag that
+   * declared a {@code release:} slot {@code main} did not was stamped publish-gated here and
+   * composed nothing there, and the request sat RELEASED with a gate nothing would ever answer.
+   * {@link #releaseRev} put the evaluation on the event's own revision; both halves of the split are
+   * now identical on both sides (the repository's declaration at the rev under test, the wrapper's
+   * recipe at the wrapper's {@code main}), which is what makes this answer a prediction of what the
+   * run will do rather than a second opinion about it. Nothing here changed to get there.
    *
    * <p><b>{@code false} is a real answer and not an absence.</b> {@code spa-frontend} and {@code
    * cli} declare no {@code release:} slot on purpose, and a rev with no {@code release.yml} at all

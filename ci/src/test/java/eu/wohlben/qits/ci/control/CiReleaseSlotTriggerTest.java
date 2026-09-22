@@ -38,6 +38,28 @@ import org.junit.jupiter.api.Test;
  * not be READ is no run and the event <em>stays owed</em>: nothing was learned, and every repository
  * in the estate now keeps its whole release cycle in that one file, so settling on a blip is what
  * silently costs a release request its QA verdict.
+ *
+ * <h2>Which revision a fixture seeds, and why it is not {@code main}</h2>
+ *
+ * <p><b>The pipeline that gates a revision is read from that revision.</b> A repository's {@code
+ * .config/qits/release.yml} is read at the commit the arriving release event is about — the
+ * request's fold for a {@code ReleaseRequestChanged}, the released tag's commit for an {@code
+ * SCMRelease} — which is the same commit the composed run checks out. So {@link #seedSlots} seeds
+ * the file at those two revisions and <b>deliberately not at {@code main}</b>: a fixture that seeded
+ * main would keep passing against the old read and say nothing about the new one.
+ *
+ * <p>This class used to argue the opposite — "decide at main, so a release request cannot alter the
+ * CI that gates it" — and that rule is <b>withdrawn by owner ruling</b>, because it was neither true
+ * of what it protected nor free. It was not free: a repository could never ship its own first
+ * release cycle (the tag declared a {@code release:} slot, qits-projects stamped the request
+ * publish-gated from that tag, and the run composed from a {@code main} with no such file — no run,
+ * event settled, request RELEASED forever; measured on qits-landing-app), and no change to {@code
+ * release.yml} was ever exercised by the release that carried it. And it did not protect what it
+ * claimed: the half of a composed pipeline that is <em>platform process</em> — the prelude, the
+ * postlude, the shared recipes — is the archetype's, and that is read from the WRAPPER repository at
+ * the wrapper's own {@code main}, which no release request of another repository can touch. That
+ * split is still here, is asserted below, and is what "a branch cannot rewrite the platform's half
+ * of its own gate" really rests on.
  */
 @QuarkusTest
 public class CiReleaseSlotTriggerTest extends CiTestSupport {
@@ -48,6 +70,12 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
 
   /** The commit the release event names, and therefore the ref a composed release run builds. */
   private static final String RELEASED_SHA = "f".repeat(40);
+
+  /**
+   * The fold a release request announces — the commit its QA run builds, and therefore the commit
+   * its QA pipeline is composed from.
+   */
+  private static final String MERGED_SHA = "e".repeat(40);
 
   /**
    * A repository's own hand-written trigger file, which is the escape hatch the generic grammar
@@ -113,7 +141,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
         CiReleaseComposer.RELEASE_REQUEST_EVENT,
         Instant.parse("2026-09-06T09:00:00Z"),
         "{\"repoName\":\"qits-target\",\"backingBranch\":\"release/abc\",\"mergedSha\":\""
-            + "e".repeat(40)
+            + MERGED_SHA
             + "\",\"releaseRequestId\":\"a1b2c3\"}");
   }
 
@@ -127,8 +155,17 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
             + "\"}");
   }
 
+  /**
+   * The repository's release cycle, <b>at the two revisions the two release events name</b> — the
+   * fold and the released tag — and at neither {@code main} nor anything else.
+   *
+   * <p>That is the whole fixture-level statement of the invariant: the file is only ever where the
+   * run will look, so a read that went back to a branch head composes nothing and every test in this
+   * class goes red rather than one of them.
+   */
   private void seedSlots(String content) {
-    fakeConfig.putFile(repoId, HEAD, CiReleaseSlotParser.CONFIG_PATH, content);
+    fakeConfig.putFile(repoId, MERGED_SHA, CiReleaseSlotParser.CONFIG_PATH, content);
+    fakeConfig.putFile(repoId, RELEASED_SHA, CiReleaseSlotParser.CONFIG_PATH, content);
   }
 
   /**
@@ -196,10 +233,16 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     // THE ROW NAMES THE SLOT FILE, not a composed pseudo-path. It is one third of the dedupe key and
     // it is what a person reading the run sees, so it has to be the file somebody can open.
     assertEquals(CiReleaseSlotParser.CONFIG_PATH, run.configPath);
-    // Decided at main, built at the fold — the composed checkout resolves out of the payload exactly
-    // as a committed one does, through the same code.
+    // Composed FROM the fold and built AT the fold — one revision, which is the invariant. The
+    // checkout resolves out of the payload exactly as a committed trigger's does, through the same
+    // code, and the slot file the document came from was read at that same sha.
     assertEquals("release/abc", run.branch);
-    assertEquals("e".repeat(40), run.commitSha);
+    assertEquals(MERGED_SHA, run.commitSha);
+    assertTrue(
+        fakeConfig
+            .fileReads()
+            .contains(repoId + "@" + MERGED_SHA + "/" + CiReleaseSlotParser.CONFIG_PATH),
+        "the slot file is read at the fold: " + fakeConfig.fileReads());
     assertEquals("a1b2c3", run.releaseRequestId, "the provenance column is unaffected by composition");
     // WHICH RECIPE, AND WHICH VERSION OF IT. The rev is the sha the wrapper's listing resolved, so
     // the row says what composed it rather than leaving a reader to guess at the wrapper's history.
@@ -270,6 +313,100 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
         recorded.stream().allMatch(run -> CiReleaseSlotParser.CONFIG_PATH.equals(run.configPath)));
     assertEquals(
         2, recorded.stream().map(run -> run.triggerEventName).distinct().count());
+  }
+
+  // --- the revision the pipeline is read from ------------------------------------------------------
+
+  @Test
+  public void aRepositoryWhoseMainCarriesNoSlotFileStillGetsItsQaPipelineFromTheFold()
+      throws Exception {
+    // THE DEADLOCK, exactly. A repository that has never released carries no .config/qits/release.yml
+    // on main and carries one on the branch that is asking to be released. Reading main composed
+    // nothing, so the QA run the gate was waiting for was never recorded, the event settled with
+    // nothing left to re-drive it, and the request could never finalize — so main never moved and
+    // the file could never arrive there. A repository could not ship its own first release cycle.
+    // Measured 2026-09-22 on qits-landing-app.
+    fakeConfig.putFile(
+        repoId,
+        MERGED_SHA,
+        CiReleaseSlotParser.CONFIG_PATH,
+        """
+        release-request:
+          - image: alpine:3
+            script: echo qa
+        """);
+    // main declares nothing, and is left that way on purpose: this is the whole fixture.
+
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
+
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(1, recorded.size(), "the QA pipeline the fold declares: " + fakeConfig.fileReads());
+    assertEquals(CiReleaseSlotParser.CONFIG_PATH, recorded.get(0).configPath);
+    assertEquals(MERGED_SHA, recorded.get(0).commitSha, "composed from and built at one revision");
+    assertFalse(stillOwed(arrival.eventId()), "and the event is settled: it was fully evaluated");
+  }
+
+  @Test
+  public void aTagDeclaringAReleaseSlotMainLacksStillGetsItsPublishPipeline() throws Exception {
+    // The publish half of the same defect, and the half qits-projects' gate sees first: it asks
+    // releasePhaseAt(repo, refs/tags/<version>), which has always composed at the rev it was asked
+    // about, and stamps the request publish-gated on the strength of the TAG's declaration. The run
+    // composition read main, found no `release:` slot there, recorded nothing — and the request sat
+    // RELEASED behind a gate nothing would ever answer. The two sides read one revision now.
+    fakeConfig.putFile(
+        repoId,
+        RELEASED_SHA,
+        CiReleaseSlotParser.CONFIG_PATH,
+        """
+        release:
+          - image: alpine:3
+            script: echo publish
+        """);
+
+    CiEventTriggerService.Arrival arrival = release();
+    deliverThroughTheLedger(arrival);
+
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(
+        1, recorded.size(), "the publish pipeline the tag declares: " + fakeConfig.fileReads());
+    assertEquals(RELEASED_SHA, recorded.get(0).commitSha);
+    assertEquals("2026.906.100732", recorded.get(0).branch, "the tag's own name is the run's ref");
+    assertFalse(stillOwed(arrival.eventId()));
+  }
+
+  @Test
+  public void theSlotFileIsNeverReadAtMainForAReleaseEventAndTheWrapperOnlyEverIs()
+      throws Exception {
+    // BOTH HALVES OF THE SPLIT, asserted as absences because nothing else catches either regression.
+    // A read of the repository's release.yml at main passes every other test in this class the day
+    // somebody re-seeds main; and a read of the ARCHETYPE at the fold would pass them all too, while
+    // quietly handing a release request the power to rewrite the platform prelude that gates it.
+    seedSlots("archetype: spa-frontend\n");
+    seedArchetype("spa-frontend", SPA_FRONTEND);
+    // Both wrong revisions are seeded, so a regression in either direction SUCCEEDS and only these
+    // assertions stand between it and a green suite.
+    fakeConfig.putFile(repoId, HEAD, CiReleaseSlotParser.CONFIG_PATH, "archetype: spa-frontend\n");
+    fakeConfig.putFile(
+        wrapperId, MERGED_SHA, CiReleaseSlotParser.archetypePath("spa-frontend"), SPA_FRONTEND);
+
+    deliver(releaseRequest());
+
+    assertEquals(1, runService.runsFor(repoId).size());
+    assertFalse(
+        fakeConfig
+            .fileReads()
+            .contains(repoId + "@" + HEAD + "/" + CiReleaseSlotParser.CONFIG_PATH),
+        "the repository's own declaration is read at the fold and nowhere else: "
+            + fakeConfig.fileReads());
+    assertEquals(
+        List.of(archetypeReadAt(WRAPPER_HEAD, "spa-frontend")),
+        fakeConfig.fileReads().stream()
+            .filter(read -> read.contains(CiReleaseSlotParser.archetypePath("spa-frontend")))
+            .toList(),
+        "and the wrapper's recipe at the WRAPPER's main, which is the half a release request must"
+            + " not be able to move: "
+            + fakeConfig.fileReads());
   }
 
   // --- the composed pipeline beside a repository's own ---------------------------------------------
@@ -353,7 +490,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     // nothing anywhere to re-drive it. One blip, one release.
     seedSlots("archetype: spa-frontend\n");
     seedArchetype("spa-frontend", SPA_FRONTEND);
-    fakeConfig.putFileUnreachable(repoId, HEAD, CiReleaseSlotParser.CONFIG_PATH);
+    fakeConfig.putFileUnreachable(repoId, MERGED_SHA, CiReleaseSlotParser.CONFIG_PATH);
 
     CiEventTriggerService.Arrival arrival = releaseRequest();
     deliverThroughTheLedger(arrival);
@@ -528,8 +665,13 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     String secondHead = "b".repeat(40);
     fakeConfig.putTriggers(secondId, "main", secondHead);
     seedSlots("archetype: spa-frontend\n");
+    // The second candidate's slot file at the SAME revision, because the revision comes from the
+    // event rather than from the repository: every candidate of one release event is read at the
+    // commit that event names. In production only the repository the event is about holds it, and
+    // every other candidate answers ABSENT — which is the same "no document, no run" it reaches
+    // through its `when:` a moment later.
     fakeConfig.putFile(
-        secondId, secondHead, CiReleaseSlotParser.CONFIG_PATH, "archetype: spa-frontend\n");
+        secondId, MERGED_SHA, CiReleaseSlotParser.CONFIG_PATH, "archetype: spa-frontend\n");
     seedArchetype("spa-frontend", SPA_FRONTEND);
 
     // One event both repositories' composed QA pipelines select: the composer's `when:` is each

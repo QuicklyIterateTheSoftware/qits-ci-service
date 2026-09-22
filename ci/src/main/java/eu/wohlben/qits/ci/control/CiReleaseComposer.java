@@ -116,6 +116,33 @@ public final class CiReleaseComposer {
    */
   public static final String RELEASE_EVENT = "SCMRelease";
 
+  /**
+   * The four payload paths the composed {@code checkout:} blocks name — the QA half's pair and the
+   * release half's.
+   *
+   * <p><b>Constants rather than literals because a second reader arrived.</b> The engine has to know
+   * which revision an arriving release event is <em>about</em> before it can compose anything at
+   * all: the repository's {@code release.yml} is read at the rev the composed run will check out,
+   * which is the rev these paths resolve to in the payload. Spelling them twice — once in the text
+   * emitted here, once in that resolution — is two things that must always agree and nothing to make
+   * them agree. See {@code CiEventTriggerService.releaseRev}.
+   */
+  public static final String RELEASE_REQUEST_BRANCH_PATH = "backingBranch";
+
+  /** @see #RELEASE_REQUEST_BRANCH_PATH */
+  public static final String RELEASE_REQUEST_SHA_PATH = "mergedSha";
+
+  /**
+   * The release half's ref path: a <b>tag name</b>, which is a ref name like any other — the engine
+   * and the daemon hold no concept of a tag.
+   *
+   * @see #RELEASE_REQUEST_BRANCH_PATH
+   */
+  public static final String RELEASE_BRANCH_PATH = "version";
+
+  /** @see #RELEASE_REQUEST_BRANCH_PATH */
+  public static final String RELEASE_SHA_PATH = "commitSha";
+
   /** Where a composed step writes the repository's own script before running it. */
   static final String SLOT_SCRIPT = "/tmp/qits-slot.sh";
 
@@ -202,8 +229,8 @@ public final class CiReleaseComposer {
     out.append("when:\n");
     out.append("  - repoName: { exact: ").append(scalar(selector)).append(" }\n");
     out.append("checkout:\n");
-    out.append("  branch: backingBranch\n");
-    out.append("  sha: mergedSha\n");
+    out.append("  branch: ").append(RELEASE_REQUEST_BRANCH_PATH).append('\n');
+    out.append("  sha: ").append(RELEASE_REQUEST_SHA_PATH).append('\n');
     steps(out, qa, false, List.of());
     return out.toString();
   }
@@ -220,8 +247,8 @@ public final class CiReleaseComposer {
     out.append("when:\n");
     out.append("  - repository: { exact: ").append(scalar(selector)).append(" }\n");
     out.append("checkout:\n");
-    out.append("  branch: version\n");
-    out.append("  sha: commitSha\n");
+    out.append("  branch: ").append(RELEASE_BRANCH_PATH).append('\n');
+    out.append("  sha: ").append(RELEASE_SHA_PATH).append('\n');
     out.append("  optional: true\n");
     if (!artifacts.isEmpty()) {
       out.append("artifacts:\n");

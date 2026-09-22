@@ -1682,7 +1682,9 @@ names"), and what follows is what biting it feels like.
   retired with the migration that finished 2026-09-17 — selects it with
   `checkout: { branch: backingBranch, sha: mergedSha }`. Matching, selection and checkout are the
   generic grammar — the branch that gets built is a branch nobody pushed, which is the whole reason
-  the event has to exist, and "decide at main, build at the payload's commit" answers it unchanged.
+  the event has to exist. "Decide at main, build at the payload's commit" answers the *committed*
+  trigger files unchanged; the composed slots are decided at the payload's commit too, since that is
+  where `release.yml` is now read from — see "Release slots" below.
 
   **What is event-specific is THREE accept-time reads, and they follow one rule.** `mergedSha` names
   one fold and the next re-fold replaces it, so it is not a handle a cancellation or a retry can
@@ -1955,9 +1957,26 @@ phase.
   catalogue for the platform pass; `CiReleaseArchetypes` takes the reference as an argument rather
   than injecting the key a second time. A second injection point would be a second thing to arm in a
   test and a second thing to keep in step.
+- **The pipeline that gates a revision is read FROM that revision, and the wrapper's half is
+  deliberately not.** A candidate's `release.yml` is read at the commit the arriving release event
+  is about — the request's fold (`payload.mergedSha`) for a `ReleaseRequestChanged`, the released
+  tag's commit (`payload.commitSha`) for an `SCMRelease` — which is the same commit the composed run
+  checks out, resolved by `CiEventTriggerService.releaseRev` through the same payload paths
+  `CiReleaseComposer` emits into the composed `checkout:`. It used to be read at `main`'s head, and
+  that broke in two directions: a repository could never ship its own FIRST `release.yml` (the tag
+  declared a `release:` slot, qits-projects' gate stamped the request publish-gated from that tag —
+  `releasePhaseAt` has always read at the rev it was asked about — and the run composed from a `main`
+  with no such file, so no run was recorded, the event settled and the request sat RELEASED forever
+  with `main` unable to move; measured 2026-09-22 on qits-landing-app), and no change to
+  `release.yml` was ever exercised by the release that carried it. **The ARCHETYPE recipe stays at
+  the wrapper's own `main`**: that is a different repository, it is no part of the release request,
+  and keeping it there is what keeps the platform prelude/postlude and the shared recipes
+  non-tamperable by a branch. A payload with no usable sha falls back to `main`'s head, which is
+  exactly the checkout fallback the run itself takes. `CiReleaseSlotTriggerTest` asserts both halves
+  as absences — never the repository's file at `main`, never the recipe at the fold.
   <br>**The wrapper half follows the repository half's resolve-once discipline now, and it did not
-  until ticket qits-336.** A candidate's `release.yml` has always been read at the sha its own
-  trigger listing resolved; the archetype recipe was read at the literal string `main`, once per
+  until ticket qits-336.** A candidate's `release.yml` has always been read at a resolved sha rather
+  than a branch name; the archetype recipe was read at the literal string `main`, once per
   candidate, so twenty repositories on `java-service` were twenty fetches of a moving ref and a push
   to the wrapper mid-evaluation could compose two of them from two different recipes with nothing on
   either row to say so. The platform listing — one per evaluation either way — is hoisted beside the
