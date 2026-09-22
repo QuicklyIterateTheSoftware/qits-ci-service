@@ -67,6 +67,25 @@ public class CiEventCheckoutTest extends CiTestSupport {
       """;
 
   /**
+   * <b>A file about somebody ELSE's release</b> — the downstream bump, and the one shape {@code
+   * optional: true} still serves. {@code SoftwareRelease} is qits-ci's own announcement of a
+   * published artifact and is not one of the two release events, so a run it triggers is not a
+   * release run of this repository: the coordinate on the payload belongs to the repository that
+   * published, and what this file builds is its own {@code main}.
+   */
+  private static final String UPSTREAM_RELEASE_TRIGGER =
+      """
+      event: SoftwareRelease
+      checkout:
+        branch: version
+        sha: commitSha
+        optional: true
+      steps:
+        - image: alpine:3
+          script: "true"
+      """;
+
+  /**
    * A bespoke release pipeline that declares NO checkout — the escape hatch's shape, and what every
    * hand-written {@code ci-event-release.yml} on the estate looked like before {@code commitSha}
    * existed. Its run is recorded at the revision the event names all the same.
@@ -335,47 +354,69 @@ public class CiEventCheckoutTest extends CiTestSupport {
   }
 
   /**
-   * <b>The compatibility arm, which is the whole reason {@code optional:} exists.</b>
+   * <b>A release event that does not carry the pair costs the file its run, {@code optional:} or
+   * not.</b>
    *
-   * <p>{@code commitSha} is an additive field on {@code SCMRelease}: a release published before it
-   * existed — a replay out of the durable log, an older publisher, a rolled-back one — carries no
-   * such key. The default answer to an unresolvable checkout is to cost the file its run, which for
-   * a release pipeline means a tag that exists and an image that silently never gets published. With
-   * {@code optional: true} the run is recorded at {@code main}'s head instead, which is byte-for-byte
-   * what the recipe did before it declared a checkout at all — and its step script's own
-   * {@code git fetch refs/tags/$version} is what then supplies the released tree.
+   * <p>This case used to read the other way round, and the sentence it made was: {@code commitSha}
+   * is additive on {@code SCMRelease}, so a release published before it existed carries none, and
+   * the flag kept such a pipeline's run by recording it at {@code main}'s head with its checkout
+   * stripped. The half of that which was true is still true — the field is additive — and the
+   * conclusion was the defect: what the arm produced is a RELEASE run of this repository dispatched
+   * at a revision the release is not about, whose verdict then travels to qits-projects' gate as if
+   * it were about the released one. A pipeline that gates a revision is read from, and run at, that
+   * revision (owner ruling), so the honest answer to a half-missing payload is the one every other
+   * unresolvable checkout gets: no run.
+   *
+   * <p>The trigger here is a repository's own release pipeline spelled by hand — the shape {@code
+   * .config/qits/release.yml} composes — which is why it is the arm that had to go. The other arm,
+   * a file reacting to somebody ELSE's release, keeps the fallback and is
+   * {@link #anUpstreamReleaseWithNoCoordinateStillRunsAtThisRepositorysMainsHead}.
    */
   @Test
-  public void aReleaseCarryingNoCommitShaStillRunsAtMainsHead() throws Exception {
+  public void aReleaseCarryingNoCommitShaRecordsNoRunRatherThanBuildingMain() throws Exception {
     fakeConfig.putTriggers(
         repoId, "main", HEAD, new EventTriggerFile(CHECKOUT_PATH, RELEASE_TRIGGER));
-    deliver(releaseEvent(UUID.randomUUID().toString(), "2026.905.60215", null));
+    CiEventTriggerService.Evaluation evaluation =
+        engine.evaluate(releaseEvent(UUID.randomUUID().toString(), "2026.905.60215", null));
+    runService.awaitIdle();
+    forgetLoadedEntities();
 
-    List<CiRun> recorded = runService.runsFor(repoId);
-    assertEquals(1, recorded.size(), "an older release event must not cost the pipeline its run");
-    assertEquals("main", recorded.get(0).branch);
-    assertEquals(HEAD, recorded.get(0).commitSha);
-    assertEquals(CiRunStatus.SUCCESS, recorded.get(0).status);
+    assertEquals(List.of(), evaluation.runIds());
+    assertEquals(
+        List.of(),
+        runService.runsFor(repoId),
+        "the optional fallback dispatched this release run at main's head — a release run about a"
+            + " commit nobody released");
+    // Settled, not owed: the payload cannot grow the field later, so a sweep would ask a question
+    // whose answer is already final and the watermark would sit behind it forever.
+    assertEquals(List.of(), evaluation.repositoriesUnreadable());
   }
 
   /**
    * <b>A fallback run IS a checkout-less run, and the per-ref collapse is where that has teeth.</b>
    *
-   * <p>Two distinct releases that both fall back are both recorded at {@code main}, so a collapse
-   * keyed on the ref would dedupe one of them away — and a deduped release run is a version that was
-   * tagged and never built. The engine hands such a run on with its checkout stripped rather than
-   * merely logging the fallback, so this holds for every reader keyed on {@code checkout}, not only
-   * for the one we remembered. It is {@link #nonCheckoutEventRunsAreNeverBranchCollapsed}'s claim,
-   * asserted for the trigger that DECLARES a checkout and did not get to use it.
+   * <p>Two distinct events that both fall back are both recorded at {@code main}, so a collapse
+   * keyed on the ref would dedupe one of them away. The engine hands such a run on with its
+   * checkout stripped rather than merely logging the fallback, so this holds for every reader keyed
+   * on {@code checkout}, not only for the one we remembered. It is {@link
+   * #nonCheckoutEventRunsAreNeverBranchCollapsed}'s claim, asserted for the trigger that DECLARES a
+   * checkout and did not get to use it.
+   *
+   * <p><b>It is asserted on the DOWNSTREAM event now, and that is where the claim still lives.</b>
+   * It used to stage two {@code SCMRelease}es of this repository falling back, which is the arm
+   * that is gone — such an event records no run at all, so there would be nothing to collapse and
+   * the property would be pinned by a test that could no longer fail. The surviving fallback is a
+   * file reacting to somebody else's release, and two of those are still two runs of this
+   * repository's own {@code main}.
    */
   @Test
-  public void twoFallbackReleasesAreTwoRunsRatherThanACollapsedOne() throws Exception {
+  public void twoUpstreamReleasesFallingBackAreTwoRunsRatherThanACollapsedOne() throws Exception {
     fakeConfig.putTriggers(
-        repoId, "main", HEAD, new EventTriggerFile(CHECKOUT_PATH, RELEASE_TRIGGER));
+        repoId, "main", HEAD, new EventTriggerFile(CHECKOUT_PATH, UPSTREAM_RELEASE_TRIGGER));
     occupyTheWorker();
 
-    engine.evaluate(releaseEvent(UUID.randomUUID().toString(), "2026.905.60215", null));
-    engine.evaluate(releaseEvent(UUID.randomUUID().toString(), "2026.905.70000", null));
+    engine.evaluate(upstreamRelease(UUID.randomUUID().toString(), "2026.905.60215"));
+    engine.evaluate(upstreamRelease(UUID.randomUUID().toString(), "2026.905.70000"));
     release.countDown();
     runService.awaitIdle();
     forgetLoadedEntities();
@@ -384,7 +425,38 @@ public class CiEventCheckoutTest extends CiTestSupport {
     assertEquals(2, recorded.size());
     assertTrue(
         recorded.stream().noneMatch(run -> run.status == CiRunStatus.FAILED),
-        "a collapsed fallback is a released version whose image is never published: " + recorded);
+        "a collapsed downstream run is an upstream release this repository never reacted to: "
+            + recorded);
+  }
+
+  /**
+   * <b>The surviving {@code optional:} arm, and the whole of what the flag means now.</b>
+   *
+   * <p>Repository B declares a file on repository A's release — a downstream bump, the shape the
+   * platform's {@code SoftwareRelease} consumers have — and hopes the payload carries a coordinate
+   * it could build. It does not, and it never could have: the revision on that event is A's, and
+   * this run is B's. So {@code main}'s head is not a fallback from a revision that exists, it is
+   * the only revision the event names for B, which is exactly what every non-release event's
+   * default checkout already answers.
+   *
+   * <p>That is the distinction the refusal above is drawn on, and it is drawn by the EVENT rather
+   * than by the file: {@code SoftwareRelease} is not one of the two release events, so nothing
+   * here is a release run of this repository and nothing is gating a revision it was not composed
+   * from. Removing the arm altogether would cost this build with nothing gained.
+   */
+  @Test
+  public void anUpstreamReleaseWithNoCoordinateStillRunsAtThisRepositorysMainsHead()
+      throws Exception {
+    fakeConfig.putTriggers(
+        repoId, "main", HEAD, new EventTriggerFile(CHECKOUT_PATH, UPSTREAM_RELEASE_TRIGGER));
+
+    deliver(upstreamRelease(UUID.randomUUID().toString(), "2026.905.60215"));
+
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(1, recorded.size(), "a downstream bump must not cost its run");
+    assertEquals("main", recorded.get(0).branch);
+    assertEquals(HEAD, recorded.get(0).commitSha);
+    assertEquals(CiRunStatus.SUCCESS, recorded.get(0).status);
   }
 
   /**
@@ -511,6 +583,19 @@ public class CiEventCheckoutTest extends CiTestSupport {
                 + "\"}";
     return new CiEventTriggerService.Arrival(
         eventId, "SCMRelease", Instant.parse("2026-09-05T06:02:15Z"), payload);
+  }
+
+  /**
+   * One upstream release: another repository published an artifact, and the payload's coordinate is
+   * that repository's rather than this one's — which is why the version is there and no commit of
+   * ours ever could be.
+   */
+  private CiEventTriggerService.Arrival upstreamRelease(String eventId, String version) {
+    return new CiEventTriggerService.Arrival(
+        eventId,
+        "SoftwareRelease",
+        Instant.parse("2026-09-05T06:02:15Z"),
+        "{\"repository\":\"upstream\",\"version\":\"" + version + "\"}");
   }
 
   private static String push(String branch, String sha) {

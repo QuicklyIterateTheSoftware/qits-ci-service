@@ -31,6 +31,7 @@ public abstract class CiTestSupport {
   @Inject protected FakeCiStepRunner fakeRunner;
   @Inject protected FakeCiConfigSource fakeConfig;
   @Inject protected FakeCandidateRepos fakeCandidates;
+  @Inject protected FakeStepImagePins fakeImagePins;
   @Inject protected CiRunService runService;
   @Inject protected CiEventTriggerParser triggerParser;
 
@@ -123,5 +124,8 @@ public abstract class CiTestSupport {
     // Empty by default, so no suite evaluates a trigger it did not ask for — the same reason the
     // eventstream module's recording raw listeners want nothing until a test arms them.
     fakeCandidates.reset();
+    // Nothing staged means every reference answers FOREIGN, which is the truth about the alpine:3
+    // this suite runs on: an image this platform does not publish and holds no pin for.
+    fakeImagePins.reset();
   }
 }

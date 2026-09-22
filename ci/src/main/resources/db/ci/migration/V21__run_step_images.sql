@@ -1,0 +1,44 @@
+-- Which bytes the tools that ran a pipeline really were: one JSON object per run, mapping each
+-- distinct image reference its steps named to the immutable digest reference it was pinned to.
+--
+-- THE DEFECT THIS RECORDS THE FIX OF. Every recipe step on the estate names
+-- `qits/build-images/*:latest`, and a composed pipeline carried that reference through verbatim —
+-- so two steps of ONE build resolved the tag independently, at whatever moment each container was
+-- started. A publish from qits-build-images-oci landing between step 2 and step 3 meant a build
+-- that verified against one toolchain and published from another, with nothing anywhere saying
+-- which. The reference is now resolved to a digest ONCE, when the run is accepted, and every step
+-- of that run is launched with it.
+--
+-- WHY NOT A VERSION IN THE RECIPE. Pinning a CalVer in each repository's release.yml would fix the
+-- straddle and break something worse: a version named only in a recipe gets no keep from
+-- qits-platform-maintenance's pins API, so docker GC would eventually evict the image the whole
+-- estate boots from. The recipe keeps the tag; the RUN is what fixes it.
+--
+-- ARCHETYPE_REV'S TWIN, and the two are meant to be read together. V20 records which wrapper commit
+-- wrote the prelude a run executed; this records which image that prelude executed inside. A run
+-- row then says what it was built from on both axes, and neither has to be reconstructed by asking
+-- a registry what a moving tag used to point at — which is a question a registry cannot answer.
+--
+-- TEXT, NOT VARCHAR, and read whole: downstream_repos' decision (V15) for its reason. The length is
+-- the pipeline's distinct image count times a reference, not a number this schema should pick, and
+-- nothing queries into the value — the claim loop never reads it and no listing filters on it.
+--
+-- NULLABLE, NO DEFAULT, NO BACKFILL, part of no constraint and carrying no index — V8's shape a
+-- ninth time, and the no-backfill half is load-bearing here. Null means three different things and
+-- none of them is a value that could be filled in: a pipeline whose every step names an image this
+-- platform does not publish (alpine:3, docker:28-dind) pins nothing, because qits-ci holds no
+-- credential for another registry and no address to it; a deployment with
+-- qits.ci.resolve-platform-step-images=false pins nothing by that switch's own design; and every
+-- row written before this migration genuinely does not know. A digest written for a run that
+-- already happened would be a claim about bytes nobody can now check.
+--
+-- A RUN THAT COULD NOT BE PINNED IS NOT A ROW AT ALL. A reference that IS this platform's and whose
+-- digest the registry would not answer refuses the accept rather than recording a null and running
+-- anyway: the alternative is a build against an unknown tool, which is the state this column exists
+-- to end. The event is left owed and a sweep asks again, exactly as an unreadable release.yml is —
+-- so a registry blip delays a run instead of silently floating it.
+--
+-- MigrationChecksumTest pins the SHA-256 of this file, so editing it after it has shipped is a red
+-- build here rather than a refused boot in the deployment. Nothing earlier in the lineage is
+-- touched: V1's header is not annotated, for the reason V19's header spells out twice over.
+alter table ci_run add column step_images text;

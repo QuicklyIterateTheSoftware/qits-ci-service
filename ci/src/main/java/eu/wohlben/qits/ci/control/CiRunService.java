@@ -12,6 +12,7 @@ import eu.wohlben.qits.ci.entity.CiStep;
 import eu.wohlben.qits.ci.entity.CiStepStatus;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
 import eu.wohlben.qits.ci.entity.ExpectedStepDurations;
+import eu.wohlben.qits.ci.entity.StepImages;
 import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.ConflictException;
 import eu.wohlben.qits.ci.error.NotFoundException;
@@ -265,6 +266,13 @@ public class CiRunService {
   @Inject CiConfigSource configSource;
   @Inject CiEventTriggerParser triggerParser;
   @Inject CiStepRunner runner;
+
+  /**
+   * What fixes a step's floating {@code :latest} to the bytes it names — see {@link
+   * CiStepImagePins}, and {@link #pinStepImages} for the once-per-run discipline this class owes it.
+   */
+  @Inject CiStepImagePins imagePins;
+
   @Inject CiRunRepository runs;
   @Inject CiStepRepository steps;
 
@@ -1434,14 +1442,120 @@ public class CiRunService {
   /**
    * Where a declared step's image is really pulled from — see {@link CiStepImage}.
    *
-   * <p><b>The resolved reference is what gets RECORDED as well as what gets started</b>, and the two
-   * being one value is the point: a launch that fails on the image says which reference it could not
-   * pull, rather than showing the recipe's shorthand and leaving the registry to be inferred.
+   * <p><b>The resolved reference is what gets RECORDED</b>: a step row that showed the recipe's
+   * shorthand would leave the registry to be inferred, and a launch that fails on the image has to
+   * say which reference it could not pull.
+   *
+   * <p><b>It is no longer what gets STARTED, and the split is deliberate.</b> What starts is this
+   * reference pinned to a digest — {@link #pinnedImage}, out of the run's own {@code step_images} —
+   * because a tag asked twice in one build can answer twice. So {@code ci_step.image} is the
+   * reference the recipe named and the registry it resolves at, while {@code ci_run.step_images} is
+   * which bytes that reference meant for THIS run; the two together say what ran, and neither says
+   * it alone.
+   *
+   * <p><b>Keeping the tag on the step row is also what keeps the duration prediction working.</b>
+   * {@link #predictedStepDurations} samples history by {@code (repo, config path, step index,
+   * image)} — "a step that changed its image stops predicting", with no invalidation and no version
+   * column. Recording the digest there would make every publish of a build image a new image to
+   * that predicate, so every pipeline on the estate would lose its history the moment the toolchain
+   * moved, which is not what that rule means by a step changing its image.
    */
   private String stepImage(CiPipeline.CiStepDecl decl) {
     return resolvePlatformStepImages
         ? CiStepImage.resolve(decl.image(), artifactsRegistryHost, artifactsImageRepository)
         : decl.image();
+  }
+
+  /**
+   * <b>What a step is really launched with: the pin this run recorded for its reference, or the
+   * reference itself.</b>
+   *
+   * <p>The map is the run's own {@code step_images} column, decoded once per run rather than per
+   * step — which is the point rather than an optimisation. Resolving per step is exactly the defect
+   * this feature closes: {@code :latest} asked twice in one build can answer twice, and a build
+   * that verified against one toolchain and published from another is a build whose green says
+   * nothing.
+   *
+   * <p><b>A reference with no entry launches as the recipe named it</b>, and that is three
+   * legitimate states rather than a gap — a foreign image, a deployment that resolves none, and
+   * every row written before the column existed. It is never the fourth state, "ours and
+   * unresolvable": such a run was refused at accept and has no row to be read back here.
+   */
+  private static String pinnedImage(Map<String, String> pins, String reference) {
+    String pinned = pins.get(reference);
+    return pinned == null ? reference : pinned;
+  }
+
+  /**
+   * <b>Every distinct image this pipeline names, pinned to an immutable digest — once, here, for
+   * the whole run.</b>
+   *
+   * <p>Computed at ACCEPT and spent at every launch, which is the whole of the guarantee: two steps
+   * naming one tag share one entry by construction, so a build can never straddle two versions of
+   * one tool however long it runs or however many images are published while it does. A resolution
+   * per step would make that a coincidence.
+   *
+   * <p><b>Where it sits is {@link #predictedStepDurations}' placement and its reason.</b> It is
+   * network I/O, and I/O inside the insert's transaction bracket would poison the session and roll
+   * an accepted run back. Both are computed before the bracket and handed in as plain values.
+   *
+   * <p><b>Refusing is the answer for a platform image that could not be resolved.</b> The other
+   * three answers record something true — a digest, a digest somebody else already chose, or
+   * nothing at all for an image this platform does not publish — and this one records nothing
+   * because nothing was learned. Starting the run anyway would be building against whatever {@code
+   * latest} is at the moment each container happens to start, which is the state the pin exists to
+   * end; so the accept throws, the trigger engine leaves the event OWED, and a sweep asks a
+   * registry that has probably come back. A blip therefore delays a run rather than floating it,
+   * which is the same trade an unreadable {@code release.yml} already makes one seam over.
+   *
+   * @throws StepImageUnpinned when a platform image's digest could not be had
+   */
+  private Map<String, String> pinStepImages(CiPipeline pipeline) {
+    Map<String, String> pins = new java.util.LinkedHashMap<>();
+    for (CiPipeline.CiStepDecl decl : pipeline.steps()) {
+      String reference = stepImage(decl);
+      if (reference == null || reference.isBlank() || pins.containsKey(reference)) {
+        // The memo IS the contract — see the method javadoc. A second step naming the tag the first
+        // one pinned asks nothing of any registry and gets the first one's answer.
+        continue;
+      }
+      CiStepImagePins.Pin pin = imagePins.pin(reference);
+      switch (pin.status()) {
+        case PINNED, ALREADY_PINNED -> pins.put(reference, pin.reference());
+        case FOREIGN -> LOG.debugf(
+            "%s is not published by this platform's registry — the run launches it as named", reference);
+        case UNRESOLVED -> throw new StepImageUnpinned(reference, pin.detail());
+      }
+    }
+    return pins;
+  }
+
+  /**
+   * A platform step image whose immutable digest could not be had, so the run was not accepted.
+   *
+   * <p>A plain {@link RuntimeException} rather than anything web-shaped, for the reason every other
+   * type in this module is. The trigger engine catches it and leaves the event owed; nothing else
+   * does, so a caller that does not know about it gets a failed accept rather than a run against an
+   * unknown tool — which is the correct default for a case that must never be swallowed.
+   */
+  public static class StepImageUnpinned extends RuntimeException {
+
+    private final transient String reference;
+
+    StepImageUnpinned(String reference, String detail) {
+      super(
+          "the digest of step image "
+              + reference
+              + " could not be resolved, so this run would build against whatever that tag points"
+              + " at when each container starts: "
+              + (detail == null ? "no detail" : detail));
+      this.reference = reference;
+    }
+
+    /** The reference that could not be pinned — what a caller names in its own line. */
+    public String reference() {
+      return reference;
+    }
   }
 
   /**
@@ -1474,6 +1588,10 @@ public class CiRunService {
       Map<String, String> env,
       DeclaredRelease release) {
     List<CiPipeline.CiStepDecl> declared = pipeline.steps();
+    // THE RUN'S OWN TOOLCHAIN, decoded once for every step of it. Recorded at accept, so it cannot
+    // move while this loop runs — which is the whole of what the column buys, since the alternative
+    // is each container resolving `:latest` for itself at whatever minute it starts.
+    Map<String, String> pins = StepImages.decode(run.stepImages);
     int index = 0;
     boolean failed = false;
     boolean timedOut = false;
@@ -1490,7 +1608,8 @@ public class CiRunService {
                     repoOf(run),
                     run.branch,
                     run.commitSha,
-                    stepImage(decl),
+                    // The PIN, never the tag: this is the one value that decides which bytes run.
+                    pinnedImage(pins, stepImage(decl)),
                     decl.script(),
                     pin.binaryUrl(),
                     decl.timeoutSeconds() == null ? stepTimeoutSeconds : decl.timeoutSeconds(),
@@ -2018,12 +2137,17 @@ public class CiRunService {
     String expected =
         predictedStepDurations(
             request.repo().repoId(), configPath, request.triggerConfig());
+    // Resolved before the bracket for the same reason, and unlike the prediction it may REFUSE the
+    // accept: a platform image whose digest could not be had is a run that would build against an
+    // unknown tool — see pinStepImages. Throwing here, before a row exists, is what leaves the
+    // event owed rather than recording a run nobody can say what it ran inside.
+    String pins = StepImages.encode(pinStepImages(request.trigger().pipeline()));
     Accepted accepted;
     try {
       accepted =
           DbRetry.inNewTx(
               "event run accept",
-              () -> insertEventRun(request, configPath, expected),
+              () -> insertEventRun(request, configPath, expected, pins),
               retryDeadline());
     } catch (RuntimeException e) {
       if (!isUniqueViolation(e)) {
@@ -2097,7 +2221,8 @@ public class CiRunService {
    * insert: a list carried in from outside would survive a rolled-back attempt and have this method
    * report a cancellation the database never took. See {@link Accepted}.
    */
-  private Accepted insertEventRun(EventRun request, String configPath, String expectedStepDurations) {
+  private Accepted insertEventRun(
+      EventRun request, String configPath, String expectedStepDurations, String stepImages) {
     if (runs.alreadyTriggered(request.eventId(), request.repo().repoId(), configPath)) {
       return null;
     }
@@ -2133,6 +2258,9 @@ public class CiRunService {
     run.downstreamRepos = downstreamReposOf(request);
     // Handed in already computed, and null far more often than not — see predictedStepDurations.
     run.expectedStepDurations = expectedStepDurations;
+    // The toolchain this run is fixed to, resolved once outside this bracket and spent by every
+    // step below — see pinStepImages and CiRun.stepImages.
+    run.stepImages = stepImages;
     runs.persist(run);
     runs.flush();
     supersedeByVersion(run, request, superseded);
@@ -2880,9 +3008,25 @@ public class CiRunService {
     // what its steps come out of.
     String expected =
         predictedStepDurations(source.repoId, source.configPath, pipeline.document());
+    // RE-PINNED rather than copied, the prediction's arm and for a version of its reason: the pin
+    // says which bytes this EXECUTION will run inside, and an execution that is about to happen is
+    // entitled to the toolchain the registry names now. That is also the loop a retry exists to
+    // close — "fix the environment, qits ci retry, the request finalizes" — since a broken build
+    // image would otherwise be re-run by every retry of every run that ever met it. A differing pin
+    // beside an identical commit_sha is then the record of the toolchain having moved, exactly as
+    // archetype_rev is of the recipe. Against the RE-COMPOSED document, since that is what will run.
+    String pins =
+        StepImages.encode(
+            pinStepImages(
+                triggerParser
+                    .parseSnapshot(
+                        source.configPath, pipeline.document(), "The run being retried for " + runId)
+                    .pipeline()));
     CiRun retry =
         DbRetry.inNewTx(
-            "run retry accept", () -> insertRetry(source.id, expected, pipeline), retryDeadline());
+            "run retry accept",
+            () -> insertRetry(source.id, expected, pipeline, pins),
+            retryDeadline());
     if (retry == null) {
       throw new NotFoundException("No such CI run: " + runId);
     }
@@ -3081,7 +3225,10 @@ public class CiRunService {
    *     #retriedPipeline} and computed outside this transaction because it reads the git host
    */
   private CiRun insertRetry(
-      String sourceRunId, String expectedStepDurations, RetriedPipeline pipeline) {
+      String sourceRunId,
+      String expectedStepDurations,
+      RetriedPipeline pipeline,
+      String stepImages) {
     CiRun source = runs.findById(sourceRunId);
     if (source == null) {
       return null;
@@ -3108,6 +3255,10 @@ public class CiRunService {
     retry.downstreamRepos = source.downstreamRepos;
     // Handed in from a fresh read of the history rather than copied off the source — see retry().
     retry.expectedStepDurations = expectedStepDurations;
+    // Handed in from a fresh resolution rather than copied, for the reason beside it in retry():
+    // this is which bytes the re-fire will run inside, and a retry that inherited a months-old
+    // digest could never be healed by fixing the build image.
+    retry.stepImages = stepImages;
     retry.retryOfRunId = source.id;
     retry.triggerType = source.triggerType;
     retry.configPath = source.configPath;

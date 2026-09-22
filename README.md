@@ -448,6 +448,49 @@ loudly and by name, so a repository that still carries one is told rather than h
 "release only if the tests passed" needs no filter anyway, because steps are sequential and a failing
 one stops the loop. `SKIPPED` therefore means one thing again: the loop never reached this step.
 
+### The image floats in the recipe and is fixed for the run
+
+**A recipe names `qits/build-images/*:latest` and that stays true.** A version named only in a
+recipe gets no keep from qits-platform-maintenance's pins API, so docker GC would eventually evict
+the image the whole estate boots from; and twenty repositories pinning by hand is twenty commits per
+toolchain release. So the tag is the right thing for a repository to write.
+
+**What is not right is a build resolving that tag more than once.** A step's image reference used to
+be carried through to every container start verbatim, so each step asked the registry for `:latest`
+at whatever minute it happened to start — and a publish from qits-build-images-oci landing between
+step 2 and step 3 meant a run that verified against one toolchain and published from another, with
+nothing anywhere saying which.
+
+**So a RUN fixes what a recipe floats.** When a run is accepted, each *distinct* reference its steps
+name is resolved once to an immutable digest — `HEAD <artifacts>/v2/<name>/manifests/<tag>`, and the
+`Docker-Content-Digest` the OCI distribution spec makes the registry answer with — and every step of
+that run is launched with that digest. Two steps naming one tag get one digest by construction, and
+the mapping is recorded on the run (`ci_run.step_images`, `V21`) so a finished build says what it ran
+inside. It is `archetype_rev`'s twin: that column says which recipe ran, this says which image ran
+it.
+
+Four answers, and each is a different sentence about the run:
+
+- **Pinned** — the platform's own registry answered. The step boots `…/qits/build-images/ci-base@sha256:…`.
+- **Already pinned** — the recipe named a digest itself. No registry is asked, and the reference is
+  spent verbatim: re-resolving somebody's deliberate pin is this whole defect wearing the fix's name.
+- **Foreign** — `alpine:3`, `docker:28-dind`, anything naming another registry. qits-ci holds no
+  credential for those stores and no address to them, so the reference is launched as written and the
+  run records **no** pin for it, which says "this reference floated" out loud rather than leaving it
+  assumed.
+- **Unresolvable** — it is ours and the registry did not answer, or answered that it holds no such
+  tag. **The run is not accepted**, and the event is left OWED so a sweep asks again: nothing was
+  learned about which tool the build would use, and starting it anyway is exactly the floating build
+  this closes. A registry blip therefore delays a run instead of silently floating it — the same
+  trade an unreadable `release.yml` already makes.
+
+`ci_step.image` keeps the reference the recipe named, deliberately: it is what the duration
+prediction samples history by, and a digest there would reset every pipeline's history on every
+build-image publish. The step row is the reference, the run row is the bytes.
+
+`qits.ci.resolve-platform-step-images=false` turns the whole platform-image resolution off, digest
+and registry prefix together — the escape hatch it always was, and still one variable.
+
 ### Running a step as somebody
 
 `user:` is a passwd name or a bare uid, and it becomes the container's `--user`. Absent means the
@@ -750,14 +793,24 @@ steps:
   `SCMRelease` anchors a run at the released tag — see "The release pipeline" — because
   `clone --branch` takes a tag and `checkout --detach` takes the sha beside it. The engine holds no
   concept of a tag and should not grow one.
-- **`optional: true` (default `false`) makes a missing coordinate a fallback rather than a refusal.**
-  Without it the bullet below applies and the file loses its run, which is right for a pipeline
-  whose entire subject is the commit the event names (the release-request gate builds a fold, and an
-  event naming none has nothing to gate). With it, an event that carries neither value is built
-  at `main`'s head — exactly what the file did before it declared a checkout — logged at INFO. It
-  exists for the case where an event *grew* its coordinate: `SCMRelease` did not always carry
-  `commitSha`, and a replay of an older one must not turn a strictly additive field into releases
-  that silently never build. Garbage is still refused; this arm is about **absence**.
+- **`optional: true` (default `false`) makes a missing coordinate a fallback rather than a refusal —
+  and it is refused outright on the two release events.** Without it the bullet below applies and
+  the file loses its run. With it, an event that carries neither value is built at `main`'s head —
+  exactly what the file did before it declared a checkout — logged at INFO. Garbage is still
+  refused; this arm is about **absence**.
+  <br>**On `ReleaseRequestChanged` and `SCMRelease` the flag does nothing and the file gets no
+  run**, one ERROR naming the event and the missing half. Those two events each name the revision
+  they are *about*, so a run of them at `main` is a release run gating a commit nobody released —
+  the defect the whole "read the pipeline from the revision it gates" rule exists to close, reached
+  by the one door that was left open. It used to exist for the case where an event *grew* its
+  coordinate (`SCMRelease` did not always carry `commitSha`), and that reading justified the defect
+  with the defect: an older event is exactly the one whose release nothing should claim to have
+  built.
+  <br>**What the flag is for now is a file about SOMEBODY ELSE'S release** — repository B reacting
+  to A's `SoftwareRelease`, a downstream bump. The coordinate on such a payload is A's, B has no
+  revision on that event at all, and `main`'s head is not a fallback but the only revision there is
+  — which is what every non-release event's default checkout already answers. Nothing composed from
+  `release.yml` declares the flag any more.
 - **Decide at main, build at the event's commit.** Discovery, parsing and `when:` still read
   `main`'s head — a branch cannot change its own event pipeline until merged. **This is about a
   committed `ci-event-*.yml` and is not the rule for `release.yml`**, whose slots are read at the
@@ -975,7 +1028,8 @@ when:
 checkout:
   branch: version        # the tag's name — a ref, which `clone --branch` resolves like any other
   sha: commitSha         # what it points at
-  optional: true         # a release published before commitSha existed still builds, at main's head
+                         # no `optional:` — an SCMRelease that carries neither records NO run, since
+                         # a release run at main's head gates a commit nobody released
 artifacts:
   - { type: npm, name: "@qits/ui-components" }
   - { type: maven, name: "eu.wohlben.qits:qits-eventstream" }
@@ -983,8 +1037,8 @@ artifacts:
 steps:
   - image: qits/build-images/node-base:latest
     script: |
-      # Belt for the optional arm: a no-op when the run is already anchored at the tag, and the
-      # whole of what supplies the released tree when it is not.
+      # Belt: the run is already anchored at the tag, so both lines are subsecond no-ops. They
+      # are kept because a step that assumes its checkout is somebody else's promise.
       v="$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r .version)"
       git fetch origin "refs/tags/$v:refs/tags/$v"
       git checkout --detach "$v"
@@ -1000,10 +1054,13 @@ event named. Any event carrying a ref name plus a sha can do the same. qits-ci's
 is unchanged — a tag push is still not a CI trigger and deliberately never became one.
 
 **Keep the two `git` lines.** They are measured working inside a step container and they cost two
-subsecond invocations when the run is already at the tag (the fetch answers "up to date", the
-checkout is where HEAD is). What they buy is the `optional: true` arm actually working: a release
-event without `commitSha` builds `main`, and `main` does not hold the released commit at this moment
-— the flow tags the backing branch, deletes it, deploys, and finalizes `main` afterwards.
+subsecond invocations, because the run is always already at the tag: the fetch answers "up to date"
+and the checkout is where HEAD is. They used to buy more than that — they were the whole of what
+supplied the released tree on the `optional: true` fallback, where the run was dispatched at `main`
+and `main` does not hold the released commit at that moment (the flow tags the backing branch,
+deletes it, deploys, and finalizes `main` afterwards). **That fallback is gone**: a release event
+carrying no usable pair records no run at all, so these lines are a belt over a checkout that has
+already happened rather than a second mechanism.
 
 `artifacts:` is a **non-empty list of mappings**, each exactly `{type, name}`:
 
@@ -1192,7 +1249,14 @@ the format above, and *those* are what land in `trigger_config`:
 |---|---|---|
 | `event:` | `ReleaseRequestChanged` | `SCMRelease` |
 | `when:` | `repoName: { exact: <this repository> }` | `repository: { exact: <this repository> }` |
-| `checkout:` | `{ branch: backingBranch, sha: mergedSha }` | `{ branch: version, sha: commitSha, optional: true }` |
+| `checkout:` | `{ branch: backingBranch, sha: mergedSha }` | `{ branch: version, sha: commitSha }` |
+
+Neither half declares `optional:`, and the release half stopped doing so on 2026-09-22. The
+compatibility it advertised — an `SCMRelease` published before `commitSha` existed — is unreachable
+for a composed document anyway, since the slot file is read AT that sha and an event with none
+composes nothing at all; what the flag really did was dispatch a release run at `main`'s head with
+its checkout stripped, which gates a commit nobody released. An event that does not carry the pair
+now records no run, exactly as a QA event naming no fold always did.
 
 **Those two keys are the first two PHASES of one release pipeline, not two pipelines that happen to
 share a file.** A release is one pipeline with three phases and four gates in it: **P1 QA**, a run at

@@ -109,8 +109,8 @@ import org.jboss.logging.Logger;
  * (trigger_event_id, repo_id, config_path)} makes a second evaluation of an event that already
  * recorded its runs a no-op. That constraint is what lets this ledger be at-least-once.
  *
- * <p><b>Two outcomes leave a row owed: a throw, and a release evaluation that could not read a
- * candidate's release pipeline.</b> The second covers both halves of that pipeline — the
+ * <p><b>Three outcomes leave a row owed: a throw, a release evaluation that could not read a
+ * candidate's release pipeline, and a run whose step image could not be pinned.</b> The second covers both halves of that pipeline — the
  * repository's {@code .config/qits/release.yml} coming back {@code UNREACHABLE}, and the wrapper
  * repository's own trigger listing failing, which leaves no revision to read an archetype recipe at.
  * They are one case because they are one sentence: nothing was learned, so nothing about this
@@ -128,6 +128,14 @@ import org.jboss.logging.Logger;
  * ever record again. One git-host blip cost a release. {@link Evaluation#repositoriesUnreadable()}
  * is what carries that fact out of the evaluation, and the two settling callers — {@link
  * #evaluateQuietly} and {@link #sweepOwed} — skip the settle when it is non-empty.
+ *
+ * <p>The third is the same sentence about a different read (2026-09-22). Every recipe step on the
+ * estate names a floating {@code qits/build-images/*:latest}, and a run now fixes that tag to a
+ * digest once, at accept, for all of its steps — see {@code CiRunService.pinStepImages}. A platform
+ * image whose digest the registry would not answer is not a verdict about the repository: nothing
+ * is known about which tool the build would have run inside, and accepting the run anyway is the
+ * floating-tag defect the pin exists to close. So the accept refuses, the candidate lands on {@link
+ * Evaluation#repositoriesUnreadable()} beside the {@code release.yml} case, and a sweep asks again.
  *
  * <p>What makes that safe is the dedupe two paragraphs up and nothing else: the candidates that
  * <em>did</em> answer have already recorded their runs, the constraint refuses them a second time,
@@ -607,7 +615,7 @@ public class CiEventTriggerService {
     }
     if (projectScope == null) {
       try {
-        evaluatePlatform(arrival, payload, candidates, wrapper, heads, runIds);
+        evaluatePlatform(arrival, payload, candidates, wrapper, heads, runIds, unreadable);
       } catch (RuntimeException e) {
         // Never out of the evaluation: the candidates' own runs are already recorded and a platform
         // pipeline's failure is not theirs.
@@ -690,33 +698,44 @@ public class CiEventTriggerService {
     // never main — see releaseRevision. The repository's own committed trigger files above are read
     // at main, exactly as they always were; only the release SLOTS move.
     ReleaseSlots slots = releaseSlots(repo, repoId, arrival, revision, wrapper);
+    // Whether every document this candidate declares was evaluated to a conclusion. A step image
+    // this platform publishes whose digest could not be resolved is the second way that can be
+    // false — see evaluateTrigger — and it is the release.yml read's case one layer down: nothing
+    // was learned, so the event is owed rather than settled with a run missing.
+    boolean complete = true;
     for (EventTriggerFile file : lookup.files()) {
       // A committed trigger file has no archetype: its bytes are the repository's own word about its
       // own pipeline, with no platform share in them to record the provenance of.
-      evaluateTrigger(
-          repo,
-          repoId,
-          file.path(),
-          file.content(),
-          arrival,
-          payload,
-          revision,
-          lookup,
-          null,
-          runIds);
+      complete &=
+          evaluateTrigger(
+              repo,
+              repoId,
+              file.path(),
+              file.content(),
+              arrival,
+              payload,
+              revision,
+              lookup,
+              null,
+              runIds);
     }
     if (slots.document() != null) {
-      evaluateTrigger(
-          repo,
-          repoId,
-          CiReleaseSlotParser.CONFIG_PATH,
-          slots.document(),
-          arrival,
-          payload,
-          revision,
-          lookup,
-          slots.archetype(),
-          runIds);
+      complete &=
+          evaluateTrigger(
+              repo,
+              repoId,
+              CiReleaseSlotParser.CONFIG_PATH,
+              slots.document(),
+              arrival,
+              payload,
+              revision,
+              lookup,
+              slots.archetype(),
+              runIds);
+    }
+    if (!complete) {
+      unreadable.add(repo.repoId());
+      return false;
     }
     if (slots.unreadable()) {
       // The repository's OWN trigger files above were evaluated — that listing answered — and what
@@ -737,8 +756,14 @@ public class CiEventTriggerService {
    * the same parser, the same {@code when:} evaluation, the same checkout resolution with its
    * validation and its optional-checkout fallback, the same run row. A composed pipeline that took a
    * shortcut anywhere in here would be a second engine to keep in step with this one.
+   *
+   * @return whether this document was evaluated <b>to a conclusion</b>. Every verdict is one,
+   *     including the several that record no run: a file that declares another event, a selection
+   *     that did not match, a checkout the payload cannot supply. {@code false} means the opposite
+   *     of a verdict — the run's step image could not be pinned, so nothing is known about what
+   *     this build would have run inside, and the caller leaves the event owed for a sweep.
    */
-  private void evaluateTrigger(
+  private boolean evaluateTrigger(
       CiRepoRef repo,
       String repoId,
       String configPath,
@@ -758,16 +783,16 @@ public class CiEventTriggerService {
         // Loud, naming repository and file — a trigger that cannot be parsed must not silently never
         // fire — and per file: the repository's OTHER trigger files are evaluated regardless.
         LOG.warnf("%s: %s is not a usable event trigger: %s", repoId, file.path(), e.getMessage());
-        return;
+        return true;
       }
       if (!trigger.eventName().equals(arrival.eventName())) {
-        return;
+        return true;
       }
       if (!CiEventSelectionEvaluator.matches(trigger.selection(), payload)) {
         LOG.debugf(
             "%s: %s declares %s but its selection did not match event %s",
             repoId, file.path(), trigger.eventName(), arrival.eventId());
-        return;
+        return true;
       }
       // THE DEFAULT CHECKOUT — what a trigger that declares no `checkout:` is recorded at. Two
       // answers, and the split is the whole of what makes it correct rather than a special case:
@@ -802,7 +827,7 @@ public class CiEventTriggerService {
           LOG.warnf(
               "%s: %s declares no checkout and event %s (%s) names no usable revision — no run",
               repoId, file.path(), arrival.eventId(), arrival.eventName());
-          return;
+          return true;
         }
         branch = dflt.branch();
         sha = dflt.sha();
@@ -824,17 +849,58 @@ public class CiEventTriggerService {
             LOG.warnf(
                 "%s: %s checkout refused for event %s: %s",
                 repoId, file.path(), arrival.eventId(), refused.getMessage());
-            return;
+            return true;
           }
           branch = declaredBranch;
           sha = declaredSha;
+        } else if (trigger.checkout().optional()
+            && RELEASE_EVENTS.contains(arrival.eventName())) {
+          // THE FALLBACK IS REFUSED FOR THE TWO RELEASE EVENTS, and this arm is what closes the
+          // last path by which a release run could be dispatched at main's head.
+          //
+          // What it used to do: branch = main, sha = the candidate's head, checkout stripped. That
+          // is a RELEASE run — the event names a fold or a released tag — recorded against, and
+          // built from, a revision the event says nothing about. A pipeline composed from main
+          // gates a commit nobody released, and the run's own verdict then travels to
+          // qits-projects' gate as if it were about the released one. Owner ruling: a release
+          // pipeline is composed from, and run against, the revision actually being built, and no
+          // step falls back to main.
+          //
+          // It is the same answer the non-optional arm below gives, and the same answer
+          // defaultCheckout gives a release event that names no revision — one line, no run — so a
+          // release event with a half-missing payload costs the file its run whichever way the file
+          // is written. ERROR rather than WARN for releaseRevision's reason: the payload of a
+          // release event is expected to carry the revision it is about, so a half of it missing is
+          // a defect in the publisher rather than a shape to accommodate.
+          //
+          // SETTLED, NOT OWED. Nothing is added to the evaluation's unreadable list, so the event
+          // is settled exactly as ReleaseSlots.NO_REVISION settles: an event's bytes are immutable,
+          // the missing half is missing on every future offer, and an owed row for it is a row
+          // nothing could ever clear with the watermark stuck behind it.
+          LOG.errorf(
+              "%s: %s declares an optional checkout { %s, %s } and release event %s (%s) does not"
+                  + " carry both — no run. The fallback to %s's head is gone: a release run at a"
+                  + " revision the event is not about gates a commit nobody released",
+              repoId,
+              file.path(),
+              trigger.checkout().branchPath(),
+              trigger.checkout().shaPath(),
+              arrival.eventId(),
+              arrival.eventName(),
+              TRIGGER_BRANCH);
+          return true;
         } else if (trigger.checkout().optional()) {
-          // THE COMPATIBILITY ARM, and the whole reason `optional:` exists. The event does not carry
-          // the coordinate this file would rather build — an SCMRelease published before `commitSha`
-          // existed, a replay of one, an older publisher — so the run falls back to exactly what
-          // this file did before it declared a checkout at all: main's head, with the step script
-          // left to find the released tree itself. INFO rather than WARN: this is a supported shape
-          // of the event, not a fault, and it stops happening on its own.
+          // THE COMPATIBILITY ARM, and what `optional:` means now that the release events are
+          // refused above: a file reacting to ANOTHER repository's release.
+          //
+          // The event names a revision of somebody else's repository — a `SoftwareRelease` off
+          // qits-ci's own announce path is the live shape, and it is not a release event here — so
+          // this repository has exactly one revision the event could be built at: the tracked
+          // branch's head. That is not a fallback from a revision that exists; it is the same
+          // answer defaultCheckout gives every non-release event, reached by a file that hoped the
+          // payload would carry a coordinate and found it did not. A downstream bump is B building
+          // B's own main because A released, which is correct and is the run the author declared.
+          // INFO rather than WARN: a supported shape of the event, not a fault.
           //
           // The trigger is handed on WITHOUT its checkout, which is the point and not bookkeeping.
           // Everything downstream that asks "does this run follow the event's own ref?" must get the
@@ -845,14 +911,13 @@ public class CiEventTriggerService {
           // Rewriting the value is how that stays true of every such question, including ones added
           // later, rather than of the one we remembered.
           //
-          // NOTE, AND IT IS A KNOWN SURVIVING FALLBACK TO MAIN'S HEAD. The default above no longer
-          // has one — a release event that names no usable revision records no run at all — and
-          // this arm is the one path by which a RELEASE run can still be dispatched at main. It is
-          // reachable for a composed release document (`checkout: { branch: version, sha:
-          // commitSha, optional: true }`) whose payload carries a usable `commitSha` and no usable
-          // `version`: the sha half is what the slot file is composed at, so the document exists,
-          // and the branch half is what is missing here. Left deliberately rather than overlooked —
-          // removing it is a decision about the compatibility this flag exists for, not a tidy-up.
+          // THERE IS NO SURVIVING FALLBACK FOR A RELEASE RUN. This arm used to be reachable for a
+          // composed release document (`checkout: { branch: version, sha: commitSha, optional: true
+          // }`) whose payload carried a usable `commitSha` and no usable `version`, and it
+          // dispatched that release run at main's head. Both halves of that are closed: the
+          // composer emits no `optional:` at all, and the arm above refuses the flag outright for
+          // the two release events. What is left here is a file about somebody else's release, for
+          // which main's head is the only revision there is.
           branch = TRIGGER_BRANCH;
           sha = lookup.headSha();
           accepted = trigger.withoutCheckout();
@@ -877,29 +942,53 @@ public class CiEventTriggerService {
               trigger.checkout().shaPath(),
               arrival.eventId(),
               arrival.eventName());
-          return;
+          return true;
         }
       }
       LOG.infof(
           "Event %s (%s) matched %s in %s — enqueuing a run at %s@%s",
           arrival.eventId(), arrival.eventName(), file.path(), repoId, branch, sha);
-      String runId =
-          runService.onEventTrigger(
-              new CiRunService.EventRun(
-                  repo,
-                  branch,
-                  sha,
-                  accepted,
-                  arrival.eventId(),
-                  arrival.eventName(),
-                  arrival.occurredAt(),
-                  arrival.payload(),
-                  file.content(),
-                  archetype));
+      String runId;
+      try {
+        runId =
+            runService.onEventTrigger(
+                new CiRunService.EventRun(
+                    repo,
+                    branch,
+                    sha,
+                    accepted,
+                    arrival.eventId(),
+                    arrival.eventName(),
+                    arrival.occurredAt(),
+                    arrival.payload(),
+                    file.content(),
+                    archetype));
+      } catch (CiRunService.StepImageUnpinned unpinned) {
+        // NOTHING WAS LEARNED ABOUT WHICH TOOL THIS BUILD WOULD USE, so there is no run and the
+        // event is left OWED — the answer an unreadable release.yml already gets, for the identical
+        // reason. A step image this platform publishes whose digest the registry would not answer
+        // is a question that stands rather than a verdict: accepting the run anyway would build
+        // against whatever that tag points at when each container starts, and settling the event
+        // would lose the build outright. A sweep asks a registry that has probably come back.
+        //
+        // WARN rather than ERROR: unlike a payload with no revision, this really can right itself,
+        // and it says so.
+        LOG.warnf(
+            "%s: %s declares step image %s, whose digest could not be resolved — no run, and event"
+                + " %s (%s) stays owed so a sweep re-evaluates it: %s",
+            repoId,
+            file.path(),
+            unpinned.reference(),
+            arrival.eventId(),
+            arrival.eventName(),
+            unpinned.getMessage());
+        return false;
+      }
       if (runId != null) {
         runIds.add(runId);
       }
     }
+    return true;
   }
 
   // --- the release slot file ----------------------------------------------------------------------
@@ -1830,7 +1919,8 @@ public class CiEventTriggerService {
       List<CiRepoRef> candidates,
       ArchetypeReads wrapper,
       Map<String, String> heads,
-      List<String> runIds) {
+      List<String> runIds,
+      List<String> unreadable) {
     String configured = platformPipelinesRepository;
     if (configured.isEmpty()) {
       // Off, and off means no read at all.
@@ -1914,21 +2004,40 @@ public class CiEventTriggerService {
       LOG.infof(
           "Event %s (%s) matched platform pipeline %s — enqueuing a run for %s at %s",
           arrival.eventId(), arrival.eventName(), file.path(), target.display(), head);
-      String runId =
-          runService.onEventTrigger(
-              new CiRunService.EventRun(
-                  target,
-                  TRIGGER_BRANCH,
-                  head,
-                  trigger,
-                  arrival.eventId(),
-                  arrival.eventName(),
-                  arrival.occurredAt(),
-                  arrival.payload(),
-                  file.content(),
-                  // A platform pipeline is a committed file like a repository's own: no composition,
-                  // so no archetype to record.
-                  null));
+      String runId;
+      try {
+        runId =
+            runService.onEventTrigger(
+                new CiRunService.EventRun(
+                    target,
+                    TRIGGER_BRANCH,
+                    head,
+                    trigger,
+                    arrival.eventId(),
+                    arrival.eventName(),
+                    arrival.occurredAt(),
+                    arrival.payload(),
+                    file.content(),
+                    // A platform pipeline is a committed file like a repository's own: no
+                    // composition, so no archetype to record.
+                    null));
+      } catch (CiRunService.StepImageUnpinned unpinned) {
+        // The candidate pass's arm, for the file that acts on the whole catalogue: no run, and the
+        // event is left owed rather than settled. The repository the row goes on is the one the
+        // payload named, so that is the one the owed list carries — a sweep re-evaluates the whole
+        // event and the dedupe refuses everything that did record a run.
+        LOG.warnf(
+            "%s: %s declares step image %s, whose digest could not be resolved — no run for %s, and"
+                + " event %s (%s) stays owed so a sweep re-evaluates it",
+            configured,
+            file.path(),
+            unpinned.reference(),
+            target.display(),
+            arrival.eventId(),
+            arrival.eventName());
+        unreadable.add(target.repoId());
+        continue;
+      }
       if (runId != null) {
         runIds.add(runId);
       }

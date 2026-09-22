@@ -40,9 +40,34 @@ import java.util.List;
  *       checkout: {branch: backingBranch, sha: mergedSha}}. No {@code optional:}: a request naming
  *       no fold has nothing to gate.
  *   <li>release — {@code event: SCMRelease}, {@code when: [{repository: {exact: …}}]}, {@code
- *       checkout: {branch: version, sha: commitSha, optional: true}}. The flag stays until no event
- *       published before {@code commitSha} existed can still arrive.
+ *       checkout: {branch: version, sha: commitSha}}. No {@code optional:} either, and the removal
+ *       is the paragraph below.
  * </ul>
+ *
+ * <p><b>{@code optional: true} used to be on the release half and is GONE.</b> The comment is kept
+ * rather than deleted with the line, because what it said was true when it was written: {@code
+ * commitSha} is an additive component of {@code SCMRelease}, so a release published before it
+ * existed carries none, and the flag made such an event fall back to {@code main}'s head rather
+ * than cost a release pipeline its run. Two things ended it.
+ *
+ * <p>The compatibility it advertised is <b>unreachable for a composed document</b>. A composed
+ * pipeline is read at the revision the event names — {@code CiEventTriggerService.releaseRevision},
+ * since the release-slots fix — so an event with no usable {@code commitSha} reads no {@code
+ * release.yml}, composes no document, and there is no {@code checkout:} for a flag to soften. The
+ * flag could only ever fire on the half-missing payload (a usable {@code commitSha} and no usable
+ * {@code version}), which is not the case it was written for.
+ *
+ * <p>And what it did in that case was the defect one layer down: dispatch a RELEASE run at {@code
+ * main}'s head with its checkout stripped. <b>A release pipeline must be composed from, and run
+ * against, the revision actually being built</b> (owner ruling), and {@code main} is a different
+ * revision wearing the event's name. So the composed release half declares the pair plainly and an
+ * event that does not carry it gets the same answer every other unresolvable checkout gets: one
+ * WARN and no run.
+ *
+ * <p><b>The flag itself is not retired</b> — {@code CiEventTriggerParser} still accepts it, and a
+ * hand-written {@code ci-event-*.yml} in repository B reacting to repository A's {@code
+ * SoftwareRelease} still uses it. That is not a release run of B: B builds its own {@code main},
+ * which is the only revision the event names for it. Nothing composed declares it.
  *
  * <p>The two spell the repository differently — {@code repoName} and {@code repository} — because
  * the two events do, and both carry the repository's public NAME. That asymmetry is copied from the
@@ -248,8 +273,10 @@ public final class CiReleaseComposer {
     out.append("  - repository: { exact: ").append(scalar(selector)).append(" }\n");
     out.append("checkout:\n");
     out.append("  branch: ").append(RELEASE_BRANCH_PATH).append('\n');
+    // NO `optional: true`. See the class javadoc: the compatibility it advertised cannot be reached
+    // by a composed document any more, and what it really did was dispatch a release run at main's
+    // head with its checkout stripped.
     out.append("  sha: ").append(RELEASE_SHA_PATH).append('\n');
-    out.append("  optional: true\n");
     if (!artifacts.isEmpty()) {
       out.append("artifacts:\n");
       for (SlotArtifact artifact : artifacts) {
@@ -351,9 +378,12 @@ public final class CiReleaseComposer {
     out.append("set -eu\n");
     out.append("# --- platform prelude ---------------------------------------------------------\n");
     if (releasePhase) {
-      // THE TAG IS THE TREE. On the anchored path the run is already at the tag's commit and this
-      // pair is a no-op; on the optional-checkout fallback (an SCMRelease published before
-      // `commitSha` existed) it is the whole mechanism. One text, both paths.
+      // THE TAG IS THE TREE. Every composed release run is now anchored at the tag's own commit —
+      // the document declares `checkout: { branch: version, sha: commitSha }` with no `optional:`,
+      // and an event that does not carry the pair records no run at all — so this pair is a belt
+      // over a checkout that has already happened rather than a second mechanism. It used to be the
+      // whole mechanism on the optional-checkout fallback, which is the path that is gone: there is
+      // no composed release run at main's head left for it to fetch the released tree into.
       out.append(
           ": \"${QITS_VERSION:?the triggering release event carried no version}\"\n");
       out.append(

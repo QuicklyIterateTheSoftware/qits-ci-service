@@ -264,7 +264,13 @@ public class CiReleaseComposerTest {
     assertEquals(CiReleaseComposer.RELEASE_EVENT, release.eventName());
     assertEquals("version", release.checkout().branchPath());
     assertEquals("commitSha", release.checkout().shaPath());
-    assertTrue(release.checkout().optional(), "the additive-commitSha transition arm");
+    assertEquals(
+        false,
+        release.checkout().optional(),
+        "no optional: on a composed release either — the arm it opened dispatched a RELEASE run at"
+            + " main's head with its checkout stripped, and the compatibility it advertised (an"
+            + " SCMRelease with no commitSha) composes no document at all now, so the flag guarded"
+            + " nothing but the defect");
     assertEquals(1, release.artifacts().size());
     assertEquals(CiArtifact.Type.DOCKER, release.artifacts().get(0).type());
     assertEquals("qits/qits-ci", release.artifacts().get(0).name());

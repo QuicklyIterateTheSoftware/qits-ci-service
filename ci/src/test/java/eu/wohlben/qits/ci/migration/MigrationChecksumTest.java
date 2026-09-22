@@ -109,6 +109,9 @@ public class MigrationChecksumTest {
     PINS.put(
         "V20__run_archetype.sql",
         "459ac9444f4210e0f69d5836dde0d8de43ef82b878efd113dc5d349b23ad9d02");
+    PINS.put(
+        "V21__run_step_images.sql",
+        "9cf8af098d8688412c80b62d020e70560bb9a151c45e1ff5ae54a93ce0dd19ff");
   }
 
   @Test

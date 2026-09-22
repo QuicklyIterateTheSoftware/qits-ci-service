@@ -350,4 +350,39 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
 
   @Column(name = "archetype_rev", length = 64)
   public String archetypeRev;
+
+  /**
+   * <b>Which bytes the tools that ran this pipeline really were</b>: a JSON object mapping each
+   * distinct image reference this run's steps named to the immutable digest reference it was
+   * pinned to when the run was accepted. Null for a run that pinned nothing.
+   *
+   * <p><b>It is {@link #archetypeRev}'s twin for the other half of a run's environment.</b> That
+   * column says which wrapper commit wrote the prelude; this one says which {@code
+   * qits/build-images/*} the prelude ran inside. Every recipe on the estate names those images by a
+   * floating {@code :latest}, and a pipeline composed step by step from a floating tag can boot two
+   * different toolchains in one build — verify against one, publish from another — with nothing on
+   * the row to say so. The pin is resolved <b>once per (run, reference)</b> and spent by every step
+   * of that run, so a build can no longer straddle two versions of one tool, and this column is
+   * what makes that readable afterwards.
+   *
+   * <p><b>Null is the ordinary value and it means three things, none of them "unknown".</b> A
+   * pipeline whose every step names an image this platform does not publish ({@code alpine:3},
+   * {@code docker:28-dind}) pins nothing — qits-ci holds no credential for another registry and
+   * says so by recording no pin rather than by inventing one. A deployment with {@code
+   * qits.ci.resolve-platform-step-images=false} resolves no platform image at all, which is that
+   * switch's whole point. And every row written before this column existed genuinely does not know,
+   * which is why there is no backfill: a digest asserted for a run that happened is a claim about
+   * bytes nobody can now check.
+   *
+   * <p><b>A retry re-pins rather than copying</b>, {@code expectedStepDurations}' arm rather than
+   * {@code priority}'s: the pin says which tool this execution will use, and the honest answer for
+   * an execution that is about to happen is the one the registry gives now. A differing pin beside
+   * an identical {@code commitSha} is then the record of the toolchain having moved between two
+   * attempts at one commit — the same question {@code archetypeRev} answers about the recipe.
+   *
+   * <p>Part of no constraint, carrying no index, read whole and queried into by nothing — {@code
+   * downstream_repos}' storage decision, for its reason. See {@link StepImages}.
+   */
+  @Column(name = "step_images", columnDefinition = "text")
+  public String stepImages;
 }

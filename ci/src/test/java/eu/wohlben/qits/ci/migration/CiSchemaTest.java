@@ -156,6 +156,39 @@ public class CiSchemaTest {
     // V16's half of it: the prediction is a JSON array whose length is the pipeline's, which is
     // likewise not a number this schema should pick.
     assertEquals("text", columnType("ci_run", "expected_step_durations"));
+    // V21's half of it: the pins are a JSON object whose size is the pipeline's distinct image
+    // count, read whole and queried into by nothing — downstream_repos' decision a third time.
+    assertEquals("text", columnType("ci_run", "step_images"));
+  }
+
+  @Test
+  public void theStepImagePinColumnIsNullableAndTakesBothArms() throws SQLException {
+    // V21. A run pins its step images at accept, and NOTHING PINNED is an ordinary run rather than
+    // a gap: a pipeline whose every step names an image this platform does not publish (alpine:3,
+    // docker:28-dind) has nothing to resolve, and every row older than the column genuinely does
+    // not know. Written and rolled back rather than described, so the lineage is proven to accept a
+    // run that recorded its toolchain and a run that recorded none.
+    try (Connection connection = ci.getConnection()) {
+      connection.setAutoCommit(false);
+      try (PreparedStatement run =
+          connection.prepareStatement(
+              "insert into ci_run (id, repo_id, branch, commit_sha, status, created_at,"
+                  + " trigger_type, config_path, step_images) values (?,"
+                  + " 'schema-probe', 'main', '0', 'QUEUED', current_timestamp, 'EVENT',"
+                  + " '.config/qits/release.yml', ?)")) {
+        run.setString(1, "image-probe-pinned");
+        run.setString(
+            2,
+            "{\"r:8080/qits/build-images/ci-base:latest\":\"r:8080/qits/build-images/ci-base@sha256:"
+                + "a".repeat(64)
+                + "\"}");
+        run.executeUpdate();
+        run.setString(1, "image-probe-unpinned");
+        run.setString(2, null);
+        run.executeUpdate();
+      }
+      connection.rollback();
+    }
   }
 
   @Test

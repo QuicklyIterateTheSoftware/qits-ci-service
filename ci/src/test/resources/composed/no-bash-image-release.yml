@@ -6,7 +6,6 @@ when:
 checkout:
   branch: version
   sha: commitSha
-  optional: true
 artifacts:
   - { type: 'docker', name: 'qits/build-images/ci-base' }
 steps:

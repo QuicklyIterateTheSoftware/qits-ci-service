@@ -98,6 +98,10 @@ package:
   There **was** a `ci-daemon-protocol/` module here, a vendored copy of the daemon repo's. It is
   gone; the contract is the dependency `eu.wohlben.qits:qits-ci-daemon-protocol` now — see "The
   protocol is a dependency" below.
+- `service/…/registry/` — one class, `HttpImagePins`: the client that asks the platform's own OCI
+  registry which bytes a step image's tag names right now. An *adapter* like `githost` and `idp`
+  are, for the `CiStepImagePins` seam in `ci/control`, and another hand-rolled `java.net.http` one
+  for the reason the whole `githost` package is. See "A run is fixed to one toolchain".
 - `ci-events/` — the event classes qits-ci emits, `eu.wohlben.qits.ci.events`. Under this repo's own
   namespace because it *is* this repo's vocabulary; depends on `eventstream` and nothing else.
 
@@ -573,6 +577,61 @@ same rows through the same pure function in whichever process is running — whi
 statement, since it holds for a backlog nothing accepted in this process at all. A queue whose rows
 state nothing derives `(createdAt, id)`, so the old case is the new one with no signals in it, and it
 is still green unchanged.
+
+### A run is fixed to one toolchain, and the fixing happens once
+
+**Every recipe step on the estate names `qits/build-images/*:latest`, and that is correct.** A
+version named only in a recipe gets no keep from qits-platform-maintenance's pins API, so docker GC
+would eventually evict the image the whole estate boots from — and twenty repositories pinning by
+hand is twenty commits per toolchain release. The tag is the right thing for a repository to write.
+
+**What was wrong is that the run resolved it more than once.** `CiReleaseComposer` emits `image:`
+verbatim and `CiRunService` carried it to each container start, so every step asked the registry for
+`:latest` at whatever minute it happened to start. A publish from qits-build-images-oci landing
+mid-build is then a run that verified against one toolchain and published from another, with nothing
+anywhere recording which — the inconsistency this closes (owner ruling, 2026-09-22).
+
+**So the RUN fixes what the recipe floats.** `CiRunService.pinStepImages` runs at **accept**, beside
+`predictedStepDurations` and for its placement reason (network I/O inside the insert's bracket would
+poison the session and roll the accepted run back). It walks the pipeline's steps, asks
+`CiStepImagePins` about each **distinct** reference — the memo is the contract, not an optimisation
+— and the answers go onto `ci_run.step_images` (V21). `runSteps` decodes that once and every step is
+launched with `pinnedImage(...)`. Two steps naming one tag get one digest by construction.
+
+- **The mechanism is the registry's own.** `HEAD <artifacts>/v2/<name>/manifests/<tag>` and the
+  `Docker-Content-Digest` header the OCI distribution spec mandates; qits-artifacts serves that spec
+  at the literal `/v2` of its own root and conformance-tests it, and its `PublishGuard` guards the
+  six publish surfaces while letting every READ through — so no credential is presented, and one
+  would be a credential offered where the store asks for none.
+- **The address is derived, never configured**, `IdpCommissioner`'s rule: the origin of
+  `qits.artifacts.maven.registry-url`, which is `CiDaemonLauncher.resolvedArtifactsUrl`'s own ladder.
+  Two derivations would mean a step publishing to one address and its pin resolved against another.
+  The *pinned reference* is built with `qits.artifacts.registry-host` — the host daemon's view, which
+  is what a pull must name. Resolving through one position and pulling through the other is sound
+  rather than sloppy: a digest is content-addressed.
+- **Four answers, and `UNRESOLVED` must never be collapsed into `FOREIGN`** — `commitHeld`'s
+  `UNKNOWN`/`GONE` rule one seam over. Pinned; already pinned by the author (no registry is asked,
+  because re-resolving a deliberate pin is this defect wearing the fix's name); foreign, which is
+  every image this platform does not publish and which is launched as named with **no** pin recorded,
+  since qits-ci holds no credential for another store and "this floated" is worth saying out loud;
+  and unresolvable, which is **no run**.
+- **Unresolvable refuses the accept and leaves the event OWED.** Nothing was learned about which tool
+  the build would use, so it is the unreadable-`release.yml` case exactly: `CiRunService.StepImageUnpinned`
+  out of `onEventTrigger`, caught in `CiEventTriggerService.evaluateTrigger`, the candidate onto
+  `repositoriesUnreadable`, and a sweep asks a registry that has probably come back. A blip delays a
+  run rather than floating it, and a release request is never left waiting on a verdict nothing
+  would record again.
+- **`ci_step.image` keeps the TAG and that is deliberate.** It is what
+  `predictedStepDurations` samples history by — "a step that changed its image stops predicting" —
+  and a digest there would make every build-image publish erase every pipeline's history, which is
+  not what that rule means. The step row is the reference, the run row is the bytes, and neither says
+  what ran alone.
+- **A retry re-pins rather than copying**, the prediction's arm rather than `priority`'s: the pin
+  says which bytes this execution will use, and a retry that inherited a months-old digest could
+  never be healed by fixing a build image — which is the loop `qits ci retry` exists to close.
+- `qits.ci.resolve-platform-step-images=false` turns the whole thing off, digest and registry prefix
+  together. No second key: that switch's argument (shipped ON, one variable reverses it) already
+  covers exactly this blast radius, and a second one would be a second thing to be wrong about.
 
 ### The queue is the table, and workers claim out of it
 
@@ -1303,13 +1362,22 @@ WP2; the class javadoc carries the argument in full and the short form is:
   script fetched `refs/tags/$version` and checked it out detached — so every release run on the
   platform displayed as `main@<head>`, a run recorded against a commit it did not build. qits-projects
   publishes the tag's commit now, and the composed release phase spends it on
-  `checkout: { branch: version, sha: commitSha, optional: true }`. **A tag is a ref and that is the
+  `checkout: { branch: version, sha: commitSha }`. **A tag is a ref and that is the
   whole mechanism** — `checkout.branch` resolves to a *ref name*, `git clone --branch` takes a tag,
-  and neither the engine nor the daemon learned anything about tags. `optional: true` is the
-  transition: `commitSha` is additive, so a replay or an older publisher carries none, and such a run
-  falls back to `main`'s head with its checkout **stripped**, which is why the per-ref burst collapse
-  cannot dedupe two distinct fallback releases. `CiEventCheckoutTest` pins all three arms; the step's
-  tag fetch stays as the fallback's mechanism and the anchored path's no-op.
+  and neither the engine nor the daemon learned anything about tags.
+  <br>**`optional: true` was on that composed pair and is gone (2026-09-22).** It was the
+  transition: `commitSha` is additive, so a replay or an older publisher carries none, and such a
+  run fell back to `main`'s head with its checkout **stripped**. Both halves of that ended. The
+  compatibility is unreachable for a composed document — the slot file is read AT the event's sha,
+  so an event with none composes nothing to soften — and what the arm really did was dispatch a
+  RELEASE run at a revision the event is not about, gating a commit nobody released. The engine now
+  **refuses the flag outright for the two release events** (one ERROR, no run, the event settled
+  like `NO_REVISION`), and the composer emits it nowhere. What survives is the genuinely different
+  case: a hand-written file reacting to ANOTHER repository's `SoftwareRelease`, where `main`'s head
+  is not a fallback but the only revision the event names for this repository — that run is still
+  accepted with its checkout stripped (`withoutCheckout`), which is what keeps the per-ref burst
+  collapse from deduping two distinct upstream releases. `CiEventCheckoutTest` pins both sides.
+  The step's tag fetch stays as the anchored path's no-op; it is no longer any fallback's mechanism.
 - **The two facts race on a real release, so both halves are rows.** `ci_release_announcement` holds
   what a green run owes (`announced_at` null is "still owed"), `ci_scm_release` holds what was really
   released. Either arrival order works and a restart between them costs nothing.
@@ -1456,8 +1524,10 @@ the clone env, the restart snapshot and `announceRun`'s `BuildSuccessful` all re
 columns. The `branch` path resolves to a **ref name** and a tag is one, which is how a release
 pipeline anchors at `{ branch: version, sha: commitSha }` without the engine or the daemon holding
 any concept of a tag. `optional: true` makes an unresolvable checkout a fallback to `main`'s head
-instead of a refusal — for the event that *grew* its coordinate, so an older `SCMRelease` does not
-cost a release pipeline its run — and such a run is accepted with its checkout stripped
+instead of a refusal — **for every event but the two release ones, where it is refused outright**,
+because a release event names the revision it is about and a run of it at `main` gates a commit
+nobody released. What is left is a file about another repository's release, and such a run is
+accepted with its checkout stripped
 (`CiEventTrigger.withoutCheckout`) so every reader keyed on `checkout` sees the run it really is. A
 checkout run's burst collapses per ref (`supersedeByCheckoutBranch`, the run queue's
 third supersede — gated on the trigger declaring checkout, because non-checkout event runs share
@@ -2427,6 +2497,21 @@ catalogue, and named, so widening it would have cost one line — and `V18` drop
 guarded. Being named is exactly what made it free to remove. `CiSchemaTest` runs the real migration
 against a real postgres and pins all of that, including that `ci_daemon_pin` is really gone and that
 the unbounded columns came out `text` and not a large object.
+
+`V21__run_step_images.sql` is V8's shape a **ninth** time: `ci_run.step_images text`, nullable, no
+default, no backfill, part of no constraint and carrying no index. It holds one JSON object per run
+— each distinct image reference its steps named, mapped to the immutable digest reference it was
+pinned to at accept — and it is `V20`'s twin rather than another column beside it: V20 records which
+wrapper commit wrote the prelude a run executed, this records which image that prelude executed
+inside, and a run row then says what it was built from on both axes. `text` and read whole is
+`downstream_repos`' decision for its reason; nothing queries into the value. **Null means three
+things and none of them is a value that could be filled in**: a pipeline whose every step names an
+image this platform does not publish pins nothing, a deployment with
+`qits.ci.resolve-platform-step-images=false` pins nothing by design, and every row older than the
+column genuinely does not know — a digest written for a run that already happened would be a claim
+about bytes nobody can now check. What is *not* a null is a platform image the registry would not
+answer about: that refuses the accept outright, so there is no row. See "A run is fixed to one
+toolchain".
 
 `V18__retire_daemon_pin_ladder.sql` is the **first migration in this lineage that drops anything**,
 and it owes an argument the additive ones do not. Every file since V1 has added a nullable column and
