@@ -18,6 +18,17 @@ import org.junit.jupiter.api.Test;
  * QitsOidcClientResourceOverridesOldExtrasTest} hold the other two arms — the old extras keys alone,
  * and the new resource keys winning over them — each in its own {@code @QuarkusTest} because a
  * {@code @TestProfile}'s config overrides are fixed for the life of one boot.
+ *
+ * <p><b>The shipped fallback is DERIVED now, which is why the value below reads {@code dev-}.</b>
+ * The innermost arm of that chain spells {@code http://${QITS_ENVIRONMENT:dev}-qits-platform-idp},
+ * because an application's alias on qits-net is {@code <environment>-<application>} for every service
+ * there is and qits-deployments injects {@code QITS_ENVIRONMENT} into every container it starts — so
+ * the address is a spelling this process derives rather than a decision a configuration entry
+ * carries. What it replaced, {@code http://qits-idp:8080/idp}, was neither the application name nor
+ * the alias and resolved nowhere at all. A surefire JVM gains no environment variable, so what this
+ * case sees is the {@code dev} fallback, which is also this estate's real environment;
+ * {@code DerivedEnvironmentAddressTest} is what asks the expression the other question, with a real
+ * environment source under it.
  */
 @QuarkusTest
 class QitsOidcClientShippedConfigTest {
@@ -29,7 +40,8 @@ class QitsOidcClientShippedConfigTest {
 
   @Test
   void theQitsClientResolvesItsOwnLiteralDefaults() {
-    assertEquals("http://qits-idp:8080/idp", value("quarkus.oidc-client.qits.auth-server-url"));
+    assertEquals(
+        "http://dev-qits-platform-idp:8080/idp", value("quarkus.oidc-client.qits.auth-server-url"));
     assertEquals("qits-ci", value("quarkus.oidc-client.qits.client-id"));
     // Empty, not absent — SmallRye reads a configured-empty String as null (the trap AGENTS.md
     // documents), so an empty secret reads as an empty Optional rather than as "" itself.

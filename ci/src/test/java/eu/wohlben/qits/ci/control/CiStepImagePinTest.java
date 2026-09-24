@@ -40,6 +40,16 @@ public class CiStepImagePinTest extends CiTestSupport {
   /** The platform's own image as a recipe spells it, and as it is addressed once resolved. */
   private static final String BARE = "qits/build-images/ci-base:latest";
 
+  /**
+   * The registry the engine prefixes a platform reference with — the RESOLVED value of
+   * {@code qits.artifacts.registry-host}, which the shipped default derives as
+   * {@code ${QITS_ENVIRONMENT:dev}-qits-artifacts:8080}. Surefire gains no environment variable, so
+   * what the engine really prefixes here is the {@code dev} fallback. Spelled once: these cases are
+   * about the pin and the digest, and five loose copies of an address would make a change to that
+   * default read as five unrelated failures.
+   */
+  private static final String REGISTRY = "dev-qits-artifacts:8080";
+
   private static final String DIGEST = "sha256:" + "1".repeat(64);
   private static final String OTHER_DIGEST = "sha256:" + "2".repeat(64);
 
@@ -54,7 +64,7 @@ public class CiStepImagePinTest extends CiTestSupport {
     fakeCandidates.set(repoId);
     // The reference the engine really pins and launches: CiStepImage prefixes the platform's own
     // namespace with the registry, and the pin is asked about what will be pulled.
-    registryReference = "qits-platform-artifacts:8080/" + BARE;
+    registryReference = REGISTRY + "/" + BARE;
   }
 
   /**
@@ -79,7 +89,7 @@ public class CiStepImagePinTest extends CiTestSupport {
 
     List<CiStepRunner.StepSpec> launched = fakeRunner.executed();
     assertEquals(2, launched.size());
-    String pinned = "qits-platform-artifacts:8080/qits/build-images/ci-base@" + DIGEST;
+    String pinned = REGISTRY + "/qits/build-images/ci-base@" + DIGEST;
     assertEquals(pinned, launched.get(0).image());
     assertEquals(
         pinned,
@@ -107,7 +117,7 @@ public class CiStepImagePinTest extends CiTestSupport {
 
     CiRun run = runService.runsFor(repoId).get(0);
     assertEquals(
-        Map.of(registryReference, "qits-platform-artifacts:8080/qits/build-images/ci-base@" + DIGEST),
+        Map.of(registryReference, REGISTRY + "/qits/build-images/ci-base@" + DIGEST),
         StepImages.decode(run.stepImages),
         "archetype_rev says which recipe ran; this says which image it ran inside, and neither is"
             + " reconstructable afterwards by asking a registry what a moving tag used to be");
@@ -153,7 +163,7 @@ public class CiStepImagePinTest extends CiTestSupport {
    */
   @Test
   public void anAuthorsOwnDigestIsSpentVerbatim() throws Exception {
-    String pinnedByHand = "qits-platform-artifacts:8080/qits/build-images/ci-base@" + OTHER_DIGEST;
+    String pinnedByHand = REGISTRY + "/qits/build-images/ci-base@" + OTHER_DIGEST;
     deliver(
         """
         event: SCMPublishCommit
