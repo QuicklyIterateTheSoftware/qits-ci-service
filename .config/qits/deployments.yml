@@ -11,10 +11,6 @@
 # configured with (`qits.workspaces.release.entry-branch`), and `deploy_branches` used to name that
 # branch here, in thirteen copies of one platform-wide answer. Both went with the release door.
 #
-# ENVIRONMENT service: every environment runs its own instance, and a deployment request carries the
-# released version coordinate into whichever tier it targets.
-deployment_target: environment
-
 # WHAT THIS REPOSITORY DEPLOYS AS, held still across the repository rename. The repository is
 # qits-ci-service now; the application is still qits-ci, so nothing that is running moves: the swarm
 # service and its wire alias, the container, the image qits/qits-ci the build pushes, the
