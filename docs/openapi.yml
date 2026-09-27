@@ -379,6 +379,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CiRunDto"
+        runners:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunnerCapacity"
     RegisterRunnerRequest:
       type: object
       properties:
@@ -449,6 +453,21 @@ components:
       properties:
         runId:
           type: string
+    RunnerCapacity:
+      type: object
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        name:
+          type: string
+        slots:
+          type: integer
+          format: int32
+        held:
+          type: integer
+          format: int64
+        connected:
+          type: boolean
     Selection:
       type: string
       enum:

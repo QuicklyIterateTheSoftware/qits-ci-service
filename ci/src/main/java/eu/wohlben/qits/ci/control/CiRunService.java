@@ -8,6 +8,8 @@ import eu.wohlben.qits.ci.control.CiStepRunner.StepResult;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
+import eu.wohlben.qits.ci.entity.CiRunner;
+import eu.wohlben.qits.ci.entity.RunnerCapabilities;
 import eu.wohlben.qits.ci.entity.CiStep;
 import eu.wohlben.qits.ci.entity.CiStepStatus;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
@@ -17,6 +19,7 @@ import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.ConflictException;
 import eu.wohlben.qits.ci.error.NotFoundException;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
+import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
 import eu.wohlben.qits.ci.persistence.CiStepRepository;
 import eu.wohlben.qits.db.DbRetry;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -266,6 +269,18 @@ public class CiRunService {
   @Inject CiConfigSource configSource;
   @Inject CiEventTriggerParser triggerParser;
   @Inject CiStepRunner runner;
+
+  /**
+   * The step seam for a run a runner reserved — see {@link CiRunnerStepRunner} and {@link
+   * #stepRunnerFor}. Unsatisfied in the {@code ci} module's own application, which ships no
+   * implementation of either seam; the service's runner socket is what satisfies it.
+   */
+  @Inject Instance<CiRunnerStepRunner> runnerSteps;
+
+  /** The runner rows a reservation re-reads, and the runners' view the queue snapshot shows. */
+  @Inject CiRunnerRepository runnerRows;
+
+  @Inject CiRunners ciRunners;
 
   /**
    * What fixes a step's floating {@code :latest} to the bytes it names — see {@link
@@ -1366,7 +1381,7 @@ public class CiRunService {
   private void executeClaimed(CiRun run, EventRun request) {
     try {
       // Resolved once, here: every step container of this run downloads the same daemon build.
-      DaemonPin pin = runner.pinDaemon();
+      DaemonPin pin = stepRunnerFor(run).pinDaemon();
       pinDaemonVersion(run.id, pin.version());
       run.daemonVersion = pin.version();
       runSteps(run, request.trigger().pipeline(), pin, eventEnv(request), declaredRelease(request));
@@ -1377,8 +1392,44 @@ public class CiRunService {
       throw fatal;
     } finally {
       cancelled.remove(run.id);
-      runner.runClosed(run.id);
+      closeWith(run);
     }
+  }
+
+  /**
+   * Gives back what the run's step seam holds for it. Guarded, unlike the rest of this {@code
+   * finally}: a runner's run whose seam cannot be resolved has already been settled by the catch
+   * above, and a throw here would replace that settled outcome with an exception on a thread that
+   * has nothing left to do with it.
+   */
+  private void closeWith(CiRun run) {
+    try {
+      stepRunnerFor(run).runClosed(run.id);
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "CI run %s: its step seam could not be told the run closed", run.id);
+    }
+  }
+
+  /**
+   * <b>Which transport runs this run's steps</b>, decided by the one column that says who claimed
+   * it: no {@code runner_id} is a local worker's run and keeps the {@link CiStepRunner} every run
+   * always had; a {@code runner_id} is a runner's, and goes through {@link CiRunnerStepRunner}. The
+   * one method every caller asks — the step loop, the run's close, and a cancellation — so the
+   * three can never disagree about which seam owns a run.
+   *
+   * @throws IllegalStateException for a runner's run in an application with no runner seam — only
+   *     the {@code ci} module's own, since the service always has one
+   */
+  CiStepRunner stepRunnerFor(CiRun run) {
+    if (run.runnerId == null) {
+      return runner;
+    }
+    if (runnerSteps == null || !runnerSteps.isResolvable()) {
+      throw new IllegalStateException(
+          "CI run " + run.id + " is held by runner " + run.runnerId
+              + " and this application has no runner step seam");
+    }
+    return runnerSteps.get();
   }
 
   /**
@@ -1611,7 +1662,7 @@ public class CiRunService {
         CiPipeline.CiStepDecl decl = declared.get(index);
         Stamps stamps = new Stamps();
         StepResult result =
-            runner.run(
+            stepRunnerFor(run).run(
                 new CiStepRunner.StepSpec(
                     run.id,
                     index,
@@ -2119,14 +2170,121 @@ public class CiRunService {
                     logLeftQueuedWhileDraining(runId);
                     return null;
                   }
-                  run.status = CiRunStatus.RUNNING;
-                  run.startedAt = Instant.now();
+                  // The claim itself is one conditional UPDATE — see claimQueued. Zero rows is a
+                  // runner's reservation or another worker that got there between the read above
+                  // and this statement, and is the same "no longer queued" as the check above.
+                  if (runs.claimQueued(runId, Instant.now()) == 0) {
+                    return null;
+                  }
+                  runs.getEntityManager().refresh(run);
                   return run;
                 });
     if (claimed != null) {
       announceStatus(claimed, CiRunStatus.RUNNING, CiRunStatus.QUEUED, claimed.startedAt);
     }
     return claimed;
+  }
+
+  /**
+   * One run a runner reserved: the claimed row, and the pipeline rebuilt from it — everything the
+   * runner's driver needs to run it through {@link #executeReserved}.
+   */
+  public record Reservation(CiRun run, EventRun request) {}
+
+  /**
+   * <b>A runner's {@code Reserve}, answered: the claim, narrowed to what this runner may take.</b>
+   * The same candidates the claim loop reads, in the same {@link CiRunOrdering#suggestedOrder}, and
+   * the same compare-and-swap on the row's status — with {@code runner_id} written in that UPDATE —
+   * so a local worker and any number of runners compete for one row and the database picks exactly
+   * one of them.
+   *
+   * <p><b>One transaction</b>, re-reading the runner's row inside it: an operator may have changed
+   * its slots, drained it or deleted it since it connected, and the answer has to be about the row
+   * as it is now. Refused outright, with no candidate read, when the runner already holds as many
+   * {@code RUNNING} runs as its row grants, and when this process is draining.
+   *
+   * <p><b>What a runner cannot take is passed over, never settled.</b> A pipeline with a {@code
+   * docker: true} or {@code build: true} step needs a host that will run docker for it, and a runner
+   * whose capabilities do not say {@code docker: true} is never handed one; a row that is not an
+   * event run, or whose snapshot will not reconstruct, is left for the claim loop, which is the one
+   * place that settles such rows — this path only ever takes.
+   *
+   * @return the reservation, or empty when there was nothing this runner could have
+   */
+  public java.util.Optional<Reservation> reserveFor(CiRunner runner) {
+    if (draining || stopping) {
+      return java.util.Optional.empty();
+    }
+    Reservation reserved =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  CiRunner row = runnerRows.findById(runner.id);
+                  if (row == null || row.slots <= 0) {
+                    return null;
+                  }
+                  if (runs.countRunningOnRunner(row.id) >= row.slots) {
+                    return null;
+                  }
+                  boolean docker = hasDocker(row);
+                  for (CiRun candidate :
+                      CiRunOrdering.suggestedOrder(runs.listQueuedOldestFirst())) {
+                    if (!runnable(candidate)) {
+                      continue;
+                    }
+                    EventRun request;
+                    try {
+                      request = reconstructEventRun(candidate);
+                    } catch (RuntimeException unparseable) {
+                      continue;
+                    }
+                    if (!docker && needsDocker(request.trigger().pipeline())) {
+                      continue;
+                    }
+                    if (draining) {
+                      logLeftQueuedWhileDraining(candidate.id);
+                      return null;
+                    }
+                    if (runs.claimQueuedForRunner(candidate.id, Instant.now(), row.id) == 0) {
+                      continue;
+                    }
+                    runs.getEntityManager().refresh(candidate);
+                    return new Reservation(candidate, request);
+                  }
+                  return null;
+                });
+    if (reserved == null) {
+      return java.util.Optional.empty();
+    }
+    CiRun run = reserved.run();
+    LOG.infof("CI run %s reserved by runner %s (%s)", run.id, runner.name, runner.id);
+    announceStatus(run, CiRunStatus.RUNNING, CiRunStatus.QUEUED, run.startedAt);
+    return java.util.Optional.of(reserved);
+  }
+
+  /**
+   * Run a reserved run to its end, on the caller's thread — which is the runner's driver thread,
+   * never a {@code ci-run-worker}. Everything after the claim is {@link #executeClaimed}'s, shared
+   * with the local path to the line: the step seam differs, the run does not.
+   */
+  public void executeReserved(Reservation reservation) {
+    executeClaimed(reservation.run(), reservation.request());
+  }
+
+  /** Whether the runner said it will run docker for a step. Absent or unreadable is no. */
+  private static boolean hasDocker(CiRunner runner) {
+    JsonNode capabilities = RunnerCapabilities.decode(runner.capabilities);
+    return capabilities != null && capabilities.path("docker").asBoolean(false);
+  }
+
+  /** Whether any step asks for the build plane — a socket or a builder, both of them docker's. */
+  static boolean needsDocker(CiPipeline pipeline) {
+    for (CiPipeline.CiStepDecl step : pipeline.steps()) {
+      if (step.docker() || step.build()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Writes the daemon build this run pinned, once, when the first container is about to launch. */
@@ -2916,7 +3074,12 @@ public class CiRunService {
       announceBacklog();
       return;
     }
-    if (!runner.owns(runId)) {
+    // The seam that owns this run, decided by who claimed it. A runner's run is its driver's from
+    // the Take to the Released, so a cancellation between two of its steps still reaches it.
+    // Read again rather than taken from the row above: a runner may have reserved the run between
+    // that read and the queued arm's write, and the column that says so is on the row as it is now.
+    CiStepRunner owner = stepRunnerFor(requireRun(runId));
+    if (!owner.owns(runId)) {
       // Nobody here is running it, so there is nothing to ask to stop and nothing that will ever
       // write the terminal row. Settle it in one write instead of recording a reason on a row that
       // would stay RUNNING forever.
@@ -2956,7 +3119,7 @@ public class CiRunService {
           }
         },
         retryDeadline());
-    runner.cancel(runId);
+    owner.cancel(runId);
     LOG.infof("CI run %s cancelled on request (%s)", runId, reason);
   }
 
@@ -3425,13 +3588,38 @@ public class CiRunService {
     // claim order regardless of which order the rows arrived in — the ordering's own guarantee, and
     // the reason nothing has to sort the input here.
     List<CiRunOrdering.OrderedRun> ordered = CiRunOrdering.explain(queued);
+    List<CiQueueForecast.RunnerCapacity> runnerCapacity = runnerCapacity();
     return new Snapshot(
         generatedAt,
         Math.max(1, concurrentBuilds),
         active,
         List.copyOf(running),
         ordered,
-        CiQueueForecast.forecast(running, ordered, concurrentBuilds, generatedAt));
+        CiQueueForecast.forecast(
+            running,
+            ordered,
+            CiQueueForecast.slotCount(concurrentBuilds, runnerCapacity),
+            generatedAt),
+        runnerCapacity);
+  }
+
+  /**
+   * Every declared runner as the queue sees it. A listing that could not be read is an empty one:
+   * the queue's own rows are the answer this read exists for, and a runner table that did not
+   * answer costs the forecast the runners' slots rather than costing the caller the queue.
+   */
+  private List<CiQueueForecast.RunnerCapacity> runnerCapacity() {
+    try {
+      return ciRunners.views().stream()
+          .map(
+              view ->
+                  new CiQueueForecast.RunnerCapacity(
+                      view.id(), view.name(), view.slots(), view.heldRuns(), view.connected()))
+          .toList();
+    } catch (RuntimeException e) {
+      LOG.debugf("The queue snapshot could not read the runners: %s", e.getMessage());
+      return List.of();
+    }
   }
 
   /**
@@ -3459,7 +3647,10 @@ public class CiRunService {
    *     that a caller re-ordering nothing is consistent with every other listing on this surface
    * @param queuedInClaimOrder the {@code QUEUED} rows in suggested claim order, each with the
    *     ordering's reasons attached
-   * @param forecast when the queue is expected to reach each of them
+   * @param forecast when the queue is expected to reach each of them — modelled over the local
+   *     pool plus every connected runner's slots, while {@code concurrentBuilds} stays the local
+   *     pool alone
+   * @param runners every declared runner, with its slots, what it holds and whether it is connected
    */
   public record Snapshot(
       Instant generatedAt,
@@ -3467,7 +3658,8 @@ public class CiRunService {
       List<CiRun> activeNewestFirst,
       List<CiRun> running,
       List<CiRunOrdering.OrderedRun> queuedInClaimOrder,
-      CiQueueForecast.Forecast forecast) {
+      CiQueueForecast.Forecast forecast,
+      List<CiQueueForecast.RunnerCapacity> runners) {
 
     /** This run's place in the claim order and why, or null when it is not queued here. */
     public CiRunOrdering.OrderedRun orderingOf(String runId) {

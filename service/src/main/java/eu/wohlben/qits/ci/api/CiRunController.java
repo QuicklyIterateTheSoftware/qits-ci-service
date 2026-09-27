@@ -408,15 +408,17 @@ public class CiRunController {
         runners.withRunnerNames(
             queue.queuedInClaimOrder().stream()
                 .map(ordered -> withQueueFacts(ordered.run(), mapper.toDto(ordered.run()), queue))
-                .toList()));
+                .toList()),
+        queue.runners());
   }
 
   /**
    * The queue envelope: how many slots there are, the instant every duration in it is relative to,
    * and the two halves of the queue.
    *
-   * @param concurrentBuilds how many runs this deployment executes at once — the number the
-   *     forecast really modelled with, so a reader can see why the queue moves as slowly as it does
+   * @param concurrentBuilds how many runs this deployment's own worker pool executes at once. The
+   *     forecast models that plus every connected runner's slots — {@code runners} says which, so
+   *     a reader can see why the queue moves as fast or as slowly as it does
    * @param generatedAt the instant every {@code expectedStartInMillis} and {@code
    *     expectedFinishInMillis} in this body is measured from. <b>It is the only absolute instant
    *     here, and that is deliberate</b>: one stamp makes a relative duration interpretable without
@@ -424,9 +426,15 @@ public class CiRunController {
    * @param running the {@code RUNNING} runs, newest first
    * @param queued the {@code QUEUED} runs in suggested claim order, each carrying its {@code
    *     queuePosition}, its {@code ordering} and its ETAs
+   * @param runners every declared runner: its slots, how many runs it holds, and whether it is
+   *     connected — only a connected runner's slots count towards the forecast
    */
   public record QueueResponse(
-      int concurrentBuilds, Instant generatedAt, List<CiRunDto> running, List<CiRunDto> queued) {}
+      int concurrentBuilds,
+      Instant generatedAt,
+      List<CiRunDto> running,
+      List<CiRunDto> queued,
+      List<CiQueueForecast.RunnerCapacity> runners) {}
 
   /**
    * The run's row stamped with what the queue says about it, or unchanged when the queue says

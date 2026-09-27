@@ -8,7 +8,6 @@ import eu.wohlben.qits.cirunner.protocol.Heartbeat;
 import eu.wohlben.qits.cirunner.protocol.Hello;
 import eu.wohlben.qits.cirunner.protocol.LaunchFailed;
 import eu.wohlben.qits.cirunner.protocol.Launched;
-import eu.wohlben.qits.cirunner.protocol.Nothing;
 import eu.wohlben.qits.cirunner.protocol.Reaped;
 import eu.wohlben.qits.cirunner.protocol.Reserve;
 import io.quarkus.security.identity.SecurityIdentity;
@@ -80,6 +79,8 @@ public class CiRunnerSocket {
 
   @Inject CiRunners runners;
 
+  @Inject RunnerReservations reservations;
+
   @Inject SecurityIdentity identity;
 
   @OnOpen
@@ -145,12 +146,12 @@ public class CiRunnerSocket {
   }
 
   /**
-   * A runner has a free slot and asks for work. Nothing is offered yet: the claim a {@code Reserve}
-   * performs is its own change, and until it lands the only true answer is {@link Nothing}, which
-   * parks the runner until its next {@code Backlog}.
+   * A runner has a free slot and asks for work: the claim, and the driver if it won one. Answered on
+   * this frame's own virtual thread — the claim is one short transaction — while the run itself is
+   * driven elsewhere, so the socket goes straight back to reading frames.
    */
   private void onReserve(CiRunnerRegistry.Session session) {
-    registry.send(session, new Nothing());
+    reservations.onReserve(session);
   }
 
   private void refuse(WebSocketConnection connection, String reason) {

@@ -12,9 +12,13 @@ import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiRunService;
 import eu.wohlben.qits.ci.control.CiRunnerPresence;
 import eu.wohlben.qits.ci.control.FakeCiStepRunner;
+import eu.wohlben.qits.ci.entity.CiRun;
+import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiRunner;
+import eu.wohlben.qits.ci.entity.CiTriggerType;
 import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import eu.wohlben.qits.ci.entity.RunnerCapabilities;
+import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
 import eu.wohlben.qits.cirunner.protocol.Ack;
 import eu.wohlben.qits.cirunner.protocol.Backlog;
@@ -22,7 +26,13 @@ import eu.wohlben.qits.cirunner.protocol.Capabilities;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerProtocol;
 import eu.wohlben.qits.cirunner.protocol.Heartbeat;
 import eu.wohlben.qits.cirunner.protocol.Hello;
+import eu.wohlben.qits.cirunner.protocol.CiRunnerMessage;
 import eu.wohlben.qits.cirunner.protocol.Launch;
+import eu.wohlben.qits.cirunner.protocol.LaunchFailed;
+import eu.wohlben.qits.cirunner.protocol.Nothing;
+import eu.wohlben.qits.cirunner.protocol.Released;
+import eu.wohlben.qits.cirunner.protocol.Reserve;
+import eu.wohlben.qits.cirunner.protocol.Take;
 import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.common.http.TestHTTPResource;
@@ -35,6 +45,7 @@ import jakarta.inject.Inject;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -83,6 +94,8 @@ class CiRunnerSocketTest {
   URI endpoint;
 
   @Inject CiRunnerRepository runnerRows;
+
+  @Inject CiRunRepository runs;
 
   @Inject CiRunnerRegistry registry;
 
@@ -331,6 +344,121 @@ class CiRunnerSocketTest {
     CiRunnerRegistry.LaunchAnswer lost = answer.get(10, TimeUnit.SECONDS);
     assertEquals(CiRunnerRegistry.LaunchAnswer.Status.CONNECTION_LOST, lost.status());
     assertTrue(Duration.between(closedAt, Instant.now()).toSeconds() < 10);
+    awaitDisconnected();
+  }
+
+  // --- Reserve is the claim -----------------------------------------------------------------------
+
+  @Test
+  @TestSecurity(user = "runner", roles = RUNNER_ROLE)
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aReserveIsAnsweredWithTheRunItClaimedAndTheClosedRunIsReleased() throws Exception {
+    java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+    CompletableFuture<Void> parked = new CompletableFuture<>();
+    fakeSteps.during(
+        0,
+        spec -> {
+          if (parked.complete(null)) {
+            try {
+              release.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+          }
+        });
+    try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
+      runner.send(hello(true));
+      assertNotNull(runner.next(Ack.class, SOON));
+      accept("runner-reserve-blocker");
+      parked.get(30, TimeUnit.SECONDS);
+      String runId = accept("runner-reserve-taken");
+
+      runner.send(new Reserve());
+      Take take = runner.next(Take.class, SOON);
+      assertNotNull(take, "a Reserve with a run it can take is a Take");
+      assertEquals(runId, take.runId());
+      assertEquals("runner-reserve-taken", take.repoName());
+      assertEquals(
+          runnerId, QuarkusTransaction.requiringNew().call(() -> runs.findById(runId).runnerId));
+
+      // Whatever the run's steps come to — a launch this fake refuses, here — it closes, and the
+      // close is the one frame that gives the runner its slot back.
+      Released released = null;
+      Instant deadline = Instant.now().plusSeconds(30);
+      while (released == null && Instant.now().isBefore(deadline)) {
+        CiRunnerMessage frame = runner.next(Duration.ofSeconds(1));
+        if (frame instanceof Launch launch) {
+          runner.send(new LaunchFailed(launch.runId(), launch.stepIndex(), "refused by the test"));
+        } else if (frame instanceof Released r && r.runId().equals(runId)) {
+          released = r;
+        }
+      }
+      assertNotNull(released, "a closed runner run is Released to the runner");
+      assertEquals(
+          CiRunStatus.FAILED,
+          QuarkusTransaction.requiringNew().call(() -> runs.findById(runId).status));
+
+      // And with nothing left it could take, the answer is Nothing.
+      runner.send(new Reserve());
+      assertNotNull(runner.next(Nothing.class, SOON), "a Reserve with nothing to take is Nothing");
+    } finally {
+      release.countDown();
+    }
+    awaitDisconnected();
+  }
+
+  @Test
+  @TestSecurity(user = "runner", roles = {RUNNER_ROLE, "qits:admin"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void theQueueNamesEveryRunnerAndARunnersRunCarriesItsName() throws Exception {
+    String runId = UUID.randomUUID().toString();
+    try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
+      runner.send(hello(true));
+      assertNotNull(runner.next(Ack.class, SOON));
+      QuarkusTransaction.requiringNew()
+          .run(
+              () -> {
+                CiRun run = new CiRun();
+                run.id = runId;
+                run.repoId = "runner-queue-repo";
+                run.branch = "main";
+                run.commitSha = "d".repeat(40);
+                run.status = CiRunStatus.RUNNING;
+                run.triggerType = CiTriggerType.EVENT;
+                run.configPath = TRIGGER_PATH;
+                run.triggerEventId = UUID.randomUUID().toString();
+                run.triggerEventName = EVENT_NAME;
+                run.createdAt = Instant.now();
+                run.startedAt = Instant.now();
+                run.runnerId = runnerId;
+                runs.persist(run);
+              });
+
+      io.restassured.path.json.JsonPath queue =
+          io.restassured.RestAssured.given()
+              .get("/ci/api/runs/queue")
+              .then()
+              .statusCode(200)
+              .extract()
+              .jsonPath();
+      assertEquals(List.of("socket-runner"), queue.getList("runners.name"));
+      assertEquals(2, queue.getInt("runners[0].slots"));
+      assertEquals(1, queue.getInt("runners[0].held"));
+      assertTrue(queue.getBoolean("runners[0].connected"));
+      assertEquals(
+          "socket-runner", queue.getString("running.find { it.id == '" + runId + "' }.runnerName"));
+      assertEquals(
+          "socket-runner",
+          io.restassured.RestAssured.given()
+              .get("/ci/api/runs/active")
+              .then()
+              .statusCode(200)
+              .extract()
+              .jsonPath()
+              .getString("runs.find { it.id == '" + runId + "' }.runnerName"));
+    } finally {
+      QuarkusTransaction.requiringNew().run(() -> runs.deleteById(runId));
+    }
     awaitDisconnected();
   }
 

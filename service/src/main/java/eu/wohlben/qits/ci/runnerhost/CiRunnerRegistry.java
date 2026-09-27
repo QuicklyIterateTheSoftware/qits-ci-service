@@ -118,6 +118,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
    */
   public static final class Session {
 
+    private final CiRunner runner;
     private final UUID runnerId;
     private final String runnerName;
     private final WebSocketConnection connection;
@@ -129,10 +130,16 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
     private volatile boolean greeted;
     private volatile Instant seenWrittenAt;
 
-    Session(UUID runnerId, String runnerName, WebSocketConnection connection) {
-      this.runnerId = runnerId;
-      this.runnerName = runnerName;
+    Session(CiRunner runner, WebSocketConnection connection) {
+      this.runner = runner;
+      this.runnerId = runner.id;
+      this.runnerName = runner.name;
       this.connection = connection;
+    }
+
+    /** The row this session was admitted as — detached, read once at the dial. */
+    public CiRunner runner() {
+      return runner;
     }
 
     public UUID runnerId() {
@@ -194,7 +201,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
    * The runner row was resolved from the bearer by the caller; nothing about identity is read here.
    */
   public Session admit(CiRunner runner, WebSocketConnection connection) {
-    Session fresh = new Session(runner.id, runner.name, connection);
+    Session fresh = new Session(runner, connection);
     Session previous = sessions.put(runner.id, fresh);
     if (previous != null) {
       LOG.warnf(

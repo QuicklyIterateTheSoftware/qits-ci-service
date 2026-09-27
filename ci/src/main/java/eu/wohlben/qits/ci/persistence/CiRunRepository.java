@@ -5,6 +5,7 @@ import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -99,6 +100,38 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
       held.put((UUID) row[0], ((Number) row[1]).longValue());
     }
     return held;
+  }
+
+  /**
+   * <b>The claim, as one conditional UPDATE</b>: {@code QUEUED} becomes {@code RUNNING}, stamped,
+   * only while the row still is {@code QUEUED}. One row changed is this caller's run; zero is
+   * somebody else's — another local worker, a runner's reservation, or a cancellation that got
+   * there first. Postgres re-evaluates the predicate against a concurrently committed version of
+   * the row, so two transactions racing for one row cannot both see one row changed, which a read
+   * followed by a dirty write under READ COMMITTED could.
+   *
+   * <p>A local claim writes {@code runner_id} null in the same statement. It is null on every row
+   * a local worker could claim except one: a runner's run the boot sweep handed back to {@code
+   * QUEUED}, which must not come back up still naming the runner it was interrupted on.
+   */
+  public int claimQueued(String runId, Instant startedAt) {
+    return update(
+        "status = ?1, startedAt = ?2, runnerId = null where id = ?3 and status = ?4",
+        CiRunStatus.RUNNING,
+        startedAt,
+        runId,
+        CiRunStatus.QUEUED);
+  }
+
+  /** {@link #claimQueued}, recording the runner that reserved the run in the same UPDATE. */
+  public int claimQueuedForRunner(String runId, Instant startedAt, UUID runnerId) {
+    return update(
+        "status = ?1, startedAt = ?2, runnerId = ?3 where id = ?4 and status = ?5",
+        CiRunStatus.RUNNING,
+        startedAt,
+        runnerId,
+        runId,
+        CiRunStatus.QUEUED);
   }
 
   /**

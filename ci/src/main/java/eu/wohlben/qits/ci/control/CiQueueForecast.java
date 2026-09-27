@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * <b>When the queue is expected to get to each run.</b> One pure function over what is {@code
@@ -191,6 +192,33 @@ public final class CiQueueForecast {
   public record Forecast(List<QueuedForecast> queued, List<RunningForecast> running) {}
 
   /**
+   * One runner as the queue sees it: how many runs its row grants, how many it holds, and whether a
+   * socket is open to it right now — the {@code runners} half of {@code GET /ci/api/runs/queue}.
+   */
+  public record RunnerCapacity(UUID id, String name, int slots, long held, boolean connected) {}
+
+  /**
+   * How many runs the estate executes at once: the local pool plus the slots of every
+   * <b>connected</b> runner.
+   *
+   * <p><b>A runner's whole slot count, not its free slots.</b> The runs a runner holds are already
+   * {@code RUNNING} rows, so they are already in the forecast's running half, where each occupies
+   * a slot until its predicted finish. Counting only the free slots would count those runs twice —
+   * once as capacity missing and once as occupancy — and forecast every queued run late by exactly
+   * the work the runners are doing. A runner that is not connected contributes nothing: nothing
+   * would claim for it, whatever its row grants.
+   */
+  public static int slotCount(int concurrentBuilds, List<RunnerCapacity> runners) {
+    int slots = Math.max(0, concurrentBuilds);
+    for (RunnerCapacity runner : runners == null ? List.<RunnerCapacity>of() : runners) {
+      if (runner.connected()) {
+        slots += Math.max(0, runner.slots());
+      }
+    }
+    return slots;
+  }
+
+  /**
    * Forecast the queue.
    *
    * <p><b>The queued runs are taken as {@link CiRunOrdering.OrderedRun}s and that is a deliberate
@@ -205,7 +233,8 @@ public final class CiQueueForecast {
    *     queue then starts at zero
    * @param queuedInClaimOrder the queued runs <b>already in claim order</b>, as {@link
    *     CiRunOrdering#explain(List)} answers them; null or empty answers an empty list
-   * @param concurrentBuilds how many runs this deployment executes at once, clamped up to 1
+   * @param concurrentBuilds how many runs this deployment executes at once, clamped up to 1 — the
+   *     local pool plus every connected runner's slots, see {@link #slotCount}
    * @param now the instant every millisecond in the answer is relative to; never read from a clock
    *     in here
    * @return one entry per input run on each side
