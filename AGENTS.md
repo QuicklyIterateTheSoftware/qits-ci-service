@@ -102,8 +102,11 @@ package:
   registry which bytes a step image's tag names right now. An *adapter* like `githost` and `idp`
   are, for the `CiStepImagePins` seam in `ci/control`, and another hand-rolled `java.net.http` one
   for the reason the whole `githost` package is. See "A run is fixed to one toolchain".
-- `service/…/runnerhost/` — the runner side of the host, beside `daemonhost`: so far one class,
-  `RunnerAddresses`, the single composition of what a runner is told (the idp token url, the
+- `service/…/runnerhost/` — the runner side of the host, beside `daemonhost`: the runner socket
+  (`CiRunnerSocket`), its session table (`CiRunnerRegistry`, also the `CiRunnerPresence` and
+  `CiBacklogListener` seams), the `Reserve` → `Take` driver (`RunnerReservations`), the step seam for
+  a reserved run (`RunnerStepRunner`, the `ci/control/CiRunnerStepRunner` implementation, typed so it
+  never competes for `CiStepRunner`), and `RunnerAddresses`, the single composition of what a runner is told (the idp token url, the
   audience, the runner socket url off `qits.ci.runner.public-url` or the derived
   `qits.ci.runner.internal-url`). The register door answers it and the install script will render
   it; two compositions would be two chances to disagree. The runner rules themselves are

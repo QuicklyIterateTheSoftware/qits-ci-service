@@ -133,8 +133,8 @@ rest of qits it reaches over a URL it is configured with:
 ### Runners
 
 A **runner** is a machine that registers with qits-ci and pulls step work, rather than a container
-qits-ci asks qits-containers to start (epic qits-440). This is the half that exists so far: the row,
-the operator's six verbs and the runner's one door. Nothing schedules work onto a runner yet.
+qits-ci asks qits-containers to start (epic qits-440): the row, the operator's six verbs, the
+runner's register door, and the socket it then holds open to pull work.
 
 | verb | answer | role |
 |---|---|---|
@@ -173,6 +173,32 @@ place those three are composed.
 
 A run a runner executed carries `runnerId` and `runnerName` on every run read; the id outlives the
 runner (no foreign key), the name does not.
+
+**The socket is `/ci/runners/socket`** (`runnerhost/CiRunnerSocket`), `@RolesAllowed("qits:ci-runner")`.
+The runner's identity is the validated bearer's `sub` — qits-idp sets it to the client id for a
+`client_credentials` token — looked up against `ci_runner.client_id`; no row, or no token at all, is
+a 1008. Forward-auth headers never name a runner, so **the machine gate must be on for a runner to
+connect.** The conversation is the protocol jar's (`qits-ci-runner-protocol`): `Hello` (capabilities
+and `last_seen_at` recorded, a foreign `CAPABILITY_VERSION` closed 1008) → `Ack{slots}` with the
+**row's** slots → `Backlog{queued}`, pushed again after every accept, finish and settlement; a
+heartbeat stamps the row at most once a minute; a second dial of the same runner replaces the first,
+which is closed 1008 `ALREADY_CONNECTED`.
+
+**`Reserve` is the claim.** `CiRunService.reserveFor` walks the queue in the claim loop's own order and
+takes the first run with the same conditional UPDATE a local worker's claim uses, writing `runner_id`
+in that statement — so local workers and runners compete for one row and exactly one wins. It passes
+over a run with a `docker:`/`build:` step for a runner whose capabilities do not say `docker: true`,
+and refuses a runner already holding its slots. The answer is `Take` or `Nothing`. A taken run is
+driven on its own `ci-runner-run-<runId>` thread, never a `ci-run-worker`, through
+`runnerhost/RunnerStepRunner`: each step is a `Launch{workloadSpec}` to the runner — the spec
+`daemonhost/StepWorkloadSpecs` composes for the local path too — answered `Launched`/`LaunchFailed`
+within `qits.ci.runner.launch-timeout-seconds` (180); then the container's own daemon dials
+`/ci/daemon` and the step runs exactly as a local one; then `Reap`. When the run closes, whatever its
+verdict, qits-ci sends `Released{runId}`, the only frame that frees the runner's slot. A runner whose
+socket drops mid-step ends that step `CONNECTION_LOST` at once, its output naming the runner
+(`[runner <name> disconnected]`); the run is an ordinary failed run and retries like one.
+`GET /ci/api/runs/queue` lists every runner (`runners: [{id, name, slots, held, connected}]`) and its
+forecast counts the local pool plus every connected runner's slots.
 
 The run listing takes the repository as a **query filter, not a path segment**. ci does not own
 repositories, so `/repositories/{repoId}/runs` asserted a containment this context does not have —

@@ -30,6 +30,8 @@ import eu.wohlben.qits.cirunner.protocol.CiRunnerMessage;
 import eu.wohlben.qits.cirunner.protocol.Launch;
 import eu.wohlben.qits.cirunner.protocol.LaunchFailed;
 import eu.wohlben.qits.cirunner.protocol.Nothing;
+import eu.wohlben.qits.cirunner.protocol.Reap;
+import eu.wohlben.qits.cirunner.protocol.Reaped;
 import eu.wohlben.qits.cirunner.protocol.Released;
 import eu.wohlben.qits.cirunner.protocol.Reserve;
 import eu.wohlben.qits.cirunner.protocol.Take;
@@ -389,6 +391,8 @@ class CiRunnerSocketTest {
         CiRunnerMessage frame = runner.next(Duration.ofSeconds(1));
         if (frame instanceof Launch launch) {
           runner.send(new LaunchFailed(launch.runId(), launch.stepIndex(), "refused by the test"));
+        } else if (frame instanceof Reap reap) {
+          runner.send(new Reaped(reap.runId(), reap.stepIndex()));
         } else if (frame instanceof Released r && r.runId().equals(runId)) {
           released = r;
         }

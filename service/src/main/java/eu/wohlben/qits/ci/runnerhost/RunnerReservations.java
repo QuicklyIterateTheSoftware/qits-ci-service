@@ -74,7 +74,7 @@ public class RunnerReservations {
       registry.send(session, new Nothing());
       return;
     }
-    CiRunService.Reservation reservation = reserved.get();
+    CiRunService.Reservation reservation = reserved.orElseThrow();
     CiRun run = reservation.run();
     registry.hold(session, run.id);
     if (!registry.send(

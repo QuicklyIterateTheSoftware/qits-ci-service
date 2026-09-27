@@ -127,6 +127,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
         new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, CompletableFuture<Boolean>> reaps =
         new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Object, Runnable> onLoss = new ConcurrentHashMap<>();
     private volatile boolean greeted;
     private volatile Instant seenWrittenAt;
 
@@ -369,6 +370,21 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
     }
   }
 
+  /**
+   * Run {@code action} if the session ends before the returned handle is closed — at once, on this
+   * thread, when it already has. A step registers what must happen to it on a lost runner (its
+   * daemon awaits completed as lost) and closes the handle when it ends, so a session that lives for
+   * weeks does not accumulate a callback per step it ever ran.
+   */
+  public AutoCloseable onLoss(Session session, Runnable action) {
+    Object key = new Object();
+    session.onLoss.put(key, action);
+    if (!session.isOpen() && session.onLoss.remove(key) != null) {
+      action.run();
+    }
+    return () -> session.onLoss.remove(key);
+  }
+
   /** Complete every outstanding launch of a run as {@link LaunchAnswer.Status#WITHDRAWN}. */
   public void withdraw(String runId) {
     Session session = heldRuns.get(runId);
@@ -483,6 +499,16 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
    */
   private static void lose(Session session) {
     session.closed.complete(null);
+    for (Object key : session.onLoss.keySet()) {
+      Runnable action = session.onLoss.remove(key);
+      if (action != null) {
+        try {
+          action.run();
+        } catch (RuntimeException e) {
+          LOG.debugf("A loss action of runner %s failed: %s", session.runnerName, e.getMessage());
+        }
+      }
+    }
     session.launches.values()
         .forEach(pending -> pending.complete(LaunchAnswer.of(LaunchAnswer.Status.CONNECTION_LOST)));
     session.reaps.values().forEach(pending -> pending.complete(Boolean.FALSE));
