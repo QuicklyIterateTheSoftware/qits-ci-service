@@ -372,6 +372,103 @@ class CiRunnerControllerTest {
     assertNull(row(theirs).clientId);
   }
 
+  // --- the raw token, presented on qits-net where there is no edge ---------------------------------
+
+  /** What qits-idp answers about a raw token: a live one of {@code kind} for {@code contextId}. */
+  private void stageLiveToken(String value, String kind, String contextId, String subject) {
+    String role =
+        IdpCommissioner.RUNNER_REGISTRATION_KIND.equals(kind) ? REGISTRATION : "qits:" + kind;
+    idp.introspection.put(
+        value,
+        "{\"tokenId\":\"token-" + value + "\",\"subject\":\"" + subject + "\",\"roles\":[\""
+            + role + "\",\"clients/" + subject + "\"],\"claims\":{},\"gitRefs\":[],"
+            + "\"contextKind\":\"" + kind + "\",\"contextId\":\"" + contextId + "\","
+            + "\"accessToken\":\"eyJ.not.used\",\"expiresIn\":300}");
+  }
+
+  private io.restassured.response.ValidatableResponse registerRaw(UUID id, String token) {
+    return given()
+        .header("Authorization", "Bearer " + token)
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"capabilities\":{\"docker\":true}}")
+        .when()
+        .post(RUNNERS + "/" + id + "/register")
+        .then();
+  }
+
+  @Test
+  void theRawRegistrationTokenRegistersItsOwnRunnerWithNoEdgeInBetween() {
+    UUID id = declaredRunner("on-qits-net");
+    stageLiveToken(
+        "qits_tok_raw-own", IdpCommissioner.RUNNER_REGISTRATION_KIND, id.toString(), SUBJECT);
+
+    JsonPath answer =
+        registerRaw(id, "qits_tok_raw-own").statusCode(200).extract().jsonPath();
+
+    assertEquals("run-client-1", answer.getString("clientId"));
+    assertEquals("run-client-1", row(id).clientId);
+    // This service asked qits-idp itself, with its own pair — the edge's question, asked here.
+    assertEquals(List.of("qits_tok_raw-own"), idp.introspected);
+    assertTrue(idp.introspectionCallers.get(0).startsWith("Basic "));
+    assertEquals(List.of("token-of-on-qits-net"), idp.deletedTokens);
+  }
+
+  @Test
+  void aRawTokenForAnotherRunnerOrOfAnotherKindIs403AndCommissionsNothing() {
+    UUID mine = declaredRunner("raw-mine");
+    UUID theirs = declaredRunner("raw-theirs");
+    // A live registration token — for the other runner, presented at mine.
+    stageLiveToken(
+        "qits_tok_raw-theirs", IdpCommissioner.RUNNER_REGISTRATION_KIND, theirs.toString(), SUBJECT);
+    registerRaw(mine, "qits_tok_raw-theirs").statusCode(403);
+    // Its context is mine, but its subject is not the one my row was issued.
+    stageLiveToken(
+        "qits_tok_raw-stale",
+        IdpCommissioner.RUNNER_REGISTRATION_KIND,
+        mine.toString(),
+        "tok-an-older-token");
+    registerRaw(mine, "qits_tok_raw-stale").statusCode(403);
+    // A live token of another kind entirely — a runner's socket token, say — for this runner.
+    stageLiveToken("qits_tok_raw-kind", IdpCommissioner.RUNNER_KIND, mine.toString(), SUBJECT);
+    registerRaw(mine, "qits_tok_raw-kind").statusCode(403);
+
+    assertEquals(List.of(), idp.posted);
+    assertNull(row(mine).clientId);
+  }
+
+  @Test
+  void aRawTokenQitsIdpDoesNotCallLiveIs401() {
+    UUID id = declaredRunner("raw-deleted");
+    // Nothing staged: qits-idp's 404, which is what a deleted token gets.
+    registerRaw(id, "qits_tok_raw-deleted").statusCode(401);
+    assertEquals(List.of("qits_tok_raw-deleted"), idp.introspected);
+    assertEquals(List.of(), idp.posted);
+  }
+
+  @Test
+  void aRawTokenOpensNoOtherRoute() {
+    UUID id = declaredRunner("raw-confined");
+    stageLiveToken(
+        "qits_tok_raw-confined", IdpCommissioner.RUNNER_REGISTRATION_KIND, id.toString(), SUBJECT);
+    String bearer = "Bearer qits_tok_raw-confined";
+
+    given().header("Authorization", bearer).when().get(RUNNERS).then().statusCode(401);
+    given().header("Authorization", bearer).when().get(RUNNERS + "/" + id).then().statusCode(401);
+    given()
+        .header("Authorization", bearer)
+        .when()
+        .post(RUNNERS + "/" + id + "/registration-token")
+        .then()
+        .statusCode(401);
+    given().header("Authorization", bearer).when().get("/ci/api/runs/active").then().statusCode(401);
+    given().header("Authorization", bearer).when().get("/ci/api/runs/queue").then().statusCode(401);
+    // Not even the register door by another verb, and no other route ever asked qits-idp.
+    given().header("Authorization", bearer).when().get(RUNNERS + "/" + id + "/register").then()
+        .statusCode(org.hamcrest.Matchers.anyOf(org.hamcrest.Matchers.is(401),
+            org.hamcrest.Matchers.is(405)));
+    assertEquals(List.of(), idp.introspected);
+  }
+
   @Test
   @TestSecurity(user = SUBJECT, roles = {REGISTRATION})
   @OidcSecurity(

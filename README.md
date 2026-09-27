@@ -154,6 +154,17 @@ commissions the runner's own `ci-runner` client, deletes the spent token and ans
 409, which is what a replay of the right token gets. **`qits:ci-runner-registration` opens this one
 route and nothing else on the platform.**
 
+**The door also takes the raw registration token, because the internal plane has no edge.** A
+runner on qits-net dials `http://<env>-qits-ci:8080` directly, so nothing exchanges its `qits_tok_`
+for the edge's JWT and the bearer that arrives is the opaque value, which quarkus-oidc cannot
+validate. For this one route — `POST /ci/api/runners/{id}/register` with `Authorization: Bearer
+qits_tok_…` — `runnerhost/RegistrationTokenMechanism` asks qits-idp itself (`POST
+/idp/api/tokens/introspect`, Basic of this service's own client, the edge's question) and admits a
+live token as `qits:ci-runner-registration` only when it is a `ci-runner-registration` token; the
+door then requires its `contextId` to be this runner and its subject the row's (403 otherwise). A
+value qits-idp does not call live — unknown, deleted — is 401. On every other route the mechanism
+abstains, so a `qits_tok_` there is refused 401 as it always was.
+
 Every credential here is handed out exactly once and logged never: the token's value is on no row
 and no read, the client's secret likewise. A refused request leaves nothing minted behind — a token
 or client whose write lost a race is given back at once — and `CommissionReconciler` reaps what a

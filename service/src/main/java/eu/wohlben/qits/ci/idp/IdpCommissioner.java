@@ -445,6 +445,85 @@ public class IdpCommissioner {
   }
 
   /**
+   * What qits-idp says about one opaque token presented to this service directly — the answer of
+   * {@code POST <idp>/api/tokens/introspect}, the call the edge makes for every {@code qits_tok_}
+   * bearer it sees. {@code roles} are the token's kind's, never its owner's.
+   */
+  public record IntrospectedToken(
+      String tokenId, String subject, List<String> roles, String contextKind, String contextId) {}
+
+  /** How an introspection came out: live, not a live token, or nothing learned. */
+  public enum Introspection {
+    LIVE,
+    /** qits-idp answered that the value is no live token — unknown, deleted, or its owner gone. */
+    NOT_LIVE,
+    /** Nothing was learned: qits-idp did not answer, refused this caller, or this process has no
+     * credential to ask with. */
+    UNKNOWN
+  }
+
+  /** {@link #introspectToken}'s answer; {@code token} is set exactly when the outcome is LIVE. */
+  public record IntrospectionAnswer(Introspection outcome, IntrospectedToken token, String detail) {}
+
+  /**
+   * Ask qits-idp about a {@code qits_tok_} value — one attempt, never held through: the caller is a
+   * request waiting on an answer, and a registration that failed is re-knocked by the runner's own
+   * retry. Authenticated with this service's own Basic pair, which qits-idp admits because it holds
+   * {@code qits:system} (the edge's door and this one share the caller rule). The value is sent in
+   * the body and appears in no log line here.
+   */
+  public IntrospectionAnswer introspectToken(String token) {
+    if (!enabled()) {
+      return new IntrospectionAnswer(
+          Introspection.UNKNOWN, null, "this qits-ci commissions nothing, so it cannot ask qits-idp");
+    }
+    String url = tokensUrl() + "/introspect";
+    try {
+      HttpRequest request =
+          HttpRequest.newBuilder(URI.create(url))
+              .timeout(REQUEST_TIMEOUT)
+              .header("Authorization", basic())
+              .header("Content-Type", "application/json")
+              .POST(
+                  HttpRequest.BodyPublishers.ofString(
+                      "{\"token\":\"" + escape(token) + "\"}", StandardCharsets.UTF_8))
+              .build();
+      HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+      int status = response.statusCode();
+      if (status == 404) {
+        return new IntrospectionAnswer(Introspection.NOT_LIVE, null, "no live token for that value");
+      }
+      if (status != 200) {
+        LOG.warnf(
+            "Could not introspect a presented token (POST %s): HTTP %d %s",
+            url, status, errorOf(response.body()));
+        return new IntrospectionAnswer(Introspection.UNKNOWN, null, "qits-idp answered " + status);
+      }
+      JsonNode node = objectMapper.readTree(response.body());
+      List<String> roles = new java.util.ArrayList<>();
+      JsonNode listed = node.get("roles");
+      if (listed != null && listed.isArray()) {
+        listed.forEach(role -> roles.add(role.asText()));
+      }
+      return new IntrospectionAnswer(
+          Introspection.LIVE,
+          new IntrospectedToken(
+              text(node, "tokenId"),
+              text(node, "subject"),
+              List.copyOf(roles),
+              text(node, "contextKind"),
+              text(node, "contextId")),
+          null);
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      return new IntrospectionAnswer(Introspection.UNKNOWN, null, "interrupted");
+    } catch (Exception e) {
+      LOG.warnf("Could not introspect a presented token (POST %s): %s", url, e.toString());
+      return new IntrospectionAnswer(Introspection.UNKNOWN, null, e.toString());
+    }
+  }
+
+  /**
    * Every token this owner still has live, or empty when the listing could not be read — {@link
    * #live()}'s contract exactly, and for its reason: nothing learned must never read as "none".
    */

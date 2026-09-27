@@ -11,7 +11,9 @@ import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.CiException;
 import eu.wohlben.qits.ci.error.NotFoundException;
 import eu.wohlben.qits.ci.error.UnavailableException;
+import eu.wohlben.qits.ci.error.ForbiddenException;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
+import eu.wohlben.qits.ci.runnerhost.RegistrationTokenIdentityProvider;
 import eu.wohlben.qits.ci.runnerhost.RunnerAddresses;
 import io.quarkus.security.identity.SecurityIdentity;
 import jakarta.annotation.security.RolesAllowed;
@@ -255,8 +257,12 @@ public class CiRunnerController {
   }
 
   /**
-   * The register door. A runner presents its registration token — as the JWT the edge mints for it —
-   * with what it says about itself, and is answered its own client, once.
+   * The register door. A runner presents its registration token — as the JWT the edge mints for it,
+   * or, on qits-net where there is no edge, as the raw {@code qits_tok_} value, which {@code
+   * runnerhost/RegistrationTokenMechanism} introspects at qits-idp for this route alone — with what
+   * it says about itself, and is answered its own client, once. A raw token must be a {@code
+   * ci-runner-registration} token whose context is this runner (403 otherwise); a value qits-idp
+   * does not call live is a 401 before this method runs.
    *
    * <p><b>Four refusals, in this order</b>: a bearer that is no machine token, or is not addressed to
    * this platform, is {@code MachineAuth}'s; no such runner is 404; a {@code sub} that is not this
@@ -286,10 +292,26 @@ public class CiRunnerController {
   @APIResponse(responseCode = "502", description = "qits-idp refused the runner's client")
   @APIResponse(responseCode = "503", description = "This deployment commissions nothing")
   public RegisteredRunner register(@PathParam("id") String id, RegisterRunnerRequest request) {
-    machineAuth.require();
+    IdpCommissioner.IntrospectedToken raw =
+        identity.getAttribute(RegistrationTokenIdentityProvider.INTROSPECTED);
+    if (raw == null) {
+      // Behind the edge: a short JWT the edge minted for the token, checked like any machine bearer.
+      machineAuth.require();
+    }
     UUID runnerId = runnerId(id);
     String capabilities = capabilities(request);
-    String subject = MachineIdentity.claim(identity, "sub").orElse(null);
+    String subject;
+    if (raw != null) {
+      // The raw token, introspected by this service itself: qits-idp vouched that it is live, and
+      // what it said must name this door and this runner before the subject is compared at all.
+      if (!IdpCommissioner.RUNNER_REGISTRATION_KIND.equals(raw.contextKind())
+          || !runnerId.toString().equals(raw.contextId())) {
+        throw new ForbiddenException("This registration token is not this runner's");
+      }
+      subject = raw.subject();
+    } else {
+      subject = MachineIdentity.claim(identity, "sub").orElse(null);
+    }
     CiRunner runner = runners.requireRegistrable(runnerId, subject);
     requireCommissioning();
     IdpCommissioner.Commission client;

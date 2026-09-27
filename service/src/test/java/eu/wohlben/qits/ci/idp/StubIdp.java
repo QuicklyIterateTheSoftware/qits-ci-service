@@ -73,6 +73,19 @@ public final class StubIdp implements AutoCloseable {
 
   private final AtomicInteger tokensMinted = new AtomicInteger();
 
+  /**
+   * What {@code POST /idp/api/tokens/introspect} answers, per presented value: the body of a 200.
+   * A value with no entry is qits-idp's one 404, {@code no live token for that value} — unknown,
+   * deleted, or its owner gone, which the real door does not tell apart either.
+   */
+  public final java.util.Map<String, String> introspection =
+      new java.util.concurrent.ConcurrentHashMap<>();
+
+  /** Every value the stub was asked to introspect, in order, and who asked. */
+  public final List<String> introspected = Collections.synchronizedList(new ArrayList<>());
+
+  public final List<String> introspectionCallers = Collections.synchronizedList(new ArrayList<>());
+
   public StubIdp() {
     server = vertx.createHttpServer();
     server.requestHandler(
@@ -137,6 +150,24 @@ public final class StubIdp implements AutoCloseable {
    * id, {@code GET} answers {@link #tokenListingBody}.
    */
   private void tokens(io.vertx.core.http.HttpServerRequest req) {
+    if (req.method() == HttpMethod.POST && req.path().endsWith("/api/tokens/introspect")) {
+      introspectionCallers.add(req.getHeader("Authorization"));
+      req.bodyHandler(
+          body -> {
+            String token = body.toJsonObject().getString("token");
+            introspected.add(token);
+            String answer = token == null ? null : introspection.get(token);
+            req.response()
+                .setStatusCode(answer == null ? 404 : 200)
+                .putHeader("Content-Type", "application/json")
+                .end(
+                    answer == null
+                        ? "{\"error\":\"not_found\",\"error_description\":\"no live token for"
+                            + " that value\"}"
+                        : answer);
+          });
+      return;
+    }
     if (req.method() == HttpMethod.POST) {
       authorizations.add(req.getHeader("Authorization"));
       req.bodyHandler(
