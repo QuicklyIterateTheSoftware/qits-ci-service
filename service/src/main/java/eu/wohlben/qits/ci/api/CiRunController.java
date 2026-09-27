@@ -11,6 +11,7 @@ import eu.wohlben.qits.ci.control.CiQueueForecast;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiRunOrdering;
 import eu.wohlben.qits.ci.control.CiRunService;
+import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import eu.wohlben.qits.ci.dto.CiLiveStepDto;
 import eu.wohlben.qits.ci.dto.CiRunDto;
@@ -109,6 +110,9 @@ public class CiRunController {
   @Inject CiRunMapper mapper;
 
   @Inject CiStepRelay relay;
+
+  /** Where a run's runner NAME comes from — a second read the mapper deliberately does not make. */
+  @Inject CiRunners runners;
 
   @Inject ObjectMapper objectMapper;
 
@@ -275,7 +279,8 @@ public class CiRunController {
   private ListRunsResponse listing(List<CiRun> forRuns, CiRunService.Snapshot queue) {
     Map<String, List<CiStep>> stepsByRun = runService.stepsForAll(forRuns);
     return new ListRunsResponse(
-        forRuns.stream()
+        runners.withRunnerNames(
+            forRuns.stream()
             .map(
                 run -> {
                   List<CiStep> steps = stepsByRun.getOrDefault(run.id, List.of());
@@ -286,7 +291,7 @@ public class CiRunController {
                   // of the status here: a finished run is in neither half of the queue.
                   return queue == null ? dto : withQueueFacts(run, dto, queue);
                 })
-            .toList());
+            .toList()));
   }
 
   /** Whether the run is still in the queue's world — {@code QUEUED} or {@code RUNNING}. */
@@ -396,10 +401,14 @@ public class CiRunController {
     return new QueueResponse(
         queue.concurrentBuilds(),
         queue.generatedAt(),
-        queue.running().stream().map(run -> withQueueFacts(run, mapper.toDto(run), queue)).toList(),
-        queue.queuedInClaimOrder().stream()
-            .map(ordered -> withQueueFacts(ordered.run(), mapper.toDto(ordered.run()), queue))
-            .toList());
+        runners.withRunnerNames(
+            queue.running().stream()
+                .map(run -> withQueueFacts(run, mapper.toDto(run), queue))
+                .toList()),
+        runners.withRunnerNames(
+            queue.queuedInClaimOrder().stream()
+                .map(ordered -> withQueueFacts(ordered.run(), mapper.toDto(ordered.run()), queue))
+                .toList()));
   }
 
   /**
@@ -570,7 +579,7 @@ public class CiRunController {
   public CiRunDto getRun(@PathParam("runId") String runId) {
     CiRun run = runService.requireRun(runId);
     List<CiStep> steps = runService.stepsFor(runId);
-    CiRunDto dto = mapper.toDto(run, steps, liveStep(run, steps, true));
+    CiRunDto dto = runners.withRunnerName(mapper.toDto(run, steps, liveStep(run, steps, true)));
     // Only an unfinished run has a queue to be placed in, and only then is the extra read made.
     if (run.status != CiRunStatus.QUEUED && run.status != CiRunStatus.RUNNING) {
       return dto;

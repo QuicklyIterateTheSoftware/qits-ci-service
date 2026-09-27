@@ -19,7 +19,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>Three routes, which are the whole contract {@link IdpCommissioner} depends on: {@code POST
  * /idp/api/clients} mints a pair, {@code DELETE /idp/api/clients/{id}} gives one back, and {@code
- * GET /idp/api/clients} lists this owner's live ones. Everything a test wants to claim is recorded
+ * GET /idp/api/clients} lists this owner's live ones — and the same three again under {@code
+ * /idp/api/tokens}, for the opaque tokens a runner registers with. Everything a test wants to claim is recorded
  * rather than inferred: the bodies posted, the {@code Authorization} headers, the ids deleted and
  * the number of listings read.
  */
@@ -58,10 +59,28 @@ public final class StubIdp implements AutoCloseable {
 
   private final AtomicInteger minted = new AtomicInteger();
 
+  /** Every token commissioning body the stub was posted, in order — {@code /api/tokens}. */
+  public final List<String> postedTokens = Collections.synchronizedList(new ArrayList<>());
+
+  /** Every token id it was asked to delete, in order. */
+  public final List<String> deletedTokens = Collections.synchronizedList(new ArrayList<>());
+
+  /** What a token mint answers — a refusal or an outage, staged. */
+  public volatile int tokenMintStatus = 201;
+
+  /** What the token listing answers. */
+  public volatile String tokenListingBody = "[]";
+
+  private final AtomicInteger tokensMinted = new AtomicInteger();
+
   public StubIdp() {
     server = vertx.createHttpServer();
     server.requestHandler(
         req -> {
+          if (req.path().contains("/api/tokens")) {
+            tokens(req);
+            return;
+          }
           if (req.method() == HttpMethod.POST) {
             authorizations.add(req.getHeader("Authorization"));
             req.bodyHandler(
@@ -110,6 +129,59 @@ public final class StubIdp implements AutoCloseable {
     } catch (Exception e) {
       throw new IllegalStateException("could not start the stub idp", e);
     }
+  }
+
+  /**
+   * The opaque-token surface: {@code POST} mints {@code token-<n>} with the value {@code
+   * qits_tok_stub-<n>} and the subject {@code tok-<kind>-<contextId>-<n>}, {@code DELETE} records the
+   * id, {@code GET} answers {@link #tokenListingBody}.
+   */
+  private void tokens(io.vertx.core.http.HttpServerRequest req) {
+    if (req.method() == HttpMethod.POST) {
+      authorizations.add(req.getHeader("Authorization"));
+      req.bodyHandler(
+          body -> {
+            postedTokens.add(body.toString());
+            int status = tokenMintStatus;
+            if (status != 201 && status != 200) {
+              req.response()
+                  .setStatusCode(status)
+                  .putHeader("Content-Type", "application/json")
+                  .end(refusal(status));
+              return;
+            }
+            int n = tokensMinted.incrementAndGet();
+            io.vertx.core.json.JsonObject posted = body.toJsonObject();
+            String kind = posted.getString("contextKind");
+            String context = posted.getString("contextId");
+            String answer =
+                new io.vertx.core.json.JsonObject()
+                    .put("tokenId", "token-" + n)
+                    .put("token", "qits_tok_stub-" + n)
+                    .put("subject", "tok-" + kind + "-" + context + "-" + n)
+                    .put("owner", SERVICE_CLIENT_ID)
+                    .put("contextKind", kind)
+                    .put("contextId", context)
+                    .put("createdAt", "2026-09-27T10:00:00Z")
+                    .encode();
+            req.response()
+                .setStatusCode(status)
+                .putHeader("Content-Type", "application/json")
+                .end(answer);
+          });
+      return;
+    }
+    if (req.method() == HttpMethod.DELETE) {
+      String path = req.path();
+      deletedTokens.add(path.substring(path.lastIndexOf('/') + 1));
+      req.response().setStatusCode(204).end();
+      return;
+    }
+    listings.incrementAndGet();
+    req.response()
+        .setStatusCode(200)
+        .putHeader("Content-Type", "application/json")
+        .end(tokenListingBody);
   }
 
   private static String refusal(int status) {

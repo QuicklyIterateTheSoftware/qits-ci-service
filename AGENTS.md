@@ -102,6 +102,13 @@ package:
   registry which bytes a step image's tag names right now. An *adapter* like `githost` and `idp`
   are, for the `CiStepImagePins` seam in `ci/control`, and another hand-rolled `java.net.http` one
   for the reason the whole `githost` package is. See "A run is fixed to one toolchain".
+- `service/…/runnerhost/` — the runner side of the host, beside `daemonhost`: so far one class,
+  `RunnerAddresses`, the single composition of what a runner is told (the idp token url, the
+  audience, the runner socket url off `qits.ci.runner.public-url` or the derived
+  `qits.ci.runner.internal-url`). The register door answers it and the install script will render
+  it; two compositions would be two chances to disagree. The runner rules themselves are
+  `ci/control/CiRunners`, the operator verbs and the register door `api/CiRunnerController` — see
+  `README.md` under "Runners".
 - `ci-events/` — the event classes qits-ci emits, `eu.wohlben.qits.ci.events`. Under this repo's own
   namespace because it *is* this repo's vocabulary; depends on `eventstream` and nothing else.
 
@@ -207,6 +214,9 @@ the adapter for it:
   lists and deletes every `ci-run` row whose `contextId` is not a `QUEUED`/`RUNNING` run and which
   this process is not holding right now. **A listing it could not read reaps nothing**: `live()`
   answers an empty `Optional` rather than an empty list precisely so the two cannot be confused.
+  The same pass reaps a runner's `ci-runner` client and `ci-runner-registration` token against the
+  runner table (`GET /idp/api/tokens` is its second listing, under the same rule); the predicate is
+  in its class javadoc and `README.md` under "Runners".
 - **`RunGitRefs`** — the Git scope the commission states as `gitRefs` (C6 of the superproject's
   `principal-bound-git-refs-plan.md`; the table is in `README.md`). It reads the run's own
   `QITS_EVENT_NAME` and `QITS_EVENT_PAYLOAD` from `LaunchSpec.env`, so no seam changed.

@@ -125,9 +125,54 @@ rest of qits it reaches over a URL it is configured with:
 | out | `ws://…/events/stream` — dialled out and held open, carrying what qits-events broadcasts back | the same two keys; the address is derived, never configured twice |
 | out | `PUT/DELETE /containers/api/containers/<owner>/ci-step/<ref>` — every step container: started, read and removed through qits-containers, which owns the docker daemon. **qits-ci holds no docker socket.** | `qits.containers.url`, `qits.ci.containers.owner` |
 | out | `POST/DELETE/GET /idp/api/clients` — one commissioned oidc client per run, minted at the run's first step and deleted when the run closes; every step clones with it, and a publishing step pushes with it | `quarkus.oidc-client.qits.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.qits.client-enabled` |
+| out | `POST/DELETE/GET /idp/api/tokens` — a runner's one-use registration token (`ci-runner-registration`), and the same clients door for its own client once it registers (`ci-runner`); both given back when the runner is decommissioned — see "Runners" below | the same keys as the row above |
 | out | the registry a publishing step pushes to, as `$QITS_REGISTRY` and `$QITS_IMAGE_REPOSITORY` in **every** step container — dialled by the *host's docker daemon*, never by this process | `qits.artifacts.registry-host`, `qits.artifacts.image-repository` |
 | out | the npm registry roots, as `$QITS_NPM_REGISTRY_URL` (hosted, `@qits/*` publishes) and `$QITS_NPM_PROXY_URL` (the npmjs pull-through cache) in **every** step container — dialled by the *step container itself* on the shared network | `qits.artifacts.npm.hosted-url`, `qits.artifacts.npm.proxy-url` |
 | out | the hosted Maven repository root, as `$QITS_MAVEN_REGISTRY_URL` in **every** step container — also dialled by the step container on the shared network | `qits.artifacts.maven.registry-url` |
+
+### Runners
+
+A **runner** is a machine that registers with qits-ci and pulls step work, rather than a container
+qits-ci asks qits-containers to start (epic qits-440). This is the half that exists so far: the row,
+the operator's six verbs and the runner's one door. Nothing schedules work onto a runner yet.
+
+| verb | answer | role |
+|---|---|---|
+| `POST /ci/api/runners` `{name, description?, slots?}` | 201 `{runner, registrationToken}` — the token **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}`, 409 on a taken one | `qits:admin` |
+| `GET /ci/api/runners` | `{runners: [{id, name, description, slots, plane, capabilities, registered, connected, heldRuns, lastSeenAt, createdAt}]}`, by name | `qits:admin`, `qits:system`, `qits:agent` |
+| `GET /ci/api/runners/{id}` | one runner, 404 | the same |
+| `PATCH /ci/api/runners/{id}` `{slots?, description?}` | the runner; `slots: 0` drains it | `qits:admin` |
+| `POST /ci/api/runners/{id}/registration-token` | `{runner, registrationToken}` — a fresh token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin` |
+| `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run | `qits:admin` |
+
+**The register door is `POST /ci/api/runners/{id}/register` `{capabilities}`**, and a runner knocks on
+it with its registration token — a `qits_tok_` value the edge introspects and exchanges for a short
+JWT whose `sub` is the token's subject. The door admits `qits:ci-runner-registration` alone, and
+the bearer's `sub` must be **this** runner's registration token subject (403 otherwise). It
+commissions the runner's own `ci-runner` client, deletes the spent token and answers **once**
+`{clientId, secret, tokenUrl, audience: "qits-platform", socketUrl}`; a runner that has registered is
+409, which is what a replay of the right token gets. **`qits:ci-runner-registration` opens this one
+route and nothing else on the platform.**
+
+Every credential here is handed out exactly once and logged never: the token's value is on no row
+and no read, the client's secret likewise. A refused request leaves nothing minted behind — a token
+or client whose write lost a race is given back at once — and `CommissionReconciler` reaps what a
+give-back could not: a runner's client once its row is gone or names another client, a registration
+token once its row is gone, has registered or names a newer token (tokens younger than ten minutes
+are spared, since a create commissions before it writes). With the qits oidc client off — the
+shipped posture — nothing can be commissioned, and the create, a rotation and the register door
+answer 503.
+
+`tokenUrl` is the idp token endpoint qits-ci hands its step daemons
+(`quarkus.oidc-client.qits.auth-server-url` + `/token`). `socketUrl` is
+`<base>/ci/runners/socket` with `ws`/`wss` after the base's scheme, where the base is
+`qits.ci.runner.public-url` when set and `qits.ci.runner.internal-url` otherwise — shipped as
+`http://${QITS_ENVIRONMENT:dev}-qits-ci:8080`, the alias a step daemon already dials back to, which
+is what a runner on qits-net (the `INTERNAL` plane) reaches. `runnerhost/RunnerAddresses` is the one
+place those three are composed.
+
+A run a runner executed carries `runnerId` and `runnerName` on every run read; the id outlives the
+runner (no foreign key), the name does not.
 
 The run listing takes the repository as a **query filter, not a path segment**. ci does not own
 repositories, so `/repositories/{repoId}/runs` asserted a containment this context does not have —
