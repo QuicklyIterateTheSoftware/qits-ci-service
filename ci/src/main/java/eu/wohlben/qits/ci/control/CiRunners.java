@@ -276,6 +276,41 @@ public class CiRunners {
     return new ConflictException("Runner " + runner.name + " is already registered");
   }
 
+  /**
+   * The registered runner a commissioned client belongs to, or empty — the runner socket's whole
+   * question about a dial. An unregistered row has no client and can never match, which is what
+   * keeps a declared-but-unregistered runner off the socket.
+   */
+  public java.util.Optional<CiRunner> findByClientId(String clientId) {
+    if (clientId == null || clientId.isBlank()) {
+      return java.util.Optional.empty();
+    }
+    return QuarkusTransaction.requiringNew().call(() -> runners.findByClientId(clientId));
+  }
+
+  /**
+   * What a runner said in its {@code Hello}: its capabilities replace what it registered with, and
+   * it is heard from now. The runner's own word again, stored as {@link #markRegistered} stores it —
+   * a host whose docker went away between registration and this connection says so here, and the
+   * claim reads the newer answer. Null leaves the registered answer standing.
+   *
+   * @return the row as it now is, or null for a runner deleted while it dialled
+   */
+  public CiRunner recordHello(UUID id, String capabilities) {
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () -> {
+              CiRunner runner = runners.findById(id);
+              if (runner != null) {
+                if (capabilities != null) {
+                  runner.capabilities = capabilities;
+                }
+                runner.lastSeenAt = Instant.now();
+              }
+              return runner;
+            });
+  }
+
   /** Stamps the runner as heard from now. A runner that no longer exists is not an error here. */
   public void touchSeen(UUID id) {
     QuarkusTransaction.requiringNew()

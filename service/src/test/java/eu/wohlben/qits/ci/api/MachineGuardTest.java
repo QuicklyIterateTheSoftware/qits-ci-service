@@ -76,7 +76,7 @@ import org.junit.jupiter.api.Test;
  */
 @QuarkusTest
 @TestProfile(MachineGuardTest.GateOn.class)
-class MachineGuardTest {
+public class MachineGuardTest {
 
   /**
    * The audience this service's machine guard expects — its config default, injected in prod. It is

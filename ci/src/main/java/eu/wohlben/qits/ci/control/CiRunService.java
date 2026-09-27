@@ -280,6 +280,12 @@ public class CiRunService {
   @Inject Instance<RunAnnouncer> runAnnouncers;
 
   /**
+   * Who hears the queue's length when it may have moved — see {@link CiBacklogListener} and {@link
+   * #announceBacklog}. Zero implementations is fine, and is the {@code ci} suites' state.
+   */
+  @Inject Instance<CiBacklogListener> backlogListeners;
+
+  /**
    * The gate a published artifact goes through — see {@link ReleaseJoin}. This class decides that a
    * release pipeline finished and what it published; that one decides whether the platform is
    * allowed to hear about it.
@@ -1021,6 +1027,7 @@ public class CiRunService {
       // One permit per worker rather than one per row: the rows are in the table and the claim loop
       // re-derives their order for itself, so what a sweep owes is "wake up", once, to everybody.
       work.release(concurrentBuilds);
+      announceBacklog();
     }
   }
 
@@ -1099,6 +1106,8 @@ public class CiRunService {
       return;
     }
     work.release();
+    // The other half of "there is work": the local pool is woken above, a runner is told here.
+    announceBacklog();
   }
 
   /**
@@ -1198,6 +1207,7 @@ public class CiRunService {
       return false;
     }
     announceStatus(settled, CiRunStatus.CANCELLED, CiRunStatus.QUEUED, settled.finishedAt);
+    announceBacklog();
     return true;
   }
 
@@ -2026,6 +2036,48 @@ public class CiRunService {
   }
 
   /**
+   * How many runs are {@code QUEUED} right now — what a runner is told in the {@code Backlog} that
+   * follows its {@code Ack}, and what {@link #announceBacklog} pushes afterwards.
+   */
+  public int queuedCount() {
+    long queued = QuarkusTransaction.requiringNew().call(runs::countQueued);
+    return (int) Math.min(Integer.MAX_VALUE, queued);
+  }
+
+  /**
+   * Tells every {@link CiBacklogListener} the queue's current length, after the write that may have
+   * moved it has committed.
+   *
+   * <p><b>Counted rather than tracked.</b> Every caller has just changed the table, and the count is
+   * the table's own answer — a running tally kept here would be a second copy of the queue that a
+   * local claim, a supersede or a boot sweep could each leave wrong. It costs one indexed count per
+   * transition, and only when somebody listens.
+   *
+   * <p><b>Never a failure of the caller.</b> This runs on the path of an accept, a finish and a
+   * cancel; a listener that throws, or a count the database could not answer, costs this push and
+   * nothing else. The next transition pushes again, which is the whole recovery a hint needs.
+   */
+  private void announceBacklog() {
+    if (backlogListeners == null || backlogListeners.isUnsatisfied()) {
+      return;
+    }
+    int queued;
+    try {
+      queued = queuedCount();
+    } catch (RuntimeException e) {
+      LOG.debugf("Could not count the queue for its listeners: %s", e.getMessage());
+      return;
+    }
+    for (CiBacklogListener listener : backlogListeners) {
+      try {
+        listener.backlogChanged(queued);
+      } catch (RuntimeException e) {
+        LOG.warnf(e, "A backlog listener failed on a queue of %d", queued);
+      }
+    }
+  }
+
+  /**
    * Claims a queued run for this worker: {@code QUEUED} becomes {@code RUNNING} and the row comes
    * back, or <b>null when the row is no longer queued</b> and there is nothing to run.
    *
@@ -2771,6 +2823,9 @@ public class CiRunService {
               run.status = status;
               run.finishedAt = finishedAt;
             });
+    // A finished run moves no QUEUED row, and it is told anyway: it is the moment capacity came
+    // back, and a runner that was answered Nothing is parked until it next hears a Backlog.
+    announceBacklog();
     return finishedAt;
   }
 
@@ -2858,6 +2913,7 @@ public class CiRunService {
       LOG.infof("CI run %s cancelled on request before it started (%s)", runId, reason);
       announceStatus(
           neverStarted, CiRunStatus.CANCELLED, CiRunStatus.QUEUED, neverStarted.finishedAt);
+      announceBacklog();
       return;
     }
     if (!runner.owns(runId)) {

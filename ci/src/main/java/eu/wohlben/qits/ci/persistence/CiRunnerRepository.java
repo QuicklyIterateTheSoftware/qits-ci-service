@@ -22,4 +22,12 @@ public class CiRunnerRepository implements PanacheRepositoryBase<CiRunner, UUID>
   public Optional<CiRunner> findByName(String name) {
     return find("name", name).firstResultOptional();
   }
+
+  /**
+   * The runner a commissioned client belongs to — how the runner socket turns the {@code sub} of a
+   * {@code client_credentials} bearer (which qits-idp sets to the client id) into a row.
+   */
+  public Optional<CiRunner> findByClientId(String clientId) {
+    return find("clientId", clientId).firstResultOptional();
+  }
 }

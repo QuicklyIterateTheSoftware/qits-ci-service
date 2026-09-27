@@ -8,6 +8,9 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 import eu.wohlben.qits.ci.daemonhost.FakeCiDaemon;
 import eu.wohlben.qits.ci.githost.StubGitHost;
+import eu.wohlben.qits.ci.runnerhost.CiRunnerSocket;
+import eu.wohlben.qits.ci.runnerhost.FakeCiRunner;
+import eu.wohlben.qits.ci.runnerhost.RunnerAddresses;
 import eu.wohlben.qits.ci.testdb.EmbeddedPg;
 import io.quarkus.test.junit.QuarkusIntegrationTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
@@ -57,6 +60,8 @@ import org.junit.jupiter.api.Test;
  *       {@code @WebSocket} endpoint is registered by an extension at augmentation, so "websockets-next
  *       is native-image supported" is a claim this repo's rule says the binary has to prove rather
  *       than the documentation;
+ *   <li>so is the runner control socket at {@code /ci/runners/socket}, the second endpoint of the
+ *       same kind and owed the same proof;
  *   <li>and, for the same reason, <b>how the Angular client and the machine surface divide {@code
  *       /ci}</b>. Quinoa is disabled by default in test mode, so no {@code @QuarkusTest} in this repo
  *       has ever seen the client at all — the SPA fallback, the {@code <base href>} another
@@ -267,6 +272,30 @@ public class CiPackagedSurfaceIT {
           (Short) (short) 1008,
           daemon.awaitClose(Duration.ofSeconds(20)),
           "the packaged artifact must serve /ci/daemon and refuse an unknown daemon on it");
+    }
+  }
+
+  @Test
+  public void theRunnerControlSocketIsOnTheArtifactsRouter() throws Exception {
+    // The daemon socket's probe, for the runner's: route presence, not behaviour. A runner dials
+    // exactly this path (RunnerAddresses composes its socketUrl from it), and a native build that
+    // dropped the endpoint would leave every runner reconnecting forever with nothing to say why.
+    //
+    // The gate is off here, so the forward-auth pair is what carries the role past the upgrade —
+    // and with no validated token there is no subject, so the socket closes 1008 after admitting
+    // the upgrade. A missing route fails the upgrade instead, with a 404.
+    URI socket =
+        URI.create("http://localhost:" + RestAssured.port + RunnerAddresses.SOCKET_PATH);
+    try (FakeCiRunner runner =
+        FakeCiRunner.dial(
+            socket,
+            Map.of(
+                FakeCiDaemon.USER_HEADER, "a-runner-without-a-token",
+                FakeCiDaemon.ROLES_HEADER, CiRunnerSocket.RUNNER_ROLE))) {
+      assertEquals(
+          (Short) (short) 1008,
+          runner.awaitClose(Duration.ofSeconds(20)),
+          "the packaged artifact must serve the runner socket and refuse a runner it cannot name");
     }
   }
 

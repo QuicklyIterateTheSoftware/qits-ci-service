@@ -51,6 +51,12 @@
             <artifactId>qits-ci-daemon-protocol</artifactId>
         </dependency>
         <dependency>
+            <!-- The runner control-socket wire contract — what runnerhost/CiRunnerSocket speaks with a
+                 registered runner. Pinned in the root pom beside the daemon protocol. -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-ci-runner-protocol</artifactId>
+        </dependency>
+        <dependency>
             <!-- WHICH qits CLI EVERY COMPOSED RELEASE STEP RUNS. Three strings and no bytes:
                  PlatformAccessCliBinary.VERSION is what CiDaemonLauncher injects as
                  $QITS_ARTIFACTS_CLI_VERSION, and the composed prelude downloads exactly that

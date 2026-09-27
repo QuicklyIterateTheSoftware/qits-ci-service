@@ -102,6 +102,15 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   }
 
   /**
+   * How many runs are {@code QUEUED} right now — the number a runner's {@code Backlog} frame
+   * carries. A count rather than {@link #listQueuedOldestFirst}'s size because it is asked on every
+   * transition that may move it, and nobody on that path wants the rows.
+   */
+  public long countQueued() {
+    return count("status", CiRunStatus.QUEUED);
+  }
+
+  /**
    * The newest {@code limit} runs that are over — anything not {@code QUEUED} or {@code RUNNING} —
    * across all repositories, newest-first. The read behind {@code GET /ci/api/runs/finished}.
    *
