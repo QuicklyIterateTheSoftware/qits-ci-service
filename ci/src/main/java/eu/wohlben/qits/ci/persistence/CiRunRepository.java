@@ -5,8 +5,11 @@ import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 /** Panache DAO for {@link CiRun} (keyed by its String UUID row id). */
 @ApplicationScoped
@@ -70,6 +73,32 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
         "status in (?1, ?2) order by createdAt desc, id desc",
         CiRunStatus.QUEUED,
         CiRunStatus.RUNNING);
+  }
+
+  /**
+   * How many {@code RUNNING} runs one runner holds — the read behind a runner's {@code heldRuns}, and
+   * behind the refusal to delete a runner that is still executing something. Only {@code RUNNING}:
+   * a finished run on a runner is history, and history never holds a runner up.
+   */
+  public long countRunningOnRunner(UUID runnerId) {
+    return count("runnerId = ?1 and status = ?2", runnerId, CiRunStatus.RUNNING);
+  }
+
+  /** {@link #countRunningOnRunner} for every runner at once, keyed by runner; absent means none. */
+  public Map<UUID, Long> countRunningByRunner() {
+    Map<UUID, Long> held = new HashMap<>();
+    List<Object[]> rows =
+        getEntityManager()
+            .createQuery(
+                "select r.runnerId, count(r) from CiRun r where r.runnerId is not null"
+                    + " and r.status = ?1 group by r.runnerId",
+                Object[].class)
+            .setParameter(1, CiRunStatus.RUNNING)
+            .getResultList();
+    for (Object[] row : rows) {
+      held.put((UUID) row[0], ((Number) row[1]).longValue());
+    }
+    return held;
   }
 
   /**

@@ -45,6 +45,11 @@ public interface CiRunMapper {
   @Mapping(target = "archetypeConfigPath", source = "archetypeConfigPath")
   @Mapping(target = "archetypeRev", source = "archetypeRev")
   @Mapping(target = "archetypeVersion", source = "archetypeVersion")
+  // The runner: its id is a column and maps by name, spelled out for `phase`'s reason; its NAME is the
+  // runner row's, a second read, so it is attached at the boundary (CiRunners.withRunnerNames) like
+  // the queue facts are, and never by this mapper.
+  @Mapping(target = "runnerId", source = "runnerId")
+  @Mapping(target = "runnerName", ignore = true)
   CiRunDto toDto(CiRun entity);
 
   CiStepDto toDto(CiStep entity);

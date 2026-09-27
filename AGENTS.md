@@ -2564,6 +2564,16 @@ V20's three nulls mean, plus every row composed while the recipe still came from
 is nothing those rows could be filled in with. 64 characters, `archetype_rev`'s width, so a value
 one of the pair could hold and the other could not can never exist.
 
+`V23__runners.sql` is the first **table** since V13 and the runners epic's (qits-440) whole schema
+cost so far: `ci_runner` — one row per runner an operator declared, its registration state being
+which of two nullable pairs is set (`registration_token_id`/`_subject` at create and rotation,
+`client_id`/`registered_at` once, by the register door) — and `ci_run.runner_id`, V8's shape again
+with V8's partial index, since "may this runner be deleted" and "how many runs does it hold" both
+look runs up by it. **No foreign key** from the run to the runner, for `repo_id`'s reason: a
+decommissioned runner leaves its runs as history. `plane` is an enum column with no check, like
+`status`; `capabilities` is the lineage's first `jsonb`, because the next epic's scheduler queries
+into it. `CiSchemaTest` pins the name constraint, the absent key and the two defaults.
+
 `V18__retire_daemon_pin_ladder.sql` is the **first migration in this lineage that drops anything**,
 and it owes an argument the additive ones do not. Every file since V1 has added a nullable column and
 kept what was there; this one removes `ci_daemon_pin` outright, because the rows were not history.

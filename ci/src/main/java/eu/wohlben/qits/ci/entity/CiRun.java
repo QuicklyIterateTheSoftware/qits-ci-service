@@ -398,4 +398,17 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
    */
   @Column(name = "step_images", columnDefinition = "text")
   public String stepImages;
+
+  /**
+   * The {@link CiRunner} that held this run, or null for every run a runner did not execute — which
+   * is every run whose steps qits-ci launched through qits-containers, and every row recorded before
+   * {@code V23__runners.sql}.
+   *
+   * <p><b>No foreign key, for {@link #repoId}'s reason.</b> A decommissioned runner leaves its runs
+   * behind as history: a key would either refuse the decommission or cascade the history away. What
+   * reads it is {@code CiRunners} — a runner holding a {@code RUNNING} run may not be deleted, and
+   * how many it holds is on its listing — and the run's own DTO, which names the runner.
+   */
+  @Column(name = "runner_id")
+  public UUID runnerId;
 }

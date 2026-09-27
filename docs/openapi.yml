@@ -122,6 +122,10 @@ components:
           type: string
         ordering:
           $ref: "#/components/schemas/CiRunOrderingDto"
+        runnerId:
+          $ref: "#/components/schemas/UUID"
+        runnerName:
+          type: string
     CiRunOrderingDto:
       type: object
       properties:
@@ -332,6 +336,10 @@ components:
           type: array
           items:
             type: string
+    UUID:
+      type: string
+      format: uuid
+      pattern: "[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}"
   securitySchemes:
     SecurityScheme:
       type: openIdConnect
@@ -769,4 +777,4 @@ paths:
         - qits:agent
 info:
   title: qits-ci API
-  version: 2026.922.224534
+  version: 2026.926.54911

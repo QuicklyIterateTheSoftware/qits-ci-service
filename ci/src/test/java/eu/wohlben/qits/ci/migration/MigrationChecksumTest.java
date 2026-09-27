@@ -115,6 +115,7 @@ public class MigrationChecksumTest {
     PINS.put(
         "V22__run_archetype_version.sql",
         "8e4c5caeb6c66dcec5b3484085fd42a9bbd027459a1d5ea75ae25a5808b51d19");
+    PINS.put("V23__runners.sql", "c6cc0c728e77a539e814a3896758edeec598761a348526f915d6dc073dc0179d");
   }
 
   @Test
