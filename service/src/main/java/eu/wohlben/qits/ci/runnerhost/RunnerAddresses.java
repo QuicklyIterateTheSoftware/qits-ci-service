@@ -22,6 +22,10 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * quarkus.oidc-client.qits.auth-server-url} plus {@code /token}, exactly {@code
  * CiDaemonLauncher.tokenUrl} — a qits-net address, the idp this service itself commissions against,
  * so the runner's client and the token it is minted from belong to one issuer by construction.
+ *
+ * <p><b>The artifacts base follows the CI base's shape</b>: an internal alias derived as {@code
+ * http://${QITS_ENVIRONMENT}-qits-artifacts:8080}, which only the install script names, and a
+ * public override that ships unset.
  */
 @ApplicationScoped
 public class RunnerAddresses {
@@ -44,6 +48,13 @@ public class RunnerAddresses {
 
   @ConfigProperty(name = "quarkus.oidc-client.qits.auth-server-url")
   String idpUrl;
+
+  @ConfigProperty(name = "qits.ci.runner.artifacts-internal-url")
+  String artifactsInternalUrl;
+
+  /** Blank is unset, as {@link #publicUrl} is. */
+  @ConfigProperty(name = "qits.ci.runner.artifacts-url")
+  Optional<String> artifactsUrl;
 
   /** The base a runner reaches qits-ci at: scheme, host and port, no trailing slash. */
   public String ciBase() {
@@ -69,6 +80,22 @@ public class RunnerAddresses {
   /** The idp token endpoint a runner mints its bearer at. */
   public String tokenUrl() {
     return value(idpUrl).trim().replaceAll("/+$", "") + "/token";
+  }
+
+  /**
+   * Where the install script downloads the binary from: scheme, host and port of qits-artifacts, no
+   * trailing slash. {@code qits.ci.runner.artifacts-url} when a deployment sets one, and the
+   * internal alias otherwise — the host {@code qits.ci.daemon-binary-url-template} already names for
+   * every step container's daemon download, where an anonymous {@code GET
+   * /artifacts/daemons/<name>/<version>} answers.
+   */
+  public String artifactsBase() {
+    String base =
+        artifactsUrl
+            .map(String::trim)
+            .filter(url -> !url.isEmpty())
+            .orElse(value(artifactsInternalUrl).trim());
+    return base.replaceAll("/+$", "");
   }
 
   /** {@link #AUDIENCE}, as a method so a caller holding this bean needs nothing else. */

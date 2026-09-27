@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.api;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.hasKey;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
@@ -11,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.ci.dto.CiRunnerDto;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiRunner;
@@ -19,6 +21,7 @@ import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.StubIdp;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
+import eu.wohlben.qits.cirunner.protocol.CiRunnerBinary;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusMock;
 import io.quarkus.test.junit.QuarkusTest;
@@ -29,8 +32,11 @@ import io.quarkus.test.security.oidc.OidcSecurity;
 import io.restassured.path.json.JsonPath;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.MediaType;
+import java.lang.reflect.RecordComponent;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
@@ -125,16 +131,37 @@ class CiRunnerControllerTest {
 
   @Test
   @TestSecurity(user = "operator", roles = {ADMIN})
-  void creatingARunnerCommissionsItsRegistrationTokenAndAnswersTheValueOnce() {
+  void creatingARunnerCommissionsItsRegistrationTokenAndAnswersItOnceInsideTheInstallScript() {
     JsonPath created = create("build-host-1");
 
-    UUID id = UUID.fromString(created.getString("runner.id"));
-    assertEquals("build-host-1", created.getString("runner.name"));
-    assertEquals(2, created.getInt("runner.slots"));
-    assertEquals("INTERNAL", created.getString("runner.plane"));
-    assertFalse(created.getBoolean("runner.registered"));
-    assertFalse(created.getBoolean("runner.connected"));
-    assertEquals("qits_tok_stub-1", created.getString("registrationToken"));
+    // The runner's fields flat at the top, as the SPA reads them, beside the script.
+    UUID id = UUID.fromString(created.getString("id"));
+    assertEquals("build-host-1", created.getString("name"));
+    assertEquals(2, created.getInt("slots"));
+    assertEquals("INTERNAL", created.getString("plane"));
+    assertFalse(created.getBoolean("registered"));
+    assertFalse(created.getBoolean("connected"));
+    assertEquals(0, created.getInt("heldRuns"));
+    assertNotNull(created.getString("createdAt"));
+    assertFalse(created.getMap("").containsKey("runner"), "the runner is not nested");
+    // The token is in the script, in its one assignment, and in no field of its own.
+    assertFalse(created.getMap("").containsKey("registrationToken"));
+    String script = created.getString("installScript");
+    assertTrue(script.contains("QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_stub-1'\n"), script);
+    assertTrue(script.contains("QITS_CI_RUNNER_ID='" + id + "'\n"), script);
+    String environment = System.getenv().getOrDefault("QITS_ENVIRONMENT", "dev");
+    assertTrue(
+        script.contains("QITS_CI_RUNNER_URL='http://" + environment + "-qits-ci:8080'\n"), script);
+    assertTrue(script.contains("QITS_CI_RUNNER_SLOTS='2'\n"), script);
+    assertTrue(
+        script.contains(
+            "QITS_CI_RUNNER_BINARY_URL='http://"
+                + environment
+                + "-qits-artifacts:8080/artifacts/daemons/qits-ci-runner/"
+                + CiRunnerBinary.VERSION
+                + "'\n"),
+        script);
+    assertEquals(1, script.split("qits_tok_stub-1", -1).length - 1, "the token appears once");
 
     // What qits-idp was asked for: a registration token for exactly this runner, pushing nothing.
     assertEquals(
@@ -199,7 +226,7 @@ class CiRunnerControllerTest {
   @Test
   @TestSecurity(user = "operator", roles = {ADMIN})
   void patchTakesSlotsZeroAndRefusesNegativeSlots() {
-    String id = create("tunable").getString("runner.id");
+    String id = create("tunable").getString("id");
 
     given()
         .contentType(MediaType.APPLICATION_JSON)
@@ -228,16 +255,24 @@ class CiRunnerControllerTest {
 
   @Test
   @TestSecurity(user = "operator", roles = {ADMIN})
-  void aRotationAnswersANewTokenAndGivesTheOldOneBack() {
-    String id = create("rotating").getString("runner.id");
+  void aRotationAnswersANewInstallScriptAndGivesTheOldTokenBack() {
+    String id = create("rotating").getString("id");
 
-    given()
-        .when()
-        .post(RUNNERS + "/" + id + "/registration-token")
-        .then()
-        .statusCode(200)
-        .body("registrationToken", equalTo("qits_tok_stub-2"))
-        .body("runner.name", equalTo("rotating"));
+    JsonPath rotated =
+        given()
+            .when()
+            .post(RUNNERS + "/" + id + "/registration-token")
+            .then()
+            .statusCode(200)
+            .body("name", equalTo("rotating"))
+            .body("id", equalTo(id))
+            .body("$", not(hasKey("registrationToken")))
+            .body("$", not(hasKey("runner")))
+            .extract()
+            .jsonPath();
+    String script = rotated.getString("installScript");
+    assertTrue(script.contains("QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_stub-2'\n"), script);
+    assertFalse(script.contains("qits_tok_stub-1"), script);
 
     assertEquals(List.of("token-1"), idp.deletedTokens);
     assertEquals("token-2", row(UUID.fromString(id)).registrationTokenId);
@@ -246,7 +281,7 @@ class CiRunnerControllerTest {
   @Test
   @TestSecurity(user = "operator", roles = {ADMIN})
   void aRunnerHoldingARunningRunIs409AndItsCredentialsGoBackWhenItIsDeleted() {
-    UUID id = UUID.fromString(create("busy").getString("runner.id"));
+    UUID id = UUID.fromString(create("busy").getString("id"));
     QuarkusTransaction.requiringNew().run(() -> runnerRows.findById(id).clientId = "dyn-busy");
     String running = insertRun(id, CiRunStatus.RUNNING);
 
@@ -283,6 +318,21 @@ class CiRunnerControllerTest {
         .then()
         .statusCode(403);
     given().when().delete(RUNNERS + "/" + UUID.randomUUID()).then().statusCode(403);
+  }
+
+  @Test
+  void theCreatedShapeIsTheRunnersFieldsFlatPlusTheScript() {
+    List<String> runner =
+        Arrays.stream(CiRunnerDto.class.getRecordComponents())
+            .map(RecordComponent::getName)
+            .toList();
+    List<String> created =
+        Arrays.stream(CiRunnerController.CiRunnerCreated.class.getRecordComponents())
+            .map(RecordComponent::getName)
+            .toList();
+    List<String> expected = new ArrayList<>(runner);
+    expected.add("installScript");
+    assertEquals(expected, created);
   }
 
   // --- the register door --------------------------------------------------------------------------
@@ -496,7 +546,7 @@ class CiRunnerControllerTest {
   @Test
   @TestSecurity(user = "operator", roles = {ADMIN})
   void aRunCarriesItsRunnersNameOnTheReadSurface() {
-    UUID id = UUID.fromString(create("named-host").getString("runner.id"));
+    UUID id = UUID.fromString(create("named-host").getString("id"));
     String run = insertRun(id, CiRunStatus.SUCCESS);
 
     given()

@@ -1,0 +1,110 @@
+#!/bin/sh
+# Installs qits-ci-runner on this host as a systemd service, set up as one qits-ci runner.
+# For x86-64 Linux with docker, run as root: `sudo sh <this file>`, or paste it into a root shell.
+#
+# It carries a one-time registration token, so treat it as a secret until the runner has registered.
+# Running it again with a fresh token — the CI UI's "replace registration token" — keeps the binary
+# already installed, rewrites the env file and restarts the unit; the runner registers again by
+# itself when the token differs from the one it registered with, so its state dir is left alone.
+#
+# Rendered by qits-ci-service from service/src/main/resources/runner-install.sh.tmpl. Every path it
+# writes is under ${QITS_INSTALL_ROOT:-} — empty on a real host — and every tool comes from PATH:
+# that is what lets qits-ci-runner-daemon's scripts/test-install-contract.sh run a rendering against
+# stubs in a temp root.
+set -eu
+
+QITS_CI_RUNNER_URL='{{CI_URL}}'
+QITS_CI_RUNNER_ID='{{RUNNER_ID}}'
+QITS_CI_RUNNER_REGISTRATION_TOKEN='{{REGISTRATION_TOKEN}}'
+QITS_CI_RUNNER_SLOTS='{{SLOTS}}'
+QITS_CI_RUNNER_BINARY_URL='{{ARTIFACTS_URL}}/artifacts/daemons/qits-ci-runner/{{RUNNER_VERSION}}'
+QITS_CI_RUNNER_STATE_DIR='/var/lib/qits-ci-runner'
+
+root="${QITS_INSTALL_ROOT:-}"
+bin="$root/usr/local/bin/qits-ci-runner"
+envfile="$root/etc/qits-ci-runner.env"
+unit="$root/etc/systemd/system/qits-ci-runner.service"
+
+refuse() {
+  echo "qits-ci-runner install: $*" >&2
+  exit 1
+}
+
+[ "$(id -u)" = 0 ] || refuse "run this as root, with sudo sh or from a root shell."
+command -v docker >/dev/null 2>&1 || refuse "docker is not on PATH; install docker first."
+
+if ! id qits-ci-runner >/dev/null 2>&1; then
+  useradd --system --no-create-home --shell /usr/sbin/nologin -G docker qits-ci-runner
+fi
+
+# A binary already here is a re-run — a rotated token — and is kept: the version is the one this
+# host already runs, and re-downloading it under a running unit would buy nothing.
+rerun=no
+if [ -x "$bin" ]; then
+  rerun=yes
+else
+  mkdir -p "$root/usr/local/bin"
+  curl -fsSL -H "Authorization: Bearer $QITS_CI_RUNNER_REGISTRATION_TOKEN" \
+    -o "$bin.part" "$QITS_CI_RUNNER_BINARY_URL" \
+    || { rm -f "$bin.part"; refuse "could not download the runner binary from $QITS_CI_RUNNER_BINARY_URL."; }
+  chmod 755 "$bin.part"
+  mv "$bin.part" "$bin"
+fi
+
+mkdir -p "$root/etc"
+(
+  umask 077
+  printf '%s\n' \
+    "QITS_CI_RUNNER_URL=$QITS_CI_RUNNER_URL" \
+    "QITS_CI_RUNNER_ID=$QITS_CI_RUNNER_ID" \
+    "QITS_CI_RUNNER_REGISTRATION_TOKEN=$QITS_CI_RUNNER_REGISTRATION_TOKEN" \
+    "QITS_CI_RUNNER_STATE_DIR=$QITS_CI_RUNNER_STATE_DIR" \
+    "QITS_CI_RUNNER_SLOTS=$QITS_CI_RUNNER_SLOTS" > "$envfile.part"
+)
+chmod 600 "$envfile.part"
+mv "$envfile.part" "$envfile"
+
+# BYTE-IDENTICAL to qits-ci-runner-daemon's packaging/qits-ci-runner.service, and changed together
+# with it: that repository's scripts/test-install-contract.sh compares the two.
+mkdir -p "$root/etc/systemd/system"
+cat > "$unit" <<'QITS_CI_RUNNER_UNIT'
+# qits-ci-runner — the systemd unit the install script writes to /etc/systemd/system.
+#
+# CHANGE IT TOGETHER WITH qits-ci-service's service/src/main/resources/runner-install.sh.tmpl, which
+# embeds this file verbatim. scripts/test-install-contract.sh asserts the installed unit is
+# byte-identical to this one, so a drift between the two fails this repository's gate the next time
+# the fixture is refreshed from the template.
+[Unit]
+Description=qits CI runner
+# Docker must be up before the runner's boot sweep asks it anything, and the network before it
+# dials; `Wants=` so a missing target does not stop the runner from starting at all.
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+# The five values the install script wrote, mode 0600: the registration token is among them.
+EnvironmentFile=/etc/qits-ci-runner.env
+ExecStart=/usr/local/bin/qits-ci-runner
+# The runner never exits healthy. Exit 2 and 5 are an env file to fix and will repeat every
+# RestartSec until it is; 3 is the platform being away and the restart is the retry.
+Restart=always
+RestartSec=5
+# An unprivileged system user in the docker group — root-equivalent through the socket, which is the
+# price of starting containers at all, but not root in its own right.
+User=qits-ci-runner
+# /var/lib/qits-ci-runner, created and owned for the user above: where client.json lives.
+StateDirectory=qits-ci-runner
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target
+QITS_CI_RUNNER_UNIT
+
+systemctl daemon-reload
+systemctl enable --now qits-ci-runner
+# enable --now leaves a running unit alone, and a re-run has just rewritten the env file under one.
+if [ "$rerun" = yes ]; then
+  systemctl restart qits-ci-runner
+fi
+
+echo "qits-ci-runner installed; watch: journalctl -fu qits-ci-runner"

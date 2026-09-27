@@ -164,12 +164,34 @@ components:
     CiRunnerCreated:
       type: object
       properties:
-        runner:
-          $ref: "#/components/schemas/CiRunnerDto"
-        registrationToken:
+        id:
+          $ref: "#/components/schemas/UUID"
+        name:
           type: string
-          description: The qits_tok_ registration token. Returned once; never readable
-            again
+        description:
+          type: string
+        slots:
+          type: integer
+          format: int32
+        plane:
+          $ref: "#/components/schemas/CiRunnerPlane"
+        capabilities:
+          $ref: "#/components/schemas/JsonNode"
+        registered:
+          type: boolean
+        connected:
+          type: boolean
+        heldRuns:
+          type: integer
+          format: int64
+        lastSeenAt:
+          $ref: "#/components/schemas/Instant"
+        createdAt:
+          $ref: "#/components/schemas/Instant"
+        installScript:
+          type: string
+          description: "The sh script that installs this runner on a host, with its\
+            \ registration token inside. Returned once; never readable again"
     CiRunnerDto:
       type: object
       properties:
@@ -680,7 +702,7 @@ paths:
         - qits:system
         - qits:agent
     post:
-      summary: "Declare a runner; answers its registration token, once"
+      summary: "Declare a runner; answers its install script, once"
       requestBody:
         content:
           application/json:
@@ -689,7 +711,8 @@ paths:
         required: true
       responses:
         "201":
-          description: The runner and its registration token
+          description: The runner and the install script carrying its registration
+            token
           content:
             application/json:
               schema:
@@ -701,7 +724,8 @@ paths:
         "502":
           description: qits-idp refused the registration token
         "503":
-          description: This deployment commissions nothing
+          description: "This deployment commissions nothing, or cannot render an install\
+            \ script"
         "401":
           description: Not Authorized
         "403":
@@ -842,7 +866,8 @@ paths:
         - qits:ci-runner-registration
   /ci/api/runners/{id}/registration-token:
     post:
-      summary: "Replace a runner's registration token; answers the new one, once"
+      summary: "Replace a runner's registration token; answers a new install script,\
+        \ once"
       parameters:
       - name: id
         in: path
@@ -851,7 +876,8 @@ paths:
           type: string
       responses:
         "200":
-          description: The runner and its new registration token
+          description: The runner and the install script carrying its new registration
+            token
           content:
             application/json:
               schema:
@@ -863,7 +889,8 @@ paths:
         "502":
           description: qits-idp refused the registration token
         "503":
-          description: This deployment commissions nothing
+          description: "This deployment commissions nothing, or cannot render an install\
+            \ script"
         "401":
           description: Not Authorized
         "403":

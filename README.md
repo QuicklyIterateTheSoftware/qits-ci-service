@@ -138,11 +138,11 @@ runner's register door, and the socket it then holds open to pull work.
 
 | verb | answer | role |
 |---|---|---|
-| `POST /ci/api/runners` `{name, description?, slots?}` | 201 `{runner, registrationToken}` — the token **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}`, 409 on a taken one | `qits:admin` |
+| `POST /ci/api/runners` `{name, description?, slots?}` | 201 the runner's fields plus `installScript` — the script carrying the registration token, **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}`, 409 on a taken one | `qits:admin` |
 | `GET /ci/api/runners` | `{runners: [{id, name, description, slots, plane, capabilities, registered, connected, heldRuns, lastSeenAt, createdAt}]}`, by name | `qits:admin`, `qits:system`, `qits:agent` |
 | `GET /ci/api/runners/{id}` | one runner, 404 | the same |
 | `PATCH /ci/api/runners/{id}` `{slots?, description?}` | the runner; `slots: 0` drains it | `qits:admin` |
-| `POST /ci/api/runners/{id}/registration-token` | `{runner, registrationToken}` — a fresh token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin` |
+| `POST /ci/api/runners/{id}/registration-token` | the runner's fields plus a fresh `installScript` with a new token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin` |
 | `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run | `qits:admin` |
 
 **The register door is `POST /ci/api/runners/{id}/register` `{capabilities}`**, and a runner knocks on
@@ -181,6 +181,29 @@ answer 503.
 `http://${QITS_ENVIRONMENT:dev}-qits-ci:8080`, the alias a step daemon already dials back to, which
 is what a runner on qits-net (the `INTERNAL` plane) reaches. `runnerhost/RunnerAddresses` is the one
 place those three are composed.
+
+**The install script is the only place the registration token's value is written**
+(`runnerhost/RunnerInstallScript`, from `service/src/main/resources/runner-install.sh.tmpl`). The
+create and a rotation answer the runner's own read fields flat, as `GET` does, plus `installScript`:
+POSIX `sh` for `sudo sh` or a root shell on x86-64 Linux with docker. It refuses without root or
+without `docker` on PATH; creates the `qits-ci-runner` system user in group `docker`; downloads
+`<artifacts base>/artifacts/daemons/qits-ci-runner/<version>` to `/usr/local/bin/qits-ci-runner`
+(bearer: the registration token); writes `/etc/qits-ci-runner.env` (0600: `QITS_CI_RUNNER_URL`
+= the CI base above, `_ID`, `_REGISTRATION_TOKEN`, `_STATE_DIR=/var/lib/qits-ci-runner`, `_SLOTS`
+= the row's, at least 1) and the unit — byte for byte qits-ci-runner-daemon's
+`packaging/qits-ci-runner.service` — then `systemctl enable --now`. Run again with a rotated token it
+keeps the binary, rewrites the env file and restarts the unit; the runner re-registers by itself
+when the token differs from the one it registered with. The artifacts base is
+`qits.ci.runner.artifacts-url` when set and `qits.ci.runner.artifacts-internal-url` otherwise
+(`http://${QITS_ENVIRONMENT:dev}-qits-artifacts:8080`, the host the daemon binary URL template
+names); the version is the pinned `qits-ci-runner-protocol`'s `CiRunnerBinary.VERSION`
+(`runnerhost/CiRunnerPins`), with `qits.ci.runner-version-override` as the unset hatch. Every
+rendered value is held to a charset that is literal inside the script's single quotes and the env
+file: a deployment value outside it is 503 before anything is minted, a token outside it 502 and
+given back. The template's shape is qits-ci-runner-daemon's `scripts/test-install-contract.sh`
+contract; `RunnerInstallScriptTest` runs that test against a rendering when the runner repository is
+checked out beside this one, and writes the rendering to `service/target/runner-install.fixture.sh`,
+which is that repository's committed fixture.
 
 A run a runner executed carries `runnerId` and `runnerName` on every run read; the id outlives the
 runner (no foreign key), the name does not.

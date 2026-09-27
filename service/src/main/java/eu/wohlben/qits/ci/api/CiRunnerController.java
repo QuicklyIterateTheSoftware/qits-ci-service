@@ -6,6 +6,7 @@ import eu.wohlben.qits.auth.MachineIdentity;
 import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.dto.CiRunnerDto;
 import eu.wohlben.qits.ci.entity.CiRunner;
+import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import eu.wohlben.qits.ci.entity.RunnerCapabilities;
 import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.CiException;
@@ -15,6 +16,7 @@ import eu.wohlben.qits.ci.error.ForbiddenException;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.runnerhost.RegistrationTokenIdentityProvider;
 import eu.wohlben.qits.ci.runnerhost.RunnerAddresses;
+import eu.wohlben.qits.ci.runnerhost.RunnerInstallScript;
 import io.quarkus.security.identity.SecurityIdentity;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
@@ -28,6 +30,7 @@ import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.eclipse.microprofile.openapi.annotations.Operation;
@@ -48,8 +51,8 @@ import org.jboss.logging.Logger;
  * subject, or it is 403.
  *
  * <p><b>Every credential this class hands out is handed out exactly once and logged never.</b> The
- * registration token's value is in the answer to the create (and to a rotation) and nowhere else —
- * not on the row, not on any read, not in a log line. The runner's client secret is in the answer
+ * registration token's value is in the install script that answers the create (and a rotation) and
+ * nowhere else — not on the row, not on any read, not in a log line. The runner's client secret is in the answer
  * to the register door and nowhere else. A caller that lost either asks for a fresh one (a rotation;
  * a decommission and a new runner).
  *
@@ -74,6 +77,8 @@ public class CiRunnerController {
 
   @Inject RunnerAddresses addresses;
 
+  @Inject RunnerInstallScript installScript;
+
   @Inject MachineAuth machineAuth;
 
   @Inject SecurityIdentity identity;
@@ -91,15 +96,51 @@ public class CiRunnerController {
       @Schema(description = "Blank clears it; absent leaves it") String description) {}
 
   /**
-   * A runner together with the secret-bearing answer only the request that minted it gets. The
-   * runner is the ordinary read shape; everything else in this record is a credential and is never
-   * readable again. Shaped as the runner plus fields so a later answer — an install script with the
-   * token inside it — is a change of fields rather than of shape.
+   * A runner together with the secret-bearing answer only the request that minted it gets: the
+   * ordinary read shape's fields, flat — the SPA reads it as {@code CiRunnerDto} plus one field —
+   * and the install script, which carries the registration token and is the only place its value is
+   * ever written. {@link #of} is the one way to build it, so the fields cannot drift from {@link
+   * CiRunnerDto}'s; {@code CiRunnerControllerTest} checks the two lists agree.
    */
   public record CiRunnerCreated(
-      CiRunnerDto runner,
-      @Schema(description = "The qits_tok_ registration token. Returned once; never readable again")
-          String registrationToken) {}
+      UUID id,
+      String name,
+      String description,
+      int slots,
+      CiRunnerPlane plane,
+      JsonNode capabilities,
+      boolean registered,
+      boolean connected,
+      long heldRuns,
+      Instant lastSeenAt,
+      Instant createdAt,
+      @Schema(
+              description =
+                  "The sh script that installs this runner on a host, with its registration token"
+                      + " inside. Returned once; never readable again")
+          String installScript) {
+
+    static CiRunnerCreated of(CiRunnerDto runner, String installScript) {
+      return new CiRunnerCreated(
+          runner.id(),
+          runner.name(),
+          runner.description(),
+          runner.slots(),
+          runner.plane(),
+          runner.capabilities(),
+          runner.registered(),
+          runner.connected(),
+          runner.heldRuns(),
+          runner.lastSeenAt(),
+          runner.createdAt(),
+          installScript);
+    }
+
+    @Override
+    public String toString() {
+      return "CiRunnerCreated[id=" + id + ", name=" + name + "]";
+    }
+  }
 
   public record RegisterRunnerRequest(
       @Schema(description = "What the runner says about itself — a JSON object, at most 16 KiB")
@@ -120,21 +161,24 @@ public class CiRunnerController {
   @POST
   @Consumes(MediaType.APPLICATION_JSON)
   @RolesAllowed("qits:admin")
-  @Operation(summary = "Declare a runner; answers its registration token, once")
+  @Operation(summary = "Declare a runner; answers its install script, once")
   @APIResponse(
       responseCode = "201",
-      description = "The runner and its registration token",
+      description = "The runner and the install script carrying its registration token",
       content = @Content(schema = @Schema(implementation = CiRunnerCreated.class)))
   @APIResponse(responseCode = "400", description = "A malformed name, slots or description")
   @APIResponse(responseCode = "409", description = "The name is taken")
   @APIResponse(responseCode = "502", description = "qits-idp refused the registration token")
-  @APIResponse(responseCode = "503", description = "This deployment commissions nothing")
+  @APIResponse(
+      responseCode = "503",
+      description = "This deployment commissions nothing, or cannot render an install script")
   public Response create(CreateRunnerRequest request) {
     if (request == null) {
       throw new BadRequestException("A runner needs a name");
     }
     runners.requireCreatable(request.name(), request.description(), request.slots());
     requireCommissioning();
+    requireRenderable();
     UUID id = UUID.randomUUID();
     IdpCommissioner.CommissionedToken token = commissionRegistrationToken(id);
     CiRunner runner;
@@ -157,7 +201,8 @@ public class CiRunnerController {
     LOG.infof(
         "Runner %s (%s) declared; its registration token is %s", runner.name, id, token.tokenId());
     return Response.status(Response.Status.CREATED)
-        .entity(new CiRunnerCreated(runners.view(runner), token.token()))
+        .entity(
+            CiRunnerCreated.of(runners.view(runner), installScript.render(runner, token.token())))
         .build();
   }
 
@@ -201,19 +246,22 @@ public class CiRunnerController {
   @POST
   @Path("/{id}/registration-token")
   @RolesAllowed("qits:admin")
-  @Operation(summary = "Replace a runner's registration token; answers the new one, once")
+  @Operation(summary = "Replace a runner's registration token; answers a new install script, once")
   @APIResponse(
       responseCode = "200",
-      description = "The runner and its new registration token",
+      description = "The runner and the install script carrying its new registration token",
       content = @Content(schema = @Schema(implementation = CiRunnerCreated.class)))
   @APIResponse(responseCode = "404", description = "No such runner")
   @APIResponse(responseCode = "409", description = "The runner is already registered")
   @APIResponse(responseCode = "502", description = "qits-idp refused the registration token")
-  @APIResponse(responseCode = "503", description = "This deployment commissions nothing")
+  @APIResponse(
+      responseCode = "503",
+      description = "This deployment commissions nothing, or cannot render an install script")
   public CiRunnerCreated rotateRegistrationToken(@PathParam("id") String id) {
     UUID runnerId = runnerId(id);
     runners.requireUnregistered(runnerId);
     requireCommissioning();
+    requireRenderable();
     IdpCommissioner.CommissionedToken token = commissionRegistrationToken(runnerId);
     String previous;
     try {
@@ -228,7 +276,8 @@ public class CiRunnerController {
               + " reconciliation reaps it",
           runnerId, previous);
     }
-    return new CiRunnerCreated(runners.view(runners.get(runnerId)), token.token());
+    CiRunner rotated = runners.get(runnerId);
+    return CiRunnerCreated.of(runners.view(rotated), installScript.render(rotated, token.token()));
   }
 
   /**
@@ -353,13 +402,35 @@ public class CiRunnerController {
   }
 
   private IdpCommissioner.CommissionedToken commissionRegistrationToken(UUID runnerId) {
+    IdpCommissioner.CommissionedToken token;
     try {
       // gitRefs [] — a registration token may push nothing, and states so.
-      return idp.commissionToken(
-          IdpCommissioner.RUNNER_REGISTRATION_KIND, runnerId.toString(), List.of());
+      token =
+          idp.commissionToken(
+              IdpCommissioner.RUNNER_REGISTRATION_KIND, runnerId.toString(), List.of());
     } catch (IdpCommissioner.CommissionFailedException failed) {
       throw new CiException(
           502, "qits-idp did not commission the registration token: " + failed.getMessage());
+    }
+    try {
+      RunnerInstallScript.requireCarriable(token.token());
+    } catch (IllegalArgumentException uncarriable) {
+      // Checked before the row is written, so the token has nowhere to be but qits-idp: give it back.
+      idp.deleteToken(token.tokenId());
+      throw new CiException(502, uncarriable.getMessage());
+    }
+    return token;
+  }
+
+  /**
+   * 503 when this deployment's runner addresses or pinned binary version could not be rendered into
+   * an install script — checked before anything is minted, so a misconfiguration costs no token.
+   */
+  private void requireRenderable() {
+    try {
+      installScript.requireRenderable();
+    } catch (IllegalStateException unrenderable) {
+      throw new UnavailableException(unrenderable.getMessage());
     }
   }
 

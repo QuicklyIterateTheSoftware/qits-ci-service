@@ -108,8 +108,10 @@ package:
   a reserved run (`RunnerStepRunner`, the `ci/control/CiRunnerStepRunner` implementation, typed so it
   never competes for `CiStepRunner`), and `RunnerAddresses`, the single composition of what a runner is told (the idp token url, the
   audience, the runner socket url off `qits.ci.runner.public-url` or the derived
-  `qits.ci.runner.internal-url`). The register door answers it and the install script will render
-  it; two compositions would be two chances to disagree. The runner rules themselves are
+  `qits.ci.runner.internal-url`, and the artifacts base the install script downloads from). The
+  register door answers it and `RunnerInstallScript` renders it into the create's and a rotation's
+  `installScript`, with the binary version `CiRunnerPins` reads off the pinned protocol jar; two
+  compositions would be two chances to disagree. The runner rules themselves are
   `ci/control/CiRunners`, the operator verbs and the register door `api/CiRunnerController` — see
   `README.md` under "Runners".
 - `ci-events/` — the event classes qits-ci emits, `eu.wohlben.qits.ci.events`. Under this repo's own
