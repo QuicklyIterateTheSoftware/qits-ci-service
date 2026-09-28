@@ -442,9 +442,7 @@ class CiRunnerControllerTest {
         given().when().get(RUNNERS + "/install.sh").then().statusCode(200).extract().asString();
     assertTrue(
         script.contains(
-            "binary_url='https://registry.qits.wohlben.eu/artifacts/daemons/qits-ci-runner/"
-                + CiRunnerBinary.VERSION
-                + "'\n"),
+            "image='registry.qits.wohlben.eu/qits/qits-ci-runner:" + CiRunnerBinary.VERSION + "'\n"),
         script);
   }
 
@@ -563,14 +561,13 @@ class CiRunnerControllerTest {
     assertTrue(script.startsWith("#!/bin/sh\n"), script);
     assertFalse(script.contains("{{"), script);
     assertFalse(script.contains("qits_tok_"), script);
-    String environment = System.getenv().getOrDefault("QITS_ENVIRONMENT", "dev");
+    // No public domain in the suite: the registry is the one the platform host's docker pulls from.
+    String registry =
+        org.eclipse.microprofile.config.ConfigProvider.getConfig()
+            .getValue("qits.artifacts.registry-host", String.class);
     assertTrue(
         script.contains(
-            "binary_url='http://"
-                + environment
-                + "-qits-artifacts:8080/artifacts/daemons/qits-ci-runner/"
-                + CiRunnerBinary.VERSION
-                + "'\n"),
+            "image='" + registry + "/qits/qits-ci-runner:" + CiRunnerBinary.VERSION + "'\n"),
         script);
   }
 

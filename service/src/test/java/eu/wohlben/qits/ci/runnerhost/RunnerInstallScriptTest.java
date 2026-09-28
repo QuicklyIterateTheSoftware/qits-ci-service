@@ -19,20 +19,23 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * The two halves of an install: the generic script as rendered text and as a script — both
- * placeholders filled, no token and no runner in it, {@code sh -n} happy with it, and, when
+ * The two halves of an install: the generic script as rendered text and as a script — its image
+ * filled, no token and no runner in it, {@code sh -n} happy with it, the container it starts against
+ * a stub docker, and, when
  * qits-ci-runner-daemon is checked out beside this repository as it is in the qits-qits wrapper,
  * that repository's own install contract test run against a rendering — and the install line, which
  * carries the token exactly twice, parses as one sh command and hands the script its four values.
  * Plain JUnit: both are pure functions of the template and a few values.
  *
- * <p>{@link #ARTIFACTS} and {@link #VERSION} render the generic script qits-ci-runner-daemon keeps as
+ * <p>{@link #REGISTRY} and {@link #VERSION} render the generic script qits-ci-runner-daemon keeps as
  * its {@code scripts/fixtures/runner-install.sh}; every run writes it to {@code
  * target/runner-install.fixture.sh}, which is the file to copy there when the template changes.
  */
 class RunnerInstallScriptTest {
 
-  static final String ARTIFACTS = "https://registry.qits.example.org";
+  static final String REGISTRY = "registry.qits.example.org";
+
+  static final String IMAGE = REGISTRY + "/qits/qits-ci-runner:0.0.0-fixture";
 
   static final String VERSION = "0.0.0-fixture";
 
@@ -49,18 +52,17 @@ class RunnerInstallScriptTest {
 
   @Test
   void theGenericScriptCarriesNoSecretNoRunnerAndNoPlaceholder() throws IOException {
-    String script = RunnerInstallScript.generic(ARTIFACTS, VERSION);
+    String script = RunnerInstallScript.generic(REGISTRY, VERSION);
 
     assertFalse(script.contains("{{"), script);
     assertFalse(script.contains("qits_tok_"), script);
     assertFalse(script.contains(LINE.runnerId().toString()), script);
     assertTrue(script.startsWith("#!/bin/sh\n"));
     assertTrue(script.contains("\nset -eu\n"));
-    assertTrue(
-        script.contains(
-            "binary_url='https://registry.qits.example.org/artifacts/daemons/qits-ci-runner/"
-                + "0.0.0-fixture'\n"),
-        script);
+    assertTrue(script.contains("  image='" + IMAGE + "'\n"), script);
+    // A container now, and nothing of the systemd install is left in it.
+    assertFalse(script.contains("systemctl"), script);
+    assertFalse(script.contains("systemd"), script);
     // The four values come from the environment, each refused by name when missing.
     for (String name :
         List.of(
@@ -124,16 +126,17 @@ class RunnerInstallScriptTest {
       assertThrows(
           IllegalStateException.class,
           () -> RunnerInstallScript.generic(url, VERSION),
-          () -> "artifacts url " + url);
+          () -> "registry " + url);
     }
-    assertThrows(IllegalStateException.class, () -> RunnerInstallScript.generic(ARTIFACTS, "1.0'"));
+    assertThrows(IllegalStateException.class, () -> RunnerInstallScript.generic(REGISTRY, "1.0'"));
+    assertThrows(IllegalStateException.class, () -> RunnerInstallScript.generic(REGISTRY, "1.0+b"));
   }
 
   @Test
   void shParsesTheScriptAndTheLine(@TempDir Path dir) throws Exception {
     assumeTrue(onPath("sh"), "no sh on PATH");
     Path script = dir.resolve("runner-install.sh");
-    Files.writeString(script, RunnerInstallScript.generic(ARTIFACTS, VERSION));
+    Files.writeString(script, RunnerInstallScript.generic(REGISTRY, VERSION));
     Path line = dir.resolve("line.sh");
     Files.writeString(line, RunnerInstallScript.line(LINE) + "\n");
 
@@ -187,25 +190,122 @@ class RunnerInstallScriptTest {
   }
 
   /**
+   * The rendered script run as the line runs it, twice — an install, then a rotation with a new
+   * token — against a stub {@code docker} that records every call and answers {@code ps} with the
+   * container the first run started. What is asserted is the runner's container contract: the login
+   * is the registration token on stdin into a throwaway config, the pinned image is pulled before
+   * anything is removed, every container labelled with this runner goes, and the one started carries
+   * the name, labels, restart policy, socket, state volume and four values by name — and the token
+   * is printed nowhere and on no docker argument.
+   */
+  @Test
+  void theScriptStartsTheRunnerContainerAndARerunReplacesIt(@TempDir Path dir) throws Exception {
+    assumeTrue(onPath("sh"), "no sh on PATH");
+    Path stubs = Files.createDirectories(dir.resolve("stubs"));
+    Path calls = dir.resolve("docker-calls");
+    Path stdin = dir.resolve("docker-stdin");
+    Path running = dir.resolve("running");
+    Files.writeString(
+        stubs.resolve("docker"),
+        "#!/bin/sh\n"
+            + "printf '%s\\n' \"$*\" >> '" + calls + "'\n"
+            + "case \" $* \" in\n"
+            + "  *' login '*) cat >> '" + stdin + "' ;;\n"
+            + "  *' ps '*) [ -f '" + running + "' ] && cat '" + running + "' ;;\n"
+            + "  *' run '*) printf 'c0ffee\\n' > '" + running + "'; printf 'c0ffee\\n' ;;\n"
+            + "  *' rm '*) rm -f '" + running + "' ;;\n"
+            + "esac\n"
+            + "exit 0\n");
+    assertTrue(stubs.resolve("docker").toFile().setExecutable(true));
+    Path script = dir.resolve("runner-install.sh");
+    Files.writeString(script, RunnerInstallScript.generic(REGISTRY, VERSION));
+    String env =
+        "PATH='" + stubs + "':\"$PATH\" QITS_CI_RUNNER_URL='https://ci.qits.example.org'"
+            + " QITS_CI_RUNNER_ID='" + LINE.runnerId() + "' QITS_CI_RUNNER_SLOTS='2'";
+
+    Ran first =
+        run(dir, "sh", "-c", env + " QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_ONE' sh " + script);
+    assertEquals(0, first.exit(), first.output());
+    List<String> installed = Files.readAllLines(calls);
+    Ran second =
+        run(dir, "sh", "-c", env + " QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_TWO' sh " + script);
+    assertEquals(0, second.exit(), second.output());
+    List<String> all = Files.readAllLines(calls);
+    List<String> rotated = all.subList(installed.size(), all.size());
+
+    String name = "qits-ci-runner-00000000-0.0.0-fixture";
+    assertEquals("qits-ci-runner started; watch: docker logs -f " + name + "\n", first.output());
+    for (String output : List.of(first.output(), second.output())) {
+      assertFalse(output.contains("qits_tok_"), output);
+    }
+    assertEquals(List.of("qits_tok_ONE", "qits_tok_TWO"), Files.readAllLines(stdin));
+    assertTrue(all.stream().noneMatch(call -> call.contains("qits_tok_")), all.toString());
+
+    String run =
+        "run -d --name " + name
+            + " --label qits.ci.runner.process=" + LINE.runnerId()
+            + " --label qits.ci.runner.version=0.0.0-fixture"
+            + " --restart=unless-stopped"
+            + " -v /var/run/docker.sock:/var/run/docker.sock"
+            + " -v qits-ci-runner-state-00000000:/var/lib/qits-ci-runner"
+            + " -e QITS_CI_RUNNER_URL -e QITS_CI_RUNNER_ID -e QITS_CI_RUNNER_SLOTS"
+            + " -e QITS_CI_RUNNER_REGISTRATION_TOKEN "
+            + IMAGE;
+    String config = installed.get(1).replaceFirst("^--config (\\S+) login .*$", "$1");
+    assertEquals(
+        List.of(
+            "version",
+            "--config " + config + " login " + REGISTRY + " -u token --password-stdin",
+            "--config " + config + " pull " + IMAGE,
+            "ps -aq --filter label=qits.ci.runner.process=" + LINE.runnerId(),
+            run),
+        installed);
+    assertFalse(Files.exists(Path.of(config)), "the throwaway docker config is gone");
+    // The rerun is the same install, with the container the first one started removed first.
+    assertEquals("rm -f c0ffee", rotated.get(4));
+    assertEquals(run, rotated.get(5));
+    assertTrue(rotated.stream().noneMatch(call -> call.contains("volume")), rotated.toString());
+  }
+
+  @Test
+  void aHostWhoseDockerDoesNotAnswerIsRefusedBeforeAnything(@TempDir Path dir) throws Exception {
+    assumeTrue(onPath("sh"), "no sh on PATH");
+    Path stubs = Files.createDirectories(dir.resolve("stubs"));
+    Files.writeString(stubs.resolve("docker"), "#!/bin/sh\nexit 1\n");
+    assertTrue(stubs.resolve("docker").toFile().setExecutable(true));
+    Path script = dir.resolve("runner-install.sh");
+    Files.writeString(script, RunnerInstallScript.generic(REGISTRY, VERSION));
+
+    Ran ran =
+        run(
+            dir,
+            "sh",
+            "-c",
+            "PATH='" + stubs + "':\"$PATH\" QITS_CI_RUNNER_URL='https://ci.qits.example.org'"
+                + " QITS_CI_RUNNER_ID='" + LINE.runnerId() + "' QITS_CI_RUNNER_SLOTS='2'"
+                + " QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_X' sh " + script);
+
+    assertEquals(1, ran.exit(), ran.output());
+    assertTrue(ran.output().contains("docker version failed"), ran.output());
+  }
+
+  /**
    * qits-ci-runner-daemon's {@code scripts/test-install-contract.sh} against this rendering: the
-   * test and the unit copied into a temp tree of that repository's shape, with the rendering as its
-   * fixture, so the runner repository's working tree is never touched. Skipped where that
-   * repository is not checked out beside this one — a clone-alone build — which is why the rendering
-   * is also that repository's committed fixture, run by its own gate.
+   * test copied into a temp tree of that repository's shape, with the rendering as its fixture, so
+   * the runner repository's working tree is never touched. Skipped where that repository is not
+   * checked out beside this one — a clone-alone build — which is why the rendering is also that
+   * repository's committed fixture, run by its own gate.
    */
   @Test
   void theRunnerRepositorysInstallContractPasses(@TempDir Path dir) throws Exception {
     Path contract = RUNNER_REPO.resolve("scripts/test-install-contract.sh");
-    Path unit = RUNNER_REPO.resolve("packaging/qits-ci-runner.service");
     assumeTrue(Files.isRegularFile(contract), "qits-ci-runner-daemon is not beside this repository");
     assumeTrue(onPath("sh"), "no sh on PATH");
     Files.createDirectories(dir.resolve("scripts/fixtures"));
-    Files.createDirectories(dir.resolve("packaging"));
     Files.copy(contract, dir.resolve("scripts/test-install-contract.sh"));
-    Files.copy(unit, dir.resolve("packaging/qits-ci-runner.service"));
     Files.writeString(
         dir.resolve("scripts/fixtures/runner-install.sh"),
-        RunnerInstallScript.generic(ARTIFACTS, VERSION));
+        RunnerInstallScript.generic(REGISTRY, VERSION));
 
     Ran test = run(dir, "sh", "scripts/test-install-contract.sh");
 

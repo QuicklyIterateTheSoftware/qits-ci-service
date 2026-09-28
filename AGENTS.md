@@ -111,7 +111,8 @@ package:
   (the CI base and so the `wss://` socket, the idp token url, the artifacts base), each with an
   override, and the qits-net aliases only as the no-domain fallback. The register door answers it,
   and `RunnerInstallScript` renders the generic script `GET /ci/api/runners/install.sh` serves (the
-  artifacts base and the binary version `CiRunnerPins` reads off the pinned protocol jar) and the
+  runner image — the registry host and the version `CiRunnerPins` reads off the pinned protocol jar —
+  which the registry's `Upgrade` to a runner of any other version names too) and the
   one-line `installScript` the create and a rotation answer; two compositions would be two chances
   to disagree. The runner rules themselves are
   `ci/control/CiRunners`, the operator verbs and the register door `api/CiRunnerController` — see
