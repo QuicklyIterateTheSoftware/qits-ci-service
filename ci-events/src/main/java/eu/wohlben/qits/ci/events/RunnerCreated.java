@@ -8,12 +8,13 @@ import java.util.UUID;
  * An operator declared a runner: this row exists now, with these slots, on this plane — and nothing
  * has registered as it yet.
  *
- * <p><b>The first of eight runner lifecycle events, and the one that states the family's
- * conventions</b>, the way {@link BuildSuccessful} states the build events'. The eight are {@code
+ * <p><b>The first of eleven runner lifecycle events, and the one that states the family's
+ * conventions</b>, the way {@link BuildSuccessful} states the build events'. The eleven are {@code
  * RunnerCreated}, {@link RunnerRegistered}, {@link RunnerConnected}, {@link RunnerDisconnected},
- * {@link RunnerUpdateStarted}, {@link RunnerUpdated}, {@link RunnerChanged} and {@link
- * RunnerDeleted}; each is one fact, and each of the others names this class for everything below
- * rather than restating it.
+ * {@link RunnerUpdateStarted}, {@link RunnerUpdated}, {@link RunnerChanged}, {@link RunnerDeleted},
+ * and the quarantine's three — {@link RunnerQuarantined}, {@link RunnerReinstated} and {@link
+ * RunnerHealthChecked}; each is one fact, and each of the others names this class for everything
+ * below rather than restating it.
  *
  * <p><b>One event per lifecycle fact, deliberately not one {@code RunnerStatusChanged}</b> — and
  * that is the opposite of {@link BuildStatusChanged}'s choice, for a reason worth keeping straight.

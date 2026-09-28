@@ -15,7 +15,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * The eight runner lifecycle events, on the wire. Plain JUnit for {@link BuildSuccessfulTest}'s
+ * The eleven runner lifecycle events, on the wire. Plain JUnit for {@link BuildSuccessfulTest}'s
  * reason — an event class is data, and the serializer it is asserted against builds its own mapper
  * precisely so no container is needed to know what it emits.
  *
@@ -27,14 +27,19 @@ import org.junit.jupiter.api.Test;
  *
  * <p>The family names its timestamp {@code occurredAt}, {@link BuildStatusChanged}'s shape: {@code
  * CanonicalJson} excludes everything {@link QitsEvent} declares, so the instant rides the envelope
- * alone and appears in no payload below. That is asserted once for all eight rather than left to be
+ * alone and appears in no payload below. That is asserted once for all of them rather than left to be
  * read off the absence.
+ *
+ * <p>Eight at first; the quarantine (qits-466) added three — {@link RunnerQuarantined}, {@link
+ * RunnerReinstated} and {@link RunnerHealthChecked} — pinned the same way, byte for byte.
  */
 class RunnerLifecycleEventsTest {
 
   private static final Instant AT = Instant.parse("2026-09-28T10:49:52Z");
 
   private static final String ID = "3f2b8a4e-5c1d-4e7f-9a6b-0c8d7e6f5a4b";
+
+  private static final String RUN = "8d1c3b0a-2f4e-4a6b-9c7d-1e2f3a4b5c6d";
 
   private static List<QitsEvent> everyEvent() {
     return List.of(
@@ -48,7 +53,11 @@ class RunnerLifecycleEventsTest {
         new RunnerChanged(
             ID, "build-host-1", 0, "INTERNAL", null,
             List.of(RunnerChanged.SLOTS, RunnerChanged.PLANE), AT),
-        new RunnerDeleted(ID, "build-host-1", AT));
+        new RunnerDeleted(ID, "build-host-1", AT),
+        new RunnerQuarantined(ID, "build-host-1", "awaiting its first health check", AT),
+        new RunnerReinstated(ID, "build-host-1", RunnerReinstated.HEALTHCHECK, AT),
+        new RunnerHealthChecked(
+            ID, "build-host-1", RUN, RunnerHealthChecked.FAILED, "NEVER_STARTED", AT));
   }
 
   @Test
@@ -62,7 +71,10 @@ class RunnerLifecycleEventsTest {
             "RunnerUpdateStarted",
             "RunnerUpdated",
             "RunnerChanged",
-            "RunnerDeleted"),
+            "RunnerDeleted",
+            "RunnerQuarantined",
+            "RunnerReinstated",
+            "RunnerHealthChecked"),
         everyEvent().stream().map(QitsEvent::name).toList());
   }
 
@@ -199,6 +211,53 @@ class RunnerLifecycleEventsTest {
     assertEquals(
         "{\"runnerId\":\"" + ID + "\",\"runnerName\":\"build-host-1\"}",
         CanonicalJson.payload(new RunnerDeleted(ID, "build-host-1", AT)));
+  }
+
+  @Test
+  void runnerQuarantined() {
+    assertEquals(
+        "{\"reason\":\"3 consecutive runner failures (NEVER_STARTED on run " + RUN + ")\","
+            + "\"runnerId\":\"" + ID + "\",\"runnerName\":\"build-host-1\"}",
+        CanonicalJson.payload(
+            new RunnerQuarantined(
+                ID,
+                "build-host-1",
+                "3 consecutive runner failures (NEVER_STARTED on run " + RUN + ")",
+                AT)));
+  }
+
+  @Test
+  void runnerReinstated() {
+    assertEquals(
+        "{\"by\":\"admin\",\"runnerId\":\"" + ID + "\",\"runnerName\":\"build-host-1\"}",
+        CanonicalJson.payload(
+            new RunnerReinstated(ID, "build-host-1", RunnerReinstated.ADMIN, AT)));
+    // The vocabulary is two plain words, spelled once here.
+    assertEquals(
+        List.of("admin", "healthcheck"),
+        List.of(RunnerReinstated.ADMIN, RunnerReinstated.HEALTHCHECK));
+  }
+
+  @Test
+  void runnerHealthChecked() {
+    assertEquals(
+        "{\"detail\":\"health check failed: NEVER_STARTED\",\"result\":\"FAILED\","
+            + "\"runId\":\"" + RUN + "\",\"runnerId\":\"" + ID + "\","
+            + "\"runnerName\":\"build-host-1\"}",
+        CanonicalJson.payload(
+            new RunnerHealthChecked(
+                ID, "build-host-1", RUN, RunnerHealthChecked.FAILED,
+                "health check failed: NEVER_STARTED", AT)));
+    // A pass with nothing to add: no detail is no key.
+    assertEquals(
+        "{\"result\":\"PASSED\",\"runId\":\"" + RUN + "\",\"runnerId\":\"" + ID + "\","
+            + "\"runnerName\":\"build-host-1\"}",
+        CanonicalJson.payload(
+            new RunnerHealthChecked(
+                ID, "build-host-1", RUN, RunnerHealthChecked.PASSED, null, AT)));
+    assertEquals(
+        List.of("PASSED", "FAILED"),
+        List.of(RunnerHealthChecked.PASSED, RunnerHealthChecked.FAILED));
   }
 
   @Test
