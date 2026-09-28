@@ -58,6 +58,7 @@ public final class FakeCiDaemon implements AutoCloseable {
   private final WebSocket socket;
   private final BlockingQueue<CiDaemonMessage> received = new ArrayBlockingQueue<>(256);
   private final CompletableFuture<Short> closeCode = new CompletableFuture<>();
+  private final CompletableFuture<String> closeReason = new CompletableFuture<>();
 
   /**
    * Dial the endpoint with the given credentials. Returns once the HTTP upgrade completed — a
@@ -65,6 +66,24 @@ public final class FakeCiDaemon implements AutoCloseable {
    * caller asserts on {@link #awaitClose} rather than on this throwing.
    */
   public static FakeCiDaemon dial(URI endpoint, String daemonId, String secret) throws Exception {
+    // The identity half of the handshake — see the class javadoc. The default, because on qits-net
+    // it is not a credential that varies: nearly every case is about the ci-daemon pair, and
+    // without these two none of them would get past the upgrade.
+    return dial(
+        endpoint,
+        daemonId,
+        secret,
+        java.util.Map.of(USER_HEADER, DAEMON_USER, ROLES_HEADER, DAEMON_ROLES));
+  }
+
+  /**
+   * {@link #dial(URI, String, String)} as another identity — an EDGE step's daemon, which arrives
+   * as a {@code qits:ci-run} token's subject rather than asserting {@code qits:system}.
+   * {@code identity} is the whole set of identity headers sent; the ci-daemon pair is added to it.
+   */
+  public static FakeCiDaemon dial(
+      URI endpoint, String daemonId, String secret, java.util.Map<String, String> identity)
+      throws Exception {
     Vertx vertx = Vertx.vertx();
     try {
       WebSocketClient client = vertx.createWebSocketClient();
@@ -72,12 +91,8 @@ public final class FakeCiDaemon implements AutoCloseable {
           new WebSocketConnectOptions()
               .setHost(endpoint.getHost())
               .setPort(endpoint.getPort())
-              .setURI(endpoint.getPath())
-              // The identity half of the handshake — see the class javadoc. Unconditional, because
-              // it is not a credential this fixture varies: every case here is about the ci-daemon
-              // pair below, and without these two none of them would get past the upgrade.
-              .addHeader(USER_HEADER, DAEMON_USER)
-              .addHeader(ROLES_HEADER, DAEMON_ROLES);
+              .setURI(endpoint.getPath());
+      identity.forEach(options::addHeader);
       if (daemonId != null) {
         options.addHeader(CiDaemonRegistry.HEADER_ID, daemonId);
       }
@@ -109,12 +124,17 @@ public final class FakeCiDaemon implements AutoCloseable {
       if (!socket.isClosed()) {
         socket.textMessageHandler(
             text -> received.offer(CiDaemonCodec.decode(new JsonObject(text).getMap())));
-        socket.closeHandler(ignored -> closeCode.complete(socket.closeStatusCode()));
+        socket.closeHandler(
+            ignored -> {
+              closeReason.complete(socket.closeReason());
+              closeCode.complete(socket.closeStatusCode());
+            });
         return;
       }
     } catch (IllegalStateException closedWhileWeWereListening) {
       // Fall through to the same answer.
     }
+    closeReason.complete(socket.closeReason());
     closeCode.complete(socket.closeStatusCode());
   }
 
@@ -144,6 +164,11 @@ public final class FakeCiDaemon implements AutoCloseable {
     } catch (Exception notClosed) {
       return null;
     }
+  }
+
+  /** The reason the host closed with — the refusal's name — once {@link #awaitClose} has seen it. */
+  public String closeReason() {
+    return closeReason.getNow(null);
   }
 
   public boolean isOpen() {

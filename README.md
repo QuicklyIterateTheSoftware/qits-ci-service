@@ -114,7 +114,7 @@ rest of qits it reaches over a URL it is configured with:
 | in | `POST /ci/api/runs/{runId}/cancel` → 202, 409 on a run that has already finished | same: no machine guard, behind the deployment's auth policy |
 | in | `POST /ci/api/runs/{runId}/retry` → 202 `{runId}`, 404, 409 on a run that has not finished — a new run of the **same** pipeline at the **same** commit | same; `qits:admin`, like the cancel, and for the same reason |
 | in | `POST /ci/api/runs/cancellations` — `{repoId, releaseRequestId}` → 202 `{runIds}`, every unfinished run that repository has for that release request | **the one write here a machine performs.** qits-projects calls it when a request is withdrawn; a machine caller needs this service's audience and `project=*`, an operator arrives on the edge's forwarded session and is judged by the roles alone |
-| in | `ws://…/ci/daemon` — the socket each step container's daemon dials **out** to | two credentials and no machine token: the daemon asserts `X-Qits-User`/`X-Qits-Roles: qits:system` to get past the endpoint's `@RolesAllowed` at the **upgrade**, and the host-minted per-container secret is what `@OnOpen` checks |
+| in | `ws://…/ci/daemon` — the socket each step container's daemon dials **out** to | two credentials, and the first comes in two forms. `@RolesAllowed({qits:system, qits:ci-run})` at the **upgrade**: an internal step's daemon asserts `X-Qits-User`/`X-Qits-Roles: qits:system` on qits-net; an EDGE step's daemon (`wss://ci.qits.<domain>/ci/daemon`) presents its run's `ci-run` token as `Authorization: Bearer $QITS_TOKEN`, which the edge exchanges for a JWT with the token's subject as `sub` and `qits:ci-run` as its role — and that `sub` must be the one recorded for the launch's run, or `@OnOpen` closes 1008 `WRONG_RUN` before `Hello`. Then, for both, the host-minted per-container id and secret are what `@OnOpen` checks. The bearer form needs a qits-ci-daemon release that sends it (not yet pinned here) |
 | out | where the git host answers: ci reads a commit's pipeline config off its content routes — `<base>/git/<projectId>/<repoName>/blob/<rev>/<path>` and `…/tree/<rev>[/<path>]` for a run whose push carried the public pair, `<base>/git/<repoId>/…` for one that did not — and, with no `qits.ci.projects-url` set, its candidate listing off `GET <base>/git` → `{"repositories": [...]}` | `qits.ci.git-host-url` |
 | out | `GET <base>/projects/api/repositories` → `{"repositories": [{id, projectId, name, mainBranch}]}` — the candidate list an arriving event is evaluated against, and the only place the public `(projectId, name)` pair can be read. **Unset by default**: with no value ci falls back to the git host's storage listing, which is what a pre-cutover platform and a clone-alone build need | `qits.ci.projects-url` |
 | out | the same, as reachable **from a step container** on the shared network | `qits.ci.container-git-url` |
@@ -125,7 +125,7 @@ rest of qits it reaches over a URL it is configured with:
 | out | `ws://…/events/stream` — dialled out and held open, carrying what qits-events broadcasts back | the same two keys; the address is derived, never configured twice |
 | out | `PUT/DELETE /containers/api/containers/<owner>/ci-step/<ref>` — every step container: started, read and removed through qits-containers, which owns the docker daemon. **qits-ci holds no docker socket.** | `qits.containers.url`, `qits.ci.containers.owner` |
 | out | `POST/DELETE/GET /idp/api/clients` — one commissioned oidc client per run, minted at the run's first step and deleted when the run closes; every step clones with it, and a publishing step pushes with it | `quarkus.oidc-client.qits.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.qits.client-enabled` |
-| out | `POST/DELETE/GET /idp/api/tokens` — a runner's one-use registration token (`ci-runner-registration`), and the same clients door for its own client once it registers (`ci-runner`); both given back when the runner is decommissioned — see "Runners" below | the same keys as the row above |
+| out | `POST/DELETE/GET /idp/api/tokens` — a runner's one-use registration token (`ci-runner-registration`), and the same clients door for its own client once it registers (`ci-runner`); both given back when the runner is decommissioned — see "Runners" below. And one `ci-run` TOKEN per run on an EDGE runner, instead of the client, deleted when the run closes | the same keys as the row above |
 | out | the registry a publishing step pushes to, as `$QITS_REGISTRY` and `$QITS_IMAGE_REPOSITORY` in **every** step container — dialled by the *host's docker daemon*, never by this process | `qits.artifacts.registry-host`, `qits.artifacts.image-repository` |
 | out | the npm registry roots, as `$QITS_NPM_REGISTRY_URL` (hosted, `@qits/*` publishes) and `$QITS_NPM_PROXY_URL` (the npmjs pull-through cache) in **every** step container — dialled by the *step container itself* on the shared network | `qits.artifacts.npm.hosted-url`, `qits.artifacts.npm.proxy-url` |
 | out | the hosted Maven repository root, as `$QITS_MAVEN_REGISTRY_URL` in **every** step container — also dialled by the step container on the shared network | `qits.artifacts.maven.registry-url` |
@@ -138,11 +138,11 @@ runner's register door, and the socket it then holds open to pull work.
 
 | verb | answer | role |
 |---|---|---|
-| `POST /ci/api/runners` `{name, description?, slots?}` | 201 the runner's fields plus `installScript` — the one install line carrying the registration token, **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}`, 409 on a taken one | `qits:admin` |
+| `POST /ci/api/runners` `{name, description?, slots?, plane?}` | 201 the runner's fields plus `installScript` — the one install line carrying the registration token, **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}`, 400 `EDGE_PLANE_UNCONFIGURED` for `plane: EDGE` on a qits-ci that knows no public domain, 409 on a taken one | `qits:admin` |
 | `GET /ci/api/runners/install.sh` | `text/plain`: the generic install script the line pipes into `sh` — no secret, no runner | `qits:ci-runner-registration`, `qits:admin`, `qits:system`, `qits:agent` |
 | `GET /ci/api/runners` | `{runners: [{id, name, description, slots, plane, capabilities, registered, connected, heldRuns, lastSeenAt, createdAt}]}`, by name | `qits:admin`, `qits:system`, `qits:agent` |
 | `GET /ci/api/runners/{id}` | one runner, 404 | the same |
-| `PATCH /ci/api/runners/{id}` `{slots?, description?}` | the runner; `slots: 0` drains it | `qits:admin` |
+| `PATCH /ci/api/runners/{id}` `{slots?, description?, plane?}` | the runner; `slots: 0` drains it; a plane change reaches the runner's next run; 400 `EDGE_PLANE_UNCONFIGURED` as on the create | `qits:admin` |
 | `POST /ci/api/runners/{id}/registration-token` | the runner's fields plus a fresh `installScript` line with a new token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin` |
 | `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run | `qits:admin` |
 
@@ -195,7 +195,7 @@ says. Each has an override that ships unset — `qits.ci.runner.public-url`, `qi
 (`qits.ci.runner.internal-url` = `http://${QITS_ENVIRONMENT:dev}-qits-ci:8080`, the idp
 `quarkus.oidc-client.qits.auth-server-url` names + `/token`, `qits.ci.runner.artifacts-internal-url` =
 `http://${QITS_ENVIRONMENT:dev}-qits-artifacts:8080`), with a WARN the first time one is composed that
-a runner outside the swarm cannot use them. The step containers' own addresses are not these.
+a runner outside the swarm cannot use them. The steps a runner starts are told the same domain's names only on the EDGE plane — below.
 
 **Installing is one line** (`runnerhost/RunnerInstallScript`). The create and a rotation answer the
 runner's own read fields flat, as `GET` does, plus `installScript` — whose value is the line to paste:
@@ -225,6 +225,57 @@ The template's shape is qits-ci-runner-daemon's `scripts/test-install-contract.s
 `RunnerInstallScriptTest` runs that test against a rendering when the runner repository is checked out
 beside this one, and writes the rendering to `service/target/runner-install.fixture.sh`, which is that
 repository's committed fixture.
+
+**A runner's `plane` decides what its STEPS are told** (epic qits-441), never what the runner itself
+is told — the install line and the register door's answer are the edge names above whatever the plane.
+`INTERNAL` is a step on qits-net: every service's wire alias, `qits.ci.network`, the host gateway, and
+the run's commissioned client — the step a local worker starts, byte for byte
+(`daemonhost/StepAddressPlane.internal`, pinned whole by `StepEnvironmentCharacterizationTest`). `EDGE`
+is a step on a host outside the swarm: each of those addresses with its origin swapped for the public
+name of the service that answers it and its path kept (`StepAddressPlane.edge`) — `$QITS_CI_DAEMON_URL`
+`wss://ci.qits.<domain>/ci/daemon`, the daemon binary, the registry, the hosted npm and maven roots, the
+docs store and `$QITS_ARTIFACTS_URL` on `registry.qits.<domain>`, the two pull-through roots on
+`mirror.qits.<domain>`, the clone url on `githost.qits.<domain>`, `$QITS_WORKSPACES_URL`
+`https://workspaces.qits.<domain>` — no network and no extra host. **A runner is created `EDGE` whenever
+this qits-ci knows its public domain** (the owner's ruling: a runner is a remote host), `INTERNAL` when
+it knows none, and `plane: EDGE` with no domain is a 400 whose `code` and message say
+`EDGE_PLANE_UNCONFIGURED`, before anything is minted. The public names are `RunnerAddresses.publicOrigin`
+— the same composition the runner is told, from `qits.ci.domain` (`QITS_DOMAIN`) — and **not** the
+epic's `<label>.<env>.<domain>` under two new `qits.ci.edge.*` keys: the platform project carries no
+environment label (`ci.dev.qits.wohlben.eu` is a 404 live), and `qits.ci.domain` already is the
+platform's domain, so neither key exists. The plane is read off the row at a run's first step and held
+until the run closes.
+
+**An EDGE run's credential is a `ci-run` TOKEN, not a client** (qits-475). The step cannot reach the
+idp's alias to mint from a pair, and the edge introspects a `qits_tok_` itself — as a bearer, and as
+the password of git's and docker's Basic — so `RunCommissions.forRun(runId, env, EDGE)` commissions one
+token per run (context the run id, `gitRefs` the run's `RunGitRefs` scope, exactly the client's),
+holds it in memory, and deletes it when the run closes; `CommissionReconciler` reaps a `ci-run` token
+whose run is no longer `QUEUED`/`RUNNING` once it is ten minutes old. The step gets `$QITS_TOKEN` and
+`$QITS_TOKEN_SUBJECT` and **none** of `$QITS_COMMISSIONED_CLIENT_ID`/`_SECRET`, `$QITS_GIT_AUTH_TOKEN_URL`,
+`_HOST`, `_AUDIENCE`, and `CiDaemonLauncher.BOOTSTRAP`'s `QITS_TOKEN` branch turns it into what the pair
+becomes on qits-net: the daemon download's bearer, `$QITS_PUBLISH_TOKEN_COMMAND` printing the token,
+the git helper (`oauth2`/token, for the clone url's host only), `-gs` maven settings carrying the bearer
+on `qits`, `qits-maven-network` and `qits-central-proxy`, an `_authToken` per npm registry host in
+`~/.npmrc`, and the docker document (`token:<value>` per public registry host).
+
+**An EDGE build step builds and pushes through the registry's public vhost** (qits-479): on a
+`docker: true` or `build: true` step `$QITS_REGISTRY` and `$QITS_BUILD_REGISTRY` are both
+`registry.qits.<domain>`, `$QITS_IMAGE_REPOSITORY` is unchanged, `BUILDKIT_HOST` is left **absent** for
+the runner to fill (qits-containers' contract, kept), `qits.ci.buildkit.enabled=false` still sends the
+empty pair, and the docker document's hosts are the plane's (`registry.` and `mirror.qits.<domain>`),
+not `qits.ci.docker-auth-hosts`. `EdgeBuildStepEnvironmentTest` pins the whole environment. **What the
+recipes still assume, and a runner build needs changed there**: the Dockerfile builds mount
+`$QITS_COMMISSIONED_CLIENT_ID`/`_SECRET` as BuildKit secrets for `QITS_MAVEN_AUTH_USR`/`_PSW`, which an
+EDGE step does not have (and the edge's Basic introspection is for git and the docker realm); the
+daemon archetype's `ADD` of the musl/zlib tarballs from `$QITS_MAVEN_REGISTRY_URL` is anonymous and the
+public vhost answers 401; npm `.npmrc` lines composed as `${QITS_NPM_REGISTRY_URL#http:}` do not strip
+`https:`; and the composed release prelude fetches the qits CLI from `$QITS_ARTIFACTS_URL` with no
+bearer. Every one reads the plane's address — nothing composes an internal alias behind it — but each
+needs the token presented. **Measured gap**: the npm pull-through is served only at `/artifacts/npm/npmjs/`
+on qits-platform-mirror, and the edge routes `/artifacts` on every vhost to qits-artifacts, so an EDGE
+step's `$QITS_NPM_PROXY_URL` (`https://mirror.qits.<domain>/artifacts/npm/npmjs/`) answers 404 until the
+mirror mounts npm under `/mirror` the way it mounted maven.
 
 A run a runner executed carries `runnerId` and `runnerName` on every run read; the id outlives the
 runner (no foreign key), the name does not.

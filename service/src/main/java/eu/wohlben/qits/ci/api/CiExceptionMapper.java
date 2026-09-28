@@ -22,8 +22,12 @@ public class CiExceptionMapper implements ExceptionMapper<CiException> {
     if (message == null || message.isBlank()) {
       message = Response.Status.fromStatusCode(status).getReasonPhrase();
     }
+    // `code` only when the refusal has one, so every existing answer keeps its exact shape.
     return Response.status(status)
-        .entity(Map.of("message", message))
+        .entity(
+            exception.code() == null
+                ? Map.of("message", message)
+                : Map.of("code", exception.code(), "message", message))
         .type(MediaType.APPLICATION_JSON)
         .build();
   }

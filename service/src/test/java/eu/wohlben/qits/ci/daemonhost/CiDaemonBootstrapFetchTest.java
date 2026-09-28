@@ -204,7 +204,8 @@ public class CiDaemonBootstrapFetchTest {
     assertTrue(bootstrap.contains("could not fetch $QITS_CI_DAEMON_BINARY_URL after"), bootstrap);
     assertTrue(bootstrap.contains("could not fetch $QITS_CI_DAEMON_BINARY_URL (attempt"), bootstrap);
     // A per-attempt timeout on each arm, or a hung attempt makes the whole budget meaningless.
-    assertTrue(bootstrap.contains("wget -q -T 20 -O"), bootstrap);
+    // "$@" is the edge plane's bearer (qits-441) and expands to nothing on an internal step.
+    assertTrue(bootstrap.contains("wget -q -T 20 \"$@\" -O"), bootstrap);
     assertTrue(bootstrap.contains("--connect-timeout 10 --max-time 120"), bootstrap);
   }
 

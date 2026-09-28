@@ -272,6 +272,47 @@ public class CiPackagedSurfaceIT {
           (Short) (short) 1008,
           daemon.awaitClose(Duration.ofSeconds(20)),
           "the packaged artifact must serve /ci/daemon and refuse an unknown daemon on it");
+      // Refused by the launch table, which is to say the header form got past the upgrade.
+      assertEquals("UNKNOWN_DAEMON", daemon.closeReason());
+    }
+  }
+
+  @Test
+  public void theDaemonSocketAdmitsACiRunCallerAtTheUpgradeAndNoOtherRole() throws Exception {
+    // The edge plane's daemon (qits-477) arrives as its run's ci-run token — the role qits:ci-run,
+    // the token's subject as its name. The gate is off here, so the forward-auth pair carries that
+    // identity as the edge's validated JWT would with it on; @RolesAllowed is enforced at the
+    // upgrade either way, which is what only the artifact's own router can show. Admitted, the
+    // dial reaches the launch table and is refused there for its unknown pair — a subject
+    // compared against a real launch is CiDaemonSocketTest's (right subject admitted, wrong one
+    // WRONG_RUN, a token on an INTERNAL launch WRONG_RUN), since no launch can be made in here.
+    URI socket = URI.create("http://localhost:" + RestAssured.port + "/ci/daemon");
+    try (FakeCiDaemon daemon =
+        FakeCiDaemon.dial(
+            socket,
+            "not-a-launched-daemon",
+            "not-a-secret",
+            Map.of(
+                FakeCiDaemon.USER_HEADER, "tok-ci-run-packaged-1",
+                FakeCiDaemon.ROLES_HEADER, "qits:ci-run"))) {
+      assertEquals((Short) (short) 1008, daemon.awaitClose(Duration.ofSeconds(20)));
+      assertEquals("UNKNOWN_DAEMON", daemon.closeReason());
+    }
+    // And a role that is neither is refused at the upgrade itself, before any launch is looked at.
+    try (FakeCiDaemon stranger =
+        FakeCiDaemon.dial(
+            socket,
+            "not-a-launched-daemon",
+            "not-a-secret",
+            Map.of(
+                FakeCiDaemon.USER_HEADER, "somebody",
+                FakeCiDaemon.ROLES_HEADER, "qits:agent"))) {
+      fail("a qits:agent caller must not get past the daemon socket's upgrade");
+    } catch (Exception refusedAtTheUpgrade) {
+      assertTrue(
+          String.valueOf(refusedAtTheUpgrade).contains("401")
+              || String.valueOf(refusedAtTheUpgrade).contains("403"),
+          "refused at the upgrade: " + refusedAtTheUpgrade);
     }
   }
 

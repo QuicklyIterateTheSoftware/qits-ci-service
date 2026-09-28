@@ -129,6 +129,12 @@ class RunnerStepRunnerTest {
 
   @BeforeEach
   void declareARegisteredRunner() {
+    // Create the bean HERE, on the test thread. The cases call steps.run from supplyAsync, and a
+    // ForkJoin common-pool thread carries the system class loader as its TCCL: a bean first created
+    // there has its @ConfigProperty fields resolved against a Config that holds none of the ci jar's
+    // keys, so the register, init and grace deadlines all read 0 and a step fails NEVER_STARTED
+    // before its daemon has dialled. Measured 2026-09-28 in a narrow run (-Dtest=RunnerStepRunnerTest).
+    steps.owns("warm-up");
     localSteps.reset();
     runnerId = UUID.randomUUID();
     QuarkusTransaction.requiringNew()
@@ -178,7 +184,7 @@ class RunnerStepRunnerTest {
       assertEquals(
           RunnerStepRunner.workloadSpec(
               StepWorkloadSpecs.compose(
-                  launcher.workloadSettings(), launchSpec(runId, workload), null),
+                  launcher.workloadSettings(), launcher.internalPlane(), launchSpec(runId, workload), null),
               false),
           workload);
       runner.send(new Launched(runId, 0, "c0ffee"));
@@ -235,6 +241,56 @@ class RunnerStepRunnerTest {
       assertTrue(refused.output().contains(RUNNER_NAME), refused.output());
     } finally {
       steps.runClosed(runId);
+    }
+  }
+
+  // --- an EDGE runner (qits-474/475) ---------------------------------------------------------------
+
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void anEdgeRunnersStepIsToldThePublicNamesAndCarriesTheRunsToken() throws Exception {
+    // The row says EDGE, the deployment knows its domain, and qits-idp is a stub: the Launch the
+    // runner is asked for is the edge plane's step, with a ci-run token and no client.
+    QuarkusTransaction.requiringNew()
+        .run(() -> runnerRows.findById(runnerId).plane = CiRunnerPlane.EDGE);
+    io.quarkus.test.junit.QuarkusMock.installMockForType(
+        RunnerAddressesFixture.withDomain("example.org"), RunnerAddresses.class);
+    try (eu.wohlben.qits.ci.idp.StubIdp idp = new eu.wohlben.qits.ci.idp.StubIdp()) {
+      io.quarkus.test.junit.QuarkusMock.installMockForType(
+          idp.commissioner(Duration.ofMillis(200)),
+          eu.wohlben.qits.ci.idp.IdpCommissioner.class);
+      String runId = "runner-edge-" + UUID.randomUUID();
+      try (FakeCiRunner runner = greeted()) {
+        registry.hold(registry.current(runnerId), runId);
+        CompletableFuture<StepResult> result =
+            CompletableFuture.supplyAsync(() -> steps.run(step(runId), new Recorder()));
+
+        Launch launch = runner.next(Launch.class, SOON);
+        assertNotNull(launch);
+        WorkloadSpec workload = launch.workloadSpec();
+        assertEquals("wss://ci.qits.example.org/ci/daemon", workload.env().get("QITS_CI_DAEMON_URL"));
+        assertEquals(
+            "https://githost.qits.example.org/git/runner-step-repo",
+            workload.env().get("QITS_CI_REPOSITORY_URL"));
+        assertEquals("qits_tok_stub-1", workload.env().get("QITS_TOKEN"));
+        assertNull(workload.env().get("QITS_COMMISSIONED_CLIENT_ID"));
+        assertNull(workload.network(), "no qits-net on a host outside the swarm");
+        assertTrue(workload.extraHosts() == null || workload.extraHosts().isEmpty());
+        assertEquals(1, idp.postedTokens.size(), "one ci-run token for the run");
+        assertTrue(idp.posted.isEmpty(), "and no client");
+
+        runner.send(new LaunchFailed(runId, 0, "not today"));
+        Reap reap = runner.next(Reap.class, SOON);
+        assertNotNull(reap);
+        runner.send(new Reaped(runId, 0));
+        assertEquals(
+            StepOutcome.LAUNCH_FAILED, result.get(SOON.toSeconds(), TimeUnit.SECONDS).outcome());
+      } finally {
+        steps.runClosed(runId);
+      }
+      // The run's close gave the token back.
+      assertEquals(List.of("token-1"), idp.deletedTokens);
     }
   }
 

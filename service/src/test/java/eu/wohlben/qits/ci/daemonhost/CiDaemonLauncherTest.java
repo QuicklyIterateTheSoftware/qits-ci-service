@@ -710,9 +710,15 @@ public class CiDaemonLauncherTest {
 
     // Under the guard, and the whole block is inside it: the last `fi` before the exec closes it,
     // so a deployment that commissions nothing writes no script and exports nothing.
+    // The pair's script is the one written AFTER the pair's guard; the edge plane's QITS_TOKEN
+    // branch writes its own, ahead of it and under its own guard (CiDaemonBootstrapEdgeTokenTest).
     int guard = bootstrap.indexOf("if [ -n \"$QITS_COMMISSIONED_CLIENT_ID\" ]");
     assertTrue(guard >= 0, bootstrap);
-    assertTrue(guard < bootstrap.indexOf("cat > " + CiDaemonLauncher.PUBLISH_TOKEN_COMMAND), bootstrap);
+    assertTrue(
+        bootstrap.indexOf("cat > " + CiDaemonLauncher.PUBLISH_TOKEN_COMMAND, guard) > guard,
+        bootstrap);
+    int edge = bootstrap.indexOf("if [ -n \"$QITS_TOKEN\" ]; then\n  cat > ");
+    assertTrue(edge >= 0 && edge < guard, bootstrap);
     assertTrue(
         bootstrap.indexOf("export QITS_PUBLISH_TOKEN")
             < bootstrap.indexOf("exec /tmp/qits-ci-daemon"),

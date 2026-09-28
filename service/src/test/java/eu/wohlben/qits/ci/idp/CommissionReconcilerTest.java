@@ -57,6 +57,52 @@ public class CommissionReconcilerTest {
     assertEquals(List.of("client-dead"), idp.deleted);
   }
 
+  private static IdpCommissioner.LiveToken token(
+      String tokenId, String kind, String contextId, Instant createdAt) {
+    return new IdpCommissioner.LiveToken(tokenId, "tok-" + tokenId, kind, contextId, createdAt);
+  }
+
+  @Test
+  public void anEdgeRunsTokenIsReapedOnceItsRunIsOverAndNotBefore() {
+    Instant now = Instant.parse("2026-09-28T12:00:00Z");
+    Instant old = now.minus(Duration.ofMinutes(30));
+
+    int reaped =
+        reconciler.reapRunTokens(
+            List.of(
+                token("tok-dead", "ci-run", "run-dead", old),
+                token("tok-live", "ci-run", "run-live", old),
+                // Younger than the grace: its run may simply not have launched a step yet.
+                token("tok-young", "ci-run", "run-young", now.minus(Duration.ofMinutes(2))),
+                // Another kind of token is the registration sweep's, never this one's.
+                token("tok-reg", "ci-runner-registration", "runner-1", old)),
+            Set.of("run-live"),
+            now);
+
+    assertEquals(1, reaped);
+    assertEquals(List.of("tok-dead"), idp.deletedTokens);
+  }
+
+  @Test
+  public void aTokenThisProcessIsHoldingIsSparedAndAnUnreadRunTableReapsNothing() {
+    RunCommissions.Credential held =
+        reconciler.commissions.forRun(
+            "run-finishing", Map.of(), eu.wohlben.qits.ci.entity.CiRunnerPlane.EDGE);
+    Instant now = Instant.now().plus(Duration.ofHours(1));
+
+    assertEquals(
+        0,
+        reconciler.reapRunTokens(
+            List.of(token(held.token().tokenId(), "ci-run", "run-finishing", Instant.EPOCH)),
+            Set.of(),
+            now));
+    assertEquals(
+        0,
+        reconciler.reapRunTokens(
+            List.of(token("tok-dead", "ci-run", "run-dead", Instant.EPOCH)), null, now));
+    assertEquals(List.of(), idp.deletedTokens);
+  }
+
   @Test
   public void aCommissionThisProcessIsHoldingIsSparedEvenWithNoRunRowLeft() {
     // The window between a run's row going terminal and its runClosed. The row says the run is over

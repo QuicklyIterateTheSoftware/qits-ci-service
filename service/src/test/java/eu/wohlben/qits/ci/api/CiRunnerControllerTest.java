@@ -448,6 +448,101 @@ class CiRunnerControllerTest {
         script);
   }
 
+  // --- the plane (qits-474) -----------------------------------------------------------------------
+
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
+  void aRunnerIsCreatedOnTheEdgePlaneWhenThePublicDomainIsKnown() {
+    // The owner's ruling: a runner is a remote host, so it goes through the edge unless told not to.
+    QuarkusMock.installMockForType(
+        RunnerAddressesFixture.withDomain("example.org"), RunnerAddresses.class);
+
+    JsonPath created = create("remote-by-default");
+
+    assertEquals("EDGE", created.getString("plane"));
+    assertEquals(
+        "EDGE", row(UUID.fromString(created.getString("id"))).plane.name(), "and the row says so");
+    // The install line does not change with the plane: the runner itself always uses the edge.
+    assertTrue(
+        created.getString("installScript").contains("QITS_CI_RUNNER_URL='https://ci.qits.example.org'"));
+  }
+
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
+  void anInternalPlaneMayStillBeAskedForWhenThePublicDomainIsKnown() {
+    QuarkusMock.installMockForType(
+        RunnerAddressesFixture.withDomain("example.org"), RunnerAddresses.class);
+
+    JsonPath created =
+        given()
+            .contentType(MediaType.APPLICATION_JSON)
+            .body("{\"name\":\"on-the-swarm\",\"plane\":\"INTERNAL\"}")
+            .when()
+            .post(RUNNERS)
+            .then()
+            .statusCode(201)
+            .extract()
+            .jsonPath();
+
+    assertEquals("INTERNAL", created.getString("plane"));
+  }
+
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
+  void anEdgePlaneOnAQitsCiThatKnowsNoDomainIs400AndMintsNothing() {
+    // The suite knows no public domain: the default there is INTERNAL (see the create case above),
+    // and asking for EDGE is refused by name before a token is commissioned.
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"name\":\"nowhere-to-go\",\"plane\":\"EDGE\"}")
+        .when()
+        .post(RUNNERS)
+        .then()
+        .statusCode(400)
+        .body("code", equalTo("EDGE_PLANE_UNCONFIGURED"))
+        .body("message", org.hamcrest.Matchers.startsWith("EDGE_PLANE_UNCONFIGURED: "));
+
+    assertTrue(idp.postedTokens.isEmpty(), "a refused plane commissions no registration token");
+    assertTrue(
+        QuarkusTransaction.requiringNew().call(() -> runnerRows.count()) == 0L, "and writes no row");
+  }
+
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
+  void patchMovesTheRunnerBetweenPlanesAndRefusesAnEdgeItCannotCompose() {
+    String id = create("mover").getString("id");
+
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"plane\":\"EDGE\"}")
+        .when()
+        .patch(RUNNERS + "/" + id)
+        .then()
+        .statusCode(400)
+        .body("code", equalTo("EDGE_PLANE_UNCONFIGURED"));
+    assertEquals("INTERNAL", row(UUID.fromString(id)).plane.name());
+
+    QuarkusMock.installMockForType(
+        RunnerAddressesFixture.withDomain("example.org"), RunnerAddresses.class);
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"plane\":\"EDGE\"}")
+        .when()
+        .patch(RUNNERS + "/" + id)
+        .then()
+        .statusCode(200)
+        .body("plane", equalTo("EDGE"))
+        .body("slots", equalTo(2));
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"plane\":\"INTERNAL\"}")
+        .when()
+        .patch(RUNNERS + "/" + id)
+        .then()
+        .statusCode(200)
+        .body("plane", equalTo("INTERNAL"));
+  }
+
   // --- the generic install script -----------------------------------------------------------------
 
   @Test

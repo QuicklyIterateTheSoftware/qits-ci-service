@@ -233,6 +233,19 @@ public class CiDaemonLauncher {
    * file and leaves {@code MAVEN_ARGS} untouched, so a deploy runs exactly as it does today rather
    * than with an empty {@code Bearer }.
    *
+   * <p><b>A step on the EDGE plane holds a token instead of a pair, and gets the same four things
+   * from it</b> (epic qits-441). {@code $QITS_TOKEN} is this run's {@code ci-run} token, and when it
+   * is set the text ahead of the pair's branch writes: the daemon download's {@code Authorization:
+   * Bearer} (the one line both branches share, as a {@code "$@"} that is empty without a token, so
+   * an internal step's download is the command it always was); a publish command that prints the
+   * token rather than exchanging anything; a git helper answering {@code oauth2}/token for the host
+   * {@code $QITS_CI_REPOSITORY_URL} names and nobody else; {@link #DEPLOY_SETTINGS_FILE} with the
+   * bearer on every server id the estate's settings use ({@code qits}, {@code qits-maven-network},
+   * {@code qits-central-proxy}); and an {@code _authToken} per npm registry host appended to {@code
+   * ~/.npmrc}. The docker document is the registry block above, composed from the token in
+   * {@link StepWorkloadSpecs}. The two branches never meet: an edge step carries no pair and an
+   * internal one no token, and the pair's branch below is byte for byte what it was.
+   *
    * <p>{@code exec} rather than a plain call, so the daemon is PID 1 and the removal signals the
    * process that owns the step rather than a shell wrapping it.
    *
@@ -244,16 +257,20 @@ public class CiDaemonLauncher {
   static final String BOOTSTRAP =
       """
       set -e
+      set --
+      if [ -n "$QITS_TOKEN" ]; then
+        set -- --header "Authorization: Bearer $QITS_TOKEN"
+      fi
       attempt=1
       while :; do
         if command -v wget >/dev/null 2>&1; then
           downloader=wget
-          if wget -q -T 20 -O /tmp/qits-ci-daemon "$QITS_CI_DAEMON_BINARY_URL"; then
+          if wget -q -T 20 "$@" -O /tmp/qits-ci-daemon "$QITS_CI_DAEMON_BINARY_URL"; then
             break
           fi
         elif command -v curl >/dev/null 2>&1; then
           downloader=curl
-          if curl -fsS --connect-timeout 10 --max-time 120 -o /tmp/qits-ci-daemon "$QITS_CI_DAEMON_BINARY_URL"; then
+          if curl -fsS --connect-timeout 10 --max-time 120 "$@" -o /tmp/qits-ci-daemon "$QITS_CI_DAEMON_BINARY_URL"; then
             break
           fi
         else
@@ -272,6 +289,114 @@ public class CiDaemonLauncher {
       if [ -n "$QITS_CI_REGISTRY_AUTH_CONFIG" ] && [ -n "$DOCKER_CONFIG" ]; then
         mkdir -p "$DOCKER_CONFIG"
         printf '%s' "$QITS_CI_REGISTRY_AUTH_CONFIG" > "$DOCKER_CONFIG/config.json"
+      fi
+      if [ -n "$QITS_TOKEN" ]; then
+        cat > /tmp/qits-publish-token <<'EOF'
+      #!/bin/sh
+      # The edge plane's twin of the exchange below, with nothing to exchange: this run's ci-run
+      # token IS the credential, handed over as $QITS_TOKEN and deleted when the run closes. So this
+      # prints it — raw, one line, nothing else — and a recipe that runs $QITS_PUBLISH_TOKEN_COMMAND
+      # works unchanged on either plane. It fails loudly for the reason the exchange does.
+      if [ -z "$QITS_TOKEN" ]; then
+        echo "qits-ci: this step holds no QITS_TOKEN, so there is no token to print" >&2
+        exit 1
+      fi
+      printf '%s\\n' "$QITS_TOKEN"
+      EOF
+        chmod 0700 /tmp/qits-publish-token
+        cat > /tmp/qits-git-credential <<'EOF'
+      #!/bin/sh
+      # Answers only the host this step clones from — the authority of $QITS_CI_REPOSITORY_URL, the
+      # git host's public name — for the exfiltration reason the helper below states. The edge reads
+      # the password of git's Basic as a qits_tok_ and introspects it; the user is a formality.
+      [ "$1" = get ] || exit 0
+      githost=${QITS_CI_REPOSITORY_URL#*://}
+      githost=${githost%%/*}
+      host=
+      protocol=
+      while IFS= read -r line && [ -n "$line" ]; do
+        case "$line" in host=*) host=${line#host=};; protocol=*) protocol=${line#protocol=};; esac
+      done
+      [ -n "$githost" ] && [ "$host" = "$githost" ] || exit 0
+      case "$protocol" in http|https) ;; *) exit 0;; esac
+      [ -n "$QITS_TOKEN" ] || exit 0
+      printf 'username=oauth2\\npassword=%s\\n\\n' "$QITS_TOKEN"
+      EOF
+        chmod 0700 /tmp/qits-git-credential
+        printf '[credential]\n\thelper = /tmp/qits-git-credential\n' > "$GIT_CONFIG_GLOBAL"
+        QITS_PUBLISH_TOKEN=$QITS_TOKEN
+        export QITS_PUBLISH_TOKEN
+        # Maven's credential for every platform repository a step dials through the edge, every one
+        # a 401 without it: `qits` (the deploy), `qits-maven-network` (the hosted registry) and
+        # `qits-central-proxy` (the mirror's central) — each server id this estate's settings name.
+        # A header rather than a <password> for the client branch's reason: maven does not
+        # authenticate preemptively. The blocker is re-declared for that branch's reason too.
+        (umask 077; printf '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+        <servers>
+          <server>
+            <id>qits</id>
+            <configuration>
+              <httpHeaders>
+                <property>
+                  <name>Authorization</name>
+                  <value>Bearer %s</value>
+                </property>
+              </httpHeaders>
+            </configuration>
+          </server>
+          <server>
+            <id>qits-maven-network</id>
+            <configuration>
+              <httpHeaders>
+                <property>
+                  <name>Authorization</name>
+                  <value>Bearer %s</value>
+                </property>
+              </httpHeaders>
+            </configuration>
+          </server>
+          <server>
+            <id>qits-central-proxy</id>
+            <configuration>
+              <httpHeaders>
+                <property>
+                  <name>Authorization</name>
+                  <value>Bearer %s</value>
+                </property>
+              </httpHeaders>
+            </configuration>
+          </server>
+        </servers>
+        <mirrors>
+          <mirror>
+            <id>maven-default-http-blocker</id>
+            <mirrorOf>external:http:*</mirrorOf>
+            <name>Pseudo repository to mirror external repositories initially using HTTP.</name>
+            <url>http://0.0.0.0/</url>
+            <blocked>true</blocked>
+          </mirror>
+        </mirrors>
+      </settings>
+      ' "$QITS_TOKEN" "$QITS_TOKEN" "$QITS_TOKEN" > /tmp/qits-deploy-settings.xml)
+        MAVEN_ARGS="${MAVEN_ARGS:+$MAVEN_ARGS }-gs /tmp/qits-deploy-settings.xml"
+        export MAVEN_ARGS
+        # And npm's: one _authToken per registry HOST the two npm roots name, APPENDED so an image's
+        # own ~/.npmrc survives. A home that cannot be written costs npm its credential and says
+        # so; it never costs the step its daemon.
+        if [ -n "$HOME" ] && [ -d "$HOME" ] && [ -w "$HOME" ]; then
+          npm_seen=
+          for npm_root in "$QITS_NPM_REGISTRY_URL" "$QITS_NPM_PROXY_URL"; do
+            npm_host=${npm_root#*://}
+            npm_host=${npm_host%%/*}
+            [ -n "$npm_host" ] || continue
+            [ "$npm_host" != "$npm_seen" ] || continue
+            npm_seen=$npm_host
+            (umask 077; printf '//%s/:_authToken=%s\\n' "$npm_host" "$QITS_TOKEN" >> "$HOME/.npmrc") \\
+              || echo "qits-ci: could not write $HOME/.npmrc, so npm holds no platform credential" >&2
+          done
+        else
+          echo "qits-ci: the home directory is not writable, so npm holds no platform credential" >&2
+        fi
       fi
       if [ -n "$QITS_COMMISSIONED_CLIENT_ID" ] && [ -n "$QITS_COMMISSIONED_CLIENT_SECRET" ]; then
         cat > /tmp/qits-publish-token <<'EOF'
@@ -1325,44 +1450,57 @@ public class CiDaemonLauncher {
     // what stays here is the commission lookup and the lifetime qits-containers holds the place to.
     IdpCommissioner.Commission commission =
         commissions == null ? null : commissions.forRun(spec.runId(), spec.env());
-    Spec workload = StepWorkloadSpecs.compose(workloadSettings(), spec, commission);
+    Spec workload =
+        StepWorkloadSpecs.compose(
+            workloadSettings(), internalPlane(), spec, RunCommissions.Credential.client(commission));
     // EPHEMERAL: a step container runs once and exits, so a recreate under a changed spec is a
     // refusal rather than a restart — which is right for a place named after one step of one run.
     return EnsureRequest.of(workload, Policy.ephemeral(maxAgeSeconds(spec)));
   }
 
   /**
-   * Every deployment fact a step container's spec is composed from, read off this bean's own
-   * configuration at the moment of asking — so a suite that sets a field on a hand-wired launcher
-   * is composed with it, exactly as before the composition moved out. The runner path asks for the
-   * same settings, which is what makes a step on a runner the same step as one here.
+   * Every deployment fact a step container's spec is composed from that is not an address, read off
+   * this bean's own configuration at the moment of asking — so a suite that sets a field on a
+   * hand-wired launcher is composed with it, exactly as before the composition moved out. The runner
+   * path asks for the same settings, which is what makes a step on a runner the same step as one
+   * here.
    */
   public StepWorkloadSpecs.Settings workloadSettings() {
     return new StepWorkloadSpecs.Settings(
-        containerDaemonUrl,
-        containerGitUrl,
-        idpUrl,
-        network,
-        artifactsRegistryHost,
         artifactsImageRepository,
-        artifactsNpmHostedUrl,
-        artifactsNpmProxyUrl,
-        artifactsMavenRegistryUrl,
         mavenCentralMirrorEnabled,
-        mavenCentralMirrorBuildUrl == null ? "" : mavenCentralMirrorBuildUrl.orElse(""),
-        mavenCentralMirrorStepUrl,
-        artifactsDocsUrl,
-        resolvedArtifactsUrl(),
         artifactsCliPackage,
         artifactsCliVersion(),
-        workspacesUrl,
         buildkitEnabled,
-        buildkitRegistryHost,
-        authHosts(),
         memoryLimit,
         pidsLimit,
         cpus,
         oomScoreAdj);
+  }
+
+  /**
+   * The addresses of a step on qits-net — this bean's own keys, exactly the ones it has always read,
+   * resolved the way it has always resolved them. Every local step is on this plane, and so is a
+   * runner's step whose row says {@code INTERNAL}; the edge plane is derived from this one ({@link
+   * StepAddressPlane#edge}), which is how it keeps every path.
+   */
+  public StepAddressPlane internalPlane() {
+    return StepAddressPlane.internal(
+        containerDaemonUrl,
+        containerGitUrl,
+        idpUrl,
+        artifactsRegistryHost,
+        buildkitRegistryHost,
+        artifactsNpmHostedUrl,
+        artifactsNpmProxyUrl,
+        artifactsMavenRegistryUrl,
+        mavenCentralMirrorBuildUrl == null ? "" : mavenCentralMirrorBuildUrl.orElse(""),
+        mavenCentralMirrorStepUrl,
+        artifactsDocsUrl,
+        resolvedArtifactsUrl(),
+        workspacesUrl,
+        authHosts(),
+        network);
   }
 
   private static String value(String text) {

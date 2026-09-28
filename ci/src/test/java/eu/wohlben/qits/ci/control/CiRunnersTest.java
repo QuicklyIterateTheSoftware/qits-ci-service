@@ -56,7 +56,7 @@ public class CiRunnersTest extends CiTestSupport {
 
   private CiRunner create(String name) {
     return service.create(
-        UUID.randomUUID(), name, null, null, "token-" + name, "tok-ci-runner-registration-" + name);
+        UUID.randomUUID(), name, null, null, null, "token-" + name, "tok-ci-runner-registration-" + name);
   }
 
   @Test
