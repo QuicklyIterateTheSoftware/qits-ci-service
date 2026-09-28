@@ -17,9 +17,10 @@ import org.jboss.logging.Logger;
  *
  * <p><b>The claim is {@link CiRunService#reserveFor}</b> — the claim loop's candidates, order and
  * compare-and-swap, narrowed to what this runner may take — and the answer is exactly one {@link
- * Take} or {@link Nothing}. A {@code Take} binds the run to the session it went out on ({@link
- * CiRunnerRegistry#hold}) <em>before</em> the frame leaves, so nothing the runner does afterwards can
- * arrive for a run this process does not yet know it holds.
+ * Take} or {@link Nothing} — always {@code Nothing} on a draining session ({@link
+ * CiRunnerRegistry.Session#draining}), which holds no slot. A {@code Take} binds the run to the
+ * session it went out on ({@link CiRunnerRegistry#hold}) <em>before</em> the frame leaves, so
+ * nothing the runner does afterwards can arrive for a run this process does not yet know it holds.
  *
  * <p><b>Each reserved run is driven on a thread of its own, never on a {@code ci-run-worker}.</b>
  * The local pool is {@code qits.ci.concurrent-builds} threads and its size is a statement about
@@ -60,6 +61,12 @@ public class RunnerReservations {
 
   /** Answer one {@code Reserve}: a {@code Take} and a driver, or {@code Nothing}. */
   public void onReserve(CiRunnerRegistry.Session session) {
+    if (session.draining()) {
+      // Told to upgrade: it finishes what it holds and takes nothing more, whatever it asks. Its
+      // Ack said 0 slots, so a Reserve here is a runner that did not listen — answered, not claimed.
+      registry.send(session, new Nothing());
+      return;
+    }
     Optional<CiRunService.Reservation> reserved;
     try {
       reserved = runService.reserveFor(session.runner());

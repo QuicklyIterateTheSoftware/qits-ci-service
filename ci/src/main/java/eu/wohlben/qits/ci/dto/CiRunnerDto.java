@@ -17,6 +17,11 @@ import java.util.UUID;
  * that cannot be deleted. {@code lastSeenAt} is host-stamped whenever the runner is heard from, null
  * until it first is. {@code capabilities} is the object the runner registered with, verbatim, and
  * null before registration.
+ *
+ * <p>{@code runnerVersion}, {@code targetVersion} and {@code updating} are presence too (qits-465):
+ * the version the runner's current connection said it is (null while it has not said), the version
+ * this deployment pins and so tells every runner to become, and whether a connection told to
+ * upgrade is still open — a self-update in flight, or one that is not completing.
  */
 public record CiRunnerDto(
     UUID id,
@@ -29,4 +34,7 @@ public record CiRunnerDto(
     boolean connected,
     long heldRuns,
     Instant lastSeenAt,
-    Instant createdAt) {}
+    Instant createdAt,
+    String runnerVersion,
+    String targetVersion,
+    boolean updating) {}

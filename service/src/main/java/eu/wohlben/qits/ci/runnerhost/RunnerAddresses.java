@@ -10,7 +10,7 @@ import org.jboss.logging.Logger;
 
 /**
  * Every address a runner is told: where it reaches qits-ci (and so its socket), where it asks
- * qits-idp for a token and for which audience, and where its install script downloads the binary.
+ * qits-idp for a token and for which audience, and which registry its runner image is pulled from.
  * One class, because the register door's answer, the install line and the install script have to
  * name the same things, and two compositions of one address are two chances for them to disagree.
  *
@@ -36,8 +36,9 @@ import org.jboss.logging.Logger;
  * stated, or a single label such as {@code localhost}, the test {@code PlatformDomain} uses to tell a
  * clone from an installation — the addresses fall back to the qits-net ones: {@code
  * qits.ci.runner.internal-url}, the idp {@code quarkus.oidc-client.qits.auth-server-url} names plus
- * {@code /token}, and {@code qits.ci.runner.artifacts-internal-url}. Only a runner on qits-net can
- * use those, and the first composition that falls back says so in a WARN.
+ * {@code /token}, {@code qits.ci.runner.artifacts-internal-url}, and for the registry the runner
+ * image is pulled from, {@code qits.artifacts.registry-host}. Only a runner on the platform's own
+ * host can use those, and the first composition that falls back says so in a WARN.
  */
 @ApplicationScoped
 public class RunnerAddresses {
@@ -68,6 +69,14 @@ public class RunnerAddresses {
 
   /** qits-artifacts' host label — {@code host: registry} in its deployments.yml. */
   static final String ARTIFACTS_HOST = "registry";
+
+  /**
+   * The runner image's repository under the registry: the platform's image namespace ({@code
+   * qits.artifacts.image-repository}'s value) and the runner's name — the path the runner
+   * repository's release pushes to. Fixed rather than read from that key, because that release
+   * pushes to exactly this path whatever this deployment's key says.
+   */
+  static final String RUNNER_IMAGE_REPOSITORY = "qits/" + CiRunnerPins.RUNNER_NAME;
 
   /** qits-platform-mirror's host label: the pull-through caches, {@code /v2} and {@code /mirror}. */
   static final String MIRROR_HOST = "mirror";
@@ -102,6 +111,13 @@ public class RunnerAddresses {
   @ConfigProperty(name = "qits.ci.runner.artifacts-url")
   Optional<String> artifactsUrl;
 
+  /**
+   * The registry as the platform host's own docker names it — {@code CiDaemonLauncher}'s key, read
+   * here only as the no-domain fallback of {@link #registryHost()}.
+   */
+  @ConfigProperty(name = "qits.artifacts.registry-host")
+  String registryInternalHost;
+
   private final AtomicBoolean warned = new AtomicBoolean();
 
   /** The base a runner reaches qits-ci at: scheme, host and port, no trailing slash. */
@@ -133,15 +149,41 @@ public class RunnerAddresses {
   }
 
   /**
-   * Where the install script downloads the binary from: scheme, host and port of qits-artifacts, no
-   * trailing slash, to which the script appends {@code /artifacts/daemons/<name>/<version>}. Through
-   * the edge that download is authorized by the registration token the install line carries.
+   * qits-artifacts as a runner reaches it over HTTP: scheme, host and port, no trailing slash. The
+   * install script used to download the runner binary under it; since the runner is an image
+   * (qits-484) nothing a runner is told is composed from it any more except, through {@link
+   * #registryHost()}, its authority — the same store's {@code /v2}.
    */
   public String artifactsBase() {
     return stripSlashes(
         set(artifactsUrl)
             .or(() -> publicOrigin(ARTIFACTS_HOST))
             .orElseGet(() -> internal(artifactsInternalUrl)));
+  }
+
+  /**
+   * The registry host a runner's docker pulls the runner image from — {@code host[:port]}, no scheme:
+   * the authority of {@link #artifactsBase()}'s override or public origin, which is the same store
+   * ({@code registry.qits.<domain>} serves both {@code /artifacts} and {@code /v2}), and with no
+   * public domain {@code qits.artifacts.registry-host}, the name the platform host's own docker
+   * pulls under. Not the {@code qits.ci.runner.artifacts-internal-url} alias: that is a qits-net name
+   * a docker daemon cannot resolve, whereas the registry-host key is a docker's view by definition.
+   */
+  public String registryHost() {
+    return set(artifactsUrl)
+        .or(() -> publicOrigin(ARTIFACTS_HOST))
+        .map(RunnerAddresses::authority)
+        .orElseGet(() -> internal(registryInternalHost));
+  }
+
+  /**
+   * The runner image of {@code version}: {@code <registryHost>/qits/qits-ci-runner:<version>}. One
+   * composition for the install script's {@code docker pull} and the {@code Upgrade} frame's {@code
+   * image}, so the container a person started and the one it replaces itself with come from one
+   * name.
+   */
+  public String runnerImage(String version) {
+    return registryHost() + "/" + RUNNER_IMAGE_REPOSITORY + ":" + version;
   }
 
   /**
@@ -203,6 +245,13 @@ public class RunnerAddresses {
 
   private static Optional<String> set(Optional<String> value) {
     return value == null ? Optional.empty() : value.map(String::trim).filter(v -> !v.isEmpty());
+  }
+
+  /** {@code host[:port]} of an {@code http(s)://} url; the value itself when it has no scheme. */
+  private static String authority(String url) {
+    String rest = stripSlashes(url).replaceFirst("^[A-Za-z][A-Za-z0-9+.-]*://", "");
+    int slash = rest.indexOf('/');
+    return slash < 0 ? rest : rest.substring(0, slash);
   }
 
   private static String stripSlashes(String url) {

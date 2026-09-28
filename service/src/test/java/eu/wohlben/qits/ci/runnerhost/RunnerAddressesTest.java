@@ -22,6 +22,7 @@ class RunnerAddressesTest {
     addresses.tokenUrlOverride = Optional.empty();
     addresses.artifactsInternalUrl = "http://dev-qits-artifacts:8080/";
     addresses.artifactsUrl = Optional.empty();
+    addresses.registryInternalHost = "registry.dev.localhost:8080";
     return addresses;
   }
 
@@ -35,6 +36,9 @@ class RunnerAddressesTest {
     assertEquals("wss://ci.qits.wohlben.eu/ci/runners/socket", addresses.socketUrl());
     assertEquals("https://idp.qits.wohlben.eu/idp/token", addresses.tokenUrl());
     assertEquals("https://registry.qits.wohlben.eu", addresses.artifactsBase());
+    assertEquals("registry.qits.wohlben.eu", addresses.registryHost());
+    assertEquals(
+        "registry.qits.wohlben.eu/qits/qits-ci-runner:2026.928.1", addresses.runnerImage("2026.928.1"));
     assertEquals("qits-platform", addresses.audience());
   }
 
@@ -56,6 +60,7 @@ class RunnerAddressesTest {
     assertEquals("wss://ci.elsewhere.example.org/ci/runners/socket", addresses.socketUrl());
     assertEquals("https://login.example.org/idp/token", addresses.tokenUrl());
     assertEquals("https://artifacts.example.org", addresses.artifactsBase());
+    assertEquals("artifacts.example.org", addresses.registryHost(), "the same store's authority");
 
     addresses.publicUrl = Optional.of("  ");
     addresses.tokenUrlOverride = Optional.of("");
@@ -74,6 +79,8 @@ class RunnerAddressesTest {
       assertEquals("ws://dev-qits-ci:8080/ci/runners/socket", addresses.socketUrl());
       assertEquals("http://dev-qits-platform-idp:8080/idp/token", addresses.tokenUrl());
       assertEquals("http://dev-qits-artifacts:8080", addresses.artifactsBase());
+      // The image is pulled by a docker, which resolves the registry-host key and no qits-net alias.
+      assertEquals("registry.dev.localhost:8080", addresses.registryHost());
     }
   }
 }

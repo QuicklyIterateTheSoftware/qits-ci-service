@@ -193,9 +193,25 @@ public final class CiQueueForecast {
 
   /**
    * One runner as the queue sees it: how many runs its row grants, how many it holds, and whether a
-   * socket is open to it right now — the {@code runners} half of {@code GET /ci/api/runs/queue}.
+   * socket is open to it right now — the {@code runners} half of {@code GET /ci/api/runs/queue}. The
+   * three version facts are {@code CiRunnerDto}'s, carried for a reader and read by no arithmetic
+   * here.
    */
-  public record RunnerCapacity(UUID id, String name, int slots, long held, boolean connected) {}
+  public record RunnerCapacity(
+      UUID id,
+      String name,
+      int slots,
+      long held,
+      boolean connected,
+      String runnerVersion,
+      String targetVersion,
+      boolean updating) {
+
+    /** A runner whose versions nothing reported. */
+    public RunnerCapacity(UUID id, String name, int slots, long held, boolean connected) {
+      this(id, name, slots, held, connected, null, null, false);
+    }
+  }
 
   /**
    * How many runs the estate executes at once: the local pool plus the slots of every

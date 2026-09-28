@@ -1,6 +1,14 @@
 #!/bin/sh
-# Installs qits-ci-runner on this host as a systemd service, set up as one qits-ci runner.
-# For x86-64 Linux with systemd and docker, as root.
+# Installs (or replaces) the qits CI runner on this host: ONE docker container, supervised by docker's
+# own restart policy. For any Linux host with docker, run by root or by a user who may use docker.
+#
+# THIS FILE IS THE REFERENCE IMPLEMENTATION OF THE INSTALL CONTRACT. qits-ci-service renders the
+# script it serves at `GET /ci/api/runners/install.sh` from its template
+# (service/src/main/resources/runner-install.sh.tmpl), and that template is written to match this
+# file EXACTLY, with only the two rendered values below (`image=` and `version=`) differing.
+# qits-ci-runner-daemon's scripts/test-install-contract.sh runs this file against a stub docker and
+# asserts the contract; change the two together, and change the runner's successor argv
+# (RunnerArgv.runSuccessor) with them, since a runner rolls itself over into the same shape.
 #
 # Not run by hand: the CI UI's Runners page hands out ONE LINE that downloads this script and pipes
 # it into `sudo env QITS_CI_RUNNER_URL=... QITS_CI_RUNNER_ID=... QITS_CI_RUNNER_REGISTRATION_TOKEN=...
@@ -9,16 +17,21 @@
 # the one it was pasted into. Everything below is inside main(), called on the last line, so a
 # download cut short runs nothing at all.
 #
-# Running it again with a fresh token — the CI UI's "replace registration token" hands out a new line
-# — re-downloads the pinned binary, rewrites the env file and restarts the unit; the runner registers
-# again by itself when the token differs from the one it registered with, so its state dir is left
-# alone.
+# WHAT IT DOES:
 #
-# Rendered by qits-ci-service from service/src/main/resources/runner-install.sh.tmpl, with only the
-# deployment's public artifacts base and the pinned runner version filled in. Every path it writes is
-# under ${QITS_INSTALL_ROOT:-} — empty on a real host — and every tool comes from PATH: that is what
-# lets qits-ci-runner-daemon's scripts/test-install-contract.sh run a rendering against stubs in a
-# temp root.
+#   1. refuses, one sentence each, when a value is missing or docker does not answer;
+#   2. logs in to the platform's registry with the registration token, in a throwaway docker config
+#      that is deleted right after, and pulls the runner image — the host's own docker config is
+#      never written;
+#   3. removes every container of this runner (label qits.ci.runner.process=<id>) — a re-run
+#      REPLACES the runner, and a re-run with a new token is how a registration is rotated;
+#   4. keeps the runner's state volume but removes client.json from it, so the token it was just
+#      given is the one the runner registers with;
+#   5. starts the runner container, and prints how to watch it.
+#
+# The registration token appears in no line this script prints and in no command line: the login
+# reads it on stdin, and the container gets it as `-e QITS_CI_RUNNER_REGISTRATION_TOKEN`, docker's
+# own "take the value from my environment" form.
 set -eu
 
 refuse() {
@@ -26,12 +39,12 @@ refuse() {
   exit 1
 }
 
-# One sentence per missing value, naming it, and a charset that is literal on a KEY=value line of a
-# systemd EnvironmentFile: no whitespace, quote, backslash, $ or newline can reach the env file.
+# One sentence per missing value, naming it, and a charset that keeps every value one plain word: they
+# become container names, labels and environment values.
 require() { # $1 = name, $2 = value
   [ -n "$2" ] || refuse "$1 is not set; paste the whole line from the CI UI's Runners page."
   case "$2" in
-    *[!A-Za-z0-9._~+/=:-]*) refuse "$1 carries a character this script will not write into the env file." ;;
+    *[!A-Za-z0-9._~+/=:-]*) refuse "$1 carries a character this script will not hand to docker." ;;
   esac
 }
 
@@ -41,96 +54,81 @@ main() {
   require QITS_CI_RUNNER_REGISTRATION_TOKEN "${QITS_CI_RUNNER_REGISTRATION_TOKEN:-}"
   require QITS_CI_RUNNER_SLOTS "${QITS_CI_RUNNER_SLOTS:-}"
 
-  binary_url='{{ARTIFACTS_URL}}/artifacts/daemons/qits-ci-runner/{{RUNNER_VERSION}}'
-  state_dir='/var/lib/qits-ci-runner'
+  # RENDERED: the image qits-ci pins (CiRunnerBinary.IMAGE_REPOSITORY on its registry's public host)
+  # and its version, which is also the container name's suffix and the version label.
+  image='{{IMAGE}}'
+  version="${image##*:}"
 
-  root="${QITS_INSTALL_ROOT:-}"
-  bin="$root/usr/local/bin/qits-ci-runner"
-  envfile="$root/etc/qits-ci-runner.env"
-  unit="$root/etc/systemd/system/qits-ci-runner.service"
+  registry="${image%%/*}"
+  id8=$(printf '%s' "$QITS_CI_RUNNER_ID" | cut -c1-8)
+  name="qits-ci-runner-$id8-$version"
+  volume="qits-ci-runner-state-$id8"
 
-  [ "$(id -u)" = 0 ] || refuse "run this as root: the line pipes it into sudo, or paste it into a root shell."
   command -v docker >/dev/null 2>&1 || refuse "docker is not on PATH; install docker first."
+  docker version >/dev/null 2>&1 \
+    || refuse "docker does not answer (docker version failed); start it, or run this as root or as a user in the docker group."
 
-  if ! id qits-ci-runner >/dev/null 2>&1; then
-    useradd --system --no-create-home --shell /usr/sbin/nologin -G docker qits-ci-runner
+  # The registry answers an anonymous pull with 401, and the host's docker config is nobody's to
+  # write: a login there would outlive this script and serve every docker user on the host. So the
+  # login lives in a directory of its own (mktemp -d is 0700) and is gone before anything else runs.
+  config=$(mktemp -d)
+  if ! printf '%s' "$QITS_CI_RUNNER_REGISTRATION_TOKEN" \
+      | docker --config "$config" login "$registry" -u token --password-stdin >/dev/null 2>&1; then
+    rm -rf "$config"
+    refuse "the registry $registry refused the registration token; paste a fresh line from the CI UI."
   fi
-
-  # A binary already here is a re-run — a rotated token — and is only remembered to decide whether
-  # the unit needs restarting below; the binary itself is always replaced with the pinned version, so
-  # a host that installed an older runner is brought current every time this line is pasted again.
-  rerun=no
-  if [ -x "$bin" ]; then
-    rerun=yes
+  if ! docker --config "$config" pull "$image" >/dev/null; then
+    rm -rf "$config"
+    refuse "could not pull $image."
   fi
-  mkdir -p "$root/usr/local/bin"
-  curl -fsSL -H "Authorization: Bearer $QITS_CI_RUNNER_REGISTRATION_TOKEN" \
-    -o "$bin.part" "$binary_url" \
-    || { rm -f "$bin.part"; refuse "could not download the runner binary from $binary_url."; }
-  chmod 755 "$bin.part"
-  mv "$bin.part" "$bin"
+  rm -rf "$config"
 
-  mkdir -p "$root/etc"
-  (
-    umask 077
-    printf '%s\n' \
-      "QITS_CI_RUNNER_URL=$QITS_CI_RUNNER_URL" \
-      "QITS_CI_RUNNER_ID=$QITS_CI_RUNNER_ID" \
-      "QITS_CI_RUNNER_REGISTRATION_TOKEN=$QITS_CI_RUNNER_REGISTRATION_TOKEN" \
-      "QITS_CI_RUNNER_STATE_DIR=$state_dir" \
-      "QITS_CI_RUNNER_SLOTS=$QITS_CI_RUNNER_SLOTS" > "$envfile.part"
-  )
-  chmod 600 "$envfile.part"
-  mv "$envfile.part" "$envfile"
+  # Whatever runs as this runner now goes: an earlier install, a runner that rolled itself over, an
+  # exited predecessor. The step containers carry a different label and are the new runner's boot
+  # sweep's to remove.
+  for container in $(docker ps -aq --filter "label=qits.ci.runner.process=$QITS_CI_RUNNER_ID"); do
+    docker rm -f "$container" >/dev/null
+  done
 
-  mkdir -p "$root/etc/systemd/system"
-  write_unit > "$unit"
+  # The volume is KEPT — it is the runner's state — but its client goes: the runner registers with
+  # the token in this line, which on a re-run is a new one.
+  docker run --rm --entrypoint rm -v "$volume:/var/lib/qits-ci-runner" "$image" \
+    -f /var/lib/qits-ci-runner/client.json
 
-  systemctl daemon-reload
-  systemctl enable --now qits-ci-runner
-  # enable --now leaves a running unit alone, and a re-run has just rewritten the env file under one.
-  if [ "$rerun" = yes ]; then
-    systemctl restart qits-ci-runner
-  fi
+  # `-e NAME` hands docker the value from its own environment, so the token is in no command line.
+  export QITS_CI_RUNNER_REGISTRATION_TOKEN
 
-  echo "qits-ci-runner installed; watch: journalctl -fu qits-ci-runner"
-}
+  # THE CONTAINER CONTRACT. docker's restart policy is the supervisor; the socket is how the runner
+  # starts its steps and, when told to update, its own successor; the volume holds its client. No
+  # --network: docker's default bridge. The runner's own label is qits.ci.runner.process — never
+  # qits.ci.runner, which the runner's boot sweep removes.
+  set -- \
+    -d \
+    --name "$name" \
+    --restart unless-stopped \
+    --label "qits.ci.runner.process=$QITS_CI_RUNNER_ID" \
+    --label "qits.ci.runner.version=$version" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "$volume:/var/lib/qits-ci-runner" \
+    -e "QITS_CI_RUNNER_URL=$QITS_CI_RUNNER_URL" \
+    -e "QITS_CI_RUNNER_ID=$QITS_CI_RUNNER_ID" \
+    -e "QITS_CI_RUNNER_SLOTS=$QITS_CI_RUNNER_SLOTS" \
+    -e QITS_CI_RUNNER_REGISTRATION_TOKEN
+  # The operator's tuning, when the line (or the shell) set any. Everything else has its default.
+  for tuning in QITS_CI_RUNNER_DOCKER_TIMEOUT QITS_CI_RUNNER_BUILDKIT_IMAGE \
+      QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS \
+      QITS_CI_RUNNER_ROLLOVER_TIMEOUT; do
+    value=$(printenv "$tuning" || true)
+    if [ -n "$value" ]; then
+      case "$value" in
+        *[!A-Za-z0-9._~+/=:,-]*) refuse "$tuning carries a character this script will not hand to docker." ;;
+      esac
+      set -- "$@" -e "$tuning=$value"
+    fi
+  done
+  docker run "$@" "$image" >/dev/null
 
-# BYTE-IDENTICAL to qits-ci-runner-daemon's packaging/qits-ci-runner.service, and changed together
-# with it: that repository's scripts/test-install-contract.sh compares the two.
-write_unit() {
-  cat <<'QITS_CI_RUNNER_UNIT'
-# qits-ci-runner — the systemd unit the install script writes to /etc/systemd/system.
-#
-# CHANGE IT TOGETHER WITH qits-ci-service's service/src/main/resources/runner-install.sh.tmpl, which
-# embeds this file verbatim. scripts/test-install-contract.sh asserts the installed unit is
-# byte-identical to this one, so a drift between the two fails this repository's gate the next time
-# the fixture is refreshed from the template.
-[Unit]
-Description=qits CI runner
-# Docker must be up before the runner's boot sweep asks it anything, and the network before it
-# dials; `Wants=` so a missing target does not stop the runner from starting at all.
-After=docker.service network-online.target
-Wants=docker.service network-online.target
-
-[Service]
-# The five values the install script wrote, mode 0600: the registration token is among them.
-EnvironmentFile=/etc/qits-ci-runner.env
-ExecStart=/usr/local/bin/qits-ci-runner
-# The runner never exits healthy. Exit 2 and 5 are an env file to fix and will repeat every
-# RestartSec until it is; 3 is the platform being away and the restart is the retry.
-Restart=always
-RestartSec=5
-# An unprivileged system user in the docker group — root-equivalent through the socket, which is the
-# price of starting containers at all, but not root in its own right.
-User=qits-ci-runner
-# /var/lib/qits-ci-runner, created and owned for the user above: where client.json lives.
-StateDirectory=qits-ci-runner
-StateDirectoryMode=0700
-
-[Install]
-WantedBy=multi-user.target
-QITS_CI_RUNNER_UNIT
+  echo "qits-ci-runner started; watch: docker logs -f $name"
 }
 
 main "$@"

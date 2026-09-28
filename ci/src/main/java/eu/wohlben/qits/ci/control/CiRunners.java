@@ -366,7 +366,7 @@ public class CiRunners {
   public CiRunnerDto view(CiRunner runner) {
     long held =
         QuarkusTransaction.requiringNew().call(() -> runs.countRunningOnRunner(runner.id));
-    return mapper.toDto(runner, presence.connected(runner.id), held);
+    return mapper.toDto(runner, presence.connected(runner.id), held, versions(runner.id));
   }
 
   /** Every runner as an operator reads it, by name; one count query for all of them. */
@@ -376,8 +376,20 @@ public class CiRunners {
         QuarkusTransaction.requiringNew()
             .call(() -> new Read(runners.listByName(), runs.countRunningByRunner()));
     return read.runners().stream()
-        .map(r -> mapper.toDto(r, presence.connected(r.id), read.held().getOrDefault(r.id, 0L)))
+        .map(
+            r ->
+                mapper.toDto(
+                    r,
+                    presence.connected(r.id),
+                    read.held().getOrDefault(r.id, 0L),
+                    versions(r.id)))
         .toList();
+  }
+
+  /** The presence's version facts, never null — a seam answering null knows nothing. */
+  private CiRunnerPresence.Versions versions(UUID runnerId) {
+    CiRunnerPresence.Versions versions = presence.versions(runnerId);
+    return versions == null ? CiRunnerPresence.Versions.UNKNOWN : versions;
   }
 
   /**

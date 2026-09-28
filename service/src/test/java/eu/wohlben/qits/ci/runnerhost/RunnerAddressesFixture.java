@@ -21,6 +21,7 @@ public final class RunnerAddressesFixture {
     addresses.tokenUrlOverride = Optional.empty();
     addresses.artifactsInternalUrl = "http://dev-qits-artifacts:8080";
     addresses.artifactsUrl = Optional.empty();
+    addresses.registryInternalHost = "registry.dev.localhost:8080";
     return addresses;
   }
 }

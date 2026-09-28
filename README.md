@@ -206,21 +206,32 @@ The token is in it twice — the fetch's bearer and the script's value — and i
 not on the row, not on any read, not in a log line. Piped into `sh`, the script runs in a process of
 its own, so a refusal never closes the shell it was pasted into. The script itself is **generic**:
 `GET /ci/api/runners/install.sh` serves `service/src/main/resources/runner-install.sh.tmpl` with only
-the artifacts base above and the runner version filled in. POSIX `sh`, `set -eu`, for x86-64 Linux with
-systemd and docker; it reads the four values from its environment and refuses, one sentence each,
-when one is missing, without root (`id -u`) or without `docker` on PATH; creates the `qits-ci-runner`
-system user in group `docker`; downloads `<artifacts base>/artifacts/daemons/qits-ci-runner/<version>`
-to `/usr/local/bin/qits-ci-runner` (bearer: the registration token — through the edge, which
-introspects it); writes `/etc/qits-ci-runner.env` (0600: `QITS_CI_RUNNER_URL`, `_ID`,
-`_REGISTRATION_TOKEN`, `_STATE_DIR=/var/lib/qits-ci-runner`, `_SLOTS` = the row's, at least 1) and the
-unit — byte for byte qits-ci-runner-daemon's `packaging/qits-ci-runner.service` — then `systemctl
-enable --now`, and prints a closing line that never carries the token. Run again from a rotation's
-line it re-downloads the pinned binary, rewrites the env file and restarts the unit; the runner
-re-registers by itself when the token differs from the one it registered with. The version is the pinned
-`qits-ci-runner-protocol`'s `CiRunnerBinary.VERSION` (`runnerhost/CiRunnerPins`), with
-`qits.ci.runner-version-override` as the unset hatch. Every rendered value is held to a charset that is
-literal inside single quotes and the env file (the script checks the four again on the host): a
-deployment value outside it is 503 before anything is minted, a token outside it 502 and given back.
+the runner image filled in. **The runner is a native binary running inside a docker container**
+(qits-484) — there is no systemd unit, no binary on the host's disk and no env file. The image is
+`<registry host>/qits/qits-ci-runner:<version>` (`RunnerAddresses.runnerImage`): the registry host is
+the authority of `qits.ci.runner.artifacts-url` or of `https://registry.qits.<domain>`, and with no
+public domain `qits.artifacts.registry-host`, the name the platform host's own docker pulls under. POSIX
+`sh`, `set -eu`; it reads the four values from its environment and refuses, one sentence each, when one
+is missing or when `docker version` does not answer; logs in to the registry host with `docker --config
+<a temp dir> login -u token --password-stdin` (the registration token — the edge introspects it),
+pulls the image and deletes that config; `docker rm -f`s every container labelled
+`qits.ci.runner.process=<id>`; removes `client.json` from the kept state volume with a throwaway
+`docker run --rm --entrypoint rm`, so the credential it next registers with is the one THIS run was
+given rather than a stale one already sitting in the volume; and `docker run -d`s
+`qits-ci-runner-<first 8 of the id>-<version>`, labelled `qits.ci.runner.process=<id>` and
+`qits.ci.runner.version=<version>`, `--restart unless-stopped`, with the host's
+`/var/run/docker.sock`, the volume `qits-ci-runner-state-<first 8 of the id>` at
+`/var/lib/qits-ci-runner`, no `--network`, `QITS_CI_RUNNER_URL`, `_ID` and `_SLOTS` (the row's, at
+least 1) passed as `NAME=value`, and `_REGISTRATION_TOKEN` passed by name alone from its environment,
+so the token is on no command line. It prints `qits-ci-runner started; watch: docker logs -f <name>`
+and never the token. Run again from a rotation's line it pulls the pinned image, replaces the
+container and clears `client.json` again; the state volume itself is kept throughout, and the runner
+re-registers by itself against whatever token it was just started with. The version is the pinned
+`qits-ci-runner-protocol`'s
+`CiRunnerBinary.VERSION` (`runnerhost/CiRunnerPins`), with `qits.ci.runner-version-override` as the
+unset hatch. Every rendered value is held to a charset that is literal inside single quotes and a
+docker argument (the script checks the four again on the host): a deployment value outside it is 503
+before anything is minted, a token outside it 502 and given back.
 The template's shape is qits-ci-runner-daemon's `scripts/test-install-contract.sh` contract;
 `RunnerInstallScriptTest` runs that test against a rendering when the runner repository is checked out
 beside this one, and writes the rendering to `service/target/runner-install.fixture.sh`, which is that
@@ -287,8 +298,25 @@ a 1008. Forward-auth headers never name a runner, so **the machine gate must be 
 connect.** The conversation is the protocol jar's (`qits-ci-runner-protocol`): `Hello` (capabilities
 and `last_seen_at` recorded, a foreign `CAPABILITY_VERSION` closed 1008) → `Ack{slots}` with the
 **row's** slots → `Backlog{queued}`, pushed again after every accept, finish and settlement; a
-heartbeat stamps the row at most once a minute; a second dial of the same runner replaces the first,
-which is closed 1008 `ALREADY_CONNECTED`.
+heartbeat stamps the row at most once a minute; a second connection of the same runner that says
+`Hello` in the **same version** replaces the first, which is closed 1008 `ALREADY_CONNECTED` (decided
+at that `Hello`, where the version is known — a dial that never says hello replaces nothing).
+
+**A runner updates itself** (qits-465). Every `Hello`'s `runnerVersion` is compared with the pin
+(`CiRunnerPins`) *before* its capability version, so a runner of any older protocol is told what to
+become rather than closed; only the pinned version speaking another capability is refused. Any other
+version — older or newer, the pin is the authority — is sent `Upgrade{version: <pin>, image:
+RunnerAddresses.runnerImage(<pin>), sha256: null}` and that **connection drains**: `Ack{slots: 0}` (no
+`Ack` at all when its capability differs — it would exit on one), every `Reserve` answered `Nothing`,
+and the runs it already holds carry on over it to their end. The runner starts its successor container
+beside itself, which dials as a second connection — allowed because the versions differ. Once a
+connection of the pinned version has said `Hello` it gets the row's slots, and every other connection
+of the runner is sent `Retire{reason: "superseded by <pin>"}`; the runner closes that socket itself.
+**Runs are routed by connection, not by runner**: a run is held by the connection its `Take` went out
+on (`CiRunnerRegistry.hold`), and every `Launch`, `Reap`, `Cancel` and `Released` for it goes there —
+the draining one for what it took before, the successor for everything after. A runner's read shape
+and its row in the queue carry `runnerVersion` (what its current connection said), `targetVersion`
+(the pin) and `updating` (a draining connection is still open); `connected` is any open connection.
 
 **`Reserve` is the claim.** `CiRunService.reserveFor` walks the queue in the claim loop's own order and
 takes the first run with the same conditional UPDATE a local worker's claim uses, writing `runner_id`

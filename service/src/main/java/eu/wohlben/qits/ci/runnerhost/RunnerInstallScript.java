@@ -14,9 +14,12 @@ import java.util.regex.Pattern;
  * How a runner is installed, in two parts that never meet on this side: the <b>generic script</b>
  * and the <b>install line</b>.
  *
- * <p>The generic script is {@code runner-install.sh.tmpl} with this deployment's public artifacts
- * base and the pinned runner version filled in, and nothing else — no runner id, no token, no
- * secret. {@code GET /ci/api/runners/install.sh} serves it. The install line is what the create and
+ * <p>The generic script is {@code runner-install.sh.tmpl} with the pinned runner image filled in —
+ * {@link RunnerAddresses#runnerImage}, the same reference an {@code Upgrade} names — and nothing
+ * else: no runner id, no token, no secret. {@code GET /ci/api/runners/install.sh} serves it. It logs
+ * in to the image's registry with the registration token, pulls the image, removes every container
+ * of the runner and starts one ({@code docker run -d}) with the four values; there is no systemd
+ * unit, no binary on the host's disk and no env file any more (qits-484). The install line is what the create and
  * a rotation answer as {@code installScript}: one line to paste, which fetches that script with the
  * registration token and pipes it into {@code sudo env <the four values> sh}. Piped, the script runs
  * in a process of its own, so its {@code set -eu} refusing ends that process and never the shell
@@ -25,13 +28,13 @@ import java.util.regex.Pattern;
  *
  * <p><b>The template's shape is a contract with another repository.</b> qits-ci-runner-daemon's
  * {@code scripts/test-install-contract.sh} runs one rendering of it (its {@code
- * scripts/fixtures/runner-install.sh}) against stubs with the four values in its environment, as the
- * line runs it, and its {@code packaging/qits-ci-runner.service} is embedded in it byte for byte.
- * Change the template and that fixture moves with it.
+ * scripts/fixtures/runner-install.sh}) against a stub docker with the four values in its
+ * environment, as the line runs it, and checks the container it starts against the runner's
+ * container contract. Change the template and that fixture moves with it.
  *
  * <p><b>Every value lands inside single quotes</b> — in the line, and in the script's own
- * assignment — and on a {@code KEY=value} line of a systemd {@code EnvironmentFile}, so each is held
- * to a charset that is literal in all of them: no quote, backslash, whitespace, {@code $} or brace.
+ * assignment — and in an argument of {@code docker}, so each is held to a charset that is literal
+ * in all of them: no quote, backslash, whitespace, {@code $} or brace.
  * A value outside it is refused here rather than rendered into something that parses differently on
  * a root shell. The config-side values are checked by {@link #requireRenderable()} before anything
  * is minted; the token by {@link #requireCarriable(String)} straight after, while it can still be
@@ -53,7 +56,11 @@ public class RunnerInstallScript {
   /** {@code qits_tok_} plus base64 or base64url, and nothing a quote or a line could trip on. */
   private static final Pattern TOKEN = Pattern.compile("[A-Za-z0-9._~+/=-]{1,1024}");
 
-  private static final Pattern VERSION = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._+-]{0,127}");
+  /** A docker tag: what the pinned version becomes in the image reference. */
+  private static final Pattern VERSION = Pattern.compile("[A-Za-z0-9_][A-Za-z0-9._-]{0,127}");
+
+  /** A registry authority, {@code host[:port]}, as docker reads the first segment of a reference. */
+  private static final Pattern REGISTRY = Pattern.compile("[A-Za-z0-9.-]+(:[0-9]{1,5})?");
 
   private static final String TEXT = load();
 
@@ -79,10 +86,10 @@ public class RunnerInstallScript {
         addresses.ciBase(),
         "the CI base (QITS_DOMAIN / qits.ci.runner.public-url / qits.ci.runner.internal-url)");
     require(
-        URL,
-        addresses.artifactsBase(),
-        "the artifacts base (QITS_DOMAIN / qits.ci.runner.artifacts-url /"
-            + " qits.ci.runner.artifacts-internal-url)");
+        REGISTRY,
+        addresses.registryHost(),
+        "the registry host (QITS_DOMAIN / qits.ci.runner.artifacts-url /"
+            + " qits.artifacts.registry-host)");
     require(VERSION, pins.version(), CiRunnerPins.OVERRIDE_KEY + " / the pinned protocol version");
   }
 
@@ -94,9 +101,9 @@ public class RunnerInstallScript {
     }
   }
 
-  /** The generic script, with this deployment's artifacts base and pinned version. */
+  /** The generic script, naming the pinned runner image on this deployment's registry. */
   public String generic() {
-    return generic(addresses.artifactsBase(), pins.version());
+    return generic(addresses.registryHost(), pins.version());
   }
 
   /** The line for this runner and this token, dialling this deployment's CI base. */
@@ -104,12 +111,16 @@ public class RunnerInstallScript {
     return line(new Line(addresses.ciBase(), runner.id, registrationToken, runner.slots));
   }
 
-  /** The template with its two placeholders replaced. */
-  public static String generic(String artifactsUrl, String runnerVersion) {
-    require(URL, artifactsUrl, "the artifacts base");
+  /**
+   * The template with its one placeholder, the image, replaced: {@code
+   * <registryHost>/qits/qits-ci-runner:<runnerVersion>}, composed exactly as {@link
+   * RunnerAddresses#runnerImage} composes it for an {@code Upgrade}.
+   */
+  public static String generic(String registryHost, String runnerVersion) {
+    require(REGISTRY, registryHost, "the registry host");
     require(VERSION, runnerVersion, "the runner version");
-    String script = fill(TEXT, "ARTIFACTS_URL", artifactsUrl);
-    script = fill(script, "RUNNER_VERSION", runnerVersion);
+    String image = registryHost + "/" + RunnerAddresses.RUNNER_IMAGE_REPOSITORY + ":" + runnerVersion;
+    String script = fill(TEXT, "IMAGE", image);
     if (script.contains("{{")) {
       throw new IllegalStateException(TEMPLATE + " has a placeholder nothing fills");
     }

@@ -21,39 +21,62 @@ import eu.wohlben.qits.cirunner.protocol.Launched;
 import eu.wohlben.qits.cirunner.protocol.Reap;
 import eu.wohlben.qits.cirunner.protocol.Reaped;
 import eu.wohlben.qits.cirunner.protocol.Released;
+import eu.wohlben.qits.cirunner.protocol.Retire;
+import eu.wohlben.qits.cirunner.protocol.Upgrade;
 import io.quarkus.websockets.next.CloseReason;
 import io.quarkus.websockets.next.WebSocketConnection;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 import org.jboss.logging.Logger;
 
 /**
- * Every runner holding a socket to this process: one {@link Session} per runner id, the launches
+ * Every runner holding a socket to this process: one {@link Session} per connection, the launches
  * and reaps it owes an answer for, and which run each session took. {@link CiRunnerSocket} owns the
  * WebSocket lifecycle and forwards frames here — {@code CiDaemonSocket}/{@code CiDaemonRegistry}'s
  * split, kept for the same reason.
  *
- * <p><b>A session is one connection, and a runner has at most one.</b> A second dial for the same
- * runner <em>replaces</em> the first, which is closed 1008 {@link #ALREADY_CONNECTED}: unlike a
- * step's daemon, a runner reconnects forever by design, and the likeliest second dial is the same
- * runner coming back before this host noticed its old socket was dead. Refusing the new one would
- * lock a runner out behind a half-open socket until TCP gave up on it. Everything the old session
- * was owed completes as {@link LaunchAnswer.Status#CONNECTION_LOST} at once — the runner reset its
- * own state when it lost that socket, so nothing launched there will ever be answered.
+ * <p><b>A session is one connection, and a runner has at most one per version.</b> A second
+ * connection of the same runner that says {@code Hello} in the <em>same</em> version
+ * <em>replaces</em> the first, which is closed 1008 {@link #ALREADY_CONNECTED}: unlike a step's
+ * daemon, a runner reconnects forever by design, and the likeliest second dial is the same runner
+ * coming back before this host noticed its old socket was dead. Refusing the new one would lock a
+ * runner out behind a half-open socket until TCP gave up on it. Everything the old session was owed
+ * completes as {@link LaunchAnswer.Status#CONNECTION_LOST} at once — the runner reset its own state
+ * when it lost that socket, so nothing launched there will ever be answered. The decision waits for
+ * the {@code Hello} because the version is only known there; a dial that never says hello replaces
+ * nothing.
+ *
+ * <p><b>Two versions side by side are a self-update, and are allowed</b> (qits-465). A runner whose
+ * {@link Hello#runnerVersion()} is not the pinned one ({@link CiRunnerPins}) — older or newer, the
+ * pin is the authority — is sent {@link Upgrade} and its session is <b>draining</b>: {@code Ack}
+ * grants it 0 slots and every {@code Reserve} is answered {@code Nothing}, while the runs it already
+ * holds carry on to their end over it. The runner then starts its successor beside itself, which
+ * dials as a second connection; once one of the pinned version has said {@code Hello} it gets the
+ * row's slots and every other session of the runner is sent {@link Retire}. Nothing here closes the
+ * retired one: the runner closes its own socket and exits, and its close is an ordinary {@link
+ * #onClose}.
  *
  * <p><b>Runs are held by the session that took them, not by the runner.</b> {@link #hold} binds a
  * run to the session its {@code Take} went out on, and a run whose session is gone is gone with it:
  * the runner forgets every run it held when its socket drops, so a step launched for that run over
- * a <em>later</em> session would run on a runner that no longer counts it against a slot.
+ * a <em>later</em> session would run on a runner that no longer counts it against a slot. That is
+ * also what routes a self-update: every {@code Launch}, {@code Reap}, {@code Cancel} and {@code
+ * Released} of a held run goes to {@link #holding}'s session — the draining one for the runs it took
+ * before it was told to upgrade, the successor for every run after — and never to "the runner".
  *
  * <p><b>Nothing here waits without a deadline</b> — the daemon registry's rule, for the daemon
  * registry's reason: a run's driver parks on {@link #launch} and {@link #reap}. A frame is sent
@@ -96,7 +119,21 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
 
   @Inject ObjectMapper objectMapper;
 
-  private final ConcurrentHashMap<UUID, Session> sessions = new ConcurrentHashMap<>();
+  /** The pinned runner version every {@code Hello} is compared with. */
+  @Inject CiRunnerPins pins;
+
+  /** Where the pinned runner image is pulled from, for {@link Upgrade#image()}. */
+  @Inject RunnerAddresses addresses;
+
+  /**
+   * Every open session of each runner, oldest first. A list rather than one session because a
+   * self-updating runner holds two for a while; mutated only inside {@link ConcurrentHashMap#compute}
+   * on the runner's key, so the same-version rule and the retirement decide over a stable set.
+   */
+  private final ConcurrentHashMap<UUID, List<Session>> sessions = new ConcurrentHashMap<>();
+
+  /** Admission order, so "the newest session" does not depend on a clock's resolution. */
+  private final AtomicLong admitted = new AtomicLong();
 
   private final ConcurrentHashMap<String, Session> heldRuns = new ConcurrentHashMap<>();
 
@@ -128,14 +165,18 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
     private final ConcurrentHashMap<String, CompletableFuture<Boolean>> reaps =
         new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Object, Runnable> onLoss = new ConcurrentHashMap<>();
+    private final long order;
     private volatile boolean greeted;
     private volatile Instant seenWrittenAt;
+    private volatile String runnerVersion;
+    private volatile boolean draining;
 
-    Session(CiRunner runner, WebSocketConnection connection) {
+    Session(CiRunner runner, WebSocketConnection connection, long order) {
       this.runner = runner;
       this.runnerId = runner.id;
       this.runnerName = runner.name;
       this.connection = connection;
+      this.order = order;
     }
 
     /** The row this session was admitted as — detached, read once at the dial. */
@@ -158,6 +199,19 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
 
     public boolean isOpen() {
       return !closed.isDone();
+    }
+
+    /** What the runner's {@code Hello} said it is; null until it has said one. */
+    public String runnerVersion() {
+      return runnerVersion;
+    }
+
+    /**
+     * Whether this connection was told to {@link Upgrade}: it holds no slot, reserves nothing, and
+     * only finishes the runs it already holds.
+     */
+    public boolean draining() {
+      return draining;
     }
 
     boolean owns(WebSocketConnection other) {
@@ -189,7 +243,10 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
   /** How a {@code Hello} was received. */
   public enum Greeting {
     GREETED,
-    /** The runner speaks another capability version; the socket is closed 1008. */
+    /**
+     * The runner is the pinned version and speaks another capability version, so there is nothing
+     * to update it to; the socket is closed 1008. Any other version is told to upgrade instead.
+     */
     VERSION_MISMATCH,
     /** The row went away between the dial and the {@code Hello}. */
     RUNNER_GONE
@@ -198,29 +255,36 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
   // --- the socket side --------------------------------------------------------------------------
 
   /**
-   * Bind a connection to its runner, replacing (and closing) any session that runner already had.
-   * The runner row was resolved from the bearer by the caller; nothing about identity is read here.
+   * Bind a connection to its runner, beside any session that runner already has — which of them
+   * stays is decided at its {@code Hello} ({@link #onHello}), where its version is known. The
+   * runner row was resolved from the bearer by the caller; nothing about identity is read here.
    */
   public Session admit(CiRunner runner, WebSocketConnection connection) {
-    Session fresh = new Session(runner, connection);
-    Session previous = sessions.put(runner.id, fresh);
-    if (previous != null) {
-      LOG.warnf(
-          "Runner %s (%s) dialled again on connection %s; closing its previous connection %s %s",
-          runner.name, runner.id, connection.id(), previous.connection.id(), ALREADY_CONNECTED);
-      lose(previous);
-      closeBounded(
-          previous.connection,
-          new CloseReason(CLOSE_POLICY, ALREADY_CONNECTED),
-          "the replaced connection of runner " + runner.name);
-    }
+    Session fresh = new Session(runner, connection, admitted.incrementAndGet());
+    sessions.compute(
+        runner.id,
+        (id, present) -> {
+          List<Session> next = present == null ? new ArrayList<>() : new ArrayList<>(present);
+          next.add(fresh);
+          return List.copyOf(next);
+        });
     LOG.infof("Runner %s (%s) connected (connection %s)", runner.name, runner.id, connection.id());
     return fresh;
   }
 
   /**
-   * The runner said who it is: check the protocol, record what it said, then answer {@code Ack}
-   * with the row's slots and {@code Backlog} with the queue.
+   * The runner said who it is: check its version against the pin, then the protocol, record what
+   * it said, settle which of the runner's sessions stay, then answer {@code Ack} with the row's
+   * slots and {@code Backlog} with the queue — or, for a runner that is not the pinned version,
+   * {@link Upgrade} and an {@code Ack} of 0.
+   *
+   * <p><b>The version is checked before the capability</b>, because {@link Upgrade}, {@link Retire}
+   * and {@code Hello.runnerVersion} are the frozen part of the wire: a runner of any older protocol
+   * still reads them, so it is told what to become rather than closed and left to be updated by a
+   * person at the machine. Only the pinned binary speaking another capability is refused — there
+   * is nothing for it to update to. A mismatched runner that also speaks another capability gets
+   * the {@code Upgrade} and no {@code Ack} at all: an {@code Ack} in a capability it does not know
+   * is a frame it exits on, which would stop the update it was just sent.
    *
    * <p><b>The slots are the row's, never the runner's.</b> {@link Hello#slots()} is what its
    * operator configured on the machine, and it is advisory — the row is what an admin edits, so the
@@ -228,17 +292,37 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
    * two is wrong is a person's call.
    */
   public Greeting onHello(Session session, Hello hello) {
-    if (hello.capabilityVersion() != CiRunnerProtocol.CAPABILITY_VERSION) {
+    String pin = pins.version();
+    boolean current = pin.equals(hello.runnerVersion());
+    boolean speaks = hello.capabilityVersion() == CiRunnerProtocol.CAPABILITY_VERSION;
+    if (current && !speaks) {
       LOG.warnf(
           "Runner %s announced capability version %d and this host speaks %d — refusing it",
           session.runnerName, hello.capabilityVersion(), CiRunnerProtocol.CAPABILITY_VERSION);
       return Greeting.VERSION_MISMATCH;
     }
-    CiRunner row = runners.recordHello(session.runnerId, capabilities(hello.capabilities()));
+    // Capabilities in a protocol this host does not speak are not read: the registered answer stands.
+    CiRunner row =
+        runners.recordHello(session.runnerId, speaks ? capabilities(hello.capabilities()) : null);
     if (row == null) {
       return Greeting.RUNNER_GONE;
     }
     session.seenWrittenAt = Instant.now();
+    session.runnerVersion = hello.runnerVersion();
+    session.draining = !current;
+    List<Session> retiring = settle(session);
+    if (!current) {
+      String image = addresses.runnerImage(pin);
+      LOG.infof(
+          "Runner %s said hello as %s (capability %d) and the pin is %s — upgrading it to %s; this"
+              + " connection drains",
+          row.name, hello.runnerVersion(), hello.capabilityVersion(), pin, image);
+      send(session, new Upgrade(pin, image, null));
+      if (speaks) {
+        send(session, new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 0));
+      }
+      return Greeting.GREETED;
+    }
     if (hello.slots() != row.slots) {
       LOG.infof(
           "Runner %s's machine is configured for %d slot(s) and its row grants %d; it is held to %d",
@@ -252,7 +336,61 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
     // Only now does a broadcast reach it: a Backlog before the Ack would be a frame the runner has
     // no slots to act on yet.
     session.greeted = true;
+    for (Session old : retiring) {
+      LOG.infof(
+          "Runner %s's %s connection %s is superseded by %s; retiring it",
+          row.name, old.runnerVersion, old.connection.id(), pin);
+      send(old, new Retire("superseded by " + pin));
+    }
     return Greeting.GREETED;
+  }
+
+  /**
+   * The same-version rule, applied once a session has said which version it is: every other open
+   * session of the runner that said {@code Hello} in the same version is replaced — dropped here,
+   * its obligations lost, its socket closed {@link #ALREADY_CONNECTED}. Returned are the sessions of
+   * <em>other</em> versions when this one is the pinned version, which are the ones to {@link
+   * Retire}; for a draining session nothing is. A session that has not said {@code Hello} yet is
+   * left alone either way: its version is unknown, and it is decided at its own.
+   */
+  private List<Session> settle(Session session) {
+    List<Session> replaced = new ArrayList<>();
+    List<Session> retiring = new ArrayList<>();
+    sessions.computeIfPresent(
+        session.runnerId,
+        (id, present) -> {
+          List<Session> kept = new ArrayList<>();
+          for (Session other : present) {
+            if (other == session || other.runnerVersion == null) {
+              kept.add(other);
+            } else if (other.runnerVersion.equals(session.runnerVersion)) {
+              replaced.add(other);
+            } else {
+              kept.add(other);
+              if (!session.draining) {
+                retiring.add(other);
+              }
+            }
+          }
+          return kept.isEmpty() ? null : List.copyOf(kept);
+        });
+    for (Session previous : replaced) {
+      LOG.warnf(
+          "Runner %s (%s) said hello again as %s on connection %s; closing its previous connection"
+              + " %s %s",
+          session.runnerName,
+          session.runnerId,
+          session.runnerVersion,
+          session.connection.id(),
+          previous.connection.id(),
+          ALREADY_CONNECTED);
+      lose(previous);
+      closeBounded(
+          previous.connection,
+          new CloseReason(CLOSE_POLICY, ALREADY_CONNECTED),
+          "the replaced connection of runner " + session.runnerName);
+    }
+    return retiring;
   }
 
   /** Liveness: the socket is the signal, and the row hears about it at most once a minute. */
@@ -304,15 +442,45 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
    * must not take the session that replaced it — and everything it was owed completes now.
    */
   public void onClose(Session session) {
-    if (sessions.remove(session.runnerId, session)) {
-      LOG.infof("Runner %s (%s) disconnected", session.runnerName, session.runnerId);
+    boolean[] removed = {false};
+    sessions.computeIfPresent(
+        session.runnerId,
+        (id, present) -> {
+          List<Session> kept = new ArrayList<>(present);
+          removed[0] = kept.remove(session);
+          return kept.isEmpty() ? null : List.copyOf(kept);
+        });
+    if (removed[0]) {
+      LOG.infof(
+          "Runner %s (%s) disconnected (connection %s)",
+          session.runnerName, session.runnerId, session.connection.id());
     }
     lose(session);
   }
 
-  /** The session a connection was admitted as, when it is still the runner's current one. */
+  /**
+   * The runner's current session: the one that holds its slots — greeted in the pinned version —
+   * when there is one, else its newest open session (a draining one, or one not greeted yet), else
+   * null. Where a frame for the runner rather than for one of its runs goes.
+   */
   public Session current(UUID runnerId) {
-    return sessions.get(runnerId);
+    List<Session> open = open(runnerId);
+    return open.stream()
+        .filter(s -> s.greeted && !s.draining)
+        .findFirst()
+        .orElseGet(() -> open.isEmpty() ? null : open.get(open.size() - 1));
+  }
+
+  /** Every open session of a runner, oldest first; empty when it has none. */
+  List<Session> open(UUID runnerId) {
+    List<Session> present = sessions.get(runnerId);
+    if (present == null) {
+      return List.of();
+    }
+    return present.stream()
+        .filter(Session::isOpen)
+        .sorted(Comparator.comparingLong(s -> s.order))
+        .toList();
   }
 
   // --- the driver side --------------------------------------------------------------------------
@@ -442,18 +610,41 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
     }
   }
 
-  /** {@link #send(Session, CiRunnerMessage)} to a runner's current session, if it has one. */
+  /** {@link #send(Session, CiRunnerMessage)} to a runner's {@link #current} session, if it has one. */
   public boolean send(UUID runnerId, CiRunnerMessage message) {
-    Session session = sessions.get(runnerId);
+    Session session = current(runnerId);
     return session != null && send(session, message);
   }
 
   // --- the seams ----------------------------------------------------------------------------------
 
+  /** Any open connection is a connected runner — a draining one is still running its runs. */
   @Override
   public boolean connected(UUID runnerId) {
-    Session session = sessions.get(runnerId);
-    return session != null && session.isOpen();
+    return !open(runnerId).isEmpty();
+  }
+
+  /**
+   * What the runner runs and what it should: the {@link #current} session's version (null before
+   * any {@code Hello}), the pin, and whether a draining connection is still open — an update in
+   * flight, or a runner that never completes one.
+   */
+  @Override
+  public Versions versions(UUID runnerId) {
+    List<Session> open = open(runnerId);
+    Session current = current(runnerId);
+    String running = current == null ? null : current.runnerVersion;
+    if (running == null) {
+      // A newest session not greeted yet says nothing; the newest that did is the answer.
+      running =
+          open.stream()
+              .map(s -> s.runnerVersion)
+              .filter(Objects::nonNull)
+              .reduce((older, newer) -> newer)
+              .orElse(null);
+    }
+    boolean updating = open.stream().anyMatch(s -> s.draining);
+    return new Versions(running, pins.version(), updating);
   }
 
   @Override
@@ -469,7 +660,8 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
    */
   public void broadcastBacklog(int queued) {
     String frame = codec.encode(new Backlog(queued));
-    for (Session session : sessions.values()) {
+    for (Session session : sessions.values().stream().flatMap(List::stream).toList()) {
+      // A draining session is never greeted: with 0 slots there is nothing for it to act on.
       if (!session.greeted || !session.isOpen() || !session.connection.isOpen()) {
         continue;
       }
@@ -486,7 +678,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
     }
   }
 
-  /** Observational: how many runners hold a session here. */
+  /** Observational: how many runners hold at least one session here. */
   public int size() {
     return sessions.size();
   }

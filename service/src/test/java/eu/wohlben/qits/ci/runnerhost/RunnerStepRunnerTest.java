@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.runnerhost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -110,6 +111,8 @@ class RunnerStepRunnerTest {
   @Inject RunnerStepRunner steps;
 
   @Inject CiRunnerRegistry registry;
+
+  @Inject CiRunnerPins pins;
 
   @Inject CiDaemonLauncher launcher;
 
@@ -239,6 +242,53 @@ class RunnerStepRunnerTest {
       assertEquals(StepOutcome.LAUNCH_FAILED, refused.outcome());
       assertTrue(refused.output().contains("pull access denied"), refused.output());
       assertTrue(refused.output().contains(RUNNER_NAME), refused.output());
+    } finally {
+      steps.runClosed(runId);
+    }
+  }
+
+  // --- a self-updating runner (qits-465) ---------------------------------------------------------
+
+  /**
+   * A run held by a connection that was since told to upgrade, with the pinned successor already
+   * beside it: the step's {@code Launch} and {@code Reap} go to the connection that took the run,
+   * never to the runner's current one — the successor never counted that run against a slot.
+   */
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aRunHeldByTheDrainingConnectionIsLaunchedAndReapedThere() throws Exception {
+    String runId = "runner-draining-" + UUID.randomUUID();
+    try (FakeCiRunner old = FakeCiRunner.dial(runnerEndpoint)) {
+      old.send(
+          new Hello(
+              "0.0.1-old",
+              CiRunnerProtocol.CAPABILITY_VERSION,
+              1,
+              new Capabilities(true, "amd64", "linux", Map.of())));
+      assertNotNull(old.next(eu.wohlben.qits.cirunner.protocol.Upgrade.class, SOON));
+      assertNotNull(old.next(eu.wohlben.qits.cirunner.protocol.Ack.class, SOON));
+      registry.hold(registry.current(runnerId), runId);
+      try (FakeCiRunner successor = greeted()) {
+        assertNotNull(old.next(eu.wohlben.qits.cirunner.protocol.Retire.class, SOON));
+        assertTrue(registry.holding(runId).draining());
+        assertFalse(registry.current(runnerId).draining(), "the successor is the runner now");
+
+        CompletableFuture<StepResult> result =
+            CompletableFuture.supplyAsync(() -> steps.run(step(runId), new Recorder()));
+
+        Launch launch = old.next(Launch.class, SOON);
+        assertNotNull(launch, "the draining connection is asked for its own run's container");
+        old.send(new LaunchFailed(runId, 0, "refused on the old connection"));
+        Reap reap = old.next(Reap.class, SOON);
+        assertNotNull(reap, "and reaps it");
+        old.send(new Reaped(runId, 0));
+
+        StepResult refused = result.get(SOON.toSeconds(), TimeUnit.SECONDS);
+        assertEquals(StepOutcome.LAUNCH_FAILED, refused.outcome());
+        assertTrue(refused.output().contains("refused on the old connection"), refused.output());
+        assertNull(successor.next(Launch.class, Duration.ofMillis(300)));
+      }
     } finally {
       steps.runClosed(runId);
     }
@@ -380,7 +430,7 @@ class RunnerStepRunnerTest {
     FakeCiRunner runner = FakeCiRunner.dial(runnerEndpoint);
     runner.send(
         new Hello(
-            "runner-test",
+            pins.version(),
             CiRunnerProtocol.CAPABILITY_VERSION,
             1,
             new Capabilities(true, "amd64", "linux", Map.of())));
