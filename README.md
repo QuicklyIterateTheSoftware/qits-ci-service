@@ -141,11 +141,13 @@ runner's register door, and the socket it then holds open to pull work.
 |---|---|---|
 | `POST /ci/api/runners` `{name, description?, slots?, plane?}` | 201 the runner's fields plus `installScript` — the one install line carrying the registration token, **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}`, 400 `EDGE_PLANE_UNCONFIGURED` for `plane: EDGE` on a qits-ci that knows no public domain, 409 on a taken one | `qits:admin` |
 | `GET /ci/api/runners/install.sh` | `text/plain`: the generic install script the line pipes into `sh` — no secret, no runner | `qits:ci-runner-registration`, `qits:admin`, `qits:system`, `qits:agent` |
-| `GET /ci/api/runners` | `{runners: [{id, name, description, slots, plane, capabilities, registered, connected, heldRuns, lastSeenAt, createdAt}]}`, by name | `qits:admin`, `qits:system`, `qits:agent` |
+| `GET /ci/api/runners` | `{runners: [{id, name, description, slots, plane, capabilities, registered, connected, heldRuns, lastSeenAt, createdAt, runnerVersion, targetVersion, updating, quarantined, quarantineReason, quarantinedAt, lastHealthcheck: {at, result, runId, detail}}]}`, by name | `qits:admin`, `qits:system`, `qits:agent` |
 | `GET /ci/api/runners/{id}` | one runner, 404 | the same |
 | `PATCH /ci/api/runners/{id}` `{slots?, description?, plane?}` | the runner; `slots: 0` drains it; a plane change reaches the runner's next run; 400 `EDGE_PLANE_UNCONFIGURED` as on the create | `qits:admin` |
 | `POST /ci/api/runners/{id}/registration-token` | the runner's fields plus a fresh `installScript` line with a new token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin` |
 | `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run | `qits:admin` |
+| `POST /ci/api/runners/{id}/greenlight` | the runner, its quarantine lifted and its failure streak reset; a runner in service is answered as it is | `qits:admin` |
+| `POST /ci/api/runners/{id}/healthcheck` | 202 `{runId}`: a health check queued for it now; 409 while one is queued or running, 503 when its repository, head or image cannot be resolved | `qits:admin` |
 
 **The register door is `POST /ci/api/runners/{id}/register` `{capabilities}`**, and a runner knocks on
 it with its registration token — a `qits_tok_` value the edge introspects and exchanges for a short
@@ -332,8 +334,56 @@ within `qits.ci.runner.launch-timeout-seconds` (180); then the container's own d
 verdict, qits-ci sends `Released{runId}`, the only frame that frees the runner's slot. A runner whose
 socket drops mid-step ends that step `CONNECTION_LOST` at once, its output naming the runner
 (`[runner <name> disconnected]`); the run is an ordinary failed run and retries like one.
-`GET /ci/api/runs/queue` lists every runner (`runners: [{id, name, slots, held, connected}]`) and its
-forecast counts the local pool plus every connected runner's slots.
+`GET /ci/api/runs/queue` lists every runner (`runners: [{id, name, slots, held, connected, …, quarantined,
+quarantineReason, quarantinedAt, lastHealthcheck}]`) and its forecast counts the local pool plus every
+connected runner's slots — none of a quarantined one's.
+
+#### Quarantine, and the health check that ends one
+
+**A runner that keeps failing is taken out of service** (qits-466, `ci/control/CiRunnerHealth`). A step
+of a runner's run that ends `LAUNCH_FAILED`, `NEVER_STARTED` or `CONNECTION_LOST` failed through the
+runner's fault, before or outside its build script; `qits.ci.runner.quarantine.failures` (3) of them in
+a row, spanning at least `qits.ci.runner.quarantine.min-runs` (2) distinct runs, **quarantine** it with a
+reason such as `3 consecutive runner failures (NEVER_STARTED on run …)`. Any step whose daemon dialled
+back resets the streak, whatever the build then did; the two-run rule is what keeps one recipe naming an
+unpublished image (a `LAUNCH_FAILED` on every attempt) from quarantining a healthy machine. A quarantined
+runner's **effective slots are 0**: its `Ack` carries 0, every ordinary `Reserve` is answered `Nothing`,
+and the queue's forecast counts none of it — while its row's `slots` stays its operator's number, which
+is what it gets back. **A newly registered runner starts quarantined** (`awaiting its first health
+check`) and is queued a health check at once. `V24__runner_quarantine.sql` has the columns.
+
+**The health check is a pseudo-build**: a `ci_run` with `purpose = HEALTHCHECK` and `target_runner_id`,
+cloning `main`'s head of `qits.ci.runner.healthcheck.repository` (`qits-ci-service`) and running `echo
+hello world` for up to 300 s in `qits.ci.runner.healthcheck.image` (`qits/build-images/ci-base:latest`,
+pinned to a digest like any step image) — the image pull, the daemon download, the dial back through
+the edge and the clone with the run's credential, which is exactly what a runner can break. **Only its
+target may take it, and may take it while quarantined** (its `Reserve` is matched to it first, needing
+no free slot beyond the one it occupies; while one waits the runner's `Ack` grants one more than it
+holds, since a runner never reserves past its `Ack`); no local worker and no other runner ever claims
+it. It announces no `BuildSuccessful`/`BuildFailed`/`BuildStatusChanged`, gates no release request,
+cannot be retried (409) and is in **no listing** — not a repository's runs, `/active`, `/finished`,
+`/queue` or `GET /ci/api/repositories[/summary]`; it is read by id at `GET /ci/api/runs/{runId}`, which
+is how a runner's page links it. Green records `PASSED` and reinstates a quarantined runner; red records
+`FAILED` with the step's outcome and the head of its output (the runner's container log tail included)
+and quarantines the runner (`health check failed: <outcome>`) or keeps it so; a cancelled one settles
+nothing. A check's own steps never count toward a streak. One is queued at registration, by the admin
+door, and every `qits.ci.runner.healthcheck.interval` (1 h, from the quarantine or the newest check) for
+each quarantined, **connected** runner with none pending; one still `QUEUED` after
+`qits.ci.runner.healthcheck.queue-timeout` (30 min) is settled `FAILED`, `runner not connected`.
+
+**A connected runner is told**: `Quarantined{reason, since}` when it is taken out and right after its
+`Ack` at every `Hello` while out, `Reinstated{by: admin|healthcheck}` when it is put back — both
+additive frames an older runner drops. And **every change of what a connected runner may hold re-sends
+`Ack` with the effective slots, then `Backlog`**: an operator's `PATCH` of `slots`, a quarantine, a
+reinstatement, a health check queued or settled. A runner learns its slots from an `Ack` alone, so before
+this a runner connected at 0 and raised to 1 sat idle beside a queued run (measured live); the runner
+reads every `Ack` as a new cap and keeps its held runs. **An EDGE runner's `Ack` also carries
+`registryMirrors`** (`runnerhost/RunnerRegistryMirrors`): every spelling of the platform's registry and
+mirror the estate's Dockerfiles commit (`registry.<env>.localhost:8080`, `mirror.<env>.localhost:8080`,
+`localhost:8081`/`8082`, and every key qits-ci reads for either store) mapped to `registry.qits.<domain>`
+or `mirror.qits.<domain>`, plus `docker.io`, `quay.io` and `registry.access.redhat.com` to the public
+mirror's `/hub`, `/quay` and `/redhat` — qits-containers' own builder table, pointed at the public
+names; an INTERNAL runner's is null.
 
 #### A runner's lifecycle is on the bus
 
@@ -357,6 +407,12 @@ the `RunnerAnnouncer` seam in `ci/control`, implemented by `service/…/bus/Runn
 - **`RunnerChanged`** — an operator's `PATCH` moved at least one setting: the new `slots`, `plane`,
   `description`, and `changed`, which of them moved.
 - **`RunnerDeleted`** — an operator's delete committed.
+- **`RunnerQuarantined`** — the runner was taken out of service: its `reason`. Once per quarantine; a
+  registration announces it right after `RunnerRegistered`.
+- **`RunnerReinstated`** — a quarantine was lifted: `by` is `admin` or `healthcheck`.
+- **`RunnerHealthChecked`** — a health check settled: `runId`, `result` (`PASSED`/`FAILED`), `detail`.
+  Announced before whatever the result does to the runner's standing; the check's run publishes no
+  build event at all.
 
 Each carries `runnerId` and `runnerName`, and the envelope's `occurredAt` is when the thing happened
 (the row's own `createdAt`/`registeredAt`, the moment the registry changed state), never when it was

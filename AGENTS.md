@@ -116,7 +116,11 @@ package:
   one-line `installScript` the create and a rotation answer; two compositions would be two chances
   to disagree. The runner rules themselves are
   `ci/control/CiRunners`, the operator verbs and the register door `api/CiRunnerController` — see
-  `README.md` under "Runners".
+  `README.md` under "Runners". The quarantine and the health check are `ci/control/CiRunnerHealth`
+  (the rules, the schedule) over `CiRunners`' row writes, and reach a connected runner through the
+  `CiRunnerSignals` seam, which `CiRunnerRegistry` implements: every change of what a runner may hold
+  is a fresh `Ack` and a `Backlog`, and every `Ack` to an EDGE runner carries `RunnerRegistryMirrors`'
+  table.
 - `ci-events/` — the event classes qits-ci emits, `eu.wohlben.qits.ci.events`. Under this repo's own
   namespace because it *is* this repo's vocabulary; depends on `eventstream` and nothing else.
 
@@ -1340,7 +1344,9 @@ Four things about that second seam are worth having in front of you:
   before the join below could have anything to join on.
 
 **A third seam, `RunnerAnnouncer`, carries the runner lifecycle** (qits-465): eight events,
-`RunnerCreated` … `RunnerDeleted`, one per fact, implemented by `service/…/bus/RunnerLifecycleAnnouncer`.
+`RunnerCreated` … `RunnerDeleted`, one per fact, implemented by `service/…/bus/RunnerLifecycleAnnouncer` —
+eleven since the quarantine (qits-466) added `RunnerQuarantined`, `RunnerReinstated` and
+`RunnerHealthChecked`, announced by `CiRunners` after their writes commit.
 Three things differ from the two above and are deliberate:
 
 - **One event per fact, not one `RunnerStatusChanged`.** A run has one status column, so one event
@@ -2612,6 +2618,19 @@ look runs up by it. **No foreign key** from the run to the runner, for `repo_id`
 decommissioned runner leaves its runs as history. `plane` is an enum column with no check, like
 `status`; `capabilities` is the lineage's first `jsonb`, because the next epic's scheduler queries
 into it. `CiSchemaTest` pins the name constraint, the absent key and the two defaults.
+
+`V24__runner_quarantine.sql` is the quarantine's (qits-466): eight nullable-or-defaulted `ci_runner`
+columns — `quarantined_at`/`quarantine_reason` set and cleared together, `infra_failures` (`not null
+default 0`, and the default stays: 0 is what a new row really has), `infra_failure_runs` (the streak's
+distinct run ids as JSON array text, `downstream_repos`' decision), and the newest health check's four
+`last_healthcheck_*` — plus `ci_run.purpose` (`not null default 'BUILD'`, which KEEPS its default so
+every insert path that predates health checks writes a build without learning a word) and
+`ci_run.target_runner_id` (V8's partial-index shape, no foreign key). **A health check is a run and so
+lives in `ci_run`, and that costs every repository-scoped read a predicate**: `CiRunRepository`'s
+listings, newest-run reads, finished listing and `distinctRepoIds` carry `purpose = BUILD`, while the
+queue's reads (`listActiveNewestFirst`, `listQueuedOldestFirst`, `countQueued`) keep every run — the
+commission reconciler must not reap a pending check's credential — and their callers filter
+(`CiRunService.builds`). A new repository-scoped read owes the predicate too.
 
 `V18__retire_daemon_pin_ladder.sql` is the **first migration in this lineage that drops anything**,
 and it owes an argument the additive ones do not. Every file since V1 has added a nullable column and
