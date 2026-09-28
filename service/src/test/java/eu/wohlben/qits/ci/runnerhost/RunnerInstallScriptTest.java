@@ -212,7 +212,8 @@ class RunnerInstallScriptTest {
             + "case \" $* \" in\n"
             + "  *' login '*) cat >> '" + stdin + "' ;;\n"
             + "  *' ps '*) [ -f '" + running + "' ] && cat '" + running + "' ;;\n"
-            + "  *' run '*) printf 'c0ffee\\n' > '" + running + "'; printf 'c0ffee\\n' ;;\n"
+            + "  *' run -d '*) printf 'c0ffee\\n' > '" + running + "'; printf 'c0ffee\\n' ;;\n"
+            + "  *' run '*) : ;;\n"
             + "  *' rm '*) rm -f '" + running + "' ;;\n"
             + "esac\n"
             + "exit 0\n");
@@ -238,17 +239,25 @@ class RunnerInstallScriptTest {
     for (String output : List.of(first.output(), second.output())) {
       assertFalse(output.contains("qits_tok_"), output);
     }
-    assertEquals(List.of("qits_tok_ONE", "qits_tok_TWO"), Files.readAllLines(stdin));
+    // The login reads the token on stdin with no trailing newline (printf '%s'), so two logins one
+    // after another concatenate with nothing between them in the fixture's own stdin capture.
+    assertEquals("qits_tok_ONEqits_tok_TWO", Files.readString(stdin));
     assertTrue(all.stream().noneMatch(call -> call.contains("qits_tok_")), all.toString());
 
+    String removeClient =
+        "run --rm --entrypoint rm -v qits-ci-runner-state-00000000:/var/lib/qits-ci-runner "
+            + IMAGE
+            + " -f /var/lib/qits-ci-runner/client.json";
     String run =
         "run -d --name " + name
+            + " --restart unless-stopped"
             + " --label qits.ci.runner.process=" + LINE.runnerId()
             + " --label qits.ci.runner.version=0.0.0-fixture"
-            + " --restart=unless-stopped"
             + " -v /var/run/docker.sock:/var/run/docker.sock"
             + " -v qits-ci-runner-state-00000000:/var/lib/qits-ci-runner"
-            + " -e QITS_CI_RUNNER_URL -e QITS_CI_RUNNER_ID -e QITS_CI_RUNNER_SLOTS"
+            + " -e QITS_CI_RUNNER_URL=https://ci.qits.example.org"
+            + " -e QITS_CI_RUNNER_ID=" + LINE.runnerId()
+            + " -e QITS_CI_RUNNER_SLOTS=2"
             + " -e QITS_CI_RUNNER_REGISTRATION_TOKEN "
             + IMAGE;
     String config = installed.get(1).replaceFirst("^--config (\\S+) login .*$", "$1");
@@ -258,13 +267,15 @@ class RunnerInstallScriptTest {
             "--config " + config + " login " + REGISTRY + " -u token --password-stdin",
             "--config " + config + " pull " + IMAGE,
             "ps -aq --filter label=qits.ci.runner.process=" + LINE.runnerId(),
+            removeClient,
             run),
         installed);
     assertFalse(Files.exists(Path.of(config)), "the throwaway docker config is gone");
-    // The rerun is the same install, with the container the first one started removed first.
+    // The rerun is the same install, with the container the first one started removed first, and
+    // client.json cleared from the kept state volume so the new token is the one that registers.
     assertEquals("rm -f c0ffee", rotated.get(4));
-    assertEquals(run, rotated.get(5));
-    assertTrue(rotated.stream().noneMatch(call -> call.contains("volume")), rotated.toString());
+    assertEquals(removeClient, rotated.get(5));
+    assertEquals(run, rotated.get(6));
   }
 
   @Test
@@ -311,6 +322,40 @@ class RunnerInstallScriptTest {
 
     assertEquals(0, test.exit(), test.output());
     assertTrue(test.output().contains("PASS"), test.output());
+  }
+
+  /**
+   * The reference script's own header states the contract in words: the template is written to
+   * match {@code scripts/fixtures/runner-install.sh} EXACTLY, with only the rendered {@code image=}
+   * and {@code version=} lines differing. This asserts that literally, line for line, against a
+   * rendering built with the fixture's own {@link #REGISTRY} and {@link #VERSION} — so the two
+   * files are compared as the same document rather than merely both passing the shell-level
+   * contract test above. Skipped where qits-ci-runner-daemon is not checked out beside this
+   * repository, exactly as {@link #theRunnerRepositorysInstallContractPasses} is.
+   */
+  @Test
+  void theTemplateRendersTheRunnerRepositorysReferenceScriptExactly() throws IOException {
+    Path fixture = RUNNER_REPO.resolve("scripts/fixtures/runner-install.sh");
+    assumeTrue(Files.isRegularFile(fixture), "qits-ci-runner-daemon is not beside this repository");
+
+    List<String> rendered = RunnerInstallScript.generic(REGISTRY, VERSION).lines().toList();
+    List<String> reference = Files.readString(fixture, StandardCharsets.UTF_8).lines().toList();
+
+    assertEquals(reference.size(), rendered.size(), "line count differs from the fixture");
+    for (int i = 0; i < reference.size(); i++) {
+      String referenceLine = reference.get(i);
+      String renderedLine = rendered.get(i);
+      if (isRenderedValueLine(referenceLine) && isRenderedValueLine(renderedLine)) {
+        continue;
+      }
+      assertEquals(referenceLine, renderedLine, "line " + (i + 1) + " differs from the fixture");
+    }
+  }
+
+  /** {@code image='...'} or {@code version=...}: the two lines the template is allowed to render. */
+  private static boolean isRenderedValueLine(String line) {
+    String trimmed = line.trim();
+    return trimmed.startsWith("image=") || trimmed.startsWith("version=");
   }
 
   private record Ran(int exit, String output) {}

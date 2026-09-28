@@ -215,15 +215,19 @@ public domain `qits.artifacts.registry-host`, the name the platform host's own d
 is missing or when `docker version` does not answer; logs in to the registry host with `docker --config
 <a temp dir> login -u token --password-stdin` (the registration token — the edge introspects it),
 pulls the image and deletes that config; `docker rm -f`s every container labelled
-`qits.ci.runner.process=<id>`; and `docker run -d`s `qits-ci-runner-<first 8 of the id>-<version>`,
-labelled `qits.ci.runner.process=<id>` and `qits.ci.runner.version=<version>`, `--restart=unless-stopped`,
-with the host's `/var/run/docker.sock`, the volume `qits-ci-runner-state-<first 8 of the id>` at
-`/var/lib/qits-ci-runner`, no `--network`, and `QITS_CI_RUNNER_URL`, `_ID`, `_SLOTS` (the row's, at
-least 1) and `_REGISTRATION_TOKEN` passed by name from its environment, so the token is on no command
-line. It prints `qits-ci-runner started; watch: docker logs -f <name>` and never the token. Run again
-from a rotation's line it pulls the pinned image and replaces the container with one carrying the new
-token; the state volume is left alone, and the runner re-registers by itself when the token differs
-from the one it registered with. The version is the pinned `qits-ci-runner-protocol`'s
+`qits.ci.runner.process=<id>`; removes `client.json` from the kept state volume with a throwaway
+`docker run --rm --entrypoint rm`, so the credential it next registers with is the one THIS run was
+given rather than a stale one already sitting in the volume; and `docker run -d`s
+`qits-ci-runner-<first 8 of the id>-<version>`, labelled `qits.ci.runner.process=<id>` and
+`qits.ci.runner.version=<version>`, `--restart unless-stopped`, with the host's
+`/var/run/docker.sock`, the volume `qits-ci-runner-state-<first 8 of the id>` at
+`/var/lib/qits-ci-runner`, no `--network`, `QITS_CI_RUNNER_URL`, `_ID` and `_SLOTS` (the row's, at
+least 1) passed as `NAME=value`, and `_REGISTRATION_TOKEN` passed by name alone from its environment,
+so the token is on no command line. It prints `qits-ci-runner started; watch: docker logs -f <name>`
+and never the token. Run again from a rotation's line it pulls the pinned image, replaces the
+container and clears `client.json` again; the state volume itself is kept throughout, and the runner
+re-registers by itself against whatever token it was just started with. The version is the pinned
+`qits-ci-runner-protocol`'s
 `CiRunnerBinary.VERSION` (`runnerhost/CiRunnerPins`), with `qits.ci.runner-version-override` as the
 unset hatch. Every rendered value is held to a charset that is literal inside single quotes and a
 docker argument (the script checks the four again on the host): a deployment value outside it is 503
