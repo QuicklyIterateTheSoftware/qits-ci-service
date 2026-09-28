@@ -6,7 +6,9 @@ import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
- * Which {@code qits-ci-runner} binary an install script rendered right now downloads: the
+ * Which {@code qits-ci-runner} version a runner is meant to be — the image an install script
+ * rendered right now starts, and the version every {@code Hello} is compared with (a runner of any
+ * other is sent {@code Upgrade}, qits-465): the
  * deployment's {@code qits.ci.runner-version-override} when it is set, otherwise {@link
  * CiRunnerBinary#VERSION} — the version of the protocol jar this reactor pins ({@code
  * qits.ci-runner-protocol.version} in the root pom), which is by construction the version of the
@@ -15,13 +17,13 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * of the other and a deployment act cannot pair them wrongly.
  *
  * <p>It lives in {@code runnerhost} rather than beside {@code CiDaemonPins} in {@code ci/control}
- * because the runner protocol is a dependency of this module alone, and the install script is its
- * only reader.
+ * because the runner protocol is a dependency of this module alone, and the install script and
+ * the runner socket are its only readers.
  */
 @ApplicationScoped
 public class CiRunnerPins {
 
-  /** The binary's artifact name in qits-artifacts' {@code daemons} store, from the protocol jar. */
+  /** The runner's name — its image's last path segment — from the protocol jar. */
   public static final String RUNNER_NAME = CiRunnerBinary.RUNNER_NAME;
 
   /** The override key, spelled once. */

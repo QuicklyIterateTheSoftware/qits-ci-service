@@ -3,6 +3,7 @@ package eu.wohlben.qits.ci.runnerhost;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -34,7 +35,9 @@ import eu.wohlben.qits.cirunner.protocol.Reap;
 import eu.wohlben.qits.cirunner.protocol.Reaped;
 import eu.wohlben.qits.cirunner.protocol.Released;
 import eu.wohlben.qits.cirunner.protocol.Reserve;
+import eu.wohlben.qits.cirunner.protocol.Retire;
 import eu.wohlben.qits.cirunner.protocol.Take;
+import eu.wohlben.qits.cirunner.protocol.Upgrade;
 import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.common.http.TestHTTPResource;
@@ -109,6 +112,10 @@ class CiRunnerSocketTest {
 
   @Inject FakeCiStepRunner fakeSteps;
 
+  @Inject CiRunnerPins pins;
+
+  @Inject RunnerAddresses addresses;
+
   private UUID runnerId;
 
   @BeforeEach
@@ -138,12 +145,17 @@ class CiRunnerSocketTest {
     QuarkusTransaction.requiringNew().run(() -> runnerRows.deleteAll());
   }
 
-  private static Hello hello(boolean docker) {
+  /** A hello in the pinned version: a runner this host has nothing to tell to update. */
+  private Hello hello(boolean docker) {
+    return hello(pins.version(), CiRunnerProtocol.CAPABILITY_VERSION);
+  }
+
+  private static Hello hello(String runnerVersion, int capabilityVersion) {
     return new Hello(
-        "runner-test",
-        CiRunnerProtocol.CAPABILITY_VERSION,
+        runnerVersion,
+        capabilityVersion,
         1,
-        new Capabilities(docker, "amd64", "linux", Map.of("site", "home")));
+        new Capabilities(true, "amd64", "linux", Map.of("site", "home")));
   }
 
   private CiRunner row() {
@@ -208,37 +220,186 @@ class CiRunnerSocketTest {
   @Test
   @TestSecurity(user = "runner", roles = RUNNER_ROLE)
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
-  void aRunnerSpeakingAnotherCapabilityVersionIsClosed() throws Exception {
+  void thePinnedRunnerSpeakingAnotherCapabilityVersionIsClosed() throws Exception {
+    // The pinned binary in a protocol this host does not speak: there is nothing to update it to.
     try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
-      runner.send(
-          new Hello(
-              "runner-test",
-              CiRunnerProtocol.CAPABILITY_VERSION + 1,
-              1,
-              new Capabilities(true, "amd64", "linux", Map.of())));
+      runner.send(hello(pins.version(), CiRunnerProtocol.CAPABILITY_VERSION + 1));
       assertEquals((Short) (short) 1008, runner.awaitClose(SOON));
       assertEquals(CiRunnerSocket.CAPABILITY_MISMATCH, runner.closeReason());
     }
   }
 
-  // --- one session per runner ---------------------------------------------------------------------
+  // --- the self-update (qits-465) -----------------------------------------------------------------
+
+  @Test
+  @TestSecurity(user = "runner", roles = {RUNNER_ROLE, "qits:admin"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aRunnerOfAnotherVersionIsToldToUpgradeAndDrains() throws Exception {
+    java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+    CompletableFuture<Void> parked = new CompletableFuture<>();
+    fakeSteps.during(
+        0,
+        spec -> {
+          if (parked.complete(null)) {
+            try {
+              release.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+          }
+        });
+    try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
+      runner.send(hello("0.0.1-old", CiRunnerProtocol.CAPABILITY_VERSION));
+
+      Upgrade upgrade = runner.next(Upgrade.class, SOON);
+      assertNotNull(upgrade, "a runner that is not the pinned version is told to become it");
+      assertEquals(pins.version(), upgrade.version());
+      assertEquals(
+          addresses.registryHost() + "/qits/qits-ci-runner:" + pins.version(), upgrade.image());
+      assertNull(upgrade.sha256());
+      Ack ack = runner.next(Ack.class, SOON);
+      assertNotNull(ack);
+      assertEquals(0, ack.slots(), "a draining connection holds no slot, whatever its row grants");
+
+      // A run it could take is waiting, and a Reserve is still Nothing.
+      accept("runner-upgrade-blocker");
+      parked.get(30, TimeUnit.SECONDS);
+      String runId = accept("runner-upgrade-queued");
+      runner.send(new Reserve());
+      assertNotNull(runner.next(Nothing.class, SOON), "a draining connection reserves nothing");
+      assertEquals(
+          CiRunStatus.QUEUED,
+          QuarkusTransaction.requiringNew().call(() -> runs.findById(runId).status));
+
+      // What an operator reads: connected, on the old version, the pin as its target, updating.
+      io.restassured.path.json.JsonPath listing =
+          io.restassured.RestAssured.given()
+              .get("/ci/api/runners")
+              .then()
+              .statusCode(200)
+              .extract()
+              .jsonPath();
+      assertTrue(listing.getBoolean("runners[0].connected"));
+      assertEquals("0.0.1-old", listing.getString("runners[0].runnerVersion"));
+      assertEquals(pins.version(), listing.getString("runners[0].targetVersion"));
+      assertTrue(listing.getBoolean("runners[0].updating"));
+      io.restassured.path.json.JsonPath queue =
+          io.restassured.RestAssured.given()
+              .get("/ci/api/runs/queue")
+              .then()
+              .statusCode(200)
+              .extract()
+              .jsonPath();
+      assertEquals("0.0.1-old", queue.getString("runners[0].runnerVersion"));
+      assertEquals(pins.version(), queue.getString("runners[0].targetVersion"));
+      assertTrue(queue.getBoolean("runners[0].updating"));
+    } finally {
+      release.countDown();
+    }
+    awaitDisconnected();
+  }
 
   @Test
   @TestSecurity(user = "runner", roles = RUNNER_ROLE)
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
-  void aSecondConnectionReplacesTheFirstWhichIsClosedAlreadyConnected() throws Exception {
+  void aRunnerOfAnOlderProtocolIsStillToldToUpgradeRatherThanClosed() throws Exception {
+    // Upgrade and Hello.runnerVersion are the frozen part of the wire: a runner of any older
+    // capability still reads them, so it is told what to become — and sent no Ack in a capability
+    // it would exit on.
+    try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
+      runner.send(hello("0.0.1-ancient", CiRunnerProtocol.CAPABILITY_VERSION - 1));
+
+      Upgrade upgrade = runner.next(Upgrade.class, SOON);
+      assertNotNull(upgrade, "an older protocol is upgraded, not refused");
+      assertEquals(pins.version(), upgrade.version());
+      assertNull(runner.awaitClose(Duration.ofSeconds(1)), "the socket stays open");
+      assertNull(runner.next(Ack.class, Duration.ofMillis(500)), "no Ack it cannot read");
+      assertTrue(runner.isOpen());
+      assertTrue(registry.versions(runnerId).updating());
+    }
+    awaitDisconnected();
+  }
+
+  @Test
+  @TestSecurity(user = "runner", roles = {RUNNER_ROLE, "qits:admin"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void thePinnedSuccessorTakesTheSlotsAndTheDrainingConnectionIsRetired() throws Exception {
+    try (FakeCiRunner old = FakeCiRunner.dial(endpoint)) {
+      old.send(hello("0.0.1-old", CiRunnerProtocol.CAPABILITY_VERSION));
+      assertNotNull(old.next(Upgrade.class, SOON));
+      assertEquals(0, old.next(Ack.class, SOON).slots());
+      CiRunnerRegistry.Session draining = registry.current(runnerId);
+      assertTrue(draining.draining());
+
+      try (FakeCiRunner successor = FakeCiRunner.dial(endpoint)) {
+        successor.send(hello(true));
+
+        Ack ack = successor.next(Ack.class, SOON);
+        assertNotNull(ack, "the successor is served beside the draining connection");
+        assertEquals(2, ack.slots(), "the pinned version gets the row's slots");
+        assertNull(successor.next(Upgrade.class, Duration.ofMillis(300)));
+        Retire retire = old.next(Retire.class, SOON);
+        assertNotNull(retire, "the superseded connection is retired");
+        assertEquals("superseded by " + pins.version(), retire.reason());
+        // Retired, not closed: the runner closes its own socket once it has read the frame.
+        assertTrue(old.isOpen());
+        assertEquals(2, registry.open(runnerId).size());
+        assertEquals(pins.version(), registry.current(runnerId).runnerVersion());
+        assertEquals(
+            new CiRunnerPresence.Versions(pins.version(), pins.version(), true),
+            registry.versions(runnerId));
+
+        // Frames for the runner go to the successor.
+        assertTrue(registry.send(runnerId, new Backlog(7)));
+        Backlog pushed = successor.next(Backlog.class, SOON);
+        assertNotNull(pushed);
+
+        old.close();
+        Instant deadline = Instant.now().plusSeconds(10);
+        while (registry.versions(runnerId).updating() && Instant.now().isBefore(deadline)) {
+          Thread.sleep(20);
+        }
+        assertEquals(
+            new CiRunnerPresence.Versions(pins.version(), pins.version(), false),
+            registry.versions(runnerId));
+        assertTrue(presence.connected(runnerId), "the old socket's close did not take the new one");
+        assertTrue(successor.isOpen());
+        io.restassured.path.json.JsonPath listing =
+            io.restassured.RestAssured.given()
+                .get("/ci/api/runners")
+                .then()
+                .statusCode(200)
+                .extract()
+                .jsonPath();
+        assertEquals(pins.version(), listing.getString("runners[0].runnerVersion"));
+        assertFalse(listing.getBoolean("runners[0].updating"));
+      }
+    }
+    awaitDisconnected();
+  }
+
+  // --- one session per runner and version -------------------------------------------------------
+
+  @Test
+  @TestSecurity(user = "runner", roles = RUNNER_ROLE)
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aSecondConnectionOfTheSameVersionReplacesTheFirstWhichIsClosedAlreadyConnected()
+      throws Exception {
     try (FakeCiRunner first = FakeCiRunner.dial(endpoint)) {
       first.send(hello(true));
       assertNotNull(first.next(Ack.class, SOON));
       try (FakeCiRunner second = FakeCiRunner.dial(endpoint)) {
+        // Decided at the newcomer's Hello, where its version is known — and it is the same one.
+        second.send(hello(true));
         assertEquals((Short) (short) 1008, first.awaitClose(SOON));
         assertEquals(CiRunnerRegistry.ALREADY_CONNECTED, first.closeReason());
 
         // The newcomer is the runner now, and the old socket's late close did not take it away.
-        second.send(hello(true));
         assertNotNull(second.next(Ack.class, SOON), "the replacing connection is served");
+        assertNull(first.next(Retire.class, Duration.ofMillis(200)), "replaced, never retired");
         assertTrue(second.isOpen());
         assertTrue(presence.connected(runnerId));
+        assertEquals(1, registry.open(runnerId).size());
       }
     }
     awaitDisconnected();
@@ -449,6 +610,9 @@ class CiRunnerSocketTest {
       assertEquals(2, queue.getInt("runners[0].slots"));
       assertEquals(1, queue.getInt("runners[0].held"));
       assertTrue(queue.getBoolean("runners[0].connected"));
+      assertEquals(pins.version(), queue.getString("runners[0].runnerVersion"));
+      assertEquals(pins.version(), queue.getString("runners[0].targetVersion"));
+      assertFalse(queue.getBoolean("runners[0].updating"));
       assertEquals(
           "socket-runner", queue.getString("running.find { it.id == '" + runId + "' }.runnerName"));
       assertEquals(

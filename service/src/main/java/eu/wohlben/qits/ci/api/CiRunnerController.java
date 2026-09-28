@@ -126,6 +126,9 @@ public class CiRunnerController {
       long heldRuns,
       Instant lastSeenAt,
       Instant createdAt,
+      String runnerVersion,
+      String targetVersion,
+      boolean updating,
       @Schema(
               description =
                   "The one line that installs this runner on a host: it fetches the generic"
@@ -146,6 +149,9 @@ public class CiRunnerController {
           runner.heldRuns(),
           runner.lastSeenAt(),
           runner.createdAt(),
+          runner.runnerVersion(),
+          runner.targetVersion(),
+          runner.updating(),
           installScript);
     }
 

@@ -287,8 +287,25 @@ a 1008. Forward-auth headers never name a runner, so **the machine gate must be 
 connect.** The conversation is the protocol jar's (`qits-ci-runner-protocol`): `Hello` (capabilities
 and `last_seen_at` recorded, a foreign `CAPABILITY_VERSION` closed 1008) → `Ack{slots}` with the
 **row's** slots → `Backlog{queued}`, pushed again after every accept, finish and settlement; a
-heartbeat stamps the row at most once a minute; a second dial of the same runner replaces the first,
-which is closed 1008 `ALREADY_CONNECTED`.
+heartbeat stamps the row at most once a minute; a second connection of the same runner that says
+`Hello` in the **same version** replaces the first, which is closed 1008 `ALREADY_CONNECTED` (decided
+at that `Hello`, where the version is known — a dial that never says hello replaces nothing).
+
+**A runner updates itself** (qits-465). Every `Hello`'s `runnerVersion` is compared with the pin
+(`CiRunnerPins`) *before* its capability version, so a runner of any older protocol is told what to
+become rather than closed; only the pinned version speaking another capability is refused. Any other
+version — older or newer, the pin is the authority — is sent `Upgrade{version: <pin>, image:
+RunnerAddresses.runnerImage(<pin>), sha256: null}` and that **connection drains**: `Ack{slots: 0}` (no
+`Ack` at all when its capability differs — it would exit on one), every `Reserve` answered `Nothing`,
+and the runs it already holds carry on over it to their end. The runner starts its successor container
+beside itself, which dials as a second connection — allowed because the versions differ. Once a
+connection of the pinned version has said `Hello` it gets the row's slots, and every other connection
+of the runner is sent `Retire{reason: "superseded by <pin>"}`; the runner closes that socket itself.
+**Runs are routed by connection, not by runner**: a run is held by the connection its `Take` went out
+on (`CiRunnerRegistry.hold`), and every `Launch`, `Reap`, `Cancel` and `Released` for it goes there —
+the draining one for what it took before, the successor for everything after. A runner's read shape
+and its row in the queue carry `runnerVersion` (what its current connection said), `targetVersion`
+(the pin) and `updating` (a draining connection is still open); `connected` is any open connection.
 
 **`Reserve` is the claim.** `CiRunService.reserveFor` walks the queue in the claim loop's own order and
 takes the first run with the same conditional UPDATE a local worker's claim uses, writing `runner_id`

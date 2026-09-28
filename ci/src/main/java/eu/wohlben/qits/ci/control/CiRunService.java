@@ -3614,7 +3614,14 @@ public class CiRunService {
           .map(
               view ->
                   new CiQueueForecast.RunnerCapacity(
-                      view.id(), view.name(), view.slots(), view.heldRuns(), view.connected()))
+                      view.id(),
+                      view.name(),
+                      view.slots(),
+                      view.heldRuns(),
+                      view.connected(),
+                      view.runnerVersion(),
+                      view.targetVersion(),
+                      view.updating()))
           .toList();
     } catch (RuntimeException e) {
       LOG.debugf("The queue snapshot could not read the runners: %s", e.getMessage());

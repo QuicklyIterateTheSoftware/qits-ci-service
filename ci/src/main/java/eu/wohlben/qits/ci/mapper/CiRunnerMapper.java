@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.mapper;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import eu.wohlben.qits.ci.control.CiRunnerPresence;
 import eu.wohlben.qits.ci.dto.CiRunnerDto;
 import eu.wohlben.qits.ci.entity.CiRunner;
 import eu.wohlben.qits.ci.entity.RunnerCapabilities;
@@ -10,7 +11,7 @@ import org.mapstruct.Mapping;
 @Mapper(componentModel = "jakarta")
 public interface CiRunnerMapper {
 
-  // `connected` and `heldRuns` are not columns. The first is in-memory state (CiRunnerPresence), the
+  // `connected`, `heldRuns` and the three version facts are not columns. The first is in-memory state (CiRunnerPresence), the
   // second a count over ci_run — so the caller that holds them hands them in, and this stays a pure
   // map with no second read and no presence lookup inside it: CiRunMapper's rule for the queue facts.
   // `registered` is derived from the row rather than stored: a runner with a client is registered.
@@ -27,7 +28,16 @@ public interface CiRunnerMapper {
   @Mapping(target = "heldRuns", source = "heldRuns")
   @Mapping(target = "lastSeenAt", source = "runner.lastSeenAt")
   @Mapping(target = "createdAt", source = "runner.createdAt")
-  CiRunnerDto toDto(CiRunner runner, boolean connected, long heldRuns);
+  @Mapping(target = "runnerVersion", source = "versions.running")
+  @Mapping(target = "targetVersion", source = "versions.target")
+  @Mapping(target = "updating", source = "versions.updating")
+  CiRunnerDto toDto(
+      CiRunner runner, boolean connected, long heldRuns, CiRunnerPresence.Versions versions);
+
+  /** {@link #toDto(CiRunner, boolean, long, CiRunnerPresence.Versions)} knowing no versions. */
+  default CiRunnerDto toDto(CiRunner runner, boolean connected, long heldRuns) {
+    return toDto(runner, connected, heldRuns, CiRunnerPresence.Versions.UNKNOWN);
+  }
 
   /** The stored capabilities as the object the runner sent, or null; never throws. */
   default JsonNode capabilities(String stored) {
