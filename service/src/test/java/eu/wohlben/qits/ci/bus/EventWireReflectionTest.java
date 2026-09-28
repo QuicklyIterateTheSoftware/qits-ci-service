@@ -10,6 +10,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import eu.wohlben.qits.ci.events.BuildFailed;
 import eu.wohlben.qits.ci.events.BuildStatusChanged;
 import eu.wohlben.qits.ci.events.BuildSuccessful;
+import eu.wohlben.qits.ci.events.RunnerChanged;
+import eu.wohlben.qits.ci.events.RunnerConnected;
+import eu.wohlben.qits.ci.events.RunnerCreated;
+import eu.wohlben.qits.ci.events.RunnerDeleted;
+import eu.wohlben.qits.ci.events.RunnerDisconnected;
+import eu.wohlben.qits.ci.events.RunnerRegistered;
+import eu.wohlben.qits.ci.events.RunnerUpdateStarted;
+import eu.wohlben.qits.ci.events.RunnerUpdated;
 import eu.wohlben.qits.ci.events.SoftwareRelease;
 import eu.wohlben.qits.eventstream.QitsDurableEventListener;
 import eu.wohlben.qits.eventstream.QitsRawEventListener;
@@ -81,13 +89,21 @@ public class EventWireReflectionTest {
             BuildFailed.class,
             BuildStatusChanged.class,
             SoftwareRelease.class,
+            RunnerCreated.class,
+            RunnerRegistered.class,
+            RunnerConnected.class,
+            RunnerDisconnected.class,
+            RunnerUpdateStarted.class,
+            RunnerUpdated.class,
+            RunnerChanged.class,
+            RunnerDeleted.class,
             SCMPublishCommit.class,
             RepositoryRenamed.class,
             EventEnvelope.class,
             EventFrame.class),
         Set.of(registration.targets()),
-        "the four events out, the push and the rename in, the PUT body, the frame — a ninth wire"
-            + " type is added here");
+        "the four build events and the eight runner events out, the push and the rename in, the"
+            + " PUT body, the frame — a seventeenth wire type is added here");
   }
 
   /**
