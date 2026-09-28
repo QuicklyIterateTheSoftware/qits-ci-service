@@ -59,7 +59,8 @@ class EdgeBuildStepEnvironmentTest {
     List<String> expected =
         List.of(
             "QITS_CI_DAEMON_ID=daemon-7",
-            "QITS_CI_DAEMON_SECRET=s3cr3t",
+            // No QITS_CI_DAEMON_SECRET on the edge plane: the ci-run token already proves the run,
+            // and the launch names itself in its Hello instead (CiDaemonRegistry.admitByToken).
             "QITS_CI_DAEMON_URL=wss://ci.qits.example.org/ci/daemon",
             "QITS_CI_DAEMON_BINARY_URL=https://registry.qits.example.org/artifacts/daemons/qits-ci-daemon/2026.927.1",
             "QITS_CI_REPOSITORY_URL=https://githost.qits.example.org/git/qits/qits-ci-service",

@@ -67,7 +67,13 @@ public final class StepWorkloadSpecs {
     // The contract, as environment. The daemon needs all of it before a socket exists, which is why
     // none of it is a message.
     env.put("QITS_CI_DAEMON_ID", value(spec.daemonId()));
-    env.put("QITS_CI_DAEMON_SECRET", value(spec.secret()));
+    // EDGE plane only: the secret is withheld. A ci-run token already proves this run to qits-ci,
+    // so the second factor the INTERNAL plane's header handshake needs buys an EDGE step nothing —
+    // it identifies its launch in its Hello instead (CiDaemonRegistry.admitByToken) — and a secret
+    // this container is never asked to present is a secret not worth handing an arbitrary image.
+    if (token == null) {
+      env.put("QITS_CI_DAEMON_SECRET", value(spec.secret()));
+    }
     env.put("QITS_CI_DAEMON_URL", value(plane.daemonUrl()));
     env.put("QITS_CI_DAEMON_BINARY_URL", value(plane.daemonBinaryUrl(spec.daemonBinaryUrl())));
     env.put("QITS_CI_REPOSITORY_URL", value(cloneUrl(plane.gitBaseUrl(), spec.repo())));

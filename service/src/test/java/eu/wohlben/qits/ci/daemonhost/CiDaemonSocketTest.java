@@ -106,31 +106,29 @@ public class CiDaemonSocketTest {
 
   @Test
   public void aCiRunCallerOfTheLaunchsOwnRunIsAdmitted() throws Exception {
+    // No id/secret headers at all — qits-edge would have stripped them — so the connection opens on
+    // the token alone and names its launch in its own Hello.
     CiDaemonRegistry.Credentials credentials =
         registry.registerLaunch("run-edge", 0, "tok-ci-run-run-edge-1", null);
     try (FakeCiDaemon daemon =
-        FakeCiDaemon.dial(
-            endpoint,
-            credentials.daemonId(),
-            credentials.secret(),
-            ciRun("tok-ci-run-run-edge-1"))) {
-      assertTrue(registry.awaitRegistered(credentials.daemonId(), SOON));
+        FakeCiDaemon.dial(endpoint, null, null, ciRun("tok-ci-run-run-edge-1"))) {
       daemon.send(new Hello(credentials.daemonId(), CiDaemonProtocol.CAPABILITY_VERSION));
       assertInstanceOf(Ack.class, daemon.next(SOON));
+      assertTrue(registry.awaitRegistered(credentials.daemonId(), SOON));
     } finally {
       registry.reap(credentials.daemonId());
     }
   }
 
   @Test
-  public void aCiRunCallerOfAnotherRunIsClosedWrongRunBeforeItsHello() throws Exception {
+  public void aCiRunCallerOfAnotherRunIsClosedWrongRunAtItsHello() throws Exception {
     CiDaemonRegistry.Credentials credentials =
         registry.registerLaunch("run-edge-mine", 0, "tok-ci-run-mine-1", null);
     try (FakeCiDaemon daemon =
-        FakeCiDaemon.dial(
-            endpoint, credentials.daemonId(), credentials.secret(), ciRun("tok-ci-run-theirs-1"))) {
-      // The right pair and the wrong run: the pair is what a step can learn, the subject is what
-      // it cannot forge — which is the whole reason the token is bound.
+        FakeCiDaemon.dial(endpoint, null, null, ciRun("tok-ci-run-theirs-1"))) {
+      // The token is what it cannot forge — the whole reason the token is bound — and the launch id
+      // it names is only a claim: it can name any launch, and naming this one is still refused.
+      daemon.send(new Hello(credentials.daemonId(), CiDaemonProtocol.CAPABILITY_VERSION));
       assertEquals((Short) (short) CiDaemonRegistry.CLOSE_UNAUTHORIZED, daemon.awaitClose(SOON));
       assertEquals("WRONG_RUN", daemon.closeReason());
       assertFalse(registry.awaitRegistered(credentials.daemonId(), Duration.ofMillis(200)));
@@ -145,12 +143,33 @@ public class CiDaemonSocketTest {
     // ci-run token may stand in for it, whatever its subject.
     CiDaemonRegistry.Credentials credentials = registry.registerLaunch("run-internal", 0, null);
     try (FakeCiDaemon daemon =
-        FakeCiDaemon.dial(
-            endpoint, credentials.daemonId(), credentials.secret(), ciRun("tok-ci-run-any-1"))) {
+        FakeCiDaemon.dial(endpoint, null, null, ciRun("tok-ci-run-any-1"))) {
+      daemon.send(new Hello(credentials.daemonId(), CiDaemonProtocol.CAPABILITY_VERSION));
       assertEquals((Short) (short) CiDaemonRegistry.CLOSE_UNAUTHORIZED, daemon.awaitClose(SOON));
       assertEquals("WRONG_RUN", daemon.closeReason());
     } finally {
       registry.reap(credentials.daemonId());
+    }
+  }
+
+  @Test
+  public void aCiRunCallerNamingAnUnknownLaunchInItsHelloIsClosedUnknownDaemon() throws Exception {
+    try (FakeCiDaemon daemon = FakeCiDaemon.dial(endpoint, null, null, ciRun("tok-ci-run-none-1"))) {
+      daemon.send(new Hello("no-such-launch", CiDaemonProtocol.CAPABILITY_VERSION));
+      assertEquals((Short) (short) CiDaemonRegistry.CLOSE_UNAUTHORIZED, daemon.awaitClose(SOON));
+      assertEquals("UNKNOWN_DAEMON", daemon.closeReason());
+    }
+  }
+
+  @Test
+  public void aCiRunCallersFirstFrameMustBeHelloOrItIsClosedUnknownDaemon() throws Exception {
+    try (FakeCiDaemon daemon =
+        FakeCiDaemon.dial(endpoint, null, null, ciRun("tok-ci-run-notfirst-1"))) {
+      // Anything else — even a well-formed frame — never names a launch, so it is exactly as
+      // unidentifiable as no header at all on the INTERNAL plane.
+      daemon.send(new Heartbeat());
+      assertEquals((Short) (short) CiDaemonRegistry.CLOSE_UNAUTHORIZED, daemon.awaitClose(SOON));
+      assertEquals("UNKNOWN_DAEMON", daemon.closeReason());
     }
   }
 
