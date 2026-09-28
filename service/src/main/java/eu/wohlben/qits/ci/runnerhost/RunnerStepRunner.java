@@ -144,10 +144,13 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
       }
     }
     relay.begin(spec.runId(), spec.stepIndex());
+    // An EDGE step's launch is bound to its run's token subject: its daemon dials through the edge
+    // with that token, and CiDaemonSocket admits it only as that subject.
     CiDaemonRegistry.Credentials credentials =
         daemons.registerLaunch(
             spec.runId(),
             spec.stepIndex(),
+            credential != null && credential.isToken() ? credential.token().subject() : null,
             (stream, seq, text) -> {
               relay.append(spec.runId(), text);
               listener.onChunk(text);

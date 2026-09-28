@@ -205,7 +205,13 @@ public class CiDaemonRegistry {
     /** The id exists and the secret does not match it. */
     BAD_SECRET,
     /** That launch already has an open connection; a second one is not a reconnect, it is a claim. */
-    ALREADY_CONNECTED
+    ALREADY_CONNECTED,
+    /**
+     * The caller is a {@code qits:ci-run} token, and not this launch's run's: its subject is not the
+     * one recorded at {@link #registerLaunch(String, int, String, StepListener)}, or the launch was
+     * recorded with none — an INTERNAL step, which no ci-run token may speak for.
+     */
+    WRONG_RUN
   }
 
   // --- the launch side (called by the launcher / the runner's worker thread) ----------------------
@@ -215,11 +221,22 @@ public class CiDaemonRegistry {
    * before {@code docker run}, so the record exists before anything can dial against it.
    */
   public Credentials registerLaunch(String runId, int stepIndex, StepListener listener) {
+    return registerLaunch(runId, stepIndex, null, listener);
+  }
+
+  /**
+   * {@link #registerLaunch(String, int, StepListener)}, bound to the run's {@code ci-run} token
+   * subject beside the secret — an EDGE step's, whose daemon dials through the edge with that token
+   * and is admitted only when the {@code sub} it arrives as is this one. Null binds nothing, which is
+   * every INTERNAL step: its daemon asserts the forward-auth pair on qits-net as it always has.
+   */
+  public Credentials registerLaunch(
+      String runId, int stepIndex, String tokenSubject, StepListener listener) {
     String daemonId = UUID.randomUUID().toString();
     byte[] entropy = new byte[32];
     random.nextBytes(entropy);
     String secret = Base64.getUrlEncoder().withoutPadding().encodeToString(entropy);
-    launches.put(daemonId, new Launch(daemonId, secret, runId, stepIndex, listener));
+    launches.put(daemonId, new Launch(daemonId, secret, runId, stepIndex, tokenSubject, listener));
     LOG.debugf("Minted ci-daemon %s for run %s step %d", daemonId, runId, stepIndex);
     return new Credentials(daemonId, secret);
   }
@@ -420,6 +437,24 @@ public class CiDaemonRegistry {
    * second socket on one launch would be a second party wanting to speak for it.
    */
   public Admission admit(String daemonId, String secret, WebSocketConnection connection) {
+    return admit(daemonId, secret, null, connection);
+  }
+
+  /**
+   * {@link #admit(String, String, WebSocketConnection)} for a caller that may be a {@code ci-run}
+   * token: {@code runSubject} is the {@code sub} it arrived as — empty when it arrived as none — or
+   * null for a caller that is not one (the forward-auth daemon on qits-net), which is judged by the
+   * id and the secret alone, as every caller always was.
+   *
+   * <p><b>A token binds the socket to ITS run</b>, on top of the per-container pair and never
+   * instead of it: a {@code ci-run} token is worth one run, and the edge admits it to {@code
+   * /ci/daemon} for any launch at all, so a step holding one could otherwise speak for another run's
+   * container by learning that container's pair. The subject is compared once the pair has matched,
+   * so a stranger still learns only that it was wrong; a mismatch is {@link Admission#WRONG_RUN},
+   * logged here with both subjects, before a single frame.
+   */
+  public Admission admit(
+      String daemonId, String secret, String runSubject, WebSocketConnection connection) {
     if (daemonId == null || secret == null) {
       return Admission.UNKNOWN_DAEMON;
     }
@@ -430,6 +465,20 @@ public class CiDaemonRegistry {
     synchronized (launch) {
       if (!MessageDigest.isEqual(launch.secret, secret.getBytes(StandardCharsets.UTF_8))) {
         return Admission.BAD_SECRET;
+      }
+      if (runSubject != null
+          && (launch.tokenSubject == null || !launch.tokenSubject.equals(runSubject))) {
+        LOG.warnf(
+            "ci-daemon %s of run %s step %d was dialled with the ci-run token of subject '%s',"
+                + " and the run's token is %s — refused WRONG_RUN",
+            daemonId,
+            launch.runId,
+            launch.stepIndex,
+            runSubject,
+            launch.tokenSubject == null
+                ? "none (an INTERNAL step)"
+                : "'" + launch.tokenSubject + "'");
+        return Admission.WRONG_RUN;
       }
       if (launch.connection != null && launch.connection.isOpen()) {
         return Admission.ALREADY_CONNECTED;
@@ -617,6 +666,10 @@ public class CiDaemonRegistry {
 
     private final String runId;
     private final int stepIndex;
+
+    /** The run's ci-run token subject for an EDGE step; null for an INTERNAL one. */
+    private final String tokenSubject;
+
     private final StepListener listener;
 
     private volatile WebSocketConnection connection;
@@ -637,11 +690,18 @@ public class CiDaemonRegistry {
     private final CompletableFuture<Initialization> initialized = new CompletableFuture<>();
     private final CompletableFuture<Completion> finished = new CompletableFuture<>();
 
-    Launch(String daemonId, String secret, String runId, int stepIndex, StepListener listener) {
+    Launch(
+        String daemonId,
+        String secret,
+        String runId,
+        int stepIndex,
+        String tokenSubject,
+        StepListener listener) {
       this.daemonId = daemonId;
       this.secret = secret.getBytes(StandardCharsets.UTF_8);
       this.runId = runId;
       this.stepIndex = stepIndex;
+      this.tokenSubject = tokenSubject;
       this.listener = listener;
     }
   }

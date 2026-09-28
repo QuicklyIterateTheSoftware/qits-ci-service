@@ -1,6 +1,8 @@
 package eu.wohlben.qits.ci.daemonhost;
 
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonMessage;
+import eu.wohlben.qits.auth.MachineIdentity;
+import io.quarkus.security.identity.SecurityIdentity;
 import io.quarkus.websockets.next.CloseReason;
 import io.quarkus.websockets.next.OnClose;
 import io.quarkus.websockets.next.OnOpen;
@@ -37,6 +39,17 @@ import org.jboss.logging.Logger;
  * That is also the one thing a caller of this endpoint must not forget — a client sending only the
  * two {@code X-Qits-Ci-Daemon-*} headers gets a 401 that looks nothing like the 1008 below.
  *
+ * <p><b>A daemon on an EDGE runner holds the other role</b> (epic qits-441). It dials through the
+ * edge, which strips {@code X-Qits-*}, so it presents its run's {@code ci-run} token as {@code
+ * Authorization: Bearer $QITS_TOKEN}; the edge introspects it and forwards a JWT whose {@code sub}
+ * is the token's subject and whose role is {@code qits:ci-run}. That opens the upgrade too, and the
+ * identity is then held to the launch: its subject must be the one recorded for the launch's run
+ * ({@code RunCommissions} holds it, {@code CiDaemonRegistry.registerLaunch} records it beside the
+ * secret), or the dial is closed 1008 {@code WRONG_RUN} before its {@code Hello}. The per-container
+ * pair is checked first either way. A daemon that speaks the bearer form ships in a qits-ci-daemon
+ * release after 2026-09-28; until {@code qits.ci-daemon-protocol.version} names it, an EDGE step's
+ * daemon cannot pass the edge.
+ *
  * <p><b>The address is a cross-repo contract.</b> {@code CiDaemonLauncher} injects {@code
  * qits.ci.container-daemon-url} (default {@code ws://qits-ci:8080/ci/daemon}) as {@code
  * $QITS_CI_DAEMON_URL} into every step container, and qits-ci-daemon dials exactly that string
@@ -59,8 +72,18 @@ import org.jboss.logging.Logger;
  * from a container took the socket with it.
  */
 @WebSocket(path = "/ci/daemon")
-@jakarta.annotation.security.RolesAllowed("qits:system")
+@jakarta.annotation.security.RolesAllowed({CiDaemonSocket.SYSTEM_ROLE, CiDaemonSocket.RUN_ROLE})
 public class CiDaemonSocket {
+
+  /** The forward-auth role a daemon on qits-net asserts for itself. */
+  static final String SYSTEM_ROLE = "qits:system";
+
+  /**
+   * The role a {@code ci-run} token carries through the edge — what an EDGE step's daemon dials with,
+   * bound to its run by the token's subject ({@link CiDaemonRegistry#admit(String, String, String,
+   * WebSocketConnection)}).
+   */
+  static final String RUN_ROLE = "qits:ci-run";
 
   private static final Logger LOG = Logger.getLogger(CiDaemonSocket.class);
 
@@ -75,12 +98,16 @@ public class CiDaemonSocket {
 
   @Inject CiDaemonMessageCodec codec;
 
+  /** The identity the upgrade was admitted as — the forward-auth daemon's, or a ci-run token's. */
+  @Inject SecurityIdentity identity;
+
   @OnOpen
   @RunOnVirtualThread
   public void onOpen(WebSocketConnection connection) {
     String daemonId = connection.handshakeRequest().header(CiDaemonRegistry.HEADER_ID);
     String secret = connection.handshakeRequest().header(CiDaemonRegistry.HEADER_SECRET);
-    CiDaemonRegistry.Admission admission = registry.admit(daemonId, secret, connection);
+    CiDaemonRegistry.Admission admission =
+        registry.admit(daemonId, secret, runSubject(), connection);
     if (admission != CiDaemonRegistry.Admission.ADMITTED) {
       // Deliberately the same close code and no detail for all three: a caller that guessed wrong
       // learns that it was wrong, not which half of the credential it got right.
@@ -91,6 +118,27 @@ public class CiDaemonSocket {
       return;
     }
     connection.userData().put(DAEMON_ID, daemonId);
+  }
+
+  /**
+   * The {@code sub} a {@code qits:ci-run} caller arrived as — empty when it carries none — or null
+   * for a caller that holds {@code qits:system}, which is judged by the launch pair alone as it
+   * always was. The subject is the validated token's claim when there is one, and the forward-auth
+   * user otherwise: the edge names the token's subject either way.
+   */
+  private String runSubject() {
+    if (identity == null
+        || identity.isAnonymous()
+        || identity.hasRole(SYSTEM_ROLE)
+        || !identity.hasRole(RUN_ROLE)) {
+      return null;
+    }
+    return MachineIdentity.claim(identity, "sub")
+        .or(
+            () ->
+                java.util.Optional.ofNullable(
+                    identity.getPrincipal() == null ? null : identity.getPrincipal().getName()))
+        .orElse("");
   }
 
   @OnTextMessage

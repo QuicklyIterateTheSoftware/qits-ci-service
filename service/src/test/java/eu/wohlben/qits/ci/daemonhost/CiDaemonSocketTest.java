@@ -96,6 +96,77 @@ public class CiDaemonSocketTest {
     }
   }
 
+  // --- the edge plane's daemon: a ci-run token bound to its run (qits-477) ---------------------
+
+  /** An EDGE step's daemon as it arrives from the edge: the token's subject, the ci-run role. */
+  private static java.util.Map<String, String> ciRun(String subject) {
+    return java.util.Map.of(
+        FakeCiDaemon.USER_HEADER, subject, FakeCiDaemon.ROLES_HEADER, CiDaemonSocket.RUN_ROLE);
+  }
+
+  @Test
+  public void aCiRunCallerOfTheLaunchsOwnRunIsAdmitted() throws Exception {
+    CiDaemonRegistry.Credentials credentials =
+        registry.registerLaunch("run-edge", 0, "tok-ci-run-run-edge-1", null);
+    try (FakeCiDaemon daemon =
+        FakeCiDaemon.dial(
+            endpoint,
+            credentials.daemonId(),
+            credentials.secret(),
+            ciRun("tok-ci-run-run-edge-1"))) {
+      assertTrue(registry.awaitRegistered(credentials.daemonId(), SOON));
+      daemon.send(new Hello(credentials.daemonId(), CiDaemonProtocol.CAPABILITY_VERSION));
+      assertInstanceOf(Ack.class, daemon.next(SOON));
+    } finally {
+      registry.reap(credentials.daemonId());
+    }
+  }
+
+  @Test
+  public void aCiRunCallerOfAnotherRunIsClosedWrongRunBeforeItsHello() throws Exception {
+    CiDaemonRegistry.Credentials credentials =
+        registry.registerLaunch("run-edge-mine", 0, "tok-ci-run-mine-1", null);
+    try (FakeCiDaemon daemon =
+        FakeCiDaemon.dial(
+            endpoint, credentials.daemonId(), credentials.secret(), ciRun("tok-ci-run-theirs-1"))) {
+      // The right pair and the wrong run: the pair is what a step can learn, the subject is what
+      // it cannot forge — which is the whole reason the token is bound.
+      assertEquals((Short) (short) CiDaemonRegistry.CLOSE_UNAUTHORIZED, daemon.awaitClose(SOON));
+      assertEquals("WRONG_RUN", daemon.closeReason());
+      assertFalse(registry.awaitRegistered(credentials.daemonId(), Duration.ofMillis(200)));
+    } finally {
+      registry.reap(credentials.daemonId());
+    }
+  }
+
+  @Test
+  public void aCiRunCallerCannotSpeakForAnInternalLaunch() throws Exception {
+    // Recorded with no subject: an INTERNAL step, whose daemon asserts qits:system on qits-net. No
+    // ci-run token may stand in for it, whatever its subject.
+    CiDaemonRegistry.Credentials credentials = registry.registerLaunch("run-internal", 0, null);
+    try (FakeCiDaemon daemon =
+        FakeCiDaemon.dial(
+            endpoint, credentials.daemonId(), credentials.secret(), ciRun("tok-ci-run-any-1"))) {
+      assertEquals((Short) (short) CiDaemonRegistry.CLOSE_UNAUTHORIZED, daemon.awaitClose(SOON));
+      assertEquals("WRONG_RUN", daemon.closeReason());
+    } finally {
+      registry.reap(credentials.daemonId());
+    }
+  }
+
+  @Test
+  public void theHeaderFormStillOpensALaunchBoundToAToken() throws Exception {
+    // The forward-auth daemon on qits-net is judged by the pair alone, as it always was.
+    CiDaemonRegistry.Credentials credentials =
+        registry.registerLaunch("run-edge-header", 0, "tok-ci-run-header-1", null);
+    try (FakeCiDaemon daemon =
+        FakeCiDaemon.dial(endpoint, credentials.daemonId(), credentials.secret())) {
+      assertTrue(registry.awaitRegistered(credentials.daemonId(), SOON));
+    } finally {
+      registry.reap(credentials.daemonId());
+    }
+  }
+
   @Test
   public void aRegisteredDaemonIsAckedWithTheHostsCapabilityVersion() throws Exception {
     CiDaemonRegistry.Credentials credentials = registry.registerLaunch("run-ack", 0, null);
