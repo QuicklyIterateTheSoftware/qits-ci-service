@@ -286,10 +286,14 @@ daemon archetype's `ADD` of the musl/zlib tarballs from `$QITS_MAVEN_REGISTRY_UR
 public vhost answers 401; npm `.npmrc` lines composed as `${QITS_NPM_REGISTRY_URL#http:}` do not strip
 `https:`; and the composed release prelude fetches the qits CLI from `$QITS_ARTIFACTS_URL` with no
 bearer. Every one reads the plane's address — nothing composes an internal alias behind it — but each
-needs the token presented. **Measured gap**: the npm pull-through is served only at `/artifacts/npm/npmjs/`
-on qits-platform-mirror, and the edge routes `/artifacts` on every vhost to qits-artifacts, so an EDGE
-step's `$QITS_NPM_PROXY_URL` (`https://mirror.qits.<domain>/artifacts/npm/npmjs/`) answers 404 until the
-mirror mounts npm under `/mirror` the way it mounted maven.
+needs the token presented. **The npm proxy's edge address is now `/mirror`, not `/artifacts` (qits-474)**:
+the internal plane still dials the npmjs pull-through at qits-artifacts' own route
+(`.../artifacts/npm/npmjs/`), but the edge routes `/artifacts` on every vhost to qits-artifacts
+regardless of which host carries it, so an EDGE step's `$QITS_NPM_PROXY_URL` moving only its origin
+would 404 there. qits-mirror carries the same cache under its own prefix, so
+`StepAddressPlane.edge` composes the edge value from `https://mirror.qits.<domain>` plus
+`/mirror/npm/npmjs/` instead of rebasing the internal path — the one edge address whose path differs
+from its internal counterpart rather than only its origin.
 
 A run a runner executed carries `runnerId` and `runnerName` on every run read; the id outlives the
 runner (no foreign key), the name does not.

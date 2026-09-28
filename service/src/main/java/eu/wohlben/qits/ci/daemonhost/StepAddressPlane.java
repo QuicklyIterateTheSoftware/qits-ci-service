@@ -71,6 +71,17 @@ public record StepAddressPlane(
   /** The one extra host an internal step has always been given. */
   static final String HOST_GATEWAY = "host.docker.internal:host-gateway";
 
+  /**
+   * qits-platform-mirror's own path for its npm pull-through, on the EDGE plane only. The internal
+   * plane's {@code npmProxyUrl} names the cache at {@code .../artifacts/npm/npmjs/} — qits-artifacts'
+   * own route to it, dialled over qits-net — and that path cannot simply move origin the way every
+   * other mirror address does: the edge routes {@code /artifacts/**} to qits-artifacts on EVERY
+   * vhost, including the mirror's own, so keeping the internal path would 404 through qits-artifacts
+   * rather than reach the cache at all. qits-mirror carries the same cache under its own prefix, so
+   * the edge address is composed from that prefix instead of the internal value's path.
+   */
+  private static final String EDGE_NPM_PROXY_PATH = "/mirror/npm/npmjs/";
+
   public StepAddressPlane {
     Objects.requireNonNull(plane, "plane");
     authHosts = List.copyOf(authHosts);
@@ -252,9 +263,17 @@ public record StepAddressPlane(
   /**
    * The same step, through the edge: each internal address's origin swapped for the public origin
    * of the service that answers it, the path kept. qits-artifacts answers the registry, the hosted
-   * npm and maven roots, the docs store and the daemon binary; qits-platform-mirror the two
-   * pull-through roots; qits-githost the clone url; qits-workspaces its own root. No network, no
-   * extra host, and no idp — an edge step carries a {@code ci-run} token, never a client to mint with.
+   * npm and maven roots, the docs store and the daemon binary; qits-platform-mirror the npm and the
+   * two maven pull-through roots; qits-githost the clone url; qits-workspaces its own root. No
+   * network, no extra host, and no idp — an edge step carries a {@code ci-run} token, never a client
+   * to mint with.
+   *
+   * <p><b>The npm proxy is the one address whose PATH moves too, not only its origin.</b> See {@link
+   * #EDGE_NPM_PROXY_PATH}: the internal path is qits-artifacts' route to the same cache, and the
+   * edge routes {@code /artifacts/**} to qits-artifacts on every vhost regardless of which host
+   * carries it, so keeping that path would send an edge step to qits-artifacts rather than to
+   * qits-mirror. Every other mirror address already sits on {@code /mirror/**} internally too, so
+   * moving only the origin is correct for them.
    *
    * <p>A value that is empty on the internal plane stays empty: the mirror's off state is an empty
    * value, and it means the same thing on either side of the edge.
@@ -277,7 +296,7 @@ public record StepAddressPlane(
         registry,
         registry,
         rebase(internal.npmHostedUrl(), origins.artifacts()),
-        rebase(internal.npmProxyUrl(), origins.mirror()),
+        blank(internal.npmProxyUrl()) ? "" : strip(origins.mirror()) + EDGE_NPM_PROXY_PATH,
         rebase(internal.mavenRegistryUrl(), origins.artifacts()),
         rebase(internal.mavenCentralMirrorBuildUrl(), origins.mirror()),
         rebase(internal.mavenCentralMirrorStepUrl(), origins.mirror()),
