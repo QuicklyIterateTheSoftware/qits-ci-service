@@ -64,7 +64,7 @@ class StepAddressPlaneTest {
     assertEquals("registry.qits.example.org", edge.registryHost());
     assertEquals("registry.qits.example.org", edge.buildRegistryHost());
     assertEquals("https://registry.qits.example.org/artifacts/npm/npm/", edge.npmHostedUrl());
-    assertEquals("https://mirror.qits.example.org/mirror/npm/npmjs/", edge.npmProxyUrl());
+    assertEquals("https://mirror.qits.example.org/npm/npmjs/", edge.npmProxyUrl());
     assertEquals("https://registry.qits.example.org/artifacts/maven/maven", edge.mavenRegistryUrl());
     assertEquals(
         "https://mirror.qits.example.org/mirror/maven/central", edge.mavenCentralMirrorBuildUrl());
