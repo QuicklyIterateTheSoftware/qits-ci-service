@@ -9,9 +9,12 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <!-- qits-ci's event vocabulary: the things this service announces to the platform. Three now:
-         `BuildSuccessful` and `BuildFailed` (a finished run's verdict about its commit) and
-         `SoftwareRelease` (one published artifact).
+    <!-- qits-ci's event vocabulary: the things this service announces to the platform.
+         `BuildSuccessful` and `BuildFailed` (a finished run's verdict about its commit),
+         `BuildStatusChanged` (every transition of a run's row), `SoftwareRelease` (one published
+         artifact), and the eight runner lifecycle events, `RunnerCreated` through `RunnerDeleted`
+         (one per fact about a runner's row and its connections; `RunnerCreated` states their
+         conventions).
 
          A module of its own, between `eventstream` and everything else, for one reason: a
          vocabulary is what a *consumer* needs, and nothing else in this repo is. The day a second
