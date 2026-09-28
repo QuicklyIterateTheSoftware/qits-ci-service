@@ -115,6 +115,8 @@ class StepAddressPlaneTest {
 
     assertNull(spec.network());
     assertEquals(List.of(), spec.addHosts());
+    // The image is an address too, and the one the runner's own docker dials (qits-479).
+    assertEquals("registry.qits.example.org/qits/java-builder:25", spec.image());
     assertEquals("wss://ci.qits.example.org/ci/daemon", spec.env().get("QITS_CI_DAEMON_URL"));
     assertEquals(
         "https://registry.qits.example.org/artifacts/daemons/qits-ci-daemon/2026.927.1",

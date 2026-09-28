@@ -209,8 +209,21 @@ public final class StepWorkloadSpecs {
         env.put("DOCKER_CONFIG", CiDaemonLauncher.REGISTRY_AUTH_DIR);
         env.put(
             "QITS_CI_REGISTRY_AUTH_CONFIG",
-            registryAuthConfig(TOKEN_LOGIN, token.token(), plane.authHosts()));
+            registryAuthConfig(TOKEN_LOGIN, token.token(), withPullHost(plane, spec.image())));
       }
+    } else if (token != null && plane.imagePullHost(spec.image()) != null) {
+      // THE PULL'S OWN LOGIN, for an EDGE step that is not a build (qits-479). The runner pulls the
+      // step image with its own docker, from the registry's public vhost, which answers an anonymous
+      // /v2 with 401 — so it reads this document for exactly that pull (docker --config) and only
+      // ever for it. One entry, the one host the image is pulled from; no DOCKER_CONFIG beside it,
+      // so the bootstrap writes no file and nothing in the container logs in: a step that cannot
+      // build is handed no docker login, the scope decision above. Nothing new reaches the
+      // container either — the document is QITS_TOKEN, already in this environment, in docker's
+      // encoding. An internal step, and an edge step on somebody else's registry, get no key.
+      env.put(
+          "QITS_CI_REGISTRY_AUTH_CONFIG",
+          registryAuthConfig(
+              TOKEN_LOGIN, token.token(), List.of(plane.imagePullHost(spec.image()))));
     }
     // Run-scoped extras, LAST and in sorted key order. Today these are the four QITS_EVENT_* of an
     // event-triggered run and the map is empty on every push; none of them is ever repo-authored.
@@ -223,7 +236,9 @@ public final class StepWorkloadSpecs {
     }
 
     return new Spec(
-        spec.image(),
+        // The image as THIS plane pulls it: exactly the run's reference on qits-net, and on the edge
+        // plane a platform registry host moved to its public vhost, path, tag and digest kept.
+        plane.imageReference(spec.image()),
         // The entrypoint and the bootstrap, as two lists rather than a command line. Nothing is
         // concatenated on either side of the wire, so the zero-interpolation property BOOTSTRAP
         // has always claimed now holds BY CONSTRUCTION rather than by inspection of an argv.
@@ -328,6 +343,22 @@ public final class StepWorkloadSpecs {
           .append("\"}");
     }
     return document.append("}}").toString();
+  }
+
+  /**
+   * {@code plane}'s login hosts with the host the step image is pulled from added when they lack it,
+   * so a build step's document always logs in wherever its own image comes from. On the edge plane
+   * the two coincide by construction (an image is only ever moved onto the registry or mirror vhost,
+   * and both are logged into), so this is a guard rather than a change.
+   */
+  private static List<String> withPullHost(StepAddressPlane plane, String image) {
+    String pullHost = plane.imagePullHost(image);
+    if (pullHost == null || plane.authHosts().contains(pullHost)) {
+      return plane.authHosts();
+    }
+    List<String> hosts = new java.util.ArrayList<>(plane.authHosts());
+    hosts.add(pullHost);
+    return hosts;
   }
 
   private static String tokenUrl(String idpBase) {
