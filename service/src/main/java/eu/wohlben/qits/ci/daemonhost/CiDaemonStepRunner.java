@@ -276,11 +276,11 @@ public class CiDaemonStepRunner implements CiStepRunner {
    * dereferenced here, and it never reaches {@link StepOutcome#SHA_GONE}, whose branch discards the
    * run: a container must not be able to delete the run that is watching it by omitting a field.
    */
-  private static StepOutcome outcomeOf(InitFailed.Reason reason) {
+  public static StepOutcome outcomeOf(InitFailed.Reason reason) {
     return reason == InitFailed.Reason.SHA_GONE ? StepOutcome.SHA_GONE : StepOutcome.INIT_FAILED;
   }
 
-  private static String detailOf(CiDaemonRegistry.Initialization initialization) {
+  public static String detailOf(CiDaemonRegistry.Initialization initialization) {
     String reason = initialization.reason() == null ? "unspecified" : initialization.reason().name();
     String detail = initialization.detail();
     return detail == null || detail.isBlank() ? reason : reason + ": " + detail;

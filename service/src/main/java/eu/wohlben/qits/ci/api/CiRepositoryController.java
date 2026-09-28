@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.api;
 
 import eu.wohlben.qits.ci.control.CiEventTriggerService;
 import eu.wohlben.qits.ci.control.CiRunService;
+import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.dto.CiRunDto;
 import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.UnavailableException;
@@ -74,6 +75,8 @@ public class CiRepositoryController {
 
   @Inject CiRunMapper mapper;
 
+  @Inject CiRunners runners;
+
   @Inject CiEventTriggerService triggers;
 
   public record ListRepositoryIdsResponse(List<String> repositoryIds) {}
@@ -143,8 +146,10 @@ public class CiRepositoryController {
                         summary.repositoryId(),
                         summary.projectId(),
                         summary.repoName(),
-                        mapper.toDto(summary.lastRun()),
-                        summary.lastMainRun() == null ? null : mapper.toDto(summary.lastMainRun())))
+                        runners.withRunnerName(mapper.toDto(summary.lastRun())),
+                        summary.lastMainRun() == null
+                            ? null
+                            : runners.withRunnerName(mapper.toDto(summary.lastMainRun()))))
             .toList());
   }
 

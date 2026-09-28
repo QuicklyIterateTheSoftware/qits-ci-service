@@ -21,7 +21,8 @@ import org.jboss.logging.Logger;
 
 /**
  * The qits-idp commissioning client: one short-lived oidc client per CI run, minted on demand and
- * deleted when the run closes.
+ * deleted when the run closes — and, since the runners, a runner's registration token and its own
+ * client, minted by {@code CiRunnerController} and given back when the runner is decommissioned.
  *
  * <p><b>What replaced what.</b> A publishing step used to push with {@code
  * qits.ci.registry-auth.client-id}/{@code …client-secret} — one static credential, shared by every
@@ -61,6 +62,19 @@ public class IdpCommissioner {
   /** What a commission made here is <b>about</b>: one CI run, named by its run id. */
   public static final String CONTEXT_KIND = "ci-run";
 
+  /**
+   * A registered runner's own client, named by the runner's id. qits-idp grants it {@code
+   * qits:ci-runner} and nothing else ({@code CommissionRoles.forKind}).
+   */
+  public static final String RUNNER_KIND = "ci-runner";
+
+  /**
+   * A runner's one-use registration token, named by the runner's id. qits-idp grants it {@code
+   * qits:ci-runner-registration}, which opens {@code POST /ci/api/runners/{id}/register} and no other
+   * route on the platform.
+   */
+  public static final String RUNNER_REGISTRATION_KIND = "ci-runner-registration";
+
   /** Bound on opening the socket, the same 2s every hand-rolled client in this repo carries. */
   static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(2);
 
@@ -80,6 +94,24 @@ public class IdpCommissioner {
 
   /** One live commission of this owner's, as the listing reports it — no secret, ever. */
   public record LiveClient(String clientId, String contextKind, String contextId) {}
+
+  /**
+   * One commissioned opaque token. {@code token} is the {@code qits_tok_…} value, returned once by
+   * qits-idp and never re-readable — the caller hands it on exactly once and never logs it. {@code
+   * subject} is the {@code sub} the edge puts on the JWT it mints for the token, which is how a
+   * door behind the edge recognises the caller as this token.
+   */
+  public record CommissionedToken(String tokenId, String token, String subject) {
+    @Override
+    public String toString() {
+      // A record's toString names every component, and this one's second component is a secret.
+      return "CommissionedToken[tokenId=" + tokenId + ", subject=" + subject + "]";
+    }
+  }
+
+  /** One live token of this owner's, as the listing reports it — no value, ever. */
+  public record LiveToken(
+      String tokenId, String subject, String contextKind, String contextId, Instant createdAt) {}
 
   /**
    * A commission that could not be made, after every attempt the patience window allowed.
@@ -150,7 +182,32 @@ public class IdpCommissioner {
    * @throws CommissionFailedException when every attempt inside the patience window failed
    */
   public Commission commission(String contextKind, String contextId, List<String> gitRefs) {
-    String url = clientsUrl();
+    return holdThrough(clientsUrl(), "a per-run credential", contextKind, contextId, gitRefs,
+        this::readCommission);
+  }
+
+  /**
+   * Commission one opaque token for a context — {@code POST <idp>/api/tokens}, the third credential
+   * qits-idp issues (its README, "Commissioned tokens"). Same caller, same body, same retry window
+   * and the same classification as {@link #commission}: a runner's registration token is minted on
+   * an operator's request rather than on a run worker, but a qits-idp in its cutover window is the
+   * same moment either way.
+   *
+   * @throws CommissionFailedException when every attempt inside the patience window failed
+   */
+  public CommissionedToken commissionToken(
+      String contextKind, String contextId, List<String> gitRefs) {
+    return holdThrough(tokensUrl(), "a token", contextKind, contextId, gitRefs, this::readToken);
+  }
+
+  /** The one retry loop both commissions share; {@code read} turns a 2xx body into the value. */
+  private <T> T holdThrough(
+      String url,
+      String what,
+      String contextKind,
+      String contextId,
+      List<String> gitRefs,
+      java.util.function.Function<String, T> read) {
     Instant giveUpAt = Instant.now().plus(patience);
     // Never pause past the window itself — the launcher's rule, for the same reason: a pause longer
     // than the patience makes a short patience mean one attempt while looking like a window.
@@ -160,10 +217,10 @@ public class IdpCommissioner {
     List<String> scope = gitRefs;
     while (true) {
       attempts++;
-      Attempt attempt = attemptCommission(url, contextKind, contextId, scope);
-      if (attempt.commission() != null) {
-        LOG.debugf("Commissioned %s for %s %s", attempt.commission().clientId(), contextKind, contextId);
-        return attempt.commission();
+      Attempt<T> attempt = attemptCommission(url, contextKind, contextId, scope, read);
+      if (attempt.value() != null) {
+        LOG.debugf("Commissioned %s for %s %s", what, contextKind, contextId);
+        return attempt.value();
       }
       detail = attempt.detail();
       if (attempt.status() == 400 && scope != null && !scope.isEmpty()) {
@@ -180,11 +237,13 @@ public class IdpCommissioner {
         break;
       }
       LOG.infof(
-          "Attempt %d to commission a credential for %s %s did not land (%s) — asking again",
-          attempts, contextKind, contextId, detail);
+          "Attempt %d to commission %s for %s %s did not land (%s) — asking again",
+          attempts, what, contextKind, contextId, detail);
     }
     throw new CommissionFailedException(
-        "could not commission a per-run credential (POST "
+        "could not commission "
+            + what
+            + " (POST "
             + url
             + ", contextKind="
             + contextKind
@@ -201,7 +260,7 @@ public class IdpCommissioner {
    * One attempt: the pair, or why not and whether asking again could change the answer. {@code
    * status} is the HTTP status, or 0 when nothing answered.
    */
-  private record Attempt(Commission commission, boolean retryable, String detail, int status) {}
+  private record Attempt<T>(T value, boolean retryable, String detail, int status) {}
 
   /**
    * The POST body. Without a scope it is byte-identical to the body before {@code gitRefs}
@@ -225,8 +284,12 @@ public class IdpCommissioner {
     return body.append('}').toString();
   }
 
-  private Attempt attemptCommission(
-      String url, String contextKind, String contextId, List<String> gitRefs) {
+  private <T> Attempt<T> attemptCommission(
+      String url,
+      String contextKind,
+      String contextId,
+      List<String> gitRefs,
+      java.util.function.Function<String, T> read) {
     String body = commissionBody(contextKind, contextId, gitRefs);
     HttpResponse<String> response;
     try {
@@ -240,23 +303,23 @@ public class IdpCommissioner {
       response = http.send(request, HttpResponse.BodyHandlers.ofString());
     } catch (InterruptedException interrupted) {
       Thread.currentThread().interrupt();
-      return new Attempt(null, false, "interrupted while asking qits-idp", 0);
+      return new Attempt<>(null, false, "interrupted while asking qits-idp", 0);
     } catch (Exception unreachable) {
-      return new Attempt(null, true, "qits-idp unreachable: " + unreachable, 0);
+      return new Attempt<>(null, true, "qits-idp unreachable: " + unreachable, 0);
     }
     int status = response.statusCode();
     if (status == 200 || status == 201) {
-      Commission minted = readCommission(response.body());
+      T minted = read.apply(response.body());
       return minted == null
-          ? new Attempt(
-              null, false, "qits-idp answered " + status + " with no clientId and secret", status)
-          : new Attempt(minted, false, null, status);
+          ? new Attempt<>(
+              null, false, "qits-idp answered " + status + " without the credential", status)
+          : new Attempt<>(minted, false, null, status);
     }
     // 401 is the idp-cutover window; a 5xx is the service's own trouble. Everything else — 403 from
     // a client that may not commission, a 400 on a value — is about the request and stands. (A 400
     // on a scoped commission is first retried with gitRefs [], in commission().)
     boolean retryable = status == 401 || status >= 500;
-    return new Attempt(
+    return new Attempt<>(
         null, retryable, "qits-idp answered " + status + ": " + errorOf(response.body()), status);
   }
 
@@ -338,6 +401,161 @@ public class IdpCommissioner {
     return value(authServerUrl).replaceAll("/+$", "") + "/api/clients";
   }
 
+  /** {@code <auth-server-url>/api/tokens} — the opaque-token surface, beside the clients one. */
+  String tokensUrl() {
+    return value(authServerUrl).replaceAll("/+$", "") + "/api/tokens";
+  }
+
+  /**
+   * Give a commissioned token back — {@link #decommission}'s twin, and <b>best effort</b> for its
+   * reason: a token this call could not delete is one the next reconciliation reaps. Answers whether
+   * qits-idp confirmed it gone (a 404 counts: "unknown, or not yours" is what was asked for), so a
+   * caller that wants to say so in a log can.
+   */
+  public boolean deleteToken(String tokenId) {
+    if (!enabled() || value(tokenId).isBlank()) {
+      return false;
+    }
+    String url = tokensUrl() + "/" + URLEncoder.encode(tokenId, StandardCharsets.UTF_8);
+    try {
+      HttpRequest request =
+          HttpRequest.newBuilder(URI.create(url))
+              .timeout(REQUEST_TIMEOUT)
+              .header("Authorization", basic())
+              .DELETE()
+              .build();
+      HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+      int status = response.statusCode();
+      if (status == 204 || status == 200 || status == 404) {
+        LOG.debugf("Deleted token %s", tokenId);
+        return true;
+      }
+      LOG.warnf(
+          "Could not delete token %s (DELETE %s): HTTP %d %s — leaving it to the next"
+              + " reconciliation",
+          tokenId, url, status, errorOf(response.body()));
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+    } catch (Exception e) {
+      LOG.warnf(
+          "Could not delete token %s (DELETE %s): %s — leaving it to the next reconciliation",
+          tokenId, url, e.toString());
+    }
+    return false;
+  }
+
+  /**
+   * What qits-idp says about one opaque token presented to this service directly — the answer of
+   * {@code POST <idp>/api/tokens/introspect}, the call the edge makes for every {@code qits_tok_}
+   * bearer it sees. {@code roles} are the token's kind's, never its owner's.
+   */
+  public record IntrospectedToken(
+      String tokenId, String subject, List<String> roles, String contextKind, String contextId) {}
+
+  /** How an introspection came out: live, not a live token, or nothing learned. */
+  public enum Introspection {
+    LIVE,
+    /** qits-idp answered that the value is no live token — unknown, deleted, or its owner gone. */
+    NOT_LIVE,
+    /** Nothing was learned: qits-idp did not answer, refused this caller, or this process has no
+     * credential to ask with. */
+    UNKNOWN
+  }
+
+  /** {@link #introspectToken}'s answer; {@code token} is set exactly when the outcome is LIVE. */
+  public record IntrospectionAnswer(Introspection outcome, IntrospectedToken token, String detail) {}
+
+  /**
+   * Ask qits-idp about a {@code qits_tok_} value — one attempt, never held through: the caller is a
+   * request waiting on an answer, and a registration that failed is re-knocked by the runner's own
+   * retry. Authenticated with this service's own Basic pair, which qits-idp admits because it holds
+   * {@code qits:system} (the edge's door and this one share the caller rule). The value is sent in
+   * the body and appears in no log line here.
+   */
+  public IntrospectionAnswer introspectToken(String token) {
+    if (!enabled()) {
+      return new IntrospectionAnswer(
+          Introspection.UNKNOWN, null, "this qits-ci commissions nothing, so it cannot ask qits-idp");
+    }
+    String url = tokensUrl() + "/introspect";
+    try {
+      HttpRequest request =
+          HttpRequest.newBuilder(URI.create(url))
+              .timeout(REQUEST_TIMEOUT)
+              .header("Authorization", basic())
+              .header("Content-Type", "application/json")
+              .POST(
+                  HttpRequest.BodyPublishers.ofString(
+                      "{\"token\":\"" + escape(token) + "\"}", StandardCharsets.UTF_8))
+              .build();
+      HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+      int status = response.statusCode();
+      if (status == 404) {
+        return new IntrospectionAnswer(Introspection.NOT_LIVE, null, "no live token for that value");
+      }
+      if (status != 200) {
+        LOG.warnf(
+            "Could not introspect a presented token (POST %s): HTTP %d %s",
+            url, status, errorOf(response.body()));
+        return new IntrospectionAnswer(Introspection.UNKNOWN, null, "qits-idp answered " + status);
+      }
+      JsonNode node = objectMapper.readTree(response.body());
+      List<String> roles = new java.util.ArrayList<>();
+      JsonNode listed = node.get("roles");
+      if (listed != null && listed.isArray()) {
+        listed.forEach(role -> roles.add(role.asText()));
+      }
+      return new IntrospectionAnswer(
+          Introspection.LIVE,
+          new IntrospectedToken(
+              text(node, "tokenId"),
+              text(node, "subject"),
+              List.copyOf(roles),
+              text(node, "contextKind"),
+              text(node, "contextId")),
+          null);
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      return new IntrospectionAnswer(Introspection.UNKNOWN, null, "interrupted");
+    } catch (Exception e) {
+      LOG.warnf("Could not introspect a presented token (POST %s): %s", url, e.toString());
+      return new IntrospectionAnswer(Introspection.UNKNOWN, null, e.toString());
+    }
+  }
+
+  /**
+   * Every token this owner still has live, or empty when the listing could not be read — {@link
+   * #live()}'s contract exactly, and for its reason: nothing learned must never read as "none".
+   */
+  public Optional<List<LiveToken>> liveTokens() {
+    if (!enabled()) {
+      return Optional.empty();
+    }
+    String url = tokensUrl();
+    try {
+      HttpRequest request =
+          HttpRequest.newBuilder(URI.create(url))
+              .timeout(REQUEST_TIMEOUT)
+              .header("Authorization", basic())
+              .GET()
+              .build();
+      HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() != 200) {
+        LOG.warnf(
+            "Could not list this service's commissioned tokens (GET %s): HTTP %d %s",
+            url, response.statusCode(), errorOf(response.body()));
+        return Optional.empty();
+      }
+      return readTokenListing(response.body());
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      return Optional.empty();
+    } catch (Exception e) {
+      LOG.warnf("Could not list this service's commissioned tokens (GET %s): %s", url, e.toString());
+      return Optional.empty();
+    }
+  }
+
   private Commission readCommission(String body) {
     try {
       JsonNode root = objectMapper.readTree(body);
@@ -345,6 +563,61 @@ public class IdpCommissioner {
       String minted = text(root, "secret");
       return id.isBlank() || minted.isBlank() ? null : new Commission(id, minted);
     } catch (Exception notJson) {
+      return null;
+    }
+  }
+
+  private CommissionedToken readToken(String body) {
+    try {
+      JsonNode root = objectMapper.readTree(body);
+      String id = text(root, "tokenId");
+      String token = text(root, "token");
+      String subject = text(root, "subject");
+      return id.isBlank() || token.isBlank() || subject.isBlank()
+          ? null
+          : new CommissionedToken(id, token, subject);
+    } catch (Exception notJson) {
+      return null;
+    }
+  }
+
+  private Optional<List<LiveToken>> readTokenListing(String body) {
+    JsonNode root;
+    try {
+      root = objectMapper.readTree(body);
+    } catch (Exception notJson) {
+      LOG.warnf("The commissioned-token listing is not JSON: %s", notJson.toString());
+      return Optional.empty();
+    }
+    if (root == null || !root.isArray()) {
+      LOG.warnf("The commissioned-token listing is not a JSON array");
+      return Optional.empty();
+    }
+    List<LiveToken> tokens = new ArrayList<>();
+    for (JsonNode entry : root) {
+      String id = text(entry, "tokenId");
+      if (id.isBlank()) {
+        continue;
+      }
+      tokens.add(
+          new LiveToken(
+              id,
+              text(entry, "subject"),
+              text(entry, "contextKind"),
+              text(entry, "contextId"),
+              instant(text(entry, "createdAt"))));
+    }
+    return Optional.of(tokens);
+  }
+
+  /** An ISO instant, or null for none or one that will not parse — the caller reads null as old. */
+  private static Instant instant(String text) {
+    if (text.isBlank()) {
+      return null;
+    }
+    try {
+      return Instant.parse(text);
+    } catch (Exception unparseable) {
       return null;
     }
   }

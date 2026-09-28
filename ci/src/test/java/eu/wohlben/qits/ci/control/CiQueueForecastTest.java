@@ -106,6 +106,41 @@ public class CiQueueForecastTest {
   }
 
   @Test
+  public void aConnectedRunnersSlotsAreCapacityAndItsHeldRunsAreOccupancyNotBoth() {
+    // One local slot busy for 30s more, and a connected runner granting two slots and holding one
+    // run with 10s left. The runner's held run is in `running` like any other, so its slots are
+    // counted whole: counting only its free slot would charge that run twice.
+    List<CiQueueForecast.RunnerCapacity> runners =
+        List.of(
+            new CiQueueForecast.RunnerCapacity(
+                java.util.UUID.randomUUID(), "connected", 2, 1, true),
+            new CiQueueForecast.RunnerCapacity(
+                java.util.UUID.randomUUID(), "offline", 8, 0, false));
+    int slots = CiQueueForecast.slotCount(1, runners);
+    assertEquals(3, slots, "the local pool plus the connected runner's slots, the offline one none");
+
+    CiQueueForecast.Forecast forecast =
+        CiQueueForecast.forecast(
+            List.of(
+                running("local", 40 * SECOND, 10 * SECOND),
+                running("on-runner", 20 * SECOND, 10 * SECOND)),
+            claimOrder(run("a", 5 * SECOND), run("b", 5 * SECOND), run("c", 5 * SECOND)),
+            slots,
+            NOW);
+
+    // The runner's free slot takes `a` now and `b` behind it; `c` starts at 10s, when the runner's
+    // held run and `b` both free a slot. With the free slot alone counted (two slots) `a` would
+    // have waited for the held run and every start would be 10s late.
+    assertEquals(Arrays.asList(0L, 5 * SECOND, 10 * SECOND), starts(forecast));
+  }
+
+  @Test
+  public void noRunnersIsTheLocalPoolAlone() {
+    assertEquals(4, CiQueueForecast.slotCount(4, List.of()));
+    assertEquals(4, CiQueueForecast.slotCount(4, null));
+  }
+
+  @Test
   public void anIdleEstateStartsTheQueueAtZeroRatherThanAtSomeUnknownFuture() {
     // No RUNNING run is not a missing fact, it is an empty estate: the slots are free NOW, so the
     // head of the queue starts at zero and the forecast is the queue's own durations stacked.

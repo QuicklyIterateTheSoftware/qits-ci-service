@@ -5,6 +5,7 @@ import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * A CI run as returned to clients — the recorded green/red for one (push, branch). {@code steps} is
@@ -178,6 +179,12 @@ import java.util.List;
  * of history pays for a forecast it would have thrown away. A client therefore reads null as "not
  * answered here" and never as "zero".
  *
+ * <p><b>{@code runnerId} and {@code runnerName} say which runner executed the run</b>, and are null
+ * on every run no runner held — every run whose steps qits-ci launched itself, and every row
+ * recorded before runners existed. The id is the row's; the name is looked up at read time, so a run
+ * whose runner has since been deleted keeps its id and reads a null name — the run is history and
+ * the runner is not.
+ *
  * <p>{@code queuePosition} and {@code ordering} are narrower still, and only a {@code QUEUED} run
  * has them: a {@code RUNNING} run is past being ordered, and reporting its place in a queue it has
  * left would be a number about nothing.
@@ -215,7 +222,9 @@ public record CiRunDto(
     Long expectedStartInMillis,
     Long expectedFinishInMillis,
     String predictionUnavailable,
-    CiRunOrderingDto ordering) {
+    CiRunOrderingDto ordering,
+    UUID runnerId,
+    String runnerName) {
 
   /**
    * This run with its steps and its live step attached — the single-run shape.
@@ -258,7 +267,9 @@ public record CiRunDto(
         expectedStartInMillis,
         expectedFinishInMillis,
         predictionUnavailable,
-        ordering);
+        ordering,
+        runnerId,
+        runnerName);
   }
 
   /**
@@ -311,6 +322,53 @@ public record CiRunDto(
         expectedStartInMillis,
         expectedFinishInMillis,
         predictionUnavailable,
-        ordering);
+        ordering,
+        runnerId,
+        runnerName);
+  }
+
+  /**
+   * This run with the name of the runner that holds it attached. {@code runnerId} is a column and
+   * comes off the entity; the name is the runner row's, so like the queue facts it is attached by
+   * whoever holds that second read — {@code CiRunners.withRunnerNames} — rather than by the mapper.
+   * A run whose runner has been decommissioned keeps its {@code runnerId} and reads a null name.
+   */
+  public CiRunDto withRunnerName(String runnerName) {
+    return new CiRunDto(
+        id,
+        repoId,
+        projectId,
+        repoName,
+        branch,
+        commitSha,
+        status,
+        createdAt,
+        startedAt,
+        finishedAt,
+        cancellationReason,
+        supersededByRunId,
+        daemonVersion,
+        triggerType,
+        triggerEventId,
+        triggerEventName,
+        releaseRequestId,
+        retryOfRunId,
+        configPath,
+        archetypeName,
+        archetypeConfigPath,
+        archetypeRev,
+        archetypeVersion,
+        priority,
+        expectedStepDurationsMillis,
+        steps,
+        live,
+        phase,
+        queuePosition,
+        expectedStartInMillis,
+        expectedFinishInMillis,
+        predictionUnavailable,
+        ordering,
+        runnerId,
+        runnerName);
   }
 }

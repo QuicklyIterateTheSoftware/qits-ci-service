@@ -102,6 +102,18 @@ package:
   registry which bytes a step image's tag names right now. An *adapter* like `githost` and `idp`
   are, for the `CiStepImagePins` seam in `ci/control`, and another hand-rolled `java.net.http` one
   for the reason the whole `githost` package is. See "A run is fixed to one toolchain".
+- `service/…/runnerhost/` — the runner side of the host, beside `daemonhost`: the runner socket
+  (`CiRunnerSocket`), its session table (`CiRunnerRegistry`, also the `CiRunnerPresence` and
+  `CiBacklogListener` seams), the `Reserve` → `Take` driver (`RunnerReservations`), the step seam for
+  a reserved run (`RunnerStepRunner`, the `ci/control/CiRunnerStepRunner` implementation, typed so it
+  never competes for `CiStepRunner`), and `RunnerAddresses`, the single composition of what a runner is told (the idp token url, the
+  audience, the runner socket url off `qits.ci.runner.public-url` or the derived
+  `qits.ci.runner.internal-url`, and the artifacts base the install script downloads from). The
+  register door answers it and `RunnerInstallScript` renders it into the create's and a rotation's
+  `installScript`, with the binary version `CiRunnerPins` reads off the pinned protocol jar; two
+  compositions would be two chances to disagree. The runner rules themselves are
+  `ci/control/CiRunners`, the operator verbs and the register door `api/CiRunnerController` — see
+  `README.md` under "Runners".
 - `ci-events/` — the event classes qits-ci emits, `eu.wohlben.qits.ci.events`. Under this repo's own
   namespace because it *is* this repo's vocabulary; depends on `eventstream` and nothing else.
 
@@ -207,6 +219,9 @@ the adapter for it:
   lists and deletes every `ci-run` row whose `contextId` is not a `QUEUED`/`RUNNING` run and which
   this process is not holding right now. **A listing it could not read reaps nothing**: `live()`
   answers an empty `Optional` rather than an empty list precisely so the two cannot be confused.
+  The same pass reaps a runner's `ci-runner` client and `ci-runner-registration` token against the
+  runner table (`GET /idp/api/tokens` is its second listing, under the same rule); the predicate is
+  in its class javadoc and `README.md` under "Runners".
 - **`RunGitRefs`** — the Git scope the commission states as `gitRefs` (C6 of the superproject's
   `principal-bound-git-refs-plan.md`; the table is in `README.md`). It reads the run's own
   `QITS_EVENT_NAME` and `QITS_EVENT_PAYLOAD` from `LaunchSpec.env`, so no seam changed.
@@ -2563,6 +2578,16 @@ read off the wrapper's `main` head and onto the wrapper's newest released versio
 V20's three nulls mean, plus every row composed while the recipe still came from `main`, and there
 is nothing those rows could be filled in with. 64 characters, `archetype_rev`'s width, so a value
 one of the pair could hold and the other could not can never exist.
+
+`V23__runners.sql` is the first **table** since V13 and the runners epic's (qits-440) whole schema
+cost so far: `ci_runner` — one row per runner an operator declared, its registration state being
+which of two nullable pairs is set (`registration_token_id`/`_subject` at create and rotation,
+`client_id`/`registered_at` once, by the register door) — and `ci_run.runner_id`, V8's shape again
+with V8's partial index, since "may this runner be deleted" and "how many runs does it hold" both
+look runs up by it. **No foreign key** from the run to the runner, for `repo_id`'s reason: a
+decommissioned runner leaves its runs as history. `plane` is an enum column with no check, like
+`status`; `capabilities` is the lineage's first `jsonb`, because the next epic's scheduler queries
+into it. `CiSchemaTest` pins the name constraint, the absent key and the two defaults.
 
 `V18__retire_daemon_pin_ladder.sql` is the **first migration in this lineage that drops anything**,
 and it owes an argument the additive ones do not. Every file since V1 has added a nullable column and

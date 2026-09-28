@@ -11,6 +11,7 @@ import eu.wohlben.qits.ci.control.CiQueueForecast;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiRunOrdering;
 import eu.wohlben.qits.ci.control.CiRunService;
+import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import eu.wohlben.qits.ci.dto.CiLiveStepDto;
 import eu.wohlben.qits.ci.dto.CiRunDto;
@@ -109,6 +110,9 @@ public class CiRunController {
   @Inject CiRunMapper mapper;
 
   @Inject CiStepRelay relay;
+
+  /** Where a run's runner NAME comes from — a second read the mapper deliberately does not make. */
+  @Inject CiRunners runners;
 
   @Inject ObjectMapper objectMapper;
 
@@ -275,7 +279,8 @@ public class CiRunController {
   private ListRunsResponse listing(List<CiRun> forRuns, CiRunService.Snapshot queue) {
     Map<String, List<CiStep>> stepsByRun = runService.stepsForAll(forRuns);
     return new ListRunsResponse(
-        forRuns.stream()
+        runners.withRunnerNames(
+            forRuns.stream()
             .map(
                 run -> {
                   List<CiStep> steps = stepsByRun.getOrDefault(run.id, List.of());
@@ -286,7 +291,7 @@ public class CiRunController {
                   // of the status here: a finished run is in neither half of the queue.
                   return queue == null ? dto : withQueueFacts(run, dto, queue);
                 })
-            .toList());
+            .toList()));
   }
 
   /** Whether the run is still in the queue's world — {@code QUEUED} or {@code RUNNING}. */
@@ -396,18 +401,24 @@ public class CiRunController {
     return new QueueResponse(
         queue.concurrentBuilds(),
         queue.generatedAt(),
-        queue.running().stream().map(run -> withQueueFacts(run, mapper.toDto(run), queue)).toList(),
-        queue.queuedInClaimOrder().stream()
-            .map(ordered -> withQueueFacts(ordered.run(), mapper.toDto(ordered.run()), queue))
-            .toList());
+        runners.withRunnerNames(
+            queue.running().stream()
+                .map(run -> withQueueFacts(run, mapper.toDto(run), queue))
+                .toList()),
+        runners.withRunnerNames(
+            queue.queuedInClaimOrder().stream()
+                .map(ordered -> withQueueFacts(ordered.run(), mapper.toDto(ordered.run()), queue))
+                .toList()),
+        queue.runners());
   }
 
   /**
    * The queue envelope: how many slots there are, the instant every duration in it is relative to,
    * and the two halves of the queue.
    *
-   * @param concurrentBuilds how many runs this deployment executes at once — the number the
-   *     forecast really modelled with, so a reader can see why the queue moves as slowly as it does
+   * @param concurrentBuilds how many runs this deployment's own worker pool executes at once. The
+   *     forecast models that plus every connected runner's slots — {@code runners} says which, so
+   *     a reader can see why the queue moves as fast or as slowly as it does
    * @param generatedAt the instant every {@code expectedStartInMillis} and {@code
    *     expectedFinishInMillis} in this body is measured from. <b>It is the only absolute instant
    *     here, and that is deliberate</b>: one stamp makes a relative duration interpretable without
@@ -415,9 +426,15 @@ public class CiRunController {
    * @param running the {@code RUNNING} runs, newest first
    * @param queued the {@code QUEUED} runs in suggested claim order, each carrying its {@code
    *     queuePosition}, its {@code ordering} and its ETAs
+   * @param runners every declared runner: its slots, how many runs it holds, and whether it is
+   *     connected — only a connected runner's slots count towards the forecast
    */
   public record QueueResponse(
-      int concurrentBuilds, Instant generatedAt, List<CiRunDto> running, List<CiRunDto> queued) {}
+      int concurrentBuilds,
+      Instant generatedAt,
+      List<CiRunDto> running,
+      List<CiRunDto> queued,
+      List<CiQueueForecast.RunnerCapacity> runners) {}
 
   /**
    * The run's row stamped with what the queue says about it, or unchanged when the queue says
@@ -570,7 +587,7 @@ public class CiRunController {
   public CiRunDto getRun(@PathParam("runId") String runId) {
     CiRun run = runService.requireRun(runId);
     List<CiStep> steps = runService.stepsFor(runId);
-    CiRunDto dto = mapper.toDto(run, steps, liveStep(run, steps, true));
+    CiRunDto dto = runners.withRunnerName(mapper.toDto(run, steps, liveStep(run, steps, true)));
     // Only an unfinished run has a queue to be placed in, and only then is the extra read made.
     if (run.status != CiRunStatus.QUEUED && run.status != CiRunStatus.RUNNING) {
       return dto;

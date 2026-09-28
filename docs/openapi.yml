@@ -122,6 +122,10 @@ components:
           type: string
         ordering:
           $ref: "#/components/schemas/CiRunOrderingDto"
+        runnerId:
+          $ref: "#/components/schemas/UUID"
+        runnerName:
+          type: string
     CiRunOrderingDto:
       type: object
       properties:
@@ -157,6 +161,69 @@ components:
       - CANCELLED
       - CONFIG_ERROR
       - TIMED_OUT
+    CiRunnerCreated:
+      type: object
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        name:
+          type: string
+        description:
+          type: string
+        slots:
+          type: integer
+          format: int32
+        plane:
+          $ref: "#/components/schemas/CiRunnerPlane"
+        capabilities:
+          $ref: "#/components/schemas/JsonNode"
+        registered:
+          type: boolean
+        connected:
+          type: boolean
+        heldRuns:
+          type: integer
+          format: int64
+        lastSeenAt:
+          $ref: "#/components/schemas/Instant"
+        createdAt:
+          $ref: "#/components/schemas/Instant"
+        installScript:
+          type: string
+          description: "The sh script that installs this runner on a host, with its\
+            \ registration token inside. Returned once; never readable again"
+    CiRunnerDto:
+      type: object
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        name:
+          type: string
+        description:
+          type: string
+        slots:
+          type: integer
+          format: int32
+        plane:
+          $ref: "#/components/schemas/CiRunnerPlane"
+        capabilities:
+          $ref: "#/components/schemas/JsonNode"
+        registered:
+          type: boolean
+        connected:
+          type: boolean
+        heldRuns:
+          type: integer
+          format: int64
+        lastSeenAt:
+          $ref: "#/components/schemas/Instant"
+        createdAt:
+          $ref: "#/components/schemas/Instant"
+    CiRunnerPlane:
+      type: string
+      enum:
+      - INTERNAL
+      - EDGE
     CiStepDto:
       type: object
       properties:
@@ -190,6 +257,21 @@ components:
       enum:
       - POST_RECEIVE
       - EVENT
+    CreateRunnerRequest:
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          type: string
+          description: "[a-z][a-z0-9-]{0,63}, unique"
+        description:
+          type: string
+          description: "Free text, at most 1024 characters"
+        slots:
+          type: integer
+          format: int32
+          description: How many steps it may hold at once; 0 drains it. Default 1
     DaemonPinDto:
       type: object
       properties:
@@ -206,6 +288,65 @@ components:
       format: date-time
       examples:
       - 2022-03-10T16:15:50Z
+    JsonNode:
+      type: object
+      properties:
+        empty:
+          type: boolean
+        valueNode:
+          type: boolean
+        containerNode:
+          type: boolean
+        missingNode:
+          type: boolean
+        array:
+          type: boolean
+        object:
+          type: boolean
+        nodeType:
+          $ref: "#/components/schemas/JsonNodeType"
+        pojo:
+          type: boolean
+        number:
+          type: boolean
+        integralNumber:
+          type: boolean
+        floatingPointNumber:
+          type: boolean
+        short:
+          type: boolean
+        int:
+          type: boolean
+        long:
+          type: boolean
+        float:
+          type: boolean
+        double:
+          type: boolean
+        bigDecimal:
+          type: boolean
+        bigInteger:
+          type: boolean
+        textual:
+          type: boolean
+        boolean:
+          type: boolean
+        "null":
+          type: boolean
+        binary:
+          type: boolean
+    JsonNodeType:
+      type: string
+      enum:
+      - ARRAY
+      - BINARY
+      - BOOLEAN
+      - MISSING
+      - "NULL"
+      - NUMBER
+      - OBJECT
+      - POJO
+      - STRING
     ListRepositoryIdsResponse:
       type: object
       properties:
@@ -220,6 +361,13 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RepositorySummaryDto"
+    ListRunnersResponse:
+      type: object
+      properties:
+        runners:
+          type: array
+          items:
+            $ref: "#/components/schemas/CiRunnerDto"
     ListRunsResponse:
       type: object
       properties:
@@ -227,6 +375,16 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CiRunDto"
+    PatchRunnerRequest:
+      type: object
+      properties:
+        slots:
+          type: integer
+          format: int32
+          description: 0 drains the runner; absent leaves it
+        description:
+          type: string
+          description: Blank clears it; absent leaves it
     QueueResponse:
       type: object
       properties:
@@ -243,6 +401,31 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CiRunDto"
+        runners:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunnerCapacity"
+    RegisterRunnerRequest:
+      type: object
+      properties:
+        capabilities:
+          $ref: "#/components/schemas/JsonNode"
+          type: object
+          description: "What the runner says about itself — a JSON object, at most\
+            \ 16 KiB"
+    RegisteredRunner:
+      type: object
+      properties:
+        clientId:
+          type: string
+        secret:
+          type: string
+        tokenUrl:
+          type: string
+        audience:
+          type: string
+        socketUrl:
+          type: string
     ReleasePhaseResponse:
       type: object
       properties:
@@ -292,6 +475,21 @@ components:
       properties:
         runId:
           type: string
+    RunnerCapacity:
+      type: object
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        name:
+          type: string
+        slots:
+          type: integer
+          format: int32
+        held:
+          type: integer
+          format: int64
+        connected:
+          type: boolean
     Selection:
       type: string
       enum:
@@ -332,6 +530,10 @@ components:
           type: array
           items:
             type: string
+    UUID:
+      type: string
+      format: uuid
+      pattern: "[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}"
   securitySchemes:
     SecurityScheme:
       type: openIdConnect
@@ -478,6 +680,226 @@ paths:
         - qits:admin
         - qits:system
         - qits:agent
+  /ci/api/runners:
+    get:
+      summary: "Every runner, with whether it is connected and how many runs it holds"
+      responses:
+        "200":
+          description: "Every runner, by name"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListRunnersResponse"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Runner Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:system
+        - qits:agent
+    post:
+      summary: "Declare a runner; answers its install script, once"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRunnerRequest"
+        required: true
+      responses:
+        "201":
+          description: The runner and the install script carrying its registration
+            token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CiRunnerCreated"
+        "400":
+          description: "A malformed name, slots or description"
+        "409":
+          description: The name is taken
+        "502":
+          description: qits-idp refused the registration token
+        "503":
+          description: "This deployment commissions nothing, or cannot render an install\
+            \ script"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Runner Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+  /ci/api/runners/{id}:
+    patch:
+      summary: Change a runner's slots or description
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchRunnerRequest"
+        required: true
+      responses:
+        "200":
+          description: The runner as it now is
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CiRunnerDto"
+        "400":
+          description: Negative slots or an overlong description
+        "404":
+          description: No such runner
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Runner Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+    get:
+      summary: One runner
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The runner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CiRunnerDto"
+        "404":
+          description: No such runner
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Runner Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:system
+        - qits:agent
+    delete:
+      summary: Decommission a runner and give its credentials back
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: Gone
+        "404":
+          description: No such runner
+        "409":
+          description: The runner holds a running run
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Runner Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+  /ci/api/runners/{id}/register:
+    post:
+      summary: "Register a runner with its registration token; answers its client,\
+        \ once"
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRunnerRequest"
+        required: true
+      responses:
+        "200":
+          description: The runner's own client and where to use it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisteredRunner"
+        "400":
+          description: Capabilities that are not a JSON object
+        "403":
+          description: The token is not this runner's
+        "404":
+          description: No such runner
+        "409":
+          description: The runner is already registered
+        "502":
+          description: qits-idp refused the runner's client
+        "503":
+          description: This deployment commissions nothing
+        "401":
+          description: Not Authorized
+      tags:
+      - Ci Runner Controller
+      security:
+      - SecurityScheme:
+        - qits:ci-runner-registration
+  /ci/api/runners/{id}/registration-token:
+    post:
+      summary: "Replace a runner's registration token; answers a new install script,\
+        \ once"
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The runner and the install script carrying its new registration
+            token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CiRunnerCreated"
+        "404":
+          description: No such runner
+        "409":
+          description: The runner is already registered
+        "502":
+          description: qits-idp refused the registration token
+        "503":
+          description: "This deployment commissions nothing, or cannot render an install\
+            \ script"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Runner Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
   /ci/api/runs:
     get:
       summary: "List a repository's CI runs, newest first"
@@ -769,4 +1191,4 @@ paths:
         - qits:agent
 info:
   title: qits-ci API
-  version: 2026.922.224534
+  version: 2026.926.54911

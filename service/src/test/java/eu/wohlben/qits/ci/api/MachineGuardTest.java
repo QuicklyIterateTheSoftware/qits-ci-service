@@ -76,7 +76,7 @@ import org.junit.jupiter.api.Test;
  */
 @QuarkusTest
 @TestProfile(MachineGuardTest.GateOn.class)
-class MachineGuardTest {
+public class MachineGuardTest {
 
   /**
    * The audience this service's machine guard expects — its config default, injected in prod. It is
@@ -174,6 +174,53 @@ class MachineGuardTest {
   private static final String RERUN_BODY =
       """
       {"repoId":"guarded-repo","releaseRequestId":"rr-guarded","phase":"RELEASE_REQUEST"}""";
+
+  /** The runner register door — the one machine door {@code CiRunnerController} has. */
+  private static final String REGISTER =
+      "/ci/api/runners/00000000-0000-0000-0000-000000000440/register";
+
+  @Test
+  void theRunnerRegisterDoorWithNoMachineTokenIs401() {
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"capabilities\":{}}")
+        .when()
+        .post(REGISTER)
+        .then()
+        .statusCode(401);
+  }
+
+  @Test
+  @TestSecurity(user = "tok-ci-runner-registration-x", roles = {"qits:ci-runner-registration"})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = FOREIGN_AUDIENCE),
+        @Claim(key = "sub", value = "tok-ci-runner-registration-x")
+      })
+  void aRegistrationTokenAddressedElsewhereMayNotRegister() {
+    // MachineAuth's own 403, asked before anything is read: this door does not even say whether the
+    // runner exists to a token that is not addressed to the platform.
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"capabilities\":{}}")
+        .when()
+        .post(REGISTER)
+        .then()
+        .statusCode(403);
+  }
+
+  @Test
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void declaringARunnerIsAPersonsAndRefusesAMachine() {
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"name\":\"machine-made\",\"slots\":1}")
+        .when()
+        .post("/ci/api/runners")
+        .then()
+        .statusCode(403);
+  }
 
   @Test
   void thePhaseRerunWithNoMachineTokenIs401() {

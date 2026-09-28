@@ -162,6 +162,39 @@ public class CiSchemaTest {
   }
 
   @Test
+  public void theRunnerTableCarriesItsNameGuaranteeAndNoCheck() throws SQLException {
+    // V23. The name is the one constraint beyond the key: a taken name is a 409 the domain checks
+    // first, and uq_ci_runner_name is what answers the race that check cannot see. The plane is an
+    // enum column like ci_run.status, so — like it — no check constraint names its values.
+    assertTrue(constraints("ci_runner", 'u').contains("uq_ci_runner_name"));
+    assertEquals(List.of(), constraints("ci_runner", 'c'));
+    assertEquals(List.of(), constraints("ci_runner", 'f'));
+    // Capabilities are the one jsonb in this lineage — the next epic's scheduler queries into them.
+    assertEquals("jsonb", columnType("ci_runner", "capabilities"));
+    // ci_run.runner_id: a uuid, and NO foreign key — a decommissioned runner leaves its runs as
+    // history rather than refusing the delete or cascading the history away.
+    assertEquals("uuid", columnType("ci_run", "runner_id"));
+    assertEquals(List.of(), constraints("ci_run", 'f'));
+    try (Connection connection = ci.getConnection()) {
+      connection.setAutoCommit(false);
+      try (PreparedStatement runner =
+          connection.prepareStatement(
+              "insert into ci_runner (id, name, created_at) values"
+                  + " ('00000000-0000-0000-0000-0000000c1023', ?, current_timestamp)"
+                  + " returning slots, plane")) {
+        runner.setString(1, "schema-probe");
+        try (ResultSet defaults = runner.executeQuery()) {
+          assertTrue(defaults.next());
+          // The shape a runner is created in when nobody says: one slot, on the internal plane.
+          assertEquals(1, defaults.getInt(1));
+          assertEquals("INTERNAL", defaults.getString(2));
+        }
+      }
+      connection.rollback();
+    }
+  }
+
+  @Test
   public void theStepImagePinColumnIsNullableAndTakesBothArms() throws SQLException {
     // V21. A run pins its step images at accept, and NOTHING PINNED is an ordinary run rather than
     // a gap: a pipeline whose every step names an image this platform does not publish (alpine:3,

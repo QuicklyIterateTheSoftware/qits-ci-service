@@ -1,7 +1,9 @@
 package eu.wohlben.qits.ci.idp;
 
 import eu.wohlben.qits.ci.entity.CiRun;
+import eu.wohlben.qits.ci.entity.CiRunner;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
+import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.runtime.LaunchMode;
 import io.quarkus.runtime.StartupEvent;
@@ -10,8 +12,12 @@ import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.jboss.logging.Logger;
@@ -37,6 +43,17 @@ import org.jboss.logging.Logger;
  * would delete every live run's credential the first time qits-idp was slow — the same "a read
  * failure must not shrink a set" rule the candidate listing and the run queue already state.
  *
+ * <p><b>It reaps a runner's credentials too, by the runner table rather than the run table.</b> A
+ * {@code ci-runner} client belongs to the runner its {@code contextId} names, and is reaped when that
+ * runner's row is gone or names a different client — a decommission whose give-back did not reach
+ * qits-idp, or a registration that lost a race. A {@code ci-runner-registration} token is reaped when
+ * its runner's row is gone, when the runner has registered (the token is spent) or when the row names
+ * a different token (it was rotated). A row with no client yet spares every client of its runner —
+ * that is a registration in flight, between the commission and the write — and a token younger than
+ * {@link #TOKEN_GRACE} is spared outright, since a create and a rotation commission the token before
+ * the row names it. {@code GET /idp/api/tokens} is a second listing on the same pass, and it carries
+ * the same rule as the first: one that could not be read reaps nothing.
+ *
  * <p><b>Boot, on its own thread.</b> The observer runs after both existing boot observers ({@code
  * CiDaemonLauncher.BOOT_REAP_PRIORITY}, then {@code CiRunService.BOOT_SWEEP_PRIORITY}) so the run
  * table it reads is the one the sweep left, and it hands the work to a thread of its own rather than
@@ -61,6 +78,16 @@ public class CommissionReconciler {
   @Inject RunCommissions commissions;
 
   @Inject CiRunRepository runs;
+
+  @Inject CiRunnerRepository runners;
+
+  /**
+   * How young a registration token has to be to be spared whatever the runner table says. A create
+   * and a rotation commission the token first and write the row after, so for a moment a live token
+   * is one no row names; ten minutes is that moment with a great deal of room, and still far inside
+   * the hourly pass.
+   */
+  static final Duration TOKEN_GRACE = Duration.ofMinutes(10);
 
   /**
    * Skipped under {@code TEST}, like both boot observers it follows: the suites reach no idp by
@@ -96,10 +123,106 @@ public class CommissionReconciler {
    */
   void reconcile() {
     Optional<List<IdpCommissioner.LiveClient>> live = idp.live();
-    if (live.isEmpty()) {
-      return;
+    if (live.isPresent()) {
+      reap(live.get(), activeRunIds());
+      // The runner table is read only when there is something of a runner's to judge against it.
+      if (live.get().stream().anyMatch(c -> IdpCommissioner.RUNNER_KIND.equals(c.contextKind()))) {
+        reapRunnerClients(live.get(), runnerCredentials());
+      }
     }
-    reap(live.get(), activeRunIds());
+    Optional<List<IdpCommissioner.LiveToken>> tokens = idp.liveTokens();
+    if (tokens.isPresent()
+        && tokens.get().stream()
+            .anyMatch(t -> IdpCommissioner.RUNNER_REGISTRATION_KIND.equals(t.contextKind()))) {
+      reapRunnerTokens(tokens.get(), runnerCredentials(), Instant.now());
+    }
+  }
+
+  /**
+   * What each runner row says it holds at qits-idp, keyed by the runner id as qits-idp spells a
+   * context id. {@code clientId} null is an unregistered runner.
+   */
+  record RunnerCredentials(String clientId, String registrationTokenId) {}
+
+  /** Every runner's credentials, or null when the table could not be read — which reaps nothing. */
+  private Map<String, RunnerCredentials> runnerCredentials() {
+    try {
+      return QuarkusTransaction.requiringNew()
+          .call(
+              () -> {
+                Map<String, RunnerCredentials> rows = new HashMap<>();
+                for (CiRunner runner : runners.listAll()) {
+                  rows.put(
+                      runner.id.toString(),
+                      new RunnerCredentials(runner.clientId, runner.registrationTokenId));
+                }
+                return rows;
+              });
+    } catch (RuntimeException e) {
+      LOG.warnf("Could not read the runners, so no runner credential is reaped: %s", e.toString());
+      return null;
+    }
+  }
+
+  /** The runner half of the client sweep; see the class javadoc for the rule. */
+  int reapRunnerClients(
+      List<IdpCommissioner.LiveClient> live, Map<String, RunnerCredentials> runnerRows) {
+    if (runnerRows == null) {
+      return 0;
+    }
+    int reaped = 0;
+    for (IdpCommissioner.LiveClient each : live) {
+      if (!IdpCommissioner.RUNNER_KIND.equals(each.contextKind())) {
+        continue;
+      }
+      RunnerCredentials row = runnerRows.get(each.contextId());
+      if (row != null && (row.clientId() == null || row.clientId().equals(each.clientId()))) {
+        continue;
+      }
+      LOG.infof(
+          "Reaping runner client %s of runner %s, which %s",
+          each.clientId(),
+          each.contextId(),
+          row == null ? "is decommissioned" : "is registered as " + row.clientId());
+      idp.decommission(each.clientId());
+      reaped++;
+    }
+    return reaped;
+  }
+
+  /** The registration-token sweep; see the class javadoc for the rule. */
+  int reapRunnerTokens(
+      List<IdpCommissioner.LiveToken> live,
+      Map<String, RunnerCredentials> runnerRows,
+      Instant now) {
+    if (runnerRows == null) {
+      return 0;
+    }
+    int reaped = 0;
+    for (IdpCommissioner.LiveToken each : live) {
+      if (!IdpCommissioner.RUNNER_REGISTRATION_KIND.equals(each.contextKind())) {
+        continue;
+      }
+      if (each.createdAt() != null && each.createdAt().isAfter(now.minus(TOKEN_GRACE))) {
+        continue;
+      }
+      RunnerCredentials row = runnerRows.get(each.contextId());
+      String why;
+      if (row == null) {
+        why = "is decommissioned";
+      } else if (row.clientId() != null) {
+        why = "has registered";
+      } else if (!each.tokenId().equals(row.registrationTokenId())) {
+        why = "holds a newer one";
+      } else {
+        continue;
+      }
+      LOG.infof(
+          "Reaping registration token %s of runner %s, which %s", each.tokenId(), each.contextId(), why);
+      idp.deleteToken(each.tokenId());
+      reaped++;
+    }
+    return reaped;
   }
 
   /** The run ids that still own a credential — see the class javadoc for why they are read here. */

@@ -125,9 +125,114 @@ rest of qits it reaches over a URL it is configured with:
 | out | `ws://…/events/stream` — dialled out and held open, carrying what qits-events broadcasts back | the same two keys; the address is derived, never configured twice |
 | out | `PUT/DELETE /containers/api/containers/<owner>/ci-step/<ref>` — every step container: started, read and removed through qits-containers, which owns the docker daemon. **qits-ci holds no docker socket.** | `qits.containers.url`, `qits.ci.containers.owner` |
 | out | `POST/DELETE/GET /idp/api/clients` — one commissioned oidc client per run, minted at the run's first step and deleted when the run closes; every step clones with it, and a publishing step pushes with it | `quarkus.oidc-client.qits.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.qits.client-enabled` |
+| out | `POST/DELETE/GET /idp/api/tokens` — a runner's one-use registration token (`ci-runner-registration`), and the same clients door for its own client once it registers (`ci-runner`); both given back when the runner is decommissioned — see "Runners" below | the same keys as the row above |
 | out | the registry a publishing step pushes to, as `$QITS_REGISTRY` and `$QITS_IMAGE_REPOSITORY` in **every** step container — dialled by the *host's docker daemon*, never by this process | `qits.artifacts.registry-host`, `qits.artifacts.image-repository` |
 | out | the npm registry roots, as `$QITS_NPM_REGISTRY_URL` (hosted, `@qits/*` publishes) and `$QITS_NPM_PROXY_URL` (the npmjs pull-through cache) in **every** step container — dialled by the *step container itself* on the shared network | `qits.artifacts.npm.hosted-url`, `qits.artifacts.npm.proxy-url` |
 | out | the hosted Maven repository root, as `$QITS_MAVEN_REGISTRY_URL` in **every** step container — also dialled by the step container on the shared network | `qits.artifacts.maven.registry-url` |
+
+### Runners
+
+A **runner** is a machine that registers with qits-ci and pulls step work, rather than a container
+qits-ci asks qits-containers to start (epic qits-440): the row, the operator's six verbs, the
+runner's register door, and the socket it then holds open to pull work.
+
+| verb | answer | role |
+|---|---|---|
+| `POST /ci/api/runners` `{name, description?, slots?}` | 201 the runner's fields plus `installScript` — the script carrying the registration token, **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}`, 409 on a taken one | `qits:admin` |
+| `GET /ci/api/runners` | `{runners: [{id, name, description, slots, plane, capabilities, registered, connected, heldRuns, lastSeenAt, createdAt}]}`, by name | `qits:admin`, `qits:system`, `qits:agent` |
+| `GET /ci/api/runners/{id}` | one runner, 404 | the same |
+| `PATCH /ci/api/runners/{id}` `{slots?, description?}` | the runner; `slots: 0` drains it | `qits:admin` |
+| `POST /ci/api/runners/{id}/registration-token` | the runner's fields plus a fresh `installScript` with a new token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin` |
+| `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run | `qits:admin` |
+
+**The register door is `POST /ci/api/runners/{id}/register` `{capabilities}`**, and a runner knocks on
+it with its registration token — a `qits_tok_` value the edge introspects and exchanges for a short
+JWT whose `sub` is the token's subject. The door admits `qits:ci-runner-registration` alone, and
+the bearer's `sub` must be **this** runner's registration token subject (403 otherwise). It
+commissions the runner's own `ci-runner` client, deletes the spent token and answers **once**
+`{clientId, secret, tokenUrl, audience: "qits-platform", socketUrl}`; a runner that has registered is
+409, which is what a replay of the right token gets. **`qits:ci-runner-registration` opens this one
+route and nothing else on the platform.**
+
+**The door also takes the raw registration token, because the internal plane has no edge.** A
+runner on qits-net dials `http://<env>-qits-ci:8080` directly, so nothing exchanges its `qits_tok_`
+for the edge's JWT and the bearer that arrives is the opaque value, which quarkus-oidc cannot
+validate. For this one route — `POST /ci/api/runners/{id}/register` with `Authorization: Bearer
+qits_tok_…` — `runnerhost/RegistrationTokenMechanism` asks qits-idp itself (`POST
+/idp/api/tokens/introspect`, Basic of this service's own client, the edge's question) and admits a
+live token as `qits:ci-runner-registration` only when it is a `ci-runner-registration` token; the
+door then requires its `contextId` to be this runner and its subject the row's (403 otherwise). A
+value qits-idp does not call live — unknown, deleted — is 401. On every other route the mechanism
+abstains, so a `qits_tok_` there is refused 401 as it always was.
+
+Every credential here is handed out exactly once and logged never: the token's value is on no row
+and no read, the client's secret likewise. A refused request leaves nothing minted behind — a token
+or client whose write lost a race is given back at once — and `CommissionReconciler` reaps what a
+give-back could not: a runner's client once its row is gone or names another client, a registration
+token once its row is gone, has registered or names a newer token (tokens younger than ten minutes
+are spared, since a create commissions before it writes). With the qits oidc client off — the
+shipped posture — nothing can be commissioned, and the create, a rotation and the register door
+answer 503.
+
+`tokenUrl` is the idp token endpoint qits-ci hands its step daemons
+(`quarkus.oidc-client.qits.auth-server-url` + `/token`). `socketUrl` is
+`<base>/ci/runners/socket` with `ws`/`wss` after the base's scheme, where the base is
+`qits.ci.runner.public-url` when set and `qits.ci.runner.internal-url` otherwise — shipped as
+`http://${QITS_ENVIRONMENT:dev}-qits-ci:8080`, the alias a step daemon already dials back to, which
+is what a runner on qits-net (the `INTERNAL` plane) reaches. `runnerhost/RunnerAddresses` is the one
+place those three are composed.
+
+**The install script is the only place the registration token's value is written**
+(`runnerhost/RunnerInstallScript`, from `service/src/main/resources/runner-install.sh.tmpl`). The
+create and a rotation answer the runner's own read fields flat, as `GET` does, plus `installScript`:
+POSIX `sh` for `sudo sh` or a root shell on x86-64 Linux with docker. It refuses without root or
+without `docker` on PATH; creates the `qits-ci-runner` system user in group `docker`; downloads
+`<artifacts base>/artifacts/daemons/qits-ci-runner/<version>` to `/usr/local/bin/qits-ci-runner`
+(bearer: the registration token); writes `/etc/qits-ci-runner.env` (0600: `QITS_CI_RUNNER_URL`
+= the CI base above, `_ID`, `_REGISTRATION_TOKEN`, `_STATE_DIR=/var/lib/qits-ci-runner`, `_SLOTS`
+= the row's, at least 1) and the unit — byte for byte qits-ci-runner-daemon's
+`packaging/qits-ci-runner.service` — then `systemctl enable --now`. Run again with a rotated token it
+keeps the binary, rewrites the env file and restarts the unit; the runner re-registers by itself
+when the token differs from the one it registered with. The artifacts base is
+`qits.ci.runner.artifacts-url` when set and `qits.ci.runner.artifacts-internal-url` otherwise
+(`http://${QITS_ENVIRONMENT:dev}-qits-artifacts:8080`, the host the daemon binary URL template
+names); the version is the pinned `qits-ci-runner-protocol`'s `CiRunnerBinary.VERSION`
+(`runnerhost/CiRunnerPins`), with `qits.ci.runner-version-override` as the unset hatch. Every
+rendered value is held to a charset that is literal inside the script's single quotes and the env
+file: a deployment value outside it is 503 before anything is minted, a token outside it 502 and
+given back. The template's shape is qits-ci-runner-daemon's `scripts/test-install-contract.sh`
+contract; `RunnerInstallScriptTest` runs that test against a rendering when the runner repository is
+checked out beside this one, and writes the rendering to `service/target/runner-install.fixture.sh`,
+which is that repository's committed fixture.
+
+A run a runner executed carries `runnerId` and `runnerName` on every run read; the id outlives the
+runner (no foreign key), the name does not.
+
+**The socket is `/ci/runners/socket`** (`runnerhost/CiRunnerSocket`), `@RolesAllowed("qits:ci-runner")`.
+The runner's identity is the validated bearer's `sub` — qits-idp sets it to the client id for a
+`client_credentials` token — looked up against `ci_runner.client_id`; no row, or no token at all, is
+a 1008. Forward-auth headers never name a runner, so **the machine gate must be on for a runner to
+connect.** The conversation is the protocol jar's (`qits-ci-runner-protocol`): `Hello` (capabilities
+and `last_seen_at` recorded, a foreign `CAPABILITY_VERSION` closed 1008) → `Ack{slots}` with the
+**row's** slots → `Backlog{queued}`, pushed again after every accept, finish and settlement; a
+heartbeat stamps the row at most once a minute; a second dial of the same runner replaces the first,
+which is closed 1008 `ALREADY_CONNECTED`.
+
+**`Reserve` is the claim.** `CiRunService.reserveFor` walks the queue in the claim loop's own order and
+takes the first run with the same conditional UPDATE a local worker's claim uses, writing `runner_id`
+in that statement — so local workers and runners compete for one row and exactly one wins. It passes
+over a run with a `docker:`/`build:` step for a runner whose capabilities do not say `docker: true`,
+and refuses a runner already holding its slots. The answer is `Take` or `Nothing`. A taken run is
+driven on its own `ci-runner-run-<runId>` thread, never a `ci-run-worker`, through
+`runnerhost/RunnerStepRunner`: each step is a `Launch{workloadSpec}` to the runner — the spec
+`daemonhost/StepWorkloadSpecs` composes for the local path too — answered `Launched`/`LaunchFailed`
+within `qits.ci.runner.launch-timeout-seconds` (180); then the container's own daemon dials
+`/ci/daemon` and the step runs exactly as a local one; then `Reap`. When the run closes, whatever its
+verdict, qits-ci sends `Released{runId}`, the only frame that frees the runner's slot. A runner whose
+socket drops mid-step ends that step `CONNECTION_LOST` at once, its output naming the runner
+(`[runner <name> disconnected]`); the run is an ordinary failed run and retries like one.
+`GET /ci/api/runs/queue` lists every runner (`runners: [{id, name, slots, held, connected}]`) and its
+forecast counts the local pool plus every connected runner's slots.
 
 The run listing takes the repository as a **query filter, not a path segment**. ci does not own
 repositories, so `/repositories/{repoId}/runs` asserted a containment this context does not have —

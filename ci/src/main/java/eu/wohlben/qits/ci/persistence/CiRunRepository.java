@@ -5,8 +5,12 @@ import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 /** Panache DAO for {@link CiRun} (keyed by its String UUID row id). */
 @ApplicationScoped
@@ -70,6 +74,73 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
         "status in (?1, ?2) order by createdAt desc, id desc",
         CiRunStatus.QUEUED,
         CiRunStatus.RUNNING);
+  }
+
+  /**
+   * How many {@code RUNNING} runs one runner holds — the read behind a runner's {@code heldRuns}, and
+   * behind the refusal to delete a runner that is still executing something. Only {@code RUNNING}:
+   * a finished run on a runner is history, and history never holds a runner up.
+   */
+  public long countRunningOnRunner(UUID runnerId) {
+    return count("runnerId = ?1 and status = ?2", runnerId, CiRunStatus.RUNNING);
+  }
+
+  /** {@link #countRunningOnRunner} for every runner at once, keyed by runner; absent means none. */
+  public Map<UUID, Long> countRunningByRunner() {
+    Map<UUID, Long> held = new HashMap<>();
+    List<Object[]> rows =
+        getEntityManager()
+            .createQuery(
+                "select r.runnerId, count(r) from CiRun r where r.runnerId is not null"
+                    + " and r.status = ?1 group by r.runnerId",
+                Object[].class)
+            .setParameter(1, CiRunStatus.RUNNING)
+            .getResultList();
+    for (Object[] row : rows) {
+      held.put((UUID) row[0], ((Number) row[1]).longValue());
+    }
+    return held;
+  }
+
+  /**
+   * <b>The claim, as one conditional UPDATE</b>: {@code QUEUED} becomes {@code RUNNING}, stamped,
+   * only while the row still is {@code QUEUED}. One row changed is this caller's run; zero is
+   * somebody else's — another local worker, a runner's reservation, or a cancellation that got
+   * there first. Postgres re-evaluates the predicate against a concurrently committed version of
+   * the row, so two transactions racing for one row cannot both see one row changed, which a read
+   * followed by a dirty write under READ COMMITTED could.
+   *
+   * <p>A local claim writes {@code runner_id} null in the same statement. It is null on every row
+   * a local worker could claim except one: a runner's run the boot sweep handed back to {@code
+   * QUEUED}, which must not come back up still naming the runner it was interrupted on.
+   */
+  public int claimQueued(String runId, Instant startedAt) {
+    return update(
+        "status = ?1, startedAt = ?2, runnerId = null where id = ?3 and status = ?4",
+        CiRunStatus.RUNNING,
+        startedAt,
+        runId,
+        CiRunStatus.QUEUED);
+  }
+
+  /** {@link #claimQueued}, recording the runner that reserved the run in the same UPDATE. */
+  public int claimQueuedForRunner(String runId, Instant startedAt, UUID runnerId) {
+    return update(
+        "status = ?1, startedAt = ?2, runnerId = ?3 where id = ?4 and status = ?5",
+        CiRunStatus.RUNNING,
+        startedAt,
+        runnerId,
+        runId,
+        CiRunStatus.QUEUED);
+  }
+
+  /**
+   * How many runs are {@code QUEUED} right now — the number a runner's {@code Backlog} frame
+   * carries. A count rather than {@link #listQueuedOldestFirst}'s size because it is asked on every
+   * transition that may move it, and nobody on that path wants the rows.
+   */
+  public long countQueued() {
+    return count("status", CiRunStatus.QUEUED);
   }
 
   /**

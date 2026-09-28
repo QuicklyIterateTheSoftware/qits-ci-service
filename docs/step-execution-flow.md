@@ -102,6 +102,37 @@ Three things the diagram is deliberately precise about:
   anything live. `BuildSuccessful` is a verdict about a commit now, and its consumer is
   qits-projects' release-request quality gate.
 
+## When a runner starts the container
+
+A run a runner reserved changes one participant: the container is started by the runner on its own
+host, asked over the runner socket, instead of by qits-containers. The control WebSocket is unchanged
+— the step's daemon still dials qits-ci, and the script still arrives as the reply.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Runner as ci-runner (runner host)
+    participant Ci as qits-ci
+    participant Step as step container
+
+    Runner-->>Ci: dials /ci/runners/socket with its client's bearer, Hello{capabilities}
+    Ci-->>Runner: Ack{slots}, Backlog{queued}
+    Runner-->>Ci: Reserve
+    Ci->>Ci: the claim loop's CAS, runner_id in the same UPDATE
+    Ci-->>Runner: Take{runId} — or Nothing
+    loop one container per step
+        Ci-->>Runner: Launch{workloadSpec} — the spec qits-containers would have got
+        Runner->>Step: docker run -d
+        Runner-->>Ci: Launched{containerId} | LaunchFailed{docker's words}
+        Step-->>Ci: dials the CONTROL WebSocket, as every step does
+        Ci-->>Step: RunStep … Finished
+        Ci-->>Runner: Reap{containerName} → Reaped
+    end
+    Ci-->>Runner: Released{runId} — the slot is free
+```
+
+A runner socket that closes mid-step ends the step `CONNECTION_LOST` at once, naming the runner.
+
 ## Where a publishing step fits
 
 ```mermaid
