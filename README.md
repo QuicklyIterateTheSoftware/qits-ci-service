@@ -138,11 +138,12 @@ runner's register door, and the socket it then holds open to pull work.
 
 | verb | answer | role |
 |---|---|---|
-| `POST /ci/api/runners` `{name, description?, slots?}` | 201 the runner's fields plus `installScript` — the script carrying the registration token, **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}`, 409 on a taken one | `qits:admin` |
+| `POST /ci/api/runners` `{name, description?, slots?}` | 201 the runner's fields plus `installScript` — the one install line carrying the registration token, **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}`, 409 on a taken one | `qits:admin` |
+| `GET /ci/api/runners/install.sh` | `text/plain`: the generic install script the line pipes into `sh` — no secret, no runner | `qits:ci-runner-registration`, `qits:admin`, `qits:system`, `qits:agent` |
 | `GET /ci/api/runners` | `{runners: [{id, name, description, slots, plane, capabilities, registered, connected, heldRuns, lastSeenAt, createdAt}]}`, by name | `qits:admin`, `qits:system`, `qits:agent` |
 | `GET /ci/api/runners/{id}` | one runner, 404 | the same |
 | `PATCH /ci/api/runners/{id}` `{slots?, description?}` | the runner; `slots: 0` drains it | `qits:admin` |
-| `POST /ci/api/runners/{id}/registration-token` | the runner's fields plus a fresh `installScript` with a new token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin` |
+| `POST /ci/api/runners/{id}/registration-token` | the runner's fields plus a fresh `installScript` line with a new token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin` |
 | `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run | `qits:admin` |
 
 **The register door is `POST /ci/api/runners/{id}/register` `{capabilities}`**, and a runner knocks on
@@ -151,17 +152,18 @@ JWT whose `sub` is the token's subject. The door admits `qits:ci-runner-registra
 the bearer's `sub` must be **this** runner's registration token subject (403 otherwise). It
 commissions the runner's own `ci-runner` client, deletes the spent token and answers **once**
 `{clientId, secret, tokenUrl, audience: "qits-platform", socketUrl}`; a runner that has registered is
-409, which is what a replay of the right token gets. **`qits:ci-runner-registration` opens this one
-route and nothing else on the platform.**
+409, which is what a replay of the right token gets. **`qits:ci-runner-registration` opens exactly
+two routes on the platform: this one, and `GET /ci/api/runners/install.sh`** — the generic install
+script, which carries no secret and names no runner, so any live registration token reads it.
 
 **The door also takes the raw registration token, because the internal plane has no edge.** A
 runner on qits-net dials `http://<env>-qits-ci:8080` directly, so nothing exchanges its `qits_tok_`
 for the edge's JWT and the bearer that arrives is the opaque value, which quarkus-oidc cannot
-validate. For this one route — `POST /ci/api/runners/{id}/register` with `Authorization: Bearer
-qits_tok_…` — `runnerhost/RegistrationTokenMechanism` asks qits-idp itself (`POST
+validate. For the two routes the role opens — `POST /ci/api/runners/{id}/register` and `GET
+/ci/api/runners/install.sh`, with `Authorization: Bearer qits_tok_…` — `runnerhost/RegistrationTokenMechanism` asks qits-idp itself (`POST
 /idp/api/tokens/introspect`, Basic of this service's own client, the edge's question) and admits a
 live token as `qits:ci-runner-registration` only when it is a `ci-runner-registration` token; the
-door then requires its `contextId` to be this runner and its subject the row's (403 otherwise). A
+register door then requires its `contextId` to be this runner and its subject the row's (403 otherwise). A
 value qits-idp does not call live — unknown, deleted — is 401. On every other route the mechanism
 abstains, so a `qits_tok_` there is refused 401 as it always was.
 
@@ -174,36 +176,55 @@ are spared, since a create commissions before it writes). With the qits oidc cli
 shipped posture — nothing can be commissioned, and the create, a rotation and the register door
 answer 503.
 
-`tokenUrl` is the idp token endpoint qits-ci hands its step daemons
-(`quarkus.oidc-client.qits.auth-server-url` + `/token`). `socketUrl` is
-`<base>/ci/runners/socket` with `ws`/`wss` after the base's scheme, where the base is
-`qits.ci.runner.public-url` when set and `qits.ci.runner.internal-url` otherwise — shipped as
-`http://${QITS_ENVIRONMENT:dev}-qits-ci:8080`, the alias a step daemon already dials back to, which
-is what a runner on qits-net (the `INTERNAL` plane) reaches. `runnerhost/RunnerAddresses` is the one
-place those three are composed.
+**A runner goes through the public edge**, and every address it is told is a public name
+(`runnerhost/RunnerAddresses`, the one place they are composed). It is a machine a person owns — not
+on the swarm, no qits-net, no internal DNS — so the CI base is `https://ci.qits.<domain>`, `socketUrl`
+`wss://ci.qits.<domain>/ci/runners/socket`, `tokenUrl` `https://idp.qits.<domain>/idp/token`, and the
+artifacts base `https://registry.qits.<domain>`. `<domain>` is `QITS_DOMAIN`, which qits-deployments
+writes into every container, and the composition is the one qits-idp uses for its canonical origin
+(`PlatformDomain.canonicalOrigin`, `https://idp.qits.<domain>`) and the edge for its door
+(`EdgeSessions.canonicalOrigin`): `https://<host>.qits.<domain>`, where `qits` is the platform's own
+project and carries **no environment label** — the edge's grammar is `<app>[.<env>].<project>.<domain>`
+and the env label is present exactly when the project supports environments, which the platform
+project does not. `ci` is this application's derived host label, `idp` and `registry` are qits-idp's
+and qits-artifacts' `host:` lines. On the live estate (`QITS_DOMAIN=wohlben.eu`) that is
+`ci.qits.wohlben.eu`, `idp.qits.wohlben.eu` and `registry.qits.wohlben.eu`, whatever `QITS_ENVIRONMENT`
+says. Each has an override that ships unset — `qits.ci.runner.public-url`, `qits.ci.runner.token-url`,
+`qits.ci.runner.artifacts-url` — and with no public domain (none, or a single label such as
+`localhost`: a clone or the suite) they fall back to the qits-net aliases
+(`qits.ci.runner.internal-url` = `http://${QITS_ENVIRONMENT:dev}-qits-ci:8080`, the idp
+`quarkus.oidc-client.qits.auth-server-url` names + `/token`, `qits.ci.runner.artifacts-internal-url` =
+`http://${QITS_ENVIRONMENT:dev}-qits-artifacts:8080`), with a WARN the first time one is composed that
+a runner outside the swarm cannot use them. The step containers' own addresses are not these.
 
-**The install script is the only place the registration token's value is written**
-(`runnerhost/RunnerInstallScript`, from `service/src/main/resources/runner-install.sh.tmpl`). The
-create and a rotation answer the runner's own read fields flat, as `GET` does, plus `installScript`:
-POSIX `sh` for `sudo sh` or a root shell on x86-64 Linux with docker. It refuses without root or
-without `docker` on PATH; creates the `qits-ci-runner` system user in group `docker`; downloads
-`<artifacts base>/artifacts/daemons/qits-ci-runner/<version>` to `/usr/local/bin/qits-ci-runner`
-(bearer: the registration token); writes `/etc/qits-ci-runner.env` (0600: `QITS_CI_RUNNER_URL`
-= the CI base above, `_ID`, `_REGISTRATION_TOKEN`, `_STATE_DIR=/var/lib/qits-ci-runner`, `_SLOTS`
-= the row's, at least 1) and the unit — byte for byte qits-ci-runner-daemon's
-`packaging/qits-ci-runner.service` — then `systemctl enable --now`. Run again with a rotated token it
-keeps the binary, rewrites the env file and restarts the unit; the runner re-registers by itself
-when the token differs from the one it registered with. The artifacts base is
-`qits.ci.runner.artifacts-url` when set and `qits.ci.runner.artifacts-internal-url` otherwise
-(`http://${QITS_ENVIRONMENT:dev}-qits-artifacts:8080`, the host the daemon binary URL template
-names); the version is the pinned `qits-ci-runner-protocol`'s `CiRunnerBinary.VERSION`
-(`runnerhost/CiRunnerPins`), with `qits.ci.runner-version-override` as the unset hatch. Every
-rendered value is held to a charset that is literal inside the script's single quotes and the env
-file: a deployment value outside it is 503 before anything is minted, a token outside it 502 and
-given back. The template's shape is qits-ci-runner-daemon's `scripts/test-install-contract.sh`
-contract; `RunnerInstallScriptTest` runs that test against a rendering when the runner repository is
-checked out beside this one, and writes the rendering to `service/target/runner-install.fixture.sh`,
-which is that repository's committed fixture.
+**Installing is one line** (`runnerhost/RunnerInstallScript`). The create and a rotation answer the
+runner's own read fields flat, as `GET` does, plus `installScript` — whose value is the line to paste:
+
+    curl -fsSL -H 'Authorization: Bearer qits_tok_…' https://ci.qits.<domain>/ci/api/runners/install.sh | sudo env QITS_CI_RUNNER_URL='https://ci.qits.<domain>' QITS_CI_RUNNER_ID='<id>' QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_…' QITS_CI_RUNNER_SLOTS='<n>' sh
+
+The token is in it twice — the fetch's bearer and the script's value — and in no other body anywhere:
+not on the row, not on any read, not in a log line. Piped into `sh`, the script runs in a process of
+its own, so a refusal never closes the shell it was pasted into. The script itself is **generic**:
+`GET /ci/api/runners/install.sh` serves `service/src/main/resources/runner-install.sh.tmpl` with only
+the artifacts base above and the runner version filled in. POSIX `sh`, `set -eu`, for x86-64 Linux with
+systemd and docker; it reads the four values from its environment and refuses, one sentence each,
+when one is missing, without root (`id -u`) or without `docker` on PATH; creates the `qits-ci-runner`
+system user in group `docker`; downloads `<artifacts base>/artifacts/daemons/qits-ci-runner/<version>`
+to `/usr/local/bin/qits-ci-runner` (bearer: the registration token — through the edge, which
+introspects it); writes `/etc/qits-ci-runner.env` (0600: `QITS_CI_RUNNER_URL`, `_ID`,
+`_REGISTRATION_TOKEN`, `_STATE_DIR=/var/lib/qits-ci-runner`, `_SLOTS` = the row's, at least 1) and the
+unit — byte for byte qits-ci-runner-daemon's `packaging/qits-ci-runner.service` — then `systemctl
+enable --now`, and prints a closing line that never carries the token. Run again from a rotation's
+line it keeps the binary, rewrites the env file and restarts the unit; the runner re-registers by
+itself when the token differs from the one it registered with. The version is the pinned
+`qits-ci-runner-protocol`'s `CiRunnerBinary.VERSION` (`runnerhost/CiRunnerPins`), with
+`qits.ci.runner-version-override` as the unset hatch. Every rendered value is held to a charset that is
+literal inside single quotes and the env file (the script checks the four again on the host): a
+deployment value outside it is 503 before anything is minted, a token outside it 502 and given back.
+The template's shape is qits-ci-runner-daemon's `scripts/test-install-contract.sh` contract;
+`RunnerInstallScriptTest` runs that test against a rendering when the runner repository is checked out
+beside this one, and writes the rendering to `service/target/runner-install.fixture.sh`, which is that
+repository's committed fixture.
 
 A run a runner executed carries `runnerId` and `runnerName` on every run read; the id outlives the
 runner (no foreign key), the name does not.

@@ -7,34 +7,45 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
 /**
- * The install script a person pastes on a runner host: {@code runner-install.sh.tmpl} with the
- * runner's id and slots, its registration token, where to dial qits-ci and where to download the
- * binary, and which version of it. The answer to a create and to a rotation, and the only place the
- * token's value leaves this service.
+ * How a runner is installed, in two parts that never meet on this side: the <b>generic script</b>
+ * and the <b>install line</b>.
+ *
+ * <p>The generic script is {@code runner-install.sh.tmpl} with this deployment's public artifacts
+ * base and the pinned runner version filled in, and nothing else — no runner id, no token, no
+ * secret. {@code GET /ci/api/runners/install.sh} serves it. The install line is what the create and
+ * a rotation answer as {@code installScript}: one line to paste, which fetches that script with the
+ * registration token and pipes it into {@code sudo env <the four values> sh}. Piped, the script runs
+ * in a process of its own, so its {@code set -eu} refusing ends that process and never the shell
+ * the line was pasted into — which a pasted multi-line script did. The token is in the line twice,
+ * as the fetch's bearer and as the script's value, and in no other body anywhere.
  *
  * <p><b>The template's shape is a contract with another repository.</b> qits-ci-runner-daemon's
  * {@code scripts/test-install-contract.sh} runs one rendering of it (its {@code
- * scripts/fixtures/runner-install.sh}) against stubs, and its {@code packaging/qits-ci-runner.service}
- * is embedded in it byte for byte. Change the template and that fixture moves with it.
+ * scripts/fixtures/runner-install.sh}) against stubs with the four values in its environment, as the
+ * line runs it, and its {@code packaging/qits-ci-runner.service} is embedded in it byte for byte.
+ * Change the template and that fixture moves with it.
  *
- * <p><b>Every value lands inside a single-quoted sh assignment and on a {@code KEY=value} line of a
- * systemd {@code EnvironmentFile}</b>, so each is held to a charset that is literal in both — no
- * quote, backslash, whitespace, {@code $} or brace — and a value outside it is refused here rather
- * than rendered into a script that parses as something else on a root shell. The config-side values
- * are checked by {@link #requireRenderable()} before anything is minted; the token by {@link
- * #requireCarriable(String)} straight after, while it can still be given back.
+ * <p><b>Every value lands inside single quotes</b> — in the line, and in the script's own
+ * assignment — and on a {@code KEY=value} line of a systemd {@code EnvironmentFile}, so each is held
+ * to a charset that is literal in all of them: no quote, backslash, whitespace, {@code $} or brace.
+ * A value outside it is refused here rather than rendered into something that parses differently on
+ * a root shell. The config-side values are checked by {@link #requireRenderable()} before anything
+ * is minted; the token by {@link #requireCarriable(String)} straight after, while it can still be
+ * given back. The script checks the four values again on the host, since there they arrive from an
+ * environment rather than from this class.
  */
 @ApplicationScoped
 public class RunnerInstallScript {
 
   /** The template, on the classpath root (and in {@code quarkus.native.resources.includes}). */
   static final String TEMPLATE = "runner-install.sh.tmpl";
+
+  /** Where the generic script is served, under the CI base. */
+  public static final String PATH = "/ci/api/runners/install.sh";
 
   private static final Pattern URL =
       Pattern.compile("https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?");
@@ -50,17 +61,11 @@ public class RunnerInstallScript {
 
   @Inject CiRunnerPins pins;
 
-  /** The fixed values of one rendering; the token is kept out of {@link #toString()}. */
-  public record Values(
-      String ciUrl,
-      UUID runnerId,
-      String registrationToken,
-      int slots,
-      String artifactsUrl,
-      String runnerVersion) {
+  /** The fixed values of one install line; the token is kept out of {@link #toString()}. */
+  public record Line(String ciUrl, UUID runnerId, String registrationToken, int slots) {
     @Override
     public String toString() {
-      return "Values[runnerId=" + runnerId + ", ciUrl=" + ciUrl + "]";
+      return "Line[runnerId=" + runnerId + ", ciUrl=" + ciUrl + "]";
     }
   }
 
@@ -69,66 +74,83 @@ public class RunnerInstallScript {
    * not be rendered, naming the key to fix.
    */
   public void requireRenderable() {
-    require(URL, addresses.ciBase(), "qits.ci.runner.public-url / qits.ci.runner.internal-url");
+    require(
+        URL,
+        addresses.ciBase(),
+        "the CI base (QITS_DOMAIN / qits.ci.runner.public-url / qits.ci.runner.internal-url)");
     require(
         URL,
         addresses.artifactsBase(),
-        "qits.ci.runner.artifacts-url / qits.ci.runner.artifacts-internal-url");
+        "the artifacts base (QITS_DOMAIN / qits.ci.runner.artifacts-url /"
+            + " qits.ci.runner.artifacts-internal-url)");
     require(VERSION, pins.version(), CiRunnerPins.OVERRIDE_KEY + " / the pinned protocol version");
   }
 
-  /** Refuses a token qits-idp minted that the script could not carry verbatim. */
+  /** Refuses a token qits-idp minted that the line could not carry verbatim. */
   public static void requireCarriable(String token) {
     if (token == null || !TOKEN.matcher(token).matches()) {
       throw new IllegalArgumentException(
-          "qits-idp answered a registration token the install script cannot carry verbatim");
+          "qits-idp answered a registration token the install line cannot carry verbatim");
     }
   }
 
-  /** The script for this runner and this token, with this deployment's addresses and version. */
-  public String render(CiRunner runner, String registrationToken) {
-    return render(
-        new Values(
-            addresses.ciBase(),
-            runner.id,
-            registrationToken,
-            runner.slots,
-            addresses.artifactsBase(),
-            pins.version()));
+  /** The generic script, with this deployment's artifacts base and pinned version. */
+  public String generic() {
+    return generic(addresses.artifactsBase(), pins.version());
   }
 
-  /**
-   * The template with every placeholder replaced. Slots are at least 1: a drained row (0) is still
-   * a runner that should connect, the runner refuses {@code QITS_CI_RUNNER_SLOTS=0} outright, and
-   * the row's own number is what holds it once it says hello whatever its env says.
-   */
-  public static String render(Values values) {
-    require(URL, values.ciUrl(), "the CI base");
-    require(URL, values.artifactsUrl(), "the artifacts base");
-    require(VERSION, values.runnerVersion(), "the runner version");
-    requireCarriable(values.registrationToken());
-    if (values.runnerId() == null) {
-      throw new IllegalArgumentException("A runner install script needs the runner's id");
-    }
-    Map<String, String> placeholders = new LinkedHashMap<>();
-    placeholders.put("CI_URL", values.ciUrl());
-    placeholders.put("RUNNER_ID", values.runnerId().toString());
-    placeholders.put("REGISTRATION_TOKEN", values.registrationToken());
-    placeholders.put("SLOTS", Integer.toString(Math.max(1, values.slots())));
-    placeholders.put("ARTIFACTS_URL", values.artifactsUrl());
-    placeholders.put("RUNNER_VERSION", values.runnerVersion());
-    String script = TEXT;
-    for (Map.Entry<String, String> placeholder : placeholders.entrySet()) {
-      String marker = "{{" + placeholder.getKey() + "}}";
-      if (!script.contains(marker)) {
-        throw new IllegalStateException(TEMPLATE + " has no " + marker);
-      }
-      script = script.replace(marker, placeholder.getValue());
-    }
+  /** The line for this runner and this token, dialling this deployment's CI base. */
+  public String line(CiRunner runner, String registrationToken) {
+    return line(new Line(addresses.ciBase(), runner.id, registrationToken, runner.slots));
+  }
+
+  /** The template with its two placeholders replaced. */
+  public static String generic(String artifactsUrl, String runnerVersion) {
+    require(URL, artifactsUrl, "the artifacts base");
+    require(VERSION, runnerVersion, "the runner version");
+    String script = fill(TEXT, "ARTIFACTS_URL", artifactsUrl);
+    script = fill(script, "RUNNER_VERSION", runnerVersion);
     if (script.contains("{{")) {
       throw new IllegalStateException(TEMPLATE + " has a placeholder nothing fills");
     }
     return script;
+  }
+
+  /**
+   * The one line to paste. Slots are at least 1: a drained row (0) is still a runner that should
+   * connect, the runner refuses {@code QITS_CI_RUNNER_SLOTS=0} outright, and the row's own number is
+   * what holds it once it says hello whatever its env says.
+   */
+  public static String line(Line values) {
+    require(URL, values.ciUrl(), "the CI base");
+    requireCarriable(values.registrationToken());
+    if (values.runnerId() == null) {
+      throw new IllegalArgumentException("A runner install line needs the runner's id");
+    }
+    String base = values.ciUrl().replaceAll("/+$", "");
+    String token = values.registrationToken();
+    return "curl -fsSL -H 'Authorization: Bearer "
+        + token
+        + "' "
+        + base
+        + PATH
+        + " | sudo env QITS_CI_RUNNER_URL='"
+        + base
+        + "' QITS_CI_RUNNER_ID='"
+        + values.runnerId()
+        + "' QITS_CI_RUNNER_REGISTRATION_TOKEN='"
+        + token
+        + "' QITS_CI_RUNNER_SLOTS='"
+        + Math.max(1, values.slots())
+        + "' sh";
+  }
+
+  private static String fill(String script, String name, String value) {
+    String marker = "{{" + name + "}}";
+    if (!script.contains(marker)) {
+      throw new IllegalStateException(TEMPLATE + " has no " + marker);
+    }
+    return script.replace(marker, value);
   }
 
   private static void require(Pattern shape, String value, String what) {

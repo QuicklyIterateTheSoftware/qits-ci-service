@@ -21,6 +21,8 @@ import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.StubIdp;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
+import eu.wohlben.qits.ci.runnerhost.RunnerAddresses;
+import eu.wohlben.qits.ci.runnerhost.RunnerAddressesFixture;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerBinary;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusMock;
@@ -144,24 +146,22 @@ class CiRunnerControllerTest {
     assertEquals(0, created.getInt("heldRuns"));
     assertNotNull(created.getString("createdAt"));
     assertFalse(created.getMap("").containsKey("runner"), "the runner is not nested");
-    // The token is in the script, in its one assignment, and in no field of its own.
+    // The token is in the install line — as the fetch's bearer and as the script's value — and in
+    // no field of its own.
     assertFalse(created.getMap("").containsKey("registrationToken"));
-    String script = created.getString("installScript");
-    assertTrue(script.contains("QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_stub-1'\n"), script);
-    assertTrue(script.contains("QITS_CI_RUNNER_ID='" + id + "'\n"), script);
     String environment = System.getenv().getOrDefault("QITS_ENVIRONMENT", "dev");
-    assertTrue(
-        script.contains("QITS_CI_RUNNER_URL='http://" + environment + "-qits-ci:8080'\n"), script);
-    assertTrue(script.contains("QITS_CI_RUNNER_SLOTS='2'\n"), script);
-    assertTrue(
-        script.contains(
-            "QITS_CI_RUNNER_BINARY_URL='http://"
-                + environment
-                + "-qits-artifacts:8080/artifacts/daemons/qits-ci-runner/"
-                + CiRunnerBinary.VERSION
-                + "'\n"),
-        script);
-    assertEquals(1, script.split("qits_tok_stub-1", -1).length - 1, "the token appears once");
+    // The suite knows no public domain, so the line names the internal alias (see
+    // RunnerAddressesTest and theRegisterAnswerNamesThePublicEdgeWhenADomainIsKnown for the edge).
+    String base = "http://" + environment + "-qits-ci:8080";
+    assertEquals(
+        "curl -fsSL -H 'Authorization: Bearer qits_tok_stub-1' "
+            + base
+            + "/ci/api/runners/install.sh | sudo env QITS_CI_RUNNER_URL='"
+            + base
+            + "' QITS_CI_RUNNER_ID='"
+            + id
+            + "' QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_stub-1' QITS_CI_RUNNER_SLOTS='2' sh",
+        created.getString("installScript"));
 
     // What qits-idp was asked for: a registration token for exactly this runner, pushing nothing.
     assertEquals(
@@ -270,9 +270,10 @@ class CiRunnerControllerTest {
             .body("$", not(hasKey("runner")))
             .extract()
             .jsonPath();
-    String script = rotated.getString("installScript");
-    assertTrue(script.contains("QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_stub-2'\n"), script);
-    assertFalse(script.contains("qits_tok_stub-1"), script);
+    String line = rotated.getString("installScript");
+    assertTrue(line.contains("QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_stub-2' "), line);
+    assertTrue(line.contains("Authorization: Bearer qits_tok_stub-2'"), line);
+    assertFalse(line.contains("qits_tok_stub-1"), line);
 
     assertEquals(List.of("token-1"), idp.deletedTokens);
     assertEquals("token-2", row(UUID.fromString(id)).registrationTokenId);
@@ -408,6 +409,119 @@ class CiRunnerControllerTest {
   @TestSecurity(user = SUBJECT, roles = {REGISTRATION})
   @OidcSecurity(
       claims = {@Claim(key = "aud", value = OWN_AUDIENCE), @Claim(key = "sub", value = SUBJECT)})
+  void theRegisterAnswerNamesThePublicEdgeWhenADomainIsKnown() {
+    // The live estate's domain: a runner outside the swarm is told the edge's names, never an alias.
+    QuarkusMock.installMockForType(
+        RunnerAddressesFixture.withDomain("wohlben.eu"), RunnerAddresses.class);
+    UUID id = declaredRunner("remote");
+
+    JsonPath answer =
+        register(id, "{\"capabilities\":{\"docker\":true}}").statusCode(200).extract().jsonPath();
+
+    assertEquals("https://idp.qits.wohlben.eu/idp/token", answer.getString("tokenUrl"));
+    assertEquals("wss://ci.qits.wohlben.eu/ci/runners/socket", answer.getString("socketUrl"));
+    assertEquals("qits-platform", answer.getString("audience"));
+  }
+
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
+  void theInstallLineNamesThePublicEdgeWhenADomainIsKnown() {
+    QuarkusMock.installMockForType(
+        RunnerAddressesFixture.withDomain("wohlben.eu"), RunnerAddresses.class);
+
+    JsonPath created = create("remote-host");
+
+    assertEquals(
+        "curl -fsSL -H 'Authorization: Bearer qits_tok_stub-1'"
+            + " https://ci.qits.wohlben.eu/ci/api/runners/install.sh"
+            + " | sudo env QITS_CI_RUNNER_URL='https://ci.qits.wohlben.eu' QITS_CI_RUNNER_ID='"
+            + created.getString("id")
+            + "' QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_stub-1' QITS_CI_RUNNER_SLOTS='2' sh",
+        created.getString("installScript"));
+    String script =
+        given().when().get(RUNNERS + "/install.sh").then().statusCode(200).extract().asString();
+    assertTrue(
+        script.contains(
+            "binary_url='https://registry.qits.wohlben.eu/artifacts/daemons/qits-ci-runner/"
+                + CiRunnerBinary.VERSION
+                + "'\n"),
+        script);
+  }
+
+  // --- the generic install script -----------------------------------------------------------------
+
+  @Test
+  @TestSecurity(user = SUBJECT, roles = {REGISTRATION})
+  @OidcSecurity(
+      claims = {@Claim(key = "aud", value = OWN_AUDIENCE), @Claim(key = "sub", value = SUBJECT)})
+  void theRegistrationTokenReadsTheGenericInstallScript() {
+    String script =
+        given()
+            .when()
+            .get(RUNNERS + "/install.sh")
+            .then()
+            .statusCode(200)
+            .contentType(org.hamcrest.Matchers.startsWith(MediaType.TEXT_PLAIN))
+            .extract()
+            .asString();
+
+    assertTrue(script.startsWith("#!/bin/sh\n"), script);
+    assertFalse(script.contains("{{"), script);
+    assertFalse(script.contains("qits_tok_"), script);
+    String environment = System.getenv().getOrDefault("QITS_ENVIRONMENT", "dev");
+    assertTrue(
+        script.contains(
+            "binary_url='http://"
+                + environment
+                + "-qits-artifacts:8080/artifacts/daemons/qits-ci-runner/"
+                + CiRunnerBinary.VERSION
+                + "'\n"),
+        script);
+  }
+
+  @Test
+  void anAnonymousReaderGetsNoInstallScript() {
+    given().when().get(RUNNERS + "/install.sh").then().statusCode(401);
+  }
+
+  @Test
+  void theRawRegistrationTokenReadsTheInstallScriptToo() {
+    UUID id = declaredRunner("raw-installing");
+    stageLiveToken(
+        "qits_tok_raw-install", IdpCommissioner.RUNNER_REGISTRATION_KIND, id.toString(), SUBJECT);
+    String bearer = "Bearer qits_tok_raw-install";
+
+    String script =
+        given()
+            .header("Authorization", bearer)
+            .when()
+            .get(RUNNERS + "/install.sh")
+            .then()
+            .statusCode(200)
+            .extract()
+            .asString();
+    assertTrue(script.startsWith("#!/bin/sh\n"), script);
+    // A live token of another kind carries no role: refused, like at the register door.
+    stageLiveToken("qits_tok_raw-socket", IdpCommissioner.RUNNER_KIND, id.toString(), SUBJECT);
+    given()
+        .header("Authorization", "Bearer qits_tok_raw-socket")
+        .when()
+        .get(RUNNERS + "/install.sh")
+        .then()
+        .statusCode(403);
+    // And one qits-idp does not call live is 401.
+    given()
+        .header("Authorization", "Bearer qits_tok_raw-unknown")
+        .when()
+        .get(RUNNERS + "/install.sh")
+        .then()
+        .statusCode(401);
+  }
+
+  @Test
+  @TestSecurity(user = SUBJECT, roles = {REGISTRATION})
+  @OidcSecurity(
+      claims = {@Claim(key = "aud", value = OWN_AUDIENCE), @Claim(key = "sub", value = SUBJECT)})
   void anotherRunnersTokenIs403AndCommissionsNothing() {
     UUID mine = declaredRunner("mine");
     UUID theirs = declaredRunner("theirs");
@@ -523,8 +637,10 @@ class CiRunnerControllerTest {
   @TestSecurity(user = SUBJECT, roles = {REGISTRATION})
   @OidcSecurity(
       claims = {@Claim(key = "aud", value = OWN_AUDIENCE), @Claim(key = "sub", value = SUBJECT)})
-  void theRegistrationRoleOpensTheRegisterDoorAndNothingElse() {
+  void theRegistrationRoleOpensTheRegisterDoorAndTheInstallScriptAndNothingElse() {
     UUID id = declaredRunner("confined");
+
+    given().when().get(RUNNERS + "/install.sh").then().statusCode(200);
 
     given().when().get(RUNNERS).then().statusCode(403);
     given().when().get(RUNNERS + "/" + id).then().statusCode(403);

@@ -23,13 +23,15 @@ import java.util.regex.Pattern;
  * This mechanism does for that one route what the edge does for every route: it asks qits-idp
  * ({@link RegistrationTokenIdentityProvider}), and turns a live token into an identity.
  *
- * <p><b>It abstains everywhere else, and that is the security property.</b> It acts only on {@code
- * POST /ci/api/runners/<id>/register} carrying {@code Authorization: Bearer qits_tok_…}; for every
- * other request it answers nothing and the ordinary mechanisms decide — which for a {@code qits_tok_}
- * is quarkus-oidc refusing a value that is not a JWT, a 401. So a registration token opens this one
- * route exactly as {@code qits:ci-runner-registration} already did behind the edge, and no other.
- * It runs before quarkus-oidc on its route (a higher priority), because quarkus-oidc would otherwise
- * fail the request before anything else were asked.
+ * <p><b>It abstains everywhere else, and that is the security property.</b> It acts only on the two
+ * routes {@code qits:ci-runner-registration} opens — {@code POST /ci/api/runners/<id>/register} and
+ * {@code GET /ci/api/runners/install.sh}, the generic script the install line fetches with the same
+ * token — carrying {@code Authorization: Bearer qits_tok_…}; for every other request it answers
+ * nothing and the ordinary mechanisms decide — which for a {@code qits_tok_} is quarkus-oidc refusing
+ * a value that is not a JWT, a 401. So a registration token opens these routes exactly as {@code
+ * qits:ci-runner-registration} already does behind the edge, and no other. It runs before
+ * quarkus-oidc on its routes (a higher priority), because quarkus-oidc would otherwise fail the
+ * request before anything else were asked.
  *
  * <p>The path is matched on the normalized path and the method, and it spells {@code /ci/api}
  * itself: an authentication mechanism runs before JAX-RS routing, so it sees what the router sees.
@@ -41,6 +43,8 @@ public class RegistrationTokenMechanism implements HttpAuthenticationMechanism {
   public static final String TOKEN_PREFIX = "qits_tok_";
 
   static final Pattern REGISTER_PATH = Pattern.compile("/ci/api/runners/[^/]+/register/?");
+
+  static final String INSTALL_SCRIPT_PATH = "/ci/api/runners/install.sh";
 
   private static final String BEARER = "Bearer ";
 
@@ -77,13 +81,19 @@ public class RegistrationTokenMechanism implements HttpAuthenticationMechanism {
         HttpSecurityUtils.setRoutingContextAttribute(new RegistrationTokenRequest(token), context));
   }
 
-  /** The raw token when this request is the register door's and carries one, else null. */
+  /**
+   * The raw token when this request is the register door's or the install script's and carries one,
+   * else null.
+   */
   static String registrationToken(RoutingContext context) {
-    if (!"POST".equals(context.request().method().name())) {
+    String method = context.request().method().name();
+    String path = context.normalizedPath();
+    if (path == null) {
       return null;
     }
-    String path = context.normalizedPath();
-    if (path == null || !REGISTER_PATH.matcher(path).matches()) {
+    boolean register = "POST".equals(method) && REGISTER_PATH.matcher(path).matches();
+    boolean install = "GET".equals(method) && INSTALL_SCRIPT_PATH.equals(path);
+    if (!register && !install) {
       return null;
     }
     String header = context.request().getHeader("Authorization");

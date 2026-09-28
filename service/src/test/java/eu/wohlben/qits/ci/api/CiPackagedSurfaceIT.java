@@ -276,6 +276,27 @@ public class CiPackagedSurfaceIT {
   }
 
   @Test
+  public void theRunnerInstallScriptIsInTheArtifact() {
+    // The template is read by name at run time (quarkus.native.resources.includes), so a native
+    // build that dropped it would answer every install line with a 500. The gate is off here, so
+    // the forward-auth pair carries a reading role; the body is the generic script, with no
+    // placeholder left.
+    String script =
+        given()
+            .header(FakeCiDaemon.USER_HEADER, "a-reader")
+            .header(FakeCiDaemon.ROLES_HEADER, "qits:agent")
+            .when()
+            .get("/ci/api/runners/install.sh")
+            .then()
+            .statusCode(200)
+            .contentType(ContentType.TEXT)
+            .extract()
+            .asString();
+    assertTrue(script.startsWith("#!/bin/sh\n"), script);
+    assertFalse(script.contains("{{"), script);
+  }
+
+  @Test
   public void theRunnerControlSocketIsOnTheArtifactsRouter() throws Exception {
     // The daemon socket's probe, for the runner's: route presence, not behaviour. A runner dials
     // exactly this path (RunnerAddresses composes its socketUrl from it), and a native build that

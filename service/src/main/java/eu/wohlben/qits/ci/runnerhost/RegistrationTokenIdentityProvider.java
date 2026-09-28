@@ -36,7 +36,7 @@ public class RegistrationTokenIdentityProvider
   /** The identity attribute carrying qits-idp's answer about the presented token. */
   public static final String INTROSPECTED = "qits.ci.registration-token";
 
-  /** The one role this identity can carry — the register door's, and no other route's. */
+  /** The one role this identity can carry — the register door's and the install script's. */
   public static final String REGISTRATION_ROLE = "qits:ci-runner-registration";
 
   @Inject IdpCommissioner idp;
@@ -56,7 +56,7 @@ public class RegistrationTokenIdentityProvider
   private SecurityIdentity identityOf(String token) {
     IdpCommissioner.IntrospectionAnswer answer = idp.introspectToken(token);
     if (answer.outcome() != IdpCommissioner.Introspection.LIVE) {
-      LOG.infof("Refused a raw registration token at the register door: %s", answer.detail());
+      LOG.infof("Refused a raw registration token: %s", answer.detail());
       throw new AuthenticationFailedException("not a live registration token");
     }
     IdpCommissioner.IntrospectedToken introspected = answer.token();

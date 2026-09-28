@@ -106,12 +106,14 @@ package:
   (`CiRunnerSocket`), its session table (`CiRunnerRegistry`, also the `CiRunnerPresence` and
   `CiBacklogListener` seams), the `Reserve` → `Take` driver (`RunnerReservations`), the step seam for
   a reserved run (`RunnerStepRunner`, the `ci/control/CiRunnerStepRunner` implementation, typed so it
-  never competes for `CiStepRunner`), and `RunnerAddresses`, the single composition of what a runner is told (the idp token url, the
-  audience, the runner socket url off `qits.ci.runner.public-url` or the derived
-  `qits.ci.runner.internal-url`, and the artifacts base the install script downloads from). The
-  register door answers it and `RunnerInstallScript` renders it into the create's and a rotation's
-  `installScript`, with the binary version `CiRunnerPins` reads off the pinned protocol jar; two
-  compositions would be two chances to disagree. The runner rules themselves are
+  never competes for `CiStepRunner`), and `RunnerAddresses`, the single composition of what a runner is told — every address a PUBLIC edge
+  name, `https://<host>.qits.${QITS_DOMAIN}` as qits-idp's `PlatformDomain` composes its own origin
+  (the CI base and so the `wss://` socket, the idp token url, the artifacts base), each with an
+  override, and the qits-net aliases only as the no-domain fallback. The register door answers it,
+  and `RunnerInstallScript` renders the generic script `GET /ci/api/runners/install.sh` serves (the
+  artifacts base and the binary version `CiRunnerPins` reads off the pinned protocol jar) and the
+  one-line `installScript` the create and a rotation answer; two compositions would be two chances
+  to disagree. The runner rules themselves are
   `ci/control/CiRunners`, the operator verbs and the register door `api/CiRunnerController` — see
   `README.md` under "Runners".
 - `ci-events/` — the event classes qits-ci emits, `eu.wohlben.qits.ci.events`. Under this repo's own

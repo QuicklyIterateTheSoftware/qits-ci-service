@@ -45,13 +45,14 @@ import org.jboss.logging.Logger;
  *
  * <p><b>Roles, per verb, as {@link CiRunController} spells them.</b> The two reads take {@code
  * qits:admin}, {@code qits:system} and {@code qits:agent}; every write is {@code qits:admin} alone,
- * the cancel button's role. The register door is {@code qits:ci-runner-registration} and nothing
- * else — the only route that role opens anywhere on the platform, and it opens it only for the runner
- * the token was minted for: the bearer's {@code sub} must be that runner's registration token
- * subject, or it is 403.
+ * the cancel button's role. {@code qits:ci-runner-registration} — what a registration token carries
+ * — opens exactly two routes anywhere on the platform: the register door, only for the runner the
+ * token was minted for (the bearer's {@code sub} must be that runner's registration token subject,
+ * or it is 403), and {@code GET /runners/install.sh}, the generic install script, which carries no
+ * secret and names no runner, so any live registration token reads it.
  *
  * <p><b>Every credential this class hands out is handed out exactly once and logged never.</b> The
- * registration token's value is in the install script that answers the create (and a rotation) and
+ * registration token's value is in the install line that answers the create (and a rotation) and
  * nowhere else — not on the row, not on any read, not in a log line. The runner's client secret is in the answer
  * to the register door and nowhere else. A caller that lost either asks for a fresh one (a rotation;
  * a decommission and a new runner).
@@ -98,8 +99,8 @@ public class CiRunnerController {
   /**
    * A runner together with the secret-bearing answer only the request that minted it gets: the
    * ordinary read shape's fields, flat — the SPA reads it as {@code CiRunnerDto} plus one field —
-   * and the install script, which carries the registration token and is the only place its value is
-   * ever written. {@link #of} is the one way to build it, so the fields cannot drift from {@link
+   * and the install line, under the field name {@code installScript} the SPA reads, which carries
+   * the registration token and is the only place its value is ever written. {@link #of} is the one way to build it, so the fields cannot drift from {@link
    * CiRunnerDto}'s; {@code CiRunnerControllerTest} checks the two lists agree.
    */
   public record CiRunnerCreated(
@@ -116,8 +117,9 @@ public class CiRunnerController {
       Instant createdAt,
       @Schema(
               description =
-                  "The sh script that installs this runner on a host, with its registration token"
-                      + " inside. Returned once; never readable again")
+                  "The one line that installs this runner on a host: it fetches the generic"
+                      + " install script with the registration token and pipes it into sudo sh with"
+                      + " this runner's values. Returned once; never readable again")
           String installScript) {
 
     static CiRunnerCreated of(CiRunnerDto runner, String installScript) {
@@ -161,10 +163,10 @@ public class CiRunnerController {
   @POST
   @Consumes(MediaType.APPLICATION_JSON)
   @RolesAllowed("qits:admin")
-  @Operation(summary = "Declare a runner; answers its install script, once")
+  @Operation(summary = "Declare a runner; answers its install line, once")
   @APIResponse(
       responseCode = "201",
-      description = "The runner and the install script carrying its registration token",
+      description = "The runner and the install line carrying its registration token",
       content = @Content(schema = @Schema(implementation = CiRunnerCreated.class)))
   @APIResponse(responseCode = "400", description = "A malformed name, slots or description")
   @APIResponse(responseCode = "409", description = "The name is taken")
@@ -202,7 +204,7 @@ public class CiRunnerController {
         "Runner %s (%s) declared; its registration token is %s", runner.name, id, token.tokenId());
     return Response.status(Response.Status.CREATED)
         .entity(
-            CiRunnerCreated.of(runners.view(runner), installScript.render(runner, token.token())))
+            CiRunnerCreated.of(runners.view(runner), installScript.line(runner, token.token())))
         .build();
   }
 
@@ -212,6 +214,28 @@ public class CiRunnerController {
   @APIResponse(responseCode = "200", description = "Every runner, by name")
   public ListRunnersResponse list() {
     return new ListRunnersResponse(runners.views());
+  }
+
+  /**
+   * The generic install script the install line pipes into {@code sh}: this deployment's artifacts
+   * base and pinned runner version, and no secret and no runner — those four values reach it from
+   * the line's {@code env}. Read with the registration token, which is what a host holds before it
+   * holds anything else; behind the edge that token arrives as the edge's JWT, on qits-net as the
+   * raw value {@code runnerhost/RegistrationTokenMechanism} introspects for this route and the
+   * register door alone.
+   */
+  @GET
+  @Path("/install.sh")
+  @Produces(MediaType.TEXT_PLAIN)
+  @RolesAllowed({REGISTRATION_ROLE, "qits:admin", "qits:system", "qits:agent"})
+  @Operation(summary = "The generic runner install script, which the install line pipes into sh")
+  @APIResponse(responseCode = "200", description = "A POSIX sh script, carrying no secret")
+  @APIResponse(
+      responseCode = "503",
+      description = "This deployment cannot render an install script")
+  public String installScript() {
+    requireRenderable();
+    return installScript.generic();
   }
 
   @GET
@@ -246,10 +270,10 @@ public class CiRunnerController {
   @POST
   @Path("/{id}/registration-token")
   @RolesAllowed("qits:admin")
-  @Operation(summary = "Replace a runner's registration token; answers a new install script, once")
+  @Operation(summary = "Replace a runner's registration token; answers a new install line, once")
   @APIResponse(
       responseCode = "200",
-      description = "The runner and the install script carrying its new registration token",
+      description = "The runner and the install line carrying its new registration token",
       content = @Content(schema = @Schema(implementation = CiRunnerCreated.class)))
   @APIResponse(responseCode = "404", description = "No such runner")
   @APIResponse(responseCode = "409", description = "The runner is already registered")
@@ -277,7 +301,7 @@ public class CiRunnerController {
           runnerId, previous);
     }
     CiRunner rotated = runners.get(runnerId);
-    return CiRunnerCreated.of(runners.view(rotated), installScript.render(rotated, token.token()));
+    return CiRunnerCreated.of(runners.view(rotated), installScript.line(rotated, token.token()));
   }
 
   /**

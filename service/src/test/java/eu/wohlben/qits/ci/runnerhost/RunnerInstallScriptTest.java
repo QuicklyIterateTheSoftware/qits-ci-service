@@ -19,47 +19,59 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * The install script as rendered text, and as a script: every placeholder filled, the token in its
- * one assignment, {@code sh -n} happy with it, and — when qits-ci-runner-daemon is checked out
- * beside this repository, as it is in the qits-qits wrapper — that repository's own install
- * contract test run against a rendering. Plain JUnit: {@link RunnerInstallScript#render(
- * RunnerInstallScript.Values)} is a pure function of the template and six values.
+ * The two halves of an install: the generic script as rendered text and as a script — both
+ * placeholders filled, no token and no runner in it, {@code sh -n} happy with it, and, when
+ * qits-ci-runner-daemon is checked out beside this repository as it is in the qits-qits wrapper,
+ * that repository's own install contract test run against a rendering — and the install line, which
+ * carries the token exactly twice, parses as one sh command and hands the script its four values.
+ * Plain JUnit: both are pure functions of the template and a few values.
  *
- * <p>{@link #FIXTURE} is the rendering qits-ci-runner-daemon keeps as its {@code
- * scripts/fixtures/runner-install.sh}; every run writes it to {@code
+ * <p>{@link #ARTIFACTS} and {@link #VERSION} render the generic script qits-ci-runner-daemon keeps as
+ * its {@code scripts/fixtures/runner-install.sh}; every run writes it to {@code
  * target/runner-install.fixture.sh}, which is the file to copy there when the template changes.
  */
 class RunnerInstallScriptTest {
 
-  static final RunnerInstallScript.Values FIXTURE =
-      new RunnerInstallScript.Values(
-          "http://dev-qits-ci:8080",
+  static final String ARTIFACTS = "https://registry.qits.example.org";
+
+  static final String VERSION = "0.0.0-fixture";
+
+  static final RunnerInstallScript.Line LINE =
+      new RunnerInstallScript.Line(
+          "https://ci.qits.example.org",
           UUID.fromString("00000000-0000-0000-0000-000000000001"),
           "qits_tok_FIXTURE",
-          2,
-          "http://dev-qits-artifacts:8080",
-          "0.0.0-fixture");
+          2);
 
   /** The runner repository, where the wrapper checks it out beside this one. */
   private static final Path RUNNER_REPO =
       Path.of("").toAbsolutePath().resolve("../../qits-ci-runner-daemon").normalize();
 
   @Test
-  void everyPlaceholderIsFilledAndTheTokenIsInItsOneAssignment() throws IOException {
-    String script = RunnerInstallScript.render(FIXTURE);
+  void theGenericScriptCarriesNoSecretNoRunnerAndNoPlaceholder() throws IOException {
+    String script = RunnerInstallScript.generic(ARTIFACTS, VERSION);
 
     assertFalse(script.contains("{{"), script);
+    assertFalse(script.contains("qits_tok_"), script);
+    assertFalse(script.contains(LINE.runnerId().toString()), script);
     assertTrue(script.startsWith("#!/bin/sh\n"));
     assertTrue(script.contains("\nset -eu\n"));
-    assertTrue(script.contains("\nQITS_CI_RUNNER_URL='http://dev-qits-ci:8080'\n"));
-    assertTrue(script.contains("\nQITS_CI_RUNNER_ID='00000000-0000-0000-0000-000000000001'\n"));
-    assertTrue(script.contains("\nQITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_FIXTURE'\n"));
-    assertTrue(script.contains("\nQITS_CI_RUNNER_SLOTS='2'\n"));
     assertTrue(
         script.contains(
-            "\nQITS_CI_RUNNER_BINARY_URL='http://dev-qits-artifacts:8080/artifacts/daemons/"
-                + "qits-ci-runner/0.0.0-fixture'\n"));
-    assertEquals(1, occurrences(script, "qits_tok_FIXTURE"), "the token appears once");
+            "binary_url='https://registry.qits.example.org/artifacts/daemons/qits-ci-runner/"
+                + "0.0.0-fixture'\n"),
+        script);
+    // The four values come from the environment, each refused by name when missing.
+    for (String name :
+        List.of(
+            "QITS_CI_RUNNER_URL",
+            "QITS_CI_RUNNER_ID",
+            "QITS_CI_RUNNER_REGISTRATION_TOKEN",
+            "QITS_CI_RUNNER_SLOTS")) {
+      assertTrue(script.contains("require " + name + " \"${" + name + ":-}\""), name);
+    }
+    // Everything runs from the last line, so a download cut short runs nothing.
+    assertTrue(script.endsWith("\nmain \"$@\"\n"), script);
 
     Path target = Path.of("target");
     Files.createDirectories(target);
@@ -67,18 +79,29 @@ class RunnerInstallScriptTest {
   }
 
   @Test
-  void aDrainedRowStillRendersASlotTheRunnerAccepts() {
-    String script =
-        RunnerInstallScript.render(
-            new RunnerInstallScript.Values(
-                FIXTURE.ciUrl(),
-                FIXTURE.runnerId(),
-                FIXTURE.registrationToken(),
-                0,
-                FIXTURE.artifactsUrl(),
-                FIXTURE.runnerVersion()));
+  void theLineIsOneCommandCarryingTheTokenTwice() {
+    String line = RunnerInstallScript.line(LINE);
 
-    assertTrue(script.contains("\nQITS_CI_RUNNER_SLOTS='1'\n"));
+    assertEquals(
+        "curl -fsSL -H 'Authorization: Bearer qits_tok_FIXTURE'"
+            + " https://ci.qits.example.org/ci/api/runners/install.sh"
+            + " | sudo env QITS_CI_RUNNER_URL='https://ci.qits.example.org'"
+            + " QITS_CI_RUNNER_ID='00000000-0000-0000-0000-000000000001'"
+            + " QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_FIXTURE'"
+            + " QITS_CI_RUNNER_SLOTS='2' sh",
+        line);
+    assertFalse(line.contains("\n"), "one line");
+    assertEquals(2, occurrences(line, "qits_tok_FIXTURE"), "the token appears twice");
+  }
+
+  @Test
+  void aDrainedRowStillRendersASlotTheRunnerAccepts() {
+    String line =
+        RunnerInstallScript.line(
+            new RunnerInstallScript.Line(
+                LINE.ciUrl(), LINE.runnerId(), LINE.registrationToken(), 0));
+
+    assertTrue(line.contains(" QITS_CI_RUNNER_SLOTS='1' sh"), line);
   }
 
   @Test
@@ -94,38 +117,73 @@ class RunnerInstallScriptTest {
       assertThrows(
           IllegalStateException.class,
           () ->
-              RunnerInstallScript.render(
-                  new RunnerInstallScript.Values(
-                      url,
-                      FIXTURE.runnerId(),
-                      FIXTURE.registrationToken(),
-                      2,
-                      FIXTURE.artifactsUrl(),
-                      FIXTURE.runnerVersion())),
+              RunnerInstallScript.line(
+                  new RunnerInstallScript.Line(
+                      url, LINE.runnerId(), LINE.registrationToken(), 2)),
           () -> "url " + url);
+      assertThrows(
+          IllegalStateException.class,
+          () -> RunnerInstallScript.generic(url, VERSION),
+          () -> "artifacts url " + url);
     }
-    assertThrows(
-        IllegalStateException.class,
-        () ->
-            RunnerInstallScript.render(
-                new RunnerInstallScript.Values(
-                    FIXTURE.ciUrl(),
-                    FIXTURE.runnerId(),
-                    FIXTURE.registrationToken(),
-                    2,
-                    FIXTURE.artifactsUrl(),
-                    "1.0'")));
+    assertThrows(IllegalStateException.class, () -> RunnerInstallScript.generic(ARTIFACTS, "1.0'"));
   }
 
   @Test
-  void shParsesTheRendering(@TempDir Path dir) throws Exception {
+  void shParsesTheScriptAndTheLine(@TempDir Path dir) throws Exception {
     assumeTrue(onPath("sh"), "no sh on PATH");
     Path script = dir.resolve("runner-install.sh");
-    Files.writeString(script, RunnerInstallScript.render(FIXTURE));
+    Files.writeString(script, RunnerInstallScript.generic(ARTIFACTS, VERSION));
+    Path line = dir.resolve("line.sh");
+    Files.writeString(line, RunnerInstallScript.line(LINE) + "\n");
 
-    Ran sh = run(dir, "sh", "-n", script.toString());
+    Ran scriptParse = run(dir, "sh", "-n", script.toString());
+    Ran lineParse = run(dir, "sh", "-n", line.toString());
 
-    assertEquals(0, sh.exit(), sh.output());
+    assertEquals(0, scriptParse.exit(), scriptParse.output());
+    assertEquals(0, lineParse.exit(), lineParse.output());
+  }
+
+  /**
+   * The line as a shell runs it, with {@code curl} and {@code sudo} stubbed: curl is asked for the
+   * install script with the token as its bearer, and what it answers is run by {@code sh} with the
+   * four values in its environment.
+   */
+  @Test
+  void theLineFetchesTheScriptAndHandsItTheFourValues(@TempDir Path dir) throws Exception {
+    assumeTrue(onPath("sh"), "no sh on PATH");
+    Path stubs = Files.createDirectories(dir.resolve("stubs"));
+    Files.writeString(
+        stubs.resolve("curl"),
+        "#!/bin/sh\n"
+            + "printf '%s\\n' \"$@\" > \""
+            + dir.resolve("curl-args")
+            + "\"\n"
+            + "printf '%s\\n' 'echo \"$QITS_CI_RUNNER_URL|$QITS_CI_RUNNER_ID|"
+            + "$QITS_CI_RUNNER_REGISTRATION_TOKEN|$QITS_CI_RUNNER_SLOTS\"'\n");
+    Files.writeString(stubs.resolve("sudo"), "#!/bin/sh\nexec \"$@\"\n");
+    for (String stub : List.of("curl", "sudo")) {
+      assertTrue(stubs.resolve(stub).toFile().setExecutable(true));
+    }
+
+    Ran ran =
+        run(
+            dir,
+            "sh",
+            "-c",
+            "PATH='" + stubs + "':\"$PATH\"; " + RunnerInstallScript.line(LINE));
+
+    assertEquals(0, ran.exit(), ran.output());
+    assertEquals(
+        "https://ci.qits.example.org|00000000-0000-0000-0000-000000000001|qits_tok_FIXTURE|2\n",
+        ran.output());
+    assertEquals(
+        List.of(
+            "-fsSL",
+            "-H",
+            "Authorization: Bearer qits_tok_FIXTURE",
+            "https://ci.qits.example.org/ci/api/runners/install.sh"),
+        Files.readAllLines(dir.resolve("curl-args")));
   }
 
   /**
@@ -146,7 +204,8 @@ class RunnerInstallScriptTest {
     Files.copy(contract, dir.resolve("scripts/test-install-contract.sh"));
     Files.copy(unit, dir.resolve("packaging/qits-ci-runner.service"));
     Files.writeString(
-        dir.resolve("scripts/fixtures/runner-install.sh"), RunnerInstallScript.render(FIXTURE));
+        dir.resolve("scripts/fixtures/runner-install.sh"),
+        RunnerInstallScript.generic(ARTIFACTS, VERSION));
 
     Ran test = run(dir, "sh", "scripts/test-install-contract.sh");
 
