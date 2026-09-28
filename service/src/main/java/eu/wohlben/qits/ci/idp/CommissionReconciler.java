@@ -54,6 +54,11 @@ import org.jboss.logging.Logger;
  * the row names it. {@code GET /idp/api/tokens} is a second listing on the same pass, and it carries
  * the same rule as the first: one that could not be read reaps nothing.
  *
+ * <p><b>And an EDGE run's {@code ci-run} token, by the run table like its client.</b> A run on the
+ * edge plane holds a token rather than a client (qits-475); one whose run is no longer {@code
+ * QUEUED} or {@code RUNNING}, that this process is not holding, and that is older than {@link
+ * #TOKEN_GRACE} is deleted. Same listing, same rule: unread, nothing is reaped.
+ *
  * <p><b>Boot, on its own thread.</b> The observer runs after both existing boot observers ({@code
  * CiDaemonLauncher.BOOT_REAP_PRIORITY}, then {@code CiRunService.BOOT_SWEEP_PRIORITY}) so the run
  * table it reads is the one the sweep left, and it hands the work to a thread of its own rather than
@@ -136,6 +141,47 @@ public class CommissionReconciler {
             .anyMatch(t -> IdpCommissioner.RUNNER_REGISTRATION_KIND.equals(t.contextKind()))) {
       reapRunnerTokens(tokens.get(), runnerCredentials(), Instant.now());
     }
+    // The run table is read again only when there is a run's token to judge against it.
+    if (tokens.isPresent()
+        && tokens.get().stream()
+            .anyMatch(t -> IdpCommissioner.CONTEXT_KIND.equals(t.contextKind()))) {
+      reapRunTokens(tokens.get(), activeRunIds(), Instant.now());
+    }
+  }
+
+  /**
+   * The edge plane's half of {@link #reap}: a {@code ci-run} TOKEN whose run is not {@code QUEUED}
+   * or {@code RUNNING} and which this process is not holding. The same predicate as the clients',
+   * plus {@link #TOKEN_GRACE}, since a token is commissioned at a run's first step and a listing can
+   * catch it in the moment between the row's claim and the step's launch — the registration
+   * token's reason, on a shorter path.
+   */
+  int reapRunTokens(
+      List<IdpCommissioner.LiveToken> live, Set<String> activeRunIds, Instant now) {
+    if (activeRunIds == null) {
+      return 0;
+    }
+    int reaped = 0;
+    for (IdpCommissioner.LiveToken each : live) {
+      if (!IdpCommissioner.CONTEXT_KIND.equals(each.contextKind())) {
+        continue;
+      }
+      if (each.createdAt() != null && each.createdAt().isAfter(now.minus(TOKEN_GRACE))) {
+        continue;
+      }
+      if (activeRunIds.contains(each.contextId()) || commissions.holdsToken(each.tokenId())) {
+        continue;
+      }
+      LOG.infof(
+          "Reaping the ci-run token %s of run %s, which is no longer running",
+          each.tokenId(), each.contextId());
+      idp.deleteToken(each.tokenId());
+      reaped++;
+    }
+    if (reaped > 0) {
+      LOG.infof("Reaped %d ci-run token(s) no CI run owns any more", reaped);
+    }
+    return reaped;
   }
 
   /**

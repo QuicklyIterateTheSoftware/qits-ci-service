@@ -120,6 +120,29 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     CiIdentifiers.requireImage(spec.image());
 
     CiRunnerRegistry.Session session = runners.holding(spec.runId());
+    // The step's plane and the run's credential on it, BEFORE a secret is minted: which kind of
+    // credential the run holds decides what the launch record is bound to (a ci-run token's subject,
+    // or nothing), and a refusal here has nothing to tear down. A session already gone skips both,
+    // and execute reports it lost exactly as before.
+    StepAddressPlane plane = null;
+    RunCommissions.Credential credential = null;
+    if (session != null && session.isOpen()) {
+      try {
+        plane = planeFor(spec.runId(), session);
+      } catch (IllegalStateException unconfigured) {
+        // An EDGE runner on a qits-ci that has since lost its public domain: there is no address to
+        // tell the step, and an internal alias would name nothing the runner's host can resolve.
+        return failed(StepOutcome.LAUNCH_FAILED, unconfigured.getMessage());
+      }
+      try {
+        credential =
+            commissions == null ? null : commissions.forRun(spec.runId(), spec.env(), plane.plane());
+      } catch (IdpCommissioner.CommissionFailedException notCommissioned) {
+        // The local path's decision, for its reason: an idp blip fails the step, never a launch
+        // without the credential.
+        return failed(StepOutcome.LAUNCH_FAILED, notCommissioned.getMessage());
+      }
+    }
     relay.begin(spec.runId(), spec.stepIndex());
     CiDaemonRegistry.Credentials credentials =
         daemons.registerLaunch(
@@ -146,7 +169,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
                     java.util.concurrent.CompletableFuture.runAsync(
                         () -> daemons.reap(credentials.daemonId())));
     try {
-      return execute(spec, listener, session, credentials, containerName);
+      return execute(spec, listener, session, credentials, containerName, plane, credential);
     } finally {
       closeQuietly(lossWatch);
       inFlight.remove(spec.runId());
@@ -160,19 +183,12 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
       StepListener listener,
       CiRunnerRegistry.Session session,
       CiDaemonRegistry.Credentials credentials,
-      String containerName) {
+      String containerName,
+      StepAddressPlane plane,
+      RunCommissions.Credential credential) {
     String daemonId = credentials.daemonId();
-    if (session == null || !session.isOpen()) {
+    if (session == null || !session.isOpen() || plane == null) {
       return lost(session, "");
-    }
-
-    StepAddressPlane plane;
-    try {
-      plane = planeFor(spec.runId(), session);
-    } catch (IllegalStateException unconfigured) {
-      // An EDGE runner on a qits-ci that has since lost its public domain: there is no address to
-      // tell the step, and an internal alias would name nothing the runner's host can resolve.
-      return failed(StepOutcome.LAUNCH_FAILED, unconfigured.getMessage());
     }
     CiDaemonLauncher.LaunchSpec launchSpec =
         new CiDaemonLauncher.LaunchSpec(
@@ -190,17 +206,9 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
             spec.build(),
             spec.user(),
             spec.env());
-    IdpCommissioner.Commission commission;
-    try {
-      commission = commissions == null ? null : commissions.forRun(spec.runId(), spec.env());
-    } catch (IdpCommissioner.CommissionFailedException notCommissioned) {
-      // The local path's decision, for its reason: an idp blip fails the step, never a launch
-      // without the credential.
-      return failed(StepOutcome.LAUNCH_FAILED, notCommissioned.getMessage());
-    }
     WorkloadSpec workload =
         workloadSpec(
-            StepWorkloadSpecs.compose(launcher.workloadSettings(), plane, launchSpec, commission),
+            StepWorkloadSpecs.compose(launcher.workloadSettings(), plane, launchSpec, credential),
             spec.docker() || spec.build());
 
     Duration launchTimeout = Duration.ofSeconds(launchTimeoutSeconds);

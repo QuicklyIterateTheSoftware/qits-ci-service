@@ -59,11 +59,11 @@ public class CiDaemonBootstrapDeploySettingsTest {
   private static final String DAEMON_PATH = "/tmp/qits-ci-daemon";
   private static final int DAEMON_PATH_USES = 4;
   private static final String TOKEN_SCRIPT_PATH = "/tmp/qits-publish-token";
-  private static final int TOKEN_SCRIPT_PATH_USES = 5;
+  private static final int TOKEN_SCRIPT_PATH_USES = 7;
   private static final String GIT_HELPER_PATH = "/tmp/qits-git-credential";
-  private static final int GIT_HELPER_PATH_USES = 3;
+  private static final int GIT_HELPER_PATH_USES = 6;
   private static final String SETTINGS_PATH = CiDaemonLauncher.DEPLOY_SETTINGS_FILE;
-  private static final int SETTINGS_PATH_USES = 2;
+  private static final int SETTINGS_PATH_USES = 4;
 
   private static final String CLIENT_ID = "run-client-1";
   private static final String CLIENT_SECRET = "run-s3cr3t-1";

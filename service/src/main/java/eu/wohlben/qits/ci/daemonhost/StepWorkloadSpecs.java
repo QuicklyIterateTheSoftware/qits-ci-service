@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.daemonhost;
 
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
+import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.containers.client.ContainersWire.Security;
 import eu.wohlben.qits.containers.client.ContainersWire.Spec;
 import java.net.URI;
@@ -51,15 +52,17 @@ public final class StepWorkloadSpecs {
       Integer oomScoreAdj) {}
 
   /**
-   * The step container's spec, on {@code plane}. {@code commission} is this run's commissioned
-   * credential, or null on a deployment that commissions nothing — see {@link
-   * CiDaemonLauncher#buildWorkloadSpec}.
+   * The step container's spec, on {@code plane}. {@code credential} is this run's commissioned
+   * credential — its client on qits-net, its {@code ci-run} token through the edge — or null on a
+   * deployment that commissions nothing; see {@link CiDaemonLauncher#buildWorkloadSpec}.
    */
   public static Spec compose(
       Settings settings,
       StepAddressPlane plane,
       CiDaemonLauncher.LaunchSpec spec,
-      IdpCommissioner.Commission commission) {
+      RunCommissions.Credential credential) {
+    IdpCommissioner.Commission commission = credential == null ? null : credential.client();
+    IdpCommissioner.CommissionedToken token = credential == null ? null : credential.token();
     Map<String, String> env = new LinkedHashMap<>();
     // The contract, as environment. The daemon needs all of it before a socket exists, which is why
     // none of it is a message.
@@ -141,6 +144,20 @@ public final class StepWorkloadSpecs {
       // gate is the one above: has this run a commission to mint with.
       env.put("QITS_PUBLISH_TOKEN_COMMAND", CiDaemonLauncher.PUBLISH_TOKEN_COMMAND);
     }
+    // THE EDGE PLANE'S CREDENTIAL, and it replaces the whole block above rather than joining it. A
+    // step outside the swarm cannot reach the idp's alias to mint from a pair, and the edge
+    // introspects a qits_tok_ itself — as a bearer, and as the password of git's and docker's Basic
+    // — so this run's ci-run token is everything such a step presents, and nothing that names the
+    // internal idp is sent at all: no pair, no token url, no git auth host, no audience. BOOTSTRAP's
+    // QITS_TOKEN branch turns it into the same four things the pair becomes (git helper, publish
+    // command, maven settings, npmrc); the token itself is the run's and dies with it
+    // (RunCommissions.release), so it is sent here rather than minted there.
+    if (token != null) {
+      env.put("QITS_TOKEN", value(token.token()));
+      env.put("QITS_TOKEN_SUBJECT", value(token.subject()));
+      env.put("GIT_CONFIG_GLOBAL", "/tmp/qits-gitconfig");
+      env.put("QITS_PUBLISH_TOKEN_COMMAND", CiDaemonLauncher.PUBLISH_TOKEN_COMMAND);
+    }
     if (spec.docker() || spec.build()) {
       // The two flags are the two generations of the same declaration — `docker: true` mounts the
       // socket and `build: true` does not — and everything in this block is the BUILD-MODE
@@ -179,6 +196,14 @@ public final class StepWorkloadSpecs {
         env.put("QITS_CI_REGISTRY_AUTH_CONFIG", registryAuthConfig(commission, plane.authHosts()));
         env.put("QITS_COMMISSIONED_CLIENT_ID", value(commission.clientId()));
         env.put("QITS_COMMISSIONED_CLIENT_SECRET", value(commission.secret()));
+      } else if (token != null) {
+        // The same document for the edge plane: one login per public registry host, each
+        // `token:<qits_tok_…>` — the Basic form the edge's docker realm introspects. No pair beside
+        // it, for the block above's reason.
+        env.put("DOCKER_CONFIG", CiDaemonLauncher.REGISTRY_AUTH_DIR);
+        env.put(
+            "QITS_CI_REGISTRY_AUTH_CONFIG",
+            registryAuthConfig(TOKEN_LOGIN, token.token(), plane.authHosts()));
       }
     }
     // Run-scoped extras, LAST and in sorted key order. Today these are the four QITS_EVENT_* of an
@@ -268,11 +293,20 @@ public final class StepWorkloadSpecs {
    * variable, which is what it travels as.
    */
   static String registryAuthConfig(IdpCommissioner.Commission commission, List<String> hosts) {
+    return registryAuthConfig(commission.clientId(), commission.secret(), hosts);
+  }
+
+  /**
+   * The user half of an edge step's registry login. Any value would do — the edge reads the
+   * password and introspects it — so it names what the password is.
+   */
+  static final String TOKEN_LOGIN = "token";
+
+  /** {@link #registryAuthConfig(IdpCommissioner.Commission, List)} for any {@code user:secret}. */
+  static String registryAuthConfig(String user, String secret, List<String> hosts) {
     String auth =
         Base64.getEncoder()
-            .encodeToString(
-                (commission.clientId() + ":" + commission.secret())
-                    .getBytes(StandardCharsets.UTF_8));
+            .encodeToString((user + ":" + secret).getBytes(StandardCharsets.UTF_8));
     StringBuilder document = new StringBuilder("{\"auths\":{");
     boolean first = true;
     for (String host : hosts) {

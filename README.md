@@ -125,7 +125,7 @@ rest of qits it reaches over a URL it is configured with:
 | out | `ws://…/events/stream` — dialled out and held open, carrying what qits-events broadcasts back | the same two keys; the address is derived, never configured twice |
 | out | `PUT/DELETE /containers/api/containers/<owner>/ci-step/<ref>` — every step container: started, read and removed through qits-containers, which owns the docker daemon. **qits-ci holds no docker socket.** | `qits.containers.url`, `qits.ci.containers.owner` |
 | out | `POST/DELETE/GET /idp/api/clients` — one commissioned oidc client per run, minted at the run's first step and deleted when the run closes; every step clones with it, and a publishing step pushes with it | `quarkus.oidc-client.qits.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.qits.client-enabled` |
-| out | `POST/DELETE/GET /idp/api/tokens` — a runner's one-use registration token (`ci-runner-registration`), and the same clients door for its own client once it registers (`ci-runner`); both given back when the runner is decommissioned — see "Runners" below | the same keys as the row above |
+| out | `POST/DELETE/GET /idp/api/tokens` — a runner's one-use registration token (`ci-runner-registration`), and the same clients door for its own client once it registers (`ci-runner`); both given back when the runner is decommissioned — see "Runners" below. And one `ci-run` TOKEN per run on an EDGE runner, instead of the client, deleted when the run closes | the same keys as the row above |
 | out | the registry a publishing step pushes to, as `$QITS_REGISTRY` and `$QITS_IMAGE_REPOSITORY` in **every** step container — dialled by the *host's docker daemon*, never by this process | `qits.artifacts.registry-host`, `qits.artifacts.image-repository` |
 | out | the npm registry roots, as `$QITS_NPM_REGISTRY_URL` (hosted, `@qits/*` publishes) and `$QITS_NPM_PROXY_URL` (the npmjs pull-through cache) in **every** step container — dialled by the *step container itself* on the shared network | `qits.artifacts.npm.hosted-url`, `qits.artifacts.npm.proxy-url` |
 | out | the hosted Maven repository root, as `$QITS_MAVEN_REGISTRY_URL` in **every** step container — also dialled by the step container on the shared network | `qits.artifacts.maven.registry-url` |
@@ -244,7 +244,20 @@ it knows none, and `plane: EDGE` with no domain is a 400 whose `code` and messag
 epic's `<label>.<env>.<domain>` under two new `qits.ci.edge.*` keys: the platform project carries no
 environment label (`ci.dev.qits.wohlben.eu` is a 404 live), and `qits.ci.domain` already is the
 platform's domain, so neither key exists. The plane is read off the row at a run's first step and held
-until the run closes. **Measured gap**: the npm pull-through is served only at `/artifacts/npm/npmjs/`
+until the run closes.
+
+**An EDGE run's credential is a `ci-run` TOKEN, not a client** (qits-475). The step cannot reach the
+idp's alias to mint from a pair, and the edge introspects a `qits_tok_` itself — as a bearer, and as
+the password of git's and docker's Basic — so `RunCommissions.forRun(runId, env, EDGE)` commissions one
+token per run (context the run id, `gitRefs` the run's `RunGitRefs` scope, exactly the client's),
+holds it in memory, and deletes it when the run closes; `CommissionReconciler` reaps a `ci-run` token
+whose run is no longer `QUEUED`/`RUNNING` once it is ten minutes old. The step gets `$QITS_TOKEN` and
+`$QITS_TOKEN_SUBJECT` and **none** of `$QITS_COMMISSIONED_CLIENT_ID`/`_SECRET`, `$QITS_GIT_AUTH_TOKEN_URL`,
+`_HOST`, `_AUDIENCE`, and `CiDaemonLauncher.BOOTSTRAP`'s `QITS_TOKEN` branch turns it into what the pair
+becomes on qits-net: the daemon download's bearer, `$QITS_PUBLISH_TOKEN_COMMAND` printing the token,
+the git helper (`oauth2`/token, for the clone url's host only), `-gs` maven settings carrying the bearer
+on `qits`, `qits-maven-network` and `qits-central-proxy`, an `_authToken` per npm registry host in
+`~/.npmrc`, and the docker document (`token:<value>` per public registry host). **Measured gap**: the npm pull-through is served only at `/artifacts/npm/npmjs/`
 on qits-platform-mirror, and the edge routes `/artifacts` on every vhost to qits-artifacts, so an EDGE
 step's `$QITS_NPM_PROXY_URL` (`https://mirror.qits.<domain>/artifacts/npm/npmjs/`) answers 404 until the
 mirror mounts npm under `/mirror` the way it mounted maven.
