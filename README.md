@@ -257,7 +257,22 @@ whose run is no longer `QUEUED`/`RUNNING` once it is ten minutes old. The step g
 becomes on qits-net: the daemon download's bearer, `$QITS_PUBLISH_TOKEN_COMMAND` printing the token,
 the git helper (`oauth2`/token, for the clone url's host only), `-gs` maven settings carrying the bearer
 on `qits`, `qits-maven-network` and `qits-central-proxy`, an `_authToken` per npm registry host in
-`~/.npmrc`, and the docker document (`token:<value>` per public registry host). **Measured gap**: the npm pull-through is served only at `/artifacts/npm/npmjs/`
+`~/.npmrc`, and the docker document (`token:<value>` per public registry host).
+
+**An EDGE build step builds and pushes through the registry's public vhost** (qits-479): on a
+`docker: true` or `build: true` step `$QITS_REGISTRY` and `$QITS_BUILD_REGISTRY` are both
+`registry.qits.<domain>`, `$QITS_IMAGE_REPOSITORY` is unchanged, `BUILDKIT_HOST` is left **absent** for
+the runner to fill (qits-containers' contract, kept), `qits.ci.buildkit.enabled=false` still sends the
+empty pair, and the docker document's hosts are the plane's (`registry.` and `mirror.qits.<domain>`),
+not `qits.ci.docker-auth-hosts`. `EdgeBuildStepEnvironmentTest` pins the whole environment. **What the
+recipes still assume, and a runner build needs changed there**: the Dockerfile builds mount
+`$QITS_COMMISSIONED_CLIENT_ID`/`_SECRET` as BuildKit secrets for `QITS_MAVEN_AUTH_USR`/`_PSW`, which an
+EDGE step does not have (and the edge's Basic introspection is for git and the docker realm); the
+daemon archetype's `ADD` of the musl/zlib tarballs from `$QITS_MAVEN_REGISTRY_URL` is anonymous and the
+public vhost answers 401; npm `.npmrc` lines composed as `${QITS_NPM_REGISTRY_URL#http:}` do not strip
+`https:`; and the composed release prelude fetches the qits CLI from `$QITS_ARTIFACTS_URL` with no
+bearer. Every one reads the plane's address — nothing composes an internal alias behind it — but each
+needs the token presented. **Measured gap**: the npm pull-through is served only at `/artifacts/npm/npmjs/`
 on qits-platform-mirror, and the edge routes `/artifacts` on every vhost to qits-artifacts, so an EDGE
 step's `$QITS_NPM_PROXY_URL` (`https://mirror.qits.<domain>/artifacts/npm/npmjs/`) answers 404 until the
 mirror mounts npm under `/mirror` the way it mounted maven.

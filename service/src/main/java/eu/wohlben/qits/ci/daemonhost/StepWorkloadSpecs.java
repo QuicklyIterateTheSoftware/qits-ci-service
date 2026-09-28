@@ -183,6 +183,12 @@ public final class StepWorkloadSpecs {
       // service says "do not". A converted recipe then fails loudly at its first buildctl call
       // rather than silently building through the socket it still holds; an unconverted one reads
       // neither variable and is untouched.
+      //
+      // ON THE EDGE PLANE THE SAME TWO KEYS, AND NOTHING SPELLED BEHIND THE PLANE'S BACK. The builder
+      // is then the runner's own — it fills BUILDKIT_HOST exactly where qits-containers does, when
+      // the key is absent — and $QITS_BUILD_REGISTRY is the registry's public vhost, the one address
+      // a builder outside the swarm can push to, authenticated by the token document below. The
+      // kill switch is unchanged: off, both keys go empty on either plane.
       env.put("QITS_BUILD_REGISTRY", settings.buildkitEnabled() ? value(plane.buildRegistryHost()) : "");
       if (!settings.buildkitEnabled()) {
         env.put("BUILDKIT_HOST", "");
