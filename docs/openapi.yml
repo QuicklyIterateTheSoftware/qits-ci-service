@@ -188,6 +188,12 @@ components:
           $ref: "#/components/schemas/Instant"
         createdAt:
           $ref: "#/components/schemas/Instant"
+        runnerVersion:
+          type: string
+        targetVersion:
+          type: string
+        updating:
+          type: boolean
         installScript:
           type: string
           description: "The one line that installs this runner on a host: it fetches\
@@ -221,6 +227,12 @@ components:
           $ref: "#/components/schemas/Instant"
         createdAt:
           $ref: "#/components/schemas/Instant"
+        runnerVersion:
+          type: string
+        targetVersion:
+          type: string
+        updating:
+          type: boolean
     CiRunnerPlane:
       type: string
       enum:
@@ -502,6 +514,12 @@ components:
           type: integer
           format: int64
         connected:
+          type: boolean
+        runnerVersion:
+          type: string
+        targetVersion:
+          type: string
+        updating:
           type: boolean
     Selection:
       type: string
