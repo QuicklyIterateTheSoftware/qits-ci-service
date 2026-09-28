@@ -10,9 +10,9 @@
 # download cut short runs nothing at all.
 #
 # Running it again with a fresh token — the CI UI's "replace registration token" hands out a new line
-# — keeps the binary already installed, rewrites the env file and restarts the unit; the runner
-# registers again by itself when the token differs from the one it registered with, so its state dir
-# is left alone.
+# — re-downloads the pinned binary, rewrites the env file and restarts the unit; the runner registers
+# again by itself when the token differs from the one it registered with, so its state dir is left
+# alone.
 #
 # Rendered by qits-ci-service from service/src/main/resources/runner-install.sh.tmpl, with only the
 # deployment's public artifacts base and the pinned runner version filled in. Every path it writes is
@@ -56,19 +56,19 @@ main() {
     useradd --system --no-create-home --shell /usr/sbin/nologin -G docker qits-ci-runner
   fi
 
-  # A binary already here is a re-run — a rotated token — and is kept: the version is the one this
-  # host already runs, and re-downloading it under a running unit would buy nothing.
+  # A binary already here is a re-run — a rotated token — and is only remembered to decide whether
+  # the unit needs restarting below; the binary itself is always replaced with the pinned version, so
+  # a host that installed an older runner is brought current every time this line is pasted again.
   rerun=no
   if [ -x "$bin" ]; then
     rerun=yes
-  else
-    mkdir -p "$root/usr/local/bin"
-    curl -fsSL -H "Authorization: Bearer $QITS_CI_RUNNER_REGISTRATION_TOKEN" \
-      -o "$bin.part" "$binary_url" \
-      || { rm -f "$bin.part"; refuse "could not download the runner binary from $binary_url."; }
-    chmod 755 "$bin.part"
-    mv "$bin.part" "$bin"
   fi
+  mkdir -p "$root/usr/local/bin"
+  curl -fsSL -H "Authorization: Bearer $QITS_CI_RUNNER_REGISTRATION_TOKEN" \
+    -o "$bin.part" "$binary_url" \
+    || { rm -f "$bin.part"; refuse "could not download the runner binary from $binary_url."; }
+  chmod 755 "$bin.part"
+  mv "$bin.part" "$bin"
 
   mkdir -p "$root/etc"
   (

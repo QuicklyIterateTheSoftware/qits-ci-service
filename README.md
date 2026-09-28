@@ -215,8 +215,8 @@ introspects it); writes `/etc/qits-ci-runner.env` (0600: `QITS_CI_RUNNER_URL`, `
 `_REGISTRATION_TOKEN`, `_STATE_DIR=/var/lib/qits-ci-runner`, `_SLOTS` = the row's, at least 1) and the
 unit — byte for byte qits-ci-runner-daemon's `packaging/qits-ci-runner.service` — then `systemctl
 enable --now`, and prints a closing line that never carries the token. Run again from a rotation's
-line it keeps the binary, rewrites the env file and restarts the unit; the runner re-registers by
-itself when the token differs from the one it registered with. The version is the pinned
+line it re-downloads the pinned binary, rewrites the env file and restarts the unit; the runner
+re-registers by itself when the token differs from the one it registered with. The version is the pinned
 `qits-ci-runner-protocol`'s `CiRunnerBinary.VERSION` (`runnerhost/CiRunnerPins`), with
 `qits.ci.runner-version-override` as the unset hatch. Every rendered value is held to a charset that is
 literal inside single quotes and the env file (the script checks the four again on the host): a
