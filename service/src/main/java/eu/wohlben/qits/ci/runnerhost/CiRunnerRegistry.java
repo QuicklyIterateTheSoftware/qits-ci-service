@@ -188,7 +188,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
     private final CompletableFuture<Void> closed = new CompletableFuture<>();
     private final ConcurrentHashMap<String, CompletableFuture<LaunchAnswer>> launches =
         new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, CompletableFuture<Boolean>> reaps =
+    private final ConcurrentHashMap<String, CompletableFuture<Reaped>> reaps =
         new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Object, Runnable> onLoss = new ConcurrentHashMap<>();
     private final long order;
@@ -522,10 +522,10 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
   }
 
   public void onReaped(Session session, Reaped reaped) {
-    CompletableFuture<Boolean> pending =
+    CompletableFuture<Reaped> pending =
         session.reaps.remove(key(reaped.runId(), reaped.stepIndex()));
     if (pending != null) {
-      pending.complete(Boolean.TRUE);
+      pending.complete(reaped);
     }
   }
 
@@ -707,21 +707,25 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
 
   /**
    * Ask the runner to remove one step's container and wait at most {@code timeout} for its {@code
-   * Reaped}. The answer is only ever logged by the caller: a removal that did not land is the
-   * runner's boot sweep's to retry, never a reason to hold a run open.
+   * Reaped}. Answers what the runner sent, or {@code null} when nothing landed inside the deadline —
+   * a session already gone, a send that failed, or a plain timeout. The answer is only ever logged by
+   * the caller: a removal that did not land is the runner's boot sweep's to retry, never a reason to
+   * hold a run open. A {@code Reaped} that arrives after this has already timed out finds its key
+   * already removed below and completes nothing — late is the same as never to a caller who has
+   * moved on.
    */
-  public boolean reap(Session session, Reap reap, Duration timeout) {
+  public Reaped reap(Session session, Reap reap, Duration timeout) {
     if (!session.isOpen()) {
-      return false;
+      return null;
     }
     String key = key(reap.runId(), reap.stepIndex());
-    CompletableFuture<Boolean> pending = new CompletableFuture<>();
+    CompletableFuture<Reaped> pending = new CompletableFuture<>();
     session.reaps.put(key, pending);
     if (!session.isOpen() || !send(session, reap)) {
-      pending.complete(Boolean.FALSE);
+      pending.complete(null);
     }
     try {
-      return Boolean.TRUE.equals(await(pending, timeout, Boolean.FALSE));
+      return await(pending, timeout, null);
     } finally {
       session.reaps.remove(key, pending);
     }
@@ -840,7 +844,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
     }
     session.launches.values()
         .forEach(pending -> pending.complete(LaunchAnswer.of(LaunchAnswer.Status.CONNECTION_LOST)));
-    session.reaps.values().forEach(pending -> pending.complete(Boolean.FALSE));
+    session.reaps.values().forEach(pending -> pending.complete(null));
   }
 
   /**

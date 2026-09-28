@@ -15,6 +15,7 @@ import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.cirunner.protocol.Cancel;
 import eu.wohlben.qits.cirunner.protocol.Launch;
 import eu.wohlben.qits.cirunner.protocol.Reap;
+import eu.wohlben.qits.cirunner.protocol.Reaped;
 import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
 import eu.wohlben.qits.containers.client.ContainersWire.Security;
 import eu.wohlben.qits.containers.client.ContainersWire.Spec;
@@ -56,6 +57,17 @@ import org.jboss.logging.Logger;
  * removal that did not land is the runner's boot sweep's to retry and never a reason to hold a run
  * open. The run's close sends {@code Released} ({@link CiRunnerRegistry#release}), the only frame
  * that frees the runner's slot.
+ *
+ * <p><b>{@code Reaped} carries the container's own {@code docker logs} now, and a step that did not
+ * finish green gets it appended to its recorded output.</b> The runner takes its own tail — the last
+ * lines, redacted, with a first line naming why the container exited — because this host can see
+ * only what the daemon relayed over the control socket, and every outcome that matters here is one
+ * where that relay said little or nothing: the container never dialled back at all, docker refused
+ * to start it, or its socket dropped mid-step. A green step is left untouched, since its own
+ * captured output already says everything worth saying. The append happens after {@link #execute}
+ * has already returned — the {@code Reaped} this waits on is the teardown's, not the verdict's — so
+ * the bound above still holds: a tail arriving inside it is folded in, one arriving after it is
+ * exactly as if none arrived, and nothing here waits any longer for it.
  */
 @ApplicationScoped
 @Typed({RunnerStepRunner.class, CiRunnerStepRunner.class})
@@ -65,6 +77,18 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
 
   /** How long a step's teardown waits for the runner's {@code Reaped} before logging and moving on. */
   static final Duration REAP_TIMEOUT = Duration.ofSeconds(30);
+
+  private volatile Duration reapTimeout = REAP_TIMEOUT;
+
+  /**
+   * Package-private for one reason: a suite proving a late {@code Reaped} is not appended cannot
+   * wait out the real thirty seconds. A method rather than a field write because this bean is
+   * normal-scoped, and a field set through the client proxy lands on the proxy — {@link
+   * CiRunnerRegistry#seenInterval}'s reason exactly.
+   */
+  void reapTimeout(Duration timeout) {
+    this.reapTimeout = timeout;
+  }
 
   @Inject CiDaemonRegistry daemons;
 
@@ -82,6 +106,19 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
 
   @ConfigProperty(name = "qits.ci.daemon-register-timeout-seconds")
   long registerTimeoutSeconds;
+
+  /**
+   * Package-private for {@link #reapTimeout}'s reason: a suite proving the never-dialled-back case
+   * cannot wait out the real 180s register deadline. A getter beside it so the same suite can put the
+   * shipped value back when it is done, rather than hard-coding a second copy of it.
+   */
+  long registerTimeoutSeconds() {
+    return registerTimeoutSeconds;
+  }
+
+  void registerTimeoutSeconds(long seconds) {
+    this.registerTimeoutSeconds = seconds;
+  }
 
   @ConfigProperty(name = "qits.ci.daemon-init-timeout-seconds")
   long initTimeoutSeconds;
@@ -171,14 +208,17 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
                 () ->
                     java.util.concurrent.CompletableFuture.runAsync(
                         () -> daemons.reap(credentials.daemonId())));
+    StepResult result;
+    Reaped reaped;
     try {
-      return execute(spec, listener, session, credentials, containerName, plane, credential);
+      result = execute(spec, listener, session, credentials, containerName, plane, credential);
     } finally {
       closeQuietly(lossWatch);
       inFlight.remove(spec.runId());
       daemons.reap(credentials.daemonId());
-      reapOnRunner(session, spec.runId(), spec.stepIndex(), containerName);
+      reaped = reapOnRunner(session, spec.runId(), spec.stepIndex(), containerName);
     }
+    return withContainerLog(result, reaped, session, containerName);
   }
 
   private StepResult execute(
@@ -425,20 +465,65 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
         buildPlane);
   }
 
-  private void reapOnRunner(
+  /** The runner's {@code Reaped}, when one arrived — {@code null} for every way it did not. */
+  private Reaped reapOnRunner(
       CiRunnerRegistry.Session session, String runId, int stepIndex, String containerName) {
     if (session == null || !session.isOpen()) {
       // The runner lost its socket and with it every run it held; its boot sweep removes what is
       // left on the next connect.
-      return;
+      return null;
     }
-    if (runners.reap(session, new Reap(runId, stepIndex, containerName), REAP_TIMEOUT)) {
+    Reaped reaped = runners.reap(session, new Reap(runId, stepIndex, containerName), reapTimeout);
+    if (reaped != null) {
       LOG.debugf("Runner %s reaped %s", session.runnerName(), containerName);
     } else {
       LOG.warnf(
           "Runner %s did not confirm removing %s within %s; its boot sweep removes it",
-          session.runnerName(), containerName, REAP_TIMEOUT);
+          session.runnerName(), containerName, reapTimeout);
     }
+    return reaped;
+  }
+
+  /**
+   * Fold the runner's own container log onto a step that did not finish green. A green step ({@link
+   * #isGreen}) is returned untouched — its captured output already says everything there is to say,
+   * and the runner's tail would only repeat it — and so is one whose {@code Reaped} carried no tail
+   * at all, whether because none arrived inside {@link #reapTimeout} or because the runner sent one
+   * that was blank. Where it lands is the "never dialled back" message's own former pointer: that
+   * text named the runner's host as the only place to look, and once the log is actually here that
+   * naming is stale, so it is rewritten to point at the section below instead of duplicated.
+   */
+  private static StepResult withContainerLog(
+      StepResult result, Reaped reaped, CiRunnerRegistry.Session session, String containerName) {
+    if (isGreen(result) || reaped == null || isBlank(reaped.logTail())) {
+      return result;
+    }
+    String output = pointToAppendedLog(result.output(), containerName);
+    String runnerName = session == null ? "?" : session.runnerName();
+    String withLog =
+        (output == null || output.isEmpty() ? "" : output + "\n")
+            + "--- the step container's own log (from runner "
+            + runnerName
+            + ") ---\n"
+            + reaped.logTail();
+    return new StepResult(result.exitCode(), result.timedOut(), result.outcome(), withLog);
+  }
+
+  private static boolean isGreen(StepResult result) {
+    return result.outcome() == StepOutcome.OK && result.exitCode() == 0 && !result.timedOut();
+  }
+
+  private static boolean isBlank(String text) {
+    return text == null || text.isBlank();
+  }
+
+  /** The one place {@code execute} names the runner's host as where the log is; superseded below. */
+  private static String pointToAppendedLog(String output, String containerName) {
+    if (output == null) {
+      return null;
+    }
+    String stale = "its own log is on the runner's host (" + containerName + ")";
+    return output.contains(stale) ? output.replace(stale, "its own log is appended below") : output;
   }
 
   private static void closeQuietly(AutoCloseable handle) {

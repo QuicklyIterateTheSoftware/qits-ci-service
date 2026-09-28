@@ -247,6 +247,153 @@ class RunnerStepRunnerTest {
     }
   }
 
+  // --- the runner's own container log (qits-467) --------------------------------------------------
+
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aGreenStepIgnoresTheRunnersContainerLog() throws Exception {
+    String runId = "runner-green-logtail-" + UUID.randomUUID();
+    try (FakeCiRunner runner = greeted()) {
+      registry.hold(registry.current(runnerId), runId);
+      CompletableFuture<StepResult> result =
+          CompletableFuture.supplyAsync(() -> steps.run(step(runId), new Recorder()));
+
+      Launch launch = runner.next(Launch.class, SOON);
+      assertNotNull(launch);
+      runner.send(new Launched(runId, 0, "c0ffee"));
+
+      try (FakeCiDaemon daemon = dialAsTheContainer(launch.workloadSpec())) {
+        daemon.send(
+            new eu.wohlben.qits.cidaemon.protocol.Hello(
+                launch.workloadSpec().env().get("QITS_CI_DAEMON_ID"), CiDaemonProtocol.CAPABILITY_VERSION));
+        assertInstanceOf(Ack.class, daemon.next(SOON));
+        daemon.send(new Initialized());
+        RunStep runStep = assertInstanceOf(RunStep.class, daemon.next(SOON));
+        daemon.send(new StepFinished(runStep.correlationId(), 0, false));
+
+        Reap reap = runner.next(Reap.class, SOON);
+        assertNotNull(reap);
+        // The container's own log arrives with the Reaped, exactly as a failed step's would — a
+        // green step must ignore it: its own captured output already said everything worth saying.
+        runner.send(new Reaped(runId, 0, "[container exited 0]\nshould never appear"));
+
+        StepResult green = result.get(SOON.toSeconds(), TimeUnit.SECONDS);
+        assertEquals(StepOutcome.OK, green.outcome());
+        assertFalse(green.output().contains("its own log"), green.output());
+        assertFalse(green.output().contains("should never appear"), green.output());
+      }
+    } finally {
+      steps.runClosed(runId);
+    }
+  }
+
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aNeverDialledStepCarriesTheRunnersContainerLogBelowAPointer() throws Exception {
+    String runId = "runner-never-dialled-logtail-" + UUID.randomUUID();
+    // The real register deadline is 180s (qits.ci.daemon-register-timeout-seconds); a suite cannot
+    // wait that out, so it is shortened here and put back in the finally below.
+    steps.registerTimeoutSeconds(2);
+    try (FakeCiRunner runner = greeted()) {
+      registry.hold(registry.current(runnerId), runId);
+      CompletableFuture<StepResult> result =
+          CompletableFuture.supplyAsync(() -> steps.run(step(runId), new Recorder()));
+
+      Launch launch = runner.next(Launch.class, SOON);
+      assertNotNull(launch);
+      runner.send(new Launched(runId, 0, "c0ffee"));
+      // No daemon ever dials back — the container started and nothing spoke, NEVER_STARTED's case.
+
+      Reap reap = runner.next(Reap.class, SOON);
+      assertNotNull(reap, "a never-started container is still reaped");
+      runner.send(new Reaped(runId, 0, "[container exited 1]\nboom: something failed"));
+
+      StepResult never = result.get(SOON.toSeconds(), TimeUnit.SECONDS);
+      assertEquals(StepOutcome.NEVER_STARTED, never.outcome());
+      assertFalse(
+          never.output().contains("its own log is on the runner's host"),
+          "the stale pointer is replaced once the log is really here: " + never.output());
+      assertTrue(never.output().contains("its own log is appended below"), never.output());
+      assertTrue(
+          never.output()
+              .contains("--- the step container's own log (from runner " + RUNNER_NAME + ") ---"),
+          never.output());
+      assertTrue(never.output().contains("boom: something failed"), never.output());
+    } finally {
+      steps.registerTimeoutSeconds(180);
+      steps.runClosed(runId);
+    }
+  }
+
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aNeverDialledStepWithNoLogTailKeepsTodaysMessage() throws Exception {
+    String runId = "runner-never-dialled-notail-" + UUID.randomUUID();
+    steps.registerTimeoutSeconds(2);
+    try (FakeCiRunner runner = greeted()) {
+      registry.hold(registry.current(runnerId), runId);
+      CompletableFuture<StepResult> result =
+          CompletableFuture.supplyAsync(() -> steps.run(step(runId), new Recorder()));
+
+      Launch launch = runner.next(Launch.class, SOON);
+      assertNotNull(launch);
+      runner.send(new Launched(runId, 0, "c0ffee"));
+
+      Reap reap = runner.next(Reap.class, SOON);
+      assertNotNull(reap);
+      // The two-argument constructor an older runner still speaks — logTail is null.
+      runner.send(new Reaped(runId, 0));
+
+      StepResult never = result.get(SOON.toSeconds(), TimeUnit.SECONDS);
+      assertEquals(StepOutcome.NEVER_STARTED, never.outcome());
+      assertTrue(
+          never.output()
+              .contains(
+                  "its own log is on the runner's host ("
+                      + CiDaemonLauncher.containerName(runId, 0)
+                      + ")"),
+          never.output());
+      assertFalse(never.output().contains("--- the step container's own log"), never.output());
+    } finally {
+      steps.registerTimeoutSeconds(180);
+      steps.runClosed(runId);
+    }
+  }
+
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aReapedArrivingAfterTheBoundIsNotAppendedAndNothingHangs() throws Exception {
+    String runId = "runner-late-reaped-" + UUID.randomUUID();
+    steps.reapTimeout(Duration.ofMillis(300));
+    try (FakeCiRunner runner = greeted()) {
+      registry.hold(registry.current(runnerId), runId);
+      CompletableFuture<StepResult> result =
+          CompletableFuture.supplyAsync(() -> steps.run(step(runId), new Recorder()));
+
+      Launch launch = runner.next(Launch.class, SOON);
+      assertNotNull(launch);
+      runner.send(new LaunchFailed(runId, 0, "not today"));
+
+      Reap reap = runner.next(Reap.class, SOON);
+      assertNotNull(reap);
+      // Deliberately answer nothing: run() must return once its own bound elapses, never hang.
+      StepResult refused = result.get(SOON.toSeconds(), TimeUnit.SECONDS);
+      assertEquals(StepOutcome.LAUNCH_FAILED, refused.outcome());
+      assertFalse(refused.output().contains("--- the step container's own log"), refused.output());
+
+      // The late answer must land nowhere: its key was already forgotten when the bound elapsed.
+      runner.send(new Reaped(runId, 0, "far too late to matter"));
+      Thread.sleep(200);
+    } finally {
+      steps.reapTimeout(RunnerStepRunner.REAP_TIMEOUT);
+      steps.runClosed(runId);
+    }
+  }
+
   // --- a self-updating runner (qits-465) ---------------------------------------------------------
 
   /**
