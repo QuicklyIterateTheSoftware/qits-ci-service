@@ -1339,6 +1339,27 @@ Four things about that second seam are worth having in front of you:
   created. `CiRunService.releaseVersionOf` is the one place that choice is made, and it had to exist
   before the join below could have anything to join on.
 
+**A third seam, `RunnerAnnouncer`, carries the runner lifecycle** (qits-465): eight events,
+`RunnerCreated` … `RunnerDeleted`, one per fact, implemented by `service/…/bus/RunnerLifecycleAnnouncer`.
+Three things differ from the two above and are deliberate:
+
+- **One event per fact, not one `RunnerStatusChanged`.** A run has one status column, so one event
+  says it moved; a runner's existence, registration, connections, update and settings are five facts
+  in two places (the row, and `CiRunnerRegistry`'s memory). `RunnerCreated`'s javadoc argues it, and
+  says why the names are `Runner*` rather than `CiRunner*` (estate convention, and `CiRunnerCreated`
+  is already the create door's response schema).
+- **Two callers.** `CiRunners` announces the four row events after each `requiringNew` commits, so a
+  refused write throws before it announces; `CiRunnerRegistry` announces the four connection events
+  when its own state changes, and is the only place that knows *why* a connection ended (`RETIRED`,
+  `REPLACED`, `LOST`, `REFUSED`, `SHUTDOWN`). Both go through `ci/control/RunnerAnnouncements`, which
+  catches whatever an announcer throws.
+- **The bus announcer does not publish on the caller's thread.** `BuildAnnouncer` accepts
+  `publish()`'s bounded wait because its caller is a run worker; half of this port's callers are socket
+  frame handlers, where that wait is a `Hello` left unanswered. So events go to ONE publishing thread
+  (one, because a self-update's order is part of what is said), and the causation parent is read on
+  the caller's thread and passed explicitly — a thread-local does not follow the work.
+  `RunnerLifecyclePublishTest` pins both on the wire.
+
 ### The release join, and why the port has a gatekeeper now
 
 **Two words carry across this section and the release-slots one below, and they mean exactly one
