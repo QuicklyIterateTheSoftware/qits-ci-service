@@ -1,9 +1,11 @@
 package eu.wohlben.qits.ci.control;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import eu.wohlben.qits.ci.dto.CiRunDto;
 import eu.wohlben.qits.ci.dto.CiRunnerDto;
 import eu.wohlben.qits.ci.entity.CiRunner;
 import eu.wohlben.qits.ci.entity.CiRunnerPlane;
+import eu.wohlben.qits.ci.entity.RunnerCapabilities;
 import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.CiException;
 import eu.wohlben.qits.ci.error.ConflictException;
@@ -16,6 +18,7 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +48,15 @@ import java.util.stream.Collectors;
  * <p><b>A runner holding a {@code RUNNING} run cannot be deleted</b> (409). A finished run naming it
  * never holds it up: {@code ci_run.runner_id} carries no foreign key, so a decommissioned runner
  * leaves its history exactly where it was.
+ *
+ * <p><b>Every write that changes what a runner is announces it, once, after it commits</b> — created,
+ * registered, changed, deleted, through {@link RunnerAnnouncements}. After, because a subscriber that
+ * reads the runner back must find what it was told; here rather than in the controller, because this
+ * is where the commit is, and a write refused by any check (400, 403, 404, 409) throws before it
+ * reaches the announcement and so announces nothing. {@link #replaceRegistrationToken}, {@link
+ * #recordHello} and {@link #touchSeen} announce nothing of their own: a rotated token is a secret's
+ * bookkeeping, and what a {@code Hello} changes is the connection's fact, which the socket registry
+ * announces.
  */
 @ApplicationScoped
 public class CiRunners {
@@ -65,6 +77,8 @@ public class CiRunners {
   @Inject CiRunnerMapper mapper;
 
   @Inject CiRunnerPresence presence;
+
+  @Inject RunnerAnnouncements announcements;
 
   /** 400 unless {@code name} is a runner name — see {@link #NAME}. */
   public static void requireName(String name) {
@@ -123,23 +137,25 @@ public class CiRunners {
       String registrationTokenId,
       String registrationTokenSubject) {
     requireCreatable(name, description, slots);
+    CiRunner created;
     try {
-      return QuarkusTransaction.requiringNew()
-          .call(
-              () -> {
-                CiRunner runner = new CiRunner();
-                runner.id = Objects.requireNonNull(id, "id");
-                runner.name = name;
-                runner.description = blankToNull(description);
-                runner.slots = slots == null ? DEFAULT_SLOTS : slots;
-                runner.plane = plane == null ? CiRunnerPlane.INTERNAL : plane;
-                runner.registrationTokenId = registrationTokenId;
-                runner.registrationTokenSubject = registrationTokenSubject;
-                runner.createdAt = Instant.now();
-                runners.persist(runner);
-                runners.flush();
-                return runner;
-              });
+      created =
+          QuarkusTransaction.requiringNew()
+              .call(
+                  () -> {
+                    CiRunner runner = new CiRunner();
+                    runner.id = Objects.requireNonNull(id, "id");
+                    runner.name = name;
+                    runner.description = blankToNull(description);
+                    runner.slots = slots == null ? DEFAULT_SLOTS : slots;
+                    runner.plane = plane == null ? CiRunnerPlane.INTERNAL : plane;
+                    runner.registrationTokenId = registrationTokenId;
+                    runner.registrationTokenSubject = registrationTokenSubject;
+                    runner.createdAt = Instant.now();
+                    runners.persist(runner);
+                    runners.flush();
+                    return runner;
+                  });
     } catch (CiException refused) {
       throw refused;
     } catch (RuntimeException collided) {
@@ -152,6 +168,17 @@ public class CiRunners {
       }
       throw collided;
     }
+    announcements.announce(
+        "runner " + created.name + " created",
+        announcer ->
+            announcer.onRunnerCreated(
+                created.id.toString(),
+                created.name,
+                created.slots,
+                created.plane.name(),
+                created.description,
+                created.createdAt));
+    return created;
   }
 
   private static ConflictException nameTaken(String name) {
@@ -188,21 +215,45 @@ public class CiRunners {
   public CiRunner patch(UUID id, Integer slots, String description, CiRunnerPlane plane) {
     requireSlots(slots);
     requireDescription(description);
-    return QuarkusTransaction.requiringNew()
-        .call(
-            () -> {
-              CiRunner runner = found(id);
-              if (slots != null) {
-                runner.slots = slots;
-              }
-              if (description != null) {
-                runner.description = blankToNull(description);
-              }
-              if (plane != null) {
-                runner.plane = plane;
-              }
-              return runner;
-            });
+    record Patched(CiRunner runner, List<String> changed, Instant at) {}
+    Patched patched =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  CiRunner runner = found(id);
+                  // What moved, in RunnerChanged's order — a value set to what it already was is
+                  // not a change, so a PATCH that repeats the row announces nothing.
+                  List<String> changed = new ArrayList<>();
+                  if (slots != null && slots != runner.slots) {
+                    runner.slots = slots;
+                    changed.add("slots");
+                  }
+                  if (plane != null && plane != runner.plane) {
+                    runner.plane = plane;
+                    changed.add("plane");
+                  }
+                  if (description != null
+                      && !Objects.equals(blankToNull(description), runner.description)) {
+                    runner.description = blankToNull(description);
+                    changed.add("description");
+                  }
+                  return new Patched(runner, List.copyOf(changed), Instant.now());
+                });
+    CiRunner runner = patched.runner();
+    if (!patched.changed().isEmpty()) {
+      announcements.announce(
+          "runner " + runner.name + " changed",
+          announcer ->
+              announcer.onRunnerChanged(
+                  runner.id.toString(),
+                  runner.name,
+                  runner.slots,
+                  runner.plane.name(),
+                  runner.description,
+                  patched.changed(),
+                  patched.at()));
+    }
+    return runner;
   }
 
   /**
@@ -271,20 +322,36 @@ public class CiRunners {
    */
   public CiRunner markRegistered(UUID id, String clientId, String capabilities) {
     Objects.requireNonNull(clientId, "clientId");
-    return QuarkusTransaction.requiringNew()
-        .call(
-            () -> {
-              CiRunner runner = found(id);
-              if (runner.registered()) {
-                throw registeredAlready(runner);
-              }
-              Instant now = Instant.now();
-              runner.clientId = clientId;
-              runner.capabilities = capabilities;
-              runner.registeredAt = now;
-              runner.lastSeenAt = now;
-              return runner;
-            });
+    CiRunner registered =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  CiRunner runner = found(id);
+                  if (runner.registered()) {
+                    throw registeredAlready(runner);
+                  }
+                  Instant now = Instant.now();
+                  runner.clientId = clientId;
+                  runner.capabilities = capabilities;
+                  runner.registeredAt = now;
+                  runner.lastSeenAt = now;
+                  return runner;
+                });
+    JsonNode said = RunnerCapabilities.decode(registered.capabilities);
+    announcements.announce(
+        "runner " + registered.name + " registered",
+        announcer ->
+            announcer.onRunnerRegistered(
+                registered.id.toString(),
+                registered.name,
+                registered.clientId,
+                said != null && said.path("docker").isBoolean()
+                    ? said.path("docker").booleanValue()
+                    : null,
+                textOf(said, "arch"),
+                textOf(said, "os"),
+                registered.registeredAt));
+    return registered;
   }
 
   private static ConflictException registeredAlready(CiRunner runner) {
@@ -348,18 +415,25 @@ public class CiRunners {
    * same absence. The other order would leave a live row whose client had been deleted.
    */
   public CiRunner delete(UUID id) {
-    return QuarkusTransaction.requiringNew()
-        .call(
-            () -> {
-              CiRunner runner = found(id);
-              long held = runs.countRunningOnRunner(id);
-              if (held > 0) {
-                throw new ConflictException(
-                    "Runner " + runner.name + " holds " + held + " running run(s)");
-              }
-              runners.delete(runner);
-              return runner;
-            });
+    record Deleted(CiRunner runner, Instant at) {}
+    Deleted deleted =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  CiRunner runner = found(id);
+                  long held = runs.countRunningOnRunner(id);
+                  if (held > 0) {
+                    throw new ConflictException(
+                        "Runner " + runner.name + " holds " + held + " running run(s)");
+                  }
+                  runners.delete(runner);
+                  return new Deleted(runner, Instant.now());
+                });
+    CiRunner gone = deleted.runner();
+    announcements.announce(
+        "runner " + gone.name + " deleted",
+        announcer -> announcer.onRunnerDeleted(gone.id.toString(), gone.name, deleted.at()));
+    return gone;
   }
 
   /** The runner as an operator reads it — with its presence and its held runs. */
@@ -428,6 +502,14 @@ public class CiRunners {
       throw new NotFoundException("No runner " + id);
     }
     return runner;
+  }
+
+  /**
+   * One string a runner said about its host, off what it registered with — null when it said
+   * nothing there, or said something that is not a string. Its word, read and never corrected.
+   */
+  private static String textOf(JsonNode said, String field) {
+    return said != null && said.path(field).isTextual() ? said.path(field).textValue() : null;
   }
 
   private static String blankToNull(String text) {

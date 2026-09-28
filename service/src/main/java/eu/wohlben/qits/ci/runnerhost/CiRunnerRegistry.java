@@ -6,8 +6,10 @@ import eu.wohlben.qits.ci.control.CiBacklogListener;
 import eu.wohlben.qits.ci.control.CiRunService;
 import eu.wohlben.qits.ci.control.CiRunnerPresence;
 import eu.wohlben.qits.ci.control.CiRunners;
+import eu.wohlben.qits.ci.control.RunnerAnnouncements;
 import eu.wohlben.qits.ci.entity.CiRunner;
 import eu.wohlben.qits.ci.entity.RunnerCapabilities;
+import eu.wohlben.qits.ci.events.RunnerDisconnected;
 import eu.wohlben.qits.cirunner.protocol.Ack;
 import eu.wohlben.qits.cirunner.protocol.Backlog;
 import eu.wohlben.qits.cirunner.protocol.Capabilities;
@@ -23,9 +25,11 @@ import eu.wohlben.qits.cirunner.protocol.Reaped;
 import eu.wohlben.qits.cirunner.protocol.Released;
 import eu.wohlben.qits.cirunner.protocol.Retire;
 import eu.wohlben.qits.cirunner.protocol.Upgrade;
+import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.websockets.next.CloseReason;
 import io.quarkus.websockets.next.WebSocketConnection;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import java.time.Duration;
 import java.time.Instant;
@@ -40,6 +44,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import org.jboss.logging.Logger;
 
@@ -85,6 +90,24 @@ import org.jboss.logging.Logger;
  * shapes. The one send that is not waited on at all is {@link #broadcastBacklog}'s, which is a hint
  * pushed from whatever thread moved the queue — an accept must not wait thirty seconds on a runner
  * that stopped draining its socket.
+ *
+ * <p><b>This is where a runner's connection lifecycle is announced</b> — {@code RunnerConnected},
+ * {@code RunnerDisconnected}, {@code RunnerUpdateStarted} and {@code RunnerUpdated}, through {@link
+ * RunnerAnnouncements} — because this is where that state lives: in memory, changed by {@link
+ * #onHello}, {@link #settle} and {@link #onClose}, with no row and no transaction behind it. Each is
+ * announced at the moment the registry's own state changes, after the change and before the frames
+ * that follow from it, so the events arrive in the order the lifecycle happened: {@code Connected}
+ * (and {@code UpdateStarted}) for the old binary, then {@code Connected} and {@code Updated} for its
+ * successor, then the old connection's {@code Disconnected} as {@code RETIRED}. An announcement never
+ * waits on qits-events and never throws here, so none of it can cost a runner its {@code Ack}.
+ *
+ * <p><b>Why a connection ended is decided here, once</b>, and it is the one fact a close does not
+ * carry: the registry records {@link RunnerDisconnected#RETIRED} when it sends {@code Retire}, {@link
+ * RunnerDisconnected#REFUSED} when it refuses a {@code Hello}, and announces {@link
+ * RunnerDisconnected#REPLACED} itself when {@link #settle} drops a same-version session; every other
+ * end is {@link RunnerDisconnected#LOST}, and a stopping process announces {@link
+ * RunnerDisconnected#SHUTDOWN} for every connection it still has. A session announces its end at
+ * most once, whichever of those paths reaches it first, and only if it said {@code Hello}.
  */
 @ApplicationScoped
 public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
@@ -125,6 +148,9 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
   /** Where the pinned runner image is pulled from, for {@link Upgrade#image()}. */
   @Inject RunnerAddresses addresses;
 
+  /** The runner lifecycle event port; see the class javadoc. */
+  @Inject RunnerAnnouncements announcements;
+
   /**
    * Every open session of each runner, oldest first. A list rather than one session because a
    * self-updating runner holds two for a while; mutated only inside {@link ConcurrentHashMap#compute}
@@ -162,7 +188,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
     private final CompletableFuture<Void> closed = new CompletableFuture<>();
     private final ConcurrentHashMap<String, CompletableFuture<LaunchAnswer>> launches =
         new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, CompletableFuture<Boolean>> reaps =
+    private final ConcurrentHashMap<String, CompletableFuture<Reaped>> reaps =
         new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Object, Runnable> onLoss = new ConcurrentHashMap<>();
     private final long order;
@@ -170,6 +196,18 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
     private volatile Instant seenWrittenAt;
     private volatile String runnerVersion;
     private volatile boolean draining;
+
+    /** What this connection's {@code Hello} said it is — set even for a refused one. */
+    private volatile String helloVersion;
+
+    /**
+     * Why this connection is ending, when the registry decided it — {@code RETIRED} or {@code
+     * REFUSED}; null means nobody here ended it, which a close reads as {@code LOST}.
+     */
+    private volatile String endReason;
+
+    /** Set by the one announcement of this connection's end, whichever path makes it. */
+    private final AtomicBoolean endAnnounced = new AtomicBoolean();
 
     Session(CiRunner runner, WebSocketConnection connection, long order) {
       this.runner = runner;
@@ -295,28 +333,42 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
     String pin = pins.version();
     boolean current = pin.equals(hello.runnerVersion());
     boolean speaks = hello.capabilityVersion() == CiRunnerProtocol.CAPABILITY_VERSION;
+    session.helloVersion = hello.runnerVersion();
     if (current && !speaks) {
       LOG.warnf(
           "Runner %s announced capability version %d and this host speaks %d — refusing it",
           session.runnerName, hello.capabilityVersion(), CiRunnerProtocol.CAPABILITY_VERSION);
+      session.endReason = RunnerDisconnected.REFUSED;
       return Greeting.VERSION_MISMATCH;
     }
     // Capabilities in a protocol this host does not speak are not read: the registered answer stands.
     CiRunner row =
         runners.recordHello(session.runnerId, speaks ? capabilities(hello.capabilities()) : null);
     if (row == null) {
+      session.endReason = RunnerDisconnected.REFUSED;
       return Greeting.RUNNER_GONE;
     }
     session.seenWrittenAt = Instant.now();
     session.runnerVersion = hello.runnerVersion();
     session.draining = !current;
     List<Session> retiring = settle(session);
+    announceConnected(session, hello, pin, current, speaks);
     if (!current) {
       String image = addresses.runnerImage(pin);
       LOG.infof(
           "Runner %s said hello as %s (capability %d) and the pin is %s — upgrading it to %s; this"
               + " connection drains",
           row.name, hello.runnerVersion(), hello.capabilityVersion(), pin, image);
+      announcements.announce(
+          "runner " + session.runnerName + "'s update",
+          announcer ->
+              announcer.onRunnerUpdateStarted(
+                  session.runnerId.toString(),
+                  session.runnerName,
+                  hello.runnerVersion(),
+                  pin,
+                  heldBy(session),
+                  Instant.now()));
       send(session, new Upgrade(pin, image, null));
       if (speaks) {
         send(session, new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 0));
@@ -336,13 +388,52 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
     // Only now does a broadcast reach it: a Backlog before the Ack would be a frame the runner has
     // no slots to act on yet.
     session.greeted = true;
+    if (!retiring.isEmpty()) {
+      // Decided before the first Retire leaves, so the Updated is announced ahead of any close the
+      // frame provokes, and a retired runner that closes at once still closes as RETIRED.
+      for (Session old : retiring) {
+        old.endReason = RunnerDisconnected.RETIRED;
+      }
+      String from = retiring.get(retiring.size() - 1).runnerVersion;
+      announcements.announce(
+          "runner " + session.runnerName + "'s rollover",
+          announcer ->
+              announcer.onRunnerUpdated(
+                  session.runnerId.toString(), session.runnerName, from, pin, Instant.now()));
+    }
     for (Session old : retiring) {
       LOG.infof(
           "Runner %s's %s connection %s is superseded by %s; retiring it",
           row.name, old.runnerVersion, old.connection.id(), pin);
-      send(old, new Retire("superseded by " + pin));
+      if (!send(old, new Retire("superseded by " + pin))) {
+        // The frame never left: nothing retired this connection, its socket was already going.
+        old.endReason = null;
+      }
     }
     return Greeting.GREETED;
+  }
+
+  /**
+   * The {@code Hello} was taken: {@code RunnerConnected}, with what this host read of the machine —
+   * nothing, for a runner whose capability version it does not speak, exactly as {@link
+   * #capabilities} records nothing for one.
+   */
+  private void announceConnected(
+      Session session, Hello hello, String pin, boolean current, boolean speaks) {
+    Capabilities host = speaks ? hello.capabilities() : null;
+    announcements.announce(
+        "runner " + session.runnerName + "'s connection",
+        announcer ->
+            announcer.onRunnerConnected(
+                session.runnerId.toString(),
+                session.runnerName,
+                hello.runnerVersion(),
+                pin,
+                !current,
+                host == null ? null : host.docker(),
+                host == null ? null : host.arch(),
+                host == null ? null : host.os(),
+                Instant.now()));
   }
 
   /**
@@ -384,6 +475,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
           session.connection.id(),
           previous.connection.id(),
           ALREADY_CONNECTED);
+      announceEnd(previous, RunnerDisconnected.REPLACED);
       lose(previous);
       closeBounded(
           previous.connection,
@@ -430,10 +522,10 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
   }
 
   public void onReaped(Session session, Reaped reaped) {
-    CompletableFuture<Boolean> pending =
+    CompletableFuture<Reaped> pending =
         session.reaps.remove(key(reaped.runId(), reaped.stepIndex()));
     if (pending != null) {
-      pending.complete(Boolean.TRUE);
+      pending.complete(reaped);
     }
   }
 
@@ -454,8 +546,53 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
       LOG.infof(
           "Runner %s (%s) disconnected (connection %s)",
           session.runnerName, session.runnerId, session.connection.id());
+      String decided = session.endReason;
+      announceEnd(session, decided != null ? decided : RunnerDisconnected.LOST);
     }
     lose(session);
+  }
+
+  /**
+   * This process is stopping: every connection that said {@code Hello} ends as {@code SHUTDOWN},
+   * announced now rather than at whatever close the server does or does not deliver on its way down.
+   * A close that does arrive afterwards finds the end already announced and adds nothing.
+   */
+  void onShutdown(@Observes ShutdownEvent stopping) {
+    announceShutdown();
+  }
+
+  /** {@link #onShutdown}'s work, callable without stopping anything — a suite's handle on it. */
+  void announceShutdown() {
+    for (Session session : sessions.values().stream().flatMap(List::stream).toList()) {
+      announceEnd(session, RunnerDisconnected.SHUTDOWN);
+    }
+  }
+
+  /**
+   * {@code RunnerDisconnected}, at most once per session and only for one that said {@code Hello} —
+   * a dial that never did was never announced as connected, so its end is not announced either.
+   * {@code heldRuns} is counted now, before the runs it held are completed as lost.
+   */
+  private void announceEnd(Session session, String reason) {
+    if (session.helloVersion == null || !session.endAnnounced.compareAndSet(false, true)) {
+      return;
+    }
+    int held = heldBy(session);
+    announcements.announce(
+        "runner " + session.runnerName + "'s disconnection",
+        announcer ->
+            announcer.onRunnerDisconnected(
+                session.runnerId.toString(),
+                session.runnerName,
+                session.helloVersion,
+                reason,
+                held,
+                Instant.now()));
+  }
+
+  /** How many runs a session holds — the runs whose driver is bound to it (see {@link #hold}). */
+  private int heldBy(Session session) {
+    return (int) heldRuns.values().stream().filter(held -> held == session).count();
   }
 
   /**
@@ -570,21 +707,25 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
 
   /**
    * Ask the runner to remove one step's container and wait at most {@code timeout} for its {@code
-   * Reaped}. The answer is only ever logged by the caller: a removal that did not land is the
-   * runner's boot sweep's to retry, never a reason to hold a run open.
+   * Reaped}. Answers what the runner sent, or {@code null} when nothing landed inside the deadline —
+   * a session already gone, a send that failed, or a plain timeout. The answer is only ever logged by
+   * the caller: a removal that did not land is the runner's boot sweep's to retry, never a reason to
+   * hold a run open. A {@code Reaped} that arrives after this has already timed out finds its key
+   * already removed below and completes nothing — late is the same as never to a caller who has
+   * moved on.
    */
-  public boolean reap(Session session, Reap reap, Duration timeout) {
+  public Reaped reap(Session session, Reap reap, Duration timeout) {
     if (!session.isOpen()) {
-      return false;
+      return null;
     }
     String key = key(reap.runId(), reap.stepIndex());
-    CompletableFuture<Boolean> pending = new CompletableFuture<>();
+    CompletableFuture<Reaped> pending = new CompletableFuture<>();
     session.reaps.put(key, pending);
     if (!session.isOpen() || !send(session, reap)) {
-      pending.complete(Boolean.FALSE);
+      pending.complete(null);
     }
     try {
-      return Boolean.TRUE.equals(await(pending, timeout, Boolean.FALSE));
+      return await(pending, timeout, null);
     } finally {
       session.reaps.remove(key, pending);
     }
@@ -703,7 +844,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
     }
     session.launches.values()
         .forEach(pending -> pending.complete(LaunchAnswer.of(LaunchAnswer.Status.CONNECTION_LOST)));
-    session.reaps.values().forEach(pending -> pending.complete(Boolean.FALSE));
+    session.reaps.values().forEach(pending -> pending.complete(null));
   }
 
   /**

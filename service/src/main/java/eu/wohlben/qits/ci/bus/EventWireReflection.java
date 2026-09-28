@@ -3,6 +3,14 @@ package eu.wohlben.qits.ci.bus;
 import eu.wohlben.qits.ci.events.BuildFailed;
 import eu.wohlben.qits.ci.events.BuildStatusChanged;
 import eu.wohlben.qits.ci.events.BuildSuccessful;
+import eu.wohlben.qits.ci.events.RunnerChanged;
+import eu.wohlben.qits.ci.events.RunnerConnected;
+import eu.wohlben.qits.ci.events.RunnerCreated;
+import eu.wohlben.qits.ci.events.RunnerDeleted;
+import eu.wohlben.qits.ci.events.RunnerDisconnected;
+import eu.wohlben.qits.ci.events.RunnerRegistered;
+import eu.wohlben.qits.ci.events.RunnerUpdateStarted;
+import eu.wohlben.qits.ci.events.RunnerUpdated;
 import eu.wohlben.qits.ci.events.SoftwareRelease;
 import eu.wohlben.qits.eventstream.control.EventEnvelope;
 import eu.wohlben.qits.eventstream.control.EventFrame;
@@ -79,6 +87,14 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * record would be a throw or a mangled payload several times per run rather than once, and the run
  * lifecycle a mirror is built on would simply never arrive.
  *
+ * <p><b>The eight runner lifecycle events are publish-only too</b> — {@link RunnerCreated} through
+ * {@link RunnerDeleted}, announced by {@link RunnerLifecycleAnnouncer} and never read back here —
+ * and they are on this list for exactly {@link BuildStatusChanged}'s reason. They add no new kind of
+ * risk, only the new shapes worth naming: {@link RunnerChanged} carries a {@code List<String>}, which
+ * Jackson writes from the component's accessor like any other, and {@link RunnerDisconnected} and
+ * {@link RunnerChanged} declare static constants, which no serializer reads. An unregistered one
+ * would fail on the publishing thread, where the only witness is a WARN.
+ *
  * <p><b>An event this service only publishes is exactly as dependent on this list</b>, which is
  * worth stating because "nothing binds it back" reads like a reason to skip it. The failure is on
  * the writing side: {@code CanonicalJson} finds a record's components by reflection, so an
@@ -124,6 +140,14 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       BuildFailed.class,
       BuildStatusChanged.class,
       SoftwareRelease.class,
+      RunnerCreated.class,
+      RunnerRegistered.class,
+      RunnerConnected.class,
+      RunnerDisconnected.class,
+      RunnerUpdateStarted.class,
+      RunnerUpdated.class,
+      RunnerChanged.class,
+      RunnerDeleted.class,
       SCMPublishCommit.class,
       RepositoryRenamed.class,
       EventEnvelope.class,

@@ -29,7 +29,7 @@ capability rather than a leftover — and none does.
 |---|---|
 | `ci/` | `eu.wohlben.qits.ci.*` — entity, persistence, dto, mapper, control, error. The pipeline itself. No web, no JAX-RS. |
 | `service/` | `eu.wohlben.qits.ci.api` — the run read surface, the manual event trigger and the exception mapper — plus `…ci.bus`, where every domain event arrives, and `…ci.daemonhost`, the step-container control plane (below). There is no filter in front of the one write: it calls `MachineAuth` (qits-auth-core) itself. |
-| `ci-events/` | `eu.wohlben.qits.ci.events` — the events this service announces: `BuildSuccessful` for every green run, `SoftwareRelease` once per artifact a release pipeline declared. Depends on the published `qits-eventstream` jar and nothing else. |
+| `ci-events/` | `eu.wohlben.qits.ci.events` — the events this service announces: `BuildSuccessful`/`BuildFailed` for a finished run's verdict, `BuildStatusChanged` for every transition of a run's row, `SoftwareRelease` once per artifact a release pipeline declared, and the eight `Runner*` lifecycle events (see "A runner's lifecycle is on the bus"). Depends on the published `qits-eventstream` jar and nothing else. |
 
 `ci/` is a library jar. **`service/` is the application** — it carries
 `<packaging>quarkus</packaging>` and produces a process, as a JVM fast-jar or as a native binary:
@@ -122,6 +122,7 @@ rest of qits it reaches over a URL it is configured with:
 | out | where a step container downloads the daemon binary from | `qits.ci.daemon-binary-url-template` + the version of the pinned `qits-ci-daemon-protocol` dependency (or `qits.ci.daemon-version-override`, the emergency hatch) |
 | out | `PUT /events/api/events/{uuid}` — one `BuildSuccessful` per **green** run, idempotent (the `RunAnnouncer` seam), and the **only** thing a green run announces | `qits.events.url`, `qits.eventstream.enabled` |
 | out | the same route — one `SoftwareRelease` per artifact a green **release pipeline** declared (the `ReleaseAnnouncer` seam), and **only once an `SCMRelease` for the same (repository, version) has been seen** — see "The release join" | the same two keys |
+| out | the same route — the eight runner lifecycle events, `RunnerCreated` … `RunnerDeleted`, one per fact as it happens (the `RunnerAnnouncer` seam) — see "A runner's lifecycle is on the bus" | the same two keys |
 | out | `ws://…/events/stream` — dialled out and held open, carrying what qits-events broadcasts back | the same two keys; the address is derived, never configured twice |
 | out | `PUT/DELETE /containers/api/containers/<owner>/ci-step/<ref>` — every step container: started, read and removed through qits-containers, which owns the docker daemon. **qits-ci holds no docker socket.** | `qits.containers.url`, `qits.ci.containers.owner` |
 | out | `POST/DELETE/GET /idp/api/clients` — one commissioned oidc client per run, minted at the run's first step and deleted when the run closes; every step clones with it, and a publishing step pushes with it | `quarkus.oidc-client.qits.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.qits.client-enabled` |
@@ -333,6 +334,40 @@ socket drops mid-step ends that step `CONNECTION_LOST` at once, its output namin
 (`[runner <name> disconnected]`); the run is an ordinary failed run and retries like one.
 `GET /ci/api/runs/queue` lists every runner (`runners: [{id, name, slots, held, connected}]`) and its
 forecast counts the local pool plus every connected runner's slots.
+
+#### A runner's lifecycle is on the bus
+
+qits-ci publishes one event per lifecycle fact (`ci-events/`, `eu.wohlben.qits.ci.events`), through
+the `RunnerAnnouncer` seam in `ci/control`, implemented by `service/…/bus/RunnerLifecycleAnnouncer`:
+
+- **`RunnerCreated`** — an operator's create committed: `slots`, `plane`, `description`.
+- **`RunnerRegistered`** — the register door committed: the runner's `clientId`, and the `docker`,
+  `arch` and `os` it registered with.
+- **`RunnerConnected`** — a connection's `Hello` was taken: `runnerVersion`, `targetVersion` (the
+  pin), `upgradeRequired`, and the host's `docker`, `arch`, `os`.
+- **`RunnerDisconnected`** — a connection that said `Hello` ended: its `runnerVersion`, `heldRuns`
+  (above 0: those runs are about to be recorded `CONNECTION_LOST`), and a `reason` — `RETIRED` (sent
+  `Retire`), `REPLACED` (closed `ALREADY_CONNECTED` by a same-version connection), `LOST` (closed
+  without qits-ci closing it), `REFUSED` (closed 1008 at its `Hello`, and never connected) or
+  `SHUTDOWN` (this qits-ci is stopping).
+- **`RunnerUpdateStarted`** — `Upgrade` was sent and the connection drains: `fromVersion`,
+  `toVersion`, `heldRuns`.
+- **`RunnerUpdated`** — a connection of the pinned version said `Hello` beside one of another
+  version, which is being sent `Retire`: `fromVersion`, `toVersion`.
+- **`RunnerChanged`** — an operator's `PATCH` moved at least one setting: the new `slots`, `plane`,
+  `description`, and `changed`, which of them moved.
+- **`RunnerDeleted`** — an operator's delete committed.
+
+Each carries `runnerId` and `runnerName`, and the envelope's `occurredAt` is when the thing happened
+(the row's own `createdAt`/`registeredAt`, the moment the registry changed state), never when it was
+published. The four row events are announced **after their transaction commits**, and a refused
+request — 400, 403, 404, 409, 502 — announces nothing; a `PATCH` that leaves every value as it was
+announces nothing either. A self-update reads `RunnerConnected{upgradeRequired: true}`,
+`RunnerUpdateStarted`, then the successor's `RunnerConnected` and `RunnerUpdated`, then the old
+connection's `RunnerDisconnected{reason: RETIRED}`. **Publishing never waits on qits-events**: the
+announcer hands each event to one ordered publishing thread and returns, so a runner's `Hello` is
+never left unanswered by an outage of the bus, and nothing an announcement does can fail the request
+or the socket frame that caused it.
 
 The run listing takes the repository as a **query filter, not a path segment**. ci does not own
 repositories, so `/repositories/{repoId}/runs` asserted a containment this context does not have —
