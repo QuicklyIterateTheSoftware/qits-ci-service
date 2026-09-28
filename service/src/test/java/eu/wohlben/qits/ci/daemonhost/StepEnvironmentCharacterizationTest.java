@@ -74,7 +74,7 @@ public class StepEnvironmentCharacterizationTest {
     launcher.buildkitEnabled = true;
     launcher.buildkitRegistryHost = "dev-qits-artifacts:8080";
     launcher.artifactsNpmHostedUrl = "http://dev-qits-artifacts:8080/artifacts/npm/npm/";
-    launcher.artifactsNpmProxyUrl = "http://dev-qits-platform-mirror:8080/artifacts/npm/npmjs/";
+    launcher.artifactsNpmProxyUrl = "http://dev-qits-platform-mirror:8080/npm/npmjs/";
     launcher.artifactsMavenRegistryUrl = "http://dev-qits-artifacts:8080/artifacts/maven/maven";
     launcher.mavenCentralMirrorEnabled = true;
     launcher.mavenCentralMirrorBuildUrl =
@@ -141,7 +141,7 @@ public class StepEnvironmentCharacterizationTest {
             "QITS_REGISTRY=dev-qits-artifacts:8080",
             "QITS_IMAGE_REPOSITORY=qits",
             "QITS_NPM_REGISTRY_URL=http://dev-qits-artifacts:8080/artifacts/npm/npm/",
-            "QITS_NPM_PROXY_URL=http://dev-qits-platform-mirror:8080/artifacts/npm/npmjs/",
+            "QITS_NPM_PROXY_URL=http://dev-qits-platform-mirror:8080/npm/npmjs/",
             "QITS_MAVEN_REGISTRY_URL=http://dev-qits-artifacts:8080/artifacts/maven/maven",
             "QITS_MAVEN_CENTRAL_MIRROR_URL=http://mirror.dev.localhost:8080/mirror/maven/central",
             "QITS_MAVEN_PROXY_URL=http://dev-qits-platform-mirror:8080/mirror/maven/central",
@@ -200,7 +200,7 @@ public class StepEnvironmentCharacterizationTest {
             "QITS_REGISTRY=dev-qits-artifacts:8080",
             "QITS_IMAGE_REPOSITORY=qits",
             "QITS_NPM_REGISTRY_URL=http://dev-qits-artifacts:8080/artifacts/npm/npm/",
-            "QITS_NPM_PROXY_URL=http://dev-qits-platform-mirror:8080/artifacts/npm/npmjs/",
+            "QITS_NPM_PROXY_URL=http://dev-qits-platform-mirror:8080/npm/npmjs/",
             "QITS_MAVEN_REGISTRY_URL=http://dev-qits-artifacts:8080/artifacts/maven/maven",
             "QITS_MAVEN_CENTRAL_MIRROR_URL=",
             "QITS_MAVEN_PROXY_URL=",

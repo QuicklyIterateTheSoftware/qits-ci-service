@@ -286,14 +286,16 @@ daemon archetype's `ADD` of the musl/zlib tarballs from `$QITS_MAVEN_REGISTRY_UR
 public vhost answers 401; npm `.npmrc` lines composed as `${QITS_NPM_REGISTRY_URL#http:}` do not strip
 `https:`; and the composed release prelude fetches the qits CLI from `$QITS_ARTIFACTS_URL` with no
 bearer. Every one reads the plane's address — nothing composes an internal alias behind it — but each
-needs the token presented. **The npm proxy's edge address is now `/mirror`, not `/artifacts` (qits-474)**:
-the internal plane still dials the npmjs pull-through at qits-artifacts' own route
-(`.../artifacts/npm/npmjs/`), but the edge routes `/artifacts` on every vhost to qits-artifacts
-regardless of which host carries it, so an EDGE step's `$QITS_NPM_PROXY_URL` moving only its origin
-would 404 there. qits-mirror carries the same cache under its own prefix, so
-`StepAddressPlane.edge` composes the edge value from `https://mirror.qits.<domain>` plus
-`/mirror/npm/npmjs/` instead of rebasing the internal path — the one edge address whose path differs
-from its internal counterpart rather than only its origin.
+needs the token presented. **The npm proxy is served at the root of qits-platform-mirror's own
+hostname, `/npm/npmjs/` (qits-474)**: both the internal plane's `$QITS_NPM_PROXY_URL`
+(`http://dev-qits-platform-mirror:8080/npm/npmjs/`, dialled over qits-net) and the edge's
+(`https://mirror.qits.<domain>/npm/npmjs/`) name that same path now. The earlier
+`/artifacts/npm/npmjs/` — qits-artifacts' own route, which an EDGE step could not simply rebase to
+since `/artifacts/**` is routed to qits-artifacts on every vhost — and the briefly used
+`/mirror/npm/npmjs/` are both gone; nothing hands either to a step any more. `StepAddressPlane.edge`
+still composes the edge value from `https://mirror.qits.<domain>` plus its own
+`EDGE_NPM_PROXY_PATH` constant rather than rebasing the internal path, since the internal dial is
+qits-platform-mirror's own route and not guaranteed to keep tracking the edge's.
 
 A run a runner executed carries `runnerId` and `runnerName` on every run read; the id outlives the
 runner (no foreign key), the name does not.

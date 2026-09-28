@@ -74,7 +74,7 @@ class EdgeBuildStepEnvironmentTest {
             "QITS_REGISTRY=registry.qits.example.org",
             "QITS_IMAGE_REPOSITORY=qits",
             "QITS_NPM_REGISTRY_URL=https://registry.qits.example.org/artifacts/npm/npm/",
-            "QITS_NPM_PROXY_URL=https://mirror.qits.example.org/mirror/npm/npmjs/",
+            "QITS_NPM_PROXY_URL=https://mirror.qits.example.org/npm/npmjs/",
             "QITS_MAVEN_REGISTRY_URL=https://registry.qits.example.org/artifacts/maven/maven",
             "QITS_MAVEN_CENTRAL_MIRROR_URL=https://mirror.qits.example.org/mirror/maven/central",
             "QITS_MAVEN_PROXY_URL=https://mirror.qits.example.org/mirror/maven/central",
