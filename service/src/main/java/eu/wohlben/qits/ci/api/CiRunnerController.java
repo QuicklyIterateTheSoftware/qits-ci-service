@@ -90,11 +90,22 @@ public class CiRunnerController {
       @Schema(description = "[a-z][a-z0-9-]{0,63}, unique", required = true) String name,
       @Schema(description = "Free text, at most 1024 characters") String description,
       @Schema(description = "How many steps it may hold at once; 0 drains it. Default 1")
-          Integer slots) {}
+          Integer slots,
+      @Schema(
+              description =
+                  "Where its steps reach the platform: EDGE through the public names, INTERNAL on"
+                      + " qits-net. Default EDGE when this qits-ci knows its public domain,"
+                      + " INTERNAL when it does not")
+          CiRunnerPlane plane) {}
 
   public record PatchRunnerRequest(
       @Schema(description = "0 drains the runner; absent leaves it") Integer slots,
-      @Schema(description = "Blank clears it; absent leaves it") String description) {}
+      @Schema(description = "Blank clears it; absent leaves it") String description,
+      @Schema(description = "EDGE or INTERNAL; absent leaves it. Reaches the runner's next run")
+          CiRunnerPlane plane) {}
+
+  /** The refusal of an EDGE plane on a qits-ci that knows no public domain — code and message. */
+  static final String EDGE_PLANE_UNCONFIGURED = "EDGE_PLANE_UNCONFIGURED";
 
   /**
    * A runner together with the secret-bearing answer only the request that minted it gets: the
@@ -168,7 +179,11 @@ public class CiRunnerController {
       responseCode = "201",
       description = "The runner and the install line carrying its registration token",
       content = @Content(schema = @Schema(implementation = CiRunnerCreated.class)))
-  @APIResponse(responseCode = "400", description = "A malformed name, slots or description")
+  @APIResponse(
+      responseCode = "400",
+      description =
+          "A malformed name, slots or description, or EDGE_PLANE_UNCONFIGURED: an EDGE plane on a"
+              + " qits-ci that knows no public domain")
   @APIResponse(responseCode = "409", description = "The name is taken")
   @APIResponse(responseCode = "502", description = "qits-idp refused the registration token")
   @APIResponse(
@@ -179,6 +194,7 @@ public class CiRunnerController {
       throw new BadRequestException("A runner needs a name");
     }
     runners.requireCreatable(request.name(), request.description(), request.slots());
+    CiRunnerPlane plane = request.plane() == null ? defaultPlane() : requireComposable(request.plane());
     requireCommissioning();
     requireRenderable();
     UUID id = UUID.randomUUID();
@@ -191,6 +207,7 @@ public class CiRunnerController {
               request.name(),
               request.description(),
               request.slots(),
+              plane,
               token.tokenId(),
               token.subject());
     } catch (RuntimeException refused) {
@@ -252,13 +269,50 @@ public class CiRunnerController {
   @Path("/{id}")
   @Consumes(MediaType.APPLICATION_JSON)
   @RolesAllowed("qits:admin")
-  @Operation(summary = "Change a runner's slots or description")
+  @Operation(summary = "Change a runner's slots, description or plane")
   @APIResponse(responseCode = "200", description = "The runner as it now is")
-  @APIResponse(responseCode = "400", description = "Negative slots or an overlong description")
+  @APIResponse(
+      responseCode = "400",
+      description =
+          "Negative slots, an overlong description, or EDGE_PLANE_UNCONFIGURED: an EDGE plane on a"
+              + " qits-ci that knows no public domain")
   @APIResponse(responseCode = "404", description = "No such runner")
   public CiRunnerDto patch(@PathParam("id") String id, PatchRunnerRequest request) {
-    PatchRunnerRequest change = request == null ? new PatchRunnerRequest(null, null) : request;
-    return runners.view(runners.patch(runnerId(id), change.slots(), change.description()));
+    PatchRunnerRequest change =
+        request == null ? new PatchRunnerRequest(null, null, null) : request;
+    UUID runnerId = runnerId(id);
+    if (change.plane() != null) {
+      requireComposable(change.plane());
+    }
+    return runners.view(
+        runners.patch(runnerId, change.slots(), change.description(), change.plane()));
+  }
+
+  /**
+   * The plane a runner is created on when the request names none: <b>EDGE whenever this qits-ci knows
+   * its public domain</b> — a runner is a machine a person owns, outside the swarm, so the edge is
+   * the only way its steps can reach anything (the owner's ruling on qits-474) — and INTERNAL on a
+   * clone or a suite that knows none, where the qits-net aliases are the only addresses there are.
+   */
+  private CiRunnerPlane defaultPlane() {
+    return addresses.edgeAvailable() ? CiRunnerPlane.EDGE : CiRunnerPlane.INTERNAL;
+  }
+
+  /**
+   * 400 {@code EDGE_PLANE_UNCONFIGURED} for an EDGE plane this qits-ci cannot compose: with no public
+   * domain there is no public name to tell a step, and an internal alias would name nothing the
+   * runner's host can resolve. Asked before anything is minted, so the refusal leaves nothing
+   * behind.
+   */
+  private CiRunnerPlane requireComposable(CiRunnerPlane plane) {
+    if (plane == CiRunnerPlane.EDGE && !addresses.edgeAvailable()) {
+      throw new BadRequestException(
+          EDGE_PLANE_UNCONFIGURED,
+          EDGE_PLANE_UNCONFIGURED
+              + ": this qits-ci knows no public domain (QITS_DOMAIN), so a step on an EDGE runner"
+              + " has no public name to reach the platform by");
+    }
+    return plane;
   }
 
   /**

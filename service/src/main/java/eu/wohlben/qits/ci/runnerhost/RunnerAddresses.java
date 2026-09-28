@@ -1,5 +1,6 @@
 package eu.wohlben.qits.ci.runnerhost;
 
+import eu.wohlben.qits.ci.daemonhost.StepAddressPlane;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Locale;
 import java.util.Optional;
@@ -68,6 +69,15 @@ public class RunnerAddresses {
   /** qits-artifacts' host label — {@code host: registry} in its deployments.yml. */
   static final String ARTIFACTS_HOST = "registry";
 
+  /** qits-platform-mirror's host label: the pull-through caches, {@code /v2} and {@code /mirror}. */
+  static final String MIRROR_HOST = "mirror";
+
+  /** qits-githost's host label; smart HTTP answers a bearer under {@code /git/<project>/<repo>}. */
+  static final String GITHOST_HOST = "githost";
+
+  /** qits-workspaces' host label, where a step asks for its own repository to be released. */
+  static final String WORKSPACES_HOST = "workspaces";
+
   @ConfigProperty(name = "qits.ci.domain")
   Optional<String> domain;
 
@@ -132,6 +142,33 @@ public class RunnerAddresses {
         set(artifactsUrl)
             .or(() -> publicOrigin(ARTIFACTS_HOST))
             .orElseGet(() -> internal(artifactsInternalUrl)));
+  }
+
+  /**
+   * The public origin of every service a step on an EDGE runner reaches, or empty when no public
+   * domain is known — in which case an EDGE plane cannot be composed at all, and the runner door
+   * refuses to declare one ({@code EDGE_PLANE_UNCONFIGURED}).
+   *
+   * <p><b>{@link #publicOrigin} and nothing else</b>, deliberately without the three runner overrides
+   * above: those re-point what a <em>runner</em> is told, and a step is told the same domain's names
+   * for five other services that have no override. One composition, so a runner and the steps it
+   * starts can never be told two different domains.
+   */
+  public Optional<StepAddressPlane.EdgeOrigins> edgeOrigins() {
+    return publicOrigin(CI_HOST)
+        .map(
+            ci ->
+                new StepAddressPlane.EdgeOrigins(
+                    ci,
+                    publicOrigin(ARTIFACTS_HOST).orElseThrow(),
+                    publicOrigin(MIRROR_HOST).orElseThrow(),
+                    publicOrigin(GITHOST_HOST).orElseThrow(),
+                    publicOrigin(WORKSPACES_HOST).orElseThrow()));
+  }
+
+  /** Whether a public domain is known, which is whether an EDGE plane can be composed. */
+  public boolean edgeAvailable() {
+    return publicOrigin(CI_HOST).isPresent();
   }
 
   /** {@link #AUDIENCE}, as a method so a caller holding this bean needs nothing else. */

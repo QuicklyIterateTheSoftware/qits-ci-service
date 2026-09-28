@@ -20,10 +20,12 @@ import java.util.TreeMap;
  * a missing variable, a sandbox flag dropped — and the difference would surface as a build that
  * passes in one place and fails in the other with nothing in either spec to say why.
  *
- * <p><b>Pure</b>: settings, the launch and the run's commission in, a spec out, no I/O. The
- * commission is looked up by each caller (it is the one input that can fail, and each transport
- * records that failure its own way), and everything configured arrives as {@link Settings}, read
- * off the launcher at the moment of asking. The reasoning for every line is where it always was,
+ * <p><b>Pure</b>: settings, the address plane, the launch and the run's commission in, a spec out,
+ * no I/O. The commission is looked up by each caller (it is the one input that can fail, and each
+ * transport records that failure its own way), everything configured that is not an address arrives
+ * as {@link Settings}, read off the launcher at the moment of asking, and every address arrives as a
+ * {@link StepAddressPlane} — the launcher's internal one for a local step and an INTERNAL runner, its
+ * edge rendering for an EDGE runner. The reasoning for every line is where it always was,
  * on {@link CiDaemonLauncher#buildWorkloadSpec}; the lines themselves moved here unchanged, and
  * {@code CiDaemonLauncherTest} and {@code RunCommissioningTest} assert the result literally.
  */
@@ -32,50 +34,40 @@ public final class StepWorkloadSpecs {
   private StepWorkloadSpecs() {}
 
   /**
-   * The deployment facts a spec is composed from — every one of them a config value the launcher
-   * holds, or a value it derives from them ({@code resolvedArtifactsUrl}, {@code
-   * artifactsCliVersion}, {@code authHosts}), resolved before it gets here.
+   * The deployment facts a spec is composed from that are NOT addresses — every one of them a config
+   * value the launcher holds, or a value it derives from them ({@code artifactsCliVersion}), resolved
+   * before it gets here. Every address is the {@link StepAddressPlane}'s, which is what lets one
+   * step be composed for either side of the edge from the same settings.
    */
   public record Settings(
-      String containerDaemonUrl,
-      String containerGitUrl,
-      String idpUrl,
-      String network,
-      String artifactsRegistryHost,
       String artifactsImageRepository,
-      String artifactsNpmHostedUrl,
-      String artifactsNpmProxyUrl,
-      String artifactsMavenRegistryUrl,
       boolean mavenCentralMirrorEnabled,
-      String mavenCentralMirrorBuildUrl,
-      String mavenCentralMirrorStepUrl,
-      String artifactsDocsUrl,
-      String resolvedArtifactsUrl,
       String artifactsCliPackage,
       String artifactsCliVersion,
-      String workspacesUrl,
       boolean buildkitEnabled,
-      String buildkitRegistryHost,
-      List<String> authHosts,
       String memoryLimit,
       long pidsLimit,
       String cpus,
       Integer oomScoreAdj) {}
 
   /**
-   * The step container's spec. {@code commission} is this run's commissioned credential, or null
-   * on a deployment that commissions nothing — see {@link CiDaemonLauncher#buildWorkloadSpec}.
+   * The step container's spec, on {@code plane}. {@code commission} is this run's commissioned
+   * credential, or null on a deployment that commissions nothing — see {@link
+   * CiDaemonLauncher#buildWorkloadSpec}.
    */
   public static Spec compose(
-      Settings settings, CiDaemonLauncher.LaunchSpec spec, IdpCommissioner.Commission commission) {
+      Settings settings,
+      StepAddressPlane plane,
+      CiDaemonLauncher.LaunchSpec spec,
+      IdpCommissioner.Commission commission) {
     Map<String, String> env = new LinkedHashMap<>();
     // The contract, as environment. The daemon needs all of it before a socket exists, which is why
     // none of it is a message.
     env.put("QITS_CI_DAEMON_ID", value(spec.daemonId()));
     env.put("QITS_CI_DAEMON_SECRET", value(spec.secret()));
-    env.put("QITS_CI_DAEMON_URL", value(settings.containerDaemonUrl()));
-    env.put("QITS_CI_DAEMON_BINARY_URL", value(spec.daemonBinaryUrl()));
-    env.put("QITS_CI_REPOSITORY_URL", value(cloneUrl(settings.containerGitUrl(), spec.repo())));
+    env.put("QITS_CI_DAEMON_URL", value(plane.daemonUrl()));
+    env.put("QITS_CI_DAEMON_BINARY_URL", value(plane.daemonBinaryUrl(spec.daemonBinaryUrl())));
+    env.put("QITS_CI_REPOSITORY_URL", value(cloneUrl(plane.gitBaseUrl(), spec.repo())));
     env.put("QITS_CI_BRANCH", value(spec.branch()));
     env.put("QITS_CI_SHA", value(spec.sha()));
     // The repository, in both coordinate systems. QITS_CI_REPO_ID is the storage id the event
@@ -95,22 +87,22 @@ public final class StepWorkloadSpecs {
     // registry" must never be a literal in a repository's pipeline. Together with $QITS_CI_SHA above
     // they are the whole of the tag convention qits-cd pulls by,
     // <registry>/<repository>/<application>:<sha>.
-    env.put("QITS_REGISTRY", value(settings.artifactsRegistryHost()));
+    env.put("QITS_REGISTRY", value(plane.registryHost()));
     env.put("QITS_IMAGE_REPOSITORY", value(settings.artifactsImageRepository()));
     // And where npm packages come from and go to. Unlike the two above, these are dialled by this
     // container, on this network — a publish here is an ordinary HTTP step needing no socket.
-    env.put("QITS_NPM_REGISTRY_URL", value(settings.artifactsNpmHostedUrl()));
-    env.put("QITS_NPM_PROXY_URL", value(settings.artifactsNpmProxyUrl()));
-    env.put("QITS_MAVEN_REGISTRY_URL", value(settings.artifactsMavenRegistryUrl()));
+    env.put("QITS_NPM_REGISTRY_URL", value(plane.npmHostedUrl()));
+    env.put("QITS_NPM_PROXY_URL", value(plane.npmProxyUrl()));
+    env.put("QITS_MAVEN_REGISTRY_URL", value(plane.mavenRegistryUrl()));
     // Maven Central through qits-platform-mirror, both address planes — see the fields' javadoc.
     // Empty is the deliberate off state, so the ternary writes "" rather than skipping the keys:
     // a pipeline reads "${QITS_MAVEN_CENTRAL_MIRROR_URL:-}" either way and empty deactivates the
     // settings profile at every consumer.
     env.put("QITS_MAVEN_CENTRAL_MIRROR_URL",
-        settings.mavenCentralMirrorEnabled() ? value(settings.mavenCentralMirrorBuildUrl()) : "");
+        settings.mavenCentralMirrorEnabled() ? value(plane.mavenCentralMirrorBuildUrl()) : "");
     env.put("QITS_MAVEN_PROXY_URL",
-        settings.mavenCentralMirrorEnabled() ? value(settings.mavenCentralMirrorStepUrl()) : "");
-    env.put("QITS_DOCS_URL", value(settings.artifactsDocsUrl()));
+        settings.mavenCentralMirrorEnabled() ? value(plane.mavenCentralMirrorStepUrl()) : "");
+    env.put("QITS_DOCS_URL", value(plane.docsUrl()));
     // The store's own root, and the coordinate a composed release prelude downloads the qits CLI at.
     // The first two are EMPTY-never-absent, so a deployment that has switched the CLI off hands
     // every step one shape to read.
@@ -121,12 +113,12 @@ public final class StepWorkloadSpecs {
     // moment the step started. The constant cannot be blank (PlatformAccessCliBinary refuses that at
     // class-init), so the prelude's `:?` guard on it can only ever fire against a qits-ci that
     // predates the pin.
-    env.put("QITS_ARTIFACTS_URL", value(settings.resolvedArtifactsUrl()));
+    env.put("QITS_ARTIFACTS_URL", value(plane.artifactsUrl()));
     env.put("QITS_ARTIFACTS_CLI_PACKAGE", value(settings.artifactsCliPackage()).trim());
     env.put("QITS_ARTIFACTS_CLI_VERSION", settings.artifactsCliVersion());
     // And where a step asks for its own repository to be released — same network, same reading of
     // "reachable from where" as the npm pair.
-    env.put("QITS_WORKSPACES_URL", value(settings.workspacesUrl()));
+    env.put("QITS_WORKSPACES_URL", value(plane.workspacesUrl()));
     // Git never receives the commissioned client secret as an HTTP credential.  Its helper exchanges
     // that pair for a short-lived, audience-bound bearer when (and only when) Git asks for the
     // configured qits-githost authority.  The helper is installed by BOOTSTRAP below, outside the
@@ -135,8 +127,8 @@ public final class StepWorkloadSpecs {
     if (commission != null) {
       env.put("QITS_COMMISSIONED_CLIENT_ID", value(commission.clientId()));
       env.put("QITS_COMMISSIONED_CLIENT_SECRET", value(commission.secret()));
-      env.put("QITS_GIT_AUTH_TOKEN_URL", tokenUrl(settings.idpUrl()));
-      env.put("QITS_GIT_AUTH_HOST", gitAuthority(settings.containerGitUrl()));
+      env.put("QITS_GIT_AUTH_TOKEN_URL", tokenUrl(plane.idpUrl()));
+      env.put("QITS_GIT_AUTH_HOST", gitAuthority(plane.gitBaseUrl()));
       env.put("QITS_GIT_AUTH_AUDIENCE", CiDaemonLauncher.CONTAINER_GIT_AUDIENCE);
       env.put("GIT_CONFIG_GLOBAL", "/tmp/qits-gitconfig");
       // And the same credential in the form a PUBLISHING step needs: the script BOOTSTRAP writes,
@@ -174,7 +166,7 @@ public final class StepWorkloadSpecs {
       // service says "do not". A converted recipe then fails loudly at its first buildctl call
       // rather than silently building through the socket it still holds; an unconverted one reads
       // neither variable and is untouched.
-      env.put("QITS_BUILD_REGISTRY", settings.buildkitEnabled() ? value(settings.buildkitRegistryHost()) : "");
+      env.put("QITS_BUILD_REGISTRY", settings.buildkitEnabled() ? value(plane.buildRegistryHost()) : "");
       if (!settings.buildkitEnabled()) {
         env.put("BUILDKIT_HOST", "");
       }
@@ -184,7 +176,7 @@ public final class StepWorkloadSpecs {
       // step container's environment is exactly what it always was.
       if (commission != null) {
         env.put("DOCKER_CONFIG", CiDaemonLauncher.REGISTRY_AUTH_DIR);
-        env.put("QITS_CI_REGISTRY_AUTH_CONFIG", registryAuthConfig(commission, settings.authHosts()));
+        env.put("QITS_CI_REGISTRY_AUTH_CONFIG", registryAuthConfig(commission, plane.authHosts()));
         env.put("QITS_COMMISSIONED_CLIENT_ID", value(commission.clientId()));
         env.put("QITS_COMMISSIONED_CLIENT_SECRET", value(commission.secret()));
       }
@@ -209,9 +201,9 @@ public final class StepWorkloadSpecs {
         env,
         // The human hint. It selects nothing any more — see RUN_LABEL.
         Map.of(CiDaemonLauncher.RUN_LABEL, value(spec.runId())),
-        settings.network(),
+        plane.network(),
         null,
-        List.of("host.docker.internal:host-gateway"),
+        plane.extraHosts(),
         null,
         null,
         // The declared opt-in, and the only thing about a step that ever changes this request.

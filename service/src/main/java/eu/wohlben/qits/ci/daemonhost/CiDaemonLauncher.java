@@ -1325,44 +1325,55 @@ public class CiDaemonLauncher {
     // what stays here is the commission lookup and the lifetime qits-containers holds the place to.
     IdpCommissioner.Commission commission =
         commissions == null ? null : commissions.forRun(spec.runId(), spec.env());
-    Spec workload = StepWorkloadSpecs.compose(workloadSettings(), spec, commission);
+    Spec workload = StepWorkloadSpecs.compose(workloadSettings(), internalPlane(), spec, commission);
     // EPHEMERAL: a step container runs once and exits, so a recreate under a changed spec is a
     // refusal rather than a restart — which is right for a place named after one step of one run.
     return EnsureRequest.of(workload, Policy.ephemeral(maxAgeSeconds(spec)));
   }
 
   /**
-   * Every deployment fact a step container's spec is composed from, read off this bean's own
-   * configuration at the moment of asking — so a suite that sets a field on a hand-wired launcher
-   * is composed with it, exactly as before the composition moved out. The runner path asks for the
-   * same settings, which is what makes a step on a runner the same step as one here.
+   * Every deployment fact a step container's spec is composed from that is not an address, read off
+   * this bean's own configuration at the moment of asking — so a suite that sets a field on a
+   * hand-wired launcher is composed with it, exactly as before the composition moved out. The runner
+   * path asks for the same settings, which is what makes a step on a runner the same step as one
+   * here.
    */
   public StepWorkloadSpecs.Settings workloadSettings() {
     return new StepWorkloadSpecs.Settings(
-        containerDaemonUrl,
-        containerGitUrl,
-        idpUrl,
-        network,
-        artifactsRegistryHost,
         artifactsImageRepository,
-        artifactsNpmHostedUrl,
-        artifactsNpmProxyUrl,
-        artifactsMavenRegistryUrl,
         mavenCentralMirrorEnabled,
-        mavenCentralMirrorBuildUrl == null ? "" : mavenCentralMirrorBuildUrl.orElse(""),
-        mavenCentralMirrorStepUrl,
-        artifactsDocsUrl,
-        resolvedArtifactsUrl(),
         artifactsCliPackage,
         artifactsCliVersion(),
-        workspacesUrl,
         buildkitEnabled,
-        buildkitRegistryHost,
-        authHosts(),
         memoryLimit,
         pidsLimit,
         cpus,
         oomScoreAdj);
+  }
+
+  /**
+   * The addresses of a step on qits-net — this bean's own keys, exactly the ones it has always read,
+   * resolved the way it has always resolved them. Every local step is on this plane, and so is a
+   * runner's step whose row says {@code INTERNAL}; the edge plane is derived from this one ({@link
+   * StepAddressPlane#edge}), which is how it keeps every path.
+   */
+  public StepAddressPlane internalPlane() {
+    return StepAddressPlane.internal(
+        containerDaemonUrl,
+        containerGitUrl,
+        idpUrl,
+        artifactsRegistryHost,
+        buildkitRegistryHost,
+        artifactsNpmHostedUrl,
+        artifactsNpmProxyUrl,
+        artifactsMavenRegistryUrl,
+        mavenCentralMirrorBuildUrl == null ? "" : mavenCentralMirrorBuildUrl.orElse(""),
+        mavenCentralMirrorStepUrl,
+        artifactsDocsUrl,
+        resolvedArtifactsUrl(),
+        workspacesUrl,
+        authHosts(),
+        network);
   }
 
   private static String value(String text) {

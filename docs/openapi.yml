@@ -274,6 +274,12 @@ components:
           type: integer
           format: int32
           description: How many steps it may hold at once; 0 drains it. Default 1
+        plane:
+          $ref: "#/components/schemas/CiRunnerPlane"
+          type: string
+          description: "Where its steps reach the platform: EDGE through the public\
+            \ names, INTERNAL on qits-net. Default EDGE when this qits-ci knows its\
+            \ public domain, INTERNAL when it does not"
     DaemonPinDto:
       type: object
       properties:
@@ -387,6 +393,11 @@ components:
         description:
           type: string
           description: Blank clears it; absent leaves it
+        plane:
+          $ref: "#/components/schemas/CiRunnerPlane"
+          type: string
+          description: EDGE or INTERNAL; absent leaves it. Reaches the runner's next
+            run
     QueueResponse:
       type: object
       properties:
@@ -719,7 +730,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/CiRunnerCreated"
         "400":
-          description: "A malformed name, slots or description"
+          description: "A malformed name, slots or description, or EDGE_PLANE_UNCONFIGURED:\
+            \ an EDGE plane on a qits-ci that knows no public domain"
         "409":
           description: The name is taken
         "502":
@@ -763,7 +775,7 @@ paths:
         - qits:agent
   /ci/api/runners/{id}:
     patch:
-      summary: Change a runner's slots or description
+      summary: "Change a runner's slots, description or plane"
       parameters:
       - name: id
         in: path
@@ -784,7 +796,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/CiRunnerDto"
         "400":
-          description: Negative slots or an overlong description
+          description: "Negative slots, an overlong description, or EDGE_PLANE_UNCONFIGURED:\
+            \ an EDGE plane on a qits-ci that knows no public domain"
         "404":
           description: No such runner
         "401":

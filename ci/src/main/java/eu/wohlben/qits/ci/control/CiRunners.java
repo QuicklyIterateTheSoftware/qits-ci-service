@@ -108,7 +108,9 @@ public class CiRunners {
   /**
    * Records a runner whose registration token has already been commissioned. {@code id} is minted by
    * the caller, because the token's context id at qits-idp is this runner's id and it has to exist
-   * before the row does.
+   * before the row does. {@code plane} is the caller's to decide — which default applies depends on
+   * whether a public domain is known, a fact of the service module's — and null is {@code
+   * INTERNAL}, the column's own default.
    *
    * @throws ConflictException when the name was taken in between
    */
@@ -117,6 +119,7 @@ public class CiRunners {
       String name,
       String description,
       Integer slots,
+      CiRunnerPlane plane,
       String registrationTokenId,
       String registrationTokenSubject) {
     requireCreatable(name, description, slots);
@@ -129,7 +132,7 @@ public class CiRunners {
                 runner.name = name;
                 runner.description = blankToNull(description);
                 runner.slots = slots == null ? DEFAULT_SLOTS : slots;
-                runner.plane = CiRunnerPlane.INTERNAL;
+                runner.plane = plane == null ? CiRunnerPlane.INTERNAL : plane;
                 runner.registrationTokenId = registrationTokenId;
                 runner.registrationTokenSubject = registrationTokenSubject;
                 runner.createdAt = Instant.now();
@@ -174,6 +177,15 @@ public class CiRunners {
    * allowed and drains the runner; a blank description clears it.
    */
   public CiRunner patch(UUID id, Integer slots, String description) {
+    return patch(id, slots, description, null);
+  }
+
+  /**
+   * {@link #patch(UUID, Integer, String)}, and the runner's plane with it. Whether the plane asked
+   * for can be composed is the caller's check, made before this; a plane change reaches the runner's
+   * next run, never the middle of one.
+   */
+  public CiRunner patch(UUID id, Integer slots, String description, CiRunnerPlane plane) {
     requireSlots(slots);
     requireDescription(description);
     return QuarkusTransaction.requiringNew()
@@ -185,6 +197,9 @@ public class CiRunners {
               }
               if (description != null) {
                 runner.description = blankToNull(description);
+              }
+              if (plane != null) {
+                runner.plane = plane;
               }
               return runner;
             });

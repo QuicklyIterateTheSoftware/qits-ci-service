@@ -2,10 +2,13 @@ package eu.wohlben.qits.ci.runnerhost;
 
 import eu.wohlben.qits.ci.control.CiIdentifiers;
 import eu.wohlben.qits.ci.control.CiRunnerStepRunner;
+import eu.wohlben.qits.ci.control.CiRunners;
+import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import eu.wohlben.qits.ci.daemonhost.CiDaemonLauncher;
 import eu.wohlben.qits.ci.daemonhost.CiDaemonRegistry;
 import eu.wohlben.qits.ci.daemonhost.CiDaemonStepRunner;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
+import eu.wohlben.qits.ci.daemonhost.StepAddressPlane;
 import eu.wohlben.qits.ci.daemonhost.StepWorkloadSpecs;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
@@ -86,6 +89,17 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
   @ConfigProperty(name = "qits.ci.step-timeout-grace-seconds")
   long stepTimeoutGraceSeconds;
 
+  @Inject RunnerAddresses addresses;
+
+  @Inject CiRunners runnerRows;
+
+  /**
+   * The plane each runner run was started on, read off the runner's row at the run's first step and
+   * kept until the run closes — so a {@code PATCH} of the plane reaches the runner's next run, never
+   * the middle of one whose first step was told the other plane's addresses and credential.
+   */
+  private final ConcurrentHashMap<String, CiRunnerPlane> planes = new ConcurrentHashMap<>();
+
   /** The step each runner run has in flight, for a cancellation arriving on another thread. */
   private final ConcurrentHashMap<String, InFlight> inFlight = new ConcurrentHashMap<>();
 
@@ -152,6 +166,14 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
       return lost(session, "");
     }
 
+    StepAddressPlane plane;
+    try {
+      plane = planeFor(spec.runId(), session);
+    } catch (IllegalStateException unconfigured) {
+      // An EDGE runner on a qits-ci that has since lost its public domain: there is no address to
+      // tell the step, and an internal alias would name nothing the runner's host can resolve.
+      return failed(StepOutcome.LAUNCH_FAILED, unconfigured.getMessage());
+    }
     CiDaemonLauncher.LaunchSpec launchSpec =
         new CiDaemonLauncher.LaunchSpec(
             spec.runId(),
@@ -178,7 +200,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     }
     WorkloadSpec workload =
         workloadSpec(
-            StepWorkloadSpecs.compose(launcher.workloadSettings(), launchSpec, commission),
+            StepWorkloadSpecs.compose(launcher.workloadSettings(), plane, launchSpec, commission),
             spec.docker() || spec.build());
 
     Duration launchTimeout = Duration.ofSeconds(launchTimeoutSeconds);
@@ -314,6 +336,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
   public void runClosed(String runId) {
     relay.drop(runId);
     inFlight.remove(runId);
+    planes.remove(runId);
     if (commissions != null) {
       commissions.release(runId);
     }
@@ -321,6 +344,42 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
   }
 
   // --- internals --------------------------------------------------------------------------------
+
+  /**
+   * This run's addresses: the launcher's own internal plane for an {@code INTERNAL} runner, and the
+   * same addresses moved onto the public edge names for an {@code EDGE} one.
+   *
+   * @throws IllegalStateException for an EDGE runner when this qits-ci knows no public domain
+   */
+  StepAddressPlane planeFor(String runId, CiRunnerRegistry.Session session) {
+    CiRunnerPlane kind = planes.computeIfAbsent(runId, id -> planeOf(session));
+    StepAddressPlane internal = launcher.internalPlane();
+    if (kind != CiRunnerPlane.EDGE) {
+      return internal;
+    }
+    StepAddressPlane.EdgeOrigins origins =
+        addresses
+            .edgeOrigins()
+            .orElseThrow(
+                () ->
+                    new IllegalStateException(
+                        "EDGE_PLANE_UNCONFIGURED: runner "
+                            + session.runnerName()
+                            + " is on the EDGE plane and this qits-ci knows no public domain"
+                            + " (QITS_DOMAIN), so its step has no address to be told"));
+    return StepAddressPlane.edge(origins, internal);
+  }
+
+  /** The runner row's plane as it is now; the row the session was admitted as if it is gone. */
+  private CiRunnerPlane planeOf(CiRunnerRegistry.Session session) {
+    CiRunnerPlane plane;
+    try {
+      plane = runnerRows.get(session.runnerId()).plane;
+    } catch (RuntimeException gone) {
+      plane = session.runner() == null ? null : session.runner().plane;
+    }
+    return plane == null ? CiRunnerPlane.INTERNAL : plane;
+  }
 
   /**
    * The composed spec as the runner protocol carries it. The protocol's {@code WorkloadSpec} is the

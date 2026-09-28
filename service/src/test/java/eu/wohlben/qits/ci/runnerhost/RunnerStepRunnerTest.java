@@ -129,6 +129,12 @@ class RunnerStepRunnerTest {
 
   @BeforeEach
   void declareARegisteredRunner() {
+    // Create the bean HERE, on the test thread. The cases call steps.run from supplyAsync, and a
+    // ForkJoin common-pool thread carries the system class loader as its TCCL: a bean first created
+    // there has its @ConfigProperty fields resolved against a Config that holds none of the ci jar's
+    // keys, so the register, init and grace deadlines all read 0 and a step fails NEVER_STARTED
+    // before its daemon has dialled. Measured 2026-09-28 in a narrow run (-Dtest=RunnerStepRunnerTest).
+    steps.owns("warm-up");
     localSteps.reset();
     runnerId = UUID.randomUUID();
     QuarkusTransaction.requiringNew()
@@ -178,7 +184,7 @@ class RunnerStepRunnerTest {
       assertEquals(
           RunnerStepRunner.workloadSpec(
               StepWorkloadSpecs.compose(
-                  launcher.workloadSettings(), launchSpec(runId, workload), null),
+                  launcher.workloadSettings(), launcher.internalPlane(), launchSpec(runId, workload), null),
               false),
           workload);
       runner.send(new Launched(runId, 0, "c0ffee"));
