@@ -7,6 +7,7 @@ import eu.wohlben.qits.ci.control.CiStepRunner.StepOutcome;
 import eu.wohlben.qits.ci.control.CiStepRunner.StepResult;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunPhase;
+import eu.wohlben.qits.ci.entity.CiRunPurpose;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiRunner;
 import eu.wohlben.qits.ci.entity.RunnerCapabilities;
@@ -39,6 +40,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.TreeMap;
@@ -317,6 +319,13 @@ public class CiRunService {
    * second thing to keep in step.
    */
   @Inject CiEventTriggerService triggerService;
+
+  /**
+   * The runners' standing: what a runner-caused step failure counts toward, and what a settled
+   * health check reports to. Circular like {@link #triggerService} — it queues health checks through
+   * {@link #acceptHealthCheck} — and sound for the same reason: both beans are normal-scoped.
+   */
+  @Inject CiRunnerHealth runnerHealth;
 
   /**
    * The field a release pipeline's version comes out of. It is the triggering event's payload, read
@@ -842,9 +851,11 @@ public class CiRunService {
     // this worker is holding a claim somebody else may not conclude is absent.
     busyWorkers.incrementAndGet();
     try {
+      // BUILDS only: a runner's health check is reserved by that runner and nothing else, so a local
+      // worker never sees one — it is not even ordered among the work it could take.
       List<CiRun> candidates =
           QuarkusTransaction.requiringNew()
-              .call(() -> CiRunOrdering.suggestedOrder(runs.listQueuedOldestFirst()));
+              .call(() -> CiRunOrdering.suggestedOrder(builds(runs.listQueuedOldestFirst())));
       boolean settledSomething = false;
       for (CiRun candidate : candidates) {
         String runId = candidate.id;
@@ -1448,6 +1459,13 @@ public class CiRunService {
     if (outcome == CiRunStatus.FAILED) {
       announceFailedRun(run, finishedAt, outcome);
     }
+    if (run.healthCheck()) {
+      runnerHealth.healthCheckSettled(
+          run,
+          outcome,
+          "the health check could not be executed",
+          "the health check could not be executed: " + cause);
+    }
   }
 
   /**
@@ -1656,6 +1674,10 @@ public class CiRunService {
     int index = 0;
     boolean failed = false;
     boolean timedOut = false;
+    // What a health check reports if it goes red: the failing step's outcome and the head of what it
+    // said. Unread for a build, whose verdict is its steps' rows.
+    String redOutcome = null;
+    String redDetail = null;
 
     try {
       while (index < declared.size() && !failed && !cancelled.contains(run.id)) {
@@ -1685,6 +1707,13 @@ public class CiRunService {
         // back.
         boolean wasCancelled = cancelled.contains(run.id);
 
+        // A runner's step says something about the RUNNER before it says anything about the build:
+        // one that never got as far as its daemon counts toward a quarantine, one that did resets
+        // the count. A cancelled step says neither — a person stopped it. Never a failure of the run.
+        if (!wasCancelled) {
+          runnerHealth.stepEnded(run, result.outcome());
+        }
+
         // The daemon's checkout could not find the run's sha. Two very different causes, so ask the
         // git host which it was rather than guessing: the commit may have been force-pushed away
         // since the run was accepted (this run describes work on a commit that no longer exists ⇒
@@ -1695,7 +1724,9 @@ public class CiRunService {
         // UNKNOWN is deliberately NOT read as gone: a git host that could not be asked has said
         // nothing about the commit, and discarding over that would erase a verdict on evidence
         // nobody has.
-        if (result.outcome() == StepOutcome.SHA_GONE && !wasCancelled) {
+        // A health check is never discarded: its verdict is about the runner, and "the commit moved
+        // away" would silently cost the runner its answer. It stays a red check naming the outcome.
+        if (result.outcome() == StepOutcome.SHA_GONE && !wasCancelled && !run.healthCheck()) {
           boolean commitGone =
               configSource.commitHeld(repoOf(run), run.commitSha) == CommitHeld.GONE;
           if (commitGone) {
@@ -1732,6 +1763,10 @@ public class CiRunService {
             stamps.finishedAt());
         failed = !ok;
         timedOut = stepTimedOut;
+        if (!ok && !wasCancelled) {
+          redOutcome = CiRunnerHealth.outcomeOf(result, stepTimedOut);
+          redDetail = CiRunnerHealth.detailOf(result, stepTimedOut);
+        }
         index++;
       }
     } catch (RuntimeException e) {
@@ -1753,6 +1788,8 @@ public class CiRunService {
       }
       failed = true;
       timedOut = false;
+      redOutcome = "the step could not be executed";
+      redDetail = redOutcome + ": " + e;
     }
 
     for (int skipped = index; skipped < declared.size(); skipped++) {
@@ -1783,6 +1820,11 @@ public class CiRunService {
       announceRelease(run, finishedAt, release);
     } else if (outcome != CiRunStatus.CANCELLED) {
       announceFailedRun(run, finishedAt, outcome);
+    }
+    if (run.healthCheck()) {
+      // The pseudo-build's one consequence: its runner's standing. After the terminal row, like
+      // every announcement above, so a runner's page following the link reads the run it was told.
+      runnerHealth.healthCheckSettled(run, outcome, redOutcome, redDetail);
     }
   }
 
@@ -1824,6 +1866,11 @@ public class CiRunService {
    * that is not a retry, straight off the row.
    */
   private void announceRun(CiRun run, Instant finishedAt) {
+    if (run.healthCheck()) {
+      // A health check's green is about a runner, never a commit: RunnerHealthChecked says it, and a
+      // BuildSuccessful here would reach a release request's gate. See announceStatus.
+      return;
+    }
     for (RunAnnouncer announcer : runAnnouncers) {
       try {
         announcer.onRunSucceeded(
@@ -1894,6 +1941,9 @@ public class CiRunService {
    * #announceRun}'s reasoning, unchanged.
    */
   private void announceFailedRun(CiRun run, Instant finishedAt, CiRunStatus outcome) {
+    if (run.healthCheck()) {
+      return;
+    }
     for (RunAnnouncer announcer : runAnnouncers) {
       try {
         announcer.onRunFailed(
@@ -1949,6 +1999,13 @@ public class CiRunService {
    */
   private void announceStatus(
       CiRun run, CiRunStatus status, CiRunStatus previous, Instant occurredAt) {
+    if (run.healthCheck()) {
+      // "Every writer calls it" stands, and this is where a health check is let off: its row is in
+      // no listing a mirror of /active holds (activeRuns leaves it out), so a transition of it is
+      // one no mirror could place — and all three build events here are statements a subscriber
+      // reads as being about a repository's CI. Its one event is RunnerHealthChecked.
+      return;
+    }
     for (RunAnnouncer announcer : runAnnouncers) {
       try {
         announcer.onRunStatusChanged(
@@ -1991,7 +2048,7 @@ public class CiRunService {
    * announcement with a guessed or blank version — which downstream would install.
    */
   private void announceRelease(CiRun run, Instant finishedAt, DeclaredRelease release) {
-    if (release == null) {
+    if (release == null || run.healthCheck()) {
       return;
     }
     String version = releaseVersionOf(run.triggerEventName, release.eventPayload());
@@ -2203,6 +2260,11 @@ public class CiRunService {
    * as it is now. Refused outright, with no candidate read, when the runner already holds as many
    * {@code RUNNING} runs as its row grants, and when this process is draining.
    *
+   * <p><b>A runner's own health check comes first, and is the one thing a quarantined runner may
+   * take</b> (qits-466): it is matched by {@code target_runner_id}, so no other runner is ever handed
+   * it, and it needs no free slot beyond the one it occupies. Everything else is refused to a
+   * quarantined runner outright, and a health check is left out of the ordinary candidates.
+   *
    * <p><b>What a runner cannot take is passed over, never settled.</b> A pipeline with a {@code
    * docker: true} or {@code build: true} step needs a host that will run docker for it, and a runner
    * whose capabilities do not say {@code docker: true} is never handed one; a row that is not an
@@ -2220,7 +2282,31 @@ public class CiRunService {
             .call(
                 () -> {
                   CiRunner row = runnerRows.findById(runner.id);
-                  if (row == null || row.slots <= 0) {
+                  if (row == null) {
+                    return null;
+                  }
+                  // ITS OWN HEALTH CHECK FIRST, and past every gate below: a quarantine blocks
+                  // ordinary work only, and a check is the one way out of one; the slots are not
+                  // asked either, because the check takes the one it occupies and nothing more.
+                  // Nobody else is ever handed it — this lookup is keyed by the asking runner.
+                  CiRun check = runs.findQueuedHealthCheck(row.id).orElse(null);
+                  if (check != null && !draining) {
+                    try {
+                      EventRun request = reconstructEventRun(check);
+                      if (runs.claimQueuedForRunner(check.id, Instant.now(), row.id) > 0) {
+                        runs.getEntityManager().refresh(check);
+                        return new Reservation(check, request);
+                      }
+                    } catch (RuntimeException unparseable) {
+                      LOG.warnf(
+                          "Runner %s's health check %s cannot be reconstructed (%s) — passing"
+                              + " over it",
+                          row.name, check.id, unparseable.getMessage());
+                    }
+                  }
+                  // A quarantined runner takes nothing else, whatever its row's slots say — they
+                  // are its operator's number, kept for when it is put back.
+                  if (row.quarantined() || row.slots <= 0) {
                     return null;
                   }
                   if (runs.countRunningOnRunner(row.id) >= row.slots) {
@@ -2228,7 +2314,7 @@ public class CiRunService {
                   }
                   boolean docker = hasDocker(row);
                   for (CiRun candidate :
-                      CiRunOrdering.suggestedOrder(runs.listQueuedOldestFirst())) {
+                      CiRunOrdering.suggestedOrder(builds(runs.listQueuedOldestFirst()))) {
                     if (!runnable(candidate)) {
                       continue;
                     }
@@ -2260,6 +2346,125 @@ public class CiRunService {
     LOG.infof("CI run %s reserved by runner %s (%s)", run.id, runner.name, runner.id);
     announceStatus(run, CiRunStatus.RUNNING, CiRunStatus.QUEUED, run.startedAt);
     return java.util.Optional.of(reserved);
+  }
+
+  // --- a runner's health check: a pseudo-build, recorded here because it is a run ------------------
+
+  /**
+   * The {@code config_path} a health check is recorded under. It names no committed file — the
+   * document is {@link #healthCheckDocument}, written here — and it is spelled like one so every
+   * reader of the column (the dedupe, the duration history, a person) has a path that says what the
+   * run was and can never collide with a repository's own {@code ci-event-*.yml}.
+   */
+  public static final String HEALTHCHECK_CONFIG_PATH = ".config/qits/ci-runner-healthcheck.yml";
+
+  /** The event name the document declares and the row records: no event on the bus carries it. */
+  public static final String HEALTHCHECK_EVENT_NAME = "RunnerHealthCheck";
+
+  /**
+   * The synthetic trigger identity a health check is recorded with, {@link #RETRY_TRIGGER_PREFIX}'s
+   * device: unique by construction (it is followed by the run's own id), so the dedupe constraint
+   * stays exactly as it is, and unmistakably not an event id.
+   */
+  public static final String HEALTHCHECK_TRIGGER_PREFIX = "healthcheck:";
+
+  /** The whole of what a health check runs: proof the container started and its daemon ran a step. */
+  public static final String HEALTHCHECK_SCRIPT = "echo hello world";
+
+  /** Its step's deadline. An image pull is the slow part, and it is not inside this budget. */
+  public static final int HEALTHCHECK_TIMEOUT_SECONDS = 300;
+
+  /**
+   * The one-step pipeline a health check runs, as the trigger document its row stores — the same
+   * grammar a repository commits, so the run is reconstructed, pinned, launched and recorded by
+   * exactly the path a build takes. The image is single-quoted YAML, so a reference is data whatever
+   * it contains.
+   */
+  static String healthCheckDocument(String image) {
+    return "event: "
+        + HEALTHCHECK_EVENT_NAME
+        + "\nsteps:\n  - image: '"
+        + image.replace("'", "''")
+        + "'\n    script: "
+        + HEALTHCHECK_SCRIPT
+        + "\n    timeout-seconds: "
+        + HEALTHCHECK_TIMEOUT_SECONDS
+        + "\n";
+  }
+
+  /**
+   * <b>Records a health check for one runner as a {@code QUEUED} pseudo-build</b>, and wakes whoever
+   * listens to the queue. {@link CiRunnerHealth} decides when one is owed and resolves where it runs;
+   * this is the insert, because a health check is a run and every run is written here.
+   *
+   * <p>It is an ordinary event run in everything but two columns: {@code purpose = HEALTHCHECK}, and
+   * {@code target_runner_id}, the only runner {@link #reserveFor} will hand it to. So it is
+   * reconstructed from its own snapshot like any row, its image is {@linkplain #pinStepImages pinned
+   * to a digest} at accept like any build's, a restart re-queues it like any event run, and it clones
+   * {@code repo} at {@code sha} with the run's own commissioned credential — the whole path a runner
+   * can break, which is the point.
+   *
+   * @throws StepImageUnpinned when the platform image's digest could not be had — no row is written,
+   *     and the caller's next attempt asks a registry that has probably come back
+   */
+  public CiRun acceptHealthCheck(UUID runnerId, CiRepoRef repo, String sha, String image) {
+    Objects.requireNonNull(runnerId, "runnerId");
+    CiIdentifiers.requireRepo(repo);
+    CiIdentifiers.requireSha(sha);
+    String document = healthCheckDocument(image);
+    CiEventTrigger trigger = triggerParser.parse(HEALTHCHECK_CONFIG_PATH, document);
+    // Before the insert's bracket, acceptEventRun's placement for its reason: this is registry I/O.
+    String pins = StepImages.encode(pinStepImages(trigger.pipeline()));
+    CiRun accepted =
+        DbRetry.inNewTx(
+            "health check accept",
+            () -> {
+              CiRun run = newRun(repo, MAIN_BRANCH, sha);
+              run.purpose = CiRunPurpose.HEALTHCHECK;
+              run.targetRunnerId = runnerId;
+              run.triggerType = CiTriggerType.EVENT;
+              run.configPath = HEALTHCHECK_CONFIG_PATH;
+              run.triggerEventId = HEALTHCHECK_TRIGGER_PREFIX + run.id;
+              run.triggerEventName = HEALTHCHECK_EVENT_NAME;
+              run.triggerEventOccurredAt = run.createdAt;
+              run.triggerEventPayload = "{\"runnerId\":\"" + runnerId + "\"}";
+              run.triggerConfig = document;
+              run.stepImages = pins;
+              runs.persist(run);
+              runs.flush();
+              return run;
+            },
+            retryDeadline());
+    LOG.infof(
+        "Health check %s queued for runner %s — %s at %s", accepted.id, runnerId, repo.display(),
+        sha);
+    // The wake a local worker ignores (it never claims one) and the Backlog a runner acts on.
+    enqueue(accepted.id);
+    return accepted;
+  }
+
+  /**
+   * Settles a health check that is still {@code QUEUED} as {@code FAILED} — its runner never took it
+   * — and answers the settled row, or null when it had already moved (taken, cancelled, gone).
+   * Nothing is announced: a health check's one event is {@link CiRunnerHealth}'s to publish.
+   */
+  CiRun failQueuedHealthCheck(String runId) {
+    CiRun settled =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  CiRun row = runs.findById(runId);
+                  if (row == null || row.status != CiRunStatus.QUEUED || !row.healthCheck()) {
+                    return null;
+                  }
+                  row.status = CiRunStatus.FAILED;
+                  row.finishedAt = Instant.now();
+                  return row;
+                });
+    if (settled != null) {
+      announceBacklog();
+    }
+    return settled;
   }
 
   /**
@@ -3218,6 +3423,13 @@ public class CiRunService {
       throw new ConflictException(
           "CI run " + runId + " has not finished (" + source.status + ") — nothing to retry yet");
     }
+    if (source.healthCheck()) {
+      // A re-fire copies the work, not what the work is for: its row would be a BUILD of the health
+      // check's pipeline that any worker could take. A runner's next check is asked for by name.
+      throw new ConflictException(
+          "CI run " + runId + " is a runner's health check — ask for a new one at POST"
+              + " /ci/api/runners/" + source.targetRunnerId + "/healthcheck");
+    }
     RetriedPipeline pipeline = retriedPipeline(source);
     // Predicted rather than copied, unlike priority and the downstream closure beside it: those are
     // what the run is WORTH and a re-fire must be worth what it re-fires, while this is how long the
@@ -3541,9 +3753,12 @@ public class CiRunService {
    * became a row: before, half of it lived in an executor's queue.
    */
   public List<CiRun> activeRuns() {
+    // Builds only, and so is everything read off this: /active, /queue and the forecast. A runner's
+    // health check is readable by its id (requireRun) and nowhere else — it is about a runner, not
+    // about any repository's CI, and it holds no slot the queue's real work could have had.
     return DbRetry.call(
         "active run listing",
-        () -> QuarkusTransaction.requiringNew().call(runs::listActiveNewestFirst),
+        () -> QuarkusTransaction.requiringNew().call(() -> builds(runs.listActiveNewestFirst())),
         retryDeadline());
   }
 
@@ -3621,7 +3836,11 @@ public class CiRunService {
                       view.connected(),
                       view.runnerVersion(),
                       view.targetVersion(),
-                      view.updating()))
+                      view.updating(),
+                      view.quarantined(),
+                      view.quarantineReason(),
+                      view.quarantinedAt(),
+                      view.lastHealthcheck()))
           .toList();
     } catch (RuntimeException e) {
       LOG.debugf("The queue snapshot could not read the runners: %s", e.getMessage());
@@ -4029,7 +4248,20 @@ public class CiRunService {
 
   /** Whether anything is waiting to be claimed at all — {@link #awaitIdle}'s other half. */
   private boolean hasQueuedRows() {
+    // Builds only: a health check waits QUEUED for its own runner, which no worker here will ever
+    // take — counting it would be waiting for something this process must never do.
     return QuarkusTransaction.requiringNew()
-        .call(() -> runs.count("status = ?1", CiRunStatus.QUEUED) > 0);
+        .call(
+            () ->
+                runs.count("status = ?1 and purpose = ?2", CiRunStatus.QUEUED, CiRunPurpose.BUILD)
+                    > 0);
+  }
+
+  /**
+   * The builds among {@code candidates}, in their order — every run but a runner's health check,
+   * which the claim loop, a runner's ordinary reservation and the queue's forecast all leave out.
+   */
+  static List<CiRun> builds(List<CiRun> candidates) {
+    return candidates.stream().filter(run -> !run.healthCheck()).toList();
   }
 }

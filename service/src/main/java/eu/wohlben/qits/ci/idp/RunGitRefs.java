@@ -3,6 +3,7 @@ package eu.wohlben.qits.ci.idp;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import eu.wohlben.qits.ci.control.CiRunService;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -49,10 +50,16 @@ public final class RunGitRefs {
 
   /**
    * Events whose recipes are known to push nothing. Add an event here only after checking every
-   * recipe that declares it: an empty list refuses every push the run makes.
+   * recipe that declares it: an empty list refuses every push the run makes. {@code
+   * RunnerHealthCheck} is no event on the bus but a runner health check's own name, and its one
+   * recipe is written by qits-ci ({@code CiRunService.healthCheckDocument}): {@code echo hello world}.
    */
   static final Set<String> PUSH_NOTHING =
-      Set.of("ReleaseRequestChanged", "SCMRelease", "SoftwareRelease");
+      Set.of(
+          "ReleaseRequestChanged",
+          "SCMRelease",
+          "SoftwareRelease",
+          CiRunService.HEALTHCHECK_EVENT_NAME);
 
   /** The two run-scoped variables every event-triggered step already carries. */
   static final String EVENT_NAME_VARIABLE = "QITS_EVENT_NAME";

@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * The runner step seam in the {@code ci} module's own application, which ships no implementation —
@@ -27,6 +28,7 @@ public class FakeRunnerStepRunner implements CiRunnerStepRunner {
   private final List<String> closed = Collections.synchronizedList(new ArrayList<>());
   private final Set<String> held = ConcurrentHashMap.newKeySet();
   private volatile Consumer<StepSpec> during;
+  private volatile Function<StepSpec, StepResult> answer;
 
   public List<StepSpec> executed() {
     return List.copyOf(executed);
@@ -50,12 +52,21 @@ public class FakeRunnerStepRunner implements CiRunnerStepRunner {
     this.during = action;
   }
 
+  /**
+   * What every step answers from now on, instead of green — how a test stages a runner that cannot
+   * start a container, or a health check that goes red. Null is green again.
+   */
+  public void answer(Function<StepSpec, StepResult> answer) {
+    this.answer = answer;
+  }
+
   public void reset() {
     executed.clear();
     cancelled.clear();
     closed.clear();
     held.clear();
     during = null;
+    answer = null;
   }
 
   @Override
@@ -72,7 +83,10 @@ public class FakeRunnerStepRunner implements CiRunnerStepRunner {
       action.accept(spec);
     }
     listener.onFinished();
-    return new StepResult(0, false, StepOutcome.OK, "ran on the runner\n");
+    Function<StepSpec, StepResult> scripted = answer;
+    return scripted != null
+        ? scripted.apply(spec)
+        : new StepResult(0, false, StepOutcome.OK, "ran on the runner\n");
   }
 
   @Override

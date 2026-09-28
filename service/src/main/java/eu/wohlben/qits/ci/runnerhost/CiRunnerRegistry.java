@@ -4,10 +4,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import eu.wohlben.qits.ci.control.CiBacklogListener;
 import eu.wohlben.qits.ci.control.CiRunService;
+import eu.wohlben.qits.ci.control.CiRunnerHealth;
 import eu.wohlben.qits.ci.control.CiRunnerPresence;
+import eu.wohlben.qits.ci.control.CiRunnerSignals;
 import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.control.RunnerAnnouncements;
 import eu.wohlben.qits.ci.entity.CiRunner;
+import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import eu.wohlben.qits.ci.entity.RunnerCapabilities;
 import eu.wohlben.qits.ci.events.RunnerDisconnected;
 import eu.wohlben.qits.cirunner.protocol.Ack;
@@ -20,8 +23,10 @@ import eu.wohlben.qits.cirunner.protocol.Hello;
 import eu.wohlben.qits.cirunner.protocol.Launch;
 import eu.wohlben.qits.cirunner.protocol.LaunchFailed;
 import eu.wohlben.qits.cirunner.protocol.Launched;
+import eu.wohlben.qits.cirunner.protocol.Quarantined;
 import eu.wohlben.qits.cirunner.protocol.Reap;
 import eu.wohlben.qits.cirunner.protocol.Reaped;
+import eu.wohlben.qits.cirunner.protocol.Reinstated;
 import eu.wohlben.qits.cirunner.protocol.Released;
 import eu.wohlben.qits.cirunner.protocol.Retire;
 import eu.wohlben.qits.cirunner.protocol.Upgrade;
@@ -110,7 +115,7 @@ import org.jboss.logging.Logger;
  * most once, whichever of those paths reaches it first, and only if it said {@code Hello}.
  */
 @ApplicationScoped
-public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
+public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, CiRunnerSignals {
 
   private static final Logger LOG = Logger.getLogger(CiRunnerRegistry.class);
 
@@ -150,6 +155,12 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
 
   /** The runner lifecycle event port; see the class javadoc. */
   @Inject RunnerAnnouncements announcements;
+
+  /** What a runner may hold right now — its {@code Ack} — whatever its row's slots say. */
+  @Inject CiRunnerHealth health;
+
+  /** What an EDGE runner's builder rewrites — every {@code Ack} to one carries it. */
+  @Inject RunnerRegistryMirrors registryMirrors;
 
   /**
    * Every open session of each runner, oldest first. A list rather than one session because a
@@ -328,6 +339,11 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
    * operator configured on the machine, and it is advisory — the row is what an admin edits, so the
    * cap the runner obeys arrives here. A disagreement is logged rather than corrected: which of the
    * two is wrong is a person's call.
+   *
+   * <p><b>And the row's slots are what a runner IN SERVICE gets</b> (qits-466): a quarantined one is
+   * {@code Ack}ed {@link CiRunnerHealth#effectiveSlots} — 0, or one more than it holds while its own
+   * health check waits for it — and is sent {@link Quarantined} right after, so the person at the
+   * machine can read why it sits idle.
    */
   public Greeting onHello(Session session, Hello hello) {
     String pin = pins.version();
@@ -371,7 +387,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
                   Instant.now()));
       send(session, new Upgrade(pin, image, null));
       if (speaks) {
-        send(session, new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 0));
+        send(session, ack(row.plane, 0));
       }
       return Greeting.GREETED;
     }
@@ -380,14 +396,23 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
           "Runner %s's machine is configured for %d slot(s) and its row grants %d; it is held to %d",
           row.name, hello.slots(), row.slots, row.slots);
     }
+    int slots = effectiveSlots(row);
     LOG.infof(
-        "Runner %s said hello: %s, capability %d, %d slot(s)",
-        row.name, hello.runnerVersion(), hello.capabilityVersion(), row.slots);
-    send(session, new Ack(CiRunnerProtocol.CAPABILITY_VERSION, row.slots));
+        "Runner %s said hello: %s, capability %d, %d slot(s)%s",
+        row.name, hello.runnerVersion(), hello.capabilityVersion(), slots,
+        row.quarantined() ? " — quarantined: " + row.quarantineReason : "");
+    send(session, ack(row.plane, slots));
+    if (row.quarantined()) {
+      send(session, quarantinedFrame(row.quarantineReason, row.quarantinedAt));
+    }
     send(session, new Backlog(runService.queuedCount()));
     // Only now does a broadcast reach it: a Backlog before the Ack would be a frame the runner has
     // no slots to act on yet.
     session.greeted = true;
+    // And only now does a signal reach it — so a quarantine, a reinstatement or a slot change that
+    // landed between the row read above and this line was sent to nobody. Read once more, and say
+    // what moved; nothing did in every ordinary Hello, and then nothing is sent.
+    catchUp(session, row, slots);
     if (!retiring.isEmpty()) {
       // Decided before the first Retire leaves, so the Updated is announced ahead of any close the
       // frame provokes, and a retired runner that closes at once still closes as RETIRED.
@@ -791,6 +816,140 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener {
   @Override
   public void backlogChanged(int queued) {
     broadcastBacklog(queued);
+  }
+
+  // --- the quarantine's signals (CiRunnerSignals) -------------------------------------------------
+
+  /**
+   * The runner was quarantined: {@link Quarantined}, then an {@code Ack} of what it may hold now, to
+   * its current session — a greeted one in the pinned version; a draining session already holds 0
+   * slots and is not told. Best effort like every hint here: a runner not connected reads the row at
+   * its next {@code Hello}.
+   */
+  @Override
+  public void quarantined(UUID runnerId, String reason, Instant since) {
+    Session session = serving(runnerId);
+    if (session != null) {
+      send(session, quarantinedFrame(reason, since));
+      reAck(session);
+    }
+  }
+
+  /** The quarantine was lifted: {@link Reinstated}, then an {@code Ack} of the row's slots again. */
+  @Override
+  public void reinstated(UUID runnerId, String by) {
+    Session session = serving(runnerId);
+    if (session != null) {
+      send(session, new Reinstated(by));
+      reAck(session);
+    }
+  }
+
+  /**
+   * What the runner may hold moved without its standing changing — an operator's {@code PATCH} of
+   * its slots, a health check queued for it, or one it held settled — so its {@code Ack} is sent
+   * again.
+   */
+  @Override
+  public void slotsChanged(UUID runnerId) {
+    Session session = serving(runnerId);
+    if (session != null) {
+      reAck(session);
+    }
+  }
+
+  /**
+   * <b>A runner learns its slots only from an {@code Ack}</b>, and until this existed only from the
+   * one at its {@code Hello} — so an operator raising a connected runner's slots from 0 to 1 left it
+   * sure it had none, never sending {@code Reserve} while a run sat {@code QUEUED} (measured live).
+   * So every change of what a connected runner may hold re-sends {@code Ack} with the value it has
+   * NOW, then {@code Backlog}: the runner reads each {@code Ack} as a new cap (its held runs are
+   * kept), and the {@code Backlog} is what un-parks one that was answered {@code Nothing} earlier, so
+   * a runner whose slots went up asks for work at once rather than at the next transition.
+   */
+  private void reAck(Session session) {
+    int slots = effectiveSlots(session.runnerId);
+    LOG.infof("Runner %s may hold %d run(s) now; re-sending its Ack", session.runnerName, slots);
+    send(session, ack(planeOf(session), slots));
+    send(session, new Backlog(runService.queuedCount()));
+  }
+
+  /**
+   * Every {@code Ack} this host sends: the capability, the slots, and — to a runner on the EDGE plane
+   * — the registry mirrors its builder must apply ({@link RunnerRegistryMirrors}), since the estate's
+   * Dockerfiles name the platform's stores by spellings only the platform's own builder rewrites.
+   * An INTERNAL runner's is null, "not sent", as every {@code Ack} before the field was.
+   */
+  private Ack ack(CiRunnerPlane plane, int slots) {
+    Map<String, String> mirrors;
+    try {
+      mirrors = registryMirrors.forPlane(plane);
+    } catch (RuntimeException e) {
+      LOG.warnf("Could not compose the registry mirrors for a %s runner: %s", plane, e.getMessage());
+      mirrors = null;
+    }
+    return new Ack(CiRunnerProtocol.CAPABILITY_VERSION, slots, mirrors);
+  }
+
+  /** The runner's plane as its row says now, or as it was when it dialled if the row is unreadable. */
+  private CiRunnerPlane planeOf(Session session) {
+    try {
+      return runners.get(session.runnerId).plane;
+    } catch (RuntimeException gone) {
+      return session.runner == null ? null : session.runner.plane;
+    }
+  }
+
+  /**
+   * What a signal would have said to a session that was not yet greeted when it was sent: the
+   * standing and slots as the row has them now, against what its {@code Hello} was answered with.
+   */
+  private void catchUp(Session session, CiRunner answered, int ackedSlots) {
+    CiRunner now;
+    try {
+      now = runners.get(session.runnerId);
+    } catch (RuntimeException gone) {
+      return;
+    }
+    boolean moved = false;
+    if (now.quarantined() && !answered.quarantined()) {
+      send(session, quarantinedFrame(now.quarantineReason, now.quarantinedAt));
+      moved = true;
+    }
+    if (moved || effectiveSlots(now) != ackedSlots) {
+      reAck(session);
+    }
+  }
+
+  /** The session a runner's slots are granted on — greeted, pinned, not draining — or null. */
+  private Session serving(UUID runnerId) {
+    Session session = current(runnerId);
+    return session != null && session.greeted && !session.draining && session.isOpen()
+        ? session
+        : null;
+  }
+
+  private int effectiveSlots(CiRunner row) {
+    return effectiveSlots(row.id, row.quarantined() ? 0 : row.slots);
+  }
+
+  private int effectiveSlots(UUID runnerId) {
+    return effectiveSlots(runnerId, 0);
+  }
+
+  /** {@link CiRunnerHealth#effectiveSlots}, or {@code fallback} when it could not be read. */
+  private int effectiveSlots(UUID runnerId, int fallback) {
+    try {
+      return health.effectiveSlots(runnerId);
+    } catch (RuntimeException e) {
+      LOG.debugf("Could not read runner %s's slots: %s", runnerId, e.getMessage());
+      return fallback;
+    }
+  }
+
+  private static Quarantined quarantinedFrame(String reason, Instant since) {
+    return new Quarantined(
+        reason == null ? "" : reason, since == null ? Instant.now().toString() : since.toString());
   }
 
   /**

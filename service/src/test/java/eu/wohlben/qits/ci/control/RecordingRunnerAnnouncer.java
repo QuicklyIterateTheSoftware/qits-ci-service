@@ -172,4 +172,33 @@ public class RecordingRunnerAnnouncer implements RunnerAnnouncer {
   public void onRunnerDeleted(String runnerId, String runnerName, Instant occurredAt) {
     record("RunnerDeleted", runnerId, "runnerName", runnerName, "occurredAt", occurredAt);
   }
+
+  @Override
+  public void onRunnerQuarantined(
+      String runnerId, String runnerName, String reason, Instant occurredAt) {
+    record(
+        "RunnerQuarantined", runnerId, "runnerName", runnerName, "reason", reason, "occurredAt",
+        occurredAt);
+  }
+
+  @Override
+  public void onRunnerReinstated(
+      String runnerId, String runnerName, String by, Instant occurredAt) {
+    record(
+        "RunnerReinstated", runnerId, "runnerName", runnerName, "by", by, "occurredAt",
+        occurredAt);
+  }
+
+  @Override
+  public void onRunnerHealthChecked(
+      String runnerId,
+      String runnerName,
+      String runId,
+      String result,
+      String detail,
+      Instant occurredAt) {
+    record(
+        "RunnerHealthChecked", runnerId, "runnerName", runnerName, "runId", runId, "result",
+        result, "detail", detail, "occurredAt", occurredAt);
+  }
 }

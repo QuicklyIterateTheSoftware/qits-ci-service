@@ -195,6 +195,39 @@ public class CiSchemaTest {
   }
 
   @Test
+  public void theQuarantineColumnsDefaultARunnerInServiceAndARunToABuild() throws SQLException {
+    // V24. Every runner that exists before it is in service with an empty streak, and every run is a
+    // build: the two not-null columns carry defaults that write exactly that, and nothing else is
+    // backfilled. target_runner_id is a uuid with NO foreign key, runner_id's reason.
+    assertEquals("uuid", columnType("ci_run", "target_runner_id"));
+    assertEquals("text", columnType("ci_runner", "quarantine_reason"));
+    assertEquals("text", columnType("ci_runner", "infra_failure_runs"));
+    assertEquals("text", columnType("ci_runner", "last_healthcheck_detail"));
+    assertEquals(List.of(), constraints("ci_runner", 'c'));
+    assertEquals(List.of(), constraints("ci_run", 'f'));
+    try (Connection connection = ci.getConnection()) {
+      connection.setAutoCommit(false);
+      try (PreparedStatement runner =
+          connection.prepareStatement(
+              "insert into ci_runner (id, name, created_at) values"
+                  + " ('00000000-0000-0000-0000-0000000c1024', ?, current_timestamp)"
+                  + " returning quarantined_at, quarantine_reason, infra_failures,"
+                  + " infra_failure_runs, last_healthcheck_at")) {
+        runner.setString(1, "quarantine-probe");
+        try (ResultSet defaults = runner.executeQuery()) {
+          assertTrue(defaults.next());
+          assertEquals(null, defaults.getObject(1));
+          assertEquals(null, defaults.getObject(2));
+          assertEquals(0, defaults.getInt(3));
+          assertEquals(null, defaults.getObject(4));
+          assertEquals(null, defaults.getObject(5));
+        }
+      }
+      connection.rollback();
+    }
+  }
+
+  @Test
   public void theStepImagePinColumnIsNullableAndTakesBothArms() throws SQLException {
     // V21. A run pins its step images at accept, and NOTHING PINNED is an ordinary run rather than
     // a gap: a pipeline whose every step names an image this platform does not publish (alpine:3,

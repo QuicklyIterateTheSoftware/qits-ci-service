@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.persistence;
 
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunPhase;
+import eu.wohlben.qits.ci.entity.CiRunPurpose;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -12,18 +13,30 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Panache DAO for {@link CiRun} (keyed by its String UUID row id). */
+/**
+ * Panache DAO for {@link CiRun} (keyed by its String UUID row id).
+ *
+ * <p><b>A repository's listings are its BUILDS.</b> A runner's health check is a run recorded against
+ * a real repository and commit ({@code qits.ci.runner.healthcheck.repository}), and its verdict says
+ * nothing about either, so every read that answers "what has this repository's CI done" — its run
+ * listing, its newest run and newest {@code main} run, the finished listing, and which repositories
+ * have runs at all — carries {@code purpose = BUILD}. The reads that are about the QUEUE, not about
+ * a repository ({@link #listActiveNewestFirst}, {@link #listQueuedOldestFirst}, {@link #countQueued})
+ * keep every run, because a pending health check is real work a runner has to take and a credential
+ * the commission reconciler must not reap; the queue's callers filter for themselves.
+ */
 @ApplicationScoped
 public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
 
-  private static final String NEWEST_FIRST = "repoId = ?1 order by createdAt desc, id desc";
+  private static final String NEWEST_FIRST =
+      "repoId = ?1 and purpose = ?2 order by createdAt desc, id desc";
 
   private static final String NEWEST_FIRST_ON_BRANCH =
-      "repoId = ?1 and branch = ?2 order by createdAt desc, id desc";
+      "repoId = ?1 and branch = ?2 and purpose = ?3 order by createdAt desc, id desc";
 
-  /** All runs recorded for a repository, newest-first. */
+  /** All builds recorded for a repository, newest-first. */
   public List<CiRun> listByRepoIdNewestFirst(String repoId) {
-    return list(NEWEST_FIRST, repoId);
+    return list(NEWEST_FIRST, repoId, CiRunPurpose.BUILD);
   }
 
   /**
@@ -36,7 +49,7 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
    * that grows at the head cannot be walked by skipping from the front without re-showing rows.
    */
   public List<CiRun> listByRepoIdNewestFirst(String repoId, int limit) {
-    return find(NEWEST_FIRST, repoId).range(0, limit - 1).list();
+    return find(NEWEST_FIRST, repoId, CiRunPurpose.BUILD).range(0, limit - 1).list();
   }
 
   /**
@@ -44,7 +57,7 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
    * lastRun} half of {@code GET /ci/api/repositories/summary}.
    */
   public Optional<CiRun> newestFor(String repoId) {
-    return find(NEWEST_FIRST, repoId).firstResultOptional();
+    return find(NEWEST_FIRST, repoId, CiRunPurpose.BUILD).firstResultOptional();
   }
 
   /**
@@ -57,7 +70,7 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
    * need the whole history read to find it.
    */
   public Optional<CiRun> newestForBranch(String repoId, String branch) {
-    return find(NEWEST_FIRST_ON_BRANCH, repoId, branch).firstResultOptional();
+    return find(NEWEST_FIRST_ON_BRANCH, repoId, branch, CiRunPurpose.BUILD).firstResultOptional();
   }
 
   /**
@@ -164,11 +177,46 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
    */
   public List<CiRun> listFinishedNewestFirst(int limit) {
     return find(
-            "status not in (?1, ?2) order by finishedAt desc, id desc",
+            "status not in (?1, ?2) and purpose = ?3 order by finishedAt desc, id desc",
             CiRunStatus.QUEUED,
-            CiRunStatus.RUNNING)
+            CiRunStatus.RUNNING,
+            CiRunPurpose.BUILD)
         .range(0, limit - 1)
         .list();
+  }
+
+  /**
+   * The runner's health check that is {@code QUEUED} or {@code RUNNING}, or empty — the one a door
+   * refuses a second of (409), the one the schedule skips a runner for, and, while {@code QUEUED},
+   * the one that runner's {@code Reserve} takes first.
+   */
+  public Optional<CiRun> findPendingHealthCheck(UUID runnerId) {
+    return find(
+            "targetRunnerId = ?1 and purpose = ?2 and status in (?3, ?4) order by createdAt, id",
+            runnerId,
+            CiRunPurpose.HEALTHCHECK,
+            CiRunStatus.QUEUED,
+            CiRunStatus.RUNNING)
+        .firstResultOptional();
+  }
+
+  /** The runner's oldest {@code QUEUED} health check, or empty — what its {@code Reserve} takes. */
+  public Optional<CiRun> findQueuedHealthCheck(UUID runnerId) {
+    return find(
+            "targetRunnerId = ?1 and purpose = ?2 and status = ?3 order by createdAt, id",
+            runnerId,
+            CiRunPurpose.HEALTHCHECK,
+            CiRunStatus.QUEUED)
+        .firstResultOptional();
+  }
+
+  /** Every health check still {@code QUEUED} that was accepted before {@code cutoff}. */
+  public List<CiRun> listHealthChecksQueuedBefore(Instant cutoff) {
+    return list(
+        "purpose = ?1 and status = ?2 and createdAt < ?3 order by createdAt, id",
+        CiRunPurpose.HEALTHCHECK,
+        CiRunStatus.QUEUED,
+        cutoff);
   }
 
   /**
@@ -310,7 +358,8 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
    */
   public List<String> distinctRepoIds() {
     return getEntityManager()
-        .createQuery("select distinct r.repoId from CiRun r", String.class)
+        .createQuery("select distinct r.repoId from CiRun r where r.purpose = ?1", String.class)
+        .setParameter(1, CiRunPurpose.BUILD)
         .getResultList();
   }
 

@@ -8,7 +8,10 @@ import eu.wohlben.qits.ci.events.RunnerConnected;
 import eu.wohlben.qits.ci.events.RunnerCreated;
 import eu.wohlben.qits.ci.events.RunnerDeleted;
 import eu.wohlben.qits.ci.events.RunnerDisconnected;
+import eu.wohlben.qits.ci.events.RunnerHealthChecked;
+import eu.wohlben.qits.ci.events.RunnerQuarantined;
 import eu.wohlben.qits.ci.events.RunnerRegistered;
+import eu.wohlben.qits.ci.events.RunnerReinstated;
 import eu.wohlben.qits.ci.events.RunnerUpdateStarted;
 import eu.wohlben.qits.ci.events.RunnerUpdated;
 import eu.wohlben.qits.ci.events.SoftwareRelease;
@@ -87,8 +90,9 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * record would be a throw or a mangled payload several times per run rather than once, and the run
  * lifecycle a mirror is built on would simply never arrive.
  *
- * <p><b>The eight runner lifecycle events are publish-only too</b> — {@link RunnerCreated} through
- * {@link RunnerDeleted}, announced by {@link RunnerLifecycleAnnouncer} and never read back here —
+ * <p><b>The eleven runner lifecycle events are publish-only too</b> — {@link RunnerCreated} through
+ * {@link RunnerDeleted}, and the quarantine's {@link RunnerQuarantined}, {@link RunnerReinstated} and
+ * {@link RunnerHealthChecked}, announced by {@link RunnerLifecycleAnnouncer} and never read back here —
  * and they are on this list for exactly {@link BuildStatusChanged}'s reason. They add no new kind of
  * risk, only the new shapes worth naming: {@link RunnerChanged} carries a {@code List<String>}, which
  * Jackson writes from the component's accessor like any other, and {@link RunnerDisconnected} and
@@ -148,6 +152,9 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       RunnerUpdated.class,
       RunnerChanged.class,
       RunnerDeleted.class,
+      RunnerQuarantined.class,
+      RunnerReinstated.class,
+      RunnerHealthChecked.class,
       SCMPublishCommit.class,
       RepositoryRenamed.class,
       EventEnvelope.class,

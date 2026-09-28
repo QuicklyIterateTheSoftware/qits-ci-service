@@ -1,5 +1,6 @@
 package eu.wohlben.qits.ci.control;
 
+import eu.wohlben.qits.ci.dto.CiRunnerHealthcheckDto;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.ExpectedStepDurations;
 import java.time.Instant;
@@ -196,6 +197,11 @@ public final class CiQueueForecast {
    * socket is open to it right now — the {@code runners} half of {@code GET /ci/api/runs/queue}. The
    * three version facts are {@code CiRunnerDto}'s, carried for a reader and read by no arithmetic
    * here.
+   *
+   * <p>The quarantine is {@code CiRunnerDto}'s too (qits-466), and {@code quarantined} is the one of
+   * those facts the arithmetic DOES read: a quarantined runner takes no queued work, so it counts no
+   * slots in {@link #slotCount} whatever {@code slots} — its operator's number, kept for a reader —
+   * says.
    */
   public record RunnerCapacity(
       UUID id,
@@ -205,11 +211,20 @@ public final class CiQueueForecast {
       boolean connected,
       String runnerVersion,
       String targetVersion,
-      boolean updating) {
+      boolean updating,
+      boolean quarantined,
+      String quarantineReason,
+      Instant quarantinedAt,
+      CiRunnerHealthcheckDto lastHealthcheck) {
 
     /** A runner whose versions nothing reported. */
     public RunnerCapacity(UUID id, String name, int slots, long held, boolean connected) {
-      this(id, name, slots, held, connected, null, null, false);
+      this(id, name, slots, held, connected, null, null, false, false, null, null, null);
+    }
+
+    /** How many slots the queue can count on this runner for: none while it is quarantined. */
+    public int effectiveSlots() {
+      return quarantined ? 0 : Math.max(0, slots);
     }
   }
 
@@ -222,13 +237,14 @@ public final class CiQueueForecast {
    * a slot until its predicted finish. Counting only the free slots would count those runs twice —
    * once as capacity missing and once as occupancy — and forecast every queued run late by exactly
    * the work the runners are doing. A runner that is not connected contributes nothing: nothing
-   * would claim for it, whatever its row grants.
+   * would claim for it, whatever its row grants — and neither does a quarantined one, which takes
+   * nothing from the queue but its own health check (see {@link RunnerCapacity#effectiveSlots}).
    */
   public static int slotCount(int concurrentBuilds, List<RunnerCapacity> runners) {
     int slots = Math.max(0, concurrentBuilds);
     for (RunnerCapacity runner : runners == null ? List.<RunnerCapacity>of() : runners) {
       if (runner.connected()) {
-        slots += Math.max(0, runner.slots());
+        slots += runner.effectiveSlots();
       }
     }
     return slots;

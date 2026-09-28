@@ -3,6 +3,7 @@ package eu.wohlben.qits.ci.mapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import eu.wohlben.qits.ci.control.CiRunnerPresence;
 import eu.wohlben.qits.ci.dto.CiRunnerDto;
+import eu.wohlben.qits.ci.dto.CiRunnerHealthcheckDto;
 import eu.wohlben.qits.ci.entity.CiRunner;
 import eu.wohlben.qits.ci.entity.RunnerCapabilities;
 import org.mapstruct.Mapper;
@@ -31,8 +32,26 @@ public interface CiRunnerMapper {
   @Mapping(target = "runnerVersion", source = "versions.running")
   @Mapping(target = "targetVersion", source = "versions.target")
   @Mapping(target = "updating", source = "versions.updating")
+  // The quarantine is the row's own, read straight off it; the newest health check is four columns
+  // folded into one object, null while the runner has none (lastHealthcheck below).
+  @Mapping(target = "quarantined", expression = "java(runner.quarantined())")
+  @Mapping(target = "quarantineReason", source = "runner.quarantineReason")
+  @Mapping(target = "quarantinedAt", source = "runner.quarantinedAt")
+  @Mapping(target = "lastHealthcheck", expression = "java(lastHealthcheck(runner))")
   CiRunnerDto toDto(
       CiRunner runner, boolean connected, long heldRuns, CiRunnerPresence.Versions versions);
+
+  /** The runner's newest settled health check, or null while it has none. */
+  default CiRunnerHealthcheckDto lastHealthcheck(CiRunner runner) {
+    if (runner.lastHealthcheckAt == null) {
+      return null;
+    }
+    return new CiRunnerHealthcheckDto(
+        runner.lastHealthcheckAt,
+        runner.lastHealthcheckResult,
+        runner.lastHealthcheckRunId,
+        runner.lastHealthcheckDetail);
+  }
 
   /** {@link #toDto(CiRunner, boolean, long, CiRunnerPresence.Versions)} knowing no versions. */
   default CiRunnerDto toDto(CiRunner runner, boolean connected, long heldRuns) {

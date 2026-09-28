@@ -22,6 +22,11 @@ import java.util.UUID;
  * the version the runner's current connection said it is (null while it has not said), the version
  * this deployment pins and so tells every runner to become, and whether a connection told to
  * upgrade is still open — a self-update in flight, or one that is not completing.
+ *
+ * <p>{@code quarantined}, {@code quarantineReason} and {@code quarantinedAt} say whether the runner is
+ * out of service and why (qits-466): a quarantined runner takes no work but its own health check,
+ * whatever {@code slots} says — which stays what its operator configured, and is what it gets back.
+ * {@code lastHealthcheck} is its newest settled health check, null until it has one.
  */
 public record CiRunnerDto(
     UUID id,
@@ -37,4 +42,8 @@ public record CiRunnerDto(
     Instant createdAt,
     String runnerVersion,
     String targetVersion,
-    boolean updating) {}
+    boolean updating,
+    boolean quarantined,
+    String quarantineReason,
+    Instant quarantinedAt,
+    CiRunnerHealthcheckDto lastHealthcheck) {}

@@ -17,6 +17,7 @@ import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.LockModeType;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -27,6 +28,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import org.jboss.logging.Logger;
 
 /**
  * The runners: every rule about a {@link CiRunner}'s state, and every write to one.
@@ -57,9 +59,18 @@ import java.util.stream.Collectors;
  * #recordHello} and {@link #touchSeen} announce nothing of their own: a rotated token is a secret's
  * bookkeeping, and what a {@code Hello} changes is the connection's fact, which the socket registry
  * announces.
+ *
+ * <p><b>The quarantine's row writes are here too</b> (qits-466) — a registration that starts one, a
+ * streak of runner-caused failures that counts toward one, a health check that settles, a
+ * reinstatement — and announce {@code RunnerQuarantined}, {@code RunnerHealthChecked} and {@code
+ * RunnerReinstated} under the same after-the-commit rule. <em>When</em> each is called — the
+ * thresholds, the health checks, the schedule, and telling a connected runner — is {@link
+ * CiRunnerHealth}'s.
  */
 @ApplicationScoped
 public class CiRunners {
+
+  private static final Logger LOG = Logger.getLogger(CiRunners.class);
 
   /** A runner's name: a lower-case letter, then up to 63 lower-case letters, digits and hyphens. */
   public static final Pattern NAME = Pattern.compile("[a-z][a-z0-9-]{0,63}");
@@ -79,6 +90,9 @@ public class CiRunners {
   @Inject CiRunnerPresence presence;
 
   @Inject RunnerAnnouncements announcements;
+
+  /** What a connected runner is told when what it may hold changes — see {@link CiRunnerSignals}. */
+  @Inject CiRunnerSignals signals;
 
   /** 400 unless {@code name} is a runner name — see {@link #NAME}. */
   public static void requireName(String name) {
@@ -240,6 +254,15 @@ public class CiRunners {
                   return new Patched(runner, List.copyOf(changed), Instant.now());
                 });
     CiRunner runner = patched.runner();
+    if (patched.changed().contains("slots")) {
+      // A connected runner learns its slots only from an Ack, so the new number is pushed to it —
+      // a hint, like every signal: one that is not connected reads the row at its next Hello.
+      try {
+        signals.slotsChanged(runner.id);
+      } catch (RuntimeException e) {
+        LOG.debugf("Runner %s's new slots could not be pushed: %s", runner.name, e.getMessage());
+      }
+    }
     if (!patched.changed().isEmpty()) {
       announcements.announce(
           "runner " + runner.name + " changed",
@@ -315,7 +338,17 @@ public class CiRunners {
   }
 
   /**
-   * Records the client the register door commissioned, and what the runner said about itself.
+   * The reason a runner is quarantined with the moment it registers: nothing has yet shown that the
+   * machine can run a step, so it takes no work until its first health check says it can.
+   */
+  public static final String AWAITING_FIRST_HEALTH_CHECK = "awaiting its first health check";
+
+  /**
+   * Records the client the register door commissioned, and what the runner said about itself — and
+   * <b>quarantines it</b>, {@link #AWAITING_FIRST_HEALTH_CHECK} (qits-466): a machine that has only
+   * proved it holds a token has not proved it can pull an image, start a daemon and reach the edge,
+   * so it takes no work until its first health check has. {@code RunnerRegistered} is announced,
+   * then {@code RunnerQuarantined}.
    *
    * @throws ConflictException when the runner registered in between — the caller then gives its
    *     own freshly commissioned client back
@@ -335,6 +368,8 @@ public class CiRunners {
                   runner.capabilities = capabilities;
                   runner.registeredAt = now;
                   runner.lastSeenAt = now;
+                  runner.quarantinedAt = now;
+                  runner.quarantineReason = AWAITING_FIRST_HEALTH_CHECK;
                   return runner;
                 });
     JsonNode said = RunnerCapabilities.decode(registered.capabilities);
@@ -351,7 +386,190 @@ public class CiRunners {
                 textOf(said, "arch"),
                 textOf(said, "os"),
                 registered.registeredAt));
+    announceQuarantined(registered);
     return registered;
+  }
+
+  // --- the quarantine (qits-466): the row writes; CiRunnerHealth decides when --------------------
+
+  /**
+   * What one step of a runner's run said about the runner: {@code infraFailure} for a step that
+   * never reached its daemon (or lost the runner's socket), anything else a step that started.
+   *
+   * @param runner the row as it now is, or null for a runner deleted meanwhile
+   * @param quarantined whether THIS write took the runner out of service
+   */
+  public record StepRecorded(CiRunner runner, boolean quarantined) {}
+
+  /**
+   * Counts one runner-caused step failure toward a quarantine, under the row's lock so two runs of
+   * one runner failing at once both count. The runner is quarantined when the streak reaches {@code
+   * failures} AND spans at least {@code minRuns} distinct runs — the second rule is what keeps one
+   * run whose recipe names an unpublished image (a LAUNCH_FAILED on every attempt, and the recipe's
+   * fault) from taking a healthy machine out. A runner already quarantined keeps counting and is not
+   * quarantined again.
+   */
+  public StepRecorded recordInfraFailure(
+      UUID id, String runId, String outcome, int failures, int minRuns) {
+    StepRecorded recorded =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  CiRunner runner = runners.findById(id, LockModeType.PESSIMISTIC_WRITE);
+                  if (runner == null) {
+                    return new StepRecorded(null, false);
+                  }
+                  runner.infraFailures++;
+                  List<String> streak = InfraFailureRuns.decode(runner.infraFailureRuns);
+                  runner.infraFailureRuns = InfraFailureRuns.encode(InfraFailureRuns.with(streak, runId));
+                  int distinct = InfraFailureRuns.decode(runner.infraFailureRuns).size();
+                  if (runner.quarantined()
+                      || runner.infraFailures < Math.max(1, failures)
+                      || distinct < Math.max(1, minRuns)) {
+                    return new StepRecorded(runner, false);
+                  }
+                  runner.quarantinedAt = Instant.now();
+                  runner.quarantineReason =
+                      runner.infraFailures
+                          + " consecutive runner failures ("
+                          + outcome
+                          + " on run "
+                          + runId
+                          + ")";
+                  return new StepRecorded(runner, true);
+                });
+    if (recorded.quarantined()) {
+      announceQuarantined(recorded.runner());
+    }
+    return recorded;
+  }
+
+  /**
+   * A step of this runner's STARTED — its daemon dialled back, whatever the build then did — so the
+   * streak is over. Writes nothing when there was none, which is every step of a healthy runner.
+   */
+  public void recordStarted(UUID id) {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              CiRunner runner = runners.findById(id, LockModeType.PESSIMISTIC_WRITE);
+              if (runner != null && (runner.infraFailures != 0 || runner.infraFailureRuns != null)) {
+                runner.infraFailures = 0;
+                runner.infraFailureRuns = null;
+              }
+            });
+  }
+
+  /**
+   * Takes a runner out of service with {@code reason}, and answers the row when THIS call did —
+   * null when it was already out (its reason stands) or is gone. Its {@code slots} is untouched.
+   */
+  public CiRunner quarantine(UUID id, String reason) {
+    CiRunner quarantined =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  CiRunner runner = runners.findById(id, LockModeType.PESSIMISTIC_WRITE);
+                  if (runner == null || runner.quarantined()) {
+                    return null;
+                  }
+                  runner.quarantinedAt = Instant.now();
+                  runner.quarantineReason = reason;
+                  return runner;
+                });
+    if (quarantined != null) {
+      announceQuarantined(quarantined);
+    }
+    return quarantined;
+  }
+
+  /**
+   * What a reinstatement did: the row as it now is, and whether a quarantine was really lifted — a
+   * greenlight of a runner in service resets its streak and lifts nothing.
+   */
+  public record Reinstatement(CiRunner runner, boolean lifted) {}
+
+  /**
+   * Puts a runner back into service — {@code by} is {@code admin} or {@code healthcheck} — and
+   * starts its streak from nothing. {@code RunnerReinstated} is announced only when a quarantine was
+   * really lifted.
+   *
+   * @throws NotFoundException for no such runner
+   */
+  public Reinstatement reinstate(UUID id, String by) {
+    record Lifted(CiRunner runner, boolean lifted, Instant at) {}
+    Lifted done =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  CiRunner runner = runners.findById(id, LockModeType.PESSIMISTIC_WRITE);
+                  if (runner == null) {
+                    throw new NotFoundException("No runner " + id);
+                  }
+                  boolean lifted = runner.quarantined();
+                  runner.quarantinedAt = null;
+                  runner.quarantineReason = null;
+                  runner.infraFailures = 0;
+                  runner.infraFailureRuns = null;
+                  return new Lifted(runner, lifted, Instant.now());
+                });
+    CiRunner runner = done.runner();
+    if (done.lifted()) {
+      announcements.announce(
+          "runner " + runner.name + "'s reinstatement",
+          announcer ->
+              announcer.onRunnerReinstated(runner.id.toString(), runner.name, by, done.at()));
+    }
+    return new Reinstatement(runner, done.lifted());
+  }
+
+  /**
+   * Records a settled health check on its runner — {@code last_healthcheck_*} — and announces {@code
+   * RunnerHealthChecked}, pass or fail. What the result does to the runner's standing is the
+   * caller's next call ({@link #reinstate} or {@link #quarantine}), so the check's own event always
+   * comes first.
+   *
+   * @return the row as it now is, or null for a runner deleted meanwhile — which announces nothing
+   */
+  public CiRunner recordHealthCheck(
+      UUID id, String runId, boolean passed, String detail, Instant at) {
+    String result = passed ? HEALTH_CHECK_PASSED : HEALTH_CHECK_FAILED;
+    CiRunner recorded =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  CiRunner runner = runners.findById(id, LockModeType.PESSIMISTIC_WRITE);
+                  if (runner == null) {
+                    return null;
+                  }
+                  runner.lastHealthcheckAt = at;
+                  runner.lastHealthcheckResult = result;
+                  runner.lastHealthcheckRunId = runId;
+                  runner.lastHealthcheckDetail = detail;
+                  return runner;
+                });
+    if (recorded != null) {
+      announcements.announce(
+          "runner " + recorded.name + "'s health check",
+          announcer ->
+              announcer.onRunnerHealthChecked(
+                  recorded.id.toString(), recorded.name, runId, result, detail, at));
+    }
+    return recorded;
+  }
+
+  /** {@code last_healthcheck_result} of a check that ran green. */
+  public static final String HEALTH_CHECK_PASSED = "PASSED";
+
+  /** {@code last_healthcheck_result} of one that did not. */
+  public static final String HEALTH_CHECK_FAILED = "FAILED";
+
+  private void announceQuarantined(CiRunner runner) {
+    announcements.announce(
+        "runner " + runner.name + "'s quarantine",
+        announcer ->
+            announcer.onRunnerQuarantined(
+                runner.id.toString(), runner.name, runner.quarantineReason, runner.quarantinedAt));
   }
 
   private static ConflictException registeredAlready(CiRunner runner) {

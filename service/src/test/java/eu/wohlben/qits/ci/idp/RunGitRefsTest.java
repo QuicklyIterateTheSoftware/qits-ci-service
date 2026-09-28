@@ -95,6 +95,8 @@ public class RunGitRefsTest {
     // No recipe selects SoftwareRelease since the hop files were deleted, so the repository the
     // payload names does not become a ref.
     assertEquals(MAY_PUSH_NOTHING, of("SoftwareRelease", UI_COMPONENTS_RELEASE));
+    // A runner's health check: qits-ci wrote its only recipe, and it echoes.
+    assertEquals(MAY_PUSH_NOTHING, of("RunnerHealthCheck", "{\"runnerId\":\"r-1\"}"));
   }
 
   @Test

@@ -3,8 +3,11 @@ package eu.wohlben.qits.ci.api;
 import com.fasterxml.jackson.databind.JsonNode;
 import eu.wohlben.qits.auth.MachineAuth;
 import eu.wohlben.qits.auth.MachineIdentity;
+import eu.wohlben.qits.ci.control.CiRunnerHealth;
 import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.dto.CiRunnerDto;
+import eu.wohlben.qits.ci.dto.CiRunnerHealthcheckDto;
+import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunner;
 import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import eu.wohlben.qits.ci.entity.RunnerCapabilities;
@@ -41,7 +44,8 @@ import org.jboss.logging.Logger;
 
 /**
  * The runners' surface: six verbs an operator uses to declare, read, tune, re-key and decommission a
- * runner, and the one door a runner itself knocks on to register.
+ * runner, two for its quarantine — greenlight and a health check on demand (qits-466, {@link
+ * CiRunnerHealth}) — and the one door a runner itself knocks on to register.
  *
  * <p><b>Roles, per verb, as {@link CiRunController} spells them.</b> The two reads take {@code
  * qits:admin}, {@code qits:system} and {@code qits:agent}; every write is {@code qits:admin} alone,
@@ -79,6 +83,8 @@ public class CiRunnerController {
   @Inject RunnerAddresses addresses;
 
   @Inject RunnerInstallScript installScript;
+
+  @Inject CiRunnerHealth health;
 
   @Inject MachineAuth machineAuth;
 
@@ -129,6 +135,10 @@ public class CiRunnerController {
       String runnerVersion,
       String targetVersion,
       boolean updating,
+      boolean quarantined,
+      String quarantineReason,
+      Instant quarantinedAt,
+      CiRunnerHealthcheckDto lastHealthcheck,
       @Schema(
               description =
                   "The one line that installs this runner on a host: it fetches the generic"
@@ -152,6 +162,10 @@ public class CiRunnerController {
           runner.runnerVersion(),
           runner.targetVersion(),
           runner.updating(),
+          runner.quarantined(),
+          runner.quarantineReason(),
+          runner.quarantinedAt(),
+          runner.lastHealthcheck(),
           installScript);
     }
 
@@ -390,6 +404,48 @@ public class CiRunnerController {
   }
 
   /**
+   * Lift a runner's quarantine: it takes work again up to its row's slots, and its streak of
+   * runner-caused failures starts from nothing. A runner in service is answered as it is, its streak
+   * reset — the door states an outcome, so pressing it twice is the same as once.
+   */
+  @POST
+  @Path("/{id}/greenlight")
+  @RolesAllowed("qits:admin")
+  @Operation(summary = "Lift a runner's quarantine")
+  @APIResponse(responseCode = "200", description = "The runner as it now is")
+  @APIResponse(responseCode = "404", description = "No such runner")
+  public CiRunnerDto greenlight(@PathParam("id") String id) {
+    return runners.view(health.greenlight(runnerId(id)));
+  }
+
+  /**
+   * Queue a health check for a runner now: the pseudo-build only that runner may take, quarantined or
+   * not. Answers the run's id, which {@code GET /ci/api/runs/{runId}} reads — the run is in no
+   * listing. The runner's standing follows the result: green lifts a quarantine, red begins one.
+   */
+  @POST
+  @Path("/{id}/healthcheck")
+  @RolesAllowed("qits:admin")
+  @Operation(summary = "Queue a health check for a runner")
+  @APIResponse(
+      responseCode = "202",
+      description = "The health check's run id",
+      content = @Content(schema = @Schema(implementation = HealthCheckQueued.class)))
+  @APIResponse(responseCode = "404", description = "No such runner")
+  @APIResponse(responseCode = "409", description = "One is already queued or running for it")
+  @APIResponse(
+      responseCode = "503",
+      description =
+          "The health check's repository, its head or its image could not be resolved; ask again")
+  public Response healthcheck(@PathParam("id") String id) {
+    CiRun run = health.requestHealthCheck(runnerId(id));
+    return Response.accepted(new HealthCheckQueued(run.id)).build();
+  }
+
+  /** The door's answer: the health check's run, readable at {@code GET /ci/api/runs/{runId}}. */
+  public record HealthCheckQueued(String runId) {}
+
+  /**
    * The register door. A runner presents its registration token — as the JWT the edge mints for it,
    * or, on qits-net where there is no edge, as the raw {@code qits_tok_} value, which {@code
    * runnerhost/RegistrationTokenMechanism} introspects at qits-idp for this route alone — with what
@@ -469,6 +525,9 @@ public class CiRunnerController {
           runnerId, runner.registrationTokenId);
     }
     LOG.infof("Runner %s (%s) registered as %s", runner.name, runnerId, client.clientId());
+    // Registered is not yet proven: the runner is quarantined awaiting its first health check
+    // (markRegistered), and this queues it — best effort, since the answer below is owed regardless.
+    health.onRegistered(runnerId);
     return new RegisteredRunner(
         client.clientId(),
         client.secret(),

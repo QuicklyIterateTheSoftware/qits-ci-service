@@ -411,4 +411,29 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
    */
   @Column(name = "runner_id")
   public UUID runnerId;
+
+  /**
+   * What this run is for — {@link CiRunPurpose#BUILD} on every row but a runner's health check, and
+   * on every row written before {@code V24__runner_quarantine.sql}, whose default wrote it.
+   *
+   * <p>Initialised here so every insert path that predates health checks keeps writing a build
+   * without naming one; the one writer of {@link CiRunPurpose#HEALTHCHECK} is {@code
+   * CiRunService.acceptHealthCheck}.
+   */
+  @Enumerated(EnumType.STRING)
+  @Column(nullable = false, length = 32)
+  public CiRunPurpose purpose = CiRunPurpose.BUILD;
+
+  /**
+   * The one runner a health check may be reserved by, or null on every build. No foreign key, for
+   * {@link #runnerId}'s reason. It is what a runner's {@code Reserve} is matched against — and the
+   * only thing that lets a quarantined runner take anything at all.
+   */
+  @Column(name = "target_runner_id")
+  public UUID targetRunnerId;
+
+  /** Whether this run is a runner's health check rather than a build. */
+  public boolean healthCheck() {
+    return purpose == CiRunPurpose.HEALTHCHECK;
+  }
 }

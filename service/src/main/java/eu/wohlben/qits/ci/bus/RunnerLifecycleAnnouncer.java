@@ -6,7 +6,10 @@ import eu.wohlben.qits.ci.events.RunnerConnected;
 import eu.wohlben.qits.ci.events.RunnerCreated;
 import eu.wohlben.qits.ci.events.RunnerDeleted;
 import eu.wohlben.qits.ci.events.RunnerDisconnected;
+import eu.wohlben.qits.ci.events.RunnerHealthChecked;
+import eu.wohlben.qits.ci.events.RunnerQuarantined;
 import eu.wohlben.qits.ci.events.RunnerRegistered;
+import eu.wohlben.qits.ci.events.RunnerReinstated;
 import eu.wohlben.qits.ci.events.RunnerUpdateStarted;
 import eu.wohlben.qits.ci.events.RunnerUpdated;
 import eu.wohlben.qits.eventstream.CausationScope;
@@ -160,6 +163,29 @@ public class RunnerLifecycleAnnouncer implements RunnerAnnouncer {
   @Override
   public void onRunnerDeleted(String runnerId, String runnerName, Instant occurredAt) {
     publish(new RunnerDeleted(runnerId, runnerName, occurredAt));
+  }
+
+  @Override
+  public void onRunnerQuarantined(
+      String runnerId, String runnerName, String reason, Instant occurredAt) {
+    publish(new RunnerQuarantined(runnerId, runnerName, reason, occurredAt));
+  }
+
+  @Override
+  public void onRunnerReinstated(
+      String runnerId, String runnerName, String by, Instant occurredAt) {
+    publish(new RunnerReinstated(runnerId, runnerName, by, occurredAt));
+  }
+
+  @Override
+  public void onRunnerHealthChecked(
+      String runnerId,
+      String runnerName,
+      String runId,
+      String result,
+      String detail,
+      Instant occurredAt) {
+    publish(new RunnerHealthChecked(runnerId, runnerName, runId, result, detail, occurredAt));
   }
 
   /** Queue one event for the publishing thread, with the cause read here, on the caller's thread. */

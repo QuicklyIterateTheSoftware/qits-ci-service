@@ -118,4 +118,26 @@ public interface RunnerAnnouncer {
 
   /** An operator's delete committed. */
   void onRunnerDeleted(String runnerId, String runnerName, Instant occurredAt);
+
+  /**
+   * The runner was taken out of service — its quarantine began, and {@code reason} is the sentence
+   * its row now keeps. Called by {@link CiRunnerHealth} after the write committed; a runner already
+   * quarantined is not announced again.
+   */
+  void onRunnerQuarantined(String runnerId, String runnerName, String reason, Instant occurredAt);
+
+  /** A quarantine was lifted — {@code by} is {@code admin} or {@code healthcheck}. */
+  void onRunnerReinstated(String runnerId, String runnerName, String by, Instant occurredAt);
+
+  /**
+   * A health check settled, {@code PASSED} or {@code FAILED}; {@code detail} is null on a pass with
+   * nothing to add.
+   */
+  void onRunnerHealthChecked(
+      String runnerId,
+      String runnerName,
+      String runId,
+      String result,
+      String detail,
+      Instant occurredAt);
 }

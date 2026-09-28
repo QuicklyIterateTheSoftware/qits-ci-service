@@ -98,8 +98,47 @@ public class CiRunner extends PanacheEntityBase implements CausedRow {
   @Column(name = "created_at", nullable = false)
   public Instant createdAt;
 
+  /**
+   * When this runner was taken out of service, or null while it is in it. Set and cleared together
+   * with {@link #quarantineReason}; {@link #slots} is never touched by either, so a reinstated runner
+   * gets back exactly what its operator configured. See {@code V24__runner_quarantine.sql}.
+   */
+  @Column(name = "quarantined_at")
+  public Instant quarantinedAt;
+
+  @Column(name = "quarantine_reason", columnDefinition = "text")
+  public String quarantineReason;
+
+  /** Runner-caused step failures in a row; a step that started resets it. */
+  @Column(name = "infra_failures", nullable = false)
+  public int infraFailures;
+
+  /** The distinct runs that streak spans, as a JSON array of run ids; null is an empty streak. */
+  @Column(name = "infra_failure_runs", columnDefinition = "text")
+  public String infraFailureRuns;
+
+  /** When this runner's newest health check settled; null until one has. */
+  @Column(name = "last_healthcheck_at")
+  public Instant lastHealthcheckAt;
+
+  /** {@code PASSED} or {@code FAILED}, or null until a health check has settled. */
+  @Column(name = "last_healthcheck_result", length = 16)
+  public String lastHealthcheckResult;
+
+  @Column(name = "last_healthcheck_run_id", length = 255)
+  public String lastHealthcheckRunId;
+
+  /** What the newest health check said: its outcome and the head of its output. */
+  @Column(name = "last_healthcheck_detail", columnDefinition = "text")
+  public String lastHealthcheckDetail;
+
   /** Whether the register door has answered this runner. */
   public boolean registered() {
     return clientId != null;
+  }
+
+  /** Whether this runner is out of service: it takes no work but its own health check. */
+  public boolean quarantined() {
+    return quarantinedAt != null;
   }
 }

@@ -306,7 +306,12 @@ class CiRunnerEventsTest {
                 + "\"labels\":{\"site\":\"attic\"}}}")
         .statusCode(200);
 
-    assertEquals(List.of("RunnerRegistered"), announcer.eventsOf(id.toString()));
+    // Registered, then out of service until its first health check passes (qits-466) — the check
+    // itself is not queued here, since this suite's catalogue holds no health-check repository.
+    assertEquals(
+        List.of("RunnerRegistered", "RunnerQuarantined"), announcer.eventsOf(id.toString()));
+    assertEquals(
+        "awaiting its first health check", announcer.of(id.toString()).get(1).fact("reason"));
     Announced registered = announcer.of(id.toString()).get(0);
     assertEquals("events-registering", registered.fact("runnerName"));
     assertEquals("run-client-1", registered.fact("clientId"));
@@ -318,7 +323,7 @@ class CiRunnerEventsTest {
 
     // 409: the same token again, for a runner that has registered.
     register(id, "{\"capabilities\":{}}").statusCode(409);
-    assertEquals(1, announcer.of(id.toString()).size(), "a replay announces nothing");
+    assertEquals(2, announcer.of(id.toString()).size(), "a replay announces nothing");
   }
 
   @Test

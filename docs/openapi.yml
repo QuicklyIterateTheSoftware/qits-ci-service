@@ -194,6 +194,14 @@ components:
           type: string
         updating:
           type: boolean
+        quarantined:
+          type: boolean
+        quarantineReason:
+          type: string
+        quarantinedAt:
+          $ref: "#/components/schemas/Instant"
+        lastHealthcheck:
+          $ref: "#/components/schemas/CiRunnerHealthcheckDto"
         installScript:
           type: string
           description: "The one line that installs this runner on a host: it fetches\
@@ -233,6 +241,25 @@ components:
           type: string
         updating:
           type: boolean
+        quarantined:
+          type: boolean
+        quarantineReason:
+          type: string
+        quarantinedAt:
+          $ref: "#/components/schemas/Instant"
+        lastHealthcheck:
+          $ref: "#/components/schemas/CiRunnerHealthcheckDto"
+    CiRunnerHealthcheckDto:
+      type: object
+      properties:
+        at:
+          $ref: "#/components/schemas/Instant"
+        result:
+          type: string
+        runId:
+          type: string
+        detail:
+          type: string
     CiRunnerPlane:
       type: string
       enum:
@@ -302,6 +329,11 @@ components:
         previousDaemonVersion:
           type: string
         source:
+          type: string
+    HealthCheckQueued:
+      type: object
+      properties:
+        runId:
           type: string
     Instant:
       type: string
@@ -521,6 +553,14 @@ components:
           type: string
         updating:
           type: boolean
+        quarantined:
+          type: boolean
+        quarantineReason:
+          type: string
+        quarantinedAt:
+          $ref: "#/components/schemas/Instant"
+        lastHealthcheck:
+          $ref: "#/components/schemas/CiRunnerHealthcheckDto"
     Selection:
       type: string
       enum:
@@ -870,6 +910,65 @@ paths:
           description: No such runner
         "409":
           description: The runner holds a running run
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Runner Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+  /ci/api/runners/{id}/greenlight:
+    post:
+      summary: Lift a runner's quarantine
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The runner as it now is
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CiRunnerDto"
+        "404":
+          description: No such runner
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Runner Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+  /ci/api/runners/{id}/healthcheck:
+    post:
+      summary: Queue a health check for a runner
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "202":
+          description: The health check's run id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthCheckQueued"
+        "404":
+          description: No such runner
+        "409":
+          description: One is already queued or running for it
+        "503":
+          description: "The health check's repository, its head or its image could\
+            \ not be resolved; ask again"
         "401":
           description: Not Authorized
         "403":
@@ -1248,4 +1347,4 @@ paths:
         - qits:agent
 info:
   title: qits-ci API
-  version: 2026.928.51151
+  version: 2026.928.134910
