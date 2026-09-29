@@ -23,8 +23,17 @@ import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
 import eu.wohlben.qits.ci.runnerhost.RunnerAddresses;
 import eu.wohlben.qits.ci.runnerhost.RunnerAddressesFixture;
+import eu.wohlben.qits.ci.runnerhost.CiRunnerPins;
+import eu.wohlben.qits.ci.runnerhost.CiRunnerSocket;
+import eu.wohlben.qits.ci.runnerhost.FakeCiRunner;
+import eu.wohlben.qits.cirunner.protocol.Ack;
+import eu.wohlben.qits.cirunner.protocol.Capabilities;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerBinary;
+import eu.wohlben.qits.cirunner.protocol.CiRunnerProtocol;
+import eu.wohlben.qits.cirunner.protocol.Hello;
+import eu.wohlben.qits.cirunner.protocol.Retire;
 import io.quarkus.narayana.jta.QuarkusTransaction;
+import io.quarkus.test.common.http.TestHTTPResource;
 import io.quarkus.test.junit.QuarkusMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
@@ -35,11 +44,13 @@ import io.restassured.path.json.JsonPath;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.MediaType;
 import java.lang.reflect.RecordComponent;
+import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -305,6 +316,50 @@ class CiRunnerControllerTest {
     // The run is history, and still names the runner it ran on.
     assertEquals(id, QuarkusTransaction.requiringNew().call(() -> runs.findById(running)).runnerId);
     given().when().get(RUNNERS + "/" + id).then().statusCode(404);
+  }
+
+  @TestHTTPResource(RunnerAddresses.SOCKET_PATH)
+  URI runnerSocket;
+
+  @Inject CiRunnerPins pins;
+
+  /**
+   * The defect this closes (qits-440): a runner deleted while it was connected kept its container
+   * running for good. Now its connection is sent {@code Retire} of kind {@code DELETED} — before
+   * qits-idp is asked to revoke its client, which {@link StubIdp#onDecommission} proves by looking
+   * for the frame at the moment the revocation arrives — and closed {@code RUNNER_DELETED}.
+   */
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN, CiRunnerSocket.RUNNER_ROLE})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = OWN_AUDIENCE),
+        @Claim(key = "sub", value = "dyn-connected")
+      })
+  void deletingAConnectedRunnerRetiresItAsDeletedBeforeItsClientIsRevoked() throws Exception {
+    UUID id = UUID.fromString(create("connected").getString("id"));
+    QuarkusTransaction.requiringNew().run(() -> runnerRows.findById(id).clientId = "dyn-connected");
+    Duration soon = Duration.ofSeconds(10);
+    try (FakeCiRunner runner = FakeCiRunner.dial(runnerSocket)) {
+      runner.send(
+          new Hello(
+              pins.version(),
+              CiRunnerProtocol.CAPABILITY_VERSION,
+              1,
+              new Capabilities(true, "amd64", "linux", Map.of())));
+      assertNotNull(runner.next(Ack.class, soon));
+      idp.onDecommission = () -> runner.holds(Retire.class);
+
+      given().when().delete(RUNNERS + "/" + id).then().statusCode(204);
+
+      Retire retire = runner.next(Retire.class, soon);
+      assertNotNull(retire, "a connected runner is told it was deleted");
+      assertEquals(Retire.Kind.DELETED, retire.kind());
+      assertEquals((Short) (short) 1008, runner.awaitClose(soon));
+      assertEquals(CiRunnerSocket.RUNNER_DELETED, runner.closeReason());
+    }
+    assertEquals(List.of("dyn-connected"), idp.deleted);
+    assertEquals(List.of(true), idp.decommissionChecks, "the Retire left before the revocation");
   }
 
   @Test

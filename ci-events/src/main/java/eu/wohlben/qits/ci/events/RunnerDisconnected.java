@@ -7,7 +7,7 @@ import java.util.UUID;
 /**
  * A runner's connection ended, and {@code reason} says how.
  *
- * <p><b>{@code reason} is one of five words</b>, a plain {@code String} on the wire (the constants
+ * <p><b>{@code reason} is one of six words</b>, a plain {@code String} on the wire (the constants
  * below are this vocabulary's spelling of them, not an enum a subscriber must share):
  *
  * <ul>
@@ -22,6 +22,9 @@ import java.util.UUID;
  *   <li>{@link #REFUSED} — qits-ci closed it at its {@code Hello} (1008): the pinned binary
  *       speaking a capability version this host does not, or a runner whose row was deleted while
  *       it dialled. The one reason that follows no {@link RunnerConnected}.
+ *   <li>{@link #DELETED} — an operator deleted the runner, and qits-ci sent the connection {@code
+ *       Retire} of kind {@code DELETED} and closed it; the runner removes its own container. After
+ *       {@link RunnerDeleted}.
  *   <li>{@link #SHUTDOWN} — this qits-ci process is stopping. Announced for every greeted
  *       connection when the stop begins, so it does not depend on the server closing sockets
  *       politely; the runners reconnect to its successor on their own.
@@ -59,6 +62,9 @@ public record RunnerDisconnected(
 
   /** Closed by qits-ci at its {@code Hello}. */
   public static final String REFUSED = "REFUSED";
+
+  /** The runner was deleted: sent {@code Retire} of kind {@code DELETED}, then closed. */
+  public static final String DELETED = "DELETED";
 
   /** This qits-ci is stopping. */
   public static final String SHUTDOWN = "SHUTDOWN";

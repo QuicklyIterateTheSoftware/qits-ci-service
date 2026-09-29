@@ -631,6 +631,11 @@ public class CiRunners {
    * and the socket check a runner against, so once it is gone the credentials open nothing here, and
    * a qits-idp that could not be reached leaves leftovers the commission reconciler reaps by that
    * same absence. The other order would leave a live row whose client had been deleted.
+   *
+   * <p>Between the two, a connected runner is told it was deleted ({@link CiRunnerSignals#deleted})
+   * so it decommissions its own container: over the socket it already holds, before its client is
+   * revoked. A runner holds no {@code RUNNING} run here — that was the 409 — so there is nothing of
+   * a run's for it to lose.
    */
   public CiRunner delete(UUID id) {
     record Deleted(CiRunner runner, Instant at) {}
@@ -651,6 +656,13 @@ public class CiRunners {
     announcements.announce(
         "runner " + gone.name + " deleted",
         announcer -> announcer.onRunnerDeleted(gone.id.toString(), gone.name, deleted.at()));
+    // Before the caller revokes the runner's credentials: a connected runner is told it was deleted
+    // and removes its own container. A hint, like every signal — it may not fail the delete.
+    try {
+      signals.deleted(gone.id);
+    } catch (RuntimeException e) {
+      LOG.warnf("Could not tell runner %s it was deleted: %s", gone.name, e.getMessage());
+    }
     return gone;
   }
 

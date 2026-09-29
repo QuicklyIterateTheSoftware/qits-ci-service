@@ -43,6 +43,8 @@ public class CiRunnersTest extends CiTestSupport {
 
   @Inject CiRunners service;
 
+  @Inject RecordingRunnerSignals signals;
+
   @Inject CiRunnerRepository runnerRows;
 
   @Inject CiRunnerMapper runnerMapper;
@@ -184,9 +186,13 @@ public class CiRunnersTest extends CiTestSupport {
     ConflictException refused = assertThrows(ConflictException.class, () -> service.delete(runner.id));
     assertTrue(refused.getMessage().contains("busy"), refused.getMessage());
     assertEquals(1L, service.view(service.get(runner.id)).heldRuns());
+    assertEquals(List.of(), signals.of(runner.id), "a refused delete tells the runner nothing");
 
     finish(running);
     CiRunner deleted = service.delete(runner.id);
+    // The delete is what tells a connected runner to decommission itself — before the caller gives
+    // its credentials back, which happens after this returns.
+    assertEquals(List.of("deleted"), signals.of(runner.id));
 
     assertEquals("busy", deleted.name);
     assertThrows(NotFoundException.class, () -> service.get(runner.id));

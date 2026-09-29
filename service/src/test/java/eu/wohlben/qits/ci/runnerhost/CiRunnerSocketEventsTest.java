@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import eu.wohlben.qits.ci.api.MachineGuardTest;
 import eu.wohlben.qits.ci.control.CiRunnerPresence;
+import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.control.RecordingRunnerAnnouncer;
 import eu.wohlben.qits.ci.control.RecordingRunnerAnnouncer.Announced;
 import eu.wohlben.qits.ci.entity.CiRunner;
@@ -73,6 +74,8 @@ class CiRunnerSocketEventsTest {
   @Inject CiRunnerPins pins;
 
   @Inject RecordingRunnerAnnouncer announcer;
+
+  @Inject CiRunners runners;
 
   private UUID runnerId;
 
@@ -164,6 +167,29 @@ class CiRunnerSocketEventsTest {
     assertEquals("LOST", lost.fact("reason"));
     assertEquals(2, lost.fact("heldRuns"), "the runs about to be recorded CONNECTION_LOST");
     assertEquals(pins.version(), lost.fact("runnerVersion"));
+  }
+
+  @Test
+  @TestSecurity(user = "runner", roles = RUNNER_ROLE)
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aDeletedRunnersConnectionIsRetiredAndEndsAsDeletedAfterRunnerDeleted() throws Exception {
+    try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
+      runner.send(current());
+      assertNotNull(runner.next(Ack.class, SOON));
+      await(1);
+
+      runners.delete(runnerId);
+
+      Retire retire = runner.next(Retire.class, SOON);
+      assertNotNull(retire);
+      assertEquals(Retire.Kind.DELETED, retire.kind());
+      assertEquals((Short) (short) 1008, runner.awaitClose(SOON));
+      assertEquals(CiRunnerSocket.RUNNER_DELETED, runner.closeReason());
+    }
+    List<Announced> announced = await(3);
+    assertEquals(List.of("RunnerConnected", "RunnerDeleted", "RunnerDisconnected"), events());
+    assertEquals("DELETED", announced.get(2).fact("reason"));
+    assertFalse(presence.connected(runnerId));
   }
 
   @Test

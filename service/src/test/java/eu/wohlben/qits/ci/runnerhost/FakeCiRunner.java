@@ -96,6 +96,11 @@ public final class FakeCiRunner implements AutoCloseable {
         .get(10, TimeUnit.SECONDS);
   }
 
+  /** Whether a frame of {@code type} has arrived and not been taken yet — a look, not a take. */
+  public boolean holds(Class<? extends CiRunnerMessage> type) {
+    return received.stream().anyMatch(type::isInstance);
+  }
+
   /** The next frame the host sent, or null if none arrived in time. */
   public CiRunnerMessage next(Duration timeout) throws InterruptedException {
     return received.poll(timeout.toMillis(), TimeUnit.MILLISECONDS);

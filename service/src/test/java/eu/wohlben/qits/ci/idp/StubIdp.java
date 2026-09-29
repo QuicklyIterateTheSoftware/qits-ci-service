@@ -39,6 +39,16 @@ public final class StubIdp implements AutoCloseable {
   /** Every client id it was asked to delete, in order. */
   public final List<String> deleted = Collections.synchronizedList(new ArrayList<>());
 
+  /**
+   * Asked as each client is decommissioned — before it is recorded and answered — polled for up to
+   * 100 ms; what it answered is appended to {@link #decommissionChecks}. How a case proves something
+   * happened BEFORE the client was revoked: shorter than the commissioner's 200 ms deadline, so a
+   * caller that waits on this answer before doing the thing cannot have done it within the window.
+   */
+  public volatile java.util.function.BooleanSupplier onDecommission;
+
+  public final List<Boolean> decommissionChecks = Collections.synchronizedList(new ArrayList<>());
+
   /** How many listings were read. */
   public final AtomicInteger listings = new AtomicInteger();
 
@@ -124,8 +134,27 @@ public final class StubIdp implements AutoCloseable {
           }
           if (req.method() == HttpMethod.DELETE) {
             String path = req.path();
-            deleted.add(path.substring(path.lastIndexOf('/') + 1));
-            req.response().setStatusCode(204).end();
+            java.util.function.BooleanSupplier check = onDecommission;
+            if (check == null) {
+              deleted.add(path.substring(path.lastIndexOf('/') + 1));
+              req.response().setStatusCode(204).end();
+              return;
+            }
+            vertx
+                .executeBlocking(
+                    () -> {
+                      long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(100);
+                      while (!check.getAsBoolean() && System.nanoTime() < deadline) {
+                        Thread.sleep(5);
+                      }
+                      return check.getAsBoolean();
+                    })
+                .onComplete(
+                    answered -> {
+                      decommissionChecks.add(answered.succeeded() && answered.result());
+                      deleted.add(path.substring(path.lastIndexOf('/') + 1));
+                      req.response().setStatusCode(204).end();
+                    });
             return;
           }
           listings.incrementAndGet();

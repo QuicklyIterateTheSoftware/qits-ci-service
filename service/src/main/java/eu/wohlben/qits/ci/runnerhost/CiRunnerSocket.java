@@ -4,6 +4,7 @@ import eu.wohlben.qits.auth.MachineIdentity;
 import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.entity.CiRunner;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerMessage;
+import eu.wohlben.qits.cirunner.protocol.CiRunnerProtocol;
 import eu.wohlben.qits.cirunner.protocol.Heartbeat;
 import eu.wohlben.qits.cirunner.protocol.Hello;
 import eu.wohlben.qits.cirunner.protocol.LaunchFailed;
@@ -33,7 +34,8 @@ import org.jboss.logging.Logger;
  * enforced at the HTTP upgrade, so a dial without a runner's role is answered 401 and never reaches
  * {@link #onOpen}. There the token's {@code sub} — which qits-idp sets to the client id for a {@code
  * client_credentials} token (its {@code TokenService} mints {@code .subject(client.clientId())}) —
- * is looked up against {@code ci_runner.client_id}. No row is a 1008. Nothing on the wire names a
+ * is looked up against {@code ci_runner.client_id}. No row is a 1008 {@link #RUNNER_DELETED}, which a
+ * runner reads as its deletion and decommissions itself on. Nothing on the wire names a
  * runner: a frame that claimed to be one would only be a claim to check against this.
  *
  * <p><b>The subject is read off the validated token and nowhere else</b>, which means the machine
@@ -63,8 +65,18 @@ public class CiRunnerSocket {
   /** The role qits-idp grants a {@code ci-runner} client, and the only one this socket admits. */
   public static final String RUNNER_ROLE = "qits:ci-runner";
 
-  /** Why a dial whose bearer names no registered runner was closed. */
+  /**
+   * Why a dial whose bearer carries no subject was closed — a host that cannot read identity, which
+   * says nothing about whether the runner exists.
+   */
   public static final String UNKNOWN_RUNNER = "UNKNOWN_RUNNER";
+
+  /**
+   * Why a dial whose bearer names a client no runner is registered with was closed: the runner was
+   * deleted. The protocol's spelling ({@link CiRunnerProtocol.CloseReason#RUNNER_DELETED}), because a
+   * runner reads it and decommissions itself rather than redialling.
+   */
+  public static final String RUNNER_DELETED = CiRunnerProtocol.CloseReason.RUNNER_DELETED;
 
   /** Why a runner speaking another capability version was closed. */
   public static final String CAPABILITY_MISMATCH = "CAPABILITY_MISMATCH";
@@ -89,12 +101,15 @@ public class CiRunnerSocket {
     Optional<String> subject = MachineIdentity.claim(identity, "sub");
     Optional<CiRunner> runner = subject.flatMap(runners::findByClientId);
     if (runner.isEmpty()) {
-      // One code and one reason whether the token had no subject or named nobody: a caller that
-      // guessed wrong learns that it was wrong, not which half.
+      // Two reasons, because the runner branches on one. A validated token that names a client with
+      // the runner role and no row is a deleted runner — the one case a runner must stop redialling
+      // for, and the one it cannot learn from any other answer. A token with no subject is this
+      // host unable to read identity at all (see the class javadoc), which says nothing about the
+      // runner and must never make one remove itself.
       LOG.warnf(
           "Refused a runner dial from %s: subject %s is no registered runner",
           connection.handshakeRequest().remoteAddress(), subject.orElse("(none)"));
-      refuse(connection, UNKNOWN_RUNNER);
+      refuse(connection, subject.isPresent() ? RUNNER_DELETED : UNKNOWN_RUNNER);
       return;
     }
     connection.userData().put(SESSION, registry.admit(runner.orElseThrow(), connection));
@@ -121,7 +136,7 @@ public class CiRunnerSocket {
         switch (registry.onHello(session, hello)) {
           case GREETED -> {}
           case VERSION_MISMATCH -> refuse(connection, CAPABILITY_MISMATCH);
-          case RUNNER_GONE -> refuse(connection, UNKNOWN_RUNNER);
+          case RUNNER_GONE -> refuse(connection, RUNNER_DELETED);
         }
       }
       case Heartbeat ignored -> registry.onHeartbeat(session);

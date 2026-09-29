@@ -22,4 +22,7 @@ public class NoRunnerSignals implements CiRunnerSignals {
 
   @Override
   public void slotsChanged(UUID runnerId) {}
+
+  @Override
+  public void deleted(UUID runnerId) {}
 }

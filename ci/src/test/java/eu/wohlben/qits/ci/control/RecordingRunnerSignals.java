@@ -24,7 +24,7 @@ public class RecordingRunnerSignals implements CiRunnerSignals {
     signals.clear();
   }
 
-  /** Every signal about one runner, in order: {@code quarantined:<reason>}, {@code reinstated:<by>}, {@code slotsChanged}. */
+  /** Every signal about one runner, in order: {@code quarantined:<reason>}, {@code reinstated:<by>}, {@code slotsChanged}, {@code deleted}. */
   public List<String> of(UUID runnerId) {
     synchronized (signals) {
       String prefix = runnerId + " ";
@@ -48,5 +48,10 @@ public class RecordingRunnerSignals implements CiRunnerSignals {
   @Override
   public void slotsChanged(UUID runnerId) {
     signals.add(runnerId + " slotsChanged");
+  }
+
+  @Override
+  public void deleted(UUID runnerId) {
+    signals.add(runnerId + " deleted");
   }
 }

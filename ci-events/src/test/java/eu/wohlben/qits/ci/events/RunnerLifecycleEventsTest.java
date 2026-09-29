@@ -157,14 +157,15 @@ class RunnerLifecycleEventsTest {
         CanonicalJson.payload(
             new RunnerDisconnected(
                 ID, "build-host-1", "2026.928.1", RunnerDisconnected.LOST, 2, AT)));
-    // The vocabulary is five plain words, spelled once here.
+    // The vocabulary is six plain words, spelled once here.
     assertEquals(
-        List.of("RETIRED", "REPLACED", "LOST", "REFUSED", "SHUTDOWN"),
+        List.of("RETIRED", "REPLACED", "LOST", "REFUSED", "DELETED", "SHUTDOWN"),
         List.of(
             RunnerDisconnected.RETIRED,
             RunnerDisconnected.REPLACED,
             RunnerDisconnected.LOST,
             RunnerDisconnected.REFUSED,
+            RunnerDisconnected.DELETED,
             RunnerDisconnected.SHUTDOWN));
   }
 

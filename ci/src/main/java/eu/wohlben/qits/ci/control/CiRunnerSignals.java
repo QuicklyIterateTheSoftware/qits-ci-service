@@ -5,7 +5,7 @@ import java.util.UUID;
 
 /**
  * What a connected runner is told when its standing changes here — taken out of service, put back,
- * or granted a slot for its own health check. {@link CiRunnerPresence}'s kind of seam, pointed the
+ * granted a slot for its own health check, or deleted. {@link CiRunnerPresence}'s kind of seam, pointed the
  * other way: {@code ci/} decides, the runner socket's registry in {@code service/} is what speaks,
  * because the socket is a web stack's and this module has none.
  *
@@ -32,4 +32,15 @@ public interface CiRunnerSignals {
    * slots it has now, and a {@code Backlog} after it so a runner with room asks for work at once.
    */
   void slotsChanged(UUID runnerId);
+
+  /**
+   * The runner's row was deleted. Every connection it still holds is told so ({@code Retire} of kind
+   * {@code DELETED}, on which the runner removes its own container and state) and then closed.
+   * Called after the delete committed and <b>before</b> the runner's credentials are revoked at
+   * qits-idp — the frame goes over a socket that is already open, so it does not need them, but a
+   * runner that is told first has not yet begun failing to mint. Like every signal a hint: a runner
+   * that is not connected finds out at its next dial, which the socket refuses {@code
+   * RUNNER_DELETED}.
+   */
+  void deleted(UUID runnerId);
 }

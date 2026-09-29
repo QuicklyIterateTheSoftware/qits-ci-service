@@ -171,10 +171,13 @@ class CiRunnerSocketTest {
         @Claim(key = "aud", value = AUDIENCE),
         @Claim(key = "sub", value = "a-client-no-runner-owns")
       })
-  void aSubjectNoRunnerOwnsIsClosedWithAPolicyViolation() throws Exception {
+  void aSubjectNoRunnerOwnsIsClosedAsADeletedRunner() throws Exception {
+    // A valid runner token naming a client no row carries: the runner was deleted, and the reason
+    // is the protocol's word for it, on which a runner decommissions itself instead of redialling.
     try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
       assertEquals((Short) (short) 1008, runner.awaitClose(SOON));
-      assertEquals(CiRunnerSocket.UNKNOWN_RUNNER, runner.closeReason());
+      assertEquals(CiRunnerSocket.RUNNER_DELETED, runner.closeReason());
+      assertEquals(CiRunnerProtocol.CloseReason.RUNNER_DELETED, runner.closeReason());
     }
     assertFalse(presence.connected(runnerId));
   }
@@ -186,6 +189,9 @@ class CiRunnerSocketTest {
     // that could have been asserted in two headers names no runner at all.
     try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
       assertEquals((Short) (short) 1008, runner.awaitClose(SOON));
+      // And never RUNNER_DELETED: a host that cannot read identity must not make a runner remove
+      // itself.
+      assertEquals(CiRunnerSocket.UNKNOWN_RUNNER, runner.closeReason());
     }
   }
 

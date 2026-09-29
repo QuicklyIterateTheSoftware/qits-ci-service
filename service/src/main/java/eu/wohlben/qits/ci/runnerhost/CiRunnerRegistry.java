@@ -108,7 +108,8 @@ import org.jboss.logging.Logger;
  *
  * <p><b>Why a connection ended is decided here, once</b>, and it is the one fact a close does not
  * carry: the registry records {@link RunnerDisconnected#RETIRED} when it sends {@code Retire}, {@link
- * RunnerDisconnected#REFUSED} when it refuses a {@code Hello}, and announces {@link
+ * RunnerDisconnected#REFUSED} when it refuses a {@code Hello}, {@link RunnerDisconnected#DELETED}
+ * when it retires the connections of a deleted runner ({@link #deleted}), and announces {@link
  * RunnerDisconnected#REPLACED} itself when {@link #settle} drops a same-version session; every other
  * end is {@link RunnerDisconnected#LOST}, and a stopping process announces {@link
  * RunnerDisconnected#SHUTDOWN} for every connection it still has. A session announces its end at
@@ -819,6 +820,32 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
   }
 
   // --- the quarantine's signals (CiRunnerSignals) -------------------------------------------------
+
+  /**
+   * The runner's row was deleted: every open connection of it — a self-updating runner can hold two,
+   * and both are equally gone — is sent {@link Retire} of kind {@link Retire.Kind#DELETED}, on which
+   * the runner removes its own container and state volume, and is then closed 1008 {@link
+   * CiRunnerProtocol.CloseReason#RUNNER_DELETED}. The frame goes first so it is read first; the
+   * close is this host's side of the same fact, and ends a runner too old to act on the frame's kind
+   * (it reads it as an operator's retirement, and stops for good). Each connection's end is decided
+   * here as {@link RunnerDisconnected#DELETED} before either leaves, so the close announces that.
+   * A connection whose frame could not leave is closed all the same: the runner reads the close
+   * reason on its own.
+   */
+  @Override
+  public void deleted(UUID runnerId) {
+    for (Session session : open(runnerId)) {
+      session.endReason = RunnerDisconnected.DELETED;
+      LOG.infof(
+          "Runner %s (%s) was deleted; retiring its connection %s for good",
+          session.runnerName, session.runnerId, session.connection.id());
+      send(session, Retire.deleted("the runner was deleted"));
+      closeBounded(
+          session.connection,
+          new CloseReason(CLOSE_POLICY, CiRunnerProtocol.CloseReason.RUNNER_DELETED),
+          "the connection of deleted runner " + session.runnerName);
+    }
+  }
 
   /**
    * The runner was quarantined: {@link Quarantined}, then an {@code Ack} of what it may hold now, to
