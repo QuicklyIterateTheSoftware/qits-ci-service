@@ -228,6 +228,33 @@ class CiRunnerSocketTest {
   @Test
   @TestSecurity(user = "runner", roles = RUNNER_ROLE)
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void theIdRangeARunnerAdvertisesIsRecordedAndOneThatSaysNothingRecordsNone() throws Exception {
+    try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
+      runner.send(
+          new Hello(
+              pins.version(),
+              CiRunnerProtocol.CAPABILITY_VERSION,
+              1,
+              new Capabilities(true, "amd64", "linux", Map.of(), 65536L)));
+      assertNotNull(runner.next(Ack.class, SOON));
+      JsonNode capabilities = RunnerCapabilities.decode(row().capabilities);
+      assertEquals(65536L, capabilities.path("idRange").asLong());
+      assertTrue(CiRunService.narrowIdRange(row()), "and placement reads it as narrow");
+    }
+    awaitDisconnected();
+    try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
+      runner.send(hello(true));
+      assertNotNull(runner.next(Ack.class, SOON));
+      assertFalse(
+          RunnerCapabilities.decode(row().capabilities).has("idRange"),
+          "an older runner's Hello leaves the range unknown");
+    }
+    awaitDisconnected();
+  }
+
+  @Test
+  @TestSecurity(user = "runner", roles = RUNNER_ROLE)
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void thePinnedRunnerSpeakingAnotherCapabilityVersionIsClosed() throws Exception {
     // The pinned binary in a protocol this host does not speak: there is nothing to update it to.
     try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {

@@ -1248,6 +1248,11 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
     for (Map.Entry<String, String> label : capabilities.labels().entrySet()) {
       labels.put(label.getKey(), label.getValue());
     }
+    // Only when the runner said it (qits-556): an absent key is "unknown", which reserveFor allows,
+    // and an older runner's Hello keeps meaning exactly that.
+    if (capabilities.idRange() != null) {
+      node.put(Field.ID_RANGE, capabilities.idRange().longValue());
+    }
     try {
       return RunnerCapabilities.encode(node);
     } catch (IllegalArgumentException tooLarge) {

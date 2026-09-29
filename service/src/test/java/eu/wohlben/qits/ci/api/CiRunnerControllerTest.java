@@ -445,6 +445,30 @@ class CiRunnerControllerTest {
   }
 
   @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
+  void theRunnersAdvertisedIdRangeIsListedWithItsCapabilities() {
+    UUID id = UUID.fromString(create("narrow-ids").getString("id"));
+    QuarkusTransaction.requiringNew()
+        .run(
+            () ->
+                runnerRows.findById(id).capabilities =
+                    "{\"docker\":true,\"arch\":\"amd64\",\"idRange\":65536}");
+
+    given()
+        .when()
+        .get(RUNNERS)
+        .then()
+        .statusCode(200)
+        .body("runners[0].capabilities.idRange", equalTo(65536));
+    given()
+        .when()
+        .get(RUNNERS + "/" + id)
+        .then()
+        .statusCode(200)
+        .body("capabilities.idRange", equalTo(65536));
+  }
+
+  @Test
   @TestSecurity(user = "watcher", roles = {AGENT})
   void anAgentReadsRunnersAndWritesNone() {
     given().when().get(RUNNERS).then().statusCode(200).body("runners", hasSize(0));

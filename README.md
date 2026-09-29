@@ -344,7 +344,11 @@ and its row in the queue carry `runnerVersion` (what its current connection said
 takes the first run with the same conditional UPDATE a local worker's claim uses, writing `runner_id`
 in that statement — so local workers and runners compete for one row and exactly one wins. It passes
 over a run with a `docker:`/`build:` step for a runner whose capabilities do not say `docker: true`,
-and refuses a runner already holding its slots. The answer is `Take` or `Nothing`. A taken run is
+a run with a `build:` step for a runner whose advertised `idRange` (its user namespace's mapped
+uid/gid count, stored in `capabilities` from its `Hello`) is below 4294967295 — its builder cannot
+unpack a layer owning an id above that (qits-556); a runner that sends no range is allowed — and a
+run whose `avoid_runner_ids` names the runner (see "retried automatically" below), and refuses a
+runner already holding its slots. The answer is `Take` or `Nothing`. A taken run is
 driven on its own `ci-runner-run-<runId>` thread, never a `ci-run-worker`, through
 `runnerhost/RunnerStepRunner`: each step is a `Launch{workloadSpec}` to the runner — the spec
 `daemonhost/StepWorkloadSpecs` composes for the local path too — answered `Launched`/`LaunchFailed`

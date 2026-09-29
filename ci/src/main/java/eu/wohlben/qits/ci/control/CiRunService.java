@@ -2540,7 +2540,7 @@ public class CiRunService {
    * its range. Unknown — a runner older than {@code idRange}, or a value that is not a number — is
    * no, because refusing it would strand every runner released before the field.
    */
-  static boolean narrowIdRange(CiRunner runner) {
+  public static boolean narrowIdRange(CiRunner runner) {
     JsonNode capabilities = RunnerCapabilities.decode(runner.capabilities);
     if (capabilities == null) {
       return false;
