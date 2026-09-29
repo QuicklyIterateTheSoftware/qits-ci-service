@@ -24,8 +24,12 @@ import org.junit.jupiter.api.Test;
  * <p>What it holds is that a build on a runner outside the swarm is told the registry's PUBLIC vhost
  * both as the image registry and as the builder's push registry, that {@code BUILDKIT_HOST} stays
  * absent for the runner to fill, that the docker document logs into every public registry host with
- * the token, and that no key anywhere spells an internal alias — the kill switch's empty pair being
- * the one deliberate exception, and a value rather than an address.
+ * the token, that {@code $QITS_MAVEN_AUTH_USR}/{@code $QITS_MAVEN_AUTH_PSW} carry the same token as
+ * the credential a repository's own {@code .qits-maven-settings.xml} asks for by name (qits-441
+ * follow-up, run ef26d331 — the repo's {@code -s} settings win a same-id merge with the {@code -gs}
+ * document this class writes, so those two variables are the only way such a server id ever sees a
+ * credential on this plane), and that no key anywhere spells an internal alias — the kill switch's
+ * empty pair being the one deliberate exception, and a value rather than an address.
  */
 class EdgeBuildStepEnvironmentTest {
 
@@ -85,6 +89,8 @@ class EdgeBuildStepEnvironmentTest {
             "QITS_WORKSPACES_URL=https://workspaces.qits.example.org",
             "QITS_TOKEN=" + TOKEN,
             "QITS_TOKEN_SUBJECT=" + SUBJECT,
+            "QITS_MAVEN_AUTH_USR=" + SUBJECT,
+            "QITS_MAVEN_AUTH_PSW=" + TOKEN,
             "GIT_CONFIG_GLOBAL=/tmp/qits-gitconfig",
             "QITS_PUBLISH_TOKEN_COMMAND=/tmp/qits-publish-token",
             "DOCKER_BUILDKIT=1",

@@ -246,6 +246,20 @@ public class CiDaemonLauncher {
    * {@link StepWorkloadSpecs}. The two branches never meet: an edge step carries no pair and an
    * internal one no token, and the pair's branch below is byte for byte what it was.
    *
+   * <p><b>{@link #DEPLOY_SETTINGS_FILE}'s {@code -gs} is not the only settings file in play, and a
+   * live run (ef26d331, qits-stt-service, {@code quarkus-bom} 401) measured that {@code -gs} losing
+   * to a repository's own {@code -s .qits-maven-settings.xml}.</b> Every repository declares that
+   * file's own {@code <server id=qits-maven-network>}/{@code <server id=qits-central-proxy>} reading
+   * {@code ${env.QITS_MAVEN_AUTH_USR}}/{@code ${env.QITS_MAVEN_AUTH_PSW}} — a plain credential
+   * profile, not the header form {@code -gs} writes — and on Maven 3.9.12 a {@code -s}/{@code -gs}
+   * merge for one server id keeps the {@code -s} file's entry. {@code -gs} alone therefore never
+   * reaches those two ids on a step that also passes its own {@code -s}, which every archetype does.
+   * {@link StepWorkloadSpecs#compose} sets both variables to this run's token (password) and its
+   * subject (username) on the EDGE plane only, so the repo's own credential profile resolves rather
+   * than reading two empty environment expressions and sending an unauthenticated Basic the edge's
+   * 401 challenge turns into exactly this failure. Never set on INTERNAL: that plane's mirror reads
+   * are anonymous, and the two variables must stay unset there.
+   *
    * <p>{@code exec} rather than a plain call, so the daemon is PID 1 and the removal signals the
    * process that owns the step rather than a shell wrapping it.
    *

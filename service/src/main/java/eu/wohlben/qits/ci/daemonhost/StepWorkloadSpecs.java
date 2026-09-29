@@ -158,9 +158,31 @@ public final class StepWorkloadSpecs {
     // QITS_TOKEN branch turns it into the same four things the pair becomes (git helper, publish
     // command, maven settings, npmrc); the token itself is the run's and dies with it
     // (RunCommissions.release), so it is sent here rather than minted there.
+    //
+    // QITS_MAVEN_AUTH_USR/QITS_MAVEN_AUTH_PSW ride beside it for a reason BOOTSTRAP's own
+    // -gs/DEPLOY_SETTINGS_FILE cannot reach (qits-441 follow-up, run ef26d331): every repository's
+    // committed .qits-maven-settings.xml declares its OWN <server id=qits-maven-network>/<server
+    // id=qits-central-proxy> reading ${env.QITS_MAVEN_AUTH_USR}/${env.QITS_MAVEN_AUTH_PSW}, and a
+    // step's `-s .qits-maven-settings.xml` is a USER settings file — measured on Maven 3.9.12,
+    // merging with a `-gs` GLOBAL settings file keeps BOTH files' <servers>, and for one server id
+    // present in both, the USER file's entry wins. So the deploy settings this class writes into
+    // MAVEN_ARGS as -gs never reaches those two ids at all; without these two variables the repo's
+    // own entries resolve to two EMPTY strings, and the edge's WWW-Authenticate challenge is
+    // answered with Basic "<anything>:" rather than the run's token, a 401 on
+    // io.quarkus.platform:quarkus-bom and every other central artifact. Setting them is the whole
+    // fix: the same bearer as $QITS_TOKEN, over the httpHeaders escape hatch, out of Maven's reach
+    // entirely, this pair is the ordinary <username>/<password> credential a repo's OWN settings
+    // already asked for — one profile Maven DOES send preemptively for Basic, unlike the header
+    // form. $QITS_TOKEN_SUBJECT is a stable, readable username; the password is the token itself,
+    // which is exactly what the edge's Basic realm introspects as a qits_tok_ regardless of the
+    // username presented. Never set on the INTERNAL plane: those reads are anonymous through the
+    // swarm-internal registry, and setting a non-empty pair there would turn a working anonymous
+    // read into a credential the internal mirror does not expect and cannot validate.
     if (token != null) {
       env.put("QITS_TOKEN", value(token.token()));
       env.put("QITS_TOKEN_SUBJECT", value(token.subject()));
+      env.put("QITS_MAVEN_AUTH_USR", value(token.subject()));
+      env.put("QITS_MAVEN_AUTH_PSW", value(token.token()));
       env.put("GIT_CONFIG_GLOBAL", "/tmp/qits-gitconfig");
       env.put("QITS_PUBLISH_TOKEN_COMMAND", CiDaemonLauncher.PUBLISH_TOKEN_COMMAND);
     }
