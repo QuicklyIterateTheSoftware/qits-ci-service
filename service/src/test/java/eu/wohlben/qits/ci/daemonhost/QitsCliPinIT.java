@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import eu.wohlben.qits.ci.HermeticEnvironment;
+import eu.wohlben.qits.ci.QitsTokenAuth;
 import eu.wohlben.qits.ci.control.CiEventTriggerParser;
 import eu.wohlben.qits.ci.control.CiReleaseComposer;
 import eu.wohlben.qits.ci.control.CiReleaseSlotParser;
@@ -223,10 +224,13 @@ public class QitsCliPinIT {
             + "/"
             + PlatformAccessCliBinary.VERSION;
     try (HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build()) {
+      HttpRequest.Builder request =
+          HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofMinutes(5)).GET();
+      // On an EDGE runner this reaches the registry through the public edge, which refuses an
+      // anonymous read; QITS_TOKEN is the step's own job token, and unset on the internal plane.
+      QitsTokenAuth.addIfPresent(request);
       HttpResponse<byte[]> answer =
-          client.send(
-              HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofMinutes(5)).GET().build(),
-              HttpResponse.BodyHandlers.ofByteArray());
+          client.send(request.build(), HttpResponse.BodyHandlers.ofByteArray());
       if (answer.statusCode() != 200) {
         fail(
             "the pinned qits CLI "
