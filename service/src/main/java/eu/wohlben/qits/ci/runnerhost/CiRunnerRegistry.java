@@ -1149,6 +1149,21 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
     }
   }
 
+  /**
+   * Every runner with at least one open connection right now — {@link #connected} for all of them at
+   * once, in memory and with no row read, which is what lets the {@code ci-runners} readiness check
+   * reach its verdict whatever the database is doing.
+   */
+  public java.util.Set<UUID> connectedRunnerIds() {
+    java.util.Set<UUID> connected = new java.util.HashSet<>();
+    for (UUID runnerId : List.copyOf(sessions.keySet())) {
+      if (connected(runnerId)) {
+        connected.add(runnerId);
+      }
+    }
+    return java.util.Set.copyOf(connected);
+  }
+
   /** Observational: how many runners hold at least one session here. */
   public int size() {
     return sessions.size();

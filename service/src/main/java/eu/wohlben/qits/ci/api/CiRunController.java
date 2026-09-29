@@ -416,8 +416,9 @@ public class CiRunController {
    * The queue envelope: how many slots there are, the instant every duration in it is relative to,
    * and the two halves of the queue.
    *
-   * @param concurrentBuilds how many runs this deployment's own worker pool executes at once. The
-   *     forecast models that plus every connected runner's slots — {@code runners} says which, so
+   * @param concurrentBuilds how many runs this deployment's own worker pool executes at once — 0
+   *     when every run is handed to the runners (qits-503). The forecast models that plus every
+   *     connected runner's slots — {@code runners} says which, so
    *     a reader can see why the queue moves as fast or as slowly as it does
    * @param generatedAt the instant every {@code expectedStartInMillis} and {@code
    *     expectedFinishInMillis} in this body is measured from. <b>It is the only absolute instant

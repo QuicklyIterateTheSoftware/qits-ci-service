@@ -218,15 +218,53 @@ public class CiQueueForecastTest {
   }
 
   @Test
-  public void aSlotCountBelowOneIsClampedRatherThanRefused() {
-    // Zero slots is not a queue that never moves, it is a configuration nothing here can usefully
-    // answer for — and a read path is not where a misconfiguration should become an exception. It
-    // reads as the serial case.
+  public void zeroSlotsForecastsNoStartAndSaysWhyRatherThanDividingByNothing() {
+    // qits-503: a zero-thread qits-ci with no runner connected is a queue nothing will move until one
+    // arrives. No start can be placed, and the reason names the missing slots — the running half is
+    // still forecast, since a run already executing somewhere has its own remaining time.
     CiQueueForecast.Forecast forecast =
         CiQueueForecast.forecast(
-            List.of(), claimOrder(run("a", 10 * SECOND), run("b", 10 * SECOND)), 0, NOW);
+            List.of(running("elsewhere", 40 * SECOND, 10 * SECOND)),
+            claimOrder(run("a", 10 * SECOND), run("unmeasured")),
+            0,
+            NOW);
 
-    assertEquals(Arrays.asList(0L, 10 * SECOND), starts(forecast));
+    assertEquals(Arrays.asList(null, null), starts(forecast));
+    assertEquals(Arrays.asList(null, null), finishes(forecast));
+    assertEquals(
+        CiQueueForecast.Unknown.NO_BUILD_SLOTS, forecast.queued().get(0).expectedStart().reason());
+    assertEquals(
+        CiQueueForecast.Unknown.NO_BUILD_SLOTS, forecast.queued().get(0).expectedFinish().reason());
+    // Its own missing prediction still wins its finish's reason, as it always does.
+    assertEquals(
+        CiQueueForecast.Unknown.RUN_HAS_NO_PREDICTION,
+        forecast.queued().get(1).expectedFinish().reason());
+    assertEquals(30 * SECOND, forecast.running().get(0).expectedFinishInMillis().longValue());
+    // A negative count is read as zero, never as an exception on a read path.
+    assertEquals(
+        CiQueueForecast.Unknown.NO_BUILD_SLOTS,
+        CiQueueForecast.forecast(List.of(), claimOrder(run("b", SECOND)), -1, NOW)
+            .queued()
+            .get(0)
+            .expectedStart()
+            .reason());
+  }
+
+  @Test
+  public void aZeroPoolCountsTheConnectedRunnersSlotsAlone() {
+    List<CiQueueForecast.RunnerCapacity> runners =
+        List.of(
+            new CiQueueForecast.RunnerCapacity(
+                java.util.UUID.randomUUID(), "localhost", 2, 0, true),
+            new CiQueueForecast.RunnerCapacity(
+                java.util.UUID.randomUUID(), "offline", 8, 0, false));
+    assertEquals(2, CiQueueForecast.slotCount(0, runners));
+    assertEquals(0, CiQueueForecast.slotCount(0, List.of()));
+
+    CiQueueForecast.Forecast forecast =
+        CiQueueForecast.forecast(
+            List.of(), claimOrder(run("a", 10 * SECOND), run("b", 10 * SECOND)), 2, NOW);
+    assertEquals(Arrays.asList(0L, 0L), starts(forecast));
   }
 
   // --- what a RUNNING run contributes -------------------------------------------------------------

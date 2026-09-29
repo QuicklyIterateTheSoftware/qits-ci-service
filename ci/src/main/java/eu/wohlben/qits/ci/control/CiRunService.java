@@ -231,8 +231,8 @@ import org.jboss.logging.Logger;
  * them — a loop that survives is a loop whose backlog never waited on a resubmission.
  *
  * <p><b>The count is a fact rather than an inference.</b> {@link #workerCensus} is how many loops
- * are live, and {@code CiRunWorkerReadinessCheck} is what turns "zero, and this process is not
- * stopping" into a DOWN a deployer can act on. Green-while-dead is what misled the incident, and
+ * are live, and {@code CiRunnerReadinessCheck} is what turns "zero, no runner connected, and this
+ * process is not stopping" into a DOWN a deployer can act on. Green-while-dead is what misled the incident, and
  * that pair is what ends it.
  *
  * <p><b>One poison row costs one row.</b> A {@code QUEUED} row whose snapshot will not reconstruct
@@ -522,7 +522,10 @@ public class CiRunService {
   @ConfigProperty(name = "qits.ci.step-timeout-seconds")
   int stepTimeoutSeconds;
 
-  /** The instance-wide upper bound on runs executing at the same time. */
+  /**
+   * How many runs this process executes itself at the same time — its claim loops. 0 runs none and
+   * hands every run to the runners (qits-503); negative refuses the boot.
+   */
   @ConfigProperty(name = "qits.ci.concurrent-builds")
   int concurrentBuilds;
 
@@ -638,7 +641,7 @@ public class CiRunService {
   private final AtomicInteger busyWorkers = new AtomicInteger();
 
   /**
-   * How many claim loops are alive right now — the number {@code CiRunWorkerReadinessCheck} turns
+   * How many claim loops are alive right now — the number {@code CiRunnerReadinessCheck} turns
    * into a health verdict, and the one fact the live incident had no way of stating.
    *
    * <p><b>Distinct from {@link #busyWorkers}, and the difference is the whole point.</b> That one
@@ -663,6 +666,11 @@ public class CiRunService {
   @PostConstruct
   void initializeWorkers() {
     worker = createWorkerPool(concurrentBuilds);
+    if (concurrentBuilds == 0) {
+      LOG.infof(
+          "qits.ci.concurrent-builds is 0: this process runs no claim loop, and every run is"
+              + " executed by a connected runner");
+    }
     for (int i = 0; i < concurrentBuilds; i++) {
       worker.submit(supervised(worker, () -> !stopping, this::workerLoop));
     }
@@ -913,13 +921,21 @@ public class CiRunService {
     }
   }
 
+  /**
+   * The pool the claim loops live on. {@code 0} is a real value (qits-503): it hands every run to
+   * the runners, so this process runs no claim loop at all — nothing is submitted, and a fixed pool
+   * starts its threads only on a submission, so the one-thread pool built for it never starts one.
+   * A pool is still built rather than a null kept, so {@link #shutdown} and {@link #supervised} have
+   * one shape whatever the size. Negative is a configuration nobody meant, and refuses the boot.
+   */
   static ExecutorService createWorkerPool(int concurrentBuilds) {
-    if (concurrentBuilds < 1) {
-      throw new IllegalArgumentException("qits.ci.concurrent-builds must be at least 1");
+    if (concurrentBuilds < 0) {
+      throw new IllegalArgumentException(
+          "qits.ci.concurrent-builds must be at least 0 — 0 hands every run to the runners");
     }
     AtomicInteger workerNumber = new AtomicInteger();
     return Executors.newFixedThreadPool(
-        concurrentBuilds,
+        Math.max(1, concurrentBuilds),
         r -> {
           Thread t = new Thread(r, "ci-run-worker-" + workerNumber.incrementAndGet());
           t.setDaemon(true);
@@ -4092,7 +4108,7 @@ public class CiRunService {
     List<CiQueueForecast.RunnerCapacity> runnerCapacity = runnerCapacity();
     return new Snapshot(
         generatedAt,
-        Math.max(1, concurrentBuilds),
+        concurrentBuilds,
         active,
         List.copyOf(running),
         ordered,
@@ -4146,9 +4162,9 @@ public class CiRunService {
    * what a map would buy.
    *
    * @param generatedAt the instant every millisecond in {@link #forecast()} is relative to
-   * @param concurrentBuilds how many runs this deployment executes at once, as the forecast modelled
-   *     it: the configured value clamped up to 1, so it is the number the arithmetic really used
-   *     rather than the number somebody configured
+   * @param concurrentBuilds the local pool as configured — how many claim loops this process runs.
+   *     0 is a real answer (qits-503): every run is then a runner's, and the forecast counts the
+   *     connected runners' slots alone
    * @param activeNewestFirst both halves together in {@link CiRunService#activeRuns()}' own order,
    *     which is the order {@code GET /ci/api/runs/active} documents and must keep. It is carried
    *     beside the partition rather than reassembled from it, because re-interleaving two lists by

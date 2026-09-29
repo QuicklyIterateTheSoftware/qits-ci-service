@@ -430,7 +430,11 @@ public class CiRunnerController {
   @Operation(summary = "Decommission a runner and give its credentials back")
   @APIResponse(responseCode = "204", description = "Gone")
   @APIResponse(responseCode = "404", description = "No such runner")
-  @APIResponse(responseCode = "409", description = "The runner holds a running run")
+  @APIResponse(
+      responseCode = "409",
+      description =
+          "The runner holds a running run, or LAST_RUNNER: it is localhost and no other runner"
+              + " exists")
   public Response delete(@PathParam("id") String id) {
     requireMachineAudience();
     CiRunner gone = runners.delete(runnerId(id));

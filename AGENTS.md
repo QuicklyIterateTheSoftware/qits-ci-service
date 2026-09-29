@@ -759,7 +759,10 @@ a process restart healed it. Four things close it and each closes a different ha
   whose backlog never waited on a resubmission. `shutdown()` raises `stopping` **before**
   `shutdownNow`, which is what makes a shutdown a shutdown rather than a stream of replacements.
 - **The count is a surface.** `CiRunService.workerCensus()` answers `(live, configured, stopping)`
-  and `api/CiRunWorkerReadinessCheck` is DOWN exactly when live is zero and `stopping` is false.
+  and `api/CiRunnerReadinessCheck` (`ci-runners`, which replaced `ci-run-workers` in qits-503) is
+  DOWN exactly when live is zero, no runner is connected and `stopping` is false — a connected
+  runner executes runs as well as a loop does, and `qits.ci.concurrent-builds=0` has no loop by
+  design.
   Zero live loops *during* a shutdown is what a shutdown is, so that arm is UP; `busyWorkers` is
   deliberately not consulted, because an idle instance is legitimately zero-busy for days. What DOWN
   buys is qits-cd's `awaitHealthy` restoring the previous container, plus a `/q/health/ready` that

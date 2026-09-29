@@ -25,7 +25,7 @@ import org.junit.jupiter.api.Test;
  * <em>whatever the config says</em>: this entry can no longer hold a deployment out of rotation, and
  * qits-cd's {@code awaitHealthy} restoring the previous container over a daemon version is exactly
  * the behaviour that was deliberately given up — the real gate is {@link
- * CiRunWorkerReadinessCheck}. A DOWN arm reappearing here would be a silent re-introduction of that,
+ * CiRunnerReadinessCheck}. A DOWN arm reappearing here would be a silent re-introduction of that,
  * and this is the test that fails when it does.
  */
 @QuarkusTest

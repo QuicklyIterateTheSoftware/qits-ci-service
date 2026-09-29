@@ -552,6 +552,62 @@ class CiRunnerControllerTest {
     assertEquals(List.of(), idp.postedTokens);
   }
 
+  // --- localhost (qits-503) ----------------------------------------------------------------------
+
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
+  void localhostNamesOneRunnerAtMostAndIsListedFirst() {
+    create("alpha");
+    UUID localhost = UUID.fromString(create("localhost").getString("id"));
+    create("zulu");
+
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"name\":\"localhost\",\"slots\":1}")
+        .when()
+        .post(RUNNERS)
+        .then()
+        .statusCode(409);
+    assertEquals(3, idp.postedTokens.size(), "the second localhost commissioned nothing");
+
+    given()
+        .when()
+        .get(RUNNERS)
+        .then()
+        .statusCode(200)
+        .body("runners.name", equalTo(List.of("localhost", "alpha", "zulu")))
+        .body("runners[0].id", equalTo(localhost.toString()));
+  }
+
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
+  void deletingLocalhostWhileItIsTheOnlyRunnerIs409LastRunnerAndGivesNothingBack() {
+    UUID localhost = UUID.fromString(create("localhost").getString("id"));
+
+    given()
+        .when()
+        .delete(RUNNERS + "/" + localhost)
+        .then()
+        .statusCode(409)
+        .body("code", equalTo("LAST_RUNNER"));
+    assertNotNull(row(localhost), "the row stays");
+    assertEquals(List.of(), idp.deletedTokens, "and its token is not given back");
+
+    // Once another runner exists it is an ordinary runner to delete — and the other one, deleted
+    // while localhost remains, never was the last.
+    UUID other = UUID.fromString(create("build-host").getString("id"));
+    given().when().delete(RUNNERS + "/" + localhost).then().statusCode(204);
+    assertNull(row(localhost));
+    given().when().delete(RUNNERS + "/" + other).then().statusCode(204);
+  }
+
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
+  void theLastRunnerThatIsNotLocalhostIsDeletedAsEver() {
+    UUID only = UUID.fromString(create("build-host").getString("id"));
+    given().when().delete(RUNNERS + "/" + only).then().statusCode(204);
+  }
+
   @Test
   void theCreatedShapeIsTheRunnersFieldsFlatPlusTheScript() {
     List<String> runner =

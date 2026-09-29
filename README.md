@@ -141,11 +141,11 @@ runner's register door, and the socket it then holds open to pull work.
 |---|---|---|
 | `POST /ci/api/runners` `{name, description?, slots?, plane?, stepMemoryLimit?}` | 201 the runner's fields plus `installScript` — the one install line carrying the registration token, **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}` or a `stepMemoryLimit` that is not a docker size of at least `6m`, 400 `EDGE_PLANE_UNCONFIGURED` for `plane: EDGE` on a qits-ci that knows no public domain, 409 on a taken one | `qits:admin`, `qits:system` |
 | `GET /ci/api/runners/install.sh` | `text/plain`: the generic install script the line pipes into `sh` — no secret, no runner | `qits:ci-runner-registration`, `qits:admin`, `qits:system`, `qits:agent` |
-| `GET /ci/api/runners` | `{runners: [{id, name, description, slots, plane, stepMemoryLimit, capabilities, registered, connected, heldRuns, lastSeenAt, createdAt, runnerVersion, targetVersion, updating, quarantined, quarantineReason, quarantinedAt, lastHealthcheck: {at, result, runId, detail}}]}`, by name | `qits:admin`, `qits:system`, `qits:agent` |
+| `GET /ci/api/runners` | `{runners: [{id, name, description, slots, plane, stepMemoryLimit, capabilities, registered, connected, heldRuns, lastSeenAt, createdAt, runnerVersion, targetVersion, updating, quarantined, quarantineReason, quarantinedAt, lastHealthcheck: {at, result, runId, detail}}]}`, `localhost` first, then by name | `qits:admin`, `qits:system`, `qits:agent` |
 | `GET /ci/api/runners/{id}` | one runner, 404 | the same |
 | `PATCH /ci/api/runners/{id}` `{slots?, description?, plane?, stepMemoryLimit?}` | the runner; `slots: 0` drains it; a plane change reaches the runner's next run, a `stepMemoryLimit` change its next step, and a blank `stepMemoryLimit` clears it back to the platform default; 400 `EDGE_PLANE_UNCONFIGURED` as on the create, 400 on a malformed `stepMemoryLimit` | `qits:admin`, `qits:system` |
 | `POST /ci/api/runners/{id}/registration-token` | the runner's fields plus a fresh `installScript` line with a new token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin`, `qits:system` |
-| `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run | `qits:admin`, `qits:system` |
+| `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run; 409 `LAST_RUNNER` for `localhost` while no other runner exists | `qits:admin`, `qits:system` |
 | `POST /ci/api/runners/{id}/greenlight` | the runner, its quarantine lifted and its failure streak reset; a runner in service is answered as it is | `qits:admin` |
 | `POST /ci/api/runners/{id}/healthcheck` | 202 `{runId}`: a health check queued for it now; 409 while one is queued or running, 503 when its repository, head or image cannot be resolved | `qits:admin` |
 
@@ -383,6 +383,36 @@ container.
 `GET /ci/api/runs/queue` lists every runner (`runners: [{id, name, slots, held, connected, …, quarantined,
 quarantineReason, quarantinedAt, lastHealthcheck}]`) and its forecast counts the local pool plus every
 connected runner's slots — none of a quarantined one's.
+
+#### `localhost`: the platform host is a runner like any other
+
+**The platform host's own runner is named `localhost`** (qits-503, epic qits-443). The name is an
+ordinary runner name reserved for ONE row by the unique constraint every name has — a second create is
+409 like any taken name, and no door renames a runner — and it is special in two places only: every
+runner listing (`GET /ci/api/runners`, the queue's `runners`) answers it **first**, then the rest by
+name, and `DELETE` of it answers **409 `LAST_RUNNER`** (`{"code": "LAST_RUNNER", "message": …}`) while
+no other runner row exists, since with the in-process pool sized to zero it is the only thing that
+executes a step. The bootstrap creates it on a cold start (see the `qits:system` paragraph above).
+**Its install values are pasted into qits-configuration, never into a shell**: the operator (or the
+bootstrap) takes `QITS_CI_RUNNER_ID` and `QITS_CI_RUNNER_REGISTRATION_TOKEN` out of the create's (or a
+rotation's) `installScript` and stores them as `env.QITS_CI_RUNNER_ID` and
+`env.QITS_CI_RUNNER_REGISTRATION_TOKEN` of the application `qits-ci-runner`, which qits-deployments
+runs as a swarm service on the platform host; the curl line is for a machine a person owns.
+
+#### Readiness counts runners
+
+**`/q/health/ready`'s gate is `ci-runners` (`api/CiRunnerReadinessCheck`), which replaced
+`ci-run-workers`** (qits-503). It is UP while at least one claim loop is live **or** at least one runner
+is connected (a quarantined one included — `localhost`'s first health check is a run this process has
+to accept), UP while the process is stopping, and DOWN otherwise; its data is `liveWorkers`,
+`configuredWorkers`, `connectedRunners` and `totalSlots` (the connected runners' effective slots, a
+quarantined one counting none). The old check counted claim loops alone, so it read
+`qits.ci.concurrent-builds=0` — no loop, by design — as the outage it was written for.
+
+**THIS READINESS CHANGE MUST BE RELEASED AND LIVE BEFORE QITS_CI_CONCURRENT_BUILDS=0 IS SET, OR THE
+ZERO-THREAD QITS-CI FAILS ITS OWN DEPLOYMENT GATE.** And with the pool at 0, a qits-ci that boots with
+no runner connected is DOWN until one dials — so `localhost` has to be registered and running before
+the cutover, not after.
 
 #### Quarantine, and the health check that ends one
 
@@ -2060,8 +2090,9 @@ document's shape, and an always-blank key costs it nothing while a removed one c
 `ci-daemon-pin`), it is UP unconditionally, and it reports the name, version and source as health
 data. It had a DOWN arm while the ladder could fall all the way through — every candidate rejected
 and nothing configured — and that state no longer exists. Nothing is lost at qits-cd's `awaitHealthy`
-gate: `CiRunWorkerReadinessCheck` is the real gate and always was the better one, since a qits-ci
-with no claim loop accepts runs and executes none, which is the failure that actually shipped.
+gate: `CiRunnerReadinessCheck` (`ci-runners`, formerly `ci-run-workers`) is the real gate and always
+was the better one, since a qits-ci with no claim loop and no runner accepts runs and executes none,
+which is the failure that actually shipped.
 
 **Failures stay distinguishable.** The orchestrator refusing the launch (or not answering at all), a
 container whose bootstrap never produced a daemon (its own log tail comes back on the very call that
@@ -2255,7 +2286,12 @@ a repository's own listing will show.
   environment sharing capacity are not a supported shape — size a single instance with
   `qits.ci.concurrent-builds` instead.
 - Set `qits.ci.concurrent-builds` to the maximum number of pipelines this qits-ci instance may run
-  at once (default **4**, minimum **1**). Steps remain sequential within one pipeline. Size this
+  itself at once (default **4**, minimum **0**). **`0` hands every run to the runners** (qits-503):
+  no claim loop starts, nothing is claimed locally, an accepted run waits `QUEUED` for a runner's
+  `Reserve`, `GET /ci/api/runs/queue` answers `concurrentBuilds: 0`, and its forecast counts the
+  connected runners' slots alone — with none connected every queued run's ETA is
+  `NO_BUILD_SLOTS`. Negative refuses the boot. See "Readiness counts runners" under "Runners"
+  before setting it. Steps remain sequential within one pipeline. Size this
   together with the host's CPU and memory and the per-container `qits.ci.cpus`/`memory-limit` caps.
   It is also how many **claim loops** the process runs: a worker is a thread that reads the queued
   runs, ranks them, and takes the best one it can have.
