@@ -87,6 +87,8 @@ class CiRunnerControllerTest {
 
   private static final String AGENT = "qits:agent";
 
+  private static final String SYSTEM = "qits:system";
+
   private static final String REGISTRATION = "qits:ci-runner-registration";
 
   /** The subject the register cases' token carries, and which they write onto the row. */
@@ -471,7 +473,9 @@ class CiRunnerControllerTest {
   @Test
   @TestSecurity(user = "watcher", roles = {AGENT})
   void anAgentReadsRunnersAndWritesNone() {
-    given().when().get(RUNNERS).then().statusCode(200).body("runners", hasSize(0));
+    // A real row, so a 403 below is the role refusing and never a 404 for a runner that is not there.
+    UUID id = declaredRunner("agent-target");
+    given().when().get(RUNNERS).then().statusCode(200).body("runners", hasSize(1));
     given()
         .contentType(MediaType.APPLICATION_JSON)
         .body("{\"name\":\"nope\",\"slots\":1}")
@@ -479,7 +483,129 @@ class CiRunnerControllerTest {
         .post(RUNNERS)
         .then()
         .statusCode(403);
-    given().when().delete(RUNNERS + "/" + UUID.randomUUID()).then().statusCode(403);
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"slots\":3}")
+        .when()
+        .patch(RUNNERS + "/" + id)
+        .then()
+        .statusCode(403);
+    given().when().post(RUNNERS + "/" + id + "/registration-token").then().statusCode(403);
+    given().when().delete(RUNNERS + "/" + id).then().statusCode(403);
+    given().when().post(RUNNERS + "/" + id + "/greenlight").then().statusCode(403);
+    given().when().post(RUNNERS + "/" + id + "/healthcheck").then().statusCode(403);
+    assertNotNull(row(id), "every write was refused, so the runner is still there");
+    assertEquals(1, row(id).slots);
+    assertEquals(List.of(), idp.postedTokens, "and nothing was minted for it");
+  }
+
+  /**
+   * qits-521: the bootstrap's own service client is the machine caller of the lifecycle writes — it
+   * creates the {@code localhost} runner on a cold start, reads the registration token out of the
+   * 201's install line and hands it to the deployer, with nobody at a keyboard.
+   */
+  @Test
+  @TestSecurity(user = "dev-qits-bootstrap", roles = {SYSTEM})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = OWN_AUDIENCE),
+        @Claim(key = "sub", value = "dev-qits-bootstrap")
+      })
+  void aSystemBearerCreatesPatchesRotatesAndDeletesARunner() {
+    JsonPath created = create("localhost");
+    UUID id = UUID.fromString(created.getString("id"));
+    assertTrue(
+        created.getString("installScript").contains("QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_stub-1'"),
+        "the registration token is readable from the 201 body");
+
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"slots\":3}")
+        .when()
+        .patch(RUNNERS + "/" + id)
+        .then()
+        .statusCode(200)
+        .body("slots", equalTo(3));
+    given().when().post(RUNNERS + "/" + id + "/registration-token").then().statusCode(200);
+    // Two runners, so deleting localhost is not refused as the last one (qits-503).
+    create("elsewhere");
+    given().when().delete(RUNNERS + "/" + id).then().statusCode(204);
+    assertNull(row(id));
+  }
+
+  /** The machine arm asks MachineAuth: a system bearer addressed elsewhere writes nothing. */
+  @Test
+  @TestSecurity(user = "dev-qits-bootstrap", roles = {SYSTEM})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = "qits-elsewhere"),
+        @Claim(key = "sub", value = "dev-qits-bootstrap")
+      })
+  void aSystemBearerAddressedElsewhereIs403AndMintsNothing() {
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"name\":\"misaddressed\",\"slots\":1}")
+        .when()
+        .post(RUNNERS)
+        .then()
+        .statusCode(403);
+    assertEquals(List.of(), idp.postedTokens);
+  }
+
+  // --- localhost (qits-503) ----------------------------------------------------------------------
+
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
+  void localhostNamesOneRunnerAtMostAndIsListedFirst() {
+    create("alpha");
+    UUID localhost = UUID.fromString(create("localhost").getString("id"));
+    create("zulu");
+
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"name\":\"localhost\",\"slots\":1}")
+        .when()
+        .post(RUNNERS)
+        .then()
+        .statusCode(409);
+    assertEquals(3, idp.postedTokens.size(), "the second localhost commissioned nothing");
+
+    given()
+        .when()
+        .get(RUNNERS)
+        .then()
+        .statusCode(200)
+        .body("runners.name", equalTo(List.of("localhost", "alpha", "zulu")))
+        .body("runners[0].id", equalTo(localhost.toString()));
+  }
+
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
+  void deletingLocalhostWhileItIsTheOnlyRunnerIs409LastRunnerAndGivesNothingBack() {
+    UUID localhost = UUID.fromString(create("localhost").getString("id"));
+
+    given()
+        .when()
+        .delete(RUNNERS + "/" + localhost)
+        .then()
+        .statusCode(409)
+        .body("code", equalTo("LAST_RUNNER"));
+    assertNotNull(row(localhost), "the row stays");
+    assertEquals(List.of(), idp.deletedTokens, "and its token is not given back");
+
+    // Once another runner exists it is an ordinary runner to delete — and the other one, deleted
+    // while localhost remains, never was the last.
+    UUID other = UUID.fromString(create("build-host").getString("id"));
+    given().when().delete(RUNNERS + "/" + localhost).then().statusCode(204);
+    assertNull(row(localhost));
+    given().when().delete(RUNNERS + "/" + other).then().statusCode(204);
+  }
+
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
+  void theLastRunnerThatIsNotLocalhostIsDeletedAsEver() {
+    UUID only = UUID.fromString(create("build-host").getString("id"));
+    given().when().delete(RUNNERS + "/" + only).then().statusCode(204);
   }
 
   @Test

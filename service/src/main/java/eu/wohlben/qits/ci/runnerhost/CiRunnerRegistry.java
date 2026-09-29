@@ -84,6 +84,12 @@ import org.jboss.logging.Logger;
  * retired one: the runner closes its own socket and exits, and its close is an ordinary {@link
  * #onClose}.
  *
+ * <p><b>A deployer-managed runner is the one exception</b> (qits-443): a {@code Hello} carrying
+ * {@link #SELF_UPDATE_LABEL}{@code =false} is taken as it is whatever its version — no {@code
+ * Upgrade}, no draining, the row's slots, never {@code updating} — because qits-deployments, not
+ * the runner, moves that runner's version. A later connection of another version retires it as the
+ * pinned one would.
+ *
  * <p><b>Runs are held by the session that took them, not by the runner.</b> {@link #hold} binds a
  * run to the session its {@code Take} went out on. That is what routes a self-update: every {@code
  * Launch}, {@code Reap}, {@code Cancel} and {@code Released} of a held run goes to {@link #holding}'s
@@ -142,6 +148,16 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
 
   /** The close reason a session replaced by a newer dial of the same runner is given. */
   public static final String ALREADY_CONNECTED = "ALREADY_CONNECTED";
+
+  /**
+   * The capability label a runner that does NOT update itself advertises, with the value {@code
+   * false}: the platform host's {@code localhost} runner, which qits-deployments runs as a swarm
+   * service with {@code QITS_CI_RUNNER_SELF_UPDATE=false}. Its version moves when qits-deployments
+   * redeploys it, so this host never sends it {@link Upgrade}, never drains it and never reports it
+   * {@code updating} — a version that differs from the pin is displayed, and nothing more. Any other
+   * value, or no label at all, is the ordinary self-updating runner.
+   */
+  public static final String SELF_UPDATE_LABEL = "qits.ci.runner.self-update";
 
   /** How long one frame may take to leave — {@code CiDaemonRegistry}'s number. */
   static final Duration SEND_TIMEOUT = Duration.ofSeconds(30);
@@ -399,7 +415,10 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
    */
   public Greeting onHello(Session session, Hello hello) {
     String pin = pins.version();
-    boolean current = pin.equals(hello.runnerVersion());
+    // A deployer-managed runner is never told to become the pin: whatever version it says, it is
+    // taken as it is — so it gets its row's slots, reserves work and is never updating. Only a
+    // capability it does not speak still refuses it, below, as it would the pinned binary.
+    boolean current = pin.equals(hello.runnerVersion()) || !selfUpdates(hello);
     boolean speaks = hello.capabilityVersion() == CiRunnerProtocol.CAPABILITY_VERSION;
     session.helloVersion = hello.runnerVersion();
     if (current && !speaks) {
@@ -477,18 +496,36 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
           "runner " + session.runnerName + "'s rollover",
           announcer ->
               announcer.onRunnerUpdated(
-                  session.runnerId.toString(), session.runnerName, from, pin, Instant.now()));
+                  session.runnerId.toString(),
+                  session.runnerName,
+                  from,
+                  hello.runnerVersion(),
+                  Instant.now()));
     }
     for (Session old : retiring) {
       LOG.infof(
           "Runner %s's %s connection %s is superseded by %s; retiring it",
-          row.name, old.runnerVersion, old.connection.id(), pin);
-      if (!send(old, new Retire("superseded by " + pin))) {
+          row.name, old.runnerVersion, old.connection.id(), hello.runnerVersion());
+      // The version that superseded it — the pin, except for a deployer-managed runner, whose
+      // redeploy is what moved it.
+      if (!send(old, new Retire("superseded by " + hello.runnerVersion()))) {
         // The frame never left: nothing retired this connection, its socket was already going.
         old.endReason = null;
       }
     }
     return Greeting.GREETED;
+  }
+
+  /**
+   * False when the runner's {@code Hello} carries {@link #SELF_UPDATE_LABEL}{@code =false} — read off
+   * the capabilities whatever their capability version, since what is at stake is whether an {@link
+   * Upgrade} may be sent at all, and a runner that said it must not be updated is not sent one.
+   */
+  static boolean selfUpdates(Hello hello) {
+    Capabilities capabilities = hello.capabilities();
+    Map<String, String> labels = capabilities == null ? null : capabilities.labels();
+    String value = labels == null ? null : labels.get(SELF_UPDATE_LABEL);
+    return value == null || !"false".equalsIgnoreCase(value.trim());
   }
 
   /**
@@ -1147,6 +1184,21 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
                       "Backlog %d did not reach runner %s: %s",
                       queued, session.runnerName, failed.getMessage()));
     }
+  }
+
+  /**
+   * Every runner with at least one open connection right now — {@link #connected} for all of them at
+   * once, in memory and with no row read, which is what lets the {@code ci-runners} readiness check
+   * reach its verdict whatever the database is doing.
+   */
+  public java.util.Set<UUID> connectedRunnerIds() {
+    java.util.Set<UUID> connected = new java.util.HashSet<>();
+    for (UUID runnerId : List.copyOf(sessions.keySet())) {
+      if (connected(runnerId)) {
+        connected.add(runnerId);
+      }
+    }
+    return java.util.Set.copyOf(connected);
   }
 
   /** Observational: how many runners hold at least one session here. */

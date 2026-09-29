@@ -825,6 +825,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:system
   /ci/api/runners/install.sh:
     get:
       summary: "The generic runner install script, which the install line pipes into\
@@ -887,6 +888,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:system
     get:
       summary: One runner
       parameters:
@@ -929,7 +931,8 @@ paths:
         "404":
           description: No such runner
         "409":
-          description: The runner holds a running run
+          description: "The runner holds a running run, or LAST_RUNNER: it is localhost\
+            \ and no other runner exists"
         "401":
           description: Not Authorized
         "403":
@@ -939,6 +942,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:system
   /ci/api/runners/{id}/greenlight:
     post:
       summary: Lift a runner's quarantine
@@ -1076,6 +1080,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:system
   /ci/api/runs:
     get:
       summary: "List a repository's CI runs, newest first"

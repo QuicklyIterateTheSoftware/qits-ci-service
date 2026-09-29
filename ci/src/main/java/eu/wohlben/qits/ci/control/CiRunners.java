@@ -75,6 +75,22 @@ public class CiRunners {
   /** A runner's name: a lower-case letter, then up to 63 lower-case letters, digits and hyphens. */
   public static final Pattern NAME = Pattern.compile("[a-z][a-z0-9-]{0,63}");
 
+  /**
+   * The platform host's own runner (qits-503): the bootstrap creates it on a cold start and the
+   * deployer runs it beside the platform. The name is an ordinary one to every rule above — it is
+   * reserved for ONE row by the same unique constraint every name is, so a second {@code localhost}
+   * is a 409 like any taken name, and no door renames a runner — and it is special in exactly two
+   * places: it is listed first, and it is not deleted while it is the only runner there is.
+   */
+  public static final String LOCALHOST = "localhost";
+
+  /**
+   * The code of the 409 a delete of {@link #LOCALHOST} answers while no other runner row exists: with
+   * the in-process pool sized to zero, that runner is the only thing that executes a step, and
+   * deleting it would leave every accepted run {@code QUEUED} with nothing to claim it.
+   */
+  public static final String LAST_RUNNER = "LAST_RUNNER";
+
   /** The widest description a runner keeps — {@code ci_runner.description}'s width. */
   public static final int DESCRIPTION_MAX = 1024;
 
@@ -281,9 +297,26 @@ public class CiRunners {
     return new ConflictException("A runner named " + name + " already exists");
   }
 
-  /** Every runner, by name. */
+  /** Every runner: {@link #LOCALHOST} first, then the rest by name. */
   public List<CiRunner> list() {
-    return QuarkusTransaction.requiringNew().call(runners::listByName);
+    return localhostFirst(QuarkusTransaction.requiringNew().call(runners::listByName));
+  }
+
+  /**
+   * {@code rows} — already by name, as the repository answers them — with {@link #LOCALHOST} moved
+   * to the front. Sorted here rather than in the query because the rule is this class's, and a
+   * query that spelled it would be a second place to keep it.
+   */
+  static List<CiRunner> localhostFirst(List<CiRunner> rows) {
+    List<CiRunner> ordered = new java.util.ArrayList<>(rows.size());
+    for (CiRunner row : rows) {
+      if (LOCALHOST.equals(row.name)) {
+        ordered.add(0, row);
+      } else {
+        ordered.add(row);
+      }
+    }
+    return ordered;
   }
 
   /** One runner, or 404. */
@@ -746,6 +779,14 @@ public class CiRunners {
             .call(
                 () -> {
                   CiRunner runner = found(id);
+                  if (LOCALHOST.equals(runner.name) && runners.count() <= 1) {
+                    throw new ConflictException(
+                        LAST_RUNNER,
+                        LAST_RUNNER
+                            + ": runner "
+                            + LOCALHOST
+                            + " is the only runner there is; declare another before deleting it");
+                  }
                   long held = runs.countRunningOnRunner(id);
                   if (held > 0) {
                     throw new ConflictException(
@@ -775,12 +816,16 @@ public class CiRunners {
     return mapper.toDto(runner, presence.connected(runner.id), held, versions(runner.id));
   }
 
-  /** Every runner as an operator reads it, by name; one count query for all of them. */
+  /**
+   * Every runner as an operator reads it, {@link #LOCALHOST} first and the rest by name; one count
+   * query for all of them.
+   */
   public List<CiRunnerDto> views() {
     record Read(List<CiRunner> runners, Map<UUID, Long> held) {}
     Read read =
         QuarkusTransaction.requiringNew()
-            .call(() -> new Read(runners.listByName(), runs.countRunningByRunner()));
+            .call(
+                () -> new Read(localhostFirst(runners.listByName()), runs.countRunningByRunner()));
     return read.runners().stream()
         .map(
             r ->

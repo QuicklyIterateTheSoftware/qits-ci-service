@@ -36,8 +36,30 @@ class CiRunWorkerPoolTest {
   }
 
   @Test
-  void atLeastOneBuildSlotIsRequired() {
-    assertThrows(IllegalArgumentException.class, () -> CiRunService.createWorkerPool(0));
+  void aNegativeBuildSlotCountIsRefused() {
+    assertThrows(IllegalArgumentException.class, () -> CiRunService.createWorkerPool(-1));
+  }
+
+  /**
+   * qits-503: {@code qits.ci.concurrent-builds=0} hands every run to the runners. The pool still
+   * exists — shutdown has one shape whatever the size — but no claim loop is ever submitted to it,
+   * so it starts no thread, and the census says zero of zero rather than the outage "zero of four".
+   */
+  @Test
+  void aZeroPoolStartsNoClaimLoopAndReservesNothingLocally() throws Exception {
+    CiRunService service = new CiRunService();
+    service.concurrentBuilds = 0;
+    service.initializeWorkers();
+    try {
+      Thread.sleep(100);
+      assertEquals(
+          new CiRunService.WorkerCensus(0, 0, false),
+          service.workerCensus(),
+          "no claim loop is live, so nothing is ever claimed here");
+    } finally {
+      service.shutdown();
+    }
+    assertEquals(new CiRunService.WorkerCensus(0, 0, true), service.workerCensus());
   }
 
   /**

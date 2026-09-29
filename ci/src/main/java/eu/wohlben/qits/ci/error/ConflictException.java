@@ -6,4 +6,9 @@ public class ConflictException extends CiException {
   public ConflictException(String message) {
     super(409, message);
   }
+
+  /** A 409 that names itself: {@code code} is answered beside the message. */
+  public ConflictException(String code, String message) {
+    super(409, code, message);
+  }
 }

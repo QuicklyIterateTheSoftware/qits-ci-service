@@ -71,9 +71,13 @@ import java.util.UUID;
  * matters — it would forecast a queue that starts sooner than any process could possibly start it,
  * by pretending work in flight is not in flight.
  *
- * <p><b>{@code concurrentBuilds < 1} is clamped to 1.</b> Zero slots is not a queue that never
- * moves, it is a configuration nothing here can usefully answer for, and a division of the queue by
- * a number nobody meant is not worth an exception on a read path.
+ * <p><b>Zero slots is a real estate, and answers no ETA rather than a guess</b> (qits-503). With
+ * {@code qits.ci.concurrent-builds=0} every run is a runner's, so a moment with no runner connected
+ * — or only quarantined ones — is a queue nothing will move until one arrives. Every queued run's
+ * start is then {@link Unknown#NO_BUILD_SLOTS}, and so is its finish unless its own total is
+ * unknown too, which wins as it always does; the running half is forecast as ever, since a run
+ * already executing somewhere has its own remaining time whatever the slots now say. A negative
+ * count is read as zero.
  *
  * <h2>Unknown poisons forward, and only forward</h2>
  *
@@ -106,7 +110,7 @@ public final class CiQueueForecast {
   private CiQueueForecast() {}
 
   /**
-   * Why a forecast has no number, in the three shapes the arithmetic can produce.
+   * Why a forecast has no number, in the four shapes the arithmetic can produce.
    *
    * <p>Each names <b>whose</b> prediction was missing, not merely that one was, because those are
    * three different sentences to the person waiting: "this build has never run before" is about
@@ -122,7 +126,13 @@ public final class CiQueueForecast {
     RUN_AHEAD_HAS_NO_PREDICTION,
 
     /** A {@code RUNNING} run had no prediction, so no slot's free-at is known at all. */
-    RUNNING_RUN_HAS_NO_PREDICTION
+    RUNNING_RUN_HAS_NO_PREDICTION,
+
+    /**
+     * No build slot exists to start it in: the local pool is sized 0 and no runner that takes work
+     * is connected (qits-503). Heals the moment one connects.
+     */
+    NO_BUILD_SLOTS
   }
 
   /**
@@ -265,8 +275,9 @@ public final class CiQueueForecast {
    *     queue then starts at zero
    * @param queuedInClaimOrder the queued runs <b>already in claim order</b>, as {@link
    *     CiRunOrdering#explain(List)} answers them; null or empty answers an empty list
-   * @param concurrentBuilds how many runs this deployment executes at once, clamped up to 1 — the
-   *     local pool plus every connected runner's slots, see {@link #slotCount}
+   * @param concurrentBuilds how many runs this deployment executes at once — the local pool plus
+   *     every connected runner's slots, see {@link #slotCount}; 0 forecasts every queued run {@link
+   *     Unknown#NO_BUILD_SLOTS}
    * @param now the instant every millisecond in the answer is relative to; never read from a clock
    *     in here
    * @return one entry per input run on each side
@@ -279,7 +290,7 @@ public final class CiQueueForecast {
     List<CiRun> live = running == null ? List.of() : running;
     List<CiRunOrdering.OrderedRun> queue =
         queuedInClaimOrder == null ? List.of() : queuedInClaimOrder;
-    int slotCount = Math.max(1, concurrentBuilds);
+    int slotCount = Math.max(0, concurrentBuilds);
 
     // The running half, and the one fact the queued half needs from it: whether any slot's free-at
     // is unknowable. One unpredicted run in flight is enough — it holds a slot for an unknown time,
@@ -304,16 +315,22 @@ public final class CiQueueForecast {
     long[] freeAt = new long[slotCount];
     // Fewest-remaining first, so the queue's next run is forecast against the slot that really frees
     // first; with more runs than slots the surplus folds onto whichever slot frees soonest, which is
-    // the same walk a queued run takes and is argued in the class javadoc.
+    // the same walk a queued run takes and is argued in the class javadoc. With no slot at all there
+    // is nothing to fold onto, and the queued half below says so rather than inventing one.
     Collections.sort(remainings);
-    for (long remaining : remainings) {
-      freeAt[earliestSlot(freeAt)] += remaining;
+    if (slotCount > 0) {
+      for (long remaining : remainings) {
+        freeAt[earliestSlot(freeAt)] += remaining;
+      }
     }
 
     List<QueuedForecast> queuedOut = new ArrayList<>(queue.size());
     // Null until something ahead breaks the chain; from then on it is this run's start's reason and
     // the slots are no longer advanced, because there is nothing left to advance them by.
-    Unknown poison = aRunningRunHasNoPrediction ? Unknown.RUNNING_RUN_HAS_NO_PREDICTION : null;
+    Unknown poison =
+        slotCount == 0
+            ? Unknown.NO_BUILD_SLOTS
+            : aRunningRunHasNoPrediction ? Unknown.RUNNING_RUN_HAS_NO_PREDICTION : null;
     for (CiRunOrdering.OrderedRun ordered : queue) {
       CiRun run = ordered.run();
       Long total = expectedTotal(run);
