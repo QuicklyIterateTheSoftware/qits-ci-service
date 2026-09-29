@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import eu.wohlben.qits.ci.api.MachineGuardTest;
+import eu.wohlben.qits.ci.control.AutoRetries;
 import eu.wohlben.qits.ci.control.CiEventTriggerParser;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiRunService;
@@ -141,6 +142,7 @@ class CiRunnerSocketTest {
 
   @AfterEach
   void forgetTheRunner() {
+    AutoRetries.restore(runService);
     registry.seenInterval(Duration.ofMinutes(1));
     QuarkusTransaction.requiringNew().run(() -> runnerRows.deleteAll());
   }
@@ -522,6 +524,9 @@ class CiRunnerSocketTest {
   @TestSecurity(user = "runner", roles = RUNNER_ROLE)
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aReserveIsAnsweredWithTheRunItClaimedAndTheClosedRunIsReleased() throws Exception {
+    // The refused Launch below is an infra failure, and its automatic retry would be what the last
+    // Reserve is handed instead of Nothing. The retry is ci/CiAutoRetryTest's subject; off here.
+    AutoRetries.off(runService);
     java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
     CompletableFuture<Void> parked = new CompletableFuture<>();
     fakeSteps.during(

@@ -14,7 +14,7 @@
 --                automatic retry 1 of 2". NULL on every other row — every run a trigger produced and
 --                every retry a PERSON pressed — so "non-null" is the whole of "this was automatic",
 --                and it is also what the cap counts: a failed run is re-fired only while fewer than
---                qits.ci.auto-retry.max (2) consecutive automatic retries stand behind it along
+--                CiRunService.AUTO_RETRY_MAX (2) consecutive automatic retries stand behind it along
 --                retry_of_run_id. Nullable, no default, no backfill: no run before this migration
 --                was retried automatically, and null says exactly that.
 alter table ci_run add column retry_reason varchar(255);

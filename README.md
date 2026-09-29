@@ -2083,7 +2083,7 @@ set a runner's quarantine counts (`CiRunnerHealth.INFRA_OUTCOMES`), so a build's
 included, a timeout, a failed checkout and a cancellation never qualify — qits-ci re-fires it through
 this same retry path, into the ordinary queue with no runner pinned, and announces **no
 `BuildFailed`** for it: a release request's gate hears only the retry's verdict, which carries
-`retryOfRunId`, so an outage no longer rejects the request. At most `qits.ci.auto-retry.max` (2)
+`retryOfRunId`, so an outage no longer rejects the request. At most `CiRunService.AUTO_RETRY_MAX` (2)
 automatic retries in a row per original run, counted along `retryOfRunId`; the next infra failure
 settles as an ordinary red. The retry says so on the run — `autoRetry: true` and `retryReason`
 (`V25__run_auto_retry.sql`); the failed run keeps its `FAILED` row, its failing step's output ends

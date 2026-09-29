@@ -398,25 +398,32 @@ public class CiRunServiceTest extends CiTestSupport {
   public void eachDistinguishableFailureStateIsRecordedAsItself() {
     // The transferred failure-state rule: docker refusing the launch, a container that never started
     // a daemon, one that registered and never finished a checkout, and a socket lost mid-step are
-    // four different things, and none of them is "the step failed with exit -1".
-    for (StepOutcome outcome :
-        List.of(
-            StepOutcome.LAUNCH_FAILED,
-            StepOutcome.NEVER_STARTED,
-            StepOutcome.NEVER_INITIALIZED,
-            StepOutcome.CONNECTION_LOST)) {
-      resetCiState();
-      seedConfig(CONFIG_TWO_STEPS);
-      fakeRunner.script(0, new StepResult(-1, false, outcome, "diagnosis for " + outcome));
-      run("main");
+    // four different things, and none of them is "the step failed with exit -1". Three of them are
+    // infra failures that would be retried automatically, which is CiAutoRetryTest's subject, not
+    // this one's: off here, so each state leaves exactly one run with its own note last.
+    service.autoRetryMax(0);
+    try {
+      for (StepOutcome outcome :
+          List.of(
+              StepOutcome.LAUNCH_FAILED,
+              StepOutcome.NEVER_STARTED,
+              StepOutcome.NEVER_INITIALIZED,
+              StepOutcome.CONNECTION_LOST)) {
+        resetCiState();
+        seedConfig(CONFIG_TWO_STEPS);
+        fakeRunner.script(0, new StepResult(-1, false, outcome, "diagnosis for " + outcome));
+        run("main");
 
-      CiStep first = service.stepsFor(soleRun().id).get(0);
-      assertEquals(CiStepStatus.FAILED, first.status, outcome.name());
-      assertTrue(first.output.contains("diagnosis for " + outcome), first.output);
-      assertEquals(
-          expectedNote(outcome),
-          first.output.substring(first.output.lastIndexOf('[')),
-          "each state must record a message that is only its own");
+        CiStep first = service.stepsFor(soleRun().id).get(0);
+        assertEquals(CiStepStatus.FAILED, first.status, outcome.name());
+        assertTrue(first.output.contains("diagnosis for " + outcome), first.output);
+        assertEquals(
+            expectedNote(outcome),
+            first.output.substring(first.output.lastIndexOf('[')),
+            "each state must record a message that is only its own");
+      }
+    } finally {
+      service.autoRetryMax(CiRunService.AUTO_RETRY_MAX);
     }
   }
 

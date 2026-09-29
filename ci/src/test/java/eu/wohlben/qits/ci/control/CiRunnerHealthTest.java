@@ -78,6 +78,10 @@ public class CiRunnerHealthTest extends CiTestSupport {
     signals.reset();
     events.reset();
     runAnnouncer.reset();
+    // Every streak here is staged from infra failures, and an automatic retry of each would be a
+    // QUEUED run the next reservation takes instead of the build the test accepted. The retry is
+    // CiAutoRetryTest's subject; off for this class, back on after it.
+    service.autoRetryMax(0);
     QuarkusTransaction.requiringNew().run(() -> runnerRows.deleteAll());
     fakeCandidates.setRefs(CiRepoRef.of("repo-" + HEALTH_REPO, "qits", HEALTH_REPO));
     fakeConfig.putTriggers("repo-" + HEALTH_REPO, "main", HEAD);
@@ -89,6 +93,7 @@ public class CiRunnerHealthTest extends CiTestSupport {
   void settle() throws Exception {
     release.countDown();
     service.awaitIdle();
+    service.autoRetryMax(CiRunService.AUTO_RETRY_MAX);
     QuarkusTransaction.requiringNew().run(() -> runnerRows.deleteAll());
   }
 

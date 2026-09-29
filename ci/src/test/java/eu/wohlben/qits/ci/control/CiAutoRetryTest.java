@@ -39,8 +39,8 @@ import org.junit.jupiter.api.Test;
  * that was queued AFTER a {@code BuildFailed} went out would pass a row-only test and still reject
  * the request.
  *
- * <p>The suite ships {@code qits.ci.auto-retry.max=0} so no other file grows runs it never asked
- * for; this one sets the shipped 2 for itself and puts the suite's value back.
+ * <p>The cap is {@link CiRunService#AUTO_RETRY_MAX}; each case sets it explicitly, since a suite
+ * staging infra failures for another purpose may have turned it off, and puts the old value back.
  */
 @QuarkusTest
 public class CiAutoRetryTest extends CiTestSupport {

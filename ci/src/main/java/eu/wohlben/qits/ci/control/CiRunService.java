@@ -505,12 +505,18 @@ public class CiRunService {
   int outputMaxChars;
 
   /**
-   * How many automatic retries in a row one original run may have — see {@link #autoRetry}. The
-   * shipped 2 and its argument are in the {@code ci} jar's {@code META-INF/microprofile-config
-   * .properties}; 0 turns the behaviour off.
+   * How many automatic retries in a row one original run may have — see {@link #autoRetry}. A code
+   * constant rather than a config key: it is a property of what "an infra failure" means here, not
+   * a deployment fact, and nothing on the estate would ever set it.
    */
-  @ConfigProperty(name = "qits.ci.auto-retry.max")
-  int autoRetryMax;
+  public static final int AUTO_RETRY_MAX = 2;
+
+  /**
+   * {@link #AUTO_RETRY_MAX}, except where a suite has turned it off through {@link
+   * #autoRetryMax(int)} — a test staging an infra failure to assert something else must not grow a
+   * second, QUEUED run it never asked for.
+   */
+  private volatile int autoRetryMax = AUTO_RETRY_MAX;
 
   /** The deadline a step gets when its declaration does not name one. */
   @ConfigProperty(name = "qits.ci.step-timeout-seconds")
@@ -3529,7 +3535,7 @@ public class CiRunService {
    * itself is untouched and stays {@code FAILED}; {@code BuildStatusChanged} still reports it, since
    * that event mirrors rows, not verdicts.
    *
-   * <p><b>Bounded</b> at {@code qits.ci.auto-retry.max} (2) consecutive automatic retries along
+   * <p><b>Bounded</b> at {@link #AUTO_RETRY_MAX} (2) consecutive automatic retries along
    * {@code retry_of_run_id}: a run whose chain already holds that many settles normally. A retry a
    * person pressed carries no {@code retry_reason}, so the count restarts behind it — a person
    * re-asking is a new question. A health check is never re-fired here: its red is its answer.
@@ -3639,7 +3645,7 @@ public class CiRunService {
     return text.length() <= max ? text : text.substring(0, max);
   }
 
-  /** The suite's handle on {@code qits.ci.auto-retry.max}; see {@code CiAutoRetryTest}. */
+  /** The suites' handle on the cap: 0 turns automatic retries off; {@link #AUTO_RETRY_MAX} ships. */
   void autoRetryMax(int max) {
     this.autoRetryMax = max;
   }
