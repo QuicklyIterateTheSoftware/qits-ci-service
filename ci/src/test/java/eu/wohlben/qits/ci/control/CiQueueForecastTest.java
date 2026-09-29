@@ -19,8 +19,8 @@ import org.junit.jupiter.api.Test;
  * runs in flight are all states a live queue cannot be asked to enter on demand, and they are the
  * three the forecast is easiest to get wrong about.
  *
- * <p>Each case pins one decision. The serial case is first because {@code concurrentBuilds == 1} is
- * what actually ships, and the unknown cases are the bulk of the file because "no ETA" is a normal
+ * <p>Each case pins one decision. The serial case is first because one slot — the platform host's
+ * single {@code localhost} runner — is the common estate, and the unknown cases are the bulk of the file because "no ETA" is a normal
  * answer here rather than a failure — a client has to be able to say <em>why</em> it has none.
  *
  * <p><b>Every expectation is milliseconds relative to {@code now}</b>, never a clock time, which is
@@ -90,8 +90,8 @@ public class CiQueueForecastTest {
 
   @Test
   public void withOneBuildSlotTheQueueIsPlainAdditionBehindWhatIsAlreadyRunning() {
-    // `qits.ci.concurrent-builds` is 1 on every deployment today, so this is not a degenerate corner
-    // — it is the arithmetic the platform actually reads. A run starts when the one before it ends,
+    // One connected one-slot runner is a common estate, so this is not a degenerate corner — it is
+    // arithmetic the platform actually reads. A run starts when the one before it ends,
     // and the first one starts when the slot the RUNNING run holds frees.
     CiQueueForecast.Forecast forecast =
         CiQueueForecast.forecast(
@@ -107,17 +107,19 @@ public class CiQueueForecastTest {
 
   @Test
   public void aConnectedRunnersSlotsAreCapacityAndItsHeldRunsAreOccupancyNotBoth() {
-    // One local slot busy for 30s more, and a connected runner granting two slots and holding one
-    // run with 10s left. The runner's held run is in `running` like any other, so its slots are
+    // A one-slot runner busy for 30s more, and a connected runner granting two slots and holding
+    // one run with 10s left. A held run is in `running` like any other, so a runner's slots are
     // counted whole: counting only its free slot would charge that run twice.
     List<CiQueueForecast.RunnerCapacity> runners =
         List.of(
             new CiQueueForecast.RunnerCapacity(
+                java.util.UUID.randomUUID(), "localhost", 1, 1, true),
+            new CiQueueForecast.RunnerCapacity(
                 java.util.UUID.randomUUID(), "connected", 2, 1, true),
             new CiQueueForecast.RunnerCapacity(
                 java.util.UUID.randomUUID(), "offline", 8, 0, false));
-    int slots = CiQueueForecast.slotCount(1, runners);
-    assertEquals(3, slots, "the local pool plus the connected runner's slots, the offline one none");
+    int slots = CiQueueForecast.slotCount(runners);
+    assertEquals(3, slots, "the connected runners' slots, the offline one none");
 
     CiQueueForecast.Forecast forecast =
         CiQueueForecast.forecast(
@@ -135,9 +137,10 @@ public class CiQueueForecastTest {
   }
 
   @Test
-  public void noRunnersIsTheLocalPoolAlone() {
-    assertEquals(4, CiQueueForecast.slotCount(4, List.of()));
-    assertEquals(4, CiQueueForecast.slotCount(4, null));
+  public void noRunnersIsNoSlotAtAll() {
+    // There is no local pool to fall back on (qits-506): a runner is the only thing that runs a run.
+    assertEquals(0, CiQueueForecast.slotCount(List.of()));
+    assertEquals(0, CiQueueForecast.slotCount(null));
   }
 
   @Test
@@ -200,7 +203,7 @@ public class CiQueueForecastTest {
 
   @Test
   public void moreRunningRunsThanSlotsFoldOntoTheEarliestFreeSlotRatherThanBeingDropped() {
-    // A shrunk `concurrent-builds`, or a leftover a predecessor was holding. Three runs in flight
+    // A runner whose slots were shrunk, or a leftover a predecessor was holding. Three runs in flight
     // and one slot: the surplus queues behind the rest exactly as a queued run would (2+4+9=15), so
     // the head of the queue waits for all of it. Taking the one smallest and discarding the others
     // would forecast a queue starting sooner than any process could start it.
@@ -251,15 +254,14 @@ public class CiQueueForecastTest {
   }
 
   @Test
-  public void aZeroPoolCountsTheConnectedRunnersSlotsAlone() {
+  public void theSlotsAreTheConnectedRunnersAlone() {
     List<CiQueueForecast.RunnerCapacity> runners =
         List.of(
             new CiQueueForecast.RunnerCapacity(
                 java.util.UUID.randomUUID(), "localhost", 2, 0, true),
             new CiQueueForecast.RunnerCapacity(
                 java.util.UUID.randomUUID(), "offline", 8, 0, false));
-    assertEquals(2, CiQueueForecast.slotCount(0, runners));
-    assertEquals(0, CiQueueForecast.slotCount(0, List.of()));
+    assertEquals(2, CiQueueForecast.slotCount(runners));
 
     CiQueueForecast.Forecast forecast =
         CiQueueForecast.forecast(

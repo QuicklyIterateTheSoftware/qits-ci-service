@@ -44,9 +44,4 @@ class QitsOidcClientResourceOverridesOldExtrasTest {
     assertEquals("resource-secret", value("quarkus.oidc-client.qits.credentials.secret"));
     assertEquals("http://resource-idp:8080/idp", value("quarkus.oidc-client.qits.auth-server-url"));
   }
-
-  @Test
-  void theContainersOwnerKeyFollowsTheResourceProvidedId() {
-    assertEquals("resource-qits-ci", value("qits.ci.containers.owner"));
-  }
 }

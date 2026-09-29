@@ -200,7 +200,7 @@ public class CiRunOrderingTest {
 
   @Test
   public void theExplainedPassAndTheClaimOrderAreTheSameAnswerOnAQueueExercisingAllFourCriteria() {
-    // The one claim the whole arrangement rests on. `suggestedOrder` is the claim loop's contract
+    // The one claim the whole arrangement rests on. `suggestedOrder` is the reservation's contract
     // and `explain` is what a person reads, and they are the same pass rather than two passes that
     // agree today — so this is asserted over a queue where every criterion says something, because
     // a set with no signals in it would agree whatever the second implementation was.
@@ -341,7 +341,7 @@ public class CiRunOrderingTest {
 
   @Test
   public void theAnswerIsTheSameWhateverOrderTheRowsArriveIn() {
-    // The claim loop re-derives this on every pass and a restart re-derives it in another process,
+    // A reservation re-derives this on every pass and a restart re-derives it in another process,
     // so the function must not depend on the order the database handed the rows back. Every
     // permutation of a queue that exercises all four criteria at once is asserted to agree.
     CiRun release = run("release", 40);

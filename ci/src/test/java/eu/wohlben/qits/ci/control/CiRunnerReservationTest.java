@@ -29,13 +29,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * A runner's {@code Reserve} is the claim: the same candidates, order and compare-and-swap the
- * local workers use, narrowed to what the runner may take, with {@code runner_id} written in the
- * claiming UPDATE — and a reserved run's steps, close and cancellation go through the runner seam.
+ * A runner's {@code Reserve} is the claim — the only one there is since qits-506: every {@code
+ * QUEUED} build in claim order and one compare-and-swap, narrowed to what the runner may take, with
+ * {@code runner_id} written in the claiming UPDATE — and a reserved run's steps, close and
+ * cancellation go through the runner seam.
  *
- * <p>The local worker is parked inside a blocking run for every case ({@link #occupyTheWorker}), so
- * what is accepted afterwards is genuinely {@code QUEUED} and the only thing claiming it is the
- * case's own reservation — the same staging {@code CiRunClaimOrderTest} uses.
+ * <p>Every runner row is deleted before each case, the {@link SuiteRunner}'s included, so what is
+ * accepted is genuinely {@code QUEUED} and the only thing claiming it is the case's own
+ * reservation.
  */
 @QuarkusTest
 public class CiRunnerReservationTest extends CiTestSupport {
@@ -54,35 +55,26 @@ public class CiRunnerReservationTest extends CiTestSupport {
 
   @Inject CiRunnerRepository runnerRows;
 
-  @Inject FakeRunnerStepRunner runnerSteps;
-
-  private final CountDownLatch release = new CountDownLatch(1);
-
-  private String blockerRunId;
-
   @BeforeEach
   void noRunners() {
-    runnerSteps.reset();
     QuarkusTransaction.requiringNew().run(() -> runnerRows.deleteAll());
   }
 
   @AfterEach
-  void releaseTheWorker() throws Exception {
-    release.countDown();
-    service.awaitIdle();
+  void removeTheRunners() {
     QuarkusTransaction.requiringNew().run(() -> runnerRows.deleteAll());
   }
 
   // --- the race -----------------------------------------------------------------------------------
 
   @Test
-  public void aLocalClaimAndARunnersClaimRacingForOneRowCannotBothWin() throws Exception {
-    occupyTheWorker();
+  public void twoRunnersClaimsRacingForOneRowCannotBothWin() throws Exception {
     CiRunner runner = runner("racer", 4, true);
+    CiRunner rival = runner("rival", 4, true);
     String runId = accept("contested", PLAIN);
 
-    // The runner's UPDATE lands first and its transaction stays open; the local claim is issued
-    // against the same row while it does. Under a read-then-write both would see QUEUED and both
+    // The first runner's UPDATE lands first and its transaction stays open; the rival's claim is
+    // issued against the same row while it does. Under a read-then-write both would see QUEUED and both
     // would write RUNNING; under the conditional UPDATE the second waits on the row and then finds
     // it no longer QUEUED.
     CountDownLatch runnerUpdated = new CountDownLatch(1);
@@ -99,15 +91,17 @@ public class CiRunnerReservationTest extends CiTestSupport {
                           return changed;
                         }));
     assertTrue(runnerUpdated.await(20, TimeUnit.SECONDS));
-    CompletableFuture<Integer> localClaim =
+    CompletableFuture<Integer> rivalClaim =
         CompletableFuture.supplyAsync(
-            () -> QuarkusTransaction.requiringNew().call(() -> runs.claimQueued(runId, Instant.now())));
+            () ->
+                QuarkusTransaction.requiringNew()
+                    .call(() -> runs.claimQueuedForRunner(runId, Instant.now(), rival.id)));
     Thread.sleep(300);
-    assertFalse(localClaim.isDone(), "the second claim waits on the row the first one holds");
+    assertFalse(rivalClaim.isDone(), "the second claim waits on the row the first one holds");
     commit.countDown();
 
     assertEquals(1, runnerClaim.get(20, TimeUnit.SECONDS));
-    assertEquals(0, localClaim.get(20, TimeUnit.SECONDS));
+    assertEquals(0, rivalClaim.get(20, TimeUnit.SECONDS));
     CiRun row = row(runId);
     assertEquals(CiRunStatus.RUNNING, row.status);
     assertEquals(runner.id, row.runnerId, "the winner's claim names the runner in the same UPDATE");
@@ -115,7 +109,6 @@ public class CiRunnerReservationTest extends CiTestSupport {
 
   @Test
   public void twoRunnersReservingAtOnceNeverShareARun() throws Exception {
-    occupyTheWorker();
     CiRunner left = runner("left", 20, true);
     CiRunner right = runner("right", 20, true);
     Set<String> accepted = new HashSet<>();
@@ -152,7 +145,6 @@ public class CiRunnerReservationTest extends CiTestSupport {
 
   @Test
   public void aRunnerIsHandedTheRunAndTheRowNamesIt() throws Exception {
-    occupyTheWorker();
     CiRunner runner = runner("plain-host", 1, false);
     String runId = accept("handed", PLAIN);
 
@@ -166,7 +158,6 @@ public class CiRunnerReservationTest extends CiTestSupport {
 
   @Test
   public void aRunNeedingDockerIsNeverOfferedToARunnerWithoutIt() throws Exception {
-    occupyTheWorker();
     CiRunner socketless = runner("socketless", 5, false);
     CiRunner docker = runner("with-docker", 5, true);
     String dockerRun = accept("needs-docker", DOCKER);
@@ -188,7 +179,6 @@ public class CiRunnerReservationTest extends CiTestSupport {
   @Test
   public void aBuildIsNeverHandedToARunnerThatCannotMapTheSixteenBitIdSpaceButAnUnknownRangeIsAllowed()
       throws Exception {
-    occupyTheWorker();
     CiRunner narrow = runner("narrow", 5, true, "65535");
     CiRunner unknown = runner("older-runner", 5, true);
     CiRunner lxc = runner("qits-ci-like", 5, true, "458752");
@@ -230,7 +220,6 @@ public class CiRunnerReservationTest extends CiTestSupport {
   public void aRowStillCarryingAnAvoidSetIsReservedByTheRunnerItNames() throws Exception {
     // ci_run.avoid_runner_ids outlived the feature that wrote it (qits-443): rows queued while it
     // lived still name a runner, and the column is read by nothing — so the named runner takes them.
-    occupyTheWorker();
     CiRunner only = runner("qits-ci", 5, true);
     String runId = accept("once-avoiding", BUILD);
     int written =
@@ -252,7 +241,6 @@ public class CiRunnerReservationTest extends CiTestSupport {
 
   @Test
   public void aRunnerHoldingItsSlotsIsRefusedAndADrainedOneTakesNothing() throws Exception {
-    occupyTheWorker();
     CiRunner one = runner("one-slot", 1, true);
     CiRunner drained = runner("drained", 0, true);
     accept("first", PLAIN);
@@ -278,73 +266,86 @@ public class CiRunnerReservationTest extends CiTestSupport {
 
   @Test
   public void aReservedRunsStepsAndCloseGoThroughTheRunnerSeam() throws Exception {
-    occupyTheWorker();
     CiRunner runner = runner("driver-host", 1, true);
     String runId = accept("driven", PLAIN);
     CiRunService.Reservation reservation = service.reserveFor(runner).orElseThrow();
 
     service.executeReserved(reservation);
 
-    assertEquals(List.of(runId), runnerSteps.executed().stream().map(s -> s.runId()).toList());
-    assertTrue(
-        fakeRunner.executed().stream().noneMatch(s -> s.runId().equals(runId)),
-        "the local seam never saw the runner's run");
-    assertEquals(List.of(runId), runnerSteps.closed());
+    assertEquals(List.of(runId), fakeRunner.executed().stream().map(s -> s.runId()).toList());
+    assertEquals(List.of(runId), fakeRunner.closed());
     assertEquals(CiRunStatus.SUCCESS, row(runId).status);
   }
 
   @Test
-  public void cancellingARunnersRunReachesTheRunnerSeamAndALocalRunTheLocalOne() throws Exception {
-    occupyTheWorker();
+  public void cancellingARunnersRunReachesTheRunnerSeam() throws Exception {
     CiRunner runner = runner("cancel-host", 1, true);
     String runId = accept("to-cancel", PLAIN);
     service.reserveFor(runner).orElseThrow();
-    runnerSteps.hold(runId);
+    fakeRunner.hold(runId);
 
     service.cancel(runId);
-    service.cancel(blockerRunId);
 
-    assertEquals(List.of(runId), runnerSteps.cancelled());
-    assertTrue(fakeRunner.cancelled().contains(blockerRunId));
-    assertFalse(fakeRunner.cancelled().contains(runId));
+    assertEquals(List.of(runId), fakeRunner.cancelled());
     // Held and asked, not settled: the runner's driver writes the terminal row.
     assertEquals(CiRunStatus.RUNNING, row(runId).status);
   }
 
   @Test
-  public void aRunnersRunTheBootSweepHandedBackIsClaimedLocallyWithoutItsRunner() throws Exception {
-    occupyTheWorker();
-    CiRunner runner = runner("interrupted-host", 1, true);
-    String runId = accept("handed-back", PLAIN);
-    service.reserveFor(runner).orElseThrow();
-    // What sweepInterrupted does to a RUNNING event run: back to QUEUED, runner column untouched.
+  public void aRunningRowWithNoRunnerIsHistoryAndACancelSettlesIt() throws Exception {
+    // What the deleted in-process executor left: a RUNNING row naming no runner. Nothing holds it —
+    // the runner seam does not own it — so a cancellation settles it in one write rather than asking
+    // a seam that would never answer.
+    String runId = accept("legacy-local", PLAIN);
     QuarkusTransaction.requiringNew()
-        .run(() -> runs.update("status = ?1 where id = ?2", CiRunStatus.QUEUED, runId));
+        .run(
+            () ->
+                runs.update(
+                    "status = ?1, startedAt = ?2 where id = ?3",
+                    CiRunStatus.RUNNING,
+                    Instant.now(),
+                    runId));
 
-    assertEquals(1, (int) QuarkusTransaction.requiringNew().call(() -> runs.claimQueued(runId, Instant.now())));
-    assertNull(row(runId).runnerId, "a local claim does not come back up naming a runner");
+    service.cancel(runId);
+
+    assertTrue(fakeRunner.cancelled().isEmpty(), "no seam was asked about a run nothing holds");
+    assertEquals(CiRunStatus.CANCELLED, row(runId).status);
+    assertNull(row(runId).runnerId);
+  }
+
+  @Test
+  public void aRunTheBootSweepHandedBackIsReservedAgainNamingItsNewRunner() throws Exception {
+    CiRunner interrupted = runner("interrupted-host", 1, true);
+    CiRunner next = runner("next-host", 1, true);
+    String runnersRun = accept("handed-back", PLAIN);
+    service.reserveFor(interrupted).orElseThrow();
+    // And a RUNNING row from before qits-506, which no runner ever held.
+    String legacyRun = accept("legacy-local", PLAIN);
     QuarkusTransaction.requiringNew()
-        .run(() -> runs.update("status = ?1 where id = ?2", CiRunStatus.CANCELLED, runId));
+        .run(
+            () ->
+                runs.update(
+                    "status = ?1, startedAt = ?2 where id = ?3",
+                    CiRunStatus.RUNNING,
+                    Instant.now(),
+                    legacyRun));
+
+    // The boot sweep: both event runs go back to QUEUED, whoever held them.
+    service.sweepInterrupted();
+    assertEquals(CiRunStatus.QUEUED, row(runnersRun).status);
+    assertEquals(CiRunStatus.QUEUED, row(legacyRun).status);
+
+    Set<String> taken = new HashSet<>();
+    taken.add(service.reserveFor(next).orElseThrow().run().id);
+    QuarkusTransaction.requiringNew()
+        .run(() -> runs.update("status = ?1 where runnerId = ?2", CiRunStatus.SUCCESS, next.id));
+    taken.add(service.reserveFor(next).orElseThrow().run().id);
+    assertEquals(Set.of(runnersRun, legacyRun), taken, "both recovered, by a runner");
+    assertEquals(next.id, row(legacyRun).runnerId, "the claim names the runner that took it now");
+    assertEquals(next.id, row(runnersRun).runnerId, "not the one it was interrupted on");
   }
 
   // --- staging ------------------------------------------------------------------------------------
-
-  private void occupyTheWorker() throws Exception {
-    CompletableFuture<String> inStepZero = new CompletableFuture<>();
-    fakeRunner.during(
-        0,
-        spec -> {
-          if (inStepZero.complete(spec.runId())) {
-            try {
-              release.await(30, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-              Thread.currentThread().interrupt();
-            }
-          }
-        });
-    accept("blocker", PLAIN);
-    blockerRunId = inStepZero.get(20, TimeUnit.SECONDS);
-  }
 
   private String accept(String repoName, String stepsYaml) {
     return service.onEventTrigger(

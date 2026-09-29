@@ -23,16 +23,13 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
  * A runner's quarantine and its health check (qits-466), against the real orchestrator, a real
- * database and the {@code ci} module's fakes: {@link FakeRunnerStepRunner} scripts what a runner's
+ * database and the {@code ci} module's fakes: {@link FakeCiStepRunner} scripts what a runner's
  * steps answer, {@link FakeRunnerPresence} says which runners are connected, {@link
  * RecordingRunnerSignals} records what a connected runner would be told and {@link
  * RecordingRunnerEvents} what is announced.
@@ -61,8 +58,6 @@ public class CiRunnerHealthTest extends CiTestSupport {
 
   @Inject CiRunnerRepository runnerRows;
 
-  @Inject FakeRunnerStepRunner runnerSteps;
-
   @Inject FakeRunnerPresence presence;
 
   @Inject RecordingRunnerSignals signals;
@@ -73,7 +68,6 @@ public class CiRunnerHealthTest extends CiTestSupport {
 
   @BeforeEach
   void clean() {
-    runnerSteps.reset();
     presence.reset();
     signals.reset();
     events.reset();
@@ -82,17 +76,15 @@ public class CiRunnerHealthTest extends CiTestSupport {
     // QUEUED run the next reservation takes instead of the build the test accepted. The retry is
     // CiAutoRetryTest's subject; off for this class, back on after it.
     service.autoRetryMax(0);
+    // Every runner row, the SuiteRunner's included: the runners here are each case's own, and a run
+    // is reserved by exactly the one the case names.
     QuarkusTransaction.requiringNew().run(() -> runnerRows.deleteAll());
     fakeCandidates.setRefs(CiRepoRef.of("repo-" + HEALTH_REPO, "qits", HEALTH_REPO));
     fakeConfig.putTriggers("repo-" + HEALTH_REPO, "main", HEAD);
   }
 
-  private final CountDownLatch release = new CountDownLatch(1);
-
   @AfterEach
   void settle() throws Exception {
-    release.countDown();
-    service.awaitIdle();
     service.autoRetryMax(CiRunService.AUTO_RETRY_MAX);
     QuarkusTransaction.requiringNew().run(() -> runnerRows.deleteAll());
   }
@@ -101,12 +93,11 @@ public class CiRunnerHealthTest extends CiTestSupport {
 
   @Test
   public void aRunnerCausedFailureCountsAndAStepThatStartedResetsTheStreak() throws Exception {
-    occupyTheWorker();
     CiRunner runner = runner("flaky", 3);
 
-    runnerSteps.answer(spec -> failed(StepOutcome.LAUNCH_FAILED, "pull access denied"));
+    fakeRunner.answer(spec -> failed(StepOutcome.LAUNCH_FAILED, "pull access denied"));
     String first = reserveAndRun(runner, "streak-a");
-    runnerSteps.answer(spec -> failed(StepOutcome.NEVER_STARTED, "never dialled back"));
+    fakeRunner.answer(spec -> failed(StepOutcome.NEVER_STARTED, "never dialled back"));
     String second = reserveAndRun(runner, "streak-b");
 
     CiRunner counted = row(runner.id);
@@ -115,7 +106,7 @@ public class CiRunnerHealthTest extends CiTestSupport {
     assertFalse(counted.quarantined(), "two failures are short of the shipped three");
 
     // A step whose daemon dialled back ends the streak — even one whose script then failed.
-    runnerSteps.answer(spec -> new StepResult(1, false, StepOutcome.OK, "tests failed\n"));
+    fakeRunner.answer(spec -> new StepResult(1, false, StepOutcome.OK, "tests failed\n"));
     reserveAndRun(runner, "streak-c");
 
     CiRunner reset = row(runner.id);
@@ -134,9 +125,8 @@ public class CiRunnerHealthTest extends CiTestSupport {
 
   @Test
   public void aBuilderThatCannotMapAnIdIsTheRunnersFaultAndQuarantinesIt() throws Exception {
-    occupyTheWorker();
     CiRunner runner = runner("narrow-ids", 3);
-    runnerSteps.answer(spec -> new StepResult(1, false, StepOutcome.OK, LCHOWN));
+    fakeRunner.answer(spec -> new StepResult(1, false, StepOutcome.OK, LCHOWN));
 
     reserveAndRun(runner, "narrow-a");
     CiRunner counted = row(runner.id);
@@ -199,9 +189,8 @@ public class CiRunnerHealthTest extends CiTestSupport {
   @Test
   public void threeFailuresOverTwoRunsQuarantineAndAQuarantinedRunnerTakesNoWork()
       throws Exception {
-    occupyTheWorker();
     CiRunner runner = runner("broken", 2);
-    runnerSteps.answer(spec -> failed(StepOutcome.NEVER_STARTED, "never dialled back"));
+    fakeRunner.answer(spec -> failed(StepOutcome.NEVER_STARTED, "never dialled back"));
 
     reserveAndRun(runner, "broken-a");
     reserveAndRun(runner, "broken-b");
@@ -298,8 +287,8 @@ public class CiRunnerHealthTest extends CiTestSupport {
     runners.quarantine(target.id, "for the test");
     CiRun check = health.requestHealthCheck(target.id);
 
-    // The local workers were woken for it and walked past it.
-    service.awaitIdle();
+    // The suite's runner — gone here — would have been told; no runner took it.
+    suiteRunner.awaitIdle();
     assertEquals(CiRunStatus.QUEUED, run(check.id).status);
     assertTrue(fakeRunner.executed().stream().noneMatch(s -> s.runId().equals(check.id)));
     assertTrue(service.reserveFor(bystander).isEmpty(), "another runner is never handed it");
@@ -356,7 +345,7 @@ public class CiRunnerHealthTest extends CiTestSupport {
     runners.quarantine(runner.id, "for the test");
     events.reset();
     CiRun check = health.requestHealthCheck(runner.id);
-    runnerSteps.answer(
+    fakeRunner.answer(
         spec -> failed(StepOutcome.LAUNCH_FAILED, "runner still-broken could not start it"));
 
     service.executeReserved(service.reserveFor(runner).orElseThrow());
@@ -379,7 +368,7 @@ public class CiRunnerHealthTest extends CiTestSupport {
   public void aRedHealthCheckOfARunnerInServiceQuarantinesIt() throws Exception {
     CiRunner runner = runner("was-fine", 1);
     health.requestHealthCheck(runner.id);
-    runnerSteps.answer(spec -> failed(StepOutcome.NEVER_STARTED, "never dialled back"));
+    fakeRunner.answer(spec -> failed(StepOutcome.NEVER_STARTED, "never dialled back"));
 
     service.executeReserved(service.reserveFor(runner).orElseThrow());
 
@@ -478,31 +467,10 @@ public class CiRunnerHealthTest extends CiTestSupport {
     return runId;
   }
 
-  /** One build, queued — for a runner, once {@link #occupyTheWorker} has parked the local one. */
+  /** One build, queued for whichever runner the case reserves for. */
   private String accept(String repoName) {
     return service.onEventTrigger(
         eventRun(CiRepoRef.of("health-" + UUID.randomUUID(), "qits", repoName), "main", SHA, PLAIN));
-  }
-
-  /**
-   * Parks the one local worker inside a build of its own, so what is accepted afterwards stays
-   * QUEUED for a runner's reservation — {@code CiRunnerReservationTest}'s staging.
-   */
-  private void occupyTheWorker() throws Exception {
-    CompletableFuture<String> inStepZero = new CompletableFuture<>();
-    fakeRunner.during(
-        0,
-        spec -> {
-          if (inStepZero.complete(spec.runId())) {
-            try {
-              release.await(30, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-              Thread.currentThread().interrupt();
-            }
-          }
-        });
-    accept("blocker");
-    inStepZero.get(20, TimeUnit.SECONDS);
   }
 
   private void cancel(String runId) {

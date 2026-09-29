@@ -1,6 +1,5 @@
 package eu.wohlben.qits.ci.runnerhost;
 
-import eu.wohlben.qits.ci.daemonhost.StepAddressPlane;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Locale;
 import java.util.Optional;
@@ -112,7 +111,7 @@ public class RunnerAddresses {
   Optional<String> artifactsUrl;
 
   /**
-   * The registry as the platform host's own docker names it — {@code CiDaemonLauncher}'s key, read
+   * The registry as the platform host's own docker names it — {@code StepContainerSettings}' key, read
    * here only as the no-domain fallback of {@link #registryHost()}.
    */
   @ConfigProperty(name = "qits.artifacts.registry-host")

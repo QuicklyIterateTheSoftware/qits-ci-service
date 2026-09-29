@@ -78,15 +78,18 @@ class QitsOidcClientShippedConfigTest {
   }
 
   @Test
-  void theContainersOwnerKeyFollowsTheQitsClientsId() {
-    // qits.ci.containers.owner (the `ci` jar) reads quarkus.oidc-client.qits.client-id by default —
-    // OwnerGuard compares this string to a machine token's `sub` once the gate is on.
-    assertEquals("qits-ci", value("qits.ci.containers.owner"));
+  void theContainersOwnerKeyIsGoneWithTheOrchestrator() {
+    // qits.ci.containers.owner was this service's owner at qits-containers, read off the qits
+    // client's id; qits-ci calls no orchestrator since qits-506, so the key is not shipped.
+    assertTrue(
+        ConfigProvider.getConfig()
+            .getOptionalValue("qits.ci.containers.owner", String.class)
+            .isEmpty());
   }
 
   @Test
   void theContainerGitAudienceIsNoLongerAConfigKey() {
-    // What CiDaemonLauncher hands a step container as $QITS_GIT_AUTH_AUDIENCE is the constant
+    // What StepContainerSettings hands a step container as $QITS_GIT_AUTH_AUDIENCE is the constant
     // qits-platform now. The key is not shipped, so a leftover QITS_CI_CONTAINER_GIT_AUDIENCE entry
     // has nothing to override.
     assertTrue(

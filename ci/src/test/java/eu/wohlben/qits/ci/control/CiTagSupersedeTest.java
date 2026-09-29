@@ -80,7 +80,7 @@ public class CiTagSupersedeTest extends CiTestSupport {
   @AfterEach
   void releaseTheWorker() throws Exception {
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
   }
 
   /** A trigger file for one event name, selecting this repository's events and nothing else. */
@@ -212,7 +212,7 @@ public class CiTagSupersedeTest extends CiTestSupport {
     }
 
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     // And the worker really built that one: the superseded rows were dropped at the claim rather

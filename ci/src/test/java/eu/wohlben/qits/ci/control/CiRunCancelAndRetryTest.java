@@ -88,7 +88,7 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
   @AfterEach
   void releaseTheWorker() throws Exception {
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
   }
 
   // --- withdrawing a release request -------------------------------------------------------------
@@ -133,7 +133,7 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
 
     service.cancelReleaseRequestRuns(repo, "rr-a");
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertEquals(CiRunStatus.CANCELLED, service.requireRun(withdrawn).status);
@@ -157,7 +157,7 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
       throws Exception {
     String repo = "consumer-" + UUID.randomUUID();
     String finished = accept(repo, "rr-a");
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     assertEquals(CiRunStatus.SUCCESS, service.requireRun(finished).status);
 
@@ -176,7 +176,7 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     fakeRunner.script(0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "flake"));
     String eventId = UUID.randomUUID().toString();
     String original = accept(repo, "rr-a", eventId);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     assertEquals(CiRunStatus.FAILED, service.requireRun(original).status);
 
@@ -188,7 +188,7 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
 
     fakeRunner.reset();
     CiRun retry = service.retry(original);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertNotEquals(original, retry.id, "a retry is a new run, never a rewritten row");
@@ -219,11 +219,11 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     String repo = "consumer-" + UUID.randomUUID();
     String eventId = UUID.randomUUID().toString();
     String original = accept(repo, "rr-a", eventId);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     CiRun retry = service.retry(original);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     FakeRunAnnouncer.Announced announced =
         announcer.announced().stream()
@@ -243,11 +243,11 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     // the original's red and the release request stays refused forever.
     String repo = "consumer-" + UUID.randomUUID();
     String original = accept(repo, "rr-a");
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     CiRun retry = service.retry(original);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     assertEquals(
         original,
@@ -266,12 +266,12 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     String repo = "consumer-" + UUID.randomUUID();
     fakeRunner.script(0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
     String original = accept(repo, "rr-a");
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     assertEquals(CiRunStatus.FAILED, service.requireRun(original).status);
 
     CiRun retry = service.retry(original);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     assertEquals(CiRunStatus.FAILED, service.requireRun(retry.id).status, "red again, on purpose");
 
@@ -288,13 +288,13 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     String repo = "consumer-" + UUID.randomUUID();
     fakeRunner.script(1, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
     String original = accept(repo, "rr-a");
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     assertEquals(CiRunStatus.FAILED, service.requireRun(original).status);
 
     fakeRunner.reset();
     CiRun retry = service.retry(original);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertEquals(CiRunStatus.SUCCESS, service.requireRun(retry.id).status);
@@ -311,12 +311,12 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     // made to find that out.
     String repo = "consumer-" + UUID.randomUUID();
     String original = accept(repo, "rr-a");
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     fakeConfig.reset();
 
     CiRun retry = service.retry(original);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertEquals(QA_TRIGGER, service.requireRun(retry.id).triggerConfig, "the file, verbatim");
@@ -345,14 +345,14 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     String original = accept(repo, "rr-a");
     service.cancelReleaseRequestRuns(repo, "rr-a");
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     CiRun first = service.retry(original);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     CiRun second = service.retry(first.id);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertEquals(3, service.runsFor(repo).size());

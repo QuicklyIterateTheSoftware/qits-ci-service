@@ -237,7 +237,7 @@ public class CiReleaseComposerTest {
     // epic qits-441: a release-phase step on the EDGE plane authenticates with this run's ci-run
     // token, $QITS_TOKEN — the CLI download is anonymous otherwise and a 401 in 0s through the
     // public edge. The composer emits no per-deployment branch for this; the choice is made at
-    // RUN TIME by the same `set --`/`"$@"` idiom CiDaemonLauncher.BOOTSTRAP already uses for the
+    // RUN TIME by the same `set --`/`"$@"` idiom StepContainerSettings.BOOTSTRAP already uses for the
     // ci-daemon binary's own download, so a token-less internal run is byte-identical to before.
     CiReleaseComposer.Composed composed =
         CiReleaseComposer.compose(

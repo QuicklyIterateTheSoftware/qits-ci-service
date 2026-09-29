@@ -1,4 +1,4 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -6,8 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
-import eu.wohlben.qits.ci.runnerhost.RunnerAddressesFixture;
-import eu.wohlben.qits.containers.client.ContainersWire.Spec;
+import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import org.junit.jupiter.api.Test;
@@ -26,20 +25,20 @@ class EdgeStepImageTest {
   private static final String DIGEST =
       "sha256:25cf82f5aa0f5a3a1c8b0f8e0d7f6e5d4c3b2a1908f7e6d5c4b3a29181706f5e";
 
-  private static CiDaemonLauncher shipped() {
+  private static StepContainerSettings shipped() {
     return StepEnvironmentCharacterizationTest.shippedLauncher(
         "http://dev-qits-platform-idp:8080/idp");
   }
 
-  private static StepAddressPlane edge(CiDaemonLauncher launcher) {
+  private static StepAddressPlane edge(StepContainerSettings launcher) {
     return StepAddressPlane.edge(
         RunnerAddressesFixture.withDomain("example.org").edgeOrigins().orElseThrow(),
         launcher.internalPlane());
   }
 
-  private static CiDaemonLauncher.LaunchSpec step(String image, boolean docker) {
-    CiDaemonLauncher.LaunchSpec s = StepEnvironmentCharacterizationTest.sampleStep(0, docker, false);
-    return new CiDaemonLauncher.LaunchSpec(
+  private static StepContainerSettings.LaunchSpec step(String image, boolean docker) {
+    StepContainerSettings.LaunchSpec s = StepEnvironmentCharacterizationTest.sampleStep(0, docker, false);
+    return new StepContainerSettings.LaunchSpec(
         s.runId(),
         s.stepIndex(),
         s.repo(),
@@ -56,14 +55,15 @@ class EdgeStepImageTest {
         s.env());
   }
 
-  private static Spec composeEdge(String image, boolean docker) {
-    CiDaemonLauncher launcher = shipped();
+  private static WorkloadSpec composeEdge(String image, boolean docker) {
+    StepContainerSettings launcher = shipped();
     return StepWorkloadSpecs.compose(
         launcher.workloadSettings(),
         edge(launcher),
         step(image, docker),
         RunCommissions.Credential.token(
-            new IdpCommissioner.CommissionedToken("token-1", TOKEN, SUBJECT)));
+            new IdpCommissioner.CommissionedToken("token-1", TOKEN, SUBJECT)),
+        null);
   }
 
   private static String document(String... hosts) {
@@ -83,7 +83,7 @@ class EdgeStepImageTest {
 
   @Test
   void anEdgeStepPullsAPinnedPlatformImageFromThePublicRegistryWithItsDigestKept() {
-    Spec spec =
+    WorkloadSpec spec =
         composeEdge("registry.dev.localhost:8080/qits/build-images/node-docker-base@" + DIGEST, false);
 
     assertEquals("registry.qits.example.org/qits/build-images/node-docker-base@" + DIGEST, spec.image());
@@ -111,7 +111,7 @@ class EdgeStepImageTest {
 
   @Test
   void anImageFromTheMirrorVhostIsPulledFromThePublicMirror() {
-    Spec spec = composeEdge("mirror.dev.localhost:8080/library/alpine:3", false);
+    WorkloadSpec spec = composeEdge("mirror.dev.localhost:8080/library/alpine:3", false);
 
     assertEquals("mirror.qits.example.org/library/alpine:3", spec.image());
     assertEquals(document("mirror.qits.example.org"), spec.env().get("QITS_CI_REGISTRY_AUTH_CONFIG"));
@@ -121,7 +121,7 @@ class EdgeStepImageTest {
   void aThirdPartyImageIsPulledAsNamedWithNoLogin() {
     for (String image :
         new String[] {"alpine:3", "docker.io/library/alpine:3", "ghcr.io/o/i@" + DIGEST}) {
-      Spec spec = composeEdge(image, false);
+      WorkloadSpec spec = composeEdge(image, false);
 
       assertEquals(image, spec.image());
       assertNull(spec.env().get("QITS_CI_REGISTRY_AUTH_CONFIG"), image);
@@ -130,7 +130,7 @@ class EdgeStepImageTest {
 
   @Test
   void anEdgeBuildStepKeepsItsWholeDocumentWhichCoversItsImage() {
-    Spec spec =
+    WorkloadSpec spec =
         composeEdge("registry.dev.localhost:8080/qits/build-images/node-docker-base@" + DIGEST, true);
 
     assertEquals("registry.qits.example.org/qits/build-images/node-docker-base@" + DIGEST, spec.image());
@@ -141,14 +141,15 @@ class EdgeStepImageTest {
 
   @Test
   void theInternalPlaneLeavesEveryImageExactlyAsTheRunPinnedIt() {
-    CiDaemonLauncher launcher = shipped();
+    StepContainerSettings launcher = shipped();
     StepAddressPlane internal = launcher.internalPlane();
     String pinned = "registry.dev.localhost:8080/qits/build-images/node-docker-base@" + DIGEST;
 
     assertEquals(pinned, internal.imageReference(pinned));
     assertNull(internal.imagePullHost(pinned));
-    Spec spec =
-        StepWorkloadSpecs.compose(launcher.workloadSettings(), internal, step(pinned, false), null);
+    WorkloadSpec spec =
+        StepWorkloadSpecs.compose(
+            launcher.workloadSettings(), internal, step(pinned, false), null, null);
     assertEquals(pinned, spec.image());
     assertNull(spec.env().get("QITS_CI_REGISTRY_AUTH_CONFIG"));
   }

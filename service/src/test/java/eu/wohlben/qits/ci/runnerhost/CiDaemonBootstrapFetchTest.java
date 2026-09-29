@@ -1,4 +1,4 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -21,12 +21,12 @@ import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 
 /**
- * The REAL {@link CiDaemonLauncher#BOOTSTRAP}, run through {@code /bin/sh} against a server that is
+ * The REAL {@link StepContainerSettings#BOOTSTRAP}, run through {@code /bin/sh} against a server that is
  * not listening yet — the one failure the retry exists for.
  *
- * <p><b>Why this is not a case in {@code CiDaemonHandshakeIT}.</b> That IT's never-registers case
- * points the bootstrap at a url that 404s forever, which proves the give-up arm and nothing about
- * recovery: no number of attempts would have fetched it. The incident of 2026-09-15 01:05 UTC was
+ * <p><b>Why this was never a case in the (since deleted, qits-506) {@code CiDaemonHandshakeIT}.</b>
+ * That IT's never-registers case pointed the bootstrap at a url that 404s forever, which proved the
+ * give-up arm and nothing about recovery: no number of attempts would have fetched it. The incident of 2026-09-15 01:05 UTC was
  * the opposite shape — qits-artifacts deploys {@code update_order: stop-first}, a step container
  * landed 7 seconds into that refusal window, got {@code Connection refused}, and a release-request run went
  * red with {@code NEVER_STARTED} over a blip that was over a minute later. So this test refuses the
@@ -103,7 +103,7 @@ public class CiDaemonBootstrapFetchTest {
     // The one edit to the shipped text — see this class's javadoc. The count is asserted first so
     // that a change to the path, or a fifth use of it, fails here rather than silently leaving an
     // occurrence pointing at the running daemon.
-    String shipped = CiDaemonLauncher.BOOTSTRAP;
+    String shipped = StepContainerSettings.BOOTSTRAP;
     assertEquals(
         SHIPPED_OUTPUT_PATH_USES,
         occurrences(shipped, SHIPPED_OUTPUT_PATH),
@@ -147,7 +147,7 @@ public class CiDaemonBootstrapFetchTest {
       builder.redirectError(err.toFile());
       // Nothing inherited but PATH and HOME, so every conditional block — the registry login, the
       // client pair's and QITS_TOKEN's credential setup — is skipped: this test is about the fetch,
-      // and the credential-to-file mechanism is CiDaemonLauncherTest's subject. A remove-list here
+      // and the credential-to-file mechanism is StepContainerSettingsTest's subject. A remove-list here
       // missed QITS_TOKEN on qits-ci's first edge run; see HermeticEnvironment.
       Map<String, String> env = HermeticEnvironment.of(builder);
       env.put("QITS_CI_DAEMON_BINARY_URL", "http://127.0.0.1:" + port + "/qits-ci-daemon");
@@ -188,7 +188,7 @@ public class CiDaemonBootstrapFetchTest {
    */
   @Test
   public void theBootstrapRetriesItsFetchAndSaysHowManyTimes() {
-    String bootstrap = CiDaemonLauncher.BOOTSTRAP;
+    String bootstrap = StepContainerSettings.BOOTSTRAP;
     assertTrue(bootstrap.contains("while :; do"), bootstrap);
     assertTrue(bootstrap.contains("attempt=$((attempt + 1))"), bootstrap);
     assertTrue(bootstrap.contains("sleep " + PAUSE_SECONDS), bootstrap);

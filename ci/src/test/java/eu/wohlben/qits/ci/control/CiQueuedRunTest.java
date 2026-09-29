@@ -32,8 +32,8 @@ import org.junit.jupiter.api.Test;
  * is the whole of what {@link CiRunStatus#QUEUED} bought and the reason a redeploy no longer eats
  * accepted builds.
  *
- * <p>Every claim here is staged against a <b>genuinely occupied worker</b> rather than against a
- * sleep. The worker is single-threaded, so holding one run inside its first step is exactly what
+ * <p>Every claim here is staged against a <b>genuinely occupied runner</b> rather than against a
+ * sleep. {@link SuiteRunner} has one slot, so holding one run inside its first step is exactly what
  * makes the next one queue — and it makes "queued" an instant the test controls rather than a window
  * it hopes to catch. {@code CiRunServiceTest} owns the rest of the state machine; this class owns
  * the queue, the restart and the cancellation that arrives before a run starts.
@@ -59,7 +59,7 @@ public class CiQueuedRunTest extends CiTestSupport {
     // down here rather than in the two methods that raise it.
     service.draining(false);
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
   }
 
   /** A fresh repository id; the sha is derived from it so a test can name both with one string. */
@@ -134,7 +134,7 @@ public class CiQueuedRunTest extends CiTestSupport {
     assertEquals(CiRunStatus.RUNNING, service.requireRun(blockingRunId).status);
 
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     CiRun finished = soleRun(repoId);
     assertEquals(CiRunStatus.SUCCESS, finished.status);
@@ -160,7 +160,7 @@ public class CiQueuedRunTest extends CiTestSupport {
     assertEquals(CiRunStatus.RUNNING, active.get(1).status);
 
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     // Terminal runs leave it, so an empty answer means "CI is idle" rather than "nothing ever ran".
@@ -236,7 +236,7 @@ public class CiQueuedRunTest extends CiTestSupport {
     assertFalse(fakeRunner.cancelled().contains(queuedId));
 
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     // And the worker really did skip it rather than running it anyway and overwriting the row.
     CiRun afterTheQueueDrained = soleRun(repoId);
@@ -263,7 +263,7 @@ public class CiQueuedRunTest extends CiTestSupport {
 
     service.draining(true);
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     CiRun stillQueued = soleRun(repoId);
     assertEquals(queuedId, stillQueued.id);
@@ -276,7 +276,7 @@ public class CiQueuedRunTest extends CiTestSupport {
     // And the sweep a successor runs picks exactly this row back up.
     service.draining(false);
     service.sweepInterrupted();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     assertEquals(CiRunStatus.SUCCESS, soleRun(repoId).status);
   }
 
@@ -293,7 +293,7 @@ public class CiQueuedRunTest extends CiTestSupport {
     CiRun accepted = soleRun(repoId);
     assertEquals(CiRunStatus.QUEUED, accepted.status);
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     assertEquals(CiRunStatus.QUEUED, soleRun(repoId).status, "the worker was never handed it");
   }
@@ -317,7 +317,7 @@ public class CiQueuedRunTest extends CiTestSupport {
     assertEquals(CiTriggerType.EVENT, run.triggerType);
 
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     assertEquals(CiRunStatus.SUCCESS, soleRun(repoId).status);
   }
 
@@ -397,7 +397,7 @@ public class CiQueuedRunTest extends CiTestSupport {
     insertStaleStep(runningEvent);
 
     service.sweepInterrupted();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     // Its in-flight step died with the process — no re-enqueue could be honest about that.
@@ -450,7 +450,7 @@ public class CiQueuedRunTest extends CiTestSupport {
         "one startup sweep restarts the interrupted event once");
 
     service.sweepInterrupted();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     assertEquals(
         1,
         fakeRunner.executed().stream()
@@ -478,7 +478,7 @@ public class CiQueuedRunTest extends CiTestSupport {
     insertQueuedEventRun(second, Instant.now().minusSeconds(20));
 
     service.sweepInterrupted();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     assertEquals(
         List.of(first, second, third),
@@ -500,7 +500,7 @@ public class CiQueuedRunTest extends CiTestSupport {
     insertQueuedEventRun(urgent, Instant.now().minusSeconds(10), "BLOCKING");
 
     service.sweepInterrupted();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     assertEquals(
         List.of(urgent, ordinary, renovate),

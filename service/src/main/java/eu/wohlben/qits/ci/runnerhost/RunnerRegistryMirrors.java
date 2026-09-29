@@ -1,7 +1,5 @@
 package eu.wohlben.qits.ci.runnerhost;
 
-import eu.wohlben.qits.ci.daemonhost.CiDaemonLauncher;
-import eu.wohlben.qits.ci.daemonhost.StepAddressPlane;
 import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -47,7 +45,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 public class RunnerRegistryMirrors {
 
   /** For the spellings: the internal plane's {@link StepAddressPlane.ImageRegistries}. */
-  @Inject CiDaemonLauncher launcher;
+  @Inject StepContainerSettings launcher;
 
   /** For the public names: the same {@code edgeOrigins} an EDGE step is told. */
   @Inject RunnerAddresses addresses;

@@ -1,4 +1,4 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -6,9 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.entity.CiRunnerPlane;
-import eu.wohlben.qits.ci.runnerhost.RunnerAddresses;
-import eu.wohlben.qits.ci.runnerhost.RunnerAddressesFixture;
-import eu.wohlben.qits.containers.client.ContainersWire.Spec;
+import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -81,7 +79,7 @@ class StepAddressPlaneTest {
 
   @Test
   void aValueSwitchedOffInternallyStaysOffOnTheEdge() {
-    CiDaemonLauncher launcher =
+    StepContainerSettings launcher =
         StepEnvironmentCharacterizationTest.shippedLauncher("http://dev-qits-platform-idp:8080/idp");
     launcher.mavenCentralMirrorBuildUrl = Optional.empty();
     StepAddressPlane edge =
@@ -103,18 +101,19 @@ class StepAddressPlaneTest {
 
   @Test
   void anEdgeStepHasNoNetworkNoExtraHostAndThePublicNamesInItsEnvironment() {
-    CiDaemonLauncher launcher =
+    StepContainerSettings launcher =
         StepEnvironmentCharacterizationTest.shippedLauncher("http://dev-qits-platform-idp:8080/idp");
 
-    Spec spec =
+    WorkloadSpec spec =
         StepWorkloadSpecs.compose(
             launcher.workloadSettings(),
             edge(),
             StepEnvironmentCharacterizationTest.sampleStep(0, false, false),
+            null,
             null);
 
     assertNull(spec.network());
-    assertEquals(List.of(), spec.addHosts());
+    assertEquals(List.of(), spec.extraHosts());
     // The image is an address too, and the one the runner's own docker dials (qits-479).
     assertEquals("registry.qits.example.org/qits/java-builder:25", spec.image());
     assertEquals("wss://ci.qits.example.org/ci/daemon", spec.env().get("QITS_CI_DAEMON_URL"));

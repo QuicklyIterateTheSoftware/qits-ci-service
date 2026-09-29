@@ -1,4 +1,4 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -7,8 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
-import eu.wohlben.qits.ci.runnerhost.RunnerAddressesFixture;
-import eu.wohlben.qits.containers.client.ContainersWire.Spec;
+import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
 import eu.wohlben.qits.platformaccess.cli.PlatformAccessCliBinary;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -36,7 +35,7 @@ class EdgeBuildStepEnvironmentTest {
   private static final String TOKEN = "qits_tok_edge-run-123";
   private static final String SUBJECT = "tok-ci-run-0123456789abcdef-run-1";
 
-  private static Spec compose(CiDaemonLauncher launcher, boolean docker, boolean build) {
+  private static WorkloadSpec compose(StepContainerSettings launcher, boolean docker, boolean build) {
     StepAddressPlane edge =
         StepAddressPlane.edge(
             RunnerAddressesFixture.withDomain("example.org").edgeOrigins().orElseThrow(),
@@ -46,17 +45,18 @@ class EdgeBuildStepEnvironmentTest {
         edge,
         StepEnvironmentCharacterizationTest.sampleStep(2, docker, build),
         RunCommissions.Credential.token(
-            new IdpCommissioner.CommissionedToken("token-1", TOKEN, SUBJECT)));
+            new IdpCommissioner.CommissionedToken("token-1", TOKEN, SUBJECT)),
+        null);
   }
 
-  private static CiDaemonLauncher shipped() {
+  private static StepContainerSettings shipped() {
     return StepEnvironmentCharacterizationTest.shippedLauncher(
         "http://dev-qits-platform-idp:8080/idp");
   }
 
   @Test
   void anEdgeBuildStepIsTheWholeOfThisEnvironment() {
-    Spec spec = compose(shipped(), true, false);
+    WorkloadSpec spec = compose(shipped(), true, false);
 
     String auth =
         Base64.getEncoder().encodeToString(("token:" + TOKEN).getBytes(StandardCharsets.UTF_8));
@@ -107,7 +107,7 @@ class EdgeBuildStepEnvironmentTest {
     assertEquals(expected, StepEnvironmentCharacterizationTest.entries(spec.env()));
     assertFalse(spec.env().containsKey("BUILDKIT_HOST"), "the runner fills it, as qits-containers does");
     assertNull(spec.network());
-    assertEquals(List.of(), spec.addHosts());
+    assertEquals(List.of(), spec.extraHosts());
     // Still the declared opt-in, and still the only thing about a step that asks for the socket.
     assertEquals(true, spec.hostDockerSocket());
   }
@@ -126,7 +126,7 @@ class EdgeBuildStepEnvironmentTest {
 
   @Test
   void theKillSwitchSendsTheEmptyPairOnTheEdgeToo() {
-    CiDaemonLauncher off = shipped();
+    StepContainerSettings off = shipped();
     off.buildkitEnabled = false;
 
     Map<String, String> env = compose(off, false, true).env();

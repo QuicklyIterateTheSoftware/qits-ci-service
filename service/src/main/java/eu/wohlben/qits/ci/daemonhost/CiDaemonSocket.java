@@ -55,7 +55,7 @@ import org.jboss.logging.Logger;
  * compared on this path — the token already proves the run, and what remains is only naming
  * <em>which</em> launch of it this is, which is not a secret.
  *
- * <p><b>The address is a cross-repo contract.</b> {@code CiDaemonLauncher} injects {@code
+ * <p><b>The address is a cross-repo contract.</b> {@code StepContainerSettings} injects {@code
  * qits.ci.container-daemon-url} (default {@code ws://qits-ci:8080/ci/daemon}) as {@code
  * $QITS_CI_DAEMON_URL} into every step container, and qits-ci-daemon dials exactly that string
  * verbatim. Move this path and that default moves with it. It is dialled directly on {@code

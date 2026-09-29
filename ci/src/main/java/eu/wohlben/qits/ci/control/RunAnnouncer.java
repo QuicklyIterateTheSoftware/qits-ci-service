@@ -92,7 +92,7 @@ public interface RunAnnouncer {
    * it keeps {@code ci/} free of every eventstream type — the dependency this seam exists to
    * prevent. The bus stamps causation from a thread-local that the implementation could have read
    * instead; it would read null, because the engine consumed the frame on the socket's dispatch
-   * thread and this call happens later on {@code ci-run-worker}. A thread-local does not follow work,
+   * thread and this call happens later on a runner's driver thread. A thread-local does not follow work,
    * deliberately. So the id travels durably on {@code CiRun.triggerEventId} and arrives here as an
    * argument, and {@code BuildAnnouncer} hands it to {@code publish(event, parent)} — where
    * an explicit non-null argument outranks the ambient context by design, precisely for this case.

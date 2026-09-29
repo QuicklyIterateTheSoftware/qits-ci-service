@@ -1,4 +1,4 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;

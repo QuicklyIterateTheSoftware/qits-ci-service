@@ -77,9 +77,8 @@ import org.junit.jupiter.api.Test;
  *
  * <p>The pipeline it pushes declares <b>no steps</b> — a config-less push records nothing at all, so
  * an empty {@code steps} list is the smallest config that still records a run, and it takes the path
- * through the parser and the database without needing docker. Step execution needs a container and
- * belongs to {@code CiDaemonGateIT} (tagged {@code extended}, and excluded from the native build
- * for that reason — see the root pom).
+ * through the parser and the database without needing docker. Step execution is a runner's, and the
+ * stories play one ({@code stories/support/StoryRunner}).
  */
 @QuarkusIntegrationTest
 @TestProfile(CiPackagedSurfaceIT.PackagedUnderTarget.class)
@@ -122,7 +121,7 @@ public class CiPackagedSurfaceIT {
   public static class PackagedUnderTarget implements QuarkusTestProfile {
 
     /** Where each url is parked for whichever copy of this class is asked second. */
-    private static final String CI_URL_PROPERTY = "qits.test.packaged-it.ci-url";
+    public static final String CI_URL_PROPERTY = "qits.test.packaged-it.ci-url";
 
     private static final String EVENTSTREAM_URL_PROPERTY =
         "qits.test.packaged-it.eventstream-url";
@@ -136,15 +135,7 @@ public class CiPackagedSurfaceIT {
           "QITS_RESOURCE_EVENTSTREAM_URL",
               databaseUrl(EVENTSTREAM_URL_PROPERTY, "eventstream_packaged_it"),
           "QITS_RESOURCE_EVENTSTREAM_USERNAME", EmbeddedPg.USER,
-          "QITS_RESOURCE_EVENTSTREAM_PASSWORD", EmbeddedPg.PASSWORD,
-          // ON, WHICH IS NOT WHAT SHIPS (qits-443). The packaged application boots on the jar's own
-          // defaults — src/test/resources/application.properties never reaches it — and the jar
-          // ships this key false: the platform's executor is a runner. Every class on this profile
-          // and on PackagedWithMockIdp, which extends it, exercises the in-process executor, which
-          // exists until qits-506: with it off no claim loop starts and
-          // an accepted run waits QUEUED for a Reserve nobody sends. concurrent-builds stays the
-          // shipped 4.
-          "qits.ci.in-process-executor.enabled", "true");
+          "QITS_RESOURCE_EVENTSTREAM_PASSWORD", EmbeddedPg.PASSWORD);
     }
 
     private static synchronized String databaseUrl(String property, String database) {

@@ -350,12 +350,12 @@ public class CiRunController {
    * order</b>, each row carrying where it sits and when the queue is expected to reach it.
    *
    * <p><b>No other route answers this, and the gap was not cosmetic.</b> The order was computed and
-   * thrown away — {@link eu.wohlben.qits.ci.control.CiRunOrdering}'s only production caller is the
-   * claim loop — and {@code /active} deliberately answers newest-first, which is a different
+   * thrown away — {@link eu.wohlben.qits.ci.control.CiRunOrdering}'s only production caller is a
+   * runner's reservation — and {@code /active} deliberately answers newest-first, which is a different
    * question with a plausible-looking answer. So "which build is next" had no reader, and the only
    * way a client could have one was to re-implement four ordering criteria, a topological pass and a
    * private rank table against rows that do not carry half of what the decision reads. That second
-   * implementation would not crash; it would disagree, quietly, with the order the claim loop acts
+   * implementation would not crash; it would disagree, quietly, with the order the reservations act
    * on. <b>Queue-wait prediction is this service's to compute.</b>
    *
    * <p><b>{@code generatedAt} is what makes the durations interpretable, and it is why it is on the
@@ -367,7 +367,7 @@ public class CiRunController {
    *
    * <p><b>{@code running} is newest-first</b>, the same order {@code /active} documents, so a client
    * holding both sees one repository's run in the same place in each. <b>{@code queued} is in
-   * suggested claim order</b> — position 0 is the run a free worker would take next — which is the
+   * suggested claim order</b> — position 0 is the run a runner with a free slot would take next — which is the
    * whole reason this route exists and is the one listing here whose order is not chronological.
    *
    * <p><b>The rows are {@link CiRunDto}, not a queue-specific shape.</b> A third copy of a run's
@@ -399,7 +399,6 @@ public class CiRunController {
   public QueueResponse queue() {
     CiRunService.Snapshot queue = runService.queueSnapshot();
     return new QueueResponse(
-        queue.concurrentBuilds(),
         queue.generatedAt(),
         runners.withRunnerNames(
             queue.running().stream()
@@ -413,13 +412,12 @@ public class CiRunController {
   }
 
   /**
-   * The queue envelope: how many slots there are, the instant every duration in it is relative to,
-   * and the two halves of the queue.
+   * The queue envelope: the instant every duration in it is relative to, the two halves of the
+   * queue, and the runners whose slots the forecast models. There is no {@code concurrentBuilds} any
+   * more (qits-506): this process executes no run itself, so the slots are the connected runners'
+   * alone — {@code runners} says which, so a reader can see why the queue moves as fast or as slowly
+   * as it does.
    *
-   * @param concurrentBuilds how many runs this deployment's own worker pool executes at once — 0
-   *     when every run is handed to the runners (qits-503). The forecast models that plus every
-   *     connected runner's slots — {@code runners} says which, so
-   *     a reader can see why the queue moves as fast or as slowly as it does
    * @param generatedAt the instant every {@code expectedStartInMillis} and {@code
    *     expectedFinishInMillis} in this body is measured from. <b>It is the only absolute instant
    *     here, and that is deliberate</b>: one stamp makes a relative duration interpretable without
@@ -431,7 +429,6 @@ public class CiRunController {
    *     connected — only a connected runner's slots count towards the forecast
    */
   public record QueueResponse(
-      int concurrentBuilds,
       Instant generatedAt,
       List<CiRunDto> running,
       List<CiRunDto> queued,

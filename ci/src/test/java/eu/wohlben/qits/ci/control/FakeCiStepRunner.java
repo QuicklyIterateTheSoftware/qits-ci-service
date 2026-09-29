@@ -1,6 +1,5 @@
 package eu.wohlben.qits.ci.control;
 
-import io.quarkus.test.Mock;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -11,6 +10,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * The step-runner seam for the ci suite: a <b>scripted-event</b> fake. A test declares, per step
@@ -20,12 +20,17 @@ import java.util.function.Consumer;
  * <p><b>It performs no step semantics whatsoever</b> — no processes, no {@code bash}, no clone.
  * That is the point rather than a shortcut: a step's script is repo-controlled code, qits-ci never
  * executes any, and a fake that kept the shape of executing one would keep the retired approach
- * alive in the test sources after it was deleted from the main ones. Real step semantics are proven
- * in exactly one place — {@code CiDaemonGateIT}, against a real container.
+ * alive in the test sources after it was deleted from the main ones.
+ *
+ * <p><b>It is the runner seam</b> ({@link CiRunnerStepRunner}), because since qits-506 every run is
+ * a runner's and that is the only seam {@code CiRunService} asks. {@link SuiteRunner} holds a run
+ * here from its reservation until the run closes ({@link #hold}), which is what {@link #owns}
+ * answers — the real runner seam's "a driver of this process holds the run from its Take to its
+ * Released". It absorbed the {@code FakeRunnerStepRunner} that used to sit beside it, whose one
+ * extra, {@link #answer}, stages a runner that cannot start a container.
  */
-@Mock
 @ApplicationScoped
-public class FakeCiStepRunner implements CiStepRunner {
+public class FakeCiStepRunner implements CiRunnerStepRunner {
 
   /** What a scripted step emits before it answers. */
   public record Script(List<String> chunks, StepResult result) {
@@ -37,18 +42,24 @@ public class FakeCiStepRunner implements CiStepRunner {
 
   // Accessed via executed() — a direct field read through the CDI client proxy would see the
   // proxy's own (empty) field, not the contextual instance's.
-  private final List<StepSpec> executed = new ArrayList<>();
-  private final List<String> emitted = new ArrayList<>();
+  private final List<StepSpec> executed = java.util.Collections.synchronizedList(new ArrayList<>());
+  private final List<String> emitted = java.util.Collections.synchronizedList(new ArrayList<>());
   private final Map<Integer, Script> scripted = new HashMap<>();
   private final Map<Integer, Deque<StepResult>> sequenced = new HashMap<>();
   private final Map<Integer, RuntimeException> failures = new HashMap<>();
   private final Map<Integer, Consumer<StepSpec>> during = new HashMap<>();
-  private final List<String> cancelled = new ArrayList<>();
-  private final List<String> closed = new ArrayList<>();
+  private final List<String> cancelled = java.util.Collections.synchronizedList(new ArrayList<>());
+  private final List<String> closed = java.util.Collections.synchronizedList(new ArrayList<>());
 
   // Written on the worker thread and read on the request thread — the same crossing the real
   // runner's in-flight map makes, and the reason this one is concurrent.
   private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
+
+  /** Runs held from their reservation until they close — see {@link #hold}. */
+  private final Set<String> held = ConcurrentHashMap.newKeySet();
+
+  /** What every step answers instead of its script, when set — see {@link #answer}. */
+  private volatile Function<StepSpec, StepResult> answer;
 
   private String daemonVersion = "fake-daemon";
 
@@ -127,6 +138,20 @@ public class FakeCiStepRunner implements CiStepRunner {
     during.put(stepIndex, action);
   }
 
+  /** What the runner socket does at a Take: the run is this process's from now until it closes. */
+  public void hold(String runId) {
+    held.add(runId);
+  }
+
+  /**
+   * What every step answers from now on, instead of its script or green — how a test stages a
+   * runner that cannot start a container, or a health check that goes red. Null is the scripts
+   * again.
+   */
+  public void answer(Function<StepSpec, StepResult> answer) {
+    this.answer = answer;
+  }
+
   public void reset() {
     executed.clear();
     emitted.clear();
@@ -139,6 +164,8 @@ public class FakeCiStepRunner implements CiStepRunner {
     cancelled.clear();
     closed.clear();
     inFlight.clear();
+    held.clear();
+    answer = null;
     daemonVersion = "fake-daemon";
     pinFailure = null;
   }
@@ -167,6 +194,16 @@ public class FakeCiStepRunner implements CiStepRunner {
     if (failure != null) {
       throw failure;
     }
+    Function<StepSpec, StepResult> answered = answer;
+    if (answered != null) {
+      listener.onStarted();
+      Consumer<StepSpec> midStep = during.get(spec.stepIndex());
+      if (midStep != null) {
+        midStep.accept(spec);
+      }
+      listener.onFinished();
+      return answered.apply(spec);
+    }
     StepResult next = nextInSequence(spec.stepIndex());
     Script script =
         next != null
@@ -190,14 +227,18 @@ public class FakeCiStepRunner implements CiStepRunner {
     cancelled.add(runId);
   }
 
-  /** True exactly while a step of the run is executing here — what the real runner answers. */
+  /**
+   * True while the run is held — from its reservation until it closes — or while one of its steps
+   * is executing here: what the real runner seam answers.
+   */
   @Override
   public boolean owns(String runId) {
-    return inFlight.contains(runId);
+    return held.contains(runId) || inFlight.contains(runId);
   }
 
   @Override
   public void runClosed(String runId) {
+    held.remove(runId);
     closed.add(runId);
   }
 

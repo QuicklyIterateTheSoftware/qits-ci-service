@@ -34,7 +34,7 @@ import org.eclipse.microprofile.config.spi.ConfigSource;
  * accident.</b> {@code StepWorkloadSpecs} sends {@code QITS_ARTIFACTS_URL} on both planes — an
  * internal alias on one, the public edge vhost on the other — and the environment source maps it
  * onto this key, which the service ships unset. So the plane a QA run happened to land on decided
- * {@code CiDaemonLauncher}'s and {@code HttpImagePins}' answers. It is the only key in the step
+ * {@code StepContainerSettings}'s and {@code HttpImagePins}' answers. It is the only key in the step
  * environment that maps onto a config key this service reads; {@code QITS_DOMAIN} reaches {@code
  * qits.ci.domain} only through an expression the shipped {@code %test.qits.ci.domain=} already
  * replaces.

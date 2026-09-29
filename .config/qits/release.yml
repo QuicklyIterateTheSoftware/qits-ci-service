@@ -13,9 +13,9 @@ userflows: qits-ci
 #
 # THE QA SLOT IS NOT OVERRIDDEN. The only thing this repository needs from it beyond the archetype
 # is `-Dit.test`, and that is composed from `.config/qits/userflow-stories` beside this file: five
-# story classes, which is what keeps CiDaemonHandshakeIT, CiDaemonGateIT and CiPackagedSurfaceIT —
-# the three `extended` gates that want a docker daemon, a published daemon binary and a host-gateway
-# route back to the JVM — from running on a step container and failing there. The list survives the
+# story classes, which is what keeps CiPackagedSurfaceIT — not a story — from running there (the
+# docker-backed CiDaemonHandshakeIT and CiDaemonGateIT it also kept out went with the in-process
+# executor, qits-506). The list survives the
 # migration as a FILE, not as a sixth key, and it lives in exactly one place.
 release:
   - image: qits/build-images/node-docker-base:latest

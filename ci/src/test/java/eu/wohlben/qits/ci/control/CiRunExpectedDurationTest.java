@@ -179,7 +179,7 @@ public class CiRunExpectedDurationTest extends CiTestSupport {
     String sourceId = stageFinishedRun(repoId, triggerFile(ONE_STEP));
 
     CiRun retry = runService.retry(sourceId);
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertEquals(
@@ -212,8 +212,13 @@ public class CiRunExpectedDurationTest extends CiTestSupport {
                 null));
 
     assertNotNull(accepted, "the run is accepted whatever the prediction could not do");
-    assertEquals(CiRunStatus.SUCCESS, accepted.status, "and it runs to its ordinary verdict");
     assertNull(accepted.expectedStepDurations);
+    // Every run is reconstructed from its own row since qits-506 — a runner's reservation is the
+    // only claim, and it reads the snapshot, never the in-memory request the accept was handed — so
+    // the same nonsense snapshot that cost the prediction settles the run as unreadable when it is
+    // reserved, rather than letting it run a pipeline its row does not state.
+    assertEquals(CiRunStatus.CANCELLED, accepted.status);
+    assertEquals(CiRunService.TRIGGER_UNREADABLE, accepted.cancellationReason);
   }
 
   @Test
@@ -265,8 +270,8 @@ public class CiRunExpectedDurationTest extends CiTestSupport {
   }
 
   private CiRun accept(CiRunService.EventRun request) throws Exception {
-    runService.executeEventRun(request);
-    runService.awaitIdle();
+    executeEventRun(request);
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     return QuarkusTransaction.requiringNew()
         .call(

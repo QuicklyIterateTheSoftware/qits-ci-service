@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit;
  * with the real handshake headers, framing the real protocol messages the same way the native binary
  * does — {@code new JsonObject(CiDaemonCodec.encode(m))} out, {@code CiDaemonCodec.decode(json)} in.
  * The host cannot tell it from a container, which is the point: {@link CiDaemonSocket} and {@link
- * CiDaemonRegistry} are provable in a docker-free suite, and only {@code CiDaemonHandshakeIT} needs
+ * CiDaemonRegistry} are provable in a docker-free suite, and only {@code CiDaemonPinIT} needs
  * a published binary.
  *
  * <p>Deliberately dumb — it holds no state machine and answers nothing on its own. Each test scripts

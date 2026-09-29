@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.api;
 
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -11,6 +12,7 @@ import eu.wohlben.qits.ci.control.CiEventTriggerParser;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiRunService;
 import eu.wohlben.qits.ci.control.FakeCiStepRunner;
+import eu.wohlben.qits.ci.control.SuiteRunner;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
@@ -31,6 +33,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -82,6 +85,9 @@ public class CiQueueSurfaceTest {
       """;
 
   @Inject FakeCiStepRunner fakeRunner;
+
+  /** Executes this suite's runs: every run is a runner's since qits-506 — see {@link SuiteRunner}. */
+  @Inject SuiteRunner suiteRunner;
   @Inject CiRunService runService;
   @Inject CiEventTriggerParser triggerParser;
   @Inject CiRunRepository runs;
@@ -90,9 +96,15 @@ public class CiQueueSurfaceTest {
   private Instant nextFinish;
   private final List<String> seeded = new ArrayList<>();
 
+  @AfterEach
+  void stopTheSuiteRunner() throws Exception {
+    suiteRunner.disable();
+  }
+
   @BeforeEach
   void resetRunner() {
     fakeRunner.reset();
+    suiteRunner.enable();
     nextFinish = Instant.now().minus(Duration.ofDays(400));
     seeded.clear();
   }
@@ -125,7 +137,18 @@ public class CiQueueSurfaceTest {
       assertTrue(
           !generatedAt.isBefore(before) && !generatedAt.isAfter(Instant.now()),
           "the instant the durations are relative to is this response's own, not a stored one");
-      assertEquals(1, body.get("concurrentBuilds"), "the number the forecast really modelled with");
+      assertFalse(
+          body.containsKey("concurrentBuilds"),
+          "no local pool any more (qits-506): the slots are the connected runners'");
+      List<Map<String, Object>> runners = rows(body, "runners");
+      assertTrue(
+          runners.stream()
+              .anyMatch(
+                  r ->
+                      SuiteRunner.NAME.equals(r.get("name"))
+                          && Boolean.TRUE.equals(r.get("connected"))
+                          && Integer.valueOf(1).equals(r.get("slots"))),
+          "the one connected one-slot runner the forecast really modelled with: " + runners);
 
       // The running half: one run, holding the slot, with a remaining that is its predicted total
       // minus however long it has really been going. No position and no ordering — it is past being

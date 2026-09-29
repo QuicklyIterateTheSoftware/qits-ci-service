@@ -14,6 +14,7 @@ import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiRunService;
 import eu.wohlben.qits.ci.control.CiRunnerPresence;
 import eu.wohlben.qits.ci.control.FakeCiStepRunner;
+import eu.wohlben.qits.ci.control.SuiteRunner;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiRunner;
@@ -113,6 +114,9 @@ class CiRunnerSocketTest {
 
   @Inject FakeCiStepRunner fakeSteps;
 
+  /** Only for the one case that needs a run to finish — see {@link SuiteRunner}. */
+  @Inject SuiteRunner suiteRunner;
+
   @Inject CiRunnerPins pins;
 
   @Inject RunnerAddresses addresses;
@@ -145,6 +149,28 @@ class CiRunnerSocketTest {
     AutoRetries.restore(runService);
     registry.seenInterval(Duration.ofMinutes(1));
     QuarkusTransaction.requiringNew().run(() -> runnerRows.deleteAll());
+    try {
+      suiteRunner.disable();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    settleLeftovers();
+  }
+
+  /**
+   * Nothing runs a run this suite leaves QUEUED — there is no claim loop since qits-506, and no
+   * runner is connected after the case — so it is settled here rather than left for a later case's
+   * runner to be handed.
+   */
+  private void settleLeftovers() {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () ->
+                runs.update(
+                    "status = ?1, finishedAt = ?2 where status = ?3",
+                    CiRunStatus.CANCELLED,
+                    Instant.now(),
+                    CiRunStatus.QUEUED));
   }
 
   /** A hello in the pinned version: a runner this host has nothing to tell to update. */
@@ -299,8 +325,6 @@ class CiRunnerSocketTest {
       assertEquals(0, ack.slots(), "a draining connection holds no slot, whatever its row grants");
 
       // A run it could take is waiting, and a Reserve is still Nothing.
-      accept("runner-upgrade-blocker");
-      parked.get(30, TimeUnit.SECONDS);
       String runId = accept("runner-upgrade-queued");
       runner.send(new Reserve());
       assertNotNull(runner.next(Nothing.class, SOON), "a draining connection reserves nothing");
@@ -381,9 +405,8 @@ class CiRunnerSocketTest {
       List<CiRunnerMessage> seen = new java.util.ArrayList<>();
       assertNotNull(runner.nextMatching(f -> seen.add(f) && f instanceof Backlog, SOON));
 
-      // The local worker is parked, so the next run is the runner's to take — and it takes it.
-      accept("runner-managed-blocker");
-      parked.get(30, TimeUnit.SECONDS);
+      // Nothing else claims since qits-506, so the next run is the runner's to take — and it takes
+      // it.
       accept("runner-managed-queued");
       runner.send(new Reserve());
       CiRunnerMessage answer =
@@ -545,8 +568,10 @@ class CiRunnerSocketTest {
       Backlog initial = runner.next(Backlog.class, SOON);
       assertNotNull(initial);
 
-      // Park the local worker inside its step so the accepted run is really queued behind it, and
-      // the number pushed on accept is the queue with that run in it.
+      // Park the suite's runner inside a step so the accepted run is really queued behind it, and
+      // the number pushed on accept is the queue with that run in it; the suite's runner then works
+      // the queue down, which is the finish that pushes again.
+      suiteRunner.enable();
       java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
       CompletableFuture<Void> parked = new CompletableFuture<>();
       fakeSteps.during(
@@ -571,7 +596,7 @@ class CiRunnerSocketTest {
       } finally {
         release.countDown();
       }
-      // And a finish pushes again, once the worker has worked the queue down.
+      // And a finish pushes again, once the suite's runner has worked the queue down.
       assertNotNull(
           runner.nextMatching(m -> m instanceof Backlog b && b.queued() == 0, Duration.ofSeconds(30)),
           "a finished run pushes the queue again");
@@ -664,8 +689,6 @@ class CiRunnerSocketTest {
     try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
       runner.send(hello(true));
       assertNotNull(runner.next(Ack.class, SOON));
-      accept("runner-reserve-blocker");
-      parked.get(30, TimeUnit.SECONDS);
       String runId = accept("runner-reserve-taken");
 
       runner.send(new Reserve());

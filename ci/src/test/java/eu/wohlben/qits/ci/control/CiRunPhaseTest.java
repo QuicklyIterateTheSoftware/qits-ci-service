@@ -278,7 +278,7 @@ public class CiRunPhaseTest extends CiTestSupport {
     assertEquals(CiRunStatus.FAILED, failed.status);
 
     CiRun refired = runService.retry(failed.id);
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertEquals(CiRunPhase.RELEASE_REQUEST, runService.requireRun(refired.id).phase);
@@ -295,7 +295,7 @@ public class CiRunPhaseTest extends CiTestSupport {
 
     CiRun refired =
         runService.retryReleaseRequestPhase(repoId, REQUEST_ID, CiRunPhase.RELEASE_REQUEST);
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertNotEquals(failed.id, refired.id);
@@ -328,7 +328,7 @@ public class CiRunPhaseTest extends CiTestSupport {
 
     CiRun refired =
         runService.retryReleaseRequestPhase(repoId, REQUEST_ID, CiRunPhase.RELEASE_REQUEST);
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     String chosen = runService.requireRun(refired.id).retryOfRunId;
@@ -450,7 +450,7 @@ public class CiRunPhaseTest extends CiTestSupport {
 
   private void deliver(CiEventTriggerService.Arrival arrival) throws Exception {
     engine.evaluate(arrival);
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
   }
 }

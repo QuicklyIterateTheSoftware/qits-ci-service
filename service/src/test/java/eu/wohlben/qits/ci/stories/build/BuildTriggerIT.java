@@ -7,10 +7,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import eu.wohlben.qits.ci.api.TokenValidationBootstrapIT;
-import eu.wohlben.qits.ci.stories.support.MockContainers;
 import eu.wohlben.qits.ci.stories.support.StoryGitHost;
 import eu.wohlben.qits.ci.stories.support.StoryIdentities;
 import eu.wohlben.qits.ci.stories.support.StoryOrigin;
+import eu.wohlben.qits.ci.stories.support.StoryRunner;
 import eu.wohlben.qits.ci.stories.support.StoryTarget;
 import eu.wohlben.qits.userflows.Interactions;
 import eu.wohlben.qits.userflows.NetworkCapture;
@@ -47,18 +47,21 @@ import org.junit.jupiter.api.condition.EnabledIf;
  *
  * <p><b>Two stories, and the second is what the first cannot say.</b> One event fires a pipeline;
  * one event that no repository selected fires nothing — and "fires nothing" is a claim about
- * absence that only the negative network assertions can make. {@code assertNoEdgesTo(qits-containers)}
- * is the interesting one: no repository matched, so no step was ever asked for, so nothing on this
- * platform started a container. A presence check cannot say that.
+ * absence that only the negative network assertions can make. {@code assertNoEdgesTo(a runner)} is
+ * the interesting one: no repository matched, so no run was recorded, so no runner was handed
+ * anything and nothing on this platform started a container. A presence check cannot say that.
  *
  * <p>Both pipelines declare <b>no steps</b>. That is the smallest configuration that still records a
  * run — a commit declaring nothing is discarded, which is what opt-in means — and it takes the whole
- * path through the git host, SnakeYAML, the queue and Panache with no container involved. What a
- * step costs, and what a step container's daemon does with it, is {@link BuildExecutionIT}.
+ * path through the git host, SnakeYAML, the queue, a runner's reservation and Panache with no
+ * container involved: the runner takes the run and is released from it without a single {@code
+ * Launch}. What a step costs, and what a step container's daemon does with it, is {@link
+ * BuildExecutionIT}.
  *
  * <p>Everything here is <b>observed</b>: the framework's RestAssured tap draws what a story sent
  * into qits-ci, {@link StoryGitHost} draws what qits-ci read back out of the git host, and {@link
- * MockContainers} would draw a step container if one were asked for. A story method asserts and
+ * StoryRunner} draws the runner's socket — which would carry a {@code Launch} if a step container
+ * were asked for. A story method asserts and
  * notes; it draws nothing.
  */
 @QuarkusIntegrationTest
@@ -141,7 +144,6 @@ public class BuildTriggerIT {
   static void tapEveryEndAndPublishTheRepository() throws Exception {
     NetworkTaps.restAssured(StoryTarget.SERVICE);
     StoryGitHost.install();
-    MockContainers.installSource();
     publishedSha = StoryOrigin.publish(REPO_ID, TRIGGER_FILE, triggerFile());
     // …and then wait for it to be a candidate. See StoryOrigin#awaitCandidateListing: qits-ci
     // caches the git host's repository listing, so a repository published inside that window is one
@@ -192,6 +194,17 @@ public class BuildTriggerIT {
     story
         .note("qits-ci read every candidate repository's .config/qits/ and one of them selected it")
         .as("event-evaluated");
+
+    // A run is a runner's since qits-506: one takes it, and with no step to launch it is released
+    // straight back.
+    NetworkCapture.actor(StoryRunner.ACTOR);
+    try (StoryRunner runner = StoryRunner.connect()) {
+      runner.take(runIds.getFirst());
+      runner.awaitReleased(runIds.getFirst(), java.time.Duration.ofSeconds(30));
+    } catch (Exception e) {
+      throw new AssertionError("the runner could not take the run", e);
+    }
+    story.note("a runner takes the run; it declares no step, so no container is asked for").as("run-taken");
 
     // End (a), the run: it exists, it is about the commit main held, and it carries the event that
     // caused it. A run that named no cause would leave the train's chain broken at its first hop.
@@ -273,6 +286,7 @@ public class BuildTriggerIT {
     // --- the triggered build -----------------------------------------------------------------
     ReportAssertions.assertComplete(CATEGORY, TRIGGERED_SLUG, UserflowReport.PASSED);
     ReportAssertions.assertStepId(CATEGORY, TRIGGERED_SLUG, "event-evaluated");
+    ReportAssertions.assertStepId(CATEGORY, TRIGGERED_SLUG, "run-taken");
     ReportAssertions.assertStepId(CATEGORY, TRIGGERED_SLUG, "run-recorded");
     ReportAssertions.assertEdge(
         CATEGORY,
@@ -307,8 +321,9 @@ public class BuildTriggerIT {
     // The actor set is the story's promise: a machine, a person, and the service's own read of the
     // git host. The request COUNTS behind them are the clients' — a poll is as many GETs as it took.
     ReportAssertions.assertOnlyEdgesFrom(
-        CATEGORY, TRIGGERED_SLUG, List.of(PLATFORM, OPERATOR, StoryTarget.SERVICE));
-    ReportAssertions.assertNoEdgesTo(CATEGORY, TRIGGERED_SLUG, MockContainers.SERVICE_NAME);
+        CATEGORY, TRIGGERED_SLUG, List.of(PLATFORM, StoryRunner.ACTOR, OPERATOR, StoryTarget.SERVICE));
+    ReportAssertions.assertEdge(
+        CATEGORY, TRIGGERED_SLUG, NetworkEdge.EVENT, StoryTarget.SERVICE, StoryRunner.ACTOR, "take");
     ReportAssertions.assertNotLeaked(CATEGORY, TRIGGERED_SLUG, platformBearer);
 
     // --- the event nobody selected -------------------------------------------------------------
@@ -330,8 +345,8 @@ public class BuildTriggerIT {
         StoryGitHost.SERVICE_NAME,
         StoryGitHost.label("GET", triggerDirPath(), 200));
     // The whole point of the story, and only a negative claim can make it: the evaluation cost a
-    // read of every repository and NOT ONE container. Nothing reached the orchestrator.
-    ReportAssertions.assertNoEdgesTo(CATEGORY, UNSELECTED_SLUG, MockContainers.SERVICE_NAME);
+    // read of every repository and NOT ONE run. No runner was handed anything.
+    ReportAssertions.assertNoEdgesTo(CATEGORY, UNSELECTED_SLUG, StoryRunner.ACTOR);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY, UNSELECTED_SLUG, List.of(PLATFORM, OPERATOR, StoryTarget.SERVICE));
   }
@@ -366,7 +381,7 @@ public class BuildTriggerIT {
 
   /**
    * Poll until the repository's one run has left {@code QUEUED}/{@code RUNNING}. The run executes on
-   * qits-ci's own worker after the trigger answered, so a story that read once would be reading a
+   * the runner's driver after the trigger answered, so a story that read once would be reading a
    * race rather than an outcome.
    */
   private static Map<String, Object> awaitTerminalRun(String repoId) {

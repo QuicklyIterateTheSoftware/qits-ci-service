@@ -164,7 +164,7 @@ public class CiEventCheckoutTest extends CiTestSupport {
     // No sha field at all — nothing truthful to record a row against.
     CiEventTriggerService.Evaluation evaluation =
         engine.evaluate(arrival(UUID.randomUUID().toString(), "{\"branch\":\"feature/x\"}"));
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     // Containment is per FILE: the sibling trigger in the same repository still fired, and the
@@ -189,7 +189,7 @@ public class CiEventCheckoutTest extends CiTestSupport {
             arrival(
                 UUID.randomUUID().toString(),
                 "{\"branch\":\"-oProxyCommand=x\",\"sha\":\"$(x)\"}"));
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertEquals(List.of(), evaluation.runIds());
@@ -273,7 +273,7 @@ public class CiEventCheckoutTest extends CiTestSupport {
     engine.evaluate(arrival(UUID.randomUUID().toString(), push("feature/x", second)));
     engine.evaluate(arrival(UUID.randomUUID().toString(), push("feature/y", elsewhere)));
     release.countDown();
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     List<CiRun> recorded = runService.runsFor(repoId);
@@ -312,7 +312,7 @@ public class CiEventCheckoutTest extends CiTestSupport {
     engine.evaluate(arrival(UUID.randomUUID().toString(), push("feature/x", "c".repeat(40))));
     engine.evaluate(arrival(UUID.randomUUID().toString(), push("feature/y", "d".repeat(40))));
     release.countDown();
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     List<CiRun> recorded = runService.runsFor(repoId);
@@ -378,7 +378,7 @@ public class CiEventCheckoutTest extends CiTestSupport {
         repoId, "main", HEAD, new EventTriggerFile(CHECKOUT_PATH, RELEASE_TRIGGER));
     CiEventTriggerService.Evaluation evaluation =
         engine.evaluate(releaseEvent(UUID.randomUUID().toString(), "2026.905.60215", null));
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertEquals(List.of(), evaluation.runIds());
@@ -418,7 +418,7 @@ public class CiEventCheckoutTest extends CiTestSupport {
     engine.evaluate(upstreamRelease(UUID.randomUUID().toString(), "2026.905.60215"));
     engine.evaluate(upstreamRelease(UUID.randomUUID().toString(), "2026.905.70000"));
     release.countDown();
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     List<CiRun> recorded = runService.runsFor(repoId);
@@ -470,7 +470,7 @@ public class CiEventCheckoutTest extends CiTestSupport {
         repoId, "main", HEAD, new EventTriggerFile(CHECKOUT_PATH, RELEASE_TRIGGER));
     CiEventTriggerService.Evaluation evaluation =
         engine.evaluate(releaseEvent(UUID.randomUUID().toString(), "2026.905.60215", "$(x)"));
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertEquals(List.of(), evaluation.runIds());
@@ -543,7 +543,7 @@ public class CiEventCheckoutTest extends CiTestSupport {
 
     CiEventTriggerService.Evaluation evaluation =
         engine.evaluate(releaseEvent(UUID.randomUUID().toString(), "2026.905.60215", null));
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertEquals(List.of(), evaluation.runIds());
@@ -609,7 +609,7 @@ public class CiEventCheckoutTest extends CiTestSupport {
 
   private void deliver(CiEventTriggerService.Arrival arrival) throws Exception {
     engine.evaluate(arrival);
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
   }
 

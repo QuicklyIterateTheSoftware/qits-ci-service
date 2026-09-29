@@ -116,27 +116,15 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   }
 
   /**
-   * <b>The claim, as one conditional UPDATE</b>: {@code QUEUED} becomes {@code RUNNING}, stamped,
-   * only while the row still is {@code QUEUED}. One row changed is this caller's run; zero is
-   * somebody else's — another local worker, a runner's reservation, or a cancellation that got
-   * there first. Postgres re-evaluates the predicate against a concurrently committed version of
-   * the row, so two transactions racing for one row cannot both see one row changed, which a read
-   * followed by a dirty write under READ COMMITTED could.
-   *
-   * <p>A local claim writes {@code runner_id} null in the same statement. It is null on every row
-   * a local worker could claim except one: a runner's run the boot sweep handed back to {@code
-   * QUEUED}, which must not come back up still naming the runner it was interrupted on.
+   * <b>The claim, as one conditional UPDATE</b>: {@code QUEUED} becomes {@code RUNNING}, stamped and
+   * naming the runner that reserved it, only while the row still is {@code QUEUED}. One row changed
+   * is this caller's run; zero is somebody else's — another runner's reservation, or a cancellation
+   * that got there first. Postgres re-evaluates the predicate against a concurrently committed
+   * version of the row, so two transactions racing for one row cannot both see one row changed,
+   * which a read followed by a dirty write under READ COMMITTED could. The runner is written in the
+   * same statement, so a run the boot sweep handed back to {@code QUEUED} comes back up naming the
+   * runner that reserved it now, never the one it was interrupted on.
    */
-  public int claimQueued(String runId, Instant startedAt) {
-    return update(
-        "status = ?1, startedAt = ?2, runnerId = null where id = ?3 and status = ?4",
-        CiRunStatus.RUNNING,
-        startedAt,
-        runId,
-        CiRunStatus.QUEUED);
-  }
-
-  /** {@link #claimQueued}, recording the runner that reserved the run in the same UPDATE. */
   public int claimQueuedForRunner(String runId, Instant startedAt, UUID runnerId) {
     return update(
         "status = ?1, startedAt = ?2, runnerId = ?3 where id = ?4 and status = ?5",
@@ -220,11 +208,11 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   }
 
   /**
-   * Every {@code QUEUED} run, oldest-first — the <b>candidate feed</b> the claim loop scans and the
+   * Every {@code QUEUED} run, oldest-first — the <b>candidate feed</b> a runner's reservation scans and the
    * startup sweep counts.
    *
    * <p>It was "what the startup sweep re-enqueues, in the order the runs were accepted so a restart
-   * does not reorder a backlog", and both halves of that moved on. The claim loop reads this list on
+   * does not reorder a backlog", and both halves of that moved on. A reservation reads this list on
    * every pass and hands it to {@code CiRunOrdering}, which decides the real order; the ordering's
    * <em>last</em> tie-break is {@code (createdAt, id)}, which is exactly this order — so a queue
    * with no priorities, no downstream lists and no release runs in it is claimed in precisely the

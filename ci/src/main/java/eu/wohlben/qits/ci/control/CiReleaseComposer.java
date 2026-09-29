@@ -406,7 +406,7 @@ public final class CiReleaseComposer {
       // `latestVersion` — so every composed release on the platform ran whatever the last CLI
       // release had been, with nothing in any consumer's tree naming it and no line anybody could
       // revert. It is a pom pin now (eu.wohlben.qits:qits-platform-access-cli-binary), injected by
-      // CiDaemonLauncher as $QITS_ARTIFACTS_CLI_VERSION, and this text simply spends it.
+      // StepContainerSettings as $QITS_ARTIFACTS_CLI_VERSION, and this text simply spends it.
       //
       // Which is why the listing read, its best-effort bearer and the jq that parsed it are all
       // gone: a release step's image no longer needs jq for the CLI's sake at all.
@@ -431,7 +431,7 @@ public final class CiReleaseComposer {
       // ran.
       // EDGE PLANE (epic qits-441): this download is anonymous, which is fine inside the swarm and
       // a 401 in 0s through the public edge. `$QITS_TOKEN` is this run's ci-run token — set only on
-      // the edge, exactly as `CiDaemonLauncher.BOOTSTRAP` reads it for the daemon binary's own
+      // the edge, exactly as `StepContainerSettings.BOOTSTRAP` reads it for the daemon binary's own
       // download — and the fix mirrors that idiom exactly: a local `set --` builds the bearer header
       // as a positional list, spent as `"$@"` on both arms and never interpolated into the url.
       // `set --` is safe here because nothing else this method emits reads `$@`/`$1`/`$2` — check
@@ -477,7 +477,7 @@ public final class CiReleaseComposer {
     }
     if (step.build()) {
       // The platform builder, demanded loudly before anything is built. Unset means a
-      // qits-ci/qits-containers pair too old to inject it; EMPTY is the kill switch. Either way a
+      // qits-ci/runner pair too old to inject it; EMPTY is the kill switch. Either way a
       // build-mode step must fail here, naming the cause, rather than reach for a socket it is not
       // handed.
       out.append(

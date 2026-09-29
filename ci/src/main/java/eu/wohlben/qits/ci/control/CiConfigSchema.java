@@ -268,7 +268,7 @@ final class CiConfigSchema {
   /**
    * The optional per-step {@code build} flag: this step builds images through the PLATFORM builder
    * and needs the build-mode environment — the run's commissioned credential, {@code
-   * $QITS_BUILD_REGISTRY}, and the {@code $BUILDKIT_HOST} qits-containers injects into every step
+   * $QITS_BUILD_REGISTRY}, and the {@code $BUILDKIT_HOST} the runner injects into every build step's
    * container — and <b>no docker socket</b>. It is what a converted recipe declares instead of
    * {@code docker: true}: the same per-step, diff-visible opt-in, minus the root-equivalence, which
    * is the whole point of the migration (qits-buildkit-plan.md in the wrapper).

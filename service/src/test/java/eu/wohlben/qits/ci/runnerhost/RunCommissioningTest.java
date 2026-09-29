@@ -1,4 +1,4 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -6,9 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import eu.wohlben.qits.ci.daemonhost.CiDaemonLauncher.LaunchSpec;
 import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.ci.idp.StubIdp;
+import eu.wohlben.qits.ci.runnerhost.StepContainerSettings.LaunchSpec;
+import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
@@ -20,10 +21,10 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The per-run push credential, end to end on this side of the wire: a real {@link StubIdp} on a real
- * socket, the real {@link CiDaemonLauncher} assembling a real spec from what it minted, and the real
- * {@link CiDaemonStepRunner#runClosed} giving it back.
+ * socket, the real {@link StepContainerSettings} assembling a real spec from what it minted, and
+ * {@link RunCommissions#release} giving it back.
  *
- * <p><b>Why it is its own class.</b> {@code CiDaemonLauncherTest} is spec assembly with no
+ * <p><b>Why it is its own class.</b> {@code StepContainerSettingsTest} is spec assembly with no
  * collaborator that sends anything, and it stays that way; what is under test here is the
  * <em>lifecycle</em> — one commission per run rather than per step, a second run's own, a failure
  * that fails the step, and a close that deletes.
@@ -51,19 +52,13 @@ public class RunCommissioningTest {
     idp.close();
   }
 
-  private CiDaemonLauncher launcher(RunCommissions commissions) {
-    CiDaemonLauncher launcher = new CiDaemonLauncher();
-    launcher.owner = "dev-qits-ci";
+  private StepContainerSettings launcher() {
+    StepContainerSettings launcher = new StepContainerSettings();
     launcher.network = "qits-net";
     launcher.containerGitUrl = "http://qits-githost:8080/";
     launcher.idpUrl = idp.authServerUrl();
     launcher.containerDaemonUrl = "ws://qits-ci:8080/ci/daemon";
     launcher.daemonBinaryUrlTemplate = "http://qits-artifacts:8080/artifacts/daemons/{version}";
-    launcher.registerTimeoutSeconds = 60;
-    launcher.initTimeoutSeconds = 120;
-    launcher.stepTimeoutSeconds = 900;
-    launcher.stepTimeoutGraceSeconds = 60;
-    launcher.outputMaxChars = 65536;
     launcher.memoryLimit = "4g";
     launcher.pidsLimit = 2048;
     launcher.cpus = "2";
@@ -89,9 +84,20 @@ public class RunCommissioningTest {
     // so nothing injects it and `null` would NPE where the real bean cannot.
     launcher.artifactsCliVersionOverride = java.util.Optional.empty();
     launcher.workspacesUrl = "http://qits-workspaces:8080";
-    launcher.launchPatience = Duration.ZERO;
-    launcher.commissions = commissions;
     return launcher;
+  }
+
+  /** Composes one step's whole spec against a fresh, shipped launcher and the given commissions. */
+  private WorkloadSpec compose(RunCommissions commissions, LaunchSpec step) {
+    return compose(launcher(), commissions, step);
+  }
+
+  /** Composes one step's whole spec against {@code launcher} and the given commissions. */
+  private WorkloadSpec compose(StepContainerSettings launcher, RunCommissions commissions, LaunchSpec step) {
+    RunCommissions.Credential credential =
+        RunCommissions.Credential.client(
+            commissions == null ? null : commissions.forRun(step.runId(), step.env()));
+    return StepWorkloadSpecs.compose(launcher.workloadSettings(), launcher.internalPlane(), step, credential, null);
   }
 
   /** One step of a run, publishing or not. */
@@ -161,8 +167,7 @@ public class RunCommissioningTest {
 
   @Test
   public void aGroupBumpRunMayPushItsMaintenanceBranch() {
-    launcher(idp.runCommissions(PATIENCE))
-        .buildWorkloadSpec(step(RUN, 0, false, bump("dependencies", "maintenance/dependencies")));
+    compose(idp.runCommissions(PATIENCE), step(RUN, 0, false, bump("dependencies", "maintenance/dependencies")));
 
     assertEquals(
         List.of(
@@ -174,8 +179,7 @@ public class RunCommissioningTest {
 
   @Test
   public void aTargetedBumpRunMayPushTheSourceBranchItWasAskedToBump() {
-    launcher(idp.runCommissions(PATIENCE))
-        .buildWorkloadSpec(step(RUN, 0, false, bump("targeted", "task/pin-the-frontend")));
+    compose(idp.runCommissions(PATIENCE), step(RUN, 0, false, bump("targeted", "task/pin-the-frontend")));
 
     assertEquals(
         List.of(
@@ -187,15 +191,15 @@ public class RunCommissioningTest {
 
   @Test
   public void aReleaseRequestRunMayPushNothing() {
-    launcher(idp.runCommissions(PATIENCE))
-        .buildWorkloadSpec(
-            step(
-                RUN,
-                0,
-                true,
-                event(
-                    "ReleaseRequestChanged",
-                    "{\"backingBranch\":\"release/4711\",\"mergedSha\":\"cafebabe\"}")));
+    compose(
+        idp.runCommissions(PATIENCE),
+        step(
+            RUN,
+            0,
+            true,
+            event(
+                "ReleaseRequestChanged",
+                "{\"backingBranch\":\"release/4711\",\"mergedSha\":\"cafebabe\"}")));
 
     assertEquals(
         List.of("{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\",\"gitRefs\":[]}"),
@@ -204,8 +208,7 @@ public class RunCommissioningTest {
 
   @Test
   public void aRunKindWhosePushesAreUnknownStatesNoScope() {
-    launcher(idp.runCommissions(PATIENCE))
-        .buildWorkloadSpec(step(RUN, 0, false, event("SCMPublishTag", "{\"tagName\":\"1.0\"}")));
+    compose(idp.runCommissions(PATIENCE), step(RUN, 0, false, event("SCMPublishTag", "{\"tagName\":\"1.0\"}")));
 
     assertEquals(
         List.of("{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\"}"), idp.posted);
@@ -216,9 +219,7 @@ public class RunCommissioningTest {
     idp.refuseGitRefList = true;
 
     Map<String, String> env =
-        launcher(idp.runCommissions(PATIENCE))
-            .buildWorkloadSpec(step(RUN, 0, false, bump("dependencies", "maintenance/dependencies")))
-            .spec()
+        compose(idp.runCommissions(PATIENCE), step(RUN, 0, false, bump("dependencies", "maintenance/dependencies")))
             .env();
 
     // Fail closed: the second commission states [], never no scope at all.
@@ -235,10 +236,11 @@ public class RunCommissioningTest {
 
   @Test
   public void oneRunCommissionsOnceAndEveryLaterStepReusesIt() {
-    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
+    StepContainerSettings launcher = launcher();
+    RunCommissions commissions = idp.runCommissions(PATIENCE);
 
-    Map<String, String> first = launcher.buildWorkloadSpec(step(RUN, 1, false)).spec().env();
-    Map<String, String> second = launcher.buildWorkloadSpec(step(RUN, 2, true)).spec().env();
+    Map<String, String> first = compose(launcher, commissions, step(RUN, 1, false)).env();
+    Map<String, String> second = compose(launcher, commissions, step(RUN, 2, true)).env();
 
     // The credential belongs to the RUN, not to the step: one commission, and the second step is
     // handed the same pair. One per step would be N clients to leak instead of one.
@@ -261,7 +263,8 @@ public class RunCommissioningTest {
 
   @Test
   public void everyCommissionedStepIsToldHowToMintAPublishToken() {
-    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
+    StepContainerSettings launcher = launcher();
+    RunCommissions commissions = idp.runCommissions(PATIENCE);
 
     // Not gated on the phase and not gated on `docker:`. A release-request (QA) run publishes too —
     // the java-service archetype PUTs its userflows bundle to the docs store from a QA step — so
@@ -278,8 +281,8 @@ public class RunCommissioningTest {
                     "ReleaseRequestChanged",
                     "{\"backingBranch\":\"release/4711\",\"mergedSha\":\"cafebabe\"}")))) {
       assertEquals(
-          CiDaemonLauncher.PUBLISH_TOKEN_COMMAND,
-          launcher.buildWorkloadSpec(each).spec().env().get("QITS_PUBLISH_TOKEN_COMMAND"));
+          StepContainerSettings.PUBLISH_TOKEN_COMMAND,
+          compose(launcher, commissions, each).env().get("QITS_PUBLISH_TOKEN_COMMAND"));
     }
   }
 
@@ -288,17 +291,14 @@ public class RunCommissioningTest {
     // qits-ci mints nothing for a container: BOOTSTRAP does, inside it, from the pair. A token on
     // this wire would be a credential recorded in an orchestrator's spec and expired by the time a
     // long step reached its publish.
-    Map<String, String> env =
-        launcher(idp.runCommissions(PATIENCE)).buildWorkloadSpec(step(RUN, 1, true)).spec().env();
+    Map<String, String> env = compose(idp.runCommissions(PATIENCE), step(RUN, 1, true)).env();
 
     assertFalse(env.containsKey("QITS_PUBLISH_TOKEN"));
   }
 
   @Test
   public void aPlainStepGetsTheSameShortLivedGitCredentialPath() {
-    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
-
-    Map<String, String> env = launcher.buildWorkloadSpec(step(RUN, 0, false)).spec().env();
+    Map<String, String> env = compose(idp.runCommissions(PATIENCE), step(RUN, 0, false)).env();
 
     // Every step clones before it can run its script; with githost gated that clone needs the
     // run-scoped client too. The helper exchanges it only for a short-lived githost bearer.
@@ -312,8 +312,7 @@ public class RunCommissioningTest {
 
   @Test
   public void theCommissionedPairIsBothTheDockerConfigAndTheTwoVariables() {
-    Map<String, String> env =
-        launcher(idp.runCommissions(PATIENCE)).buildWorkloadSpec(step(RUN, 1, true)).spec().env();
+    Map<String, String> env = compose(idp.runCommissions(PATIENCE), step(RUN, 1, true)).env();
 
     // The document, byte for byte: the CLI's own base64 of id:secret, against the address the step
     // reads as $QITS_REGISTRY **and** the one it reads as $QITS_BUILD_REGISTRY, in a directory
@@ -344,11 +343,11 @@ public class RunCommissioningTest {
     // registry vhost. The docker client picks a login BY HOSTNAME, so a document naming only the
     // push registry leaves the pull unauthenticated and the build dies on a 401 no pipeline
     // mentions. One entry per host, one commissioned identity behind all of them.
-    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
+    StepContainerSettings launcher = launcher();
     launcher.dockerAuthHosts = List.of("registry.dev.localhost:8080", "mirror.dev.localhost:8080");
 
     String document =
-        launcher.buildWorkloadSpec(step(RUN, 1, true)).spec().env().get("QITS_CI_REGISTRY_AUTH_CONFIG");
+        compose(launcher, idp.runCommissions(PATIENCE), step(RUN, 1, true)).env().get("QITS_CI_REGISTRY_AUTH_CONFIG");
 
     String auth =
         Base64.getEncoder()
@@ -371,11 +370,11 @@ public class RunCommissioningTest {
   public void aRepeatedOrBlankHostIsNotASecondEntry() {
     // A duplicate would be a duplicate JSON key — legal and useless — and a blank one an entry for
     // the empty host. Both are config slips rather than requests.
-    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
+    StepContainerSettings launcher = launcher();
     launcher.dockerAuthHosts = List.of("qits-artifacts:8080", " ", "qits-artifacts:8080");
 
     String document =
-        launcher.buildWorkloadSpec(step(RUN, 1, true)).spec().env().get("QITS_CI_REGISTRY_AUTH_CONFIG");
+        compose(launcher, idp.runCommissions(PATIENCE), step(RUN, 1, true)).env().get("QITS_CI_REGISTRY_AUTH_CONFIG");
 
     String auth =
         Base64.getEncoder()
@@ -399,9 +398,7 @@ public class RunCommissioningTest {
     // login for the address it is pushing to, which costs nothing for exactly as long as the store
     // lets an anonymous /v2 publish through and fails every image push on the estate the moment it
     // answers one with a Bearer challenge.
-    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
-
-    Map<String, String> env = launcher.buildWorkloadSpec(buildStep(RUN, 1)).spec().env();
+    Map<String, String> env = compose(idp.runCommissions(PATIENCE), buildStep(RUN, 1)).env();
     String document = env.get("QITS_CI_REGISTRY_AUTH_CONFIG");
 
     assertTrue(document.contains("\"" + env.get("QITS_BUILD_REGISTRY") + "\""), document);
@@ -417,11 +414,11 @@ public class RunCommissioningTest {
     // differ: a deployment whose host daemon and whose builder resolve the registry by the same
     // name is legitimate. Naming it twice would be a duplicate JSON key — legal, useless, and one
     // typo away from a document a client reads differently than it looks.
-    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
+    StepContainerSettings launcher = launcher();
     launcher.buildkitRegistryHost = "qits-artifacts:8080";
 
     String document =
-        launcher.buildWorkloadSpec(step(RUN, 1, true)).spec().env().get("QITS_CI_REGISTRY_AUTH_CONFIG");
+        compose(launcher, idp.runCommissions(PATIENCE), step(RUN, 1, true)).env().get("QITS_CI_REGISTRY_AUTH_CONFIG");
 
     String auth =
         Base64.getEncoder()
@@ -434,10 +431,10 @@ public class RunCommissioningTest {
     // QITS_CI_BUILDKIT_ENABLED=false sends $QITS_BUILD_REGISTRY empty, so no step pushes through
     // that alias and a login for it would be an entry for an address nothing addresses. The
     // document follows the switch rather than the key.
-    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
+    StepContainerSettings launcher = launcher();
     launcher.buildkitEnabled = false;
 
-    Map<String, String> env = launcher.buildWorkloadSpec(step(RUN, 1, true)).spec().env();
+    Map<String, String> env = compose(launcher, idp.runCommissions(PATIENCE), step(RUN, 1, true)).env();
 
     String auth =
         Base64.getEncoder()
@@ -450,7 +447,7 @@ public class RunCommissioningTest {
 
   @Test
   public void theCommissioningCallSaysWhatItIsForAndWhoIsAsking() {
-    launcher(idp.runCommissions(PATIENCE)).buildWorkloadSpec(step(RUN, 1, true));
+    compose(idp.runCommissions(PATIENCE), step(RUN, 1, true));
 
     // The context is what makes the reconciliation possible at all: a row qits-idp holds says which
     // run owns it, so a row whose run is over is reapable without any bookkeeping of ours.
@@ -469,10 +466,10 @@ public class RunCommissioningTest {
 
   @Test
   public void aSecondRunGetsACredentialOfItsOwn() {
-    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
+    RunCommissions commissions = idp.runCommissions(PATIENCE);
 
-    Map<String, String> first = launcher.buildWorkloadSpec(step("run-a", 1, true)).spec().env();
-    Map<String, String> second = launcher.buildWorkloadSpec(step("run-b", 1, true)).spec().env();
+    Map<String, String> first = compose(commissions, step("run-a", 1, true)).env();
+    Map<String, String> second = compose(commissions, step("run-b", 1, true)).env();
 
     assertEquals(2, idp.posted.size());
     assertNotEquals(
@@ -481,52 +478,20 @@ public class RunCommissioningTest {
     assertTrue(idp.posted.get(1).contains("run-b"));
   }
 
-  @Test
-  public void aCommissionThatCouldNotBeMadeFailsTheStepAndNamesTheCall() {
-    idp.mintStatus = 503;
-    CiDaemonLauncher launcher = launcher(idp.runCommissions(PATIENCE));
-
-    // No container client is wired, so a launch that reached one would NPE: this returning at all is
-    // the assertion that nothing was started. Which is the posture — launching credential-less would
-    // turn an idp blip into a push 401 minutes later, inside somebody's build.
-    CiDaemonLauncher.Launched launched = launcher.launch(step(RUN, 1, true));
-
-    assertFalse(launched.started());
-    assertTrue(launched.error().startsWith("could not commission a per-run credential"), launched.error());
-    assertTrue(launched.error().contains("/idp/api/clients"), launched.error());
-    assertTrue(launched.error().contains("contextKind=ci-run"), launched.error());
-    assertTrue(launched.error().contains("503"), launched.error());
-    // Bounded retry rather than one attempt: a 5xx and a 401 are about the moment, so the window is
-    // asked more than once and then gives up rather than holding a build slot forever.
-    assertTrue(idp.posted.size() >= 2, "asked again inside the window: " + idp.posted.size());
-  }
-
-  @Test
-  public void aRefusalAboutTheRequestIsOneAttempt() {
-    // 403 is qits-idp saying a commissioned client may not commission — a statement about the
-    // request that no window fixes, so the step fails at once rather than after the patience.
-    idp.mintStatus = 403;
-
-    CiDaemonLauncher.Launched launched =
-        launcher(idp.runCommissions(PATIENCE)).launch(step(RUN, 1, true));
-
-    assertFalse(launched.started());
-    assertEquals(1, idp.posted.size());
-    assertTrue(launched.error().contains("403"), launched.error());
-  }
+  // aCommissionThatCouldNotBeMadeFailsTheStepAndNamesTheCall and aRefusalAboutTheRequestIsOneAttempt
+  // used to prove the retry/refusal behaviour of StepContainerSettings#launch. That method is
+  // deleted with the in-process executor (qits-506): a runner-side commission failure now fails the
+  // step from RunnerStepRunner#run instead (its own suite, and RunnerStepRunnerTest's), so there is
+  // nothing left of that behaviour for a plain-JUnit spec-composition class to hold.
 
   @Test
   public void closingTheRunGivesTheCredentialBack() {
     RunCommissions commissions = idp.runCommissions(PATIENCE);
-    launcher(commissions).buildWorkloadSpec(step(RUN, 1, true));
+    compose(commissions, step(RUN, 1, true));
 
-    CiStepRelay relay = new CiStepRelay();
-    relay.outputMaxChars = 65536;
-    CiDaemonStepRunner runner = new CiDaemonStepRunner();
-    runner.relay = relay;
-    runner.commissions = commissions;
-
-    runner.runClosed(RUN);
+    // The runner-side teardown (RunnerStepRunner#runClosed) is what calls this in production; the
+    // credential lifecycle itself is RunCommissions' own and is what this class pins.
+    commissions.release(RUN);
 
     assertEquals(List.of("run-client-1"), idp.deleted);
     // And it is gone from memory too, so a run id that came round again would commission afresh
@@ -537,15 +502,9 @@ public class RunCommissioningTest {
   @Test
   public void closingARunThatOnlyClonedStillDeletesItsCredential() {
     RunCommissions commissions = idp.runCommissions(PATIENCE);
-    launcher(commissions).buildWorkloadSpec(step(RUN, 0, false));
+    compose(commissions, step(RUN, 0, false));
 
-    CiStepRelay relay = new CiStepRelay();
-    relay.outputMaxChars = 65536;
-    CiDaemonStepRunner runner = new CiDaemonStepRunner();
-    runner.relay = relay;
-    runner.commissions = commissions;
-
-    runner.runClosed(RUN);
+    commissions.release(RUN);
 
     assertEquals(List.of("run-client-1"), idp.deleted);
   }
@@ -555,8 +514,7 @@ public class RunCommissioningTest {
     // The fallback arm, and it must be byte-identical to what shipped before per-run credentials
     // existed: quarkus.oidc-client.qits.client-enabled is false out of the box, so there is nothing
     // to commission with and a step container's environment gains nothing at all.
-    Map<String, String> env =
-        launcher(StubIdp.disabledCommissions()).buildWorkloadSpec(step(RUN, 1, true)).spec().env();
+    Map<String, String> env = compose(StubIdp.disabledCommissions(), step(RUN, 1, true)).env();
 
     assertEquals(List.of(), idp.posted);
     assertFalse(env.containsKey("DOCKER_CONFIG"));
@@ -573,22 +531,22 @@ public class RunCommissioningTest {
 
   @Test
   public void theSecretIsNeverASubstringOfAnythingSentBesideItsOwnVariable() {
-    var request = launcher(idp.runCommissions(PATIENCE)).buildWorkloadSpec(step(RUN, 1, true));
+    WorkloadSpec request = compose(idp.runCommissions(PATIENCE), step(RUN, 1, true));
     String secret = "run-s3cr3t-1";
 
     // It reaches the container in exactly two forms: base64 inside the docker document, and raw
     // under one name a BuildKit secret mount reads. Anywhere else — a second variable, an argv, a
     // label, the bootstrap — is a leak into something that gets logged or baked into an image.
     List<String> carrying =
-        request.spec().env().entrySet().stream()
+        request.env().entrySet().stream()
             .filter(entry -> entry.getValue().contains(secret))
             .map(Map.Entry::getKey)
             .toList();
     assertEquals(List.of("QITS_COMMISSIONED_CLIENT_SECRET"), carrying);
-    assertFalse(String.valueOf(request.spec().args()).contains(secret));
-    assertFalse(String.valueOf(request.spec().entrypoint()).contains(secret));
-    assertFalse(String.valueOf(request.spec().extraLabels()).contains(secret));
-    assertFalse(String.valueOf(request.spec().explicitName()).contains(secret));
-    assertFalse(CiDaemonLauncher.BOOTSTRAP.contains(secret));
+    assertFalse(String.valueOf(request.args()).contains(secret));
+    assertFalse(String.valueOf(request.entrypoint()).contains(secret));
+    assertFalse(String.valueOf(request.labels()).contains(secret));
+    assertFalse(String.valueOf(request.name()).contains(secret));
+    assertFalse(StepContainerSettings.BOOTSTRAP.contains(secret));
   }
 }

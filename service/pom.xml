@@ -58,7 +58,7 @@
         </dependency>
         <dependency>
             <!-- WHICH qits CLI EVERY COMPOSED RELEASE STEP RUNS. Three strings and no bytes:
-                 PlatformAccessCliBinary.VERSION is what CiDaemonLauncher injects as
+                 PlatformAccessCliBinary.VERSION is what StepContainerSettings injects as
                  $QITS_ARTIFACTS_CLI_VERSION, and the composed prelude downloads exactly that
                  coordinate. Declared here and not in `ci/` because the launcher — the one thing
                  that has to state a version — lives in this module; the composer only reads the
@@ -155,10 +155,10 @@
         <dependency>
             <!-- The other direction, BACK after one release without it, and the comment that stood
                  here said what it would take: "adding the extension back means a new outbound
-                 caller, not a config change". This is that caller. qits-ci asks qits-containers for
-                 every step container it runs, that service guards every route on the caller's own
-                 identity (its OwnerGuard compares the token's `sub` to the owner in the path), and
-                 containers/ContainersClientProducer is where a token becomes a header.
+                 caller, not a config change". The named `qits` client is the bearer this service
+                 presents to qits-githost (githost/IdpGitHostBearer). It was also the bearer sent to
+                 qits-containers until the in-process executor was deleted (qits-506); qits-ci calls
+                 no orchestrator any more.
 
                  Shipped OFF, exactly as its predecessor was: quarkus.oidc-client.client-enabled is
                  false in application.properties, so the extension builds a disabled client, this
@@ -168,27 +168,6 @@
                  first. -->
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-oidc-client</artifactId>
-        </dependency>
-        <dependency>
-            <!-- The orchestrator's client jar: how this service starts and stops step containers now
-                 that it holds no docker socket. A client rather than a vocabulary, so it is the
-                 second thing "Adding a dependency on another context" in AGENTS.md has to be read
-                 against — and the answer is the one the eventstream jar already gets: this is
-                 PLATFORM INFRASTRUCTURE, not another bounded context's SDK. It brings no container,
-                 no framework and no address; qits-containers is where the platform's containers
-                 live the way qits-events is where its events live.
-
-                 IT IS A SNAPSHOT AND MUST NOT SHIP AS ONE, the qits-githost-events arrangement
-                 exactly: qits-containers has cut no release, so 1.0.0-SNAPSHOT resolves from the
-                 local ~/.m2 only and the bootstrap seed-publishes it so a STEP container can build
-                 this repository. The cutover to a calver is one line in the root pom, in the same
-                 commit that first deploys a released qits-containers.
-
-                 A native consumer owes the wire records a registration: containers/
-                 ContainersWireReflection, the second member of EventWireReflection's family and
-                 there for the identical reason. -->
-            <groupId>${project.groupId}</groupId>
-            <artifactId>qits-containers-client</artifactId>
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
@@ -332,11 +311,10 @@
                 <artifactId>maven-surefire-plugin</artifactId>
             </plugin>
             <plugin>
-                <!-- CiPackagedSurfaceIT and the docker-backed gates (CiDaemonHandshakeIT,
-                     CiDaemonGateIT) bind here. skipITs=true is the parent's default, so a fresh
-                     clone's `mvn verify` is green without docker; `-DskipITs=false` runs them all and
-                     the gates self-skip (JUnit Assumptions) when docker, the step image or the daemon
-                     binary is absent. The `native` profile flips skipITs too, but narrows to
+                <!-- CiPackagedSurfaceIT and the packaged stories bind here (the docker-backed gates
+                     CiDaemonHandshakeIT and CiDaemonGateIT went with the in-process executor,
+                     qits-506). skipITs=true is the parent's default, so a fresh clone's `mvn
+                     verify` is green without a packaged artifact; `-DskipITs=false` runs them all. The `native` profile flips skipITs too, but narrows to
                      CiPackagedSurfaceIT via qits.it.excluded-groups (see the root pom). -->
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <executions>

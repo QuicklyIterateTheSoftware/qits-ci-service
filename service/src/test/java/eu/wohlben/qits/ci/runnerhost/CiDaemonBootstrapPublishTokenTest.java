@@ -1,4 +1,4 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -25,7 +25,7 @@ import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 
 /**
- * The REAL {@link CiDaemonLauncher#BOOTSTRAP}, run through {@code /bin/sh} against a real token
+ * The REAL {@link StepContainerSettings#BOOTSTRAP}, run through {@code /bin/sh} against a real token
  * endpoint: the publish credential a step gets, proved by minting one rather than by reading the
  * text that would.
  *
@@ -54,7 +54,7 @@ public class CiDaemonBootstrapPublishTokenTest {
   private static final String GIT_HELPER_PATH = "/tmp/qits-git-credential";
   private static final int GIT_HELPER_PATH_USES = 6;
   /** Not this test's subject, but written under the same guard — so it moves out of /tmp too. */
-  private static final String SETTINGS_PATH = CiDaemonLauncher.DEPLOY_SETTINGS_FILE;
+  private static final String SETTINGS_PATH = StepContainerSettings.DEPLOY_SETTINGS_FILE;
 
   private static final int SETTINGS_PATH_USES = 4;
 
@@ -202,7 +202,7 @@ public class CiDaemonBootstrapPublishTokenTest {
 
   /** The shipped text with its four {@code /tmp} literals moved under this test's own directory. */
   private String bootstrapUnderTemp() {
-    String shipped = CiDaemonLauncher.BOOTSTRAP;
+    String shipped = StepContainerSettings.BOOTSTRAP;
     assertEquals(DAEMON_PATH_USES, occurrences(shipped, DAEMON_PATH), DAEMON_PATH + " moved");
     assertEquals(
         TOKEN_SCRIPT_PATH_USES, occurrences(shipped, TOKEN_SCRIPT_PATH), TOKEN_SCRIPT_PATH + " moved");
@@ -246,7 +246,7 @@ public class CiDaemonBootstrapPublishTokenTest {
     env.put("QITS_COMMISSIONED_CLIENT_ID", CLIENT_ID);
     env.put("QITS_COMMISSIONED_CLIENT_SECRET", CLIENT_SECRET);
     env.put("QITS_GIT_AUTH_TOKEN_URL", "http://127.0.0.1:" + server.getAddress().getPort() + "/token");
-    env.put("QITS_GIT_AUTH_AUDIENCE", CiDaemonLauncher.CONTAINER_GIT_AUDIENCE);
+    env.put("QITS_GIT_AUTH_AUDIENCE", StepContainerSettings.CONTAINER_GIT_AUDIENCE);
     env.put("QITS_GIT_AUTH_HOST", "qits-githost:8080");
     env.put("QITS_PUBLISH_TOKEN_COMMAND", TOKEN_SCRIPT_PATH);
     env.put("GIT_CONFIG_GLOBAL", work.resolve("gitconfig").toString());
@@ -269,7 +269,7 @@ public class CiDaemonBootstrapPublishTokenTest {
     env.put("QITS_COMMISSIONED_CLIENT_ID", CLIENT_ID);
     env.put("QITS_COMMISSIONED_CLIENT_SECRET", CLIENT_SECRET);
     env.put("QITS_GIT_AUTH_TOKEN_URL", tokenUrl());
-    env.put("QITS_GIT_AUTH_AUDIENCE", CiDaemonLauncher.CONTAINER_GIT_AUDIENCE);
+    env.put("QITS_GIT_AUTH_AUDIENCE", StepContainerSettings.CONTAINER_GIT_AUDIENCE);
     return builder;
   }
 

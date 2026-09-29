@@ -4,21 +4,16 @@ import eu.wohlben.qits.ci.control.CiIdentifiers;
 import eu.wohlben.qits.ci.control.CiRunnerStepRunner;
 import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.entity.CiRunnerPlane;
-import eu.wohlben.qits.ci.daemonhost.CiDaemonLauncher;
 import eu.wohlben.qits.ci.daemonhost.CiDaemonRegistry;
-import eu.wohlben.qits.ci.daemonhost.CiDaemonStepRunner;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
-import eu.wohlben.qits.ci.daemonhost.StepAddressPlane;
-import eu.wohlben.qits.ci.daemonhost.StepWorkloadSpecs;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
+import eu.wohlben.qits.cidaemon.protocol.InitFailed;
 import eu.wohlben.qits.cirunner.protocol.Cancel;
 import eu.wohlben.qits.cirunner.protocol.Launch;
 import eu.wohlben.qits.cirunner.protocol.Reap;
 import eu.wohlben.qits.cirunner.protocol.Reaped;
 import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
-import eu.wohlben.qits.containers.client.ContainersWire.Security;
-import eu.wohlben.qits.containers.client.ContainersWire.Spec;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Typed;
 import jakarta.inject.Inject;
@@ -29,19 +24,19 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
- * The step seam for a run a runner reserved: {@link CiDaemonStepRunner}'s sequence with one link
- * changed — the container is started by the runner, asked over its socket, instead of by
- * qits-containers.
+ * <b>The step seam</b> — every run's, since the in-process executor ({@code CiDaemonStepRunner},
+ * which asked qits-containers for each container) was deleted in qits-506. The runner that reserved
+ * the run is asked over its socket to start each step's container ({@code Launch} → its host's
+ * {@code docker run}) and to remove it again ({@code Reap} → {@code docker rm}).
  *
- * <p><b>Everything else is the local path's, deliberately to the line.</b> The step's identifiers
- * are validated the same way, the launch is registered in the same {@link CiDaemonRegistry} with the
- * same per-container secret, the spec is composed by the same {@link StepWorkloadSpecs} from the same
- * settings, and the container's own {@code qits-ci-daemon} dials the same {@code /ci/daemon} socket
- * and receives its script as the reply to its {@code Initialized}. So the four deadlines are the
- * same four — the runner's answer, register, initialize, the step's backstop — and the outcomes are
- * the same {@link StepOutcome}s: no answer to a {@code Launch} is {@code NEVER_STARTED}, a {@code
- * LaunchFailed} is {@code LAUNCH_FAILED} carrying docker's own words, and a socket that goes away is
- * {@code CONNECTION_LOST}. No new outcome and no new step status was needed.
+ * <p><b>The sequence per step.</b> The step's identifiers are validated, the launch is registered
+ * in the {@link CiDaemonRegistry} with a per-container secret, the spec is composed by {@link
+ * StepWorkloadSpecs} from {@link StepContainerSettings}, and the container's own {@code
+ * qits-ci-daemon} dials the {@code /ci/daemon} socket and receives its script as the reply to its
+ * {@code Initialized}. So there are four deadlines — the runner's answer, register, initialize, the
+ * step's backstop — and the outcomes are {@link StepOutcome}s: no answer to a {@code Launch} is
+ * {@code NEVER_STARTED}, a {@code LaunchFailed} is {@code LAUNCH_FAILED} carrying docker's own
+ * words, and a socket that goes away is {@code CONNECTION_LOST}.
  *
  * <p><b>Two sockets can be lost now.</b> The daemon's ends the step at once, as it always did. The
  * runner's does not any more (qits-545): a runner that drops its socket keeps the step's container
@@ -94,8 +89,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
 
   @Inject CiDaemonRegistry daemons;
 
-  /** For the settings a spec is composed from and the daemon pin — never to start anything. */
-  @Inject CiDaemonLauncher launcher;
+  /** The settings a spec is composed from, and the daemon pin. */
+  @Inject StepContainerSettings launcher;
 
   @Inject CiStepRelay relay;
 
@@ -152,7 +147,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
 
   @Override
   public StepResult run(StepSpec spec, StepListener listener) {
-    // CiDaemonStepRunner's checks, for its reasons: before a secret is minted or a relay opened.
+    // Before a secret is minted or a relay opened: a value that would reach the container's
+    // environment is validated here, where a refusal has nothing to tear down.
     CiIdentifiers.requireRepo(spec.repo());
     CiIdentifiers.requireBranch(spec.branch());
     CiIdentifiers.requireSha(spec.sha());
@@ -180,8 +176,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
         credential =
             commissions == null ? null : commissions.forRun(spec.runId(), spec.env(), plane.plane());
       } catch (IdpCommissioner.CommissionFailedException notCommissioned) {
-        // The local path's decision, for its reason: an idp blip fails the step, never a launch
-        // without the credential.
+        // An idp blip fails the step, never a launch without the credential.
         return failed(StepOutcome.LAUNCH_FAILED, notCommissioned.getMessage());
       }
     }
@@ -197,7 +192,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
               relay.append(spec.runId(), text);
               listener.onChunk(text);
             });
-    String containerName = CiDaemonLauncher.containerName(spec.runId(), spec.stepIndex());
+    String containerName = StepContainerSettings.containerName(spec.runId(), spec.stepIndex());
     inFlight.put(
         spec.runId(), new InFlight(credentials.daemonId(), containerName, spec.stepIndex()));
 
@@ -239,8 +234,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     if (session == null || !session.isOpen() || plane == null) {
       return lost(session, "");
     }
-    CiDaemonLauncher.LaunchSpec launchSpec =
-        new CiDaemonLauncher.LaunchSpec(
+    StepContainerSettings.LaunchSpec launchSpec =
+        new StepContainerSettings.LaunchSpec(
             spec.runId(),
             spec.stepIndex(),
             spec.repo(),
@@ -256,10 +251,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
             spec.user(),
             spec.env());
     WorkloadSpec workload =
-        workloadSpec(
-            StepWorkloadSpecs.compose(launcher.workloadSettings(), plane, launchSpec, credential),
-            spec.docker() || spec.build(),
-            stepMemoryLimitOf(session));
+        StepWorkloadSpecs.compose(
+            launcher.workloadSettings(), plane, launchSpec, credential, stepMemoryLimitOf(session));
 
     Duration launchTimeout = Duration.ofSeconds(launchTimeoutSeconds);
     CiRunnerRegistry.LaunchAnswer answer =
@@ -292,8 +285,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
       if (runners.lost(spec.runId())) {
         return lost(session, "");
       }
-      // The local path reads the bootstrap's own log off the removal; this host cannot see the
-      // runner's docker, so what is recorded is where that log is.
+      // This host cannot see the runner's docker, so what is recorded is where that log is — and
+      // the Reaped's own log tail replaces the pointer below when it arrives.
       return failed(
           StepOutcome.NEVER_STARTED,
           "the step container on runner "
@@ -314,9 +307,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
         /* the step is the reply to this */
       }
       case INIT_FAILED -> {
-        return failed(
-            CiDaemonStepRunner.outcomeOf(initialization.reason()),
-            CiDaemonStepRunner.detailOf(initialization));
+        return failed(outcomeOf(initialization.reason()), detailOf(initialization));
       }
       case NEVER_INITIALIZED -> {
         return failed(
@@ -358,8 +349,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
   }
 
   /**
-   * Stop a runner run. A step whose script is running is stopped by its daemon, exactly as on the
-   * local path — a {@code Cancel} on the daemon socket answered with a terminal frame. Before that
+   * Stop a runner run. A step whose script is running is stopped by its daemon — a {@code Cancel}
+   * on the daemon socket answered with a terminal frame. Before that
    * there is nothing in the container to stop, so the outstanding launch is withdrawn, the launch
    * record reaped (which completes the step's awaits at once) and the runner told to remove every
    * container of the run.
@@ -456,50 +447,16 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     return plane == null ? CiRunnerPlane.INTERNAL : plane;
   }
 
-  /**
-   * The composed spec as the runner protocol carries it. The protocol's {@code WorkloadSpec} is the
-   * subset of qits-containers' spec this service fills, so this is a field-for-field copy plus the
-   * one fact the protocol adds: {@code buildPlane}, the step's {@code docker: || build:}.
-   *
-   * <p><b>No {@code qits.ci.runner} label is added here, and none may be.</b> That namespace is the
-   * runner's own: it stamps {@code qits.ci.runner=<runner id>} and {@code qits.ci.runner.run} on
-   * every container it starts (its boot sweep selects by them), and it refuses a spec whose labels
-   * reach into it — so a label written here would fail every launch.
-   */
-  static WorkloadSpec workloadSpec(Spec spec, boolean buildPlane) {
-    return workloadSpec(spec, buildPlane, null);
+  /** A failed checkout whose commit is gone is its own outcome; every other refusal is INIT_FAILED. */
+  static StepOutcome outcomeOf(InitFailed.Reason reason) {
+    return reason == InitFailed.Reason.SHA_GONE ? StepOutcome.SHA_GONE : StepOutcome.INIT_FAILED;
   }
 
-  /**
-   * {@link #workloadSpec(Spec, boolean)} with the runner's own step memory limit in place of the
-   * composed one — memory and memory-swap alike, exactly as {@code StepWorkloadSpecs} sets the
-   * platform's {@code qits.ci.memory-limit}, so a runner's steps still get no swap beyond their cap.
-   * Null keeps the composed value. Only the runner path passes one: the in-process executor composes
-   * through {@code CiDaemonLauncher} and never reaches this method.
-   */
-  static WorkloadSpec workloadSpec(Spec spec, boolean buildPlane, String stepMemoryLimit) {
-    Security security = spec.security() == null ? Security.none() : spec.security();
-    String memory = stepMemoryLimit == null ? security.memory() : stepMemoryLimit;
-    String memorySwap = stepMemoryLimit == null ? security.memorySwap() : stepMemoryLimit;
-    return new WorkloadSpec(
-        spec.image(),
-        spec.entrypoint(),
-        spec.args(),
-        spec.env(),
-        spec.extraLabels(),
-        spec.network(),
-        spec.addHosts(),
-        spec.user(),
-        spec.hostDockerSocket(),
-        security.capDropAll(),
-        security.noNewPrivileges(),
-        memory,
-        memorySwap,
-        security.pidsLimit(),
-        security.cpus(),
-        security.oomScoreAdj(),
-        spec.explicitName(),
-        buildPlane);
+  /** The daemon's reason and detail for a failed initialization, as the step's recorded output. */
+  static String detailOf(CiDaemonRegistry.Initialization initialization) {
+    String reason = initialization.reason() == null ? "unspecified" : initialization.reason().name();
+    String detail = initialization.detail();
+    return detail == null || detail.isBlank() ? reason : reason + ": " + detail;
   }
 
   /** The runner's {@code Reaped}, when one arrived — {@code null} for every way it did not. */

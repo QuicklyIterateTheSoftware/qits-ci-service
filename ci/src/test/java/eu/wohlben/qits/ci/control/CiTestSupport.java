@@ -36,6 +36,12 @@ public abstract class CiTestSupport {
   @Inject protected CiEventTriggerParser triggerParser;
 
   /**
+   * The runner every run of this suite executes on — see {@link SuiteRunner}. Since qits-506 there
+   * is no claim loop in {@code CiRunService}; a run is a runner's reservation or nothing.
+   */
+  @Inject protected SuiteRunner suiteRunner;
+
+  /**
    * The event name every run this class drives is triggered by. A name of its own rather than a real
    * one, so a test that seeds a trigger file for a <em>real</em> event cannot be fired by one of
    * these and vice versa — the candidate list is shared for the life of a Quarkus instance, which is
@@ -86,16 +92,33 @@ public abstract class CiTestSupport {
         null);
   }
 
-  /** Accept and run one pipeline synchronously, with no worker timing to wait out. */
+  /**
+   * Accept one pipeline and wait for the suite's runner to have run it — the accept, the {@code
+   * Backlog}, the reservation and the whole step loop, exactly as a runner's run goes.
+   */
   protected void executePipeline(String repoId, String branch, String sha, String stepsYaml) {
-    runService.executeEventRun(eventRun(repoId, branch, sha, stepsYaml));
+    executeEventRun(eventRun(repoId, branch, sha, stepsYaml));
+  }
+
+  /**
+   * {@link #executePipeline} for an already-built request: what {@code CiRunService.executeEventRun}
+   * was, before the synchronous claim it made went with the in-process executor (qits-506).
+   */
+  protected void executeEventRun(CiRunService.EventRun request) {
+    runService.onEventTrigger(request);
+    try {
+      suiteRunner.awaitIdle();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("interrupted waiting for the suite's runner", e);
+    }
   }
 
   /**
    * Drop everything this test thread has already loaded, so the next read really goes to the
    * database.
    *
-   * <p>Needed exactly when a test reads a row <em>before</em> the run worker changes it: a {@code
+   * <p>Needed exactly when a test reads a row <em>before</em> the runner's driver changes it: a {@code
    * @QuarkusTest} method has one request-scoped persistence context, and Hibernate's identity map
    * wins over a query's own results — so a second read would hand back the stale instance the first
    * read cached and the test would be asserting against its own memory rather than the worker's
@@ -127,5 +150,7 @@ public abstract class CiTestSupport {
     // Nothing staged means every reference answers FOREIGN, which is the truth about the alpine:3
     // this suite runs on: an image this platform does not publish and holds no pin for.
     fakeImagePins.reset();
+    // A fresh runner row per test: no infra streak, no quarantine.
+    suiteRunner.reset();
   }
 }

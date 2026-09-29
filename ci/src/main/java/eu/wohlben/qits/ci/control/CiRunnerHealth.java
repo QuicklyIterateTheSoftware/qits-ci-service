@@ -43,7 +43,7 @@ import org.jboss.logging.Logger;
  * <p><b>The health check</b> is a pseudo-build ({@code CiRunService.acceptHealthCheck}): one step,
  * {@code echo hello world}, in {@code qits.ci.runner.healthcheck.image}, cloning {@code main} of
  * {@code qits.ci.runner.healthcheck.repository} — exactly the path a runner can break. Only its
- * target runner can take it, and it can take it while quarantined; no local worker ever claims it; it
+ * target runner can take it, and it can take it while quarantined; no other runner is ever handed it; it
  * announces no build event, gates nothing and is in no listing but its own id. Green records {@code
  * PASSED} and reinstates a quarantined runner; red records {@code FAILED} with the step's outcome and
  * the head of its output, and quarantines the runner ({@code health check failed: <outcome>}) or
@@ -154,8 +154,8 @@ public class CiRunnerHealth {
 
   /**
    * One step of a run ended with {@code result}. A build on a runner counts: an {@link #isInfra
-   * infra failure} toward a quarantine, any other resets the streak. A local worker's run and a
-   * health check say nothing here. Never throws.
+   * infra failure} toward a quarantine, any other resets the streak. A run with no runner (history
+   * from before qits-506) and a health check say nothing here. Never throws.
    */
   public void stepEnded(CiRun run, StepResult result) {
     if (run == null

@@ -11,6 +11,7 @@ import eu.wohlben.qits.ci.control.CiEventTriggerParser;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiRunService;
 import eu.wohlben.qits.ci.control.FakeCiStepRunner;
+import eu.wohlben.qits.ci.control.SuiteRunner;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiStep;
@@ -28,6 +29,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -70,6 +72,9 @@ public class CiRunProgressSurfaceTest {
       """;
 
   @Inject FakeCiStepRunner fakeRunner;
+
+  /** Executes this suite's runs: every run is a runner's since qits-506 — see {@link SuiteRunner}. */
+  @Inject SuiteRunner suiteRunner;
   @Inject CiRunService runService;
   @Inject CiEventTriggerParser triggerParser;
   @Inject CiRunRepository runs;
@@ -77,9 +82,15 @@ public class CiRunProgressSurfaceTest {
 
   private Instant nextFinish;
 
+  @AfterEach
+  void stopTheSuiteRunner() throws Exception {
+    suiteRunner.disable();
+  }
+
   @BeforeEach
   void resetRunner() {
     fakeRunner.reset();
+    suiteRunner.enable();
     nextFinish = Instant.now().minusSeconds(86_400);
   }
 

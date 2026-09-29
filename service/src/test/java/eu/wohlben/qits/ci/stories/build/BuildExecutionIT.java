@@ -7,11 +7,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import eu.wohlben.qits.ci.api.TokenValidationBootstrapIT;
-import eu.wohlben.qits.ci.stories.support.MockContainers;
 import eu.wohlben.qits.ci.stories.support.StoryDaemon;
 import eu.wohlben.qits.ci.stories.support.StoryGitHost;
 import eu.wohlben.qits.ci.stories.support.StoryIdentities;
 import eu.wohlben.qits.ci.stories.support.StoryOrigin;
+import eu.wohlben.qits.ci.stories.support.StoryRunner;
 import eu.wohlben.qits.ci.stories.support.StoryTarget;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonProtocol;
 import eu.wohlben.qits.cidaemon.protocol.RunStep;
@@ -45,29 +45,32 @@ import org.junit.jupiter.api.condition.EnabledIf;
  * <p>The arrangement is the whole design of this service, and it is inside out on purpose:
  *
  * <ol>
- *   <li>qits-ci asks <b>qits-containers</b> — over plain HTTP, because this process holds no docker
- *       socket and spawns no process — to put a container somewhere. The spec's environment carries
- *       a per-container id and secret, minted for this one step.
+ *   <li>A <b>runner</b> — a machine registered with qits-ci, holding {@code /ci/runners/socket}
+ *       open — reserves the run, and qits-ci sends it a {@code Launch} for the step: the whole
+ *       workload spec, whose environment carries a per-container id and secret minted for this one
+ *       step. The runner's host starts that container with its own docker; this process holds no
+ *       docker socket, spawns no process and calls no orchestrator (qits-506).
  *   <li>The container's own {@code qits-ci-daemon} <b>dials out</b> to {@code ws://…/ci/daemon} with
  *       those two headers. qits-ci never dials in, which is why a step container needs no address.
  *   <li>The daemon says {@code Initialized} once its checkout is done, and <b>the step is the reply
  *       to that</b>. The host initiates nothing: a script leaves this process as one field of one
  *       JSON frame, and executes as the daemon's child inside the sandbox.
  *   <li>Output comes back as {@code StepChunk} frames while the step runs, and one {@code
- *       StepFinished} ends it.
+ *       StepFinished} ends it. qits-ci then sends the runner a {@code Reap} for the container, and
+ *       a {@code Released} for the run.
  * </ol>
  *
  * <p><b>The daemon in this story is a real client of the real socket.</b> {@link StoryDaemon} is a
  * Vert.x WebSocket framing the vendored protocol exactly as the native binary does, and — the part
  * that makes this evidence rather than a fixture — it learns its credentials <b>only</b> from the
- * workload spec that reached {@link MockContainers}. Nothing here reads the host's launch table. An
- * admitted dial is therefore a measurement of the whole path: qits-ci minted a secret, put it in a
- * container spec, sent it to the orchestrator, and then recognised it coming back off a socket.
+ * workload spec that reached {@link StoryRunner} in a {@code Launch}. Nothing here reads the host's
+ * launch table. An admitted dial is therefore a measurement of the whole path: qits-ci minted a
+ * secret, put it in a container spec, sent it to the runner, and then recognised it coming back off a
+ * socket.
  *
  * <p>What is <b>not</b> proved here, and is out of reach in this container: a real image, a real
- * daemon binary and a real docker daemon. Those are {@code CiDaemonHandshakeIT} and {@code
- * CiDaemonGateIT}, which are tagged {@code extended} and need docker, a published step image, a
- * built daemon binary and a container route back to the JVM. What this story adds to them is that
+ * daemon binary and a real docker daemon. The real daemon binary is {@code CiDaemonPinIT}'s; the
+ * real {@code docker run} is the runner's own (qits-ci-runner-daemon). What this story adds is that
  * it needs none of it — so the flow is documented on every ordinary build.
  *
  * <p><b>Two stories, and the second is deliberately not the first one's tail.</b> The peer that
@@ -75,7 +78,7 @@ import org.junit.jupiter.api.condition.EnabledIf;
  * qits-platform-maintenance does while it waits out a bump. A <b>person</b> reading the transcript
  * afterwards is a different door, a different identity track and — the claim the diagram makes —
  * a walk that reaches no other service at all: the step's output is a row by then, so reading it
- * costs the git host nothing and the orchestrator nothing.
+ * costs the git host nothing and the runner nothing.
  */
 @QuarkusIntegrationTest
 @TestProfile(TokenValidationBootstrapIT.PackagedWithMockIdp.class)
@@ -120,7 +123,7 @@ public class BuildExecutionIT {
 
   static final String STDERR_LINE = "note: nothing to do\n";
 
-  /** How long a launch may take to arrive: the run is queued behind whatever the worker is doing. */
+  /** How long a launch may take to arrive once the runner holds the run. */
   private static final Duration LAUNCH_PATIENCE = Duration.ofSeconds(60);
 
   private static String publishedSha;
@@ -155,7 +158,6 @@ public class BuildExecutionIT {
   static void tapEveryEndAndPublishTheRepository() throws Exception {
     NetworkTaps.restAssured(StoryTarget.SERVICE);
     StoryGitHost.install();
-    MockContainers.installSource();
     publishedSha = StoryOrigin.publish(REPO_ID, TRIGGER_FILE, triggerFile());
     // …and then wait for it to be a candidate. See StoryOrigin#awaitCandidateListing: qits-ci
     // caches the git host's repository listing, so a repository published inside that window is one
@@ -166,8 +168,8 @@ public class BuildExecutionIT {
   @UserStory(value = "A build step connects to qits-ci and streams its output", category = BUILDS)
   @UserStoryDescription(
       """
-      A pipeline declares a step, and the step runs somewhere qits-ci cannot reach. qits-ci asks
-      the platform's container service to put a container at a place, hands it an id and a secret
+      A pipeline declares a step, and the step runs somewhere qits-ci cannot reach. A runner takes
+      the run, and qits-ci asks it to start a container for the step, handing it an id and a secret
       nobody else holds, and then waits — because the container's daemon is what dials back. The
       step itself travels down that connection as the reply to the daemon saying its checkout is
       done, and the build's output comes back up it a frame at a time. This story is that whole
@@ -196,8 +198,11 @@ public class BuildExecutionIT {
     runId = runIds.getFirst();
     story.note("a release this repository depends on is announced, and a run is accepted").as("run-accepted");
 
-    // --- qits-ci asks the orchestrator for a container, and that is where the secret is ---------
-    MockContainers.Launch launch = MockContainers.awaitLaunch(LAUNCH_PATIENCE);
+    // --- a runner takes the run, and qits-ci asks it for a container: that is where the secret is
+    NetworkCapture.actor(StoryRunner.ACTOR);
+    StoryRunner runner = StoryRunner.connect();
+    runner.take(runId);
+    StoryRunner.Launch launch = runner.awaitLaunch(LAUNCH_PATIENCE);
     String daemonId = launch.environment().get(StoryDaemon.ID_VARIABLE);
     String secret = launch.environment().get(StoryDaemon.SECRET_VARIABLE);
     daemonSecret = secret;
@@ -209,8 +214,11 @@ public class BuildExecutionIT {
     assertTrue(
         launch.environment().get(StoryDaemon.URL_VARIABLE).endsWith(StoryTarget.DAEMON_PATH),
         "the container is told to dial " + StoryTarget.DAEMON_PATH);
+    runner.launched(launch);
     story
-        .note("qits-ci asked qits-containers for one container, carrying an id and a secret for it")
+        .note(
+            "a runner takes the run, and qits-ci asks it for one container, carrying an id and a"
+                + " secret for it")
         .as("container-requested");
 
     // --- the container's daemon dials back ------------------------------------------------------
@@ -248,6 +256,13 @@ public class BuildExecutionIT {
       story.note("the step's output streams back frame by frame, and then it ends").as("step-finished");
     }
 
+    // --- the runner is told to remove the container, and then that the run is over -------------
+    NetworkCapture.actor(StoryRunner.ACTOR);
+    try (runner) {
+      runner.awaitReapAndConfirm(launch, Duration.ofSeconds(30));
+      runner.awaitReleased(runId, Duration.ofSeconds(30));
+    }
+
     // --- the peer that asked for the build polls the run it asked for ---------------------------
     // The machine role, not a person's: a peer waiting out a build it triggered must not be handed
     // qits:admin to do it, which is why the read routes accept {qits:admin, qits:system}.
@@ -264,9 +279,6 @@ public class BuildExecutionIT {
         "the step's row holds what came up the socket");
     story.note("the run is green, and the step's row holds what the daemon streamed").as("run-green");
 
-    // The teardown is the last thing the run worker does, in a finally, and it is far-side traffic:
-    // a DELETE that lands after this story returns is a DELETE in the NEXT story's diagram.
-    MockContainers.awaitRemoved(launch.containerName(), Duration.ofSeconds(30));
     StoryGitHost.awaitRead(blobPath());
   }
 
@@ -278,7 +290,7 @@ public class BuildExecutionIT {
       are worth saying about that walk. It is authenticated as a PERSON — this service
       authenticates nobody itself, so the platform edge asserts who the caller is and what they
       may do — and it reaches nothing else at all: the build's output is a row by the time anyone
-      reads it, so no git host and no container service is on the path.
+      reads it, so no git host and no runner is on the path.
       """)
   @Order(2)
   void anOperatorReadsTheTranscript(Interactions story) {
@@ -378,22 +390,30 @@ public class BuildExecutionIT {
         StoryTarget.SERVICE,
         StoryGitHost.SERVICE_NAME,
         StoryGitHost.label("GET", blobPath(), 200));
-    // (3) the container: asked for, and taken away again. qits-ci holds no docker socket, so these
-    // two calls are the entirety of its container vocabulary for one step.
+    // (3) the runner: it dialled, took the run, and was asked for the container and to remove it
+    // again. qits-ci holds no docker socket and calls no orchestrator, so Launch and Reap are the
+    // entirety of its container vocabulary for one step.
     ReportAssertions.assertEdge(
         BUILDS,
         STEP_SLUG,
-        NetworkEdge.HTTP,
+        NetworkEdge.SOCKET,
+        StoryRunner.ACTOR,
         StoryTarget.SERVICE,
-        MockContainers.SERVICE_NAME,
-        MockContainers.label("PUT", "", 200));
+        "CONNECT " + eu.wohlben.qits.ci.runnerhost.RunnerAddresses.SOCKET_PATH);
     ReportAssertions.assertEdge(
-        BUILDS,
-        STEP_SLUG,
-        NetworkEdge.HTTP,
-        StoryTarget.SERVICE,
-        MockContainers.SERVICE_NAME,
-        MockContainers.label("DELETE", "volumes=false&logs=false", 200));
+        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryRunner.ACTOR, StoryTarget.SERVICE, "reserve");
+    ReportAssertions.assertEdge(
+        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryTarget.SERVICE, StoryRunner.ACTOR, "take");
+    ReportAssertions.assertEdge(
+        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryTarget.SERVICE, StoryRunner.ACTOR, "launch");
+    ReportAssertions.assertEdge(
+        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryRunner.ACTOR, StoryTarget.SERVICE, "launched");
+    ReportAssertions.assertEdge(
+        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryTarget.SERVICE, StoryRunner.ACTOR, "reap");
+    ReportAssertions.assertEdge(
+        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryRunner.ACTOR, StoryTarget.SERVICE, "reaped");
+    ReportAssertions.assertEdge(
+        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryTarget.SERVICE, StoryRunner.ACTOR, "released");
     // (4) the socket, and the frames on it. The DIAL is the container's: qits-ci never dials in.
     ReportAssertions.assertEdge(
         BUILDS,
@@ -427,12 +447,14 @@ public class BuildExecutionIT {
         StoryDaemon.ACTOR,
         StoryTarget.SERVICE,
         "stepFinished exit 0");
-    // Three initiators and no fourth: the peer that asked, the container that dialled back, and
-    // qits-ci itself. Nothing else reached this service and this service reached nothing else.
+    // Four initiators and no fifth: the peer that asked, the runner that took the run, the
+    // container that dialled back, and qits-ci itself.
     ReportAssertions.assertEdge(
         BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryDaemon.ACTOR, StoryTarget.SERVICE, "heartbeat");
     ReportAssertions.assertOnlyEdgesFrom(
-        BUILDS, STEP_SLUG, List.of(PLATFORM, StoryDaemon.ACTOR, StoryTarget.SERVICE));
+        BUILDS,
+        STEP_SLUG,
+        List.of(PLATFORM, StoryRunner.ACTOR, StoryDaemon.ACTOR, StoryTarget.SERVICE));
     // Neither credential is in the bundle: not the bearer that opened the trigger, and not the
     // per-container secret that admitted the socket.
     ReportAssertions.assertNotLeaked(BUILDS, STEP_SLUG, platformBearer);
@@ -467,7 +489,7 @@ public class BuildExecutionIT {
     ReportAssertions.assertEdgeCount(OPERATIONS, TRANSCRIPT_SLUG, 3);
     ReportAssertions.assertOnlyEdgesFrom(OPERATIONS, TRANSCRIPT_SLUG, List.of(OPERATOR));
     ReportAssertions.assertNoEdgesTo(OPERATIONS, TRANSCRIPT_SLUG, StoryGitHost.SERVICE_NAME);
-    ReportAssertions.assertNoEdgesTo(OPERATIONS, TRANSCRIPT_SLUG, MockContainers.SERVICE_NAME);
+    ReportAssertions.assertNoEdgesTo(OPERATIONS, TRANSCRIPT_SLUG, StoryRunner.ACTOR);
   }
 
   private static String blobPath() {

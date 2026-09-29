@@ -64,8 +64,8 @@ import org.jboss.logging.Logger;
  * <h2>The timeouts</h2>
  *
  * <p>Short and bounded, because the callers are single-threaded workers: {@code ci-trigger-worker}
- * for an arriving event, where every candidate repository costs one of these calls, and {@code
- * ci-run-worker} for the commit-held probe. {@link #CONNECT_TIMEOUT} 2s and {@link #REQUEST_TIMEOUT}
+ * for an arriving event, where every candidate repository costs one of these calls, and a runner's
+ * driver thread for the commit-held probe. {@link #CONNECT_TIMEOUT} 2s and {@link #REQUEST_TIMEOUT}
  * 5s, so a git host that has stopped answering costs seconds per repository rather than a step's
  * whole timeout. Same 2s connect bound {@code HttpGitHostRepoListing} carries.
  *
@@ -315,7 +315,7 @@ public class HttpGitConfigSource implements CiConfigSource {
    * naming the repository and the url. Refusing here instead put an exception on the run worker for
    * a refusal the host makes anyway, and it guarded nothing the host does not already guard: with
    * {@code quarkus.oidc-client.qits.client-enabled} shipped false, every config read of every run
-   * failed before a socket was opened. Same rule as qits-containers' client.
+   * failed before a socket was opened.
    */
   private Answer get(String url) {
     try {

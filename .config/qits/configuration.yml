@@ -35,7 +35,10 @@
 #   * QUARKUS_OIDC_CLIENT_GITHOST_* (five keys) — the old `githost` client. There is no such client:
 #     `application.properties` ships one named block, `qits`, and nothing binds these.
 #   * QITS_CI_CONTAINER_GIT_AUDIENCE — the audience a step container's Git helper asks for is the
-#     constant `qits-platform` now (CiDaemonLauncher.CONTAINER_GIT_AUDIENCE).
+#     constant `qits-platform` now (StepContainerSettings.CONTAINER_GIT_AUDIENCE).
+#   * QITS_CONTAINERS_URL and QITS_CI_CONCURRENT_BUILDS — the in-process executor's two keys, gone
+#     with it (qits-506): qits-ci asks no qits-containers for a step container and runs no claim
+#     loop of its own. Every run is a runner's, the platform host's `localhost` runner included.
 #   * QITS_CI_REGISTRY_AUTH_CLIENT_ID / _SECRET — the old static push credential, replaced by one
 #     commissioned per run.
 #   * QITS_RESOURCE_* — injected by the deployer from its resource registry. Configuration cannot
@@ -59,10 +62,6 @@ keys:
     type: string
     description: "The git host as a step container reaches it: the platform edge, which turns the step's Basic credential into a bearer."
 
-  env.QITS_CONTAINERS_URL:
-    type: string
-    description: "Where qits-containers answers. Every step container is started and removed through it."
-
   env.QITS_CI_WORKSPACES_URL:
     type: string
     description: "qits-workspaces' root, handed to every step container as $QITS_WORKSPACES_URL."
@@ -79,15 +78,11 @@ keys:
 
   env.QITS_CI_NETWORK:
     type: string
-    description: "The docker network every step container joins."
-
-  env.QITS_CI_CONCURRENT_BUILDS:
-    type: number
-    description: "How many runs this instance executes itself at once, in its own claim loops; size it to the host. 0 hands every run to runners (set it only once a qits-ci carrying the ci-runners readiness check is live). Never negative. Read only while qits.ci.in-process-executor.enabled is true, and that ships false: until then the effective count is 0 whatever this says."
+    description: "The docker network every step container on an INTERNAL runner joins."
 
   env.QITS_CI_MEMORY_LIMIT:
     type: string
-    description: "Memory cap for one step container, with its unit (for example 4g)."
+    description: "Memory cap for one step container, with its unit (for example 4g). A runner row's own step memory limit replaces it for that runner's steps."
 
   env.QITS_CI_CPUS:
     type: number
@@ -173,7 +168,7 @@ keys:
 
   env.QUARKUS_OIDC_CLIENT_CLIENT_ID:
     type: string
-    description: "This service's idp client id, and so its owner at qits-containers. Read only when QITS_RESOURCE_IDP_CLIENT_ID is unset."
+    description: "This service's idp client id. Read only when QITS_RESOURCE_IDP_CLIENT_ID is unset."
 
   env.QUARKUS_OIDC_CLIENT_CREDENTIALS_SECRET:
     type: string

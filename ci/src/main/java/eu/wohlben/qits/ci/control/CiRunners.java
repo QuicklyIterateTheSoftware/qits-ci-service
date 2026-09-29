@@ -86,8 +86,8 @@ public class CiRunners {
 
   /**
    * The code of the 409 a delete of {@link #LOCALHOST} answers while no other runner row exists: with
-   * the in-process pool sized to zero, that runner is the only thing that executes a step, and
-   * deleting it would leave every accepted run {@code QUEUED} with nothing to claim it.
+   * no in-process executor any more (qits-506), that runner is the only thing that executes a step
+   * on the platform host, and deleting it would leave every accepted run {@code QUEUED} with nothing to claim it.
    */
   public static final String LAST_RUNNER = "LAST_RUNNER";
 

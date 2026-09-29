@@ -239,7 +239,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
 
   private void deliver(CiEventTriggerService.Arrival arrival) throws Exception {
     engine.evaluate(arrival);
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
   }
 
@@ -256,7 +256,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
   private void deliverThroughTheLedger(CiEventTriggerService.Arrival arrival) throws Exception {
     assertTrue(engine.onEvent(arrival), "the accept writes the owed row and reports it");
     engine.awaitIdle();
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
   }
 
@@ -629,7 +629,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     // The git host comes back, and the sweep is what a deployed qits-ci runs at boot and on a tick.
     seedSlots("archetype: spa-frontend\n");
     engine.sweepOwed(Instant.now().plusSeconds(60));
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     List<CiRun> recovered = runService.runsFor(repoId);
@@ -661,7 +661,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     // The git host comes back and says the repository carries its own recipe after all.
     seedArchetype("spa-frontend", SPA_FRONTEND);
     engine.sweepOwed(Instant.now().plusSeconds(60));
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     List<CiRun> recovered = runService.runsFor(repoId);
@@ -864,7 +864,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
 
     seedArchetype("java-service", javaService("target/sbom.json"));
     CiRun retry = runService.retry(original.id);
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     CiRun refired = runService.requireRun(retry.id);
@@ -916,7 +916,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     forgetLoadedEntities();
 
     CiRun retry = runService.retry(original.id);
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     CiRun refired = runService.requireRun(retry.id);
@@ -987,7 +987,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
         retry.status,
         "the retry is accepted regardless — the fallback is the stored document, not a refusal");
 
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     CiRun refired = runService.requireRun(retry.id);
     assertEquals(composed, refired.triggerConfig, "byte for byte, the pipeline the source ran");

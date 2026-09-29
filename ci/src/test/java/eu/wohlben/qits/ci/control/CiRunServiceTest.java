@@ -94,7 +94,7 @@ public class CiRunServiceTest extends CiTestSupport {
   private String versionSeededBy(String eventName, String payload) {
     String repo = UUID.randomUUID().toString();
     String content = triggerFile("steps:\n  - image: alpine:3\n    script: echo v\n");
-    service.executeEventRun(
+    executeEventRun(
         new CiRunService.EventRun(
             CiRepoRef.of(repo),
             "main",
@@ -252,7 +252,7 @@ public class CiRunServiceTest extends CiTestSupport {
     String runId = reachedStepZero.get(10, TimeUnit.SECONDS);
     service.cancel(runId);
     cancelled.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     forgetLoadedEntities();
     CiRun run = soleRun();
@@ -285,7 +285,7 @@ public class CiRunServiceTest extends CiTestSupport {
     // The seam-level half of the docker-socket feature: everything from the parsed key to the argv is
     // covered elsewhere, and what this asserts is the wiring in between — that the flag arrives at the
     // runner attached to the step that declared it and to no other. The mount itself is
-    // CiDaemonLauncherTest's subject; that a step which declared nothing keeps its sandbox is asserted
+    // StepContainerSettingsTest's subject; that a step which declared nothing keeps its sandbox is asserted
     // there as an absence, and here as a plain false.
     seedConfig(
         """
@@ -482,7 +482,7 @@ public class CiRunServiceTest extends CiTestSupport {
     String runId = reachedStepZero.get(10, TimeUnit.SECONDS);
     service.cancel(runId);
     cancelled.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     // The cancel above read the run into this thread's persistence context while it was still
     // RUNNING; without this the assertions below would read that copy back rather than the worker's.
@@ -520,7 +520,7 @@ public class CiRunServiceTest extends CiTestSupport {
     String runId = reachedStep.get(10, TimeUnit.SECONDS);
     service.cancel(runId, "No longer needed");
     cancelled.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertEquals("No longer needed", soleRun().cancellationReason);
@@ -656,7 +656,7 @@ public class CiRunServiceTest extends CiTestSupport {
   public void theAcceptExecutesAsynchronously() throws Exception {
     seedConfig(CONFIG_TWO_STEPS);
     accept("main");
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     assertEquals(CiRunStatus.SUCCESS, soleRun().status);
   }
 
@@ -668,7 +668,7 @@ public class CiRunServiceTest extends CiTestSupport {
     seedConfig(CONFIG_TWO_STEPS);
     CiRunService.EventRun request = eventRun(repoId, "main", sha, pipeline);
     service.onEventTrigger(request);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     CiRun run = soleRun();
     assertEquals(CiRunStatus.SUCCESS, run.status);
@@ -685,7 +685,7 @@ public class CiRunServiceTest extends CiTestSupport {
     CiRunService.EventRun request = eventRun(repoId, "main", sha, pipeline);
     service.onEventTrigger(request);
     service.onEventTrigger(request);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     assertEquals(1, service.runsFor(repoId).size(), "one announcement, one run");
   }

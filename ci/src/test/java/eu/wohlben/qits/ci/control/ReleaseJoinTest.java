@@ -586,7 +586,7 @@ public class ReleaseJoinTest extends CiTestSupport {
     engine.evaluate(
         new CiEventTriggerService.Arrival(
             eventId, eventName, Instant.parse("2026-08-12T09:00:00Z"), payload));
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     CiRun run = runService.runsFor(repoId).get(0);
     assertNotNull(run.finishedAt, "the run finished before anything about the join is asserted");

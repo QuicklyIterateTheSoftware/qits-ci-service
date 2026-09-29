@@ -16,9 +16,8 @@ import eu.wohlben.qits.ci.control.CiStepRunner.StepOutcome;
 import eu.wohlben.qits.ci.control.CiStepRunner.StepResult;
 import eu.wohlben.qits.ci.control.CiStepRunner.StepSpec;
 import eu.wohlben.qits.ci.control.FakeCiStepRunner;
-import eu.wohlben.qits.ci.daemonhost.CiDaemonLauncher;
 import eu.wohlben.qits.ci.daemonhost.FakeCiDaemon;
-import eu.wohlben.qits.ci.daemonhost.StepWorkloadSpecs;
+import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiRunner;
@@ -114,7 +113,7 @@ class RunnerStepRunnerTest {
 
   @Inject CiRunnerPins pins;
 
-  @Inject CiDaemonLauncher launcher;
+  @Inject StepContainerSettings launcher;
 
   @Inject CiRunnerRepository runnerRows;
 
@@ -159,7 +158,24 @@ class RunnerStepRunnerTest {
   @AfterEach
   void forgetTheRunner() {
     QuarkusTransaction.requiringNew().run(() -> runnerRows.deleteAll());
+    settleLeftovers();
   }
+  /**
+   * Nothing runs a run this suite leaves QUEUED — there is no claim loop since qits-506, and no
+   * runner is connected after the case — so it is settled here rather than left for a later case's
+   * runner to be handed.
+   */
+  private void settleLeftovers() {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () ->
+                runs.update(
+                    "status = ?1, finishedAt = ?2 where status = ?3",
+                    CiRunStatus.CANCELLED,
+                    Instant.now(),
+                    CiRunStatus.QUEUED));
+  }
+
 
   // --- the step, through the seam -----------------------------------------------------------------
 
@@ -178,17 +194,19 @@ class RunnerStepRunnerTest {
       assertNotNull(launch, "the runner is asked to start the step's container");
       assertEquals(runId, launch.runId());
       WorkloadSpec workload = launch.workloadSpec();
-      assertEquals(CiDaemonLauncher.containerName(runId, 0), workload.name());
+      assertEquals(StepContainerSettings.containerName(runId, 0), workload.name());
       assertEquals(Map.of("qits.ci.run", runId), workload.labels());
       assertTrue(
           workload.labels().keySet().stream().noneMatch(k -> k.startsWith("qits.ci.runner")),
           "the runner refuses its own namespace in a spec, and stamps it itself");
       // The local composition, field for field: a step on a runner is the same step.
       assertEquals(
-          RunnerStepRunner.workloadSpec(
-              StepWorkloadSpecs.compose(
-                  launcher.workloadSettings(), launcher.internalPlane(), launchSpec(runId, workload), null),
-              false),
+          StepWorkloadSpecs.compose(
+              launcher.workloadSettings(),
+              launcher.internalPlane(),
+              launchSpec(runId, workload),
+              (RunCommissions.Credential) null,
+              null),
           workload);
       runner.send(new Launched(runId, 0, "c0ffee"));
 
@@ -417,7 +435,7 @@ class RunnerStepRunnerTest {
           never.output()
               .contains(
                   "its own log is on the runner's host ("
-                      + CiDaemonLauncher.containerName(runId, 0)
+                      + StepContainerSettings.containerName(runId, 0)
                       + ")"),
           never.output());
       assertFalse(never.output().contains("--- the step container's own log"), never.output());
@@ -580,9 +598,7 @@ class RunnerStepRunnerTest {
         });
     String runId;
     try {
-      // The local worker is parked in a run of its own, so the one accepted next is the runner's.
-      accept("runner-vanish-blocker");
-      parked.get(30, TimeUnit.SECONDS);
+      // Nothing else claims since qits-506, so the one accepted is the runner's.
       runId = accept("runner-vanish-target");
 
       Instant vanishedAt;
@@ -800,9 +816,9 @@ class RunnerStepRunnerTest {
   }
 
   /** {@link #step}'s launch, with the identity the runner was actually handed. */
-  private static CiDaemonLauncher.LaunchSpec launchSpec(String runId, WorkloadSpec workload) {
+  private static StepContainerSettings.LaunchSpec launchSpec(String runId, WorkloadSpec workload) {
     StepSpec step = step(runId);
-    return new CiDaemonLauncher.LaunchSpec(
+    return new StepContainerSettings.LaunchSpec(
         runId,
         0,
         step.repo(),

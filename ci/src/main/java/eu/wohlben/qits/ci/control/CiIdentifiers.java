@@ -166,7 +166,7 @@ public final class CiIdentifiers {
    * hold: a calver ({@code 2026.803.91607}) and a sha256 digest hex.
    *
    * <p><b>It has no caller on a shipped path any more, and it is kept rather than deleted.</b> It
-   * replaced {@code CiDaemonLauncher}'s boot-time {@code daemonVersionComplaint}, and it was
+   * replaced {@code CiDaemonLauncher}'s (now {@code StepContainerSettings}) boot-time {@code daemonVersionComplaint}, and it was
    * enforced at ADOPTION — where a version really did arrive untrusted, off a {@code SoftwareRelease}
    * frame on the bus. The daemon pin ladder is retired, so the only two versions that reach a
    * download url now are a constant compiled into the protocol jar and an override a person typed

@@ -73,7 +73,7 @@ public class RunLifecycleAnnounceSeamTest extends CiTestSupport {
   @AfterEach
   void releaseTheWorker() throws Exception {
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
   }
 
   private CiRun theRun() {

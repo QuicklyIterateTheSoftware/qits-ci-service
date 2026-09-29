@@ -49,9 +49,4 @@ class QitsOidcClientOldExtrasFallbackTest {
     assertEquals("old-extras-secret", value("quarkus.oidc-client.qits.credentials.secret"));
     assertEquals("http://old-extras-idp:8080/idp", value("quarkus.oidc-client.qits.auth-server-url"));
   }
-
-  @Test
-  void theContainersOwnerKeyFollowsTheFallenBackId() {
-    assertEquals("old-extras-qits-ci", value("qits.ci.containers.owner"));
-  }
 }

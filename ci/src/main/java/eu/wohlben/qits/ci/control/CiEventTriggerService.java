@@ -48,7 +48,7 @@ import org.jboss.logging.Logger;
  * so doing it inline would hold up every other consumer's frames for however long a git host takes —
  * and the typed {@code BuildSuccessfulListener} is on that same thread.
  *
- * <p><b>Not {@code ci-run-worker} either</b>, though it is the obvious reuse. That thread is occupied
+ * <p><b>Not a run's driver thread either</b>, though it is the obvious reuse. That thread is occupied
  * by a running pipeline for minutes at a time; queueing evaluation behind it would mean an event that
  * arrived during a long build gets evaluated when the build ends, against a {@code main} that has
  * moved since. Evaluation-before-enqueue is a different latency class from run execution and gets its
@@ -1994,13 +1994,10 @@ public class CiEventTriggerService {
    * on the network loses the container healthcheck's race and cd kills the deployment. This one
    * reads the git host once per candidate per row.
    *
-   * <p><b>At {@code CiRunService.BOOT_SWEEP_PRIORITY}</b> rather than unordered, because it can
-   * record runs and hand them to the run worker: it must not precede {@code
-   * CiDaemonLauncher.onStart}'s container reap, which cannot tell a container this boot started from
-   * one the previous life left. Sharing the run sweep's rung is enough for that — the reap's is
-   * lower and the observers before it have returned — and the two do not otherwise interact: a run
-   * this sweep records is {@code QUEUED}, which the run sweep either re-enqueues or ignores, and
-   * both are correct.
+   * <p><b>At {@code CiRunService.BOOT_SWEEP_PRIORITY}</b>, sharing the run sweep's rung. The two do
+   * not interact: a run this sweep records is {@code QUEUED}, which the run sweep either announces
+   * to the runners or ignores, and both are correct. (The rung once also kept this sweep behind the
+   * in-process executor's container reap; that reap went with the executor in qits-506.)
    */
   void onStart(@Observes @Priority(CiRunService.BOOT_SWEEP_PRIORITY) StartupEvent event) {
     if (LaunchMode.current() == LaunchMode.TEST) {

@@ -1,4 +1,4 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -26,7 +26,7 @@ import org.junit.jupiter.api.condition.OS;
 import org.w3c.dom.Document;
 
 /**
- * The REAL {@link CiDaemonLauncher#BOOTSTRAP}, run through {@code /bin/sh}: the maven deploy
+ * The REAL {@link StepContainerSettings#BOOTSTRAP}, run through {@code /bin/sh}: the maven deploy
  * credential a step gets ambiently, proved by writing the settings file and reading it back rather
  * than by asserting on the text that would.
  *
@@ -63,7 +63,7 @@ public class CiDaemonBootstrapDeploySettingsTest {
   private static final int TOKEN_SCRIPT_PATH_USES = 7;
   private static final String GIT_HELPER_PATH = "/tmp/qits-git-credential";
   private static final int GIT_HELPER_PATH_USES = 6;
-  private static final String SETTINGS_PATH = CiDaemonLauncher.DEPLOY_SETTINGS_FILE;
+  private static final String SETTINGS_PATH = StepContainerSettings.DEPLOY_SETTINGS_FILE;
   private static final int SETTINGS_PATH_USES = 4;
 
   private static final String CLIENT_ID = "run-client-1";
@@ -209,7 +209,7 @@ public class CiDaemonBootstrapDeploySettingsTest {
 
   /** The shipped text with its {@code /tmp} literals moved under this test's own directory. */
   private String bootstrapUnderTemp() {
-    String shipped = CiDaemonLauncher.BOOTSTRAP;
+    String shipped = StepContainerSettings.BOOTSTRAP;
     assertEquals(DAEMON_PATH_USES, occurrences(shipped, DAEMON_PATH), DAEMON_PATH + " moved");
     assertEquals(
         TOKEN_SCRIPT_PATH_USES,
@@ -243,7 +243,7 @@ public class CiDaemonBootstrapDeploySettingsTest {
     env.put("QITS_COMMISSIONED_CLIENT_SECRET", CLIENT_SECRET);
     env.put(
         "QITS_GIT_AUTH_TOKEN_URL", "http://127.0.0.1:" + server.getAddress().getPort() + "/token");
-    env.put("QITS_GIT_AUTH_AUDIENCE", CiDaemonLauncher.CONTAINER_GIT_AUDIENCE);
+    env.put("QITS_GIT_AUTH_AUDIENCE", StepContainerSettings.CONTAINER_GIT_AUDIENCE);
     env.put("QITS_GIT_AUTH_HOST", "qits-githost:8080");
     env.put("GIT_CONFIG_GLOBAL", work.resolve("gitconfig").toString());
     env.put("MAVEN_ARGS", PRE_EXISTING_MAVEN_ARGS);

@@ -130,7 +130,7 @@ release:
       # escaping.
       #
       # THE PATH IS THIS RECIPE'S OWN, AND THAT IS A FIX RATHER THAN A PREFERENCE. qits-ci's own
-      # container bootstrap (CiDaemonLauncher.BOOTSTRAP) writes /tmp/qits-deploy-settings.xml when
+      # container bootstrap (StepContainerSettings.BOOTSTRAP) writes /tmp/qits-deploy-settings.xml when
       # the step container starts and APPENDS `-gs /tmp/qits-deploy-settings.xml` to MAVEN_ARGS,
       # which every maven in the step then inherits. A recipe writing that same path overwrites the
       # platform's file — and the `rm -f` after the deploy DELETED it, so the makeBom below started
@@ -138,7 +138,7 @@ release:
       # file does not exist: /tmp/qits-deploy-settings.xml`. Every release on this recipe hit it.
       # Writing somewhere the platform does not own removes the collision in both directions.
       #
-      # MAVEN_ARGS BEATS THE COMMAND LINE — measured on 3.9.12 and stated in CiDaemonLauncher — so
+      # MAVEN_ARGS BEATS THE COMMAND LINE — measured on 3.9.12 and stated in StepContainerSettings — so
       # on a current qits-ci this `-gs` is inert and the ambient file is what the deploy uses. It
       # stays anyway: this file is read at main and runs against a tag on whatever qits-ci the
       # estate is deployed with, and on one that injects nothing this is the deploy's only

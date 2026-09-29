@@ -172,7 +172,7 @@
 #
 #   the qits CLI          PINNED, and pinned ONCE PER BUILD. The composed release prelude fetches
 #                         `$QITS_ARTIFACTS_CLI_PACKAGE` at `$QITS_ARTIFACTS_CLI_VERSION`, which
-#                         CiDaemonLauncher injects from qits-ci's own pom pin
+#                         StepContainerSettings injects from qits-ci's own pom pin
 #                         (eu.wohlben.qits:qits-platform-access-cli-binary). It is one value for
 #                         one run — every step of one build fetches the same bytes — and it is a
 #                         line somebody can revert, which the `latestVersion` read it replaced was
