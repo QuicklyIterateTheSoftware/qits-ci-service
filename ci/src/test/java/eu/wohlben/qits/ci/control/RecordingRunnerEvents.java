@@ -38,7 +38,13 @@ public class RecordingRunnerEvents implements RunnerAnnouncer {
 
   @Override
   public void onRunnerCreated(
-      String runnerId, String runnerName, int slots, String plane, String description, Instant at) {
+      String runnerId,
+      String runnerName,
+      int slots,
+      String plane,
+      String description,
+      String stepMemoryLimit,
+      Instant at) {
     record("RunnerCreated", runnerId, runnerName);
   }
 
@@ -93,6 +99,7 @@ public class RecordingRunnerEvents implements RunnerAnnouncer {
       int slots,
       String plane,
       String description,
+      String stepMemoryLimit,
       List<String> changed,
       Instant at) {
     record("RunnerChanged", runnerId, String.valueOf(changed));

@@ -27,6 +27,10 @@ import java.util.UUID;
  * out of service and why (qits-466): a quarantined runner takes no work but its own health check,
  * whatever {@code slots} says — which stays what its operator configured, and is what it gets back.
  * {@code lastHealthcheck} is its newest settled health check, null until it has one.
+ *
+ * <p>{@code stepMemoryLimit} is the memory cap this runner's step containers get, a docker size such
+ * as {@code 6g}; null means the platform's own {@code qits.ci.memory-limit}, which is what every
+ * runner that never set one — and the in-process executor, which has no row — runs its steps under.
  */
 public record CiRunnerDto(
     UUID id,
@@ -34,6 +38,7 @@ public record CiRunnerDto(
     String description,
     int slots,
     CiRunnerPlane plane,
+    String stepMemoryLimit,
     JsonNode capabilities,
     boolean registered,
     boolean connected,

@@ -78,12 +78,15 @@ import org.jboss.logging.Logger;
  * absent {@code stream}, strictness that is right for the contract and fatal if one malformed frame
  * from a container took the socket with it.
  */
-@WebSocket(path = "/ci/daemon")
+@WebSocket(path = CiDaemonSocket.PATH)
 @jakarta.annotation.security.RolesAllowed({CiDaemonSocket.SYSTEM_ROLE, CiDaemonSocket.RUN_ROLE})
 public class CiDaemonSocket {
 
   /** The forward-auth role a daemon on qits-net asserts for itself. */
   static final String SYSTEM_ROLE = "qits:system";
+
+  /** The literal, {@code /ci} and all — see the class javadoc; {@code SocketBearerLifetime} reads it. */
+  public static final String PATH = "/ci/daemon";
 
   /**
    * The role a {@code ci-run} token carries through the edge — what an EDGE step's daemon dials with,

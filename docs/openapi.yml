@@ -179,6 +179,8 @@ components:
           format: int32
         plane:
           $ref: "#/components/schemas/CiRunnerPlane"
+        stepMemoryLimit:
+          type: string
         capabilities:
           $ref: "#/components/schemas/JsonNode"
         registered:
@@ -226,6 +228,8 @@ components:
           format: int32
         plane:
           $ref: "#/components/schemas/CiRunnerPlane"
+        stepMemoryLimit:
+          type: string
         capabilities:
           $ref: "#/components/schemas/JsonNode"
         registered:
@@ -323,6 +327,11 @@ components:
           description: "Where its steps reach the platform: EDGE through the public\
             \ names, INTERNAL on qits-net. Default EDGE when this qits-ci knows its\
             \ public domain, INTERNAL when it does not"
+        stepMemoryLimit:
+          type: string
+          description: "The memory cap its step containers get, memory and memory-swap\
+            \ alike: a docker size, digits and an optional b, k, m or g (6g, 6144m),\
+            \ at least 6m. Absent or blank is the platform default, qits.ci.memory-limit"
     DaemonPinDto:
       type: object
       properties:
@@ -446,6 +455,11 @@ components:
           type: string
           description: EDGE or INTERNAL; absent leaves it. Reaches the runner's next
             run
+        stepMemoryLimit:
+          type: string
+          description: "A docker size (6g, 6144m) its step containers are capped at;\
+            \ blank clears it back to the platform default, qits.ci.memory-limit;\
+            \ absent leaves it. Reaches the runner's next step"
     QueueResponse:
       type: object
       properties:
@@ -792,8 +806,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/CiRunnerCreated"
         "400":
-          description: "A malformed name, slots or description, or EDGE_PLANE_UNCONFIGURED:\
-            \ an EDGE plane on a qits-ci that knows no public domain"
+          description: "A malformed name, slots, description or stepMemoryLimit, or\
+            \ EDGE_PLANE_UNCONFIGURED: an EDGE plane on a qits-ci that knows no public\
+            \ domain"
         "409":
           description: The name is taken
         "502":
@@ -837,7 +852,7 @@ paths:
         - qits:agent
   /ci/api/runners/{id}:
     patch:
-      summary: "Change a runner's slots, description or plane"
+      summary: "Change a runner's slots, description, plane or step memory limit"
       parameters:
       - name: id
         in: path
@@ -858,8 +873,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/CiRunnerDto"
         "400":
-          description: "Negative slots, an overlong description, or EDGE_PLANE_UNCONFIGURED:\
-            \ an EDGE plane on a qits-ci that knows no public domain"
+          description: "Negative slots, an overlong description, a malformed stepMemoryLimit,\
+            \ or EDGE_PLANE_UNCONFIGURED: an EDGE plane on a qits-ci that knows no\
+            \ public domain"
         "404":
           description: No such runner
         "401":
@@ -1351,4 +1367,4 @@ paths:
         - qits:agent
 info:
   title: qits-ci API
-  version: 2026.929.92156
+  version: 2026.929.121335

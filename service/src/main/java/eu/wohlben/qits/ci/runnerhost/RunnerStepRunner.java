@@ -43,13 +43,15 @@ import org.jboss.logging.Logger;
  * LaunchFailed} is {@code LAUNCH_FAILED} carrying docker's own words, and a socket that goes away is
  * {@code CONNECTION_LOST}. No new outcome and no new step status was needed.
  *
- * <p><b>Two sockets can be lost now, and both end the step at once.</b> The daemon's is what it
- * always was. The runner's is the new one: the runner forgets every run it held when its socket
- * drops, so a step whose runner is gone is over whatever its container is doing. A loss hook on the
- * session ({@link CiRunnerRegistry#onLoss}) reaps the step's launch record the moment the session
- * ends, which completes every daemon await as lost — so a vanished runner costs the run a few milliseconds, never a
- * deadline — and the step's output then names the runner ({@code [runner <name> disconnected]}).
- * The run is an ordinary failed run and retryable like one.
+ * <p><b>Two sockets can be lost now.</b> The daemon's ends the step at once, as it always did. The
+ * runner's does not any more (qits-545): a runner that drops its socket keeps the step's container
+ * and comes back for the run, so the step is only over once the registry says the <em>run</em> is
+ * lost — its runner did not come back inside the grace, or came back without it ({@link
+ * CiRunnerRegistry#onRunLost}). Then a loss hook reaps the step's launch record, which completes
+ * every daemon await as lost — so a vanished runner costs the run the grace, never a deadline — and
+ * the step's output names the runner ({@code [runner <name> disconnected]}). The run is an ordinary
+ * failed run and retryable like one. A step that starts, or ends, while its runner is away waits the
+ * same grace for it ({@link CiRunnerRegistry#awaitHolding}) rather than failing on the spot.
  *
  * <p><b>The teardown asks the runner too, and never waits on it for long.</b> Every step ends with
  * the daemon's launch record reaped and a {@link Reap} to the runner for the step's container; its
@@ -156,7 +158,10 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     CiIdentifiers.requireSha(spec.sha());
     CiIdentifiers.requireImage(spec.image());
 
-    CiRunnerRegistry.Session session = runners.holding(spec.runId());
+    CiRunnerRegistry.Session session = runners.awaitHolding(spec.runId());
+    if (session == null) {
+      session = runners.holding(spec.runId()); // gone for good — kept only to name it
+    }
     // The step's plane and the run's credential on it, BEFORE a secret is minted: which kind of
     // credential the run holds decides what the launch record is bound to (a ci-run token's subject,
     // or nothing), and a refusal here has nothing to tear down. A session already gone skips both,
@@ -196,18 +201,16 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     inFlight.put(
         spec.runId(), new InFlight(credentials.daemonId(), containerName, spec.stepIndex()));
 
-    // The runner's socket closing ends this step's daemon awaits now rather than at their
-    // deadlines: reaping the launch record completes every one of them as lost. Handed to another
-    // thread, because the loss is reported on whichever thread saw the close and the reap closes a
-    // socket with a bounded wait.
+    // The run being lost ends this step's daemon awaits then rather than at their deadlines: reaping
+    // the launch record completes every one of them as lost. Handed to another thread, because the
+    // loss is reported on whichever thread decided it and the reap closes a socket with a bounded
+    // wait.
     AutoCloseable lossWatch =
-        session == null
-            ? () -> {}
-            : runners.onLoss(
-                session,
-                () ->
-                    java.util.concurrent.CompletableFuture.runAsync(
-                        () -> daemons.reap(credentials.daemonId())));
+        runners.onRunLost(
+            spec.runId(),
+            () ->
+                java.util.concurrent.CompletableFuture.runAsync(
+                    () -> daemons.reap(credentials.daemonId())));
     StepResult result;
     Reaped reaped;
     try {
@@ -216,7 +219,10 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
       closeQuietly(lossWatch);
       inFlight.remove(spec.runId());
       daemons.reap(credentials.daemonId());
-      reaped = reapOnRunner(session, spec.runId(), spec.stepIndex(), containerName);
+      // Whichever connection holds the run now: one that came back for it after a blip, or none.
+      reaped =
+          reapOnRunner(
+              runners.awaitHolding(spec.runId()), spec.runId(), spec.stepIndex(), containerName);
     }
     return withContainerLog(result, reaped, session, containerName);
   }
@@ -252,7 +258,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     WorkloadSpec workload =
         workloadSpec(
             StepWorkloadSpecs.compose(launcher.workloadSettings(), plane, launchSpec, credential),
-            spec.docker() || spec.build());
+            spec.docker() || spec.build(),
+            stepMemoryLimitOf(session));
 
     Duration launchTimeout = Duration.ofSeconds(launchTimeoutSeconds);
     CiRunnerRegistry.LaunchAnswer answer =
@@ -282,7 +289,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     }
 
     if (!daemons.awaitRegistered(daemonId, Duration.ofSeconds(registerTimeoutSeconds))) {
-      if (!session.isOpen()) {
+      if (runners.lost(spec.runId())) {
         return lost(session, "");
       }
       // The local path reads the bootstrap's own log off the removal; this host cannot see the
@@ -298,7 +305,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
 
     CiDaemonRegistry.Initialization initialization =
         daemons.awaitInitialized(daemonId, Duration.ofSeconds(initTimeoutSeconds));
-    if (!session.isOpen()
+    if (runners.lost(spec.runId())
         && initialization.status() != CiDaemonRegistry.Initialization.Status.INITIALIZED) {
       return lost(session, "");
     }
@@ -329,7 +336,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     CiDaemonRegistry.Completion completion = daemons.awaitFinished(daemonId, backstop);
     listener.onFinished();
 
-    if (completion.status() != CiDaemonRegistry.Completion.Status.FINISHED && !session.isOpen()) {
+    if (completion.status() != CiDaemonRegistry.Completion.Status.FINISHED
+        && runners.lost(spec.runId())) {
       return lost(session, tail(spec.runId()));
     }
     return switch (completion.status()) {
@@ -421,6 +429,22 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     return StepAddressPlane.edge(origins, internal);
   }
 
+  /**
+   * The runner row's step memory limit as it is NOW — read per step, unlike the plane, which is
+   * fixed per run: an operator raising a runner's cap for a build that keeps getting OOM-killed
+   * wants the very next step to have it, without a reconnect and without waiting for a new run.
+   * Null is the platform default ({@code qits.ci.memory-limit}, already in the composed spec). A row
+   * that cannot be read falls back to the one the session was admitted as, and a row gone with it to
+   * the default — a launch is never refused over the cap.
+   */
+  private String stepMemoryLimitOf(CiRunnerRegistry.Session session) {
+    try {
+      return runnerRows.get(session.runnerId()).stepMemoryLimit;
+    } catch (RuntimeException gone) {
+      return session.runner() == null ? null : session.runner().stepMemoryLimit;
+    }
+  }
+
   /** The runner row's plane as it is now; the row the session was admitted as if it is gone. */
   private CiRunnerPlane planeOf(CiRunnerRegistry.Session session) {
     CiRunnerPlane plane;
@@ -443,7 +467,20 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
    * reach into it — so a label written here would fail every launch.
    */
   static WorkloadSpec workloadSpec(Spec spec, boolean buildPlane) {
+    return workloadSpec(spec, buildPlane, null);
+  }
+
+  /**
+   * {@link #workloadSpec(Spec, boolean)} with the runner's own step memory limit in place of the
+   * composed one — memory and memory-swap alike, exactly as {@code StepWorkloadSpecs} sets the
+   * platform's {@code qits.ci.memory-limit}, so a runner's steps still get no swap beyond their cap.
+   * Null keeps the composed value. Only the runner path passes one: the in-process executor composes
+   * through {@code CiDaemonLauncher} and never reaches this method.
+   */
+  static WorkloadSpec workloadSpec(Spec spec, boolean buildPlane, String stepMemoryLimit) {
     Security security = spec.security() == null ? Security.none() : spec.security();
+    String memory = stepMemoryLimit == null ? security.memory() : stepMemoryLimit;
+    String memorySwap = stepMemoryLimit == null ? security.memorySwap() : stepMemoryLimit;
     return new WorkloadSpec(
         spec.image(),
         spec.entrypoint(),
@@ -456,8 +493,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
         spec.hostDockerSocket(),
         security.capDropAll(),
         security.noNewPrivileges(),
-        security.memory(),
-        security.memorySwap(),
+        memory,
+        memorySwap,
         security.pidsLimit(),
         security.cpus(),
         security.oomScoreAdj(),
@@ -469,8 +506,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
   private Reaped reapOnRunner(
       CiRunnerRegistry.Session session, String runId, int stepIndex, String containerName) {
     if (session == null || !session.isOpen()) {
-      // The runner lost its socket and with it every run it held; its boot sweep removes what is
-      // left on the next connect.
+      // The run is lost with its runner; the runner cancels what it carried of it when it is back,
+      // and its boot sweep removes the rest.
       return null;
     }
     Reaped reaped = runners.reap(session, new Reap(runId, stepIndex, containerName), reapTimeout);

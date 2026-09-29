@@ -7,18 +7,22 @@ import java.util.UUID;
 
 /**
  * An operator changed a runner: {@code changed} names which of its settings moved, and {@code
- * slots}, {@code plane} and {@code description} are what all three are <b>now</b>.
+ * slots}, {@code plane}, {@code description} and {@code stepMemoryLimit} are what all four are
+ * <b>now</b>.
  *
  * <p><b>The whole state, plus the list of what moved.</b> A subscriber mirroring a runner needs the
  * new values whichever of them changed, and one reacting to a change — a runner drained to 0 slots,
  * moved between planes — needs to know which, without holding the previous event to diff against.
  * Carrying both answers both. {@code changed} holds the settings' own field names, {@code "slots"},
- * {@code "plane"} and {@code "description"}, in that order; it is never empty, because a {@code
+ * {@code "plane"}, {@code "description"} and {@code "stepMemoryLimit"}, in that order; it is never empty, because a {@code
  * PATCH} that leaves every value as it was — every field absent, or each equal to what the row held
  * — changed nothing and announces nothing.
  *
  * <p>{@code description} is nullable and absent from the payload when the runner has none, which is
  * also what clearing it looks like: {@code changed} then names it and the value is gone. {@code
+ * stepMemoryLimit} is the same: a docker size ({@code 6g}) while the runner's steps have their own
+ * memory cap, absent while they take the platform's {@code qits.ci.memory-limit} — including right
+ * after an operator cleared it. {@code
  * plane} is {@code CiRunnerPlane}'s word as a plain {@code String}. {@code occurredAt} is when the
  * change was written — the row keeps no {@code updatedAt}, so it is the transaction's own clock.
  * Published once that transaction committed, and never for a refused {@code PATCH} (400, 404).
@@ -31,6 +35,7 @@ public record RunnerChanged(
     int slots,
     String plane,
     String description,
+    String stepMemoryLimit,
     List<String> changed,
     Instant occurredAt)
     implements QitsEvent {
@@ -43,6 +48,9 @@ public record RunnerChanged(
 
   /** The {@code changed} word for the runner's description. */
   public static final String DESCRIPTION = "description";
+
+  /** The {@code changed} word for the runner's step memory limit. */
+  public static final String STEP_MEMORY_LIMIT = "stepMemoryLimit";
 
   public RunnerChanged {
     if (eventId == null) {
@@ -58,8 +66,11 @@ public record RunnerChanged(
       int slots,
       String plane,
       String description,
+      String stepMemoryLimit,
       List<String> changed,
       Instant occurredAt) {
-    this(null, runnerId, runnerName, slots, plane, description, changed, occurredAt);
+    this(
+        null, runnerId, runnerName, slots, plane, description, stepMemoryLimit, changed,
+        occurredAt);
   }
 }

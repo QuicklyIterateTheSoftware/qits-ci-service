@@ -45,6 +45,8 @@ public class CiRunnersTest extends CiTestSupport {
 
   @Inject RecordingRunnerSignals signals;
 
+  @Inject RecordingRunnerEvents events;
+
   @Inject CiRunnerRepository runnerRows;
 
   @Inject CiRunnerMapper runnerMapper;
@@ -128,6 +130,77 @@ public class CiRunnersTest extends CiTestSupport {
     assertThrows(
         BadRequestException.class, () -> service.requireCreatable("fine", null, -1));
     assertThrows(NotFoundException.class, () -> service.patch(UUID.randomUUID(), 1, null));
+  }
+
+  @Test
+  public void theStepMemoryLimitIsTheRunnersSizeGrammarAndAtLeastDockersFloor() {
+    // What the runner's RunnerArgv.SIZE accepts, at or above docker's 6 MiB floor.
+    for (String good :
+        List.of("6g", "6G", "6144m", "6M", "6291456", "6291456b", "6144k", "64g", "999999999g")) {
+      CiRunners.requireStepMemoryLimit(good);
+    }
+    // Null and blank are the platform default; which of "leave" or "clear" is the caller's.
+    CiRunners.requireStepMemoryLimit(null);
+    CiRunners.requireStepMemoryLimit("  ");
+    for (String bad :
+        List.of(
+            "6gb", "6 g", "1.5g", "-1g", "g", "six", "6t", "0", "0g", "5m", "6291455", "100k",
+            "1234567890123456", "999999999999999g")) {
+      assertThrows(
+          BadRequestException.class, () -> CiRunners.requireStepMemoryLimit(bad), bad);
+    }
+    // And the rule is what create applies before it writes anything.
+    assertThrows(
+        BadRequestException.class, () -> service.requireCreatable("fine", null, 1, "lots"));
+    assertThrows(
+        BadRequestException.class,
+        () ->
+            service.create(
+                UUID.randomUUID(), "fine", null, 1, null, "5m", "token-fine", "tok-fine"));
+    assertEquals(0, QuarkusTransaction.requiringNew().call(() -> runnerRows.count()));
+  }
+
+  @Test
+  public void aStepMemoryLimitIsKeptSetClearedAndAnnouncedAndNullMeansThePlatformDefault() {
+    // Created without one: null, which is qits.ci.memory-limit.
+    CiRunner plain = create("default-cap");
+    assertNull(service.get(plain.id).stepMemoryLimit);
+    assertNull(service.view(service.get(plain.id)).stepMemoryLimit());
+
+    // Created with one: kept verbatim (trimmed), and on the operator's read.
+    CiRunner big =
+        service.create(
+            UUID.randomUUID(), "big-cap", null, 2, CiRunnerPlane.EDGE, " 6g ", "token-big", "tok-big");
+    assertEquals("6g", service.get(big.id).stepMemoryLimit);
+    assertEquals("6g", service.view(service.get(big.id)).stepMemoryLimit());
+    assertEquals("6g", runnerMapper.toDto(service.get(big.id), false, 0).stepMemoryLimit());
+
+    events.reset();
+    // Null leaves it, whatever else the patch moves.
+    CiRunner kept = service.patch(big.id, 3, null, null, null);
+    assertEquals("6g", kept.stepMemoryLimit);
+    // A new value is set and announced by name.
+    CiRunner raised = service.patch(big.id, null, null, null, "8192m");
+    assertEquals("8192m", service.get(big.id).stepMemoryLimit);
+    assertEquals("8192m", raised.stepMemoryLimit);
+    // The same value again is no change and announces nothing.
+    service.patch(big.id, null, null, null, "8192m");
+    // Blank clears it back to the platform default.
+    CiRunner cleared = service.patch(big.id, null, null, null, "");
+    assertNull(cleared.stepMemoryLimit);
+    assertNull(service.get(big.id).stepMemoryLimit);
+    assertEquals(
+        List.of(
+            "RunnerChanged [slots]",
+            "RunnerChanged [stepMemoryLimit]",
+            "RunnerChanged [stepMemoryLimit]"),
+        events.of(big.id.toString()));
+
+    // A malformed value is refused and changes nothing, slots included.
+    assertThrows(
+        BadRequestException.class, () -> service.patch(big.id, 1, null, null, "a lot"));
+    assertEquals(3, service.get(big.id).slots);
+    assertNull(service.get(big.id).stepMemoryLimit);
   }
 
   @Test

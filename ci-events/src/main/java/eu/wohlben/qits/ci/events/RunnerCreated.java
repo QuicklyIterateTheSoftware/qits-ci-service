@@ -50,7 +50,9 @@ import java.util.UUID;
  *
  * <p><b>Published only once the row committed</b>, and never for a refused create: a malformed
  * request (400), a taken name (409) and a registration token qits-idp would not mint (502) all leave
- * no row, and so no event. {@code description} is nullable — an operator need not write one.
+ * no row, and so no event. {@code description} is nullable — an operator need not write one — and so
+ * is {@code stepMemoryLimit}, the docker size ({@code 6g}) this runner's steps are capped at, null
+ * while it takes the platform's own {@code qits.ci.memory-limit}.
  */
 public record RunnerCreated(
     UUID eventId,
@@ -59,6 +61,7 @@ public record RunnerCreated(
     int slots,
     String plane,
     String description,
+    String stepMemoryLimit,
     Instant occurredAt)
     implements QitsEvent {
 
@@ -75,7 +78,8 @@ public record RunnerCreated(
       int slots,
       String plane,
       String description,
+      String stepMemoryLimit,
       Instant occurredAt) {
-    this(null, runnerId, runnerName, slots, plane, description, occurredAt);
+    this(null, runnerId, runnerName, slots, plane, description, stepMemoryLimit, occurredAt);
   }
 }

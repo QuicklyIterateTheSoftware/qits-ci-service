@@ -73,6 +73,16 @@ public class CiRunner extends PanacheEntityBase implements CausedRow {
   @Column(nullable = false, length = 32)
   public CiRunnerPlane plane;
 
+  /**
+   * The memory cap this runner's step containers get — memory and memory-swap alike — as the docker
+   * size string the runner passes on ({@code 6g}, {@code 6144m}); see {@code
+   * CiRunners.STEP_MEMORY_LIMIT}. Null is the platform's own {@code qits.ci.memory-limit}, which is
+   * every runner that never set one. Read at each launch, so a change reaches the next step. See
+   * {@code V26__runner_step_memory_limit.sql}.
+   */
+  @Column(name = "step_memory_limit", length = 32)
+  public String stepMemoryLimit;
+
   /** What the runner said about itself at registration, as JSON text; null until then. */
   @JdbcTypeCode(SqlTypes.JSON)
   @Column(columnDefinition = "jsonb")

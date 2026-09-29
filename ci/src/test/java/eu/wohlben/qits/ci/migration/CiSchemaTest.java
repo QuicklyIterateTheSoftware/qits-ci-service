@@ -228,6 +228,31 @@ public class CiSchemaTest {
   }
 
   @Test
+  public void theStepMemoryLimitIsNullableAndDefaultsEveryRunnerToThePlatformCap()
+      throws SQLException {
+    // V26. Null is "qits.ci.memory-limit", so a runner that predates the column — and one created
+    // without naming a cap — keeps exactly the cap it had. No default, no backfill, no check: the
+    // grammar is CiRunners.STEP_MEMORY_LIMIT's, the only writer.
+    assertEquals("character varying", columnType("ci_runner", "step_memory_limit"));
+    assertEquals(List.of(), constraints("ci_runner", 'c'));
+    try (Connection connection = ci.getConnection()) {
+      connection.setAutoCommit(false);
+      try (PreparedStatement runner =
+          connection.prepareStatement(
+              "insert into ci_runner (id, name, created_at) values"
+                  + " ('00000000-0000-0000-0000-0000000c1026', ?, current_timestamp)"
+                  + " returning step_memory_limit")) {
+        runner.setString(1, "memory-probe");
+        try (ResultSet defaults = runner.executeQuery()) {
+          assertTrue(defaults.next());
+          assertNull(defaults.getObject(1));
+        }
+      }
+      connection.rollback();
+    }
+  }
+
+  @Test
   public void theStepImagePinColumnIsNullableAndTakesBothArms() throws SQLException {
     // V21. A run pins its step images at accept, and NOTHING PINNED is an ordinary run rather than
     // a gap: a pipeline whose every step names an image this platform does not publish (alpine:3,

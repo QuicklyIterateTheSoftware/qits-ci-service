@@ -33,6 +33,7 @@ import eu.wohlben.qits.cirunner.protocol.Upgrade;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.websockets.next.CloseReason;
 import io.quarkus.websockets.next.WebSocketConnection;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
@@ -47,10 +48,13 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
@@ -81,12 +85,25 @@ import org.jboss.logging.Logger;
  * #onClose}.
  *
  * <p><b>Runs are held by the session that took them, not by the runner.</b> {@link #hold} binds a
- * run to the session its {@code Take} went out on, and a run whose session is gone is gone with it:
- * the runner forgets every run it held when its socket drops, so a step launched for that run over
- * a <em>later</em> session would run on a runner that no longer counts it against a slot. That is
- * also what routes a self-update: every {@code Launch}, {@code Reap}, {@code Cancel} and {@code
- * Released} of a held run goes to {@link #holding}'s session — the draining one for the runs it took
- * before it was told to upgrade, the successor for every run after — and never to "the runner".
+ * run to the session its {@code Take} went out on. That is what routes a self-update: every {@code
+ * Launch}, {@code Reap}, {@code Cancel} and {@code Released} of a held run goes to {@link #holding}'s
+ * session — the draining one for the runs it took before it was told to upgrade, the successor for
+ * every run after — and never to "the runner".
+ *
+ * <p><b>A run whose session drops waits a grace for the runner to come back</b> (qits-545). A socket
+ * that merely blinked — the edge restarting, a NAT timing out — used to fail every run the runner
+ * held on the spot, while their containers were still running and their daemons still talking to
+ * this host on their own sockets. Now such a run is <em>orphaned</em> for {@code
+ * qits.ci.runner.reconnect-grace-seconds}: nothing is failed, and the runner's next connection in the
+ * same version claims it in its {@code Hello} ({@code heldRuns}) and is answered with it in its
+ * {@code Ack} ({@code adoptedRuns}), after which the run is that connection's exactly as if it had
+ * taken it there. A run the returning runner does not claim is lost at its {@code Hello} — a
+ * restarted process carries nothing, and a runner older than the claim claims nothing, so both
+ * fail as fast as they ever did — and one nobody comes back for is lost when the grace runs out.
+ * Only a connection that ended by itself gets the grace: a deleted runner's, a retired one's and a
+ * replaced one's runs are lost at once. Loss is per run ({@link #onRunLost}), and it is what a step
+ * waits on; a {@code Launch} or {@code Reap} in flight on the dropped socket is still lost with it,
+ * since its answer can only ever have gone to that socket.
  *
  * <p><b>Nothing here waits without a deadline</b> — the daemon registry's rule, for the daemon
  * registry's reason: a run's driver parks on {@link #launch} and {@link #reap}. A frame is sent
@@ -175,7 +192,32 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
 
   private final ConcurrentHashMap<String, Session> heldRuns = new ConcurrentHashMap<>();
 
+  /** Held runs whose session dropped, waiting out the grace for their runner — see the javadoc. */
+  private final ConcurrentHashMap<String, Orphan> orphans = new ConcurrentHashMap<>();
+
+  /** What must happen to each held run if it is lost, keyed per registration ({@link #onRunLost}). */
+  private final ConcurrentHashMap<String, ConcurrentHashMap<Object, Runnable>> onRunLost =
+      new ConcurrentHashMap<>();
+
+  /** Ends the graces nobody came back inside. One thread: an expiry is a map removal and a hand-off. */
+  private final ScheduledExecutorService graces =
+      Executors.newSingleThreadScheduledExecutor(
+          r -> {
+            Thread t = new Thread(r, "ci-runner-grace");
+            t.setDaemon(true);
+            return t;
+          });
+
   private volatile Duration seenInterval = SEEN_INTERVAL;
+
+  @ConfigProperty(name = "qits.ci.runner.reconnect-grace-seconds")
+  long reconnectGraceSeconds;
+
+  /** Set by a suite only; otherwise {@link #reconnectGraceSeconds}. */
+  private volatile Duration reconnectGrace;
+
+  /** A run waiting for its runner: which runner and version may claim it, and the grace's end. */
+  private record Orphan(UUID runnerId, CompletableFuture<Session> resolved) {}
 
   /**
    * Package-private for one reason: a suite proving that a heartbeat reaches the row cannot wait a
@@ -184,6 +226,16 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
    */
   void seenInterval(Duration interval) {
     this.seenInterval = interval;
+  }
+
+  /** {@link #seenInterval}'s reason: a suite proving a grace runs out cannot wait a minute. */
+  void reconnectGrace(Duration grace) {
+    this.reconnectGrace = grace;
+  }
+
+  Duration reconnectGrace() {
+    Duration set = reconnectGrace;
+    return set != null ? set : Duration.ofSeconds(reconnectGraceSeconds);
   }
 
   /**
@@ -202,7 +254,6 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
         new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, CompletableFuture<Reaped>> reaps =
         new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Object, Runnable> onLoss = new ConcurrentHashMap<>();
     private final long order;
     private volatile boolean greeted;
     private volatile Instant seenWrittenAt;
@@ -368,6 +419,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
     session.seenWrittenAt = Instant.now();
     session.runnerVersion = hello.runnerVersion();
     session.draining = !current;
+    List<String> adopted = adopt(session, hello.heldRuns());
     List<Session> retiring = settle(session);
     announceConnected(session, hello, pin, current, speaks);
     if (!current) {
@@ -388,7 +440,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
                   Instant.now()));
       send(session, new Upgrade(pin, image, null));
       if (speaks) {
-        send(session, ack(row.plane, 0));
+        send(session, ack(row.plane, 0, adopted));
       }
       return Greeting.GREETED;
     }
@@ -402,7 +454,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
         "Runner %s said hello: %s, capability %d, %d slot(s)%s",
         row.name, hello.runnerVersion(), hello.capabilityVersion(), slots,
         row.quarantined() ? " — quarantined: " + row.quarantineReason : "");
-    send(session, ack(row.plane, slots));
+    send(session, ack(row.plane, slots, adopted));
     if (row.quarantined()) {
       send(session, quarantinedFrame(row.quarantineReason, row.quarantinedAt));
     }
@@ -463,6 +515,54 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
   }
 
   /**
+   * The runs this runner's {@code Hello} claims, taken over by its new connection; answered in the
+   * {@code Ack}. A candidate is a run held by another connection of the same runner in the same
+   * version that is either waiting out its grace or about to be replaced by this one ({@link
+   * #settle}): claimed, it moves here; not claimed and orphaned, it is lost now, since the runner is
+   * back and did not bring it; not claimed and on a connection about to be replaced, it is lost with
+   * that connection. A claim this host does not recognise is simply not adopted — the runner cancels
+   * it on reading the {@code Ack}.
+   */
+  private List<String> adopt(Session session, List<String> claimed) {
+    List<String> adopted = new ArrayList<>();
+    for (Map.Entry<String, Session> held : List.copyOf(heldRuns.entrySet())) {
+      String runId = held.getKey();
+      Session holder = held.getValue();
+      if (holder == session
+          || !holder.runnerId.equals(session.runnerId)
+          || holder.runnerVersion == null
+          || !holder.runnerVersion.equals(session.runnerVersion)) {
+        continue;
+      }
+      Orphan orphan = orphans.get(runId);
+      if (!holder.isOpen() && orphan == null) {
+        continue; // already lost; its driver is finishing it
+      }
+      if (claimed.contains(runId)) {
+        // The orphan first: whichever of this and the grace's end removes it decides the run.
+        if (orphan != null && !orphans.remove(runId, orphan)) {
+          continue;
+        }
+        if (!heldRuns.replace(runId, holder, session)) {
+          continue; // released meanwhile
+        }
+        if (orphan != null) {
+          orphan.resolved().complete(session);
+        }
+        adopted.add(runId);
+        LOG.infof(
+            "Runner %s came back holding run %s; connection %s carries it on",
+            session.runnerName, runId, session.connection.id());
+      } else if (orphan != null) {
+        LOG.infof(
+            "Runner %s came back without run %s; it is lost", session.runnerName, runId);
+        loseRun(runId);
+      }
+    }
+    return adopted;
+  }
+
+  /**
    * The same-version rule, applied once a session has said which version it is: every other open
    * session of the runner that said {@code Hello} in the same version is replaced — dropped here,
    * its obligations lost, its socket closed {@link #ALREADY_CONNECTED}. Returned are the sessions of
@@ -502,7 +602,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
           previous.connection.id(),
           ALREADY_CONNECTED);
       announceEnd(previous, RunnerDisconnected.REPLACED);
-      lose(previous);
+      lose(previous, false);
       closeBounded(
           previous.connection,
           new CloseReason(CLOSE_POLICY, ALREADY_CONNECTED),
@@ -575,7 +675,9 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
       String decided = session.endReason;
       announceEnd(session, decided != null ? decided : RunnerDisconnected.LOST);
     }
-    lose(session);
+    // Only a connection that ended by itself is waited for: a deleted, retired or refused one ended
+    // because this host decided it, and no Hello will ever claim what it held.
+    lose(session, session.endReason == null);
   }
 
   /**
@@ -670,6 +772,12 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
    */
   public void release(String runId) {
     Session session = heldRuns.remove(runId);
+    onRunLost.remove(runId);
+    Orphan orphan = orphans.remove(runId);
+    if (orphan != null) {
+      // Closed while its runner was away: nothing is lost, and the runner's claim finds nothing.
+      orphan.resolved().complete(null);
+    }
     if (session == null) {
       return;
     }
@@ -702,18 +810,42 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
   }
 
   /**
-   * Run {@code action} if the session ends before the returned handle is closed — at once, on this
-   * thread, when it already has. A step registers what must happen to it on a lost runner (its
-   * daemon awaits completed as lost) and closes the handle when it ends, so a session that lives for
-   * weeks does not accumulate a callback per step it ever ran.
+   * Run {@code action} if the run is lost before the returned handle is closed — at once, on this
+   * thread, when it already is. Lost is not "its session closed": a run whose runner dropped its
+   * socket waits out the grace first (see the class javadoc). A step registers what must happen to it
+   * on a lost runner (its daemon awaits completed as lost) and closes the handle when it ends.
    */
-  public AutoCloseable onLoss(Session session, Runnable action) {
+  public AutoCloseable onRunLost(String runId, Runnable action) {
     Object key = new Object();
-    session.onLoss.put(key, action);
-    if (!session.isOpen() && session.onLoss.remove(key) != null) {
+    ConcurrentHashMap<Object, Runnable> actions =
+        onRunLost.computeIfAbsent(runId, id -> new ConcurrentHashMap<>());
+    actions.put(key, action);
+    if (lost(runId) && actions.remove(key) != null) {
       action.run();
     }
-    return () -> session.onLoss.remove(key);
+    return () -> actions.remove(key);
+  }
+
+  /**
+   * Whether no runner will ever act on this run again: nothing of this process holds it, or the
+   * connection holding it is gone and no grace is running for it.
+   */
+  public boolean lost(String runId) {
+    Session holder = heldRuns.get(runId);
+    return holder == null || (!holder.isOpen() && !orphans.containsKey(runId));
+  }
+
+  /**
+   * The open connection holding a run — waiting, while the run is orphaned, for its runner to come
+   * back and claim it, at most until its grace ends. Null when the run is lost.
+   */
+  public Session awaitHolding(String runId) {
+    Orphan orphan = orphans.get(runId);
+    if (orphan != null) {
+      await(orphan.resolved(), reconnectGrace().plusSeconds(5), null);
+    }
+    Session holder = heldRuns.get(runId);
+    return holder != null && holder.isOpen() ? holder : null;
   }
 
   /** Complete every outstanding launch of a run as {@link LaunchAnswer.Status#WITHDRAWN}. */
@@ -834,6 +966,13 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
    */
   @Override
   public void deleted(UUID runnerId) {
+    // A deleted runner is not waited for.
+    orphans.forEach(
+        (runId, orphan) -> {
+          if (orphan.runnerId().equals(runnerId)) {
+            loseRun(runId);
+          }
+        });
     for (Session session : open(runnerId)) {
       session.endReason = RunnerDisconnected.DELETED;
       LOG.infof(
@@ -908,6 +1047,11 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
    * An INTERNAL runner's is null, "not sent", as every {@code Ack} before the field was.
    */
   private Ack ack(CiRunnerPlane plane, int slots) {
+    return ack(plane, slots, null);
+  }
+
+  /** {@link #ack(CiRunnerPlane, int)}, answering a {@code Hello}'s claim with what was adopted. */
+  private Ack ack(CiRunnerPlane plane, int slots, List<String> adopted) {
     Map<String, String> mirrors;
     try {
       mirrors = registryMirrors.forPlane(plane);
@@ -915,7 +1059,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
       LOG.warnf("Could not compose the registry mirrors for a %s runner: %s", plane, e.getMessage());
       mirrors = null;
     }
-    return new Ack(CiRunnerProtocol.CAPABILITY_VERSION, slots, mirrors);
+    return new Ack(CiRunnerProtocol.CAPABILITY_VERSION, slots, mirrors, adopted);
   }
 
   /** The runner's plane as its row says now, or as it was when it dialled if the row is unreadable. */
@@ -1013,24 +1157,78 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
   // --- internals --------------------------------------------------------------------------------
 
   /**
-   * End a session's obligations: its {@link Session#closed} completes, and every launch and reap it
-   * owed completes as lost, so no driver waits out a deadline on a socket that cannot answer.
+   * End a session's obligations, once: its {@link Session#closed} completes, every launch and reap it
+   * owed completes as lost, so no driver waits out a deadline on a socket that cannot answer — and
+   * every run it still holds is orphaned for the grace when {@code graceful}, lost at once otherwise.
    */
-  private static void lose(Session session) {
-    session.closed.complete(null);
-    for (Object key : session.onLoss.keySet()) {
-      Runnable action = session.onLoss.remove(key);
-      if (action != null) {
-        try {
-          action.run();
-        } catch (RuntimeException e) {
-          LOG.debugf("A loss action of runner %s failed: %s", session.runnerName, e.getMessage());
-        }
-      }
+  private void lose(Session session, boolean graceful) {
+    if (!session.closed.complete(null)) {
+      return;
     }
     session.launches.values()
         .forEach(pending -> pending.complete(LaunchAnswer.of(LaunchAnswer.Status.CONNECTION_LOST)));
     session.reaps.values().forEach(pending -> pending.complete(null));
+    Duration grace = reconnectGrace();
+    for (Map.Entry<String, Session> held : List.copyOf(heldRuns.entrySet())) {
+      if (held.getValue() != session) {
+        continue;
+      }
+      String runId = held.getKey();
+      if (!graceful || grace.isZero() || grace.isNegative() || session.runnerVersion == null) {
+        loseRun(runId);
+        continue;
+      }
+      Orphan orphan = new Orphan(session.runnerId, new CompletableFuture<>());
+      orphans.put(runId, orphan);
+      graces.schedule(() -> expire(runId, orphan), grace.toMillis(), TimeUnit.MILLISECONDS);
+      LOG.infof(
+          "Runner %s's connection dropped holding run %s; waiting %ss for it to come back",
+          session.runnerName, runId, grace.toSeconds());
+    }
+  }
+
+  /** The grace ran out; unless the run was adopted or released first, nobody came back for it. */
+  private void expire(String runId, Orphan orphan) {
+    if (!orphans.remove(runId, orphan)) {
+      return;
+    }
+    LOG.warnf(
+        "Runner %s did not come back for run %s within %ss; it is lost",
+        orphan.runnerId(), runId, reconnectGrace().toSeconds());
+    orphan.resolved().complete(null);
+    runLossActions(runId);
+  }
+
+  /** The run is lost: its grace, if any, ends, and every loss action registered for it runs. */
+  private void loseRun(String runId) {
+    Orphan orphan = orphans.remove(runId);
+    if (orphan != null) {
+      orphan.resolved().complete(null);
+    }
+    runLossActions(runId);
+  }
+
+  /** Each registered action at most once, whichever path gets to it. */
+  private void runLossActions(String runId) {
+    ConcurrentHashMap<Object, Runnable> actions = onRunLost.get(runId);
+    if (actions == null) {
+      return;
+    }
+    for (Object key : actions.keySet()) {
+      Runnable action = actions.remove(key);
+      if (action != null) {
+        try {
+          action.run();
+        } catch (RuntimeException e) {
+          LOG.debugf("A loss action of run %s failed: %s", runId, e.getMessage());
+        }
+      }
+    }
+  }
+
+  @PreDestroy
+  void stopGraces() {
+    graces.shutdownNow();
   }
 
   /**
