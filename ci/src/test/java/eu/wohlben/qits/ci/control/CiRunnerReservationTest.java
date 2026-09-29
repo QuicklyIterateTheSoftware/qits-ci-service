@@ -186,6 +186,36 @@ public class CiRunnerReservationTest extends CiTestSupport {
   }
 
   @Test
+  public void aBuildIsNeverHandedToARunnerWhoseIdRangeIsNarrowButAnUnknownRangeIsAllowed()
+      throws Exception {
+    occupyTheWorker();
+    CiRunner narrow = runner("narrow", 5, true, "65536");
+    CiRunner unknown = runner("older-runner", 5, true);
+    CiRunner full = runner("full-host", 5, true, "4294967295");
+    String buildRun = accept("needs-builder", BUILD);
+    String dockerRun = accept("needs-socket", DOCKER);
+
+    assertEquals(
+        dockerRun,
+        service.reserveFor(narrow).orElseThrow().run().id,
+        "a narrow runner still takes what does not run in its builder");
+    assertTrue(service.reserveFor(narrow).isEmpty(), "the build is left for a runner that can map it");
+    assertEquals(CiRunStatus.QUEUED, row(buildRun).status);
+    assertEquals(buildRun, service.reserveFor(full).orElseThrow().run().id);
+
+    String another = accept("needs-builder-too", BUILD);
+    assertEquals(
+        another,
+        service.reserveFor(unknown).orElseThrow().run().id,
+        "a runner that says nothing about its range is not refused");
+
+    assertTrue(CiRunService.narrowIdRange(runnerRow("{\"idRange\":65537}")));
+    assertFalse(CiRunService.narrowIdRange(runnerRow("{\"idRange\":4294967295}")));
+    assertFalse(CiRunService.narrowIdRange(runnerRow("{\"idRange\":\"narrow\"}")));
+    assertFalse(CiRunService.narrowIdRange(runnerRow(null)));
+  }
+
+  @Test
   public void aRunIsNeverHandedToARunnerItAvoidsButAnyOtherRunnerMayTakeIt() throws Exception {
     occupyTheWorker();
     CiRunner failedIt = runner("failed-it", 5, true);
@@ -322,6 +352,16 @@ public class CiRunnerReservationTest extends CiTestSupport {
   }
 
   private CiRunner runner(String name, int slots, boolean docker) {
+    return runner(name, slots, docker, null);
+  }
+
+  private static CiRunner runnerRow(String capabilities) {
+    CiRunner runner = new CiRunner();
+    runner.capabilities = capabilities;
+    return runner;
+  }
+
+  private CiRunner runner(String name, int slots, boolean docker, String idRange) {
     return QuarkusTransaction.requiringNew()
         .call(
             () -> {
@@ -331,7 +371,9 @@ public class CiRunnerReservationTest extends CiTestSupport {
               runner.slots = slots;
               runner.plane = CiRunnerPlane.INTERNAL;
               runner.clientId = "client-" + name;
-              runner.capabilities = "{\"docker\":" + docker + ",\"arch\":\"amd64\"}";
+              runner.capabilities =
+                  "{\"docker\":" + docker + ",\"arch\":\"amd64\""
+                      + (idRange == null ? "" : ",\"idRange\":" + idRange) + "}";
               runner.registeredAt = Instant.now();
               runner.createdAt = Instant.now();
               runnerRows.persist(runner);

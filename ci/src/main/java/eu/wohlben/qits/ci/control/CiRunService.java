@@ -2302,7 +2302,9 @@ public class CiRunService {
    *
    * <p><b>What a runner cannot take is passed over, never settled.</b> A pipeline with a {@code
    * docker: true} or {@code build: true} step needs a host that will run docker for it, and a runner
-   * whose capabilities do not say {@code docker: true} is never handed one; a row that is not an
+   * whose capabilities do not say {@code docker: true} is never handed one; a {@code build: true}
+   * pipeline is never handed to a runner that said its id range is narrow ({@link #narrowIdRange},
+   * qits-556), nor any run to a runner in its avoid set ({@link #avoidRunner}); a row that is not an
    * event run, or whose snapshot will not reconstruct, is left for the claim loop, which is the one
    * place that settles such rows — this path only ever takes.
    *
@@ -2348,6 +2350,7 @@ public class CiRunService {
                     return null;
                   }
                   boolean docker = hasDocker(row);
+                  boolean narrowIds = narrowIdRange(row);
                   for (CiRun candidate :
                       CiRunOrdering.suggestedOrder(builds(runs.listQueuedOldestFirst()))) {
                     if (!runnable(candidate)) {
@@ -2365,6 +2368,9 @@ public class CiRunService {
                       continue;
                     }
                     if (!docker && needsDocker(request.trigger().pipeline())) {
+                      continue;
+                    }
+                    if (narrowIds && needsBuildPlane(request.trigger().pipeline())) {
                       continue;
                     }
                     if (draining) {
@@ -2520,6 +2526,41 @@ public class CiRunService {
   private static boolean hasDocker(CiRunner runner) {
     JsonNode capabilities = RunnerCapabilities.decode(runner.capabilities);
     return capabilities != null && capabilities.path("docker").asBoolean(false);
+  }
+
+  /**
+   * The whole 32-bit id space, {@code 0 0 4294967295} — what a host outside any user namespace maps,
+   * and the protocol's {@code Capabilities.FULL_ID_RANGE}.
+   */
+  static final long FULL_ID_RANGE = 4294967295L;
+
+  /**
+   * Whether the runner said its user namespace maps fewer ids than the whole space (qits-556): a
+   * rootless docker or an unprivileged LXC, whose builder cannot unpack a layer owning a file above
+   * its range. Unknown — a runner older than {@code idRange}, or a value that is not a number — is
+   * no, because refusing it would strand every runner released before the field.
+   */
+  static boolean narrowIdRange(CiRunner runner) {
+    JsonNode capabilities = RunnerCapabilities.decode(runner.capabilities);
+    if (capabilities == null) {
+      return false;
+    }
+    JsonNode range = capabilities.path("idRange");
+    return range.isIntegralNumber() && range.asLong() < FULL_ID_RANGE;
+  }
+
+  /**
+   * Whether any step runs in the runner's own builder ({@code build: true}) — the one place a narrow
+   * id range fails, because it is the runner's daemon that unpacks the layers. A {@code docker: true}
+   * step is handed the host's socket and is judged by {@link CiRunnerHealth#isInfra} after the fact.
+   */
+  static boolean needsBuildPlane(CiPipeline pipeline) {
+    for (CiPipeline.CiStepDecl step : pipeline.steps()) {
+      if (step.build()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Whether any step asks for the build plane — a socket or a builder, both of them docker's. */
