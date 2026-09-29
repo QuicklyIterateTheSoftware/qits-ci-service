@@ -1,0 +1,21 @@
+-- A runner may give its steps more (or less) memory than the platform's default (epic qits-438).
+--
+-- WHY PER RUNNER. Every step container is capped by one global key, qits.ci.memory-limit (4g), sent
+-- as the workload spec's memory AND memory-swap. That cap is sized for the swarm host the in-process
+-- executor shares with every platform service; a runner is a machine a person owns, and one with RAM
+-- to spare still OOM-killed qits-projects-service's native-image build at 4g (exit 137, runs
+-- b82b99fb and ed75f516). So the cap becomes the runner's to override.
+--
+-- ci_runner.step_memory_limit   the cap this runner's steps get, as the docker size string the
+--                               runner passes to `docker run --memory/--memory-swap` ("6g",
+--                               "6144m") — CiRunners.STEP_MEMORY_LIMIT, the runner's own SIZE
+--                               grammar, is the only thing that writes it. NULL means "the platform
+--                               default, qits.ci.memory-limit", which is what every runner that
+--                               exists before this migration is: nothing is backfilled, so no step
+--                               anywhere gets a different cap until an operator sets one. It is read
+--                               at every launch, so a change reaches the runner's next step without a
+--                               reconnect. The in-process executor has no row and never reads it.
+--                               varchar(32): sixteen characters is the grammar's widest value.
+--
+-- MigrationChecksumTest pins the SHA-256 of this file. Nothing earlier in the lineage is touched.
+alter table ci_runner add column step_memory_limit varchar(32);

@@ -122,6 +122,9 @@ public class MigrationChecksumTest {
     PINS.put(
         "V25__run_auto_retry.sql",
         "4a9162c4d556c1d831fa4d775e5ffe937088882da6c430bcf0fd28a052badca8");
+    PINS.put(
+        "V26__runner_step_memory_limit.sql",
+        "1a97ea2283d369ac48439b462af8fd3fcfedacd8c54a067eb7270fa3c65f2e98");
   }
 
   @Test

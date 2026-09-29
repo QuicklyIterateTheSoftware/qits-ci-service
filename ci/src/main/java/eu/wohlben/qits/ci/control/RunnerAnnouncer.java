@@ -40,13 +40,17 @@ import java.util.List;
  */
 public interface RunnerAnnouncer {
 
-  /** An operator's create committed: the row as written. */
+  /**
+   * An operator's create committed: the row as written. {@code stepMemoryLimit} is null while the
+   * runner takes the platform's {@code qits.ci.memory-limit}.
+   */
   void onRunnerCreated(
       String runnerId,
       String runnerName,
       int slots,
       String plane,
       String description,
+      String stepMemoryLimit,
       Instant createdAt);
 
   /**
@@ -104,7 +108,7 @@ public interface RunnerAnnouncer {
       String runnerId, String runnerName, String fromVersion, String toVersion, Instant occurredAt);
 
   /**
-   * An operator's change committed and moved at least one setting: the three as they now are, and
+   * An operator's change committed and moved at least one setting: the four as they now are, and
    * {@code changed} naming which moved.
    */
   void onRunnerChanged(
@@ -113,6 +117,7 @@ public interface RunnerAnnouncer {
       int slots,
       String plane,
       String description,
+      String stepMemoryLimit,
       List<String> changed,
       Instant occurredAt);
 

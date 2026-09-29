@@ -258,7 +258,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     WorkloadSpec workload =
         workloadSpec(
             StepWorkloadSpecs.compose(launcher.workloadSettings(), plane, launchSpec, credential),
-            spec.docker() || spec.build());
+            spec.docker() || spec.build(),
+            stepMemoryLimitOf(session));
 
     Duration launchTimeout = Duration.ofSeconds(launchTimeoutSeconds);
     CiRunnerRegistry.LaunchAnswer answer =
@@ -428,6 +429,22 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     return StepAddressPlane.edge(origins, internal);
   }
 
+  /**
+   * The runner row's step memory limit as it is NOW — read per step, unlike the plane, which is
+   * fixed per run: an operator raising a runner's cap for a build that keeps getting OOM-killed
+   * wants the very next step to have it, without a reconnect and without waiting for a new run.
+   * Null is the platform default ({@code qits.ci.memory-limit}, already in the composed spec). A row
+   * that cannot be read falls back to the one the session was admitted as, and a row gone with it to
+   * the default — a launch is never refused over the cap.
+   */
+  private String stepMemoryLimitOf(CiRunnerRegistry.Session session) {
+    try {
+      return runnerRows.get(session.runnerId()).stepMemoryLimit;
+    } catch (RuntimeException gone) {
+      return session.runner() == null ? null : session.runner().stepMemoryLimit;
+    }
+  }
+
   /** The runner row's plane as it is now; the row the session was admitted as if it is gone. */
   private CiRunnerPlane planeOf(CiRunnerRegistry.Session session) {
     CiRunnerPlane plane;
@@ -450,7 +467,20 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
    * reach into it — so a label written here would fail every launch.
    */
   static WorkloadSpec workloadSpec(Spec spec, boolean buildPlane) {
+    return workloadSpec(spec, buildPlane, null);
+  }
+
+  /**
+   * {@link #workloadSpec(Spec, boolean)} with the runner's own step memory limit in place of the
+   * composed one — memory and memory-swap alike, exactly as {@code StepWorkloadSpecs} sets the
+   * platform's {@code qits.ci.memory-limit}, so a runner's steps still get no swap beyond their cap.
+   * Null keeps the composed value. Only the runner path passes one: the in-process executor composes
+   * through {@code CiDaemonLauncher} and never reaches this method.
+   */
+  static WorkloadSpec workloadSpec(Spec spec, boolean buildPlane, String stepMemoryLimit) {
     Security security = spec.security() == null ? Security.none() : spec.security();
+    String memory = stepMemoryLimit == null ? security.memory() : stepMemoryLimit;
+    String memorySwap = stepMemoryLimit == null ? security.memorySwap() : stepMemoryLimit;
     return new WorkloadSpec(
         spec.image(),
         spec.entrypoint(),
@@ -463,8 +493,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
         spec.hostDockerSocket(),
         security.capDropAll(),
         security.noNewPrivileges(),
-        security.memory(),
-        security.memorySwap(),
+        memory,
+        memorySwap,
         security.pidsLimit(),
         security.cpus(),
         security.oomScoreAdj(),

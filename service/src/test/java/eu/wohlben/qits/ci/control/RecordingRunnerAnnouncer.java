@@ -83,10 +83,11 @@ public class RecordingRunnerAnnouncer implements RunnerAnnouncer {
       int slots,
       String plane,
       String description,
+      String stepMemoryLimit,
       Instant createdAt) {
     record(
         "RunnerCreated", runnerId, "runnerName", runnerName, "slots", slots, "plane", plane,
-        "description", description, "occurredAt", createdAt);
+        "description", description, "stepMemoryLimit", stepMemoryLimit, "occurredAt", createdAt);
   }
 
   @Override
@@ -161,11 +162,13 @@ public class RecordingRunnerAnnouncer implements RunnerAnnouncer {
       int slots,
       String plane,
       String description,
+      String stepMemoryLimit,
       List<String> changed,
       Instant occurredAt) {
     record(
         "RunnerChanged", runnerId, "runnerName", runnerName, "slots", slots, "plane", plane,
-        "description", description, "changed", changed, "occurredAt", occurredAt);
+        "description", description, "stepMemoryLimit", stepMemoryLimit, "changed", changed,
+        "occurredAt", occurredAt);
   }
 
   @Override

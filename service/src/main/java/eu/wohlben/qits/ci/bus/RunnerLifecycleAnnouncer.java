@@ -83,8 +83,11 @@ public class RunnerLifecycleAnnouncer implements RunnerAnnouncer {
       int slots,
       String plane,
       String description,
+      String stepMemoryLimit,
       Instant createdAt) {
-    publish(new RunnerCreated(runnerId, runnerName, slots, plane, description, createdAt));
+    publish(
+        new RunnerCreated(
+            runnerId, runnerName, slots, plane, description, stepMemoryLimit, createdAt));
   }
 
   @Override
@@ -154,10 +157,13 @@ public class RunnerLifecycleAnnouncer implements RunnerAnnouncer {
       int slots,
       String plane,
       String description,
+      String stepMemoryLimit,
       List<String> changed,
       Instant occurredAt) {
     publish(
-        new RunnerChanged(runnerId, runnerName, slots, plane, description, changed, occurredAt));
+        new RunnerChanged(
+            runnerId, runnerName, slots, plane, description, stepMemoryLimit, changed,
+            occurredAt));
   }
 
   @Override

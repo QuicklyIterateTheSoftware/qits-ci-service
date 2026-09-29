@@ -102,13 +102,25 @@ public class CiRunnerController {
                   "Where its steps reach the platform: EDGE through the public names, INTERNAL on"
                       + " qits-net. Default EDGE when this qits-ci knows its public domain,"
                       + " INTERNAL when it does not")
-          CiRunnerPlane plane) {}
+          CiRunnerPlane plane,
+      @Schema(
+              description =
+                  "The memory cap its step containers get, memory and memory-swap alike: a docker"
+                      + " size, digits and an optional b, k, m or g (6g, 6144m), at least 6m."
+                      + " Absent or blank is the platform default, qits.ci.memory-limit")
+          String stepMemoryLimit) {}
 
   public record PatchRunnerRequest(
       @Schema(description = "0 drains the runner; absent leaves it") Integer slots,
       @Schema(description = "Blank clears it; absent leaves it") String description,
       @Schema(description = "EDGE or INTERNAL; absent leaves it. Reaches the runner's next run")
-          CiRunnerPlane plane) {}
+          CiRunnerPlane plane,
+      @Schema(
+              description =
+                  "A docker size (6g, 6144m) its step containers are capped at; blank clears it back"
+                      + " to the platform default, qits.ci.memory-limit; absent leaves it. Reaches"
+                      + " the runner's next step")
+          String stepMemoryLimit) {}
 
   /** The refusal of an EDGE plane on a qits-ci that knows no public domain — code and message. */
   static final String EDGE_PLANE_UNCONFIGURED = "EDGE_PLANE_UNCONFIGURED";
@@ -126,6 +138,7 @@ public class CiRunnerController {
       String description,
       int slots,
       CiRunnerPlane plane,
+      String stepMemoryLimit,
       JsonNode capabilities,
       boolean registered,
       boolean connected,
@@ -153,6 +166,7 @@ public class CiRunnerController {
           runner.description(),
           runner.slots(),
           runner.plane(),
+          runner.stepMemoryLimit(),
           runner.capabilities(),
           runner.registered(),
           runner.connected(),
@@ -202,8 +216,8 @@ public class CiRunnerController {
   @APIResponse(
       responseCode = "400",
       description =
-          "A malformed name, slots or description, or EDGE_PLANE_UNCONFIGURED: an EDGE plane on a"
-              + " qits-ci that knows no public domain")
+          "A malformed name, slots, description or stepMemoryLimit, or EDGE_PLANE_UNCONFIGURED: an"
+              + " EDGE plane on a qits-ci that knows no public domain")
   @APIResponse(responseCode = "409", description = "The name is taken")
   @APIResponse(responseCode = "502", description = "qits-idp refused the registration token")
   @APIResponse(
@@ -213,7 +227,8 @@ public class CiRunnerController {
     if (request == null) {
       throw new BadRequestException("A runner needs a name");
     }
-    runners.requireCreatable(request.name(), request.description(), request.slots());
+    runners.requireCreatable(
+        request.name(), request.description(), request.slots(), request.stepMemoryLimit());
     CiRunnerPlane plane = request.plane() == null ? defaultPlane() : requireComposable(request.plane());
     requireCommissioning();
     requireRenderable();
@@ -228,6 +243,7 @@ public class CiRunnerController {
               request.description(),
               request.slots(),
               plane,
+              request.stepMemoryLimit(),
               token.tokenId(),
               token.subject());
     } catch (RuntimeException refused) {
@@ -289,23 +305,28 @@ public class CiRunnerController {
   @Path("/{id}")
   @Consumes(MediaType.APPLICATION_JSON)
   @RolesAllowed("qits:admin")
-  @Operation(summary = "Change a runner's slots, description or plane")
+  @Operation(summary = "Change a runner's slots, description, plane or step memory limit")
   @APIResponse(responseCode = "200", description = "The runner as it now is")
   @APIResponse(
       responseCode = "400",
       description =
-          "Negative slots, an overlong description, or EDGE_PLANE_UNCONFIGURED: an EDGE plane on a"
-              + " qits-ci that knows no public domain")
+          "Negative slots, an overlong description, a malformed stepMemoryLimit, or"
+              + " EDGE_PLANE_UNCONFIGURED: an EDGE plane on a qits-ci that knows no public domain")
   @APIResponse(responseCode = "404", description = "No such runner")
   public CiRunnerDto patch(@PathParam("id") String id, PatchRunnerRequest request) {
     PatchRunnerRequest change =
-        request == null ? new PatchRunnerRequest(null, null, null) : request;
+        request == null ? new PatchRunnerRequest(null, null, null, null) : request;
     UUID runnerId = runnerId(id);
     if (change.plane() != null) {
       requireComposable(change.plane());
     }
     return runners.view(
-        runners.patch(runnerId, change.slots(), change.description(), change.plane()));
+        runners.patch(
+            runnerId,
+            change.slots(),
+            change.description(),
+            change.plane(),
+            change.stepMemoryLimit()));
   }
 
   /**

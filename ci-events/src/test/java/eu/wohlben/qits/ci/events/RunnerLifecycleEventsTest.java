@@ -43,7 +43,7 @@ class RunnerLifecycleEventsTest {
 
   private static List<QitsEvent> everyEvent() {
     return List.of(
-        new RunnerCreated(ID, "build-host-1", 2, "EDGE", "the attic box", AT),
+        new RunnerCreated(ID, "build-host-1", 2, "EDGE", "the attic box", null, AT),
         new RunnerRegistered(ID, "build-host-1", "ci-runner-7", true, "amd64", "linux", AT),
         new RunnerConnected(
             ID, "build-host-1", "2026.927.1", "2026.928.1", true, true, "amd64", "linux", AT),
@@ -51,7 +51,7 @@ class RunnerLifecycleEventsTest {
         new RunnerUpdateStarted(ID, "build-host-1", "2026.927.1", "2026.928.1", 0, AT),
         new RunnerUpdated(ID, "build-host-1", "2026.927.1", "2026.928.1", AT),
         new RunnerChanged(
-            ID, "build-host-1", 0, "INTERNAL", null,
+            ID, "build-host-1", 0, "INTERNAL", null, null,
             List.of(RunnerChanged.SLOTS, RunnerChanged.PLANE), AT),
         new RunnerDeleted(ID, "build-host-1", AT),
         new RunnerQuarantined(ID, "build-host-1", "awaiting its first health check", AT),
@@ -106,12 +106,17 @@ class RunnerLifecycleEventsTest {
     assertEquals(
         "{\"description\":\"the attic box\",\"plane\":\"EDGE\",\"runnerId\":\"" + ID + "\","
             + "\"runnerName\":\"build-host-1\",\"slots\":2}",
-        CanonicalJson.payload(new RunnerCreated(ID, "build-host-1", 2, "EDGE", "the attic box", AT)));
+        CanonicalJson.payload(new RunnerCreated(ID, "build-host-1", 2, "EDGE", "the attic box", null, AT)));
     // No description is no key.
     assertEquals(
         "{\"plane\":\"INTERNAL\",\"runnerId\":\"" + ID + "\",\"runnerName\":\"build-host-1\","
             + "\"slots\":1}",
-        CanonicalJson.payload(new RunnerCreated(ID, "build-host-1", 1, "INTERNAL", null, AT)));
+        CanonicalJson.payload(new RunnerCreated(ID, "build-host-1", 1, "INTERNAL", null, null, AT)));
+    // A runner created with its own step memory limit says so.
+    assertEquals(
+        "{\"plane\":\"EDGE\",\"runnerId\":\"" + ID + "\",\"runnerName\":\"build-host-1\","
+            + "\"slots\":1,\"stepMemoryLimit\":\"6144m\"}",
+        CanonicalJson.payload(new RunnerCreated(ID, "build-host-1", 1, "EDGE", null, "6144m", AT)));
   }
 
   @Test
@@ -196,15 +201,30 @@ class RunnerLifecycleEventsTest {
             + "\",\"runnerName\":\"build-host-1\",\"slots\":0}",
         CanonicalJson.payload(
             new RunnerChanged(
-                ID, "build-host-1", 0, "INTERNAL", null,
+                ID, "build-host-1", 0, "INTERNAL", null, null,
                 List.of(RunnerChanged.SLOTS, RunnerChanged.DESCRIPTION), AT)));
     assertEquals(
         "{\"changed\":[\"description\"],\"description\":\"moved to the rack\",\"plane\":\"EDGE\","
             + "\"runnerId\":\"" + ID + "\",\"runnerName\":\"build-host-1\",\"slots\":3}",
         CanonicalJson.payload(
             new RunnerChanged(
-                ID, "build-host-1", 3, "EDGE", "moved to the rack",
+                ID, "build-host-1", 3, "EDGE", "moved to the rack", null,
                 List.of(RunnerChanged.DESCRIPTION), AT)));
+    // A step memory limit is carried while set, and a cleared one is named and absent.
+    assertEquals(
+        "{\"changed\":[\"stepMemoryLimit\"],\"plane\":\"EDGE\",\"runnerId\":\"" + ID
+            + "\",\"runnerName\":\"build-host-1\",\"slots\":3,\"stepMemoryLimit\":\"6g\"}",
+        CanonicalJson.payload(
+            new RunnerChanged(
+                ID, "build-host-1", 3, "EDGE", null, "6g",
+                List.of(RunnerChanged.STEP_MEMORY_LIMIT), AT)));
+    assertEquals(
+        "{\"changed\":[\"stepMemoryLimit\"],\"plane\":\"EDGE\",\"runnerId\":\"" + ID
+            + "\",\"runnerName\":\"build-host-1\",\"slots\":3}",
+        CanonicalJson.payload(
+            new RunnerChanged(
+                ID, "build-host-1", 3, "EDGE", null, null,
+                List.of(RunnerChanged.STEP_MEMORY_LIMIT), AT)));
   }
 
   @Test

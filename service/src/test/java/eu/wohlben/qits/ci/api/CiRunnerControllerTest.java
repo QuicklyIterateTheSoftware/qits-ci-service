@@ -266,6 +266,88 @@ class CiRunnerControllerTest {
 
   @Test
   @TestSecurity(user = "operator", roles = {ADMIN})
+  void aStepMemoryLimitIsSetAtCreateChangedAndClearedByPatchAndListed() {
+    // Absent at create is the platform default, and the read says null rather than a number.
+    String plain = create("default-memory").getString("id");
+    given().when().get(RUNNERS + "/" + plain).then().statusCode(200)
+        .body("$", hasKey("stepMemoryLimit"))
+        .body("stepMemoryLimit", nullValue());
+
+    // Set at create: on the 201 (the CiRunnerCreated shape) and on the row.
+    String id =
+        given()
+            .contentType(MediaType.APPLICATION_JSON)
+            .body("{\"name\":\"big-memory\",\"slots\":1,\"stepMemoryLimit\":\"6g\"}")
+            .when()
+            .post(RUNNERS)
+            .then()
+            .statusCode(201)
+            .body("stepMemoryLimit", equalTo("6g"))
+            .extract()
+            .jsonPath()
+            .getString("id");
+    assertEquals("6g", row(UUID.fromString(id)).stepMemoryLimit);
+
+    // The listing carries it for every runner.
+    JsonPath listed = given().when().get(RUNNERS).then().statusCode(200).extract().jsonPath();
+    assertEquals("6g", listed.getString("runners.find { it.name == 'big-memory' }.stepMemoryLimit"));
+    assertNull(listed.getString("runners.find { it.name == 'default-memory' }.stepMemoryLimit"));
+
+    // PATCH changes it, leaves it when absent, and a blank clears it back to the default.
+    given().contentType(MediaType.APPLICATION_JSON).body("{\"stepMemoryLimit\":\"8192m\"}")
+        .when().patch(RUNNERS + "/" + id).then().statusCode(200)
+        .body("stepMemoryLimit", equalTo("8192m"));
+    given().contentType(MediaType.APPLICATION_JSON).body("{\"slots\":3}")
+        .when().patch(RUNNERS + "/" + id).then().statusCode(200)
+        .body("stepMemoryLimit", equalTo("8192m"));
+    given().contentType(MediaType.APPLICATION_JSON).body("{\"stepMemoryLimit\":\"\"}")
+        .when().patch(RUNNERS + "/" + id).then().statusCode(200)
+        .body("stepMemoryLimit", nullValue());
+    assertNull(row(UUID.fromString(id)).stepMemoryLimit);
+
+    // A value the runner could not apply is a 400 at both doors, and a create refused over it mints
+    // nothing at qits-idp.
+    given().contentType(MediaType.APPLICATION_JSON).body("{\"stepMemoryLimit\":\"6 gigs\"}")
+        .when().patch(RUNNERS + "/" + id).then().statusCode(400);
+    given().contentType(MediaType.APPLICATION_JSON).body("{\"stepMemoryLimit\":\"5m\"}")
+        .when().patch(RUNNERS + "/" + id).then().statusCode(400);
+    int minted = idp.postedTokens.size();
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"name\":\"bad-memory\",\"slots\":1,\"stepMemoryLimit\":\"0\"}")
+        .when()
+        .post(RUNNERS)
+        .then()
+        .statusCode(400);
+    assertEquals(minted, idp.postedTokens.size(), "refused before a registration token");
+    assertNull(row(UUID.fromString(id)).stepMemoryLimit);
+  }
+
+  @Test
+  @TestSecurity(user = "agent", roles = {AGENT})
+  void anAgentReadsTheStepMemoryLimitButCannotChangeIt() {
+    UUID id = UUID.randomUUID();
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              CiRunner runner = new CiRunner();
+              runner.id = id;
+              runner.name = "agent-read-memory";
+              runner.slots = 1;
+              runner.plane = eu.wohlben.qits.ci.entity.CiRunnerPlane.INTERNAL;
+              runner.stepMemoryLimit = "6g";
+              runner.createdAt = Instant.now();
+              runnerRows.persist(runner);
+            });
+    given().when().get(RUNNERS + "/" + id).then().statusCode(200)
+        .body("stepMemoryLimit", equalTo("6g"));
+    given().contentType(MediaType.APPLICATION_JSON).body("{\"stepMemoryLimit\":\"64g\"}")
+        .when().patch(RUNNERS + "/" + id).then().statusCode(403);
+    assertEquals("6g", row(id).stepMemoryLimit);
+  }
+
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
   void aRotationAnswersANewInstallScriptAndGivesTheOldTokenBack() {
     String id = create("rotating").getString("id");
 

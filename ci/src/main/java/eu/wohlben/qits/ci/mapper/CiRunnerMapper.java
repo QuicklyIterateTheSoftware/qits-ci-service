@@ -23,6 +23,7 @@ public interface CiRunnerMapper {
   @Mapping(target = "description", source = "runner.description")
   @Mapping(target = "slots", source = "runner.slots")
   @Mapping(target = "plane", source = "runner.plane")
+  @Mapping(target = "stepMemoryLimit", source = "runner.stepMemoryLimit")
   @Mapping(target = "capabilities", source = "runner.capabilities")
   @Mapping(target = "registered", expression = "java(runner.registered())")
   @Mapping(target = "connected", source = "connected")

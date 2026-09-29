@@ -247,6 +247,70 @@ class RunnerStepRunnerTest {
     }
   }
 
+  // --- the runner's step memory limit ------------------------------------------------------------
+
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void theLaunchCarriesTheRunnersStepMemoryLimitReadAtEachStepElseThePlatformDefault()
+      throws Exception {
+    String platformDefault = launcher.workloadSettings().memoryLimit();
+    assertNotNull(platformDefault);
+    try (FakeCiRunner runner = greeted()) {
+      // No limit on the row: exactly the platform's cap, as before the column existed.
+      WorkloadSpec none = launchedAndRefused(runner, "runner-mem-none-");
+      assertEquals(platformDefault, none.memory());
+      assertEquals(platformDefault, none.memorySwap());
+
+      // Set on the row of a runner that is already connected: the very next step has it, memory and
+      // memory-swap alike, with no reconnect.
+      setStepMemoryLimit("6g");
+      WorkloadSpec six = launchedAndRefused(runner, "runner-mem-six-");
+      assertEquals("6g", six.memory());
+      assertEquals("6g", six.memorySwap());
+      // Nothing else about the spec moves with it.
+      assertEquals(none.pidsLimit(), six.pidsLimit());
+      assertEquals(none.cpus(), six.cpus());
+
+      setStepMemoryLimit("8192m");
+      WorkloadSpec eight = launchedAndRefused(runner, "runner-mem-eight-");
+      assertEquals("8192m", eight.memory());
+      assertEquals("8192m", eight.memorySwap());
+
+      // Cleared: back to the platform default.
+      setStepMemoryLimit(null);
+      WorkloadSpec cleared = launchedAndRefused(runner, "runner-mem-cleared-");
+      assertEquals(platformDefault, cleared.memory());
+      assertEquals(platformDefault, cleared.memorySwap());
+    }
+  }
+
+  private void setStepMemoryLimit(String limit) {
+    QuarkusTransaction.requiringNew()
+        .run(() -> runnerRows.findById(runnerId).stepMemoryLimit = limit);
+  }
+
+  /** One step on {@code runner}, answered LaunchFailed and reaped; the spec it was asked to start. */
+  private WorkloadSpec launchedAndRefused(FakeCiRunner runner, String prefix) throws Exception {
+    String runId = prefix + UUID.randomUUID();
+    try {
+      registry.hold(registry.current(runnerId), runId);
+      CompletableFuture<StepResult> result =
+          CompletableFuture.supplyAsync(() -> steps.run(step(runId), new Recorder()));
+      Launch launch = runner.next(Launch.class, SOON);
+      assertNotNull(launch, "the runner is asked to start the step's container");
+      runner.send(new LaunchFailed(runId, 0, "refused by the test"));
+      Reap reap = runner.next(Reap.class, SOON);
+      assertNotNull(reap);
+      runner.send(new Reaped(runId, 0));
+      assertEquals(
+          StepOutcome.LAUNCH_FAILED, result.get(SOON.toSeconds(), TimeUnit.SECONDS).outcome());
+      return launch.workloadSpec();
+    } finally {
+      steps.runClosed(runId);
+    }
+  }
+
   // --- the runner's own container log (qits-467) --------------------------------------------------
 
   @Test

@@ -139,15 +139,26 @@ runner's register door, and the socket it then holds open to pull work.
 
 | verb | answer | role |
 |---|---|---|
-| `POST /ci/api/runners` `{name, description?, slots?, plane?}` | 201 the runner's fields plus `installScript` — the one install line carrying the registration token, **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}`, 400 `EDGE_PLANE_UNCONFIGURED` for `plane: EDGE` on a qits-ci that knows no public domain, 409 on a taken one | `qits:admin` |
+| `POST /ci/api/runners` `{name, description?, slots?, plane?, stepMemoryLimit?}` | 201 the runner's fields plus `installScript` — the one install line carrying the registration token, **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}` or a `stepMemoryLimit` that is not a docker size of at least `6m`, 400 `EDGE_PLANE_UNCONFIGURED` for `plane: EDGE` on a qits-ci that knows no public domain, 409 on a taken one | `qits:admin` |
 | `GET /ci/api/runners/install.sh` | `text/plain`: the generic install script the line pipes into `sh` — no secret, no runner | `qits:ci-runner-registration`, `qits:admin`, `qits:system`, `qits:agent` |
-| `GET /ci/api/runners` | `{runners: [{id, name, description, slots, plane, capabilities, registered, connected, heldRuns, lastSeenAt, createdAt, runnerVersion, targetVersion, updating, quarantined, quarantineReason, quarantinedAt, lastHealthcheck: {at, result, runId, detail}}]}`, by name | `qits:admin`, `qits:system`, `qits:agent` |
+| `GET /ci/api/runners` | `{runners: [{id, name, description, slots, plane, stepMemoryLimit, capabilities, registered, connected, heldRuns, lastSeenAt, createdAt, runnerVersion, targetVersion, updating, quarantined, quarantineReason, quarantinedAt, lastHealthcheck: {at, result, runId, detail}}]}`, by name | `qits:admin`, `qits:system`, `qits:agent` |
 | `GET /ci/api/runners/{id}` | one runner, 404 | the same |
-| `PATCH /ci/api/runners/{id}` `{slots?, description?, plane?}` | the runner; `slots: 0` drains it; a plane change reaches the runner's next run; 400 `EDGE_PLANE_UNCONFIGURED` as on the create | `qits:admin` |
+| `PATCH /ci/api/runners/{id}` `{slots?, description?, plane?, stepMemoryLimit?}` | the runner; `slots: 0` drains it; a plane change reaches the runner's next run, a `stepMemoryLimit` change its next step, and a blank `stepMemoryLimit` clears it back to the platform default; 400 `EDGE_PLANE_UNCONFIGURED` as on the create, 400 on a malformed `stepMemoryLimit` | `qits:admin` |
 | `POST /ci/api/runners/{id}/registration-token` | the runner's fields plus a fresh `installScript` line with a new token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin` |
 | `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run | `qits:admin` |
 | `POST /ci/api/runners/{id}/greenlight` | the runner, its quarantine lifted and its failure streak reset; a runner in service is answered as it is | `qits:admin` |
 | `POST /ci/api/runners/{id}/healthcheck` | 202 `{runId}`: a health check queued for it now; 409 while one is queued or running, 503 when its repository, head or image cannot be resolved | `qits:admin` |
+
+**`stepMemoryLimit` is the one cap a runner may set for its own steps.** Every step container is capped
+at `qits.ci.memory-limit` (4g), sent as its memory **and** memory-swap; that number is sized for the
+swarm host the in-process executor shares with every platform service, and a runner with RAM to spare
+still OOM-killed a native-image build at it (exit 137). So a runner's row may carry its own cap — a
+docker size, the runner's own `RunnerArgv` grammar (`[0-9]{1,15}[bkmgBKMG]?`, e.g. `6g`, `6144m`) and
+at least docker's `6m` floor, checked at the door because a value the runner refuses is a
+`LAUNCH_FAILED` that counts toward its quarantine. It replaces both memory and memory-swap in that
+runner's `Launch`, and is read off the row at **each step's launch**, so a change reaches the runner's
+next step with no reconnect. Null — every runner that never set one — is the platform default, and the
+in-process executor has no row and never reads it.
 
 **The register door is `POST /ci/api/runners/{id}/register` `{capabilities}`**, and a runner knocks on
 it with its registration token — a `qits_tok_` value the edge introspects and exchanges for a short
@@ -411,7 +422,8 @@ names; an INTERNAL runner's is null.
 qits-ci publishes one event per lifecycle fact (`ci-events/`, `eu.wohlben.qits.ci.events`), through
 the `RunnerAnnouncer` seam in `ci/control`, implemented by `service/…/bus/RunnerLifecycleAnnouncer`:
 
-- **`RunnerCreated`** — an operator's create committed: `slots`, `plane`, `description`.
+- **`RunnerCreated`** — an operator's create committed: `slots`, `plane`, `description`,
+  `stepMemoryLimit` (absent while it takes the platform default).
 - **`RunnerRegistered`** — the register door committed: the runner's `clientId`, and the `docker`,
   `arch` and `os` it registered with.
 - **`RunnerConnected`** — a connection's `Hello` was taken: `runnerVersion`, `targetVersion` (the
@@ -427,7 +439,7 @@ the `RunnerAnnouncer` seam in `ci/control`, implemented by `service/…/bus/Runn
 - **`RunnerUpdated`** — a connection of the pinned version said `Hello` beside one of another
   version, which is being sent `Retire`: `fromVersion`, `toVersion`.
 - **`RunnerChanged`** — an operator's `PATCH` moved at least one setting: the new `slots`, `plane`,
-  `description`, and `changed`, which of them moved.
+  `description`, `stepMemoryLimit`, and `changed`, which of them moved.
 - **`RunnerDeleted`** — an operator's delete committed.
 - **`RunnerQuarantined`** — the runner was taken out of service: its `reason`. Once per quarantine; a
   registration announces it right after `RunnerRegistered`.
@@ -1970,7 +1982,8 @@ daemon binary.
 A step's script is **repo-controlled code**, so the step container is a hostile-code sandbox:
 `--cap-drop=ALL`, `no-new-privileges`, no docker socket unless the step declared `docker: true`
 above, and memory/pids/cpu caps
-(`qits.ci.memory-limit`, `…pids-limit`, `…cpus`). The daemon lives *inside* that sandbox and the
+(`qits.ci.memory-limit`, `…pids-limit`, `…cpus`; a runner's own `stepMemoryLimit` replaces the first
+for the steps it runs — see "Runners"). The daemon lives *inside* that sandbox and the
 script is its child, so everything arriving over the socket is attacker-influenced data about the
 run: recorded, never trusted. The residual gap — a push is itself unauthenticated, and running
 repo-committed scripts is the feature — is a known, documented issue.

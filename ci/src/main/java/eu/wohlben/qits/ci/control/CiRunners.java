@@ -81,6 +81,23 @@ public class CiRunners {
   /** The slots a runner is created with when the request names none — the column's default. */
   public static final int DEFAULT_SLOTS = 1;
 
+  /**
+   * A runner's step memory limit: the runner's own {@code SIZE} grammar ({@code RunnerArgv} in
+   * qits-ci-runner-daemon) — digits and an optional {@code b}, {@code k}, {@code m} or {@code g} —
+   * because the runner refuses a {@code Launch} whose memory it does not match, and a refused launch
+   * is an infrastructure failure that counts toward the runner's quarantine. Checked here, at the
+   * door, so a typo is a 400 to the operator rather than a quarantined runner.
+   */
+  public static final Pattern STEP_MEMORY_LIMIT = Pattern.compile("[0-9]{1,15}[bkmgBKMG]?");
+
+  /**
+   * The smallest step memory limit a runner is given, in bytes: docker's own floor for {@code
+   * --memory} (6 MiB), below which {@code docker run} refuses — the same quarantine-by-typo the
+   * grammar is checked for, and the reason {@code 0} (which some docker versions read as "no limit
+   * at all", the sandbox gone) is not a value here either.
+   */
+  public static final long STEP_MEMORY_LIMIT_MIN_BYTES = 6L * 1024 * 1024;
+
   @Inject CiRunnerRepository runners;
 
   @Inject CiRunRepository runs;
@@ -109,6 +126,45 @@ public class CiRunners {
     }
   }
 
+  /**
+   * 400 unless {@code limit} is a step memory limit a runner can apply — see {@link
+   * #STEP_MEMORY_LIMIT} and {@link #STEP_MEMORY_LIMIT_MIN_BYTES}. Null and blank pass: both mean the
+   * platform default, and which of "leave it" or "clear it" they are is the caller's.
+   */
+  public static void requireStepMemoryLimit(String limit) {
+    if (limit == null || limit.isBlank()) {
+      return;
+    }
+    String value = limit.strip();
+    if (!STEP_MEMORY_LIMIT.matcher(value).matches()) {
+      throw new BadRequestException(
+          "stepMemoryLimit is a docker size: digits and an optional unit b, k, m or g (e.g. 6g,"
+              + " 6144m), or blank for the platform default");
+    }
+    char unit = Character.toLowerCase(value.charAt(value.length() - 1));
+    long factor =
+        switch (unit) {
+          case 'k' -> 1024L;
+          case 'm' -> 1024L * 1024;
+          case 'g' -> 1024L * 1024 * 1024;
+          default -> 1L;
+        };
+    String digits = Character.isDigit(unit) ? value : value.substring(0, value.length() - 1);
+    long amount = Long.parseLong(digits);
+    if (amount > Long.MAX_VALUE / factor) {
+      throw new BadRequestException("stepMemoryLimit " + value + " is larger than any machine");
+    }
+    if (amount * factor < STEP_MEMORY_LIMIT_MIN_BYTES) {
+      throw new BadRequestException(
+          "stepMemoryLimit is at least 6m — docker refuses a smaller --memory");
+    }
+  }
+
+  /** The value a step memory limit is stored as: trimmed, and null for null or blank. */
+  static String stepMemoryLimitOf(String limit) {
+    return limit == null || limit.isBlank() ? null : limit.strip();
+  }
+
   private static void requireDescription(String description) {
     if (description != null && description.length() > DESCRIPTION_MAX) {
       throw new BadRequestException(
@@ -123,9 +179,16 @@ public class CiRunners {
    * constraint's, and {@link #create} answers it with the same 409.
    */
   public void requireCreatable(String name, String description, Integer slots) {
+    requireCreatable(name, description, slots, null);
+  }
+
+  /** {@link #requireCreatable(String, String, Integer)}, and the step memory limit with it. */
+  public void requireCreatable(
+      String name, String description, Integer slots, String stepMemoryLimit) {
     requireName(name);
     requireSlots(slots);
     requireDescription(description);
+    requireStepMemoryLimit(stepMemoryLimit);
     boolean taken =
         QuarkusTransaction.requiringNew().call(() -> runners.findByName(name).isPresent());
     if (taken) {
@@ -150,7 +213,24 @@ public class CiRunners {
       CiRunnerPlane plane,
       String registrationTokenId,
       String registrationTokenSubject) {
-    requireCreatable(name, description, slots);
+    return create(
+        id, name, description, slots, plane, null, registrationTokenId, registrationTokenSubject);
+  }
+
+  /**
+   * {@link #create(UUID, String, String, Integer, CiRunnerPlane, String, String)} with a step memory
+   * limit; null or blank is the platform default, {@code qits.ci.memory-limit}.
+   */
+  public CiRunner create(
+      UUID id,
+      String name,
+      String description,
+      Integer slots,
+      CiRunnerPlane plane,
+      String stepMemoryLimit,
+      String registrationTokenId,
+      String registrationTokenSubject) {
+    requireCreatable(name, description, slots, stepMemoryLimit);
     CiRunner created;
     try {
       created =
@@ -163,6 +243,7 @@ public class CiRunners {
                     runner.description = blankToNull(description);
                     runner.slots = slots == null ? DEFAULT_SLOTS : slots;
                     runner.plane = plane == null ? CiRunnerPlane.INTERNAL : plane;
+                    runner.stepMemoryLimit = stepMemoryLimitOf(stepMemoryLimit);
                     runner.registrationTokenId = registrationTokenId;
                     runner.registrationTokenSubject = registrationTokenSubject;
                     runner.createdAt = Instant.now();
@@ -191,6 +272,7 @@ public class CiRunners {
                 created.slots,
                 created.plane.name(),
                 created.description,
+                created.stepMemoryLimit,
                 created.createdAt));
     return created;
   }
@@ -227,8 +309,21 @@ public class CiRunners {
    * next run, never the middle of one.
    */
   public CiRunner patch(UUID id, Integer slots, String description, CiRunnerPlane plane) {
+    return patch(id, slots, description, plane, null);
+  }
+
+  /**
+   * {@link #patch(UUID, Integer, String, CiRunnerPlane)}, and the step memory limit with it: null
+   * leaves it, blank clears it back to the platform default, anything else must be a {@link
+   * #STEP_MEMORY_LIMIT}. Nothing is pushed to a connected runner — the limit travels in each {@code
+   * Launch}, read off the row when the step starts, so the change reaches the runner's next step and
+   * never one already running.
+   */
+  public CiRunner patch(
+      UUID id, Integer slots, String description, CiRunnerPlane plane, String stepMemoryLimit) {
     requireSlots(slots);
     requireDescription(description);
+    requireStepMemoryLimit(stepMemoryLimit);
     record Patched(CiRunner runner, List<String> changed, Instant at) {}
     Patched patched =
         QuarkusTransaction.requiringNew()
@@ -250,6 +345,12 @@ public class CiRunners {
                       && !Objects.equals(blankToNull(description), runner.description)) {
                     runner.description = blankToNull(description);
                     changed.add("description");
+                  }
+                  if (stepMemoryLimit != null
+                      && !Objects.equals(
+                          stepMemoryLimitOf(stepMemoryLimit), runner.stepMemoryLimit)) {
+                    runner.stepMemoryLimit = stepMemoryLimitOf(stepMemoryLimit);
+                    changed.add("stepMemoryLimit");
                   }
                   return new Patched(runner, List.copyOf(changed), Instant.now());
                 });
@@ -273,6 +374,7 @@ public class CiRunners {
                   runner.slots,
                   runner.plane.name(),
                   runner.description,
+                  runner.stepMemoryLimit,
                   patched.changed(),
                   patched.at()));
     }

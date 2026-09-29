@@ -55,13 +55,13 @@ public class RunnerLifecyclePublishTest {
   @Test
   public void everyCallIsOnePutOfItsOwnNameInCallOrder() throws Exception {
     String id = UUID.randomUUID().toString();
-    announcer.onRunnerCreated(id, "wire-host", 2, "EDGE", null, AT);
+    announcer.onRunnerCreated(id, "wire-host", 2, "EDGE", null, null, AT);
     announcer.onRunnerRegistered(id, "wire-host", "ci-runner-9", true, "amd64", "linux", AT);
     announcer.onRunnerConnected(id, "wire-host", "0.0.1", "0.0.2", true, true, "amd64", "linux", AT);
     announcer.onRunnerUpdateStarted(id, "wire-host", "0.0.1", "0.0.2", 0, AT);
     announcer.onRunnerUpdated(id, "wire-host", "0.0.1", "0.0.2", AT);
     announcer.onRunnerDisconnected(id, "wire-host", "0.0.1", "RETIRED", 0, AT);
-    announcer.onRunnerChanged(id, "wire-host", 0, "EDGE", null, List.of("slots"), AT);
+    announcer.onRunnerChanged(id, "wire-host", 0, "EDGE", null, null, List.of("slots"), AT);
     announcer.onRunnerDeleted(id, "wire-host", AT);
 
     List<JsonNode> envelopes = awaitEnvelopes(id, 8);
@@ -95,7 +95,7 @@ public class RunnerLifecyclePublishTest {
     UUID cause = UUID.randomUUID();
 
     CausationScope.with(
-        cause, () -> announcer.onRunnerCreated(id, "caused-host", 1, "INTERNAL", null, AT));
+        cause, () -> announcer.onRunnerCreated(id, "caused-host", 1, "INTERNAL", null, null, AT));
 
     JsonNode envelope = awaitEnvelopes(id, 1).get(0);
     assertEquals(cause.toString(), envelope.get("parentId").asText());
