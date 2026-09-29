@@ -43,13 +43,15 @@ import org.jboss.logging.Logger;
  * LaunchFailed} is {@code LAUNCH_FAILED} carrying docker's own words, and a socket that goes away is
  * {@code CONNECTION_LOST}. No new outcome and no new step status was needed.
  *
- * <p><b>Two sockets can be lost now, and both end the step at once.</b> The daemon's is what it
- * always was. The runner's is the new one: the runner forgets every run it held when its socket
- * drops, so a step whose runner is gone is over whatever its container is doing. A loss hook on the
- * session ({@link CiRunnerRegistry#onLoss}) reaps the step's launch record the moment the session
- * ends, which completes every daemon await as lost — so a vanished runner costs the run a few milliseconds, never a
- * deadline — and the step's output then names the runner ({@code [runner <name> disconnected]}).
- * The run is an ordinary failed run and retryable like one.
+ * <p><b>Two sockets can be lost now.</b> The daemon's ends the step at once, as it always did. The
+ * runner's does not any more (qits-545): a runner that drops its socket keeps the step's container
+ * and comes back for the run, so the step is only over once the registry says the <em>run</em> is
+ * lost — its runner did not come back inside the grace, or came back without it ({@link
+ * CiRunnerRegistry#onRunLost}). Then a loss hook reaps the step's launch record, which completes
+ * every daemon await as lost — so a vanished runner costs the run the grace, never a deadline — and
+ * the step's output names the runner ({@code [runner <name> disconnected]}). The run is an ordinary
+ * failed run and retryable like one. A step that starts, or ends, while its runner is away waits the
+ * same grace for it ({@link CiRunnerRegistry#awaitHolding}) rather than failing on the spot.
  *
  * <p><b>The teardown asks the runner too, and never waits on it for long.</b> Every step ends with
  * the daemon's launch record reaped and a {@link Reap} to the runner for the step's container; its
@@ -156,7 +158,10 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     CiIdentifiers.requireSha(spec.sha());
     CiIdentifiers.requireImage(spec.image());
 
-    CiRunnerRegistry.Session session = runners.holding(spec.runId());
+    CiRunnerRegistry.Session session = runners.awaitHolding(spec.runId());
+    if (session == null) {
+      session = runners.holding(spec.runId()); // gone for good — kept only to name it
+    }
     // The step's plane and the run's credential on it, BEFORE a secret is minted: which kind of
     // credential the run holds decides what the launch record is bound to (a ci-run token's subject,
     // or nothing), and a refusal here has nothing to tear down. A session already gone skips both,
@@ -196,18 +201,16 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     inFlight.put(
         spec.runId(), new InFlight(credentials.daemonId(), containerName, spec.stepIndex()));
 
-    // The runner's socket closing ends this step's daemon awaits now rather than at their
-    // deadlines: reaping the launch record completes every one of them as lost. Handed to another
-    // thread, because the loss is reported on whichever thread saw the close and the reap closes a
-    // socket with a bounded wait.
+    // The run being lost ends this step's daemon awaits then rather than at their deadlines: reaping
+    // the launch record completes every one of them as lost. Handed to another thread, because the
+    // loss is reported on whichever thread decided it and the reap closes a socket with a bounded
+    // wait.
     AutoCloseable lossWatch =
-        session == null
-            ? () -> {}
-            : runners.onLoss(
-                session,
-                () ->
-                    java.util.concurrent.CompletableFuture.runAsync(
-                        () -> daemons.reap(credentials.daemonId())));
+        runners.onRunLost(
+            spec.runId(),
+            () ->
+                java.util.concurrent.CompletableFuture.runAsync(
+                    () -> daemons.reap(credentials.daemonId())));
     StepResult result;
     Reaped reaped;
     try {
@@ -216,7 +219,10 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
       closeQuietly(lossWatch);
       inFlight.remove(spec.runId());
       daemons.reap(credentials.daemonId());
-      reaped = reapOnRunner(session, spec.runId(), spec.stepIndex(), containerName);
+      // Whichever connection holds the run now: one that came back for it after a blip, or none.
+      reaped =
+          reapOnRunner(
+              runners.awaitHolding(spec.runId()), spec.runId(), spec.stepIndex(), containerName);
     }
     return withContainerLog(result, reaped, session, containerName);
   }
@@ -282,7 +288,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     }
 
     if (!daemons.awaitRegistered(daemonId, Duration.ofSeconds(registerTimeoutSeconds))) {
-      if (!session.isOpen()) {
+      if (runners.lost(spec.runId())) {
         return lost(session, "");
       }
       // The local path reads the bootstrap's own log off the removal; this host cannot see the
@@ -298,7 +304,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
 
     CiDaemonRegistry.Initialization initialization =
         daemons.awaitInitialized(daemonId, Duration.ofSeconds(initTimeoutSeconds));
-    if (!session.isOpen()
+    if (runners.lost(spec.runId())
         && initialization.status() != CiDaemonRegistry.Initialization.Status.INITIALIZED) {
       return lost(session, "");
     }
@@ -329,7 +335,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     CiDaemonRegistry.Completion completion = daemons.awaitFinished(daemonId, backstop);
     listener.onFinished();
 
-    if (completion.status() != CiDaemonRegistry.Completion.Status.FINISHED && !session.isOpen()) {
+    if (completion.status() != CiDaemonRegistry.Completion.Status.FINISHED
+        && runners.lost(spec.runId())) {
       return lost(session, tail(spec.runId()));
     }
     return switch (completion.status()) {
@@ -469,8 +476,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
   private Reaped reapOnRunner(
       CiRunnerRegistry.Session session, String runId, int stepIndex, String containerName) {
     if (session == null || !session.isOpen()) {
-      // The runner lost its socket and with it every run it held; its boot sweep removes what is
-      // left on the next connect.
+      // The run is lost with its runner; the runner cancels what it carried of it when it is back,
+      // and its boot sweep removes the rest.
       return null;
     }
     Reaped reaped = runners.reap(session, new Reap(runId, stepIndex, containerName), reapTimeout);

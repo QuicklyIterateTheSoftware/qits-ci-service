@@ -499,6 +499,8 @@ class RunnerStepRunnerTest {
       roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system", "qits:admin"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aRunnerVanishingMidStepFailsTheRunNamingItAndTheRunIsRetryable() throws Exception {
+    // Nobody comes back for it here, so the grace (a minute shipped) is what the run waits out.
+    registry.reconnectGrace(Duration.ofSeconds(1));
     CountDownLatch releaseLocal = new CountDownLatch(1);
     CompletableFuture<Void> parked = new CompletableFuture<>();
     localSteps.during(
@@ -548,7 +550,7 @@ class RunnerStepRunnerTest {
         assertEquals(CiRunStatus.FAILED, failed.status);
         assertTrue(
             Duration.between(vanishedAt, failed.finishedAt).toSeconds() < 10,
-            "a vanished runner ends the step at once, not at a deadline");
+            "a vanished runner ends the step when its grace runs out, not at a deadline");
       } finally {
         if (daemon != null) {
           daemon.close();
@@ -567,8 +569,131 @@ class RunnerStepRunnerTest {
       assertEquals(runId, retried.retryOfRunId);
       assertNull(retried.runnerId);
     } finally {
+      registry.reconnectGrace(null);
       releaseLocal.countDown();
     }
+  }
+
+  // --- a runner that blinks (qits-545) -------------------------------------------------------------
+
+  /**
+   * The 2026-09-29 failure, turned around: the runner's socket drops mid-step and the runner is back
+   * a moment later claiming the run. The step's daemon never noticed, the step finishes green, and
+   * its teardown reaps on the connection that came back.
+   */
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aRunnerThatComesBackForItsRunInsideTheGraceCarriesTheStepOn() throws Exception {
+    String runId = "runner-blip-" + UUID.randomUUID();
+    Recorder listener = new Recorder();
+    try {
+      FakeCiRunner first = greeted();
+      registry.hold(registry.current(runnerId), runId);
+      CompletableFuture<StepResult> result =
+          CompletableFuture.supplyAsync(() -> steps.run(step(runId), listener));
+      Launch launch = first.next(Launch.class, SOON);
+      assertNotNull(launch);
+      first.send(new Launched(runId, 0, "c0ffee"));
+
+      try (FakeCiDaemon daemon = dialAsTheContainer(launch.workloadSpec())) {
+        daemon.send(
+            new eu.wohlben.qits.cidaemon.protocol.Hello(
+                launch.workloadSpec().env().get("QITS_CI_DAEMON_ID"),
+                CiDaemonProtocol.CAPABILITY_VERSION));
+        assertInstanceOf(Ack.class, daemon.next(SOON));
+        daemon.send(new Initialized());
+        RunStep runStep = assertInstanceOf(RunStep.class, daemon.next(SOON));
+        daemon.send(new StepChunk(runStep.correlationId(), 0, Stream.OUT, "before\n"));
+
+        first.close();
+        awaitRunOrphaned(runId);
+        assertFalse(registry.lost(runId), "orphaned, not lost: the grace is running");
+
+        try (FakeCiRunner back = FakeCiRunner.dial(runnerEndpoint)) {
+          back.send(
+              new Hello(
+                  pins.version(),
+                  CiRunnerProtocol.CAPABILITY_VERSION,
+                  1,
+                  new Capabilities(true, "amd64", "linux", Map.of()),
+                  List.of(runId, "a-run-this-host-never-held")));
+          eu.wohlben.qits.cirunner.protocol.Ack ack =
+              back.next(eu.wohlben.qits.cirunner.protocol.Ack.class, SOON);
+          assertEquals(List.of(runId), ack.adoptedRuns(), "only what this host was driving");
+
+          daemon.send(new StepChunk(runStep.correlationId(), 1, Stream.OUT, "after\n"));
+          daemon.send(new StepFinished(runStep.correlationId(), 0, false));
+          Reap reap = back.next(Reap.class, SOON);
+          assertNotNull(reap, "the step is reaped on the connection that came back");
+          back.send(new Reaped(runId, 0));
+
+          StepResult green = result.get(SOON.toSeconds(), TimeUnit.SECONDS);
+          assertEquals(StepOutcome.OK, green.outcome(), green.output());
+          assertEquals(0, green.exitCode());
+          assertTrue(green.output().contains("before"), green.output());
+          assertTrue(green.output().contains("after"), green.output());
+          assertFalse(green.output().contains("disconnected"), green.output());
+        }
+      }
+    } finally {
+      steps.runClosed(runId);
+    }
+  }
+
+  /**
+   * A runner that comes back WITHOUT the run — a restarted process, or a runner older than the claim
+   * — did not keep its container, so the step is lost at that {@code Hello}, not a grace later.
+   */
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aRunnerThatComesBackWithoutTheRunLosesItAtItsHello() throws Exception {
+    String runId = "runner-back-empty-" + UUID.randomUUID();
+    try {
+      FakeCiRunner first = greeted();
+      registry.hold(registry.current(runnerId), runId);
+      CompletableFuture<StepResult> result =
+          CompletableFuture.supplyAsync(() -> steps.run(step(runId), new Recorder()));
+      Launch launch = first.next(Launch.class, SOON);
+      assertNotNull(launch);
+      first.send(new Launched(runId, 0, "c0ffee"));
+
+      try (FakeCiDaemon daemon = dialAsTheContainer(launch.workloadSpec())) {
+        daemon.send(
+            new eu.wohlben.qits.cidaemon.protocol.Hello(
+                launch.workloadSpec().env().get("QITS_CI_DAEMON_ID"),
+                CiDaemonProtocol.CAPABILITY_VERSION));
+        assertInstanceOf(Ack.class, daemon.next(SOON));
+        daemon.send(new Initialized());
+        assertInstanceOf(RunStep.class, daemon.next(SOON));
+
+        first.close();
+        awaitRunOrphaned(runId);
+        Instant backAt = Instant.now();
+        try (FakeCiRunner back = greeted()) {
+          StepResult lost = result.get(SOON.toSeconds(), TimeUnit.SECONDS);
+          assertEquals(StepOutcome.CONNECTION_LOST, lost.outcome());
+          assertTrue(lost.output().contains("[runner " + RUNNER_NAME + " disconnected]"), lost.output());
+          assertTrue(
+              Duration.between(backAt, Instant.now()).toSeconds() < 10,
+              "lost at the Hello, not when the minute's grace runs out");
+          assertTrue(registry.lost(runId));
+          assertNull(back.next(Reap.class, Duration.ofMillis(300)), "nothing of it is on this runner");
+        }
+      }
+    } finally {
+      steps.runClosed(runId);
+    }
+  }
+
+  /** Until the host has seen the close: the run's connection is gone and its grace is running. */
+  private void awaitRunOrphaned(String runId) throws InterruptedException {
+    Instant deadline = Instant.now().plus(SOON);
+    while (Instant.now().isBefore(deadline) && registry.holding(runId).isOpen()) {
+      Thread.sleep(20);
+    }
+    assertFalse(registry.holding(runId).isOpen(), "the host saw the runner's socket close");
   }
 
   // ---------------------------------------------------------------------------------------------

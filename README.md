@@ -340,8 +340,21 @@ driven on its own `ci-runner-run-<runId>` thread, never a `ci-run-worker`, throu
 within `qits.ci.runner.launch-timeout-seconds` (180); then the container's own daemon dials
 `/ci/daemon` and the step runs exactly as a local one; then `Reap`. When the run closes, whatever its
 verdict, qits-ci sends `Released{runId}`, the only frame that frees the runner's slot. A runner whose
-socket drops mid-step ends that step `CONNECTION_LOST` at once, its output naming the runner
-(`[runner <name> disconnected]`); the run is an ordinary failed run and retries like one.
+socket drops mid-step keeps the step's container and redials; its runs wait
+`qits.ci.runner.reconnect-grace-seconds` (60) for it, and its next `Hello` in the same version claims
+them (`heldRuns`) and is answered with those qits-ci kept (`Ack.adoptedRuns`) — the step carries on as
+if nothing happened (qits-545). A run nobody comes back for inside the grace, or that the returning
+runner does not claim (a restarted process, a runner older than the claim), ends its step
+`CONNECTION_LOST`, its output naming the runner (`[runner <name> disconnected]`); the run is an
+ordinary failed run and retries like one. A deleted or retired runner's runs get no grace.
+
+**Neither control socket closes when its bearer expires.** Quarkus' websockets-next closes a
+connection 1008 `Authentication expired` at the `exp` of the token that opened it, which cut every
+runner off exactly one token lifetime (an hour) after each connect and would cut an EDGE step's daemon
+off five minutes in (the edge's introspected JWT). `runnerhost/SocketBearerLifetime` drops that
+expiry from the identity of the two upgrades: both are authenticated at the upgrade only, a deleted
+runner is closed by `deleted` whatever its token says, and a step's daemon lives as long as its
+container.
 `GET /ci/api/runs/queue` lists every runner (`runners: [{id, name, slots, held, connected, …, quarantined,
 quarantineReason, quarantinedAt, lastHealthcheck}]`) and its forecast counts the local pool plus every
 connected runner's slots — none of a quarantined one's.
@@ -404,7 +417,8 @@ the `RunnerAnnouncer` seam in `ci/control`, implemented by `service/…/bus/Runn
 - **`RunnerConnected`** — a connection's `Hello` was taken: `runnerVersion`, `targetVersion` (the
   pin), `upgradeRequired`, and the host's `docker`, `arch`, `os`.
 - **`RunnerDisconnected`** — a connection that said `Hello` ended: its `runnerVersion`, `heldRuns`
-  (above 0: those runs are about to be recorded `CONNECTION_LOST`), and a `reason` — `RETIRED` (sent
+  (above 0 on a `LOST` connection: those runs wait the reconnect grace, and are recorded
+  `CONNECTION_LOST` only if the runner does not come back for them), and a `reason` — `RETIRED` (sent
   `Retire`), `REPLACED` (closed `ALREADY_CONNECTED` by a same-version connection), `LOST` (closed
   without qits-ci closing it), `REFUSED` (closed 1008 at its `Hello`, and never connected) or
   `SHUTDOWN` (this qits-ci is stopping).
