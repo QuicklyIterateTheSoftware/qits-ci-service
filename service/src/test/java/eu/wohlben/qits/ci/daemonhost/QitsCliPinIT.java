@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import eu.wohlben.qits.ci.HermeticEnvironment;
 import eu.wohlben.qits.ci.control.CiEventTriggerParser;
 import eu.wohlben.qits.ci.control.CiReleaseComposer;
 import eu.wohlben.qits.ci.control.CiReleaseSlotParser;
@@ -297,11 +298,11 @@ public class QitsCliPinIT {
    * Runs the composed script under {@code bash}, in a scratch checkout, with the environment a
    * release-phase step gets and nothing else.
    *
-   * <p><b>Every ambient {@code QITS_} variable is removed first, and that is the difference between
-   * a test and a coincidence.</b> {@code ProcessBuilder} seeds the child from this process's
-   * environment, and this process runs somewhere that has opinions: a workspace container carries a
-   * commissioned credential and a full set of platform addresses, a CI step container carries
-   * another. A pin test whose result depends on where it runs proves nothing about the pin — so the
+   * <p><b>Every ambient variable but PATH and HOME is removed first ({@link HermeticEnvironment}),
+   * and that is the difference between a test and a coincidence.</b> {@code ProcessBuilder} seeds
+   * the child from this process's environment, and this process runs somewhere that has opinions: a
+   * workspace container carries a commissioned credential and a full set of platform addresses, a
+   * CI step container carries another. A pin test whose result depends on where it runs proves nothing about the pin — so the
    * child is handed exactly the five variables the composed text reads, and a sixth arriving from
    * the host would be a failure this test could not see.
    *
@@ -312,8 +313,7 @@ public class QitsCliPinIT {
       throws Exception {
     ProcessBuilder builder =
         new ProcessBuilder("bash", script.toAbsolutePath().toString()).directory(checkout.toFile());
-    Map<String, String> env = builder.environment();
-    env.keySet().removeIf(key -> key.startsWith("QITS_"));
+    Map<String, String> env = HermeticEnvironment.of(builder);
     env.put("QITS_ARTIFACTS_URL", storeBase);
     env.put("QITS_ARTIFACTS_CLI_PACKAGE", PlatformAccessCliBinary.DAEMON_NAME);
     env.put("QITS_ARTIFACTS_CLI_VERSION", PlatformAccessCliBinary.VERSION);

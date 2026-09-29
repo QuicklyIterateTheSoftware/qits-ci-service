@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.sun.net.httpserver.HttpServer;
+import eu.wohlben.qits.ci.HermeticEnvironment;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.ci.runnerhost.RunnerAddressesFixture;
@@ -227,16 +228,12 @@ public class CiDaemonBootstrapEdgeTokenTest {
   }
 
   /**
-   * Every ambient {@code QITS_} name gone, then the composed env with what this suite serves or
-   * keeps out of {@code /tmp} replaced: the daemon's origin (its path kept), the docker, git-config,
-   * publish-command and home locations.
+   * Nothing ambient but PATH and HOME ({@link HermeticEnvironment}), then the composed env with
+   * what this suite serves or keeps out of {@code /tmp} replaced: the daemon's origin (its path
+   * kept), the docker, git-config, publish-command and home locations.
    */
   private ProcessBuilder stripped(ProcessBuilder builder, Map<String, String> composed) {
-    Map<String, String> env = builder.environment();
-    env.keySet().removeIf(name -> name.startsWith("QITS_"));
-    env.remove("DOCKER_CONFIG");
-    env.remove("GIT_CONFIG_GLOBAL");
-    env.remove("MAVEN_ARGS");
+    Map<String, String> env = HermeticEnvironment.of(builder);
     env.putAll(composed);
     env.put(
         "QITS_CI_DAEMON_BINARY_URL",

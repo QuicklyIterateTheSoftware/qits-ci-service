@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.sun.net.httpserver.HttpServer;
+import eu.wohlben.qits.ci.HermeticEnvironment;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -144,20 +145,12 @@ public class CiDaemonBootstrapFetchTest {
       ProcessBuilder builder = new ProcessBuilder("/bin/sh", "-c", bootstrap);
       builder.redirectOutput(out.toFile());
       builder.redirectError(err.toFile());
-      Map<String, String> env = builder.environment();
+      // Nothing inherited but PATH and HOME, so every conditional block — the registry login, the
+      // client pair's and QITS_TOKEN's credential setup — is skipped: this test is about the fetch,
+      // and the credential-to-file mechanism is CiDaemonLauncherTest's subject. A remove-list here
+      // missed QITS_TOKEN on qits-ci's first edge run; see HermeticEnvironment.
+      Map<String, String> env = HermeticEnvironment.of(builder);
       env.put("QITS_CI_DAEMON_BINARY_URL", "http://127.0.0.1:" + port + "/qits-ci-daemon");
-      // Everything the two conditional blocks read, emptied so both are skipped: this test is about
-      // the fetch, and the credential-to-file mechanism is CiDaemonLauncherTest's subject.
-      for (String unset :
-          new String[] {
-            "QITS_CI_REGISTRY_AUTH_CONFIG",
-            "DOCKER_CONFIG",
-            "QITS_COMMISSIONED_CLIENT_ID",
-            "QITS_COMMISSIONED_CLIENT_SECRET",
-            "GIT_CONFIG_GLOBAL"
-          }) {
-        env.remove(unset);
-      }
       process = builder.start();
 
       // ~13 seconds by construction (one refusal, one 12s pause, then success). The wait is
