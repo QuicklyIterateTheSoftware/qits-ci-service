@@ -1,1 +1,2 @@
 eu.wohlben.qits.ci.testdb.EmbeddedPgConfigSource
+eu.wohlben.qits.ci.testdb.HermeticConfigSource

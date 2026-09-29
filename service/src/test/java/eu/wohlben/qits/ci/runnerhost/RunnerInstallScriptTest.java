@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import eu.wohlben.qits.ci.HermeticEnvironment;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -364,12 +365,15 @@ class RunnerInstallScriptTest {
   private static Ran run(Path dir, String... command) throws Exception {
     Path log = Files.createTempFile("runner-install", ".log");
     try {
-      Process process =
+      ProcessBuilder builder =
           new ProcessBuilder(command)
               .directory(dir.toFile())
               .redirectErrorStream(true)
-              .redirectOutput(log.toFile())
-              .start();
+              .redirectOutput(log.toFile());
+      // Every QITS_CI_RUNNER_* the script reads is spelled on its command line; nothing ambient —
+      // an edge step's DOCKER_CONFIG or QITS_* — may answer for one it forgot.
+      HermeticEnvironment.of(builder);
+      Process process = builder.start();
       if (!process.waitFor(60, TimeUnit.SECONDS)) {
         process.destroyForcibly();
         throw new AssertionError("timed out: " + String.join(" ", command));

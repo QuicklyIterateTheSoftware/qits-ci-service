@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.sun.net.httpserver.HttpServer;
+import eu.wohlben.qits.ci.HermeticEnvironment;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -230,13 +231,11 @@ public class CiDaemonBootstrapDeploySettingsTest {
     ProcessBuilder builder = new ProcessBuilder("/bin/sh", "-c", bootstrapUnderTemp());
     builder.redirectOutput(out.toFile());
     builder.redirectError(err.toFile());
-    Map<String, String> env = builder.environment();
-    // Every ambient QITS_ name gone first. This suite runs inside a qits-ci step container, whose
-    // environment carries a real commissioned pair and a real token endpoint, so a child that
-    // inherited it would mint against the LIVE idp and pass against a text that does nothing.
-    env.keySet().removeIf(name -> name.startsWith("QITS_"));
-    env.remove("QITS_CI_REGISTRY_AUTH_CONFIG");
-    env.remove("DOCKER_CONFIG");
+    // Nothing ambient but PATH and HOME first. This suite runs inside a qits-ci step container,
+    // whose environment carries a real commissioned pair and a real token endpoint (or, on an edge
+    // step, a real QITS_TOKEN), so a child that inherited it would mint against the LIVE idp and
+    // pass against a text that does nothing. See HermeticEnvironment.
+    Map<String, String> env = HermeticEnvironment.of(builder);
     env.put(
         "QITS_CI_DAEMON_BINARY_URL",
         "http://127.0.0.1:" + server.getAddress().getPort() + "/qits-ci-daemon");

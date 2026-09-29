@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.sun.net.httpserver.HttpServer;
+import eu.wohlben.qits.ci.HermeticEnvironment;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -249,9 +250,7 @@ public class CiDaemonBootstrapPublishTokenTest {
     env.put("QITS_GIT_AUTH_HOST", "qits-githost:8080");
     env.put("QITS_PUBLISH_TOKEN_COMMAND", TOKEN_SCRIPT_PATH);
     env.put("GIT_CONFIG_GLOBAL", work.resolve("gitconfig").toString());
-    // The registry block is another test's subject; emptied, it does nothing.
-    env.remove("QITS_CI_REGISTRY_AUTH_CONFIG");
-    env.remove("DOCKER_CONFIG");
+    // The registry block is another test's subject; stripped() left it unset, so it does nothing.
 
     Process process = builder.start();
     if (!process.waitFor(60, TimeUnit.SECONDS)) {
@@ -261,12 +260,12 @@ public class CiDaemonBootstrapPublishTokenTest {
     return new Result(process.exitValue(), read(out), read(err));
   }
 
-  /** Every ambient {@code QITS_} name gone, and the four the exchange reads set to this fixture's. */
+  /**
+   * Nothing ambient but PATH and HOME ({@link HermeticEnvironment}), and the four the exchange reads
+   * set to this fixture's.
+   */
   private ProcessBuilder stripped(ProcessBuilder builder) {
-    Map<String, String> env = builder.environment();
-    env.keySet().removeIf(name -> name.startsWith("QITS_"));
-    env.remove("DOCKER_CONFIG");
-    env.remove("GIT_CONFIG_GLOBAL");
+    Map<String, String> env = HermeticEnvironment.of(builder);
     env.put("QITS_COMMISSIONED_CLIENT_ID", CLIENT_ID);
     env.put("QITS_COMMISSIONED_CLIENT_SECRET", CLIENT_SECRET);
     env.put("QITS_GIT_AUTH_TOKEN_URL", tokenUrl());
