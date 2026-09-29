@@ -210,9 +210,15 @@ public class MachineGuardTest {
   }
 
   @Test
-  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
+  @TestSecurity(user = ARTIFACTS, roles = {"qits:agent"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
-  void declaringARunnerIsAPersonsAndRefusesAMachine() {
+  void anAgentTokenMayNotDeclareARunner() {
+    // qits-521 widened the four lifecycle writes to {qits:admin, qits:system} — a qits:system
+    // bearer addressed here now declares (CiRunnerControllerTest's
+    // aSystemBearerCreatesPatchesRotatesAndDeletesARunner and
+    // aSystemBearerAddressedElsewhereIs403AndMintsNothing cover that pair in full) — but
+    // qits:agent never gets this far: it is in none of these doors' @RolesAllowed, exactly as it
+    // is refused every other write in this file.
     given()
         .contentType(MediaType.APPLICATION_JSON)
         .body("{\"name\":\"machine-made\",\"slots\":1}")
