@@ -334,6 +334,98 @@ class CiRunnerSocketTest {
     awaitDisconnected();
   }
 
+  /**
+   * qits-443: the platform host's runner runs as a swarm service with {@code
+   * QITS_CI_RUNNER_SELF_UPDATE=false} and says so in a capability label. Its version is moved by
+   * qits-deployments redeploying it, so a version other than the pin is taken as it is: no {@code
+   * Upgrade}, the row's slots, a {@code Reserve} that claims, and {@code updating} never true — the
+   * pin is still shown as its target.
+   */
+  @Test
+  @TestSecurity(user = "runner", roles = {RUNNER_ROLE, "qits:admin"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aDeployerManagedRunnerOfAnotherVersionIsNeverToldToUpgradeAndReservesAsEver()
+      throws Exception {
+    AutoRetries.off(runService);
+    java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+    CompletableFuture<Void> parked = new CompletableFuture<>();
+    fakeSteps.during(
+        0,
+        spec -> {
+          if (parked.complete(null)) {
+            try {
+              release.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+          }
+        });
+    try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
+      runner.send(
+          new Hello(
+              "0.0.1-deployed",
+              CiRunnerProtocol.CAPABILITY_VERSION,
+              2,
+              new Capabilities(
+                  true,
+                  "amd64",
+                  "linux",
+                  Map.of(CiRunnerRegistry.SELF_UPDATE_LABEL, "false"))));
+
+      // An Upgrade would be the FIRST frame (it precedes the Ack); the first frame is the Ack.
+      CiRunnerMessage first = runner.next(SOON);
+      assertTrue(first instanceof Ack, "greeted like a runner of the pinned version: " + first);
+      assertEquals(2, ((Ack) first).slots(), "with its row's slots — it does not drain");
+      List<CiRunnerMessage> seen = new java.util.ArrayList<>();
+      assertNotNull(runner.nextMatching(f -> seen.add(f) && f instanceof Backlog, SOON));
+
+      // The local worker is parked, so the next run is the runner's to take — and it takes it.
+      accept("runner-managed-blocker");
+      parked.get(30, TimeUnit.SECONDS);
+      accept("runner-managed-queued");
+      runner.send(new Reserve());
+      CiRunnerMessage answer =
+          runner.nextMatching(f -> seen.add(f) && !(f instanceof Backlog), SOON);
+      // Whichever queued run the claim order hands it — the suite shares one queue — it is a Take.
+      assertTrue(answer instanceof Take, "a version mismatch withholds nothing: " + answer);
+      String taken = ((Take) answer).runId();
+      assertEquals(
+          runnerId, QuarkusTransaction.requiringNew().call(() -> runs.findById(taken).runnerId));
+      assertEquals(
+          List.of(),
+          seen.stream().filter(Upgrade.class::isInstance).toList(),
+          "and it was never sent an Upgrade");
+
+      io.restassured.path.json.JsonPath listing =
+          io.restassured.RestAssured.given()
+              .get("/ci/api/runners")
+              .then()
+              .statusCode(200)
+              .extract()
+              .jsonPath();
+      assertEquals("0.0.1-deployed", listing.getString("runners[0].runnerVersion"));
+      assertEquals(pins.version(), listing.getString("runners[0].targetVersion"));
+      assertFalse(listing.getBoolean("runners[0].updating"));
+    } finally {
+      release.countDown();
+    }
+    awaitDisconnected();
+  }
+
+  @Test
+  void onlyAnExplicitFalseLabelOptsARunnerOutOfTheSelfUpdate() {
+    assertTrue(CiRunnerRegistry.selfUpdates(hello("1", 1)), "no label is the ordinary runner");
+    assertTrue(
+        CiRunnerRegistry.selfUpdates(
+            new Hello("1", 1, 1, new Capabilities(true, "amd64", "linux", Map.of(
+                CiRunnerRegistry.SELF_UPDATE_LABEL, "true")))));
+    assertFalse(
+        CiRunnerRegistry.selfUpdates(
+            new Hello("1", 1, 1, new Capabilities(true, "amd64", "linux", Map.of(
+                CiRunnerRegistry.SELF_UPDATE_LABEL, "false")))));
+    assertTrue(CiRunnerRegistry.selfUpdates(new Hello("1", 1, 1, null)));
+  }
+
   @Test
   @TestSecurity(user = "runner", roles = RUNNER_ROLE)
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})

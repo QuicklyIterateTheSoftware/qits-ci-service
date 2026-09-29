@@ -350,6 +350,15 @@ the draining one for what it took before, the successor for everything after. A 
 and its row in the queue carry `runnerVersion` (what its current connection said), `targetVersion`
 (the pin) and `updating` (a draining connection is still open); `connected` is any open connection.
 
+**A deployer-managed runner is never upgraded by qits-ci** (qits-443). The platform host's `localhost`
+runner runs as a swarm service with `QITS_CI_RUNNER_SELF_UPDATE=false` and advertises the capability
+label `qits.ci.runner.self-update=false`; a `Hello` carrying it is taken as it is whatever its
+`runnerVersion` — no `Upgrade`, no draining, `Ack` with the row's slots, `Reserve` claims as ever and
+`updating` is never true, while `targetVersion` still shows the pin. **Its version moves when
+qits-deployments redeploys it**: the new container dials as a second connection, and the old one is
+sent `Retire` like any superseded connection. Only a capability version this host does not speak
+still refuses it, since there is nothing to update it to.
+
 **`Reserve` is the claim.** `CiRunService.reserveFor` walks the queue in the claim loop's own order and
 takes the first run with the same conditional UPDATE a local worker's claim uses, writing `runner_id`
 in that statement — so local workers and runners compete for one row and exactly one wins. It passes
