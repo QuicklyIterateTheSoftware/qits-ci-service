@@ -126,6 +126,10 @@ components:
           $ref: "#/components/schemas/UUID"
         runnerName:
           type: string
+        retryReason:
+          type: string
+        autoRetry:
+          type: boolean
     CiRunOrderingDto:
       type: object
       properties:
@@ -1347,4 +1351,4 @@ paths:
         - qits:agent
 info:
   title: qits-ci API
-  version: 2026.928.134910
+  version: 2026.929.92156

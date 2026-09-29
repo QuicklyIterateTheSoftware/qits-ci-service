@@ -185,6 +185,15 @@ import java.util.UUID;
  * whose runner has since been deleted keeps its id and reads a null name — the run is history and
  * the runner is not.
  *
+ * <p><b>{@code autoRetry} and {@code retryReason} say whether this run was fired by qits-ci
+ * itself</b> because the run named by {@code retryOfRunId} failed through the infrastructure (a step
+ * that ended {@code LAUNCH_FAILED}, {@code NEVER_STARTED} or {@code CONNECTION_LOST}) rather than
+ * the build (qits-440). {@code autoRetry} is true exactly when {@code retryReason} is non-null, and
+ * the reason is the words: which infra failure, on which run, and which of the at most two automatic
+ * retries this is. Both are false/null on every run a trigger produced and every retry a person
+ * pressed. The failed run itself keeps its {@code FAILED} row; its failing step's output ends with
+ * a line naming the retry.
+ *
  * <p>{@code queuePosition} and {@code ordering} are narrower still, and only a {@code QUEUED} run
  * has them: a {@code RUNNING} run is past being ordered, and reporting its place in a queue it has
  * left would be a number about nothing.
@@ -224,7 +233,9 @@ public record CiRunDto(
     String predictionUnavailable,
     CiRunOrderingDto ordering,
     UUID runnerId,
-    String runnerName) {
+    String runnerName,
+    String retryReason,
+    boolean autoRetry) {
 
   /**
    * This run with its steps and its live step attached — the single-run shape.
@@ -269,7 +280,9 @@ public record CiRunDto(
         predictionUnavailable,
         ordering,
         runnerId,
-        runnerName);
+        runnerName,
+        retryReason,
+        autoRetry);
   }
 
   /**
@@ -324,7 +337,9 @@ public record CiRunDto(
         predictionUnavailable,
         ordering,
         runnerId,
-        runnerName);
+        runnerName,
+        retryReason,
+        autoRetry);
   }
 
   /**
@@ -369,6 +384,8 @@ public record CiRunDto(
         predictionUnavailable,
         ordering,
         runnerId,
-        runnerName);
+        runnerName,
+        retryReason,
+        autoRetry);
   }
 }

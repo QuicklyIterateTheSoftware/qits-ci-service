@@ -38,6 +38,7 @@ import java.sql.SQLIntegrityConstraintViolationException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -502,6 +503,14 @@ public class CiRunService {
 
   @ConfigProperty(name = "qits.ci.output-max-chars")
   int outputMaxChars;
+
+  /**
+   * How many automatic retries in a row one original run may have — see {@link #autoRetry}. The
+   * shipped 2 and its argument are in the {@code ci} jar's {@code META-INF/microprofile-config
+   * .properties}; 0 turns the behaviour off.
+   */
+  @ConfigProperty(name = "qits.ci.auto-retry.max")
+  int autoRetryMax;
 
   /** The deadline a step gets when its declaration does not name one. */
   @ConfigProperty(name = "qits.ci.step-timeout-seconds")
@@ -1678,6 +1687,10 @@ public class CiRunService {
     // said. Unread for a build, whose verdict is its steps' rows.
     String redOutcome = null;
     String redDetail = null;
+    // The step that failed through the INFRASTRUCTURE rather than the build, if one did — the
+    // quarantine's classifier (CiRunnerHealth.INFRA_OUTCOMES), and what autoRetry acts on.
+    StepOutcome infraOutcome = null;
+    int infraStep = -1;
 
     try {
       while (index < declared.size() && !failed && !cancelled.contains(run.id)) {
@@ -1766,6 +1779,10 @@ public class CiRunService {
         if (!ok && !wasCancelled) {
           redOutcome = CiRunnerHealth.outcomeOf(result, stepTimedOut);
           redDetail = CiRunnerHealth.detailOf(result, stepTimedOut);
+          if (!stepTimedOut && CiRunnerHealth.INFRA_OUTCOMES.contains(result.outcome())) {
+            infraOutcome = result.outcome();
+            infraStep = index;
+          }
         }
         index++;
       }
@@ -1815,10 +1832,17 @@ public class CiRunService {
     // First, and unconditionally: the run has left the active listing whichever way it ended, and
     // that is true of the CANCELLED outcome the two verdict announcements below deliberately skip.
     announceStatus(run, outcome, CiRunStatus.RUNNING, finishedAt);
+    // BEFORE the verdict: an infra failure re-fired here is not announced as BuildFailed at all, so
+    // a release request's gate never hears a red it would reject on — it waits for the retry, whose
+    // verdict carries retryOfRunId and lands on the same commit. See autoRetry.
+    CiRun autoRetried =
+        outcome == CiRunStatus.FAILED && infraOutcome != null
+            ? autoRetry(run, infraStep, infraOutcome)
+            : null;
     if (outcome == CiRunStatus.SUCCESS) {
       announceRun(run, finishedAt);
       announceRelease(run, finishedAt, release);
-    } else if (outcome != CiRunStatus.CANCELLED) {
+    } else if (outcome != CiRunStatus.CANCELLED && autoRetried == null) {
       announceFailedRun(run, finishedAt, outcome);
     }
     if (run.healthCheck()) {
@@ -3418,6 +3442,13 @@ public class CiRunService {
    * @return the new run, already {@code QUEUED} and on the worker
    */
   public CiRun retry(String runId) {
+    return refire(runId, null);
+  }
+
+  /**
+   * {@link #retry}, with the reason an automatic one records on its row — null for a person's.
+   */
+  private CiRun refire(String runId, String autoRetryReason) {
     CiRun source = requireRun(runId);
     if (source.status == CiRunStatus.QUEUED || source.status == CiRunStatus.RUNNING) {
       throw new ConflictException(
@@ -3456,14 +3487,14 @@ public class CiRunService {
     CiRun retry =
         DbRetry.inNewTx(
             "run retry accept",
-            () -> insertRetry(source.id, expected, pipeline, pins),
+            () -> insertRetry(source.id, expected, pipeline, pins, autoRetryReason),
             retryDeadline());
     if (retry == null) {
       throw new NotFoundException("No such CI run: " + runId);
     }
     LOG.infof(
-        "CI run %s retried as %s — same %s at %s", runId, retry.id, retry.configPath,
-        retry.commitSha);
+        "CI run %s retried as %s — same %s at %s%s", runId, retry.id, retry.configPath,
+        retry.commitSha, autoRetryReason == null ? "" : " (automatically: " + autoRetryReason + ")");
     // After the insert's transaction and before the wake, the accept path's arrangement exactly: a
     // retry is a new row entering the active listing, and the only thing that separates it from an
     // event-triggered arrival is which method wrote it. `previousStatus` is null for that reason —
@@ -3471,6 +3502,150 @@ public class CiRunService {
     announceStatus(retry, CiRunStatus.QUEUED, null, retry.createdAt);
     enqueue(retry.id);
     return retry;
+  }
+
+  /**
+   * <b>A run the infrastructure failed is asked again at once</b> (qits-440): called by {@code
+   * runSteps} for a run that just went {@code FAILED} on a step whose outcome is one of {@link
+   * CiRunnerHealth#INFRA_OUTCOMES} — the runner quarantine's own classifier, so "infra failure" means
+   * one thing on this service — and answers the retry, or null when there is none and the failure
+   * must settle as an ordinary red verdict.
+   *
+   * <p><b>The set, and what is deliberately outside it.</b> {@code LAUNCH_FAILED} (the container
+   * could not be started), {@code NEVER_STARTED} (its daemon never dialled back — the "never
+   * registered" case) and {@code CONNECTION_LOST} (the runner's or the daemon's socket closed
+   * mid-step). Everything else means the daemon registered and the step is the build's: a real exit
+   * code, 137 included (the OOM killer is a property of the build's memory, handled apart); a
+   * deadline ({@code TIMED_OUT}); {@code INIT_FAILED} and {@code SHA_GONE}, which are the checkout —
+   * a deleted branch fails them identically on every attempt; and {@code NEVER_INITIALIZED}, which
+   * the quarantine does not count either. A step runner that threw is not classified at all. Widening
+   * the set is a change to {@code INFRA_OUTCOMES}, and moves the quarantine with it on purpose.
+   *
+   * <p><b>Why this is the gate hook.</b> The caller skips {@code BuildFailed} when this answers a
+   * run, and that is the whole of the change on the gate's side: qits-projects' release gate hears
+   * verdicts only through {@code BuildSuccessful}/{@code BuildFailed}, so a run that announces
+   * neither leaves the request PENDING, and the retry's verdict — carrying {@code retryOfRunId},
+   * which that ledger already walks to supersede its ancestry — is the one it reads. The failed row
+   * itself is untouched and stays {@code FAILED}; {@code BuildStatusChanged} still reports it, since
+   * that event mirrors rows, not verdicts.
+   *
+   * <p><b>Bounded</b> at {@code qits.ci.auto-retry.max} (2) consecutive automatic retries along
+   * {@code retry_of_run_id}: a run whose chain already holds that many settles normally. A retry a
+   * person pressed carries no {@code retry_reason}, so the count restarts behind it — a person
+   * re-asking is a new question. A health check is never re-fired here: its red is its answer.
+   *
+   * <p><b>Never a failure of the run.</b> A retry that could not be accepted (the git host, the
+   * registry, the database) is logged and answers null, so the red is announced as it always was.
+   * The runner's quarantine streak has already been recorded by then and is untouched: the retry
+   * does not un-count the failure, and it is not pinned to that runner — it re-enters the queue.
+   */
+  private CiRun autoRetry(CiRun run, int failedStep, StepOutcome outcome) {
+    if (run.healthCheck() || autoRetryMax <= 0) {
+      return null;
+    }
+    String what;
+    int behind;
+    try {
+      behind = automaticRetriesBehind(run.id);
+      what = infraFailureWords(run, outcome);
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e, "CI run %s failed by the infrastructure and could not be weighed for a retry", run.id);
+      return null;
+    }
+    if (behind >= autoRetryMax) {
+      LOG.infof(
+          "CI run %s failed by the infrastructure (%s) after %d automatic retr%s — it settles FAILED",
+          run.id, what, behind, behind == 1 ? "y" : "ies");
+      return null;
+    }
+    String reason =
+        bounded(
+            "infra failure (" + what + ") on run " + run.id + " — automatic retry " + (behind + 1)
+                + " of " + autoRetryMax,
+            255);
+    CiRun retry;
+    try {
+      retry = refire(run.id, reason);
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e, "CI run %s failed by the infrastructure (%s) and its automatic retry could not be"
+              + " accepted — it settles FAILED", run.id, what);
+      return null;
+    }
+    // The failed run's own record says where its question went. Best effort: the retry exists
+    // whether or not this line lands, and its row names the run it re-fires either way.
+    try {
+      appendToStepOutput(
+          run.id,
+          failedStep,
+          "[infra failure (" + what + ") — retried automatically as run " + retry.id + "]");
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "CI run %s: could not note its automatic retry %s", run.id, retry.id);
+    }
+    return retry;
+  }
+
+  /** How many automatic retries stand behind {@code runId}, it included, along retry_of_run_id. */
+  private int automaticRetriesBehind(String runId) {
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () -> {
+              int count = 0;
+              Set<String> seen = new HashSet<>();
+              CiRun at = runs.findById(runId);
+              while (at != null && at.retryReason != null && seen.add(at.id)) {
+                count++;
+                at = at.retryOfRunId == null ? null : runs.findById(at.retryOfRunId);
+              }
+              return count;
+            });
+  }
+
+  /** The infra failure as a person reads it — naming the runner when one held the run. */
+  private String infraFailureWords(CiRun run, StepOutcome outcome) {
+    String runner = null;
+    if (run.runnerId != null) {
+      CiRunner row =
+          QuarkusTransaction.requiringNew().call(() -> runnerRows.findById(run.runnerId));
+      runner = "runner " + (row == null ? run.runnerId.toString() : row.name);
+    }
+    return switch (outcome) {
+      case CONNECTION_LOST ->
+          runner == null ? "the connection to the step container was lost" : runner + " disconnected";
+      case LAUNCH_FAILED ->
+          "the step container could not be started" + (runner == null ? "" : " on " + runner);
+      case NEVER_STARTED ->
+          "the step container never started its ci daemon" + (runner == null ? "" : " on " + runner);
+      default -> outcome.name() + (runner == null ? "" : " on " + runner);
+    };
+  }
+
+  /** Appends one line to a recorded step's output. */
+  private void appendToStepOutput(String runId, int stepIndex, String line) {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              for (CiStep step : steps.listByRunIdOrdered(runId)) {
+                if (step.stepIndex == stepIndex) {
+                  step.output =
+                      step.output == null || step.output.isEmpty() ? line : step.output + "\n" + line;
+                }
+              }
+            });
+  }
+
+  private static String bounded(String text, int max) {
+    return text.length() <= max ? text : text.substring(0, max);
+  }
+
+  /** The suite's handle on {@code qits.ci.auto-retry.max}; see {@code CiAutoRetryTest}. */
+  void autoRetryMax(int max) {
+    this.autoRetryMax = max;
+  }
+
+  int autoRetryMax() {
+    return autoRetryMax;
   }
 
   /**
@@ -3662,7 +3837,8 @@ public class CiRunService {
       String sourceRunId,
       String expectedStepDurations,
       RetriedPipeline pipeline,
-      String stepImages) {
+      String stepImages,
+      String autoRetryReason) {
     CiRun source = runs.findById(sourceRunId);
     if (source == null) {
       return null;
@@ -3694,6 +3870,11 @@ public class CiRunService {
     // digest could never be healed by fixing the build image.
     retry.stepImages = stepImages;
     retry.retryOfRunId = source.id;
+    // Null for a person's retry, the words for an automatic one — see autoRetry. Never copied from
+    // the source: it is about THIS row's firing, and a person re-firing an automatic retry is not one.
+    retry.retryReason = autoRetryReason;
+    // runner_id and target_runner_id are deliberately NOT copied: a retry re-enters the ordinary
+    // queue, and pinning an infra failure's retry to the runner that just failed it would be perverse.
     retry.triggerType = source.triggerType;
     retry.configPath = source.configPath;
     // The bypass. Unique by construction, unmistakably local, and the constraint is untouched.

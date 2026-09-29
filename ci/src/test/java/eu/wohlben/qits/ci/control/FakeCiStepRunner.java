@@ -2,7 +2,9 @@ package eu.wohlben.qits.ci.control;
 
 import io.quarkus.test.Mock;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +40,7 @@ public class FakeCiStepRunner implements CiStepRunner {
   private final List<StepSpec> executed = new ArrayList<>();
   private final List<String> emitted = new ArrayList<>();
   private final Map<Integer, Script> scripted = new HashMap<>();
+  private final Map<Integer, Deque<StepResult>> sequenced = new HashMap<>();
   private final Map<Integer, RuntimeException> failures = new HashMap<>();
   private final Map<Integer, Consumer<StepSpec>> during = new HashMap<>();
   private final List<String> cancelled = new ArrayList<>();
@@ -84,6 +87,20 @@ public class FakeCiStepRunner implements CiStepRunner {
     scripted.put(stepIndex, script);
   }
 
+  /**
+   * Answers the next executions of this step with {@code results}, one each and in order, before
+   * falling back to {@link #script} or green — how a test fails ONE run of a pipeline and lets its
+   * retry through.
+   */
+  public synchronized void scriptSequence(int stepIndex, StepResult... results) {
+    sequenced.put(stepIndex, new ArrayDeque<>(List.of(results)));
+  }
+
+  private synchronized StepResult nextInSequence(int stepIndex) {
+    Deque<StepResult> queue = sequenced.get(stepIndex);
+    return queue == null ? null : queue.poll();
+  }
+
   public void pin(String version) {
     daemonVersion = version;
   }
@@ -114,6 +131,9 @@ public class FakeCiStepRunner implements CiStepRunner {
     executed.clear();
     emitted.clear();
     scripted.clear();
+    synchronized (this) {
+      sequenced.clear();
+    }
     failures.clear();
     during.clear();
     cancelled.clear();
@@ -147,7 +167,11 @@ public class FakeCiStepRunner implements CiStepRunner {
     if (failure != null) {
       throw failure;
     }
-    Script script = scripted.getOrDefault(spec.stepIndex(), greenStep(spec.stepIndex()));
+    StepResult next = nextInSequence(spec.stepIndex());
+    Script script =
+        next != null
+            ? Script.of(next)
+            : scripted.getOrDefault(spec.stepIndex(), greenStep(spec.stepIndex()));
     listener.onStarted();
     Consumer<StepSpec> midStep = during.get(spec.stepIndex());
     if (midStep != null) {

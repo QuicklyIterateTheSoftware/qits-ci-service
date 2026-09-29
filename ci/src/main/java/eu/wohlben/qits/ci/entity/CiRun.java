@@ -153,6 +153,16 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   public String retryOfRunId;
 
   /**
+   * Why this run was fired <b>automatically</b>, or null when it was not — every run a trigger
+   * produced, and every retry a person asked for. Set only on a retry qits-ci fired itself because
+   * the run it re-fires ({@link #retryOfRunId}) failed through the infrastructure rather than the
+   * build (qits-440, {@code V25__run_auto_retry.sql}). Non-null is the whole of "automatic", and the
+   * cap on automatic retries counts consecutive non-null rows along {@link #retryOfRunId}.
+   */
+  @Column(name = "retry_reason", length = 255)
+  public String retryReason;
+
+  /**
    * What the triggering event said this work was worth, verbatim, or null when it said nothing —
    * which is every run not triggered by a {@code ReleaseRequestChanged} or an {@code SCMRelease},
    * every run whose event stated no priority, and every row recorded before the ordering campaign.

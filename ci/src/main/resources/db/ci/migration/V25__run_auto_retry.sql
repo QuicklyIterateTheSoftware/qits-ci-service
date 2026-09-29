@@ -1,0 +1,20 @@
+-- A run that failed because of the INFRASTRUCTURE rather than the build is retried automatically
+-- (qits-440), and the retry says so here.
+--
+-- WHAT COUNTS AS INFRASTRUCTURE is exactly what a runner's quarantine counts (V24,
+-- CiRunnerHealth.INFRA_OUTCOMES): a step that ended LAUNCH_FAILED, NEVER_STARTED or CONNECTION_LOST
+-- — the container could not be started, its daemon never dialled back, or the socket to it was lost
+-- before a terminal frame. None of those is a verdict about the commit, so qits-ci re-fires the run
+-- at once through the manual retry's own path (same commit, same pipeline, same release request, a
+-- new row carrying retry_of_run_id) and announces no BuildFailed for the run it re-fired: the
+-- release request's gate waits for the retry instead of rejecting over an outage.
+--
+-- retry_reason   why this run was fired AUTOMATICALLY, in words: the infra failure and the run it
+--                re-fires, e.g. "infra failure (runner qits-ci disconnected) on run <id> —
+--                automatic retry 1 of 2". NULL on every other row — every run a trigger produced and
+--                every retry a PERSON pressed — so "non-null" is the whole of "this was automatic",
+--                and it is also what the cap counts: a failed run is re-fired only while fewer than
+--                qits.ci.auto-retry.max (2) consecutive automatic retries stand behind it along
+--                retry_of_run_id. Nullable, no default, no backfill: no run before this migration
+--                was retried automatically, and null says exactly that.
+alter table ci_run add column retry_reason varchar(255);

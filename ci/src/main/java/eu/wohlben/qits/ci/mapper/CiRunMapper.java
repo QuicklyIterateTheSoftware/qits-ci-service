@@ -50,6 +50,9 @@ public interface CiRunMapper {
   // the queue facts are, and never by this mapper.
   @Mapping(target = "runnerId", source = "runnerId")
   @Mapping(target = "runnerName", ignore = true)
+  // The automatic-retry marker (qits-440): the column, and the flag that is nothing but its presence.
+  @Mapping(target = "retryReason", source = "retryReason")
+  @Mapping(target = "autoRetry", expression = "java(entity.retryReason != null)")
   CiRunDto toDto(CiRun entity);
 
   CiStepDto toDto(CiStep entity);

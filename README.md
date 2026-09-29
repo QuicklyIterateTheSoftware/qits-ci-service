@@ -2077,6 +2077,20 @@ a step that hit its deadline), where nothing needs re-folding and no new event n
 new run builds the very sha the old one built, so its verdict lands on the same commit. Retrying a
 run that has not finished is a 409; everything terminal is retryable, cancelled runs included.
 
+**A run the infrastructure failed is retried automatically, at once** (qits-440). When a run goes
+`FAILED` on a step that ended `LAUNCH_FAILED`, `NEVER_STARTED` or `CONNECTION_LOST` — exactly the
+set a runner's quarantine counts (`CiRunnerHealth.INFRA_OUTCOMES`), so a build's own exit code, 137
+included, a timeout, a failed checkout and a cancellation never qualify — qits-ci re-fires it through
+this same retry path, into the ordinary queue with no runner pinned, and announces **no
+`BuildFailed`** for it: a release request's gate hears only the retry's verdict, which carries
+`retryOfRunId`, so an outage no longer rejects the request. At most `qits.ci.auto-retry.max` (2)
+automatic retries in a row per original run, counted along `retryOfRunId`; the next infra failure
+settles as an ordinary red. The retry says so on the run — `autoRetry: true` and `retryReason`
+(`V25__run_auto_retry.sql`); the failed run keeps its `FAILED` row, its failing step's output ends
+with `[infra failure (runner … disconnected) — retried automatically as run <id>]`, and the failure
+still counts toward the runner's quarantine. A retry a person presses is not marked and starts the
+count again.
+
 **How it gets past the dedupe.** `unique (trigger_event_id, repo_id, config_path)` is the
 at-most-one-run-per-(event, trigger file) guarantee, and a retry is by definition the same three
 values — the shape that constraint exists to refuse. So a retry mints its own **synthetic** trigger
