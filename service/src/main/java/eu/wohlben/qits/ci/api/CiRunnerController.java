@@ -48,8 +48,11 @@ import org.jboss.logging.Logger;
  * CiRunnerHealth}) — and the one door a runner itself knocks on to register.
  *
  * <p><b>Roles, per verb, as {@link CiRunController} spells them.</b> The two reads take {@code
- * qits:admin}, {@code qits:system} and {@code qits:agent}; every write is {@code qits:admin} alone,
- * the cancel button's role. {@code qits:ci-runner-registration} — what a registration token carries
+ * qits:admin}, {@code qits:system} and {@code qits:agent}. The four lifecycle writes — create,
+ * patch, a registration token rotation and delete — take the pair {@code {qits:admin, qits:system}}
+ * the release-request cancellation takes (qits-521), because the bootstrap's own service client is
+ * a real caller of them; greenlight and a health check on demand stay {@code qits:admin} alone, the
+ * cancel button's role. {@code qits:agent} writes nothing here. {@code qits:ci-runner-registration} — what a registration token carries
  * — opens exactly two routes anywhere on the platform: the register door, only for the runner the
  * token was minted for (the bearer's {@code sub} must be that runner's registration token subject,
  * or it is 403), and {@code GET /runners/install.sh}, the generic install script, which carries no
@@ -72,6 +75,19 @@ import org.jboss.logging.Logger;
 public class CiRunnerController {
 
   private static final Logger LOG = Logger.getLogger(CiRunnerController.class);
+
+  /** The operator's role: every write here takes it. */
+  static final String ADMIN_ROLE = "qits:admin";
+
+  /**
+   * The machine role, and the second one the four lifecycle writes take (qits-521): the bootstrap's
+   * own service client creates the {@code localhost} runner on a cold start with nobody at a
+   * keyboard. Greenlight and a health check on demand stay {@code qits:admin} alone — a freshly
+   * registered runner's first health check is queued by the register door itself ({@code
+   * CiRunnerHealth.onRegistered}) and a green one lifts the quarantine, so no machine caller needs
+   * either door to bring a runner into service.
+   */
+  static final String SYSTEM_ROLE = "qits:system";
 
   /** The role a registration token carries, and the only one the register door admits. */
   static final String REGISTRATION_ROLE = "qits:ci-runner-registration";
@@ -207,7 +223,7 @@ public class CiRunnerController {
 
   @POST
   @Consumes(MediaType.APPLICATION_JSON)
-  @RolesAllowed("qits:admin")
+  @RolesAllowed({ADMIN_ROLE, SYSTEM_ROLE})
   @Operation(summary = "Declare a runner; answers its install line, once")
   @APIResponse(
       responseCode = "201",
@@ -224,6 +240,7 @@ public class CiRunnerController {
       responseCode = "503",
       description = "This deployment commissions nothing, or cannot render an install script")
   public Response create(CreateRunnerRequest request) {
+    requireMachineAudience();
     if (request == null) {
       throw new BadRequestException("A runner needs a name");
     }
@@ -304,7 +321,7 @@ public class CiRunnerController {
   @PATCH
   @Path("/{id}")
   @Consumes(MediaType.APPLICATION_JSON)
-  @RolesAllowed("qits:admin")
+  @RolesAllowed({ADMIN_ROLE, SYSTEM_ROLE})
   @Operation(summary = "Change a runner's slots, description, plane or step memory limit")
   @APIResponse(responseCode = "200", description = "The runner as it now is")
   @APIResponse(
@@ -314,6 +331,7 @@ public class CiRunnerController {
               + " EDGE_PLANE_UNCONFIGURED: an EDGE plane on a qits-ci that knows no public domain")
   @APIResponse(responseCode = "404", description = "No such runner")
   public CiRunnerDto patch(@PathParam("id") String id, PatchRunnerRequest request) {
+    requireMachineAudience();
     PatchRunnerRequest change =
         request == null ? new PatchRunnerRequest(null, null, null, null) : request;
     UUID runnerId = runnerId(id);
@@ -364,7 +382,7 @@ public class CiRunnerController {
    */
   @POST
   @Path("/{id}/registration-token")
-  @RolesAllowed("qits:admin")
+  @RolesAllowed({ADMIN_ROLE, SYSTEM_ROLE})
   @Operation(summary = "Replace a runner's registration token; answers a new install line, once")
   @APIResponse(
       responseCode = "200",
@@ -377,6 +395,7 @@ public class CiRunnerController {
       responseCode = "503",
       description = "This deployment commissions nothing, or cannot render an install script")
   public CiRunnerCreated rotateRegistrationToken(@PathParam("id") String id) {
+    requireMachineAudience();
     UUID runnerId = runnerId(id);
     runners.requireUnregistered(runnerId);
     requireCommissioning();
@@ -407,12 +426,13 @@ public class CiRunnerController {
    */
   @DELETE
   @Path("/{id}")
-  @RolesAllowed("qits:admin")
+  @RolesAllowed({ADMIN_ROLE, SYSTEM_ROLE})
   @Operation(summary = "Decommission a runner and give its credentials back")
   @APIResponse(responseCode = "204", description = "Gone")
   @APIResponse(responseCode = "404", description = "No such runner")
   @APIResponse(responseCode = "409", description = "The runner holds a running run")
   public Response delete(@PathParam("id") String id) {
+    requireMachineAudience();
     CiRunner gone = runners.delete(runnerId(id));
     if (gone.clientId != null) {
       idp.decommission(gone.clientId);
@@ -584,6 +604,22 @@ public class CiRunnerController {
       throw new CiException(502, uncarriable.getMessage());
     }
     return token;
+  }
+
+  /**
+   * The machine arm of the four lifecycle writes, as {@code CiRunController}'s cancellation judges
+   * its own ({@code cancellationScope}): a {@code qits:system} caller presenting a machine token —
+   * the bootstrap's service client — must present one addressed to this platform ({@link
+   * MachineAuth#require}). A {@code qits:admin} caller is the operator's door as it always was and
+   * is judged by its role alone, and so is a forwarded session, which carries no token at all:
+   * asking either for one would 401 a person. No {@code project} claim is
+   * asked for — a runner belongs to no project — and {@code qits:agent} never gets this far: it is
+   * in none of these doors' {@code @RolesAllowed}.
+   */
+  private void requireMachineAudience() {
+    if (MachineIdentity.isMachine(identity) && !identity.hasRole(ADMIN_ROLE)) {
+      machineAuth.require();
+    }
   }
 
   /**

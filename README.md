@@ -139,15 +139,25 @@ runner's register door, and the socket it then holds open to pull work.
 
 | verb | answer | role |
 |---|---|---|
-| `POST /ci/api/runners` `{name, description?, slots?, plane?, stepMemoryLimit?}` | 201 the runner's fields plus `installScript` — the one install line carrying the registration token, **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}` or a `stepMemoryLimit` that is not a docker size of at least `6m`, 400 `EDGE_PLANE_UNCONFIGURED` for `plane: EDGE` on a qits-ci that knows no public domain, 409 on a taken one | `qits:admin` |
+| `POST /ci/api/runners` `{name, description?, slots?, plane?, stepMemoryLimit?}` | 201 the runner's fields plus `installScript` — the one install line carrying the registration token, **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}` or a `stepMemoryLimit` that is not a docker size of at least `6m`, 400 `EDGE_PLANE_UNCONFIGURED` for `plane: EDGE` on a qits-ci that knows no public domain, 409 on a taken one | `qits:admin`, `qits:system` |
 | `GET /ci/api/runners/install.sh` | `text/plain`: the generic install script the line pipes into `sh` — no secret, no runner | `qits:ci-runner-registration`, `qits:admin`, `qits:system`, `qits:agent` |
 | `GET /ci/api/runners` | `{runners: [{id, name, description, slots, plane, stepMemoryLimit, capabilities, registered, connected, heldRuns, lastSeenAt, createdAt, runnerVersion, targetVersion, updating, quarantined, quarantineReason, quarantinedAt, lastHealthcheck: {at, result, runId, detail}}]}`, by name | `qits:admin`, `qits:system`, `qits:agent` |
 | `GET /ci/api/runners/{id}` | one runner, 404 | the same |
-| `PATCH /ci/api/runners/{id}` `{slots?, description?, plane?, stepMemoryLimit?}` | the runner; `slots: 0` drains it; a plane change reaches the runner's next run, a `stepMemoryLimit` change its next step, and a blank `stepMemoryLimit` clears it back to the platform default; 400 `EDGE_PLANE_UNCONFIGURED` as on the create, 400 on a malformed `stepMemoryLimit` | `qits:admin` |
-| `POST /ci/api/runners/{id}/registration-token` | the runner's fields plus a fresh `installScript` line with a new token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin` |
-| `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run | `qits:admin` |
+| `PATCH /ci/api/runners/{id}` `{slots?, description?, plane?, stepMemoryLimit?}` | the runner; `slots: 0` drains it; a plane change reaches the runner's next run, a `stepMemoryLimit` change its next step, and a blank `stepMemoryLimit` clears it back to the platform default; 400 `EDGE_PLANE_UNCONFIGURED` as on the create, 400 on a malformed `stepMemoryLimit` | `qits:admin`, `qits:system` |
+| `POST /ci/api/runners/{id}/registration-token` | the runner's fields plus a fresh `installScript` line with a new token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin`, `qits:system` |
+| `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run | `qits:admin`, `qits:system` |
 | `POST /ci/api/runners/{id}/greenlight` | the runner, its quarantine lifted and its failure streak reset; a runner in service is answered as it is | `qits:admin` |
 | `POST /ci/api/runners/{id}/healthcheck` | 202 `{runId}`: a health check queued for it now; 409 while one is queued or running, 503 when its repository, head or image cannot be resolved | `qits:admin` |
+
+**The four lifecycle writes take `qits:system` as well as `qits:admin`** (qits-521), the pair `POST
+/ci/api/runs/cancellations` takes, and on the machine arm the bearer must be addressed to the platform
+(`MachineAuth.require()`, exactly as the cancellation asks; no `project` claim is required, since a
+runner belongs to no project). **The machine caller is the bootstrap's own service client**: on a cold
+start it creates the `localhost` runner, reads the registration token out of the 201's
+`installScript`, and hands it to the deployer — with nobody at a keyboard. Greenlight and a health
+check on demand stay `qits:admin` alone, because nothing on that path needs them: the register door
+queues a new runner's first health check itself and a green one lifts the quarantine. `qits:agent`
+writes nothing here, and the register door admits `qits:ci-runner-registration` alone.
 
 **`stepMemoryLimit` is the one cap a runner may set for its own steps.** Every step container is capped
 at `qits.ci.memory-limit` (4g), sent as its memory **and** memory-swap; that number is sized for the

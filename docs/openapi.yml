@@ -825,6 +825,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:system
   /ci/api/runners/install.sh:
     get:
       summary: "The generic runner install script, which the install line pipes into\
@@ -887,6 +888,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:system
     get:
       summary: One runner
       parameters:
@@ -939,6 +941,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:system
   /ci/api/runners/{id}/greenlight:
     post:
       summary: Lift a runner's quarantine
@@ -1076,6 +1079,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:system
   /ci/api/runs:
     get:
       summary: "List a repository's CI runs, newest first"
