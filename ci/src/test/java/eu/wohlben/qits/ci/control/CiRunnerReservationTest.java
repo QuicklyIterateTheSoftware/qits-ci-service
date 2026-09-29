@@ -186,6 +186,40 @@ public class CiRunnerReservationTest extends CiTestSupport {
   }
 
   @Test
+  public void aRunIsNeverHandedToARunnerItAvoidsButAnyOtherRunnerMayTakeIt() throws Exception {
+    occupyTheWorker();
+    CiRunner failedIt = runner("failed-it", 5, true);
+    CiRunner other = runner("other", 5, true);
+    String runId = accept("avoiding", BUILD);
+    QuarkusTransaction.requiringNew()
+        .run(
+            () ->
+                runs.update(
+                    "avoidRunnerIds = ?1 where id = ?2",
+                    AvoidRunnerIds.encode(List.of(failedIt.id)),
+                    runId));
+
+    assertTrue(
+        service.reserveFor(failedIt).isEmpty(), "the runner that failed the work is passed over");
+    assertEquals(CiRunStatus.QUEUED, row(runId).status, "passed over, never settled");
+
+    CiRunService.Reservation taken = service.reserveFor(other).orElseThrow();
+    assertEquals(runId, taken.run().id);
+    assertEquals(other.id, row(runId).runnerId);
+  }
+
+  @Test
+  public void anAvoidSetThatCannotBeReadAvoidsNobody() {
+    assertEquals(List.of(), AvoidRunnerIds.decode("not json"));
+    assertEquals(List.of(), AvoidRunnerIds.decode("{\"a\":1}"));
+    UUID id = UUID.randomUUID();
+    assertEquals(List.of(id), AvoidRunnerIds.decode("[\"" + id + "\", \"junk\", 7]"));
+    assertEquals(
+        List.of(id), AvoidRunnerIds.with(AvoidRunnerIds.with(List.of(), id), id), "a set");
+    assertNull(AvoidRunnerIds.encode(List.of()));
+  }
+
+  @Test
   public void aRunnerHoldingItsSlotsIsRefusedAndADrainedOneTakesNothing() throws Exception {
     occupyTheWorker();
     CiRunner one = runner("one-slot", 1, true);

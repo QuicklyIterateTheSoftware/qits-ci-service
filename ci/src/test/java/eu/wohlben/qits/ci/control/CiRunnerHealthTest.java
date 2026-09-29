@@ -124,6 +124,60 @@ public class CiRunnerHealthTest extends CiTestSupport {
     assertFalse(reset.quarantined());
   }
 
+  /** What buildkit says on a runner whose user namespace cannot map a layer's owner (qits-556). */
+  static final String LCHOWN =
+      "#7 extracting sha256:eb074df0155e\n"
+          + "ERROR: failed to solve: failed to Lchown \"/tmp/containerd-mount1/opt/jdtls/bin\" for"
+          + " UID 1001380000, GID 1001380000: lchown /tmp/containerd-mount1/opt/jdtls/bin: invalid"
+          + " argument (Hint: try increasing the number of subordinate IDs in /etc/subuid and"
+          + " /etc/subgid)\n";
+
+  @Test
+  public void aBuilderThatCannotMapAnIdIsTheRunnersFaultAndQuarantinesIt() throws Exception {
+    occupyTheWorker();
+    CiRunner runner = runner("narrow-ids", 3);
+    runnerSteps.answer(spec -> new StepResult(1, false, StepOutcome.OK, LCHOWN));
+
+    reserveAndRun(runner, "narrow-a");
+    CiRunner counted = row(runner.id);
+    assertEquals(1, counted.infraFailures, "a step that ran and exited 1 still counts");
+    reserveAndRun(runner, "narrow-b");
+    String third = reserveAndRun(runner, "narrow-c");
+
+    CiRunner quarantined = row(runner.id);
+    assertTrue(quarantined.quarantined());
+    assertEquals(
+        "3 consecutive runner failures (\"failed to Lchown\" on run " + third + ")",
+        quarantined.quarantineReason);
+  }
+
+  @Test
+  public void anInfraSignatureCountsOnlyAtTheTailOfAStepThatRanAndFailed() {
+    assertTrue(CiRunnerHealth.isInfra(new StepResult(1, false, StepOutcome.OK, LCHOWN)));
+    assertEquals(
+        "failed to Lchown",
+        CiRunnerHealth.infraSignature(new StepResult(1, false, StepOutcome.OK, LCHOWN)));
+    for (String signature : CiRunnerHealth.INFRA_SIGNATURES) {
+      assertEquals(
+          signature,
+          CiRunnerHealth.infraSignature(
+              new StepResult(2, false, StepOutcome.OK, "building\nerror: " + signature + "\n")));
+    }
+    // An outcome is judged as it always was.
+    assertTrue(CiRunnerHealth.isInfra(failed(StepOutcome.CONNECTION_LOST, "")));
+    assertFalse(CiRunnerHealth.isInfra(failed(StepOutcome.SHA_GONE, LCHOWN)));
+    // A green step is green, a timeout is a timeout, and an ordinary red is the build's.
+    assertFalse(CiRunnerHealth.isInfra(new StepResult(0, false, StepOutcome.OK, LCHOWN)));
+    assertFalse(CiRunnerHealth.isInfra(new StepResult(143, true, StepOutcome.OK, LCHOWN)));
+    assertFalse(CiRunnerHealth.isInfra(new StepResult(1, false, StepOutcome.OK, "tests failed\n")));
+    assertFalse(CiRunnerHealth.isInfra(new StepResult(1, false, StepOutcome.OK, null)));
+    // A signature the build printed and then survived, far above its own last words, is not one.
+    String survived =
+        LCHOWN + "retrying with --no-same-owner\n".repeat(CiRunnerHealth.SIGNATURE_TAIL_LINES + 5)
+            + "[ERROR] Tests run: 3, Failures: 1\n";
+    assertFalse(CiRunnerHealth.isInfra(new StepResult(1, false, StepOutcome.OK, survived)));
+  }
+
   @Test
   public void theStreakMustSpanTwoRunsSoOneBadRecipeCannotQuarantineAHealthyRunner() {
     CiRunner runner = runner("one-recipe", 1);

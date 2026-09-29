@@ -1,0 +1,21 @@
+-- A retry is not handed back to the runner that failed it by the infrastructure (qits-556).
+--
+-- WHY. An infra failure is re-fired at once (V25), and until now the retry re-entered the ordinary
+-- queue with no memory of where it failed: the runner that could not do the work raced the local
+-- worker for the row and could win it again. Measured on runner qits-ci, whose user namespace maps
+-- too few ids for buildkit to unpack workspace-base: runs 63b7b182, 114832ac, 8715fe58, 22577e3d
+-- and a8f43ad6 all failed there, while 02d0f7ec built the same commits green elsewhere.
+--
+-- ci_run.avoid_runner_ids   the runners this run must not be reserved by, as a JSON array of runner
+--                           ids (infra_failure_runs' encoding: read whole, queried into by nothing).
+--                           A runner is added when a step it held failed by the infrastructure
+--                           (CiRunnerHealth.isInfra), on the FAILED row itself, and every retry
+--                           copies the source's set whole — so an automatic retry and a person's
+--                           `qits ci retry` alike avoid it. Only a runner's reservation reads it: a
+--                           local worker, and every other runner, may take the run; with neither,
+--                           it waits QUEUED. NULL means "avoid nobody", which is every run before
+--                           this migration and every run no runner failed. Nullable, no default,
+--                           no backfill, part of no constraint and carrying no index.
+--
+-- MigrationChecksumTest pins the SHA-256 of this file. Nothing earlier in the lineage is touched.
+alter table ci_run add column avoid_runner_ids text;

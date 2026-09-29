@@ -28,8 +28,9 @@ import org.jboss.logging.Logger;
  * and what a connected runner is told about either (qits-466, epic qits-440).
  *
  * <p><b>Quarantine.</b> A runner is a machine a person owns, and when it breaks it breaks for every
- * run it reserves — so a streak of steps that ended {@link #INFRA_OUTCOMES runner-caused} (the
- * container could not be started, its daemon never dialled back, the runner's socket dropped) takes
+ * run it reserves — so a streak of steps that failed {@link #isInfra runner-caused} (the container
+ * could not be started, its daemon never dialled back, the runner's socket dropped, or its builder
+ * could not map an id a layer owns — {@link #INFRA_SIGNATURES}) takes
  * it out once the streak is {@code qits.ci.runner.quarantine.failures} long and spans {@code
  * qits.ci.runner.quarantine.min-runs} distinct runs. A step that started resets the streak, whatever
  * the build then did. A quarantined runner's <em>effective</em> slots are 0 — {@link
@@ -75,6 +76,31 @@ public class CiRunnerHealth {
    */
   public static final Set<StepOutcome> INFRA_OUTCOMES =
       Set.of(StepOutcome.LAUNCH_FAILED, StepOutcome.NEVER_STARTED, StepOutcome.CONNECTION_LOST);
+
+  /**
+   * <b>What a step that ran can still say about the host rather than the build</b> (qits-556): the
+   * words buildkit and containerd use when the builder's user namespace cannot map an id a layer
+   * owns — a rootless docker or an unprivileged LXC whose subordinate range stops below a file's uid
+   * (the jdtls tarball's 1001380000). Such a step exits 1 on that runner and builds green on any
+   * other, so it is judged like an {@link #INFRA_OUTCOMES infra outcome}: retried automatically, and
+   * counted toward the runner's quarantine. One list, here, and read by {@link #isInfra} alone.
+   *
+   * <p>Deliberately narrow: each phrase is one only the id-mapping failure produces, so a build that
+   * merely talks about ownership is not mistaken for one — and a mistake costs at most {@code
+   * CiRunService.AUTO_RETRY_MAX} retries of a real red, never a lost verdict.
+   */
+  public static final List<String> INFRA_SIGNATURES =
+      List.of(
+          "mount callback failed",
+          "failed to Lchown",
+          "subordinate IDs in /etc/subuid",
+          "potentially insufficient UIDs or GIDs");
+
+  /**
+   * How many trailing lines of a step's output {@link #infraSignature} reads. The builder's error is
+   * the step's last word; a signature further up is something the build printed and then survived.
+   */
+  static final int SIGNATURE_TAIL_LINES = 40;
 
   /** {@code RunnerReinstated.by} when a person pressed greenlight. */
   public static final String BY_ADMIN = "admin";
@@ -127,22 +153,26 @@ public class CiRunnerHealth {
   // --- what a runner's steps say about it ---------------------------------------------------------
 
   /**
-   * One step of a run ended with {@code outcome}. A build on a runner counts: an {@link
-   * #INFRA_OUTCOMES infra outcome} toward a quarantine, any other resets the streak. A local
-   * worker's run and a health check say nothing here. Never throws.
+   * One step of a run ended with {@code result}. A build on a runner counts: an {@link #isInfra
+   * infra failure} toward a quarantine, any other resets the streak. A local worker's run and a
+   * health check say nothing here. Never throws.
    */
-  public void stepEnded(CiRun run, StepOutcome outcome) {
-    if (run == null || run.runnerId == null || run.healthCheck() || outcome == null) {
+  public void stepEnded(CiRun run, StepResult result) {
+    if (run == null
+        || run.runnerId == null
+        || run.healthCheck()
+        || result == null
+        || result.outcome() == null) {
       return;
     }
     try {
-      if (!INFRA_OUTCOMES.contains(outcome)) {
+      if (!isInfra(result)) {
         runners.recordStarted(run.runnerId);
         return;
       }
       CiRunners.StepRecorded recorded =
           runners.recordInfraFailure(
-              run.runnerId, run.id, outcome.name(), quarantineFailures, quarantineMinRuns);
+              run.runnerId, run.id, infraWord(result), quarantineFailures, quarantineMinRuns);
       CiRunner runner = recorded.runner();
       if (recorded.quarantined()) {
         LOG.warnf(
@@ -153,11 +183,63 @@ public class CiRunnerHealth {
       } else if (runner != null) {
         LOG.infof(
             "Runner %s: step of run %s ended %s — %d runner failure(s) in a row",
-            runner.name, run.id, outcome, runner.infraFailures);
+            runner.name, run.id, infraWord(result), runner.infraFailures);
       }
     } catch (RuntimeException e) {
       LOG.warnf(e, "Run %s: could not record what its step said about runner %s", run.id, run.runnerId);
     }
+  }
+
+  /**
+   * <b>Whether a step failed because of the host rather than the build</b> — the one classifier the
+   * quarantine and {@code CiRunService}'s automatic retry share. Either its outcome is one of {@link
+   * #INFRA_OUTCOMES}, or it ran, exited non-zero without a deadline, and its output's tail carries
+   * one of {@link #INFRA_SIGNATURES}.
+   */
+  public static boolean isInfra(StepResult result) {
+    if (result == null || result.outcome() == null) {
+      return false;
+    }
+    return INFRA_OUTCOMES.contains(result.outcome()) || infraSignature(result) != null;
+  }
+
+  /**
+   * The {@link #INFRA_SIGNATURES signature} a step that ran and failed ends with, or null. Only an
+   * {@code OK} outcome with a non-zero exit and no deadline is read: a green step is green whatever
+   * it printed, and a timeout is its own verdict.
+   */
+  public static String infraSignature(StepResult result) {
+    if (result == null
+        || result.outcome() != StepOutcome.OK
+        || result.timedOut()
+        || result.exitCode() == 0
+        || result.output() == null) {
+      return null;
+    }
+    String output = result.output();
+    int from = output.length();
+    for (int lines = 0; lines <= SIGNATURE_TAIL_LINES && from > 0; lines++) {
+      from = output.lastIndexOf('\n', from - 1);
+      if (from < 0) {
+        from = 0;
+      }
+    }
+    String tail = output.substring(from);
+    for (String signature : INFRA_SIGNATURES) {
+      if (tail.contains(signature)) {
+        return signature;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * An infra failure in one word for a quarantine reason and a log line: its outcome's name, or the
+   * signature it ended with.
+   */
+  static String infraWord(StepResult result) {
+    String signature = infraSignature(result);
+    return signature == null ? result.outcome().name() : "\"" + signature + "\"";
   }
 
   // --- the operator's two doors -------------------------------------------------------------------

@@ -2107,16 +2107,31 @@ run that has not finished is a 409; everything terminal is retryable, cancelled 
 **A run the infrastructure failed is retried automatically, at once** (qits-440). When a run goes
 `FAILED` on a step that ended `LAUNCH_FAILED`, `NEVER_STARTED` or `CONNECTION_LOST` — exactly the
 set a runner's quarantine counts (`CiRunnerHealth.INFRA_OUTCOMES`), so a build's own exit code, 137
-included, a timeout, a failed checkout and a cancellation never qualify — qits-ci re-fires it through
+included (with the one exception below), a timeout, a failed checkout and a cancellation never qualify — qits-ci re-fires it through
 this same retry path, into the ordinary queue with no runner pinned, and announces **no
 `BuildFailed`** for it: a release request's gate hears only the retry's verdict, which carries
 `retryOfRunId`, so an outage no longer rejects the request. At most `CiRunService.AUTO_RETRY_MAX` (2)
 automatic retries in a row per original run, counted along `retryOfRunId`; the next infra failure
 settles as an ordinary red. The retry says so on the run — `autoRetry: true` and `retryReason`
 (`V25__run_auto_retry.sql`); the failed run keeps its `FAILED` row, its failing step's output ends
-with `[infra failure (runner … disconnected) — retried automatically as run <id>]`, and the failure
-still counts toward the runner's quarantine. A retry a person presses is not marked and starts the
-count again.
+with `[infra failure (runner … disconnected) — retried automatically as run <id>, which runner … is
+not handed]`, and the failure still counts toward the runner's quarantine. A retry a person presses is
+not marked and starts the count again.
+
+**One exit code is infrastructure too** (qits-556): a step that ran and exited non-zero whose output
+ends with one of `CiRunnerHealth.INFRA_SIGNATURES` — `mount callback failed`, `failed to Lchown`,
+`subordinate IDs in /etc/subuid`, `potentially insufficient UIDs or GIDs`, the words buildkit uses when
+its user namespace cannot map an id a layer owns. It fails on that runner every time and builds green
+anywhere else, so `CiRunnerHealth.isInfra` — the one classifier the quarantine and the automatic retry
+share — counts it like an infra outcome, and the retry line names it (`the builder could not map a file
+owner ("failed to Lchown") on runner …`). Only the last 40 lines are read, so a signature a build
+printed and survived is not one.
+
+**A retry is not handed back to the runner that failed it** (`V27__run_avoid_runners.sql`). An infra
+failure on a runner writes that runner onto the FAILED run's `avoid_runner_ids`, and every retry copies
+the set whole — so an automatic retry and a person's `qits ci retry` of that run (or of any retry behind
+it) are passed over by that runner's `Reserve`, while a local worker and every other runner may take
+them. With neither, the run waits `QUEUED`. A build's own red adds nobody: its retry may go anywhere.
 
 **How it gets past the dedupe.** `unique (trigger_event_id, repo_id, config_path)` is the
 at-most-one-run-per-(event, trigger file) guarantee, and a retry is by definition the same three
