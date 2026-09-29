@@ -31,11 +31,11 @@ import org.junit.jupiter.api.Test;
  * The control socket and the registry behind it, driven by a real WebSocket from a scripted {@link
  * FakeCiDaemon}. No docker and no daemon binary: the host cannot tell this client from a container,
  * so everything about admission, framing, dispatch and the blocking bridge is provable here and only
- * the round trip through a real image is left to {@code CiDaemonHandshakeIT}.
+ * the round trip through the real daemon binary is {@code CiDaemonPinIT}'s.
  *
  * <p>Addresses the socket through {@code @TestHTTPResource} rather than a hard-coded port, and
  * through its <b>absolute</b> path — {@code /ci/daemon} is a literal that does not follow {@code
- * quarkus.rest.path}, and it is the string {@code CiDaemonLauncher} injects into every container, so
+ * quarkus.rest.path}, and it is the string {@code StepContainerSettings} injects into every container, so
  * a test that addressed it relatively would not catch a segment regression.
  */
 @QuarkusTest

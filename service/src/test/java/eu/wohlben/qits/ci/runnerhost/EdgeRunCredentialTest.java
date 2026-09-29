@@ -1,4 +1,4 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -9,7 +9,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.ci.idp.StubIdp;
-import eu.wohlben.qits.ci.runnerhost.RunnerAddressesFixture;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -108,27 +107,29 @@ class EdgeRunCredentialTest {
 
   @Test
   void theEdgeAndInternalEnvironmentsAreDisjointInTheirCredentials() {
-    CiDaemonLauncher launcher =
+    StepContainerSettings launcher =
         StepEnvironmentCharacterizationTest.shippedLauncher(idp.authServerUrl());
     StepAddressPlane edgePlane =
         StepAddressPlane.edge(
             RunnerAddressesFixture.withDomain("example.org").edgeOrigins().orElseThrow(),
             launcher.internalPlane());
-    CiDaemonLauncher.LaunchSpec step = StepEnvironmentCharacterizationTest.sampleStep(1, true, false);
+    StepContainerSettings.LaunchSpec step = StepEnvironmentCharacterizationTest.sampleStep(1, true, false);
 
     Map<String, String> edge =
         StepWorkloadSpecs.compose(
                 launcher.workloadSettings(),
                 edgePlane,
                 step,
-                commissions.forRun(RUN, step.env(), CiRunnerPlane.EDGE))
+                commissions.forRun(RUN, step.env(), CiRunnerPlane.EDGE),
+                null)
             .env();
     Map<String, String> internal =
         StepWorkloadSpecs.compose(
                 launcher.workloadSettings(),
                 launcher.internalPlane(),
                 step,
-                commissions.forRun("another-run", step.env(), CiRunnerPlane.INTERNAL))
+                commissions.forRun("another-run", step.env(), CiRunnerPlane.INTERNAL),
+                null)
             .env();
 
     assertEquals("qits_tok_stub-1", edge.get("QITS_TOKEN"));

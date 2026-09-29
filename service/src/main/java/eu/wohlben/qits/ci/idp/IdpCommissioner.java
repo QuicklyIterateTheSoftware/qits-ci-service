@@ -82,10 +82,9 @@ public class IdpCommissioner {
   static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(5);
 
   /**
-   * How long a commission waits between two attempts at the same call. Five seconds, the same pause
-   * {@code CiDaemonLauncher.launch} holds an idp cutover through and for the same reason: what is
-   * being waited out is a window of tens of seconds, so a shorter pause only spends the run worker
-   * on refusals nobody has fixed yet.
+   * How long a commission waits between two attempts at the same call. Five seconds, because what is
+   * being waited out is an idp cutover, a window of tens of seconds, so a shorter pause only spends
+   * the run's driver on refusals nobody has fixed yet.
    */
   static final Duration RETRY_PAUSE = Duration.ofSeconds(5);
 
@@ -127,8 +126,7 @@ public class IdpCommissioner {
   }
 
   /**
-   * The single switch, read from the extension's own key rather than shadowed by one of ours — the
-   * same arrangement {@code containers/ContainersClientProducer} makes for the token it fetches.
+   * The single switch, read from the extension's own key rather than shadowed by one of ours.
    *
    * <p>{@code qits}, the one named client every outbound identity this service has now shares
    * (service-client-identity-plan.md, C4). This class never asks {@code quarkus-oidc-client} for a
@@ -166,8 +164,7 @@ public class IdpCommissioner {
   /**
    * Commission one credential for a context, holding through the answers that are about the moment.
    *
-   * <p><b>The classification is {@code CiDaemonLauncher.holdThrough}'s, applied to a different
-   * hop.</b> Nothing answered, a 5xx and a 401 are held through — the last one because an idp that
+   * <p><b>The classification holds through what is about the moment.</b> Nothing answered, a 5xx and a 401 are held through — the last one because an idp that
    * has just been replaced answers exactly that to a credential that was valid a minute ago, which
    * is the 2026-08-12 lesson this platform already paid for once. A 403 and a 400 are statements
    * about the request that no window fixes, so they are one attempt.

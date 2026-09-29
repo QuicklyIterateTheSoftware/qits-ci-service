@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import eu.wohlben.qits.ci.control.FakeCiStepRunner;
+import eu.wohlben.qits.ci.control.SuiteRunner;
 import eu.wohlben.qits.ci.githost.FakeGitHostRepoListing;
 import eu.wohlben.qits.ci.githost.StubGitHost;
 import io.quarkus.test.common.TestResourceScope;
@@ -21,6 +22,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -63,11 +65,20 @@ public class CiManualTriggerTest {
 
   @Inject FakeCiStepRunner fakeRunner;
 
+  /** Executes this suite's runs: every run is a runner's since qits-506 — see {@link SuiteRunner}. */
+  @Inject SuiteRunner suiteRunner;
+
   @Inject FakeGitHostRepoListing gitHostListing;
+
+  @AfterEach
+  void stopTheSuiteRunner() throws Exception {
+    suiteRunner.disable();
+  }
 
   @BeforeEach
   void resetFakes() {
     fakeRunner.reset();
+    suiteRunner.enable();
     // Empty by default, so a repository another method seeded is in nobody else's candidate set
     // until the method that wants it says so.
     gitHostListing.set();

@@ -463,9 +463,6 @@ components:
     QueueResponse:
       type: object
       properties:
-        concurrentBuilds:
-          type: integer
-          format: int32
         generatedAt:
           $ref: "#/components/schemas/Instant"
         running:

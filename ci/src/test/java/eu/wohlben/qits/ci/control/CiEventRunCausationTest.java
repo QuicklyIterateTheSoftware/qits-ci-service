@@ -51,7 +51,7 @@ public class CiEventRunCausationTest extends CiTestSupport {
     engine.evaluate(
         new CiEventTriggerService.Arrival(
             eventId, "BuildSuccessful", Instant.now(), "{\"repoId\":\"upstream\"}"));
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
   }
 

@@ -12,7 +12,7 @@ import java.util.Set;
 
 /**
  * <b>The order the run queue should be claimed in.</b> One pure function over the {@code QUEUED}
- * rows: no I/O, no clock, no CDI, no state. The claim loop reads the rows in one transaction, asks
+ * rows: no I/O, no clock, no CDI, no state. A runner's reservation ({@code CiRunService.reserveFor}) reads the rows in one transaction, asks
  * this class for a suggested order, and walks it; a restart therefore re-derives the same order from
  * the same rows, which is what replaced the old "the worker is FIFO and a restart must not reorder a
  * backlog" guarantee with a stronger one.
@@ -44,7 +44,7 @@ import java.util.Set;
  * <p><b>Only {@code QUEUED} rows are sequenced.</b> There is no cross-state blocking: a downstream
  * run may start while its upstream is {@code RUNNING}. Strict chaining would idle workers behind a
  * long build and would stall outright on a run that never finishes, and the ordering is a
- * <em>suggestion</em> to a claim loop rather than a scheduler with a lock.
+ * <em>suggestion</em> to a reservation rather than a scheduler with a lock.
  *
  * <p><b>Starvation is accepted.</b> A steady stream of {@code BLOCKING} work can keep a {@code
  * LOWEST} run waiting indefinitely. That is the honest consequence of a priority queue with no
@@ -60,7 +60,7 @@ import java.util.Set;
  *
  * <p>{@link #explain(List)} is the same pass, answering with its reasons attached; {@link
  * #suggestedOrder(List)} is that answer with the reasons dropped. <b>There is exactly one
- * implementation of the ordering logic and the claim loop's contract is the thin one</b> — the
+ * implementation of the ordering logic and the reservation's contract is the thin one</b> — the
  * alternative, a second pass that re-derives "why" beside the one that decides, is a copy that
  * drifts in the direction nobody notices: an explanation that disagrees with the order is worse
  * than no explanation, because it is believed.
@@ -122,7 +122,7 @@ public final class CiRunOrdering {
    * same output, because every choice is made with a comparator whose last key is the row id. The
    * input is not modified.
    *
-   * @param queued the {@code QUEUED} rows, in any order — the claim loop passes {@code
+   * @param queued the {@code QUEUED} rows, in any order — a reservation passes {@code
    *     CiRunRepository.listQueuedOldestFirst}'s answer, whose base order is this function's final
    *     tie-break anyway
    * @return the same rows, reordered

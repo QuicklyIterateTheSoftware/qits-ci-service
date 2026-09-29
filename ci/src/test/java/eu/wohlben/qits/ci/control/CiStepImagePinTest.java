@@ -213,7 +213,7 @@ public class CiStepImagePinTest extends CiTestSupport {
             """));
 
     CiEventTriggerService.Evaluation evaluation = engine.evaluate(push());
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertEquals(List.of(), evaluation.runIds(), "a run against an unknown tool is worse than none");
@@ -230,7 +230,7 @@ public class CiStepImagePinTest extends CiTestSupport {
     fakeConfig.putTriggers(
         repoId, "main", HEAD, new EventTriggerFile(TRIGGER_PATH, triggerFile));
     engine.evaluate(push());
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
   }
 

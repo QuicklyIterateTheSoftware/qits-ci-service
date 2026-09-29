@@ -4,7 +4,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import eu.wohlben.qits.ci.control.CiRunService;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.util.Map;
@@ -13,12 +12,12 @@ import org.eclipse.microprofile.health.Readiness;
 import org.junit.jupiter.api.Test;
 
 /**
- * The verdict is a pure function of the census and the connected runners, so the whole truth table
- * is assertable here — including the rows a running suite cannot stage, since killing this
- * instance's claim loops to prove the check would leave every later test with no worker.
+ * The verdict is a pure function of the connected runners, the {@code
+ * qits.ci.runners.readiness-requires-connected} hatch and the shutdown, so the whole truth table is
+ * assertable here — including the rows a running suite cannot stage.
  *
- * <p>The last case is the wiring: a real instance, its real census and its real (empty) runner
- * registry, and UP with the counts on it.
+ * <p>The last case is the wiring: a real instance, its real (empty) runner registry and the shipped
+ * {@code true} hatch — DOWN, with the counts on it, because this suite connects no runner.
  */
 @QuarkusTest
 public class CiRunnerReadinessCheckTest {
@@ -26,11 +25,9 @@ public class CiRunnerReadinessCheckTest {
   @Inject @Readiness CiRunnerReadinessCheck check;
 
   private static HealthCheckResponse verdict(
-      int liveWorkers, int configured, boolean stopping, int connectedRunners, Integer totalSlots) {
+      int connectedRunners, Integer totalSlots, boolean requiresConnected, boolean stopping) {
     return CiRunnerReadinessCheck.responseFor(
-        new CiRunService.WorkerCensus(liveWorkers, configured, stopping),
-        connectedRunners,
-        totalSlots);
+        connectedRunners, totalSlots, requiresConnected, stopping);
   }
 
   private static String data(HealthCheckResponse response, String key) {
@@ -38,23 +35,25 @@ public class CiRunnerReadinessCheckTest {
   }
 
   @Test
-  public void theTruthTableOfWorkersAndRunners() {
-    // live workers × connected runners, not stopping: DOWN only where both are zero.
-    assertEquals(HealthCheckResponse.Status.DOWN, verdict(0, 4, false, 0, 0).getStatus());
-    assertEquals(HealthCheckResponse.Status.UP, verdict(0, 4, false, 1, 2).getStatus());
-    assertEquals(HealthCheckResponse.Status.UP, verdict(4, 4, false, 0, 0).getStatus());
-    assertEquals(HealthCheckResponse.Status.UP, verdict(4, 4, false, 1, 2).getStatus());
-    // The zero-thread qits-ci (qits-503): no loop by design, and a runner is what keeps it ready.
-    assertEquals(HealthCheckResponse.Status.UP, verdict(0, 0, false, 1, 1).getStatus());
-    assertEquals(HealthCheckResponse.Status.DOWN, verdict(0, 0, false, 0, 0).getStatus());
+  public void theTruthTableOfRunnersTheHatchAndTheShutdown() {
+    // connected × requires-connected × stopping: DOWN only where nothing is connected, the hatch is
+    // on (shipped) and the process is not on its way out.
+    assertEquals(HealthCheckResponse.Status.DOWN, verdict(0, 0, true, false).getStatus());
+    assertEquals(HealthCheckResponse.Status.UP, verdict(0, 0, true, true).getStatus());
+    assertEquals(HealthCheckResponse.Status.UP, verdict(0, 0, false, false).getStatus());
+    assertEquals(HealthCheckResponse.Status.UP, verdict(0, 0, false, true).getStatus());
+    assertEquals(HealthCheckResponse.Status.UP, verdict(1, 2, true, false).getStatus());
+    assertEquals(HealthCheckResponse.Status.UP, verdict(1, 2, true, true).getStatus());
+    assertEquals(HealthCheckResponse.Status.UP, verdict(1, 2, false, false).getStatus());
+    assertEquals(HealthCheckResponse.Status.UP, verdict(1, 2, false, true).getStatus());
   }
 
   @Test
   public void aConnectedRunnerKeepsItUpEvenWithNoUsableSlot() {
-    // The bootstrap's localhost registers quarantined awaiting its first health check: connected,
-    // zero effective slots. The check that lifts the quarantine is a run this process must accept,
-    // so a readiness demanding slots would hold the deployment down over exactly that runner.
-    HealthCheckResponse response = verdict(0, 0, false, 1, 0);
+    // The localhost runner registers quarantined awaiting its first health check: connected, zero
+    // effective slots. The check that lifts the quarantine is a run this process must accept, so a
+    // readiness demanding slots would hold the deployment down over exactly that runner.
+    HealthCheckResponse response = verdict(1, 0, true, false);
 
     assertEquals(HealthCheckResponse.Status.UP, response.getStatus());
     assertEquals("1", data(response, "connectedRunners"));
@@ -63,26 +62,35 @@ public class CiRunnerReadinessCheckTest {
 
   @Test
   public void nothingToExecuteARunAndNoShutdownUnderWayIsDownAndSaysWhy() {
-    // The measured state: qits-ci accepting runs, writing QUEUED rows, releasing permits nobody
-    // consumes — and now also no runner to Reserve them.
-    HealthCheckResponse response = verdict(0, 4, false, 0, 0);
+    HealthCheckResponse response = verdict(0, 0, true, false);
 
     assertEquals(HealthCheckResponse.Status.DOWN, response.getStatus());
-    assertEquals("0", data(response, "liveWorkers"));
     assertEquals("0", data(response, "connectedRunners"));
+    assertFalse(response.getData().orElseThrow().containsKey("liveWorkers"), "no claim loops left");
     assertTrue(data(response, "message").contains("QUEUED"), "naming the consequence");
   }
 
   @Test
+  public void theHatchOffIsUpAndSaysSo() {
+    HealthCheckResponse response = verdict(0, 0, false, false);
+
+    assertEquals(HealthCheckResponse.Status.UP, response.getStatus());
+    assertTrue(
+        data(response, "message").contains("qits.ci.runners.readiness-requires-connected"),
+        "an UP with nothing connected names the switch that made it UP");
+  }
+
+  @Test
   public void nothingLeftBECAUSEitIsShuttingDownIsUp() {
-    // Zero live loops during a shutdown is what a shutdown is, runners or not.
-    assertEquals(HealthCheckResponse.Status.UP, verdict(0, 4, true, 0, 0).getStatus());
-    assertEquals(HealthCheckResponse.Status.UP, verdict(0, 0, true, 0, 0).getStatus());
+    HealthCheckResponse response = verdict(0, 0, true, true);
+
+    assertEquals(HealthCheckResponse.Status.UP, response.getStatus());
+    assertFalse(response.getData().orElseThrow().containsKey("message"));
   }
 
   @Test
   public void anUnreadableSlotCountIsLeftOutAndNeverJudged() {
-    HealthCheckResponse response = verdict(0, 0, false, 2, null);
+    HealthCheckResponse response = verdict(2, null, true, false);
 
     assertEquals(HealthCheckResponse.Status.UP, response.getStatus());
     Map<String, Object> data = response.getData().orElseThrow();
@@ -91,16 +99,14 @@ public class CiRunnerReadinessCheckTest {
   }
 
   @Test
-  public void theRunningInstanceReportsItsRealClaimLoopsAndRunners() {
+  public void theRunningInstanceWithNoRunnerConnectedIsDownOnTheShippedHatch() {
     HealthCheckResponse response = check.call();
 
     assertEquals("ci-runners", response.getName());
-    assertEquals(HealthCheckResponse.Status.UP, response.getStatus());
-    assertEquals(
-        data(response, "configuredWorkers"),
-        data(response, "liveWorkers"),
-        "every configured claim loop is live on an instance that is serving");
+    assertEquals(HealthCheckResponse.Status.DOWN, response.getStatus());
     assertEquals("0", data(response, "connectedRunners"));
     assertEquals("0", data(response, "totalSlots"));
+    assertFalse(response.getData().orElseThrow().containsKey("liveWorkers"));
+    assertFalse(response.getData().orElseThrow().containsKey("configuredWorkers"));
   }
 }

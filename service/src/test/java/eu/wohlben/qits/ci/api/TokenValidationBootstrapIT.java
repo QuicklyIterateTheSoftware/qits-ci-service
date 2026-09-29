@@ -4,7 +4,6 @@ import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import eu.wohlben.qits.ci.stories.support.MockContainers;
 import eu.wohlben.qits.servicemock.idp.MockIdp;
 import eu.wohlben.qits.userflows.Interactions;
 import eu.wohlben.qits.userflows.NetworkCapture;
@@ -64,13 +63,10 @@ import org.junit.jupiter.api.TestMethodOrder;
  * story would empty the story it documents.
  *
  * <p><b>ITs stay skipped by default here and this one does NOT flip that.</b> {@code skipITs} is
- * {@code true} in the root pom because the docker-backed gates — {@code CiDaemonHandshakeIT} and
- * {@code CiDaemonGateIT} — bind to the same failsafe run and need real docker, a published step
- * image, a built daemon binary and a container route back to this JVM. (There were three; {@code
- * CiDaemonContainerProbeIT} went with the pin ladder it probed for.)
- * The root pom's {@code qits.it.excluded-groups} would exclude them by their {@code extended} tag,
- * but it is <b>empty by default</b> and only the {@code native} profile sets it, deliberately, so
- * that {@code -DskipITs=false} still means "run everything". Naming the class is therefore the only
+ * {@code true} in the root pom. The docker-backed gates it was first written for ({@code
+ * CiDaemonHandshakeIT}, {@code CiDaemonGateIT}) went with the in-process executor (qits-506), so
+ * {@code -DskipITs=false} runs every packaged IT here, stories and {@code CiPackagedSurfaceIT}
+ * alike. Naming the class is therefore the only
  * opt-in that is correct on a plain {@code verify}, and it is what {@code
  * .config/qits/ci-event-userflows.yml} passes:
  *
@@ -155,29 +151,17 @@ public class TokenValidationBootstrapIT {
       // artifact runs under neither %dev nor %test, so it had to be said again here. The ladder is
       // retired: the daemon version is the pinned protocol dependency's, resolved at build time,
       // with no discovery, no adoption and nothing for a story to be polluted by.
-      // The orchestrator, played by a recording stand-in. This used to be http://127.0.0.1:1 — an
-      // address nothing answers on — because the only thing an auth story needed of qits-containers
-      // was that the boot reap give up and let boot proceed. The build stories need the opposite:
-      // a step container is four HTTP calls to this address and NOTHING ELSE, so a stand-in that
-      // answers them is the whole of what stands between a story and a real build, and the
-      // credential the socket story dials with exists only in the workload spec that arrives here.
+      // NO ORCHESTRATOR ANY MORE (qits-506). This block used to point qits.containers.url at a
+      // recording stand-in (MockContainers) and shrink the boot reap's patience, because qits-ci
+      // asked qits-containers for every step container and reaped them at boot. It asks nobody now:
+      // a runner holds every run, and the build stories play one over the real socket
+      // (stories/support/StoryRunner), reading the workload spec out of the Launch it is sent.
       //
-      // It is in THIS profile rather than in a second one on purpose: a @TestProfile is what
-      // decides whether failsafe launches another process, so every seam every IT class needs lives
-      // in the one profile they all share and the whole phase costs one launched qits-ci.
-      //
-      // The boot reap is still a StartupEvent observer that runs outside TEST mode — a launched
-      // artifact really does ask an orchestrator to delete this owner's step containers — and it now
-      // gets an answer instead of a refusal. See MockContainers on why that call is nobody's story.
-      overrides.put("qits.containers.url", MockContainers.baseUrl());
-      // …and the patience stays short. It was shrunk when nothing answered, because the two
-      // 60-second windows collide exactly: the reap holds through "nothing answering" for its full
-      // PT60S on a StartupEvent observer, the "Listening on" line prints only after observers
-      // return, and failsafe's launcher waits 60s for precisely that line — so at the shipped
-      // patience the launcher declares the process dead moments before boot would have proceeded.
-      // Measured on this IT's first CI run (2026-08-29). A stand-in that answers immediately never
-      // enters that window, and one second is what keeps the collision from coming back if it stops.
-      overrides.put("qits.ci.containers.boot-reap-patience", "PT1S");
+      // THE ONE READINESS HATCH, and this is the place it is for. The ci-runners readiness check is
+      // DOWN while no runner is connected, and this story asserts /ci/q/health/ready answers 200
+      // BEFORE any story has connected one — an auth story has no runner to bring. The hatch is a
+      // RUNTIME key, so the packaged artifact under test is otherwise exactly what ships.
+      overrides.put("qits.ci.runners.readiness-requires-connected", "false");
       // AND NO DAEMON PIN IS SET HERE EITHER, which is one fewer thing a story has to arrange. This
       // block used to carry qits.ci.daemon-version=2026.101.000000 purely so /ci/q/health/ready came
       // up: the readiness check was DOWN whenever the pin ladder had no rung at all — no adopted

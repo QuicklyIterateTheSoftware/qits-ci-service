@@ -27,7 +27,6 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.runtime.LaunchMode;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
-import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -47,27 +46,23 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.BooleanSupplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.hibernate.exception.ConstraintViolationException;
 import org.jboss.logging.Logger;
 
 /**
  * The pipeline orchestrator: a domain event matched a repository's trigger file → run the pipeline
- * that file declared, sequentially → record per-step pass/fail. Runs execute on a bounded pool of
- * daemon workers (the intake returns immediately; {@code qits.ci.concurrent-builds} controls how
- * many runs may execute at once), with each DB transition in its own {@link
- * QuarkusTransaction#requiringNew()} bracket so the slow container work never holds a transaction
- * (worker threads have no request context; the {@code BlobService}/{@code GitHostRoutes} stance).
+ * that file declared, sequentially → record per-step pass/fail. <b>Every run is executed by a
+ * runner</b> (qits-506): the intake writes a {@code QUEUED} row and returns, a connected runner
+ * reserves it ({@link #reserveFor}) and its driver thread runs it ({@link #executeReserved}), with
+ * each DB transition in its own {@link QuarkusTransaction#requiringNew()} bracket so the slow
+ * container work never holds a transaction (driver threads have no request context; the {@code
+ * BlobService}/{@code GitHostRoutes} stance). How many runs execute at once is the connected
+ * runners' slots, and nothing in this process.
  *
- * <p>That worker now parks on a socket rather than on a process — {@link CiStepRunner} waits for a
- * step container's own daemon — but the shape is unchanged: one blocking call per step, in order.
+ * <p>The driver parks on sockets rather than on a process — {@link CiRunnerStepRunner} asks the
+ * runner to start each step's container and waits for that container's own daemon — but the shape
+ * is one blocking call per step, in order.
  *
  * <p><b>There is ONE way in, and that is the whole of the 2026-09-05 change.</b> {@link
  * #onEventTrigger} takes a domain event that matched a {@code .config/qits/ci-event-*.yml}: it names
@@ -117,10 +112,11 @@ import org.jboss.logging.Logger;
  * that is sound because every statement in it is derived from the current database state and from the
  * arriving request, so a rolled-back attempt leaves the next one deciding the same way.
  *
- * <p><b>What is deliberately NOT wrapped.</b> No worker-thread transition ({@link #startQueued},
+ * <p><b>What is deliberately NOT wrapped.</b> No driver-thread transition (the claim in {@link
+ * #reserveFor},
  * {@link #finishRun}, {@code failIncompleteSteps}, {@link #discardRun}, the step inserts) is wrapped:
  * those have their own recovery in {@code sweepInterrupted} at boot, which is a stronger answer than
- * a fifteen-second wait on the run worker. The rule they follow was written for a third case that no
+ * a fifteen-second wait on the runner's driver. The rule they follow was written for a third case that no
  * longer exists — {@code acceptPostReceive} ran inside the push listener's claiming transaction,
  * where a retry outliving that claim's connection would have committed a {@code QUEUED} row behind an
  * event the funnel then re-offered — and it is worth keeping in front of you the next time an accept
@@ -134,7 +130,7 @@ import org.jboss.logging.Logger;
  * <h2>The run row is born at accept, not at start</h2>
  *
  * <p><b>{@link #onEventTrigger} inserts a {@link CiRunStatus#QUEUED} row before it returns</b>, and
- * the worker flips it to {@code RUNNING} when it dequeues it. Before that, a queued run was a closure
+ * a runner's reservation flips it to {@code RUNNING}. Before that, a queued run was a closure
  * on this class's executor and nothing else — invisible to every read surface, and gone with the
  * process. That was the lossy intake: a redeploy landing between acceptance and the build lost the
  * build with no row anywhere to say so.
@@ -179,68 +175,32 @@ import org.jboss.logging.Logger;
  * worker reparses that immutable snapshot, so a queued event run is recoverable without consulting
  * a branch that may have moved and without relying on an at-most-once event redelivery.
  *
- * <h2>The queue is the table, and the workers claim out of it</h2>
+ * <h2>The queue is the table, and the runners reserve out of it</h2>
  *
- * <p><b>There is no in-memory queue left.</b> {@link #initializeWorkers} starts {@code
- * concurrent-builds} loops ({@link #workerLoop}); each one reads every {@code QUEUED} row in one
- * transaction, asks the pure {@link CiRunOrdering} which of them to take, and claims the first it
- * can with {@link #startQueued} — the CAS that was already there, re-reading the status and the
- * draining flag inside the writing transaction. {@link #enqueue} is a one-permit wake on a
- * semaphore and nothing else; an idle worker parks on it for {@code qits.ci.queue-poll-interval}.
+ * <p><b>There is no in-memory queue, and since qits-506 no claim loop in this process either.</b>
+ * The in-process worker pool ({@code qits.ci.concurrent-builds} claim loops) is deleted: every run
+ * is held by a runner — the platform host's own included, the reserved {@code localhost} runner
+ * qits-deployments runs beside this service. An accept, a retry and a boot sweep only tell the
+ * runners there is work ({@link #announceBacklog}, a {@code Backlog} frame); a runner answers with
+ * {@code Reserve}, and {@link #reserveFor} reads every {@code QUEUED} row in one transaction, asks
+ * the pure {@link CiRunOrdering} which of them to take, and claims the first that runner may have
+ * with one conditional UPDATE that writes its {@code runner_id}.
  *
- * <p>Three things follow, and each of them was a defect of the executor queue it replaced. Ordering
- * is <b>dynamic</b>: a high-priority run accepted while ten others wait is claimed next rather than
- * eleventh, because the order is re-derived on every pass rather than fixed at submit time. A
- * restart is no longer a special path — the boot sweep says "there is work" and the same loop
- * re-derives the same order from the same rows, which is a stronger guarantee than the "a restart
- * must not reorder a backlog" it replaces. And a manual reorder, if it is ever wanted, is a change
- * to one pure function rather than a reach into an executor.
+ * <p>Ordering is <b>dynamic</b>: a high-priority run accepted while ten others wait is reserved next
+ * rather than eleventh, because the order is re-derived on every reservation rather than fixed at
+ * submit time. A restart is no special path — the boot sweep announces the backlog and the next
+ * reservation re-derives the same order from the same rows.
  *
  * <p>What is deliberately NOT here: no cross-state blocking (a run may start while the run it
  * depends on is {@code RUNNING} — see {@link CiRunOrdering}), and no lock. The ordering is a
- * suggestion; the claim is the decision, and two workers racing for one row is settled by the
- * database exactly as it always was.
+ * suggestion; the claim is the decision, and two runners racing for one row is settled by the
+ * database.
  *
- * <h2>The claim loop survives its workers</h2>
- *
- * <p><b>A pool of loops that never return has one failure mode the executor queue it replaced did
- * not have: a loop can END.</b> Nothing resubmits it, nothing counts it, and a qits-ci with zero
- * live claim loops accepts runs, writes {@code QUEUED} rows and releases permits nobody consumes —
- * while every health check it declares stays green. That is not a hypothesis: it happened after a
- * redeploy, runs sat {@code QUEUED} indefinitely, and only a process restart healed it. Four things
- * are what keep it from happening again, and each one closes a different half of it.
- *
- * <p><b>A leaked interrupt flag no longer retires a worker.</b> At least five helpers on this
- * thread's own call path catch {@code InterruptedException}, <em>restore</em> the flag and return a
- * fallback — {@code CiDaemonRegistry.await}, {@code CiDaemonLauncher}'s sleep, three in {@code
- * IdpCommissioner}, {@code HttpGitConfigSource}, {@code DbRetry}. Every one of them is locally
- * correct and every one of them used to end this loop, because the flag it left behind was
- * indistinguishable from a real shutdown. So the loop asks the question the flag cannot answer:
- * {@link #stopping} is what a shutdown looks like, and a flag found raised while that is false is a
- * <b>leak</b> — cleared, named in a WARN, and the loop stays on the queue.
- *
- * <p><b>An {@code Error} no longer kills a thread the pool will never refill.</b> {@link
- * #claimLoop} catches {@code Throwable}, so an {@code OutOfMemoryError}, a {@code
- * NoClassDefFoundError} or an {@code ExceptionInInitializerError} — the last two are exactly what a
- * native image produces when something was never registered — costs one pass and one ERROR rather
- * than one twelfth of the platform's build capacity, permanently.
- *
- * <p><b>And a loop that ends anyway is REPLACED.</b> {@link #supervised} is the outer net: whatever
- * a claim loop returns or throws, a fresh one is submitted in its place for as long as this process
- * is not stopping. It is deliberately the belt to the two braces above rather than a substitute for
- * them — a loop that survives is a loop whose backlog never waited on a resubmission.
- *
- * <p><b>The count is a fact rather than an inference.</b> {@link #workerCensus} is how many loops
- * are live, and {@code CiRunnerReadinessCheck} is what turns "zero, no runner connected, and this
- * process is not stopping" into a DOWN a deployer can act on. Green-while-dead is what misled the incident, and
- * that pair is what ends it.
- *
- * <p><b>One poison row costs one row.</b> A {@code QUEUED} row whose snapshot will not reconstruct
- * used to abandon the scan, which held up every row behind it in {@link
- * CiRunOrdering#suggestedOrder} for every worker, forever — and the boot sweep re-enqueued it, so
- * the wedge outlived restarts. It is settled {@code CANCELLED}/{@link #TRIGGER_UNREADABLE} now and
- * the scan continues; a row that cannot even be settled is skipped for this pass rather than
- * abandoning it.
+ * <p><b>One poison row costs one row.</b> A {@code QUEUED} row this engine cannot run — not an
+ * event run, or one whose snapshot will not reconstruct — is settled {@code CANCELLED} ({@link
+ * #TRIGGER_RETIRED}/{@link #TRIGGER_UNREADABLE}) by the reservation that walks past it, after that
+ * reservation's own transaction, so it neither holds up the rows behind it nor survives into the
+ * next boot's sweep.
  */
 @ApplicationScoped
 public class CiRunService {
@@ -248,9 +208,9 @@ public class CiRunService {
   private static final Logger LOG = Logger.getLogger(CiRunService.class);
 
   /**
-   * Boot order, second half. This observer runs <b>after</b> {@code CiDaemonLauncher.onStart}, whose
-   * matching {@code @Priority} is one step lower. <b>Move neither alone</b> — see {@link #onStart}
-   * for what the order buys.
+   * The boot sweep's rung. Observers that must read the run table as the sweep left it — {@code
+   * CommissionReconciler} — carry a higher {@code @Priority}; the owed-event sweep in {@code
+   * CiEventTriggerService} shares this one.
    */
   public static final int BOOT_SWEEP_PRIORITY = 2100;
 
@@ -271,12 +231,11 @@ public class CiRunService {
 
   @Inject CiConfigSource configSource;
   @Inject CiEventTriggerParser triggerParser;
-  @Inject CiStepRunner runner;
 
   /**
-   * The step seam for a run a runner reserved — see {@link CiRunnerStepRunner} and {@link
-   * #stepRunnerFor}. Unsatisfied in the {@code ci} module's own application, which ships no
-   * implementation of either seam; the service's runner socket is what satisfies it.
+   * The step seam every run goes through — see {@link CiRunnerStepRunner} and {@link
+   * #stepRunnerFor}. The {@code ci} module ships no implementation; the service's runner socket is
+   * what satisfies it, and a suite supplies a fake.
    */
   @Inject Instance<CiRunnerStepRunner> runnerSteps;
 
@@ -523,30 +482,6 @@ public class CiRunService {
   int stepTimeoutSeconds;
 
   /**
-   * How many runs this process executes itself at the same time — its claim loops. 0 runs none and
-   * hands every run to the runners (qits-503); negative refuses the boot.
-   */
-  @ConfigProperty(name = "qits.ci.concurrent-builds")
-  int concurrentBuilds;
-
-  /**
-   * How long an idle worker waits for a wake before scanning the queue anyway.
-   *
-   * <p><b>A net under the wake, not the mechanism.</b> Every accept, retry and boot sweep releases a
-   * permit, so the ordinary path is immediate; this is what covers the cases where no permit was
-   * ever released for a row that is nevertheless {@code QUEUED} — a run accepted by a process that
-   * died before it could wake anything, a row written by an operator, a permit consumed by a worker
-   * that lost the race to claim it. Ten seconds is short enough that such a row is never stranded
-   * and long enough that an idle instance is not polling its database for a living.
-   *
-   * <p>No {@code defaultValue} here: the shipped ten seconds is in the {@code ci} jar's {@code
-   * META-INF/microprofile-config.properties} with its argument beside it, which is where {@code
-   * qits.ci.concurrent-builds} keeps its own and the one place either can be changed.
-   */
-  @ConfigProperty(name = "qits.ci.queue-poll-interval")
-  Duration queuePollInterval;
-
-  /**
    * How long a <b>read</b> holds while the datasource is gone — see "Patience" in this class's
    * javadoc. The shipped 15s covers a postgres cutover; the suite shortens it, because a test
    * proving the give-up must not pay for it.
@@ -592,359 +527,30 @@ public class CiRunService {
 
   /**
    * Raised once this process is on its way out, and read by everything that would otherwise take
-   * new work: {@link #enqueue} and the claim in {@link #startQueued}.
+   * new work: {@link #announceQueued} and {@link #reserveFor}.
    *
-   * <p><b>A dying process must claim nothing.</b> On 2026-08-23 a start-first successor booted, ran
-   * its sweep, and only then did the predecessor claim a {@code QUEUED} row and die holding it
-   * {@code RUNNING} — a row past every sweep, owned by no worker anywhere, which had to be flipped
-   * by hand. Leaving the row {@code QUEUED} instead costs nothing: the successor's boot sweep
-   * re-enqueues it.
+   * <p><b>A dying process must hand out nothing.</b> On 2026-08-23 a start-first successor booted,
+   * ran its sweep, and only then did the predecessor claim a {@code QUEUED} row and die holding it
+   * {@code RUNNING} — a row past every sweep, owned by nothing anywhere, which had to be flipped by
+   * hand. Leaving the row {@code QUEUED} instead costs nothing: the successor's boot sweep announces
+   * it again, and a runner reserves it from there.
    *
-   * <p><b>The order is what makes the flag work.</b> {@link #onStop} observes {@code ShutdownEvent},
-   * which Quarkus fires before it destroys beans — so the flag is up before {@link #shutdown}
-   * stops the worker pool, and no worker can start a claim after it. A claim already past the read
-   * commits and runs as normal in-flight work; that window is one transaction wide, and the run it
-   * produces is an owned one.
+   * <p>{@link #onStop} observes {@code ShutdownEvent}, which Quarkus fires before it destroys beans,
+   * so the flag is up before anything is torn down. A reservation already past the read commits and
+   * runs as normal in-flight work; that window is one transaction wide.
    */
   private volatile boolean draining;
 
   /**
-   * Raised by {@link #shutdown} so a worker parked on {@link #work} stops looping once it is woken.
-   *
-   * <p>Distinct from {@link #draining}, and both are needed. {@code draining} is a <b>policy</b> a
-   * test raises and lowers and a {@code ShutdownEvent} raises for real: a draining worker keeps
-   * running, it simply claims nothing. This one is the <b>end of the thread</b>, set once and never
-   * cleared, so a worker that wakes during bean destruction returns instead of touching a datasource
-   * Quarkus is closing.
+   * Raised by {@link #shutdown}, once and never cleared: bean destruction has begun, so nothing may
+   * be reserved against a datasource Quarkus is closing. Distinct from {@link #draining}, which is a
+   * policy a test raises and lowers; this one is the end of the process, and the one fact the
+   * readiness check reads from here ({@link #stopping()}).
    */
   private volatile boolean stopping;
 
   /**
-   * The wake. One permit is released per accepted run, per retry and per swept backlog; a worker
-   * with nothing to do parks on it for {@link #queuePollInterval}.
-   *
-   * <p><b>Permits accumulate and that is harmless — never drain them.</b> A surplus permit costs one
-   * scan of the queued rows, which is one indexed read; a drained one costs a run its wake, and the
-   * only thing that would then start it is the poll interval. The asymmetry is the whole argument.
-   */
-  private final Semaphore work = new Semaphore(0);
-
-  /**
-   * How many workers are inside {@link #claimAndRunOne} right now — <b>incremented before the
-   * candidate read, not after the claim</b>.
-   *
-   * <p>That order is the point. It makes "a worker holds a row nobody can see it holding" impossible:
-   * between the scan and the {@code RUNNING} flip a row is still {@code QUEUED} and a reader asking
-   * "is the queue drained" would otherwise be told yes about work that is one statement from
-   * starting. {@link #awaitIdle} is that reader and the suite is built on its answer.
-   */
-  private final AtomicInteger busyWorkers = new AtomicInteger();
-
-  /**
-   * How many claim loops are alive right now — the number {@code CiRunnerReadinessCheck} turns
-   * into a health verdict, and the one fact the live incident had no way of stating.
-   *
-   * <p><b>Distinct from {@link #busyWorkers}, and the difference is the whole point.</b> That one
-   * counts loops that are <em>inside</em> a claim; this one counts loops that exist at all. A
-   * process whose every worker has quietly died reads zero here and zero there, and only this one
-   * says anything is wrong: an idle instance is legitimately zero-busy forever.
-   */
-  private final AtomicInteger liveWorkers = new AtomicInteger();
-
-  private ExecutorService worker;
-
-  /**
-   * Starts the claim loops: {@code concurrent-builds} threads, each one claiming and running one run
-   * at a time for the life of the process.
-   *
-   * <p><b>The pool is exactly saturated on purpose.</b> Every thread it has is occupied by a loop
-   * that never returns, so nothing else may ever be submitted to it — the queue's shape lives in the
-   * database now, not in an executor. The one exception is {@link #supervised}'s own resubmission,
-   * which is a <em>replacement</em> for a loop that has already ended and therefore never adds a
-   * task to a saturated pool.
-   */
-  @PostConstruct
-  void initializeWorkers() {
-    worker = createWorkerPool(concurrentBuilds);
-    if (concurrentBuilds == 0) {
-      LOG.infof(
-          "qits.ci.concurrent-builds is 0: this process runs no claim loop, and every run is"
-              + " executed by a connected runner");
-    }
-    for (int i = 0; i < concurrentBuilds; i++) {
-      worker.submit(supervised(worker, () -> !stopping, this::workerLoop));
-    }
-  }
-
-  /**
-   * Keeps one claim loop on the pool for as long as {@code stillWanted} says so: whatever the loop
-   * returns or throws, a fresh one is submitted in its place.
-   *
-   * <p><b>The resubmission is inside the {@code finally} and that is deadlock-free rather than
-   * lucky.</b> {@link ExecutorService#execute} on a saturated fixed pool <em>queues</em> the task
-   * rather than running it, and the thread that queued it is the one about to become free — so the
-   * replacement starts the moment this task ends and no thread ever waits for another.
-   *
-   * <p><b>A shutdown is the one thing it does not race.</b> {@code stopping} is raised before {@code
-   * shutdownNow}, so a loop ending during a shutdown is not replaced; and a submission that slips
-   * past that check anyway is refused by the stopped pool, which is a {@code
-   * RejectedExecutionException} and an INFO rather than a failure — the shutdown is what was asked
-   * for.
-   *
-   * <p>Static and parameterised so the mechanism itself is unit-testable ({@code
-   * CiRunWorkerPoolTest}) with no database, no CDI and no run: a supervisor nothing exercises is a
-   * supervisor nobody knows resubmits.
-   */
-  static Runnable supervised(ExecutorService pool, BooleanSupplier stillWanted, Runnable loop) {
-    return new Runnable() {
-      @Override
-      public void run() {
-        try {
-          loop.run();
-        } catch (Throwable fatal) {
-          // Nothing above this catches an Error out of the loop's own frame, and a fixed pool never
-          // refills a thread that died of one. Say it, then replace the loop below.
-          LOG.errorf(
-              fatal,
-              "A CI run worker left its claim loop on %s",
-              fatal.getClass().getName());
-        } finally {
-          if (stillWanted.getAsBoolean()) {
-            try {
-              pool.execute(this);
-            } catch (RejectedExecutionException stopped) {
-              LOG.infof(
-                  "A CI run worker was not replaced: the worker pool is shut down (%s)",
-                  stopped.getMessage());
-            }
-          }
-        }
-      }
-    };
-  }
-
-  /**
-   * One worker's whole life, with the census around it: claim the best queued run and run it, or
-   * park until something says there may be work.
-   *
-   * <p>The count is kept here rather than in {@link #supervised} because it is this class's fact
-   * about its own queue, and because the two log lines it makes possible are the ones the live
-   * incident needed and did not have — a worker starting, and a worker leaving while the queue is
-   * still live.
-   */
-  private void workerLoop() {
-    int live = liveWorkers.incrementAndGet();
-    LOG.debugf("A CI run worker is claiming — %d of %d claim loop(s) live", live, concurrentBuilds);
-    try {
-      claimLoop();
-    } finally {
-      int remaining = liveWorkers.decrementAndGet();
-      if (stopping) {
-        LOG.debugf("A CI run worker stopped — %d claim loop(s) left", remaining);
-      } else if (remaining == 0) {
-        LOG.errorf(
-            "The LAST CI run worker left its claim loop while this process is not stopping —"
-                + " nothing would claim a QUEUED row until it is replaced; the readiness check"
-                + " reports this instance DOWN until one is");
-      } else {
-        LOG.errorf(
-            "A CI run worker left its claim loop while this process is not stopping — %d of %d"
-                + " left, and a replacement is being started",
-            remaining, concurrentBuilds);
-      }
-    }
-  }
-
-  /**
-   * The claim loop proper: re-derive the queue's order, take the first row this process can have,
-   * and park on the wake when there was nothing.
-   *
-   * <p>It re-scans immediately after a successful claim rather than parking, because a backlog is
-   * exactly the case where the next run is already there — and it re-derives the order every time,
-   * which is what makes a late high-priority arrival jump a queue this loop had already looked at.
-   *
-   * <p><b>{@link #stopping} is the only thing that ends it, and that is the 2026-09-08 change.</b>
-   * It used to end on {@code Thread.currentThread().isInterrupted()} as well, which reads like
-   * ordinary hygiene and was the defect: half a dozen helpers on this thread's call path catch
-   * {@code InterruptedException} and <em>restore</em> the flag before returning a fallback, so one
-   * step failure could retire a worker for the life of the process — silently, and until all of
-   * them had gone and the queue was dead. A flag raised while {@code stopping} is false is now read
-   * as what it is, a leak: cleared, named, and the loop stays.
-   *
-   * <p><b>And it catches {@code Throwable}, not {@code RuntimeException}.</b> An {@code Error} on
-   * this thread is a permanently missing build slot, and in a native image {@code
-   * NoClassDefFoundError}/{@code ExceptionInInitializerError} are the ordinary shape of a missing
-   * reflection registration. Whatever it was, one pass and one ERROR is the honest price.
-   */
-  private void claimLoop() {
-    while (!stopping) {
-      if (Thread.interrupted()) {
-        if (stopping) {
-          // A real shutdown: shutdownNow interrupted us and the flag is the messenger.
-          Thread.currentThread().interrupt();
-          return;
-        }
-        LOG.warnf(
-            "A CI run worker found its interrupt flag raised while this process is not stopping —"
-                + " a helper on the run path restored it after catching an InterruptedException."
-                + " Clearing it; this worker stays on the queue.");
-      }
-      try {
-        if (!draining && claimAndRunOne()) {
-          continue;
-        }
-        work.tryAcquire(queuePollInterval.toMillis(), TimeUnit.MILLISECONDS);
-      } catch (InterruptedException interrupted) {
-        if (stopping) {
-          Thread.currentThread().interrupt();
-          return;
-        }
-        // The same leak, arriving while parked instead of before the park. Catching it already
-        // cleared the flag; the loop simply goes round again.
-        LOG.warnf(
-            "A CI run worker was interrupted while parked and this process is not stopping —"
-                + " treating it as a restored flag rather than as a shutdown");
-      } catch (Throwable failure) {
-        // The datasource is gone, something in the scan is broken, or a class the image never
-        // registered was touched. None of them is a reason to lose a worker for the life of the
-        // process, and none is a reason to spin: say it once and wait out the poll interval like an
-        // idle worker does.
-        LOG.errorf(
-            failure,
-            "A CI run worker could not claim work (%s) — retrying after the poll interval",
-            failure.getClass().getName());
-        if (!park()) {
-          return;
-        }
-      }
-    }
-  }
-
-  /**
-   * Waits out one poll interval after a failed pass.
-   *
-   * @return whether the loop should keep going — false only for a genuine shutdown.
-   */
-  private boolean park() {
-    try {
-      work.tryAcquire(queuePollInterval.toMillis(), TimeUnit.MILLISECONDS);
-      return true;
-    } catch (InterruptedException interrupted) {
-      if (stopping) {
-        Thread.currentThread().interrupt();
-        return false;
-      }
-      return true;
-    }
-  }
-
-  /**
-   * How many claim loops exist right now, how many this instance is configured for, and whether it
-   * is on its way out.
-   *
-   * <p>All three, because the interesting answer is a conjunction: <b>zero live loops while the
-   * process is not stopping</b> is the state a healthy-looking qits-ci with a dead queue is in, and
-   * zero live loops during a shutdown is what a shutdown is.
-   */
-  public record WorkerCensus(int live, int configured, boolean stopping) {}
-
-  /** @see WorkerCensus */
-  public WorkerCensus workerCensus() {
-    return new WorkerCensus(liveWorkers.get(), concurrentBuilds, stopping);
-  }
-
-  /**
-   * One pass of the claim loop: read every {@code QUEUED} row, ask {@link CiRunOrdering} what order
-   * they should be claimed in, and take the first one this process can actually have.
-   *
-   * <p><b>No candidate ends the scan except the one that is claimed.</b> That is the 2026-09-08
-   * change and it closes the regression the queue's own notes recorded as "the follow-up": a row the
-   * loop could neither run nor settle used to {@code return false} here, so every row the ordering
-   * put behind it was unreachable by <em>every</em> worker, on every pass, until somebody edited the
-   * database — and the boot sweep handed the same row back, so a restart did not clear it either.
-   * A row that cannot be reconstructed is settled terminally and the walk goes on; a row that cannot
-   * even be settled is skipped for this pass, which costs it one pass instead of costing the queue
-   * everything behind it.
-   *
-   * @return whether this pass did something — a run executed, or a row settled. False means the
-   *     queue held nothing for this worker and it should park.
-   */
-  private boolean claimAndRunOne() {
-    // Incremented BEFORE the read, and see the field's javadoc for why: from here until the finally,
-    // this worker is holding a claim somebody else may not conclude is absent.
-    busyWorkers.incrementAndGet();
-    try {
-      // BUILDS only: a runner's health check is reserved by that runner and nothing else, so a local
-      // worker never sees one — it is not even ordered among the work it could take.
-      List<CiRun> candidates =
-          QuarkusTransaction.requiringNew()
-              .call(() -> CiRunOrdering.suggestedOrder(builds(runs.listQueuedOldestFirst())));
-      boolean settledSomething = false;
-      for (CiRun candidate : candidates) {
-        String runId = candidate.id;
-        if (!runnable(candidate)) {
-          settledSomething |= retireUnrunnable(candidate);
-          continue;
-        }
-        EventRun request;
-        try {
-          request = reconstructEventRun(candidate);
-        } catch (RuntimeException unparseable) {
-          // The snapshot on the row parsed once, at accept, so this is unreachable through the
-          // engine. If it ever is not, the row is one this process has learned it can never run —
-          // which is a settleable fact rather than an unknown one — so it is settled with a reason
-          // of its own and the scan continues to the rows behind it.
-          LOG.errorf(
-              unparseable,
-              "CI run %s cannot be reconstructed from its own row (%s) — settling it CANCELLED/%s"
-                  + " and continuing the scan",
-              runId,
-              candidate.configPath,
-              TRIGGER_UNREADABLE);
-          settledSomething |= settleUnreadable(candidate);
-          continue;
-        }
-        CiRun claimed = startQueued(runId);
-        if (claimed == null) {
-          // Cancelled, superseded, already taken by another worker, or this process is draining.
-          // All four are ordinary and none of them is this pass's business.
-          LOG.debugf("CI run %s is no longer queued — moving on to the next candidate", runId);
-          cancelled.remove(runId);
-          continue;
-        }
-        executeClaimed(claimed, request);
-        return true;
-      }
-      return settledSomething;
-    } finally {
-      busyWorkers.decrementAndGet();
-    }
-  }
-
-  /**
-   * The pool the claim loops live on. {@code 0} is a real value (qits-503): it hands every run to
-   * the runners, so this process runs no claim loop at all — nothing is submitted, and a fixed pool
-   * starts its threads only on a submission, so the one-thread pool built for it never starts one.
-   * A pool is still built rather than a null kept, so {@link #shutdown} and {@link #supervised} have
-   * one shape whatever the size. Negative is a configuration nobody meant, and refuses the boot.
-   */
-  static ExecutorService createWorkerPool(int concurrentBuilds) {
-    if (concurrentBuilds < 0) {
-      throw new IllegalArgumentException(
-          "qits.ci.concurrent-builds must be at least 0 — 0 hands every run to the runners");
-    }
-    AtomicInteger workerNumber = new AtomicInteger();
-    return Executors.newFixedThreadPool(
-        Math.max(1, concurrentBuilds),
-        r -> {
-          Thread t = new Thread(r, "ci-run-worker-" + workerNumber.incrementAndGet());
-          t.setDaemon(true);
-          return t;
-        });
-  }
-
-  /**
-   * Stops this process taking new work, and runs <b>before</b> {@link #shutdown} — see {@link
+   * Stops this process handing out new work, and runs <b>before</b> {@link #shutdown} — see {@link
    * #draining} for why the pair has to be in that order.
    */
   void onStop(@Observes ShutdownEvent event) {
@@ -960,25 +566,18 @@ public class CiRunService {
     this.draining = draining;
   }
 
+  /** Whether this process is on its way out — bean destruction has begun. */
+  public boolean stopping() {
+    return stopping;
+  }
+
   /**
-   * Ends the claim loops. Three statements and the order is the whole of it: raise {@link #stopping}
-   * so a woken worker returns rather than scanning, hand out one permit per worker so a worker
-   * parked on the poll interval wakes at once instead of holding the shutdown for it, and only then
-   * interrupt whatever is left — a worker inside a step, which is exactly what {@code draining}
-   * plus the successor's boot sweep exist to make survivable.
-   *
-   * <p><b>The first statement is also what switches the supervisor off</b>, and it has to come
-   * first for that reason as well: {@link #supervised} replaces a loop that ended only while {@code
-   * stopping} is false, so raising it before the interrupt is what makes a shutdown a shutdown
-   * rather than a stream of replacements. The {@code shutdownNow} is the second net — a task
-   * submitted into the gap is refused rather than run.
+   * Marks the end. There is no pool left to stop: a run in flight is a runner driver's, and the
+   * runner socket's own shutdown is what ends it; a successor's boot sweep restarts it.
    */
   @PreDestroy
   void shutdown() {
     stopping = true;
-    work.release(concurrentBuilds);
-    worker.shutdownNow();
-    LOG.debugf("The CI run worker pool is stopping — %d claim loop(s) still live", liveWorkers.get());
   }
 
   /**
@@ -991,24 +590,15 @@ public class CiRunService {
    * after the push retirement that is a {@code POST_RECEIVE} row a predecessor deployment left, work
    * this engine has no worker for and could not safely replay if it had one.
    *
-   * <p>A run left {@code QUEUED} never started. Its row is the whole of it, so it is <b>put back on
-   * the worker</b> in {@code createdAt} order rather than failed: this is the point of the status
+   * <p>A run left {@code QUEUED} never started. Its row is the whole of it, so it is <b>announced to the
+   * runners again</b> rather than failed: this is the point of the status
    * existing, and it is what closes the cutover loss for builds that were accepted while qits-ci was
    * redeploying itself. Event-triggered rows contain their envelope and trigger snapshot too, so
    * every runnable row takes the same recovery path. One this engine cannot run is settled {@code
-   * CANCELLED} instead — see {@link #enqueue}, which is where that decision lives.
+   * CANCELLED} instead, by the reservation that walks past it — see {@link #reserveFor}.
    *
-   * <p>The container half of the same reconciliation is {@code CiDaemonLauncher.onStart}, which
-   * reaps what the {@code RUNNING} runs left behind; it is a second observer because it needs docker
-   * and this module has no business knowing about it.
-   *
-   * <p><b>That half runs first, and the {@code @Priority} pair is what says so.</b> This one does
-   * not only write rows: it hands work straight back to the run worker, which starts labelled
-   * containers of its own. The reap filters on the label alone and cannot tell a container this boot
-   * just started from one the previous life left, so running it second would let it remove a
-   * restarted run's first container. {@code CiDaemonLauncher.onStart} therefore carries the lower
-   * priority and this one the higher; <b>neither moves alone</b>, and {@code
-   * BootReconciliationOrderTest} holds the pair.
+   * <p>There is no container half to it any more (qits-506): a step container belongs to the runner
+   * that started it, whose own boot sweep removes what a previous life of it left behind.
    */
   void onStart(@Observes @Priority(BOOT_SWEEP_PRIORITY) StartupEvent event) {
     if (LaunchMode.current() == LaunchMode.TEST) {
@@ -1018,20 +608,19 @@ public class CiRunService {
   }
 
   /**
-   * What one sweep found: how many rows are queued for the claim loop to take, and the runs it
-   * failed — announced after the commit.
+   * What one sweep found: how many rows are queued for a runner to reserve, and the runs it failed
+   * — announced after the commit.
    *
-   * <p>{@code requeued} is a <b>count</b> rather than a list of ids, and that is the claim loop
-   * showing through: a row is claimed because it is {@code QUEUED} in the table, never because a
-   * particular id was handed to a particular thread. The sweep's whole remaining job is to say
-   * "there is work" once.
+   * <p>{@code requeued} is a <b>count</b> rather than a list of ids: a row is reserved because it is
+   * {@code QUEUED} in the table, never because a particular id was handed to a particular runner.
+   * The sweep's whole remaining job is to say "there is work" once.
    *
    * <p><b>{@code restarted} is a list where {@code requeued} is a count, and the asymmetry is the
-   * same distinction pointed at two different readers.</b> The claim loop wants a wake and nothing
-   * else, so a count is the whole of what it is owed. A mirror of the active listing is owed the
+   * same distinction pointed at two different readers.</b> The runners want a {@code Backlog} and
+   * nothing else, so a count is the whole of what they are owed. A mirror of the active listing is owed the
    * rows: a run this sweep moved from {@code RUNNING} back to {@code QUEUED} is a transition like any
    * other, and one nobody else will ever announce — the run's next announcement is the {@code
-   * RUNNING} a worker's claim makes, minutes later and from a state the mirror was never told about.
+   * RUNNING} a runner's reservation makes, later and from a state the mirror was never told about.
    */
   private record Sweep(int requeued, List<FailedOrphan> failed, List<CiRun> restarted) {}
 
@@ -1042,9 +631,9 @@ public class CiRunService {
    * The sweep itself — package-private because {@link #onStart} skips test mode, so this is what a
    * suite drives to make a claim about a restart.
    *
-   * <p>The re-enqueue happens <b>after</b> the transaction commits: the worker's first act on a run
-   * is to read its row back and check it is still {@code QUEUED}, which it cannot do against a write
-   * this thread has not committed yet.
+   * <p>The backlog is announced <b>after</b> the transaction commits: a runner answers it with a
+   * {@code Reserve}, whose claim reads the row back and checks it is still {@code QUEUED}, which it
+   * cannot do against a write this thread has not committed yet.
    */
   void sweepInterrupted() {
     Sweep sweep;
@@ -1073,7 +662,7 @@ public class CiRunService {
           sweep.restarted().size());
       // The one transition on this path that goes BACKWARDS, and the one nothing else would ever
       // say: the run was RUNNING in a process that is gone and is queued again here. Its next
-      // announcement is a worker's RUNNING claim, so a mirror not told about this one would be
+      // announcement is a runner's RUNNING reservation, so a mirror not told about this one would be
       // holding a run it believes is still executing on a dead instance.
       for (CiRun restarted : sweep.restarted()) {
         announceStatus(restarted, CiRunStatus.QUEUED, CiRunStatus.RUNNING, restarted.createdAt);
@@ -1081,9 +670,8 @@ public class CiRunService {
     }
     if (sweep.requeued() > 0) {
       LOG.infof("Re-enqueued %d CI run(s) left QUEUED by a previous shutdown", sweep.requeued());
-      // One permit per worker rather than one per row: the rows are in the table and the claim loop
-      // re-derives their order for itself, so what a sweep owes is "wake up", once, to everybody.
-      work.release(concurrentBuilds);
+      // Once, not once per row: the rows are in the table and a reservation re-derives their order
+      // for itself, so what a sweep owes the runners is "there is work", once.
       announceBacklog();
     }
   }
@@ -1111,9 +699,9 @@ public class CiRunService {
       }
     }
 
-    // Every QUEUED row is the claim loop's, including one this engine can no longer run — a
-    // POST_RECEIVE leftover from a predecessor deployment. The loop is the single place that decides
-    // what a row is worth (it has to be: a row can also become unrunnable between here and a worker
+    // Every QUEUED row is counted, including one this engine can no longer run — a POST_RECEIVE
+    // leftover from a predecessor deployment. The reservation is the single place that decides what
+    // a row is worth (it has to be: a row can also become unrunnable between here and a runner
     // reaching it), and it settles such a row CANCELLED rather than leaving it QUEUED for a
     // successor that will make the same discovery. The count includes the rows this method just
     // moved back to QUEUED — the query flushes them first, which is what makes an interrupted event
@@ -1137,33 +725,24 @@ public class CiRunService {
   private static void logLeftQueuedWhileDraining(String runId) {
     LOG.infof(
         "CI run %s left QUEUED: this process is shutting down, the successor's boot sweep"
-            + " re-enqueues it",
+            + " announces it again",
         runId);
   }
 
   /**
-   * Tells the claim loop there is work.
+   * Tells the runners a run was queued — a {@code Backlog} through every {@link CiBacklogListener}
+   * ({@link #announceBacklog}). There is nothing to wake in this process: a runner answers with a
+   * {@code Reserve}, and {@link #reserveFor} is the claim.
    *
-   * <p><b>It hands nothing to anybody, and that is the 2026-09-07 change.</b> This method used to
-   * submit a closure per run to the worker pool, which made the order runs executed in the order
-   * they were submitted — an ordering decided at accept time, by the thread that happened to accept
-   * first, and unchangeable afterwards. The row is the queue now: a worker reads every {@code
-   * QUEUED} row, asks {@link CiRunOrdering} which one to take, and takes it. So a high-priority run
-   * accepted while ten others wait is claimed next rather than eleventh, a restart re-derives the
-   * same order from the same rows, and a future manual reorder has one function to change instead of
-   * an executor to reach into.
-   *
-   * <p>What is left here is the <b>wake</b>, and the draining refusal, which is unchanged: a dying
-   * process must not start work, so it does not even say there is any. The row stays {@code QUEUED}
-   * for the successor's boot sweep — see {@link #draining}.
+   * <p>The draining refusal is the one thing it adds: a dying process must not hand out work, so it
+   * does not even say there is any. The row stays {@code QUEUED} for the successor's boot sweep —
+   * see {@link #draining}.
    */
-  private void enqueue(String runId) {
+  private void announceQueued(String runId) {
     if (draining) {
       logLeftQueuedWhileDraining(runId);
       return;
     }
-    work.release();
-    // The other half of "there is work": the local pool is woken above, a runner is told here.
     announceBacklog();
   }
 
@@ -1187,8 +766,8 @@ public class CiRunService {
    * Settles a row no engine here can run, with the one line and the one reason that say why.
    *
    * <p><b>Only a row that is still {@code QUEUED}</b>, and the status is re-read inside the writing
-   * transaction — {@code startQueued}'s discipline, for {@code startQueued}'s reason. A person can
-   * cancel such a row through the API between the sweep reading it and this running, and settling it
+   * transaction — the claim's discipline, for the claim's reason. A person can cancel such a row
+   * through the API between the reservation reading it and this running, and settling it
    * a second time would overwrite their reason with this one.
    *
    * @return whether this pass settled it — false for a row somebody else settled first, and for one
@@ -1227,12 +806,12 @@ public class CiRunService {
    * given, and only while the row really is still queued.
    *
    * <p><b>A write that throws is answered {@code false} rather than propagated</b>, and that is the
-   * scan's whole safety net: this runs on the claim loop, over a row the loop cannot run, and a
-   * database blip while settling one poison row must not cost every row behind it its pass. The row
-   * stays {@code QUEUED} and the next wake tries again.
+   * scan's whole safety net: this runs after a runner's reservation, over a row nobody can run, and
+   * a database blip while settling one poison row must not cost that reservation its answer. The
+   * row stays {@code QUEUED} and the next reservation tries again.
    *
    * <p><b>The announcement is made here rather than by either caller</b>, for the reason {@link
-   * #startQueued} makes the {@code RUNNING} one: this is the single write, so it is the one place
+   * #reserveFor} makes the {@code RUNNING} one: this is the single write, so it is the one place
    * that cannot be forgotten by a third settlement. It is made from the row the transaction settled
    * and after that transaction has committed, and the {@code false} arm — a row that had already
    * moved, or a write that did not land — announces nothing, because nothing happened. Note the run
@@ -1326,7 +905,7 @@ public class CiRunService {
     if (run == null) {
       return null;
     }
-    enqueue(run.id);
+    announceQueued(run.id);
     return run.id;
   }
 
@@ -1360,65 +939,21 @@ public class CiRunService {
   }
 
   /**
-   * Accept and run in one call — package-private so tests drive the whole state machine without the
-   * worker's timing, which is what {@link #onEventTrigger} plus the queue hop otherwise costs them.
-   *
-   * <p>It is the only synchronous entry left. There was a second, {@code execute(repoId, branch,
-   * sha)}, which accepted and ran a push; it went with the push arm on 2026-09-05 and the suites that
-   * used it as a cheap way into {@link #runSteps} drive an event run through here instead.
-   */
-  void executeEventRun(EventRun request) {
-    CiRun run = acceptEventRun(request);
-    if (run == null) {
-      return;
-    }
-    runQueuedEventRun(run.id, request);
-  }
-
-  /**
-   * The worker half of an event-triggered run: claim the queued row, then run the pipeline that
-   * reconstructed from the durable row.
-   *
-   * <p>No config lookup: {@code CiEventTriggerService} had to read and parse the trigger file to know
-   * there was anything to run at all, so the pipeline arrives parsed. The row stores that file's
-   * exact content so a restart parses the same declaration again.
-   */
-  private void runQueuedEventRun(String runId, EventRun request) {
-    CiRun run = startQueued(runId);
-    if (run == null) {
-      cancelled.remove(runId);
-      return;
-    }
-    executeClaimed(run, request);
-  }
-
-  /**
-   * The half of {@link #runQueuedEventRun} that runs a run this thread has <b>already claimed</b>.
-   *
-   * <p>It is split out for the claim loop, which does its own {@link #startQueued} — it has to, since
-   * "could this row be claimed" is how it decides whether to move on to the next candidate. What is
-   * left above is the synchronous entry {@link #executeEventRun} uses, unchanged, so no test's path
-   * through this class moved.
+   * Runs a run a runner has <b>already claimed</b> — reached from {@link #executeReserved} and from
+   * nowhere else.
    *
    * <p><b>Everything a claimed run does is inside the try, and the daemon pin is why that had to be
    * said out loud.</b> {@code pinDaemon()} and {@link #pinDaemonVersion} used to sit above it —
-   * two statements between a row that {@link #startQueued} has already flipped {@code RUNNING} and
-   * the handler that settles it. Neither was free: the first resolved a pin ladder that read a
-   * table and could launch a probe container, and whose {@code answer()} was deliberately not
-   * {@code DbRetry}-wrapped; the second is a write. A throw out of either left a row {@code RUNNING}
-   * with no steps, no {@code finishedAt} and no owner, settleable by nothing short of the next
-   * process's boot sweep — the 2026-08-23 shape of failure, arrived at from the other direction.
+   * two statements between a row the claim has already flipped {@code RUNNING} and the handler that
+   * settles it. A throw out of either left a row {@code RUNNING} with no steps, no {@code
+   * finishedAt} and no owner, settleable by nothing short of the next process's boot sweep — the
+   * 2026-08-23 shape of failure, arrived at from the other direction. {@code pinDaemon()} can no
+   * longer throw (it reads a constant off the classpath); {@link #pinDaemonVersion} is still a
+   * write, which is reason enough on its own.
    *
-   * <p><b>The first of those two can no longer throw, and the placement stays anyway.</b> The ladder
-   * is retired: {@code pinDaemon()} now reads a constant off the classpath and trims a config
-   * string, touching no database and no container. {@link #pinDaemonVersion} is still a write, which
-   * is reason enough on its own — and moving a statement back out of a try because it has stopped
-   * being able to fail is how the next statement added beside it ends up outside the bracket.
-   *
-   * <p><b>An {@code Error} settles the row too, and is then rethrown.</b> The two facts are
-   * independent: the run is over either way and its row must say so, while the loop above is what
-   * decides what to do about a JVM that has just thrown an {@code Error} — logging it, parking, and
-   * (if the loop itself dies of it) being replaced.
+   * <p><b>An {@code Error} settles the row too, and is then rethrown.</b> The run is over either way
+   * and its row must say so, while the caller — the runner's driver — decides what to do about a JVM
+   * that has just thrown an {@code Error}.
    */
   private void executeClaimed(CiRun run, EventRun request) {
     try {
@@ -1453,23 +988,22 @@ public class CiRunService {
   }
 
   /**
-   * <b>Which transport runs this run's steps</b>, decided by the one column that says who claimed
-   * it: no {@code runner_id} is a local worker's run and keeps the {@link CiStepRunner} every run
-   * always had; a {@code runner_id} is a runner's, and goes through {@link CiRunnerStepRunner}. The
-   * one method every caller asks — the step loop, the run's close, and a cancellation — so the
-   * three can never disagree about which seam owns a run.
+   * <b>The transport that runs this run's steps</b>: the runner seam, {@link CiRunnerStepRunner},
+   * for every run — the one method every caller asks (the step loop, the run's close, and a
+   * cancellation), so the three can never disagree about which seam owns a run.
    *
-   * @throws IllegalStateException for a runner's run in an application with no runner seam — only
-   *     the {@code ci} module's own, since the service always has one
+   * <p><b>A run with no {@code runner_id} is history</b>: the in-process executor that claimed such
+   * runs is deleted (qits-506). One still {@code RUNNING} at boot is reset to {@code QUEUED} by
+   * {@link #sweepInterrupted} and reserved by a runner from there; one met by a cancellation at run
+   * time is not owned by the runner seam, so {@link #cancel} settles it in one write.
+   *
+   * @throws IllegalStateException in an application with no runner seam — only the {@code ci}
+   *     module's own without a suite fake, since the service always has one
    */
   CiStepRunner stepRunnerFor(CiRun run) {
-    if (run.runnerId == null) {
-      return runner;
-    }
     if (runnerSteps == null || !runnerSteps.isResolvable()) {
       throw new IllegalStateException(
-          "CI run " + run.id + " is held by runner " + run.runnerId
-              + " and this application has no runner step seam");
+          "CI run " + run.id + " cannot be executed: this application has no runner step seam");
     }
     return runnerSteps.get();
   }
@@ -1907,7 +1441,7 @@ public class CiRunService {
    * published event's parent, so the run's own {@code BuildSuccessful} names what caused it and a
    * release train is a chain in the event log. It comes off the row rather than out of an ambient
    * context because there is none to read here: the engine consumed the frame on the bus's dispatch
-   * thread and this is {@code ci-run-worker}, minutes later. Null only on a historical push row,
+   * thread and this is a runner's driver thread, minutes later. Null only on a historical push row,
    * which publishes a root — correctly, since a push was not caused by an event.
    *
    * <p><b>{@link CiRun#retryOfRunId} rides along too, and it is the only lineage the causation edge
@@ -2209,7 +1743,7 @@ public class CiRunService {
    *
    * <p><b>Counted rather than tracked.</b> Every caller has just changed the table, and the count is
    * the table's own answer — a running tally kept here would be a second copy of the queue that a
-   * local claim, a supersede or a boot sweep could each leave wrong. It costs one indexed count per
+   * reservation, a supersede or a boot sweep could each leave wrong. It costs one indexed count per
    * transition, and only when somebody listens.
    *
    * <p><b>Never a failure of the caller.</b> This runs on the path of an accept, a finish and a
@@ -2237,63 +1771,6 @@ public class CiRunService {
   }
 
   /**
-   * Claims a queued run for this worker: {@code QUEUED} becomes {@code RUNNING} and the row comes
-   * back, or <b>null when the row is no longer queued</b> and there is nothing to run.
-   *
-   * <p>The null case is a cancellation that reached the row first, and reading the status inside the
-   * claiming transaction is what makes "the worker must never pick up a run that was cancelled while
-   * it waited" a property of the database rather than of the order two threads happened to run in.
-   *
-   * <p>It is also <b>null while this process is {@link #draining}</b>, and then the row is left
-   * {@code QUEUED} rather than finished: a shutting-down process must hand its backlog on, not claim
-   * it.
-   *
-   * <p>Flipping here rather than at accept is what keeps {@code QUEUED} honest: the config read
-   * below is an HTTP read against a host that can take seconds, and a run doing that has
-   * started. It also fixes what a crash during it costs — a {@code RUNNING} row, swept to {@code
-   * FAILED}, which is the truthful answer to "did this run begin".
-   *
-   * <p><b>The {@code RUNNING} announcement is made here rather than by the callers</b>, and there are
-   * two of them — the claim loop and the synchronous entry — which is exactly the reason. This is the
-   * one place {@code QUEUED} becomes {@code RUNNING}, so it is the one place that can say so without
-   * a second caller ever being able to forget; and the two ways it answers null (cancelled first,
-   * draining) announce nothing, correctly, because neither wrote anything. See {@link
-   * #announceStatus} for what a mirror of the active listing does with it. The announcement is after
-   * the claiming transaction has committed, so a consumer that reads the run back sees {@code
-   * RUNNING}.
-   */
-  private CiRun startQueued(String runId) {
-    CiRun claimed =
-        QuarkusTransaction.requiringNew()
-            .call(
-                () -> {
-                  CiRun run = runs.findById(runId);
-                  if (run == null || run.status != CiRunStatus.QUEUED) {
-                    return null;
-                  }
-                  // Read as late as it can be — after the row, immediately before the flip, inside
-                  // the claiming transaction. A dying process leaves the row QUEUED for the
-                  // successor's boot sweep rather than claiming it and dying holding it RUNNING.
-                  if (draining) {
-                    logLeftQueuedWhileDraining(runId);
-                    return null;
-                  }
-                  // The claim itself is one conditional UPDATE — see claimQueued. Zero rows is a
-                  // runner's reservation or another worker that got there between the read above
-                  // and this statement, and is the same "no longer queued" as the check above.
-                  if (runs.claimQueued(runId, Instant.now()) == 0) {
-                    return null;
-                  }
-                  runs.getEntityManager().refresh(run);
-                  return run;
-                });
-    if (claimed != null) {
-      announceStatus(claimed, CiRunStatus.RUNNING, CiRunStatus.QUEUED, claimed.startedAt);
-    }
-    return claimed;
-  }
-
-  /**
    * One run a runner reserved: the claimed row, and the pipeline rebuilt from it — everything the
    * runner's driver needs to run it through {@link #executeReserved}.
    */
@@ -2301,10 +1778,10 @@ public class CiRunService {
 
   /**
    * <b>A runner's {@code Reserve}, answered: the claim, narrowed to what this runner may take.</b>
-   * The same candidates the claim loop reads, in the same {@link CiRunOrdering#suggestedOrder}, and
-   * the same compare-and-swap on the row's status — with {@code runner_id} written in that UPDATE —
-   * so a local worker and any number of runners compete for one row and the database picks exactly
-   * one of them.
+   * Every {@code QUEUED} build in {@link CiRunOrdering#suggestedOrder}, and one compare-and-swap on
+   * the row's status with {@code runner_id} written in that UPDATE ({@link
+   * CiRunRepository#claimQueuedForRunner}) — so any number of runners compete for one row and the
+   * database picks exactly one of them. It is the only claim there is (qits-506).
    *
    * <p><b>One transaction</b>, re-reading the runner's row inside it: an operator may have changed
    * its slots, drained it or deleted it since it connected, and the answer has to be about the row
@@ -2320,9 +1797,14 @@ public class CiRunService {
    * docker: true} or {@code build: true} step needs a host that will run docker for it, and a runner
    * whose capabilities do not say {@code docker: true} is never handed one; a {@code build: true}
    * pipeline is never handed to a runner that said its id range is narrow ({@link #narrowIdRange},
-   * qits-556), nor any run to a runner in its avoid set ({@link #avoidRunner}); a row that is not an
-   * event run, or whose snapshot will not reconstruct, is left for the claim loop, which is the one
-   * place that settles such rows — this path only ever takes.
+   * qits-556), nor any run to a runner in its avoid set ({@link #avoidRunner}).
+   *
+   * <p><b>What nobody can run is settled, after the claim's transaction.</b> A row that is not an
+   * event run, or whose snapshot will not reconstruct, is passed over inside the transaction and
+   * then settled {@code CANCELLED} ({@link #retireUnrunnable}, {@link #settleUnreadable}) once it has
+   * committed, each in its own write that re-reads the status — so one poison row neither holds up
+   * the rows behind it nor survives to the next boot. This used to be the in-process claim loop's
+   * job; it is the reservation's now that the loop is gone.
    *
    * @return the reservation, or empty when there was nothing this runner could have
    */
@@ -2330,6 +1812,10 @@ public class CiRunService {
     if (draining || stopping) {
       return java.util.Optional.empty();
     }
+    // Filled inside the transaction, settled after it: a settlement is a write of its own with an
+    // announcement after its commit, and must not ride — or roll back with — this claim.
+    List<CiRun> unrunnable = new ArrayList<>();
+    List<CiRun> unreadable = new ArrayList<>();
     Reservation reserved =
         QuarkusTransaction.requiringNew()
             .call(
@@ -2367,13 +1853,16 @@ public class CiRunService {
                   }
                   boolean docker = hasDocker(row);
                   boolean narrowIds = narrowIdRange(row);
+                  unrunnable.clear();
+                  unreadable.clear();
                   for (CiRun candidate :
                       CiRunOrdering.suggestedOrder(builds(runs.listQueuedOldestFirst()))) {
                     if (!runnable(candidate)) {
+                      unrunnable.add(candidate);
                       continue;
                     }
-                    // A run this runner failed by the infrastructure is left for anyone else — a
-                    // local worker or another runner; with neither, it waits QUEUED (qits-556).
+                    // A run this runner failed by the infrastructure is left for another runner;
+                    // with none, it waits QUEUED (qits-556).
                     if (AvoidRunnerIds.decode(candidate.avoidRunnerIds).contains(row.id)) {
                       continue;
                     }
@@ -2381,6 +1870,14 @@ public class CiRunService {
                     try {
                       request = reconstructEventRun(candidate);
                     } catch (RuntimeException unparseable) {
+                      LOG.errorf(
+                          unparseable,
+                          "CI run %s cannot be reconstructed from its own row (%s) — settling it"
+                              + " CANCELLED/%s",
+                          candidate.id,
+                          candidate.configPath,
+                          TRIGGER_UNREADABLE);
+                      unreadable.add(candidate);
                       continue;
                     }
                     if (!docker && needsDocker(request.trigger().pipeline())) {
@@ -2401,6 +1898,8 @@ public class CiRunService {
                   }
                   return null;
                 });
+    unrunnable.forEach(this::retireUnrunnable);
+    unreadable.forEach(this::settleUnreadable);
     if (reserved == null) {
       return java.util.Optional.empty();
     }
@@ -2500,8 +1999,8 @@ public class CiRunService {
     LOG.infof(
         "Health check %s queued for runner %s — %s at %s", accepted.id, runnerId, repo.display(),
         sha);
-    // The wake a local worker ignores (it never claims one) and the Backlog a runner acts on.
-    enqueue(accepted.id);
+    // The Backlog a runner acts on — the target runner reserves it first.
+    announceQueued(accepted.id);
     return accepted;
   }
 
@@ -2530,9 +2029,8 @@ public class CiRunService {
   }
 
   /**
-   * Run a reserved run to its end, on the caller's thread — which is the runner's driver thread,
-   * never a {@code ci-run-worker}. Everything after the claim is {@link #executeClaimed}'s, shared
-   * with the local path to the line: the step seam differs, the run does not.
+   * Run a reserved run to its end, on the caller's thread — the runner's driver thread. Everything
+   * after the claim is {@link #executeClaimed}'s.
    */
   public void executeReserved(Reservation reservation) {
     executeClaimed(reservation.run(), reservation.request());
@@ -2784,7 +2282,7 @@ public class CiRunService {
   /**
    * <b>A burst of events naming one branch is one build, of the newest tip.</b> The checkout
    * feature's collapse: a trigger following the event's own branch gets one run per event, so N
-   * re-folds of a release request in a burst would queue N builds behind the single run worker where
+   * re-folds of a release request in a burst would queue N builds behind one another where
    * only the newest matters.
    *
    * <p>It is modelled on the per-branch supersede the push intake used to do at accept, which
@@ -2881,7 +2379,7 @@ public class CiRunService {
     }
     if (newer != null) {
       // The push's tags arrived out of order and this one is not the newest. Its row stays as the
-      // record that the tag was announced; the worker's claim reads the status back and drops it,
+      // record that the tag was announced; a runner's reservation reads the status back and passes over it,
       // which is the same path a cancellation of a queued run takes.
       LOG.infof(
           "Tag %s in %s is older than queued %s — run %s stands for %s",
@@ -3304,14 +2802,14 @@ public class CiRunService {
    * container is asked to die; this returns as soon as both are done, which is well before the run
    * is actually finished — the caller answers 202.
    *
-   * <p>A {@code QUEUED} one is <b>finished here</b>, {@code CANCELLED}, without the worker ever picking
+   * <p>A {@code QUEUED} one is <b>finished here</b>, {@code CANCELLED}, without a runner ever picking
    * it up. There is no container to ask and no step to stop, so the row is the whole of the
-   * cancellation; the worker's own {@link #startQueued} then finds a row that is no longer queued
-   * and drops it. That is the queue-visible form of what this class did before, when a cancellation
+   * cancellation; a runner's reservation then finds a row that is no longer queued and passes over
+   * it. That is the queue-visible form of what this class did before, when a cancellation
    * arriving before the first step tore the launch down instead.
    *
    * <p>The flag is raised in <b>both</b> cases and on purpose. Cancel runs on the request thread and
-   * the claim runs on the worker; if the worker won the race and turned the row {@code RUNNING}
+   * the claim on a runner's socket; if the runner won the race and turned the row {@code RUNNING}
    * between the read and the write, the flag is what stops the run before its first container — so
    * neither thread has to win for the answer to be right.
    *
@@ -3512,7 +3010,7 @@ public class CiRunService {
    * whole body, so a read in there would be re-issued per attempt and could poison the session it
    * was meant to serve.
    *
-   * @return the new run, already {@code QUEUED} and on the worker
+   * @return the new run, already {@code QUEUED} and announced to the runners
    */
   public CiRun retry(String runId) {
     return refire(runId, null);
@@ -3573,7 +3071,7 @@ public class CiRunService {
     // event-triggered arrival is which method wrote it. `previousStatus` is null for that reason —
     // this run has no earlier state, whatever the run it re-fires ended as.
     announceStatus(retry, CiRunStatus.QUEUED, null, retry.createdAt);
-    enqueue(retry.id);
+    announceQueued(retry.id);
     return retry;
   }
 
@@ -3791,7 +3289,7 @@ public class CiRunService {
    * cut on, and P2's green is what was published. So it is refused here, in words, before any work
    * is accepted.
    *
-   * @return the new run, already {@code QUEUED} and on the worker
+   * @return the new run, already {@code QUEUED} and announced to the runners
    * @throws NotFoundException this instance has never recorded a run for the repository
    * @throws ConflictException the phase has no run, its newest run is still going, or that run
    *     succeeded
@@ -4074,8 +3572,9 @@ public class CiRunService {
    * true.</b> A client reconstructing the order from a listing would be a second {@link
    * CiRunOrdering} — four criteria, a topological pass and a private rank table, re-implemented
    * against rows that do not carry half of what the decision reads — and the failure mode is not a
-   * crash but a plausible answer that disagrees with the one the claim loop acts on. So the order
-   * is computed here, by the same pure function the claim loop walks, and travels to the wire.
+   * crash but a plausible answer that disagrees with the one the runners' reservations act on. So
+   * the order is computed here, by the same pure function {@link #reserveFor} walks, and travels to
+   * the wire.
    *
    * <p><b>One instant per snapshot, and it is stamped once.</b> Every millisecond in the forecast is
    * relative to {@link Snapshot#generatedAt()}, so two runs in one response are relative to one
@@ -4108,15 +3607,11 @@ public class CiRunService {
     List<CiQueueForecast.RunnerCapacity> runnerCapacity = runnerCapacity();
     return new Snapshot(
         generatedAt,
-        concurrentBuilds,
         active,
         List.copyOf(running),
         ordered,
         CiQueueForecast.forecast(
-            running,
-            ordered,
-            CiQueueForecast.slotCount(concurrentBuilds, runnerCapacity),
-            generatedAt),
+            running, ordered, CiQueueForecast.slotCount(runnerCapacity), generatedAt),
         runnerCapacity);
   }
 
@@ -4158,13 +3653,10 @@ public class CiRunService {
    * {@code …ForOf} accessors exist rather than leaving a caller to index by position: a boundary
    * stamps rows it got from a listing in whatever order <em>that</em> listing documents, and
    * matching by index across two differently-ordered lists is the bug this shape removes. The lists
-   * are short — bounded by accepted work and the worker pool — so a linear scan is the whole of
+   * are short — bounded by accepted work and the runners' slots — so a linear scan is the whole of
    * what a map would buy.
    *
    * @param generatedAt the instant every millisecond in {@link #forecast()} is relative to
-   * @param concurrentBuilds the local pool as configured — how many claim loops this process runs.
-   *     0 is a real answer (qits-503): every run is then a runner's, and the forecast counts the
-   *     connected runners' slots alone
    * @param activeNewestFirst both halves together in {@link CiRunService#activeRuns()}' own order,
    *     which is the order {@code GET /ci/api/runs/active} documents and must keep. It is carried
    *     beside the partition rather than reassembled from it, because re-interleaving two lists by
@@ -4175,14 +3667,12 @@ public class CiRunService {
    *     that a caller re-ordering nothing is consistent with every other listing on this surface
    * @param queuedInClaimOrder the {@code QUEUED} rows in suggested claim order, each with the
    *     ordering's reasons attached
-   * @param forecast when the queue is expected to reach each of them — modelled over the local
-   *     pool plus every connected runner's slots, while {@code concurrentBuilds} stays the local
-   *     pool alone
+   * @param forecast when the queue is expected to reach each of them — modelled over every
+   *     connected runner's slots
    * @param runners every declared runner, with its slots, what it holds and whether it is connected
    */
   public record Snapshot(
       Instant generatedAt,
-      int concurrentBuilds,
       List<CiRun> activeNewestFirst,
       List<CiRun> running,
       List<CiRunOrdering.OrderedRun> queuedInClaimOrder,
@@ -4226,7 +3716,7 @@ public class CiRunService {
    *
    * <p><b>A run that never started is skipped without a query, and that is exact rather than an
    * optimisation.</b> A step row is written at its step's end, and no step can have ended before
-   * {@code startQueued} flipped the row {@code RUNNING} and stamped {@link CiRun#startedAt} — so a
+   * the claim flipped the row {@code RUNNING} and stamped {@link CiRun#startedAt} — so a
    * null stamp means "no step rows" by construction, not "probably none". It is what keeps a
    * hundred-row backlog from costing a hundred reads on every poll of a listing whose queued half
    * has nothing to show.
@@ -4509,59 +3999,8 @@ public class CiRunService {
   }
 
   /**
-   * Test hook: waits until no worker is running anything and the queue holds nothing this process
-   * would claim.
-   *
-   * <p><b>It cannot be a submit-and-wait any more, and the reason is the claim loop.</b> The pool's
-   * threads are all inside {@link #workerLoop} for the life of the process, so a task submitted to
-   * it would never run at all. What replaced it is a poll over the two facts that together mean
-   * "idle": no worker is inside {@link #claimAndRunOne}, and no {@code QUEUED} row is waiting.
-   *
-   * <p><b>Two things make it sound and both are easy to get backwards.</b> {@link #busyWorkers} is
-   * incremented <em>before</em> the candidate read, so a worker that has chosen a row but not yet
-   * flipped it is already counted. And the two halves are read <b>queue first, workers second</b>,
-   * because the transition that would otherwise slip between them is exactly {@code QUEUED →
-   * RUNNING}: reading the workers first can see zero, let a worker claim and start a run, and then
-   * see an empty queue — reporting idle over a run that has just begun. Measured, as a suite-only
-   * flake in which a retried run's announcement had not happened yet. Reading the queue first cannot
-   * be wrong: an empty queue means every accepted row is already {@code RUNNING} or over, and a
-   * {@code RUNNING} one is held by a worker that has not decremented yet.
-   *
-   * <p>The {@code draining} arm is not an optimisation either: a draining process deliberately leaves
-   * its backlog {@code QUEUED} for the successor, so waiting for the queue to empty would be waiting
-   * for something that must never happen. The nudge is for the mirror case — a row accepted while
-   * draining released no permit, so once a test lowers the flag there is nothing to wake the worker
-   * but this.
-   */
-  void awaitIdle() throws Exception {
-    try {
-      while ((!draining && hasQueuedRows()) || busyWorkers.get() > 0) {
-        work.release();
-        Thread.sleep(25);
-      }
-    } finally {
-      // The nudges above are the one place permits are released for something other than real work,
-      // so they are the one place they are taken back: a permit left over here would let an idle
-      // worker rescan into rows a later test has staged and expects nobody to touch. Outside this
-      // hook, permits accumulate and are never drained — see the field.
-      work.drainPermits();
-    }
-  }
-
-  /** Whether anything is waiting to be claimed at all — {@link #awaitIdle}'s other half. */
-  private boolean hasQueuedRows() {
-    // Builds only: a health check waits QUEUED for its own runner, which no worker here will ever
-    // take — counting it would be waiting for something this process must never do.
-    return QuarkusTransaction.requiringNew()
-        .call(
-            () ->
-                runs.count("status = ?1 and purpose = ?2", CiRunStatus.QUEUED, CiRunPurpose.BUILD)
-                    > 0);
-  }
-
-  /**
    * The builds among {@code candidates}, in their order — every run but a runner's health check,
-   * which the claim loop, a runner's ordinary reservation and the queue's forecast all leave out.
+   * which a runner's ordinary reservation and the queue's forecast both leave out.
    */
   static List<CiRun> builds(List<CiRun> candidates) {
     return candidates.stream().filter(run -> !run.healthCheck()).toList();

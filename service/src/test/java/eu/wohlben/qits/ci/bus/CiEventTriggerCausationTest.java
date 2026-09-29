@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.ci.control.FakeCiStepRunner;
+import eu.wohlben.qits.ci.control.SuiteRunner;
 import eu.wohlben.qits.ci.githost.FakeGitHostRepoListing;
 import eu.wohlben.qits.eventstream.control.EventDispatcher;
 import eu.wohlben.qits.eventstream.control.EventFrame;
@@ -24,6 +25,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -95,13 +97,22 @@ public class CiEventTriggerCausationTest {
 
   @Inject FakeCiStepRunner fakeRunner;
 
+  /** Executes this suite's runs: every run is a runner's since qits-506 — see {@link SuiteRunner}. */
+  @Inject SuiteRunner suiteRunner;
+
   @Inject FakeGitHostRepoListing gitHostListing;
 
   @Inject EventDispatcher dispatcher;
 
+  @AfterEach
+  void stopTheSuiteRunner() throws Exception {
+    suiteRunner.disable();
+  }
+
   @BeforeEach
   void resetState() {
     fakeRunner.reset();
+    suiteRunner.enable();
     StubEventsServer.reset();
     gitHostListing.set();
   }

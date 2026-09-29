@@ -1,4 +1,4 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.is;
@@ -28,12 +28,12 @@ import org.junit.jupiter.api.Test;
  * asserted present-and-blank for exactly that reason: it has no rung to name any more, and an
  * always-blank key costs that consumer nothing while a removed one costs it a change.
  *
- * <p><b>It lives in {@code daemonhost} rather than beside the resource in {@code api}, and that
+ * <p><b>It lives in {@code runnerhost} rather than beside the resource in {@code api}, and that
  * still buys one Quarkus start instead of two.</b> Proving both arms means asking with the override
  * unset and with it set, and a second config value normally means a second {@code @TestProfile},
  * which means a second application boot racing the test port. {@link CiDaemonPins#versionOverride}
- * is public for this, so the set case is staged through {@link ClientProxy#unwrap} the way
- * {@code CiDaemonGateIT} stages the container url, and restored after. A deliberate, local ugliness
+ * is public for this, so the set case is staged through {@link ClientProxy#unwrap}, and restored
+ * after. A deliberate, local ugliness
  * and not a pattern to spread.
  *
  * <p>What this class used to prove and no longer can: that the endpoint answered {@code source:

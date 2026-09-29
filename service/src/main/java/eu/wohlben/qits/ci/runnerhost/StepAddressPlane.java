@@ -1,4 +1,4 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import java.net.URI;
@@ -73,7 +73,7 @@ public record StepAddressPlane(
 
   /**
    * qits-platform-mirror's own path for its npm pull-through cache, shared by both planes: {@code
-   * CiDaemonLauncher.internalNpmProxyUrl} composes the internal address from it too now, since the
+   * StepContainerSettings.internalNpmProxyUrl} composes the internal address from it too now, since the
    * mirror address is never a deployment fact — it is always {@code
    * <environment-or-public-origin>-qits-platform-mirror/npm/npmjs/}, on qits-net or through the
    * edge. There is no config key left to diverge from.

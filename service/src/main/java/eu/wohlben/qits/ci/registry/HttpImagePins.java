@@ -28,7 +28,7 @@ import org.jboss.logging.Logger;
  * <p><b>The address is DERIVED, never configured</b> — {@code IdpCommissioner}'s rule, for its
  * reason: a second key is a second thing to keep in step with the first, and a pin resolved against
  * one store and pulled from another is worse than no pin. It is the origin of {@code
- * qits.artifacts.maven.registry-url}, which is {@code CiDaemonLauncher.resolvedArtifactsUrl}'s own
+ * qits.artifacts.maven.registry-url}, which is {@code StepContainerSettings.resolvedArtifactsUrl}'s own
  * derivation and is set on every live deployment. That origin and the {@code /v2} registry are one
  * service by construction: {@code qits.artifacts.registry-host}'s default is that same authority,
  * and the registry cannot be mounted anywhere else — docker resolves a reference against {@code
@@ -192,7 +192,7 @@ public class HttpImagePins implements CiStepImagePins {
    * The origin this process dials the registry at — {@code qits.artifacts.url} when a deployment
    * states one, otherwise the scheme and authority of {@code qits.artifacts.maven.registry-url}.
    *
-   * <p><b>It is {@code CiDaemonLauncher.resolvedArtifactsUrl}'s ladder, deliberately the same
+   * <p><b>It is {@code StepContainerSettings.resolvedArtifactsUrl}'s ladder, deliberately the same
    * one.</b> That method decides the {@code $QITS_ARTIFACTS_URL} every step container reads, and
    * this decides where qits-ci itself asks about the same store; two different answers would mean a
    * step publishing to one address and its own pin resolved against another. It is derived rather

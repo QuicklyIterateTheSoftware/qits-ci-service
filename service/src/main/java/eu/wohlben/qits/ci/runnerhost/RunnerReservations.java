@@ -15,19 +15,16 @@ import org.jboss.logging.Logger;
 /**
  * A runner's {@code Reserve}, answered, and the run it reserved, driven.
  *
- * <p><b>The claim is {@link CiRunService#reserveFor}</b> — the claim loop's candidates, order and
+ * <p><b>The claim is {@link CiRunService#reserveFor}</b> — the one claim there is: the queue's candidates, order and
  * compare-and-swap, narrowed to what this runner may take — and the answer is exactly one {@link
  * Take} or {@link Nothing} — always {@code Nothing} on a draining session ({@link
  * CiRunnerRegistry.Session#draining}), which holds no slot. A {@code Take} binds the run to the
  * session it went out on ({@link CiRunnerRegistry#hold}) <em>before</em> the frame leaves, so
  * nothing the runner does afterwards can arrive for a run this process does not yet know it holds.
  *
- * <p><b>Each reserved run is driven on a thread of its own, never on a {@code ci-run-worker}.</b>
- * The local pool is {@code qits.ci.concurrent-builds} threads and its size is a statement about
- * this host's capacity; a runner's run spends none of that capacity — its containers run on the
- * runner's machine — so parking it on a pool thread would take a local build slot away for
- * nothing, and the pool's liveness census would count runner work as its own. So the driver is a
- * platform thread from an unbounded cached pool, named {@code ci-runner-run-<runId>} for as long as
+ * <p><b>Each reserved run is driven on a thread of its own.</b> A run's containers run on the
+ * runner's machine, so its driver here only waits on sockets; it is a platform thread from an
+ * unbounded cached pool, named {@code ci-runner-run-<runId>} for as long as
  * it drives that run. Unbounded is safe because the runners bound it: nothing reaches this executor
  * that a runner's slots did not first admit.
  *
@@ -71,8 +68,8 @@ public class RunnerReservations {
     try {
       reserved = runService.reserveFor(session.runner());
     } catch (RuntimeException e) {
-      // A claim that could not be made is a Nothing: the runner parks until its next Backlog, and
-      // the database blip that caused it is the claim loop's to live through as well.
+      // A claim that could not be made is a Nothing: the runner parks until its next Backlog, which
+      // is its retry.
       LOG.warnf(e, "Runner %s's reservation failed; answering Nothing", session.runnerName());
       registry.send(session, new Nothing());
       return;

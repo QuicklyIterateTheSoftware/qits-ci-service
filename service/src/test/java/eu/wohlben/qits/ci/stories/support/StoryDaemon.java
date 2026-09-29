@@ -28,9 +28,9 @@ import java.time.Duration;
  * <p>{@link FakeCiDaemon} is a real Vert.x WebSocket dialling the real endpoint with the real
  * handshake headers and framing the real protocol through the vendored {@code CiDaemonCodec} — the
  * host cannot tell it from a container. What this class adds is the <b>credential's provenance</b>
- * and the <b>edges</b>. The id and the secret come out of the workload spec qits-ci sent to
- * qits-containers ({@link MockContainers#awaitLaunchEnvironment}), which is exactly where a
- * container gets them and the only place they exist: nothing in the story reads the host's launch
+ * and the <b>edges</b>. The id and the secret come out of the workload spec qits-ci sent a runner
+ * in a {@code Launch} ({@link StoryRunner#awaitLaunch}), which is exactly where a container gets
+ * them and the only place they exist: nothing in the story reads the host's launch
  * table, so an admitted dial here is evidence that the credential really travelled the way the
  * service says it does.
  *

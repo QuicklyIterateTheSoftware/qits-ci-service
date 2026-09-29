@@ -37,7 +37,7 @@ import org.junit.jupiter.api.io.TempDir;
  * <b>THE PIN TEST.</b> The {@code qits} CLI at exactly the version this reactor pins is downloaded
  * from the real artifacts store and made to publish an SBOM — driven by a <em>composed</em>
  * release-phase step script, the one {@link CiReleaseComposer} really emits, run under {@code bash}
- * with the environment {@link CiDaemonLauncher} really injects.
+ * with the environment {@link eu.wohlben.qits.ci.runnerhost.StepContainerSettings} really injects.
  *
  * <h2>What it is for</h2>
  *

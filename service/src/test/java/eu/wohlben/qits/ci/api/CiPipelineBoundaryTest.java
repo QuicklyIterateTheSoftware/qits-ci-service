@@ -14,6 +14,7 @@ import eu.wohlben.qits.ci.control.CiStepRunner.StepResult;
 import eu.wohlben.qits.ci.bus.CiEventTriggerListener;
 import eu.wohlben.qits.ci.bus.ScmPushFrames;
 import eu.wohlben.qits.ci.control.FakeCiStepRunner;
+import eu.wohlben.qits.ci.control.SuiteRunner;
 import eu.wohlben.qits.ci.githost.FakeGitHostRepoListing;
 import eu.wohlben.qits.ci.githost.StubGitHost;
 import io.quarkus.test.common.TestResourceScope;
@@ -31,6 +32,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -46,7 +48,8 @@ import org.junit.jupiter.api.Test;
  * that fake died with the approach it modelled, because qits-ci never executes a repository's code.
  * What survives at this level is everything between the intake and the read surface — which config
  * an event produced, how many steps it declared, what each step was asked to run, and how outcomes
- * become rows. What a real container does with a real script is {@code CiDaemonGateIT}'s job.
+ * become rows. What a real container does with a real script is the runner's, and a real daemon
+ * binary's run is {@code CiDaemonPinIT}'s.
  *
  * <p><b>Where the loop starts, and it moved on 2026-09-05.</b> It used to start at a push: this
  * class seeded a bare origin, committed {@code .config/qits/ci-post-receive.yml} on a branch, pushed
@@ -94,6 +97,9 @@ public class CiPipelineBoundaryTest {
 
   @Inject FakeCiStepRunner fakeRunner;
 
+  /** Executes this suite's runs: every run is a runner's since qits-506 — see {@link SuiteRunner}. */
+  @Inject SuiteRunner suiteRunner;
+
   @Inject FakeGitHostRepoListing gitHostListing;
 
   /** The bus end of the trigger engine, for the one case that is about what a push does NOT do. */
@@ -106,9 +112,15 @@ public class CiPipelineBoundaryTest {
    */
   private final List<String> seeded = new ArrayList<>();
 
+  @AfterEach
+  void stopTheSuiteRunner() throws Exception {
+    suiteRunner.disable();
+  }
+
   @BeforeEach
   void resetRunner() {
     fakeRunner.reset();
+    suiteRunner.enable();
     seeded.clear();
     gitHostListing.set();
   }
@@ -131,8 +143,10 @@ public class CiPipelineBoundaryTest {
     assertTrue(
         listedSteps.stream().allMatch(step -> step.get("output") == null),
         "listing must not carry step output");
-    // Every run is pinned to one daemon build, resolved before the first container.
-    assertEquals("fake-daemon", run.get("daemonVersion"));
+    // Every run is pinned to one daemon build, resolved before the first container — the real pin,
+    // since the suite's step seam delegates the pin to the real runner seam.
+    assertEquals(
+        eu.wohlben.qits.cidaemon.protocol.CiDaemonBinary.VERSION, run.get("daemonVersion"));
 
     JsonPath detail =
         given()
@@ -598,11 +612,13 @@ public class CiPipelineBoundaryTest {
         .then()
         .statusCode(200)
         .contentType(ContentType.JSON)
-        // The queue envelope's own four keys, and not the single-run shape.
+        // The queue envelope's own four keys, and not the single-run shape. No concurrentBuilds any
+        // more (qits-506): the slots are the runners'.
         .body("$", org.hamcrest.Matchers.hasKey("running"))
         .body("$", org.hamcrest.Matchers.hasKey("queued"))
+        .body("$", org.hamcrest.Matchers.hasKey("runners"))
+        .body("$", org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasKey("concurrentBuilds")))
         .body("generatedAt", org.hamcrest.Matchers.notNullValue())
-        .body("concurrentBuilds", org.hamcrest.Matchers.greaterThanOrEqualTo(1))
         .body("id", org.hamcrest.Matchers.nullValue())
         .body("commitSha", org.hamcrest.Matchers.nullValue());
   }

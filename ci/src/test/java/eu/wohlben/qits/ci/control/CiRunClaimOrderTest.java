@@ -18,14 +18,15 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * <b>What the claim loop really does with {@link CiRunOrdering}'s answer.</b> {@code
+ * <b>What a runner's reservation really does with {@link CiRunOrdering}'s answer.</b> {@code
  * CiRunOrderingTest} owns the function; this class owns the queue it drives — accepted rows, a real
- * worker, a real database, and the order the fake step runner was actually asked to run things in.
+ * reservation ({@link SuiteRunner}), a real database, and the order the fake step runner was
+ * actually asked to run things in.
  *
  * <p>Every case is staged the way {@code CiQueuedRunTest} stages its own: one run parks inside its
- * first step with {@code fakeRunner.during(0, …)}, and since {@code qits.ci.concurrent-builds=1} in
- * this suite that run really is holding the sole worker. Everything accepted afterwards is genuinely
- * {@code QUEUED} at one instant the test controls, and releasing the latch is what lets the loop
+ * first step with {@code fakeRunner.during(0, …)}, and since the suite's runner has one slot that
+ * run really is holding the whole of CI. Everything accepted afterwards is genuinely {@code QUEUED}
+ * at one instant the test controls, and releasing the latch is what lets the next reservation
  * choose among them.
  *
  * <p><b>Acceptance order is the wrong answer in every case here, deliberately.</b> Each queue is
@@ -46,7 +47,7 @@ public class CiRunClaimOrderTest extends CiTestSupport {
   @AfterEach
   void releaseTheWorker() throws Exception {
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
   }
 
   // --- staging ------------------------------------------------------------------------------------
@@ -149,7 +150,7 @@ public class CiRunClaimOrderTest extends CiTestSupport {
     accept("hotfix", CiRunService.RELEASE_REQUEST_EVENT_NAME, payload("BLOCKING"));
 
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     // And the run that stated nothing sits in the middle, where MEDIUM is — not behind the renovate,
     // which is what "absent means unknown, not lowest" buys a repository whose publisher predates
@@ -169,7 +170,7 @@ public class CiRunClaimOrderTest extends CiTestSupport {
     accept("release", ReleaseJoin.RELEASE_EVENT_NAME, "{\"version\":\"2026.907.101500\"}");
 
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     assertEquals(List.of("release", "first-request", "second-request"), claimed());
   }
@@ -188,7 +189,7 @@ public class CiRunClaimOrderTest extends CiTestSupport {
         payload("LOWEST", "qits-ci-frontend"));
 
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     assertEquals(List.of("qits-ui-components-jslib", "qits-ci-frontend"), claimed());
   }
@@ -205,7 +206,7 @@ public class CiRunClaimOrderTest extends CiTestSupport {
 
     service.cancel(cancelledId);
     release.countDown();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     // The cancelled run ranked FIRST, so a loop that stopped at a candidate it could not claim would
     // have left the survivor queued forever. It moves on to the next candidate instead.
@@ -225,7 +226,7 @@ public class CiRunClaimOrderTest extends CiTestSupport {
             "qits-ui-components-jslib",
             CiRunService.RELEASE_REQUEST_EVENT_NAME,
             payload("HIGHER", "qits-ci-frontend", "qits-ci-service"));
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     CiRun run = soleRun(repoId);
     assertEquals("HIGHER", run.priority);
@@ -245,7 +246,7 @@ public class CiRunClaimOrderTest extends CiTestSupport {
             ReleaseJoin.RELEASE_EVENT_NAME,
             "{\"version\":\"2026.907.101500\",\"priority\":\"HIGH\","
                 + "\"downstreamTechnicalComponents\":[\"qits-ci-frontend\"]}");
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     CiRun run = soleRun(repoId);
     assertEquals("HIGH", run.priority);
@@ -262,7 +263,7 @@ public class CiRunClaimOrderTest extends CiTestSupport {
             "bystander",
             "BuildSuccessful",
             "{\"priority\":\"BLOCKING\",\"downstreamTechnicalComponents\":[\"qits-ci-service\"]}");
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     CiRun run = soleRun(repoId);
     assertNull(run.priority);
@@ -279,7 +280,7 @@ public class CiRunClaimOrderTest extends CiTestSupport {
             "verbose",
             CiRunService.RELEASE_REQUEST_EVENT_NAME,
             payload("B".repeat(CiRunService.MAX_PRIORITY_LENGTH + 1)));
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     CiRun run = soleRun(repoId);
     assertNull(run.priority, "recorded as none, never truncated");
@@ -296,7 +297,7 @@ public class CiRunClaimOrderTest extends CiTestSupport {
             "confused",
             CiRunService.RELEASE_REQUEST_EVENT_NAME,
             "{\"releaseRequestId\":\"rr-1\",\"downstreamTechnicalComponents\":\"qits-ci-service\"}");
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     assertNull(soleRun(repoId).downstreamRepos);
   }

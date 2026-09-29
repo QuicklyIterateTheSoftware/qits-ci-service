@@ -1,12 +1,14 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 import eu.wohlben.qits.ci.control.CiRepoRef;
-import eu.wohlben.qits.ci.daemonhost.CiDaemonLauncher.LaunchSpec;
+import eu.wohlben.qits.ci.idp.IdpCommissioner;
+import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.ci.idp.StubIdp;
-import eu.wohlben.qits.containers.client.ContainersWire.Spec;
+import eu.wohlben.qits.ci.runnerhost.StepContainerSettings.LaunchSpec;
+import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
 import eu.wohlben.qits.platformaccess.cli.PlatformAccessCliBinary;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -50,20 +52,14 @@ public class StepEnvironmentCharacterizationTest {
   }
 
   /** The shipped defaults, {@code dev} resolved — every address key a step container is told. */
-  static CiDaemonLauncher shippedLauncher(String idpUrl) {
-    CiDaemonLauncher launcher = new CiDaemonLauncher();
-    launcher.owner = "dev-qits-ci";
+  static StepContainerSettings shippedLauncher(String idpUrl) {
+    StepContainerSettings launcher = new StepContainerSettings();
     launcher.network = "qits-net";
     launcher.containerGitUrl = "http://dev-qits-platform-edge:8080";
     launcher.idpUrl = idpUrl;
     launcher.containerDaemonUrl = "ws://dev-qits-ci:8080/ci/daemon";
     launcher.daemonBinaryUrlTemplate =
         "http://dev-qits-artifacts:8080/artifacts/daemons/qits-ci-daemon/{version}";
-    launcher.registerTimeoutSeconds = 180;
-    launcher.initTimeoutSeconds = 120;
-    launcher.stepTimeoutSeconds = 900;
-    launcher.stepTimeoutGraceSeconds = 60;
-    launcher.outputMaxChars = 65536;
     launcher.memoryLimit = "4g";
     launcher.pidsLimit = 2048;
     launcher.cpus = "2";
@@ -87,7 +83,6 @@ public class StepEnvironmentCharacterizationTest {
     launcher.artifactsCliPackage = "qits";
     launcher.artifactsCliVersionOverride = Optional.empty();
     launcher.workspacesUrl = "http://dev-qits-workspaces:8080";
-    launcher.launchPatience = Duration.ZERO;
     return launcher;
   }
 
@@ -116,10 +111,11 @@ public class StepEnvironmentCharacterizationTest {
 
   @Test
   public void anInternalPublishingStepIsExactlyTheStepThatShipped() {
-    CiDaemonLauncher launcher = shippedLauncher(idp.authServerUrl());
-    launcher.commissions = idp.runCommissions(Duration.ofMillis(200));
+    StepContainerSettings launcher = shippedLauncher(idp.authServerUrl());
+    RunCommissions commissions = idp.runCommissions(Duration.ofMillis(200));
+    LaunchSpec step = sampleStep(2, true, false);
 
-    Spec spec = launcher.buildWorkloadSpec(sampleStep(2, true, false)).spec();
+    WorkloadSpec spec = compose(launcher, launcher.internalPlane(), step, commissions);
 
     String auth =
         Base64.getEncoder()
@@ -171,17 +167,18 @@ public class StepEnvironmentCharacterizationTest {
             "QITS_EVENT_PAYLOAD={\"branch\":\"maintenance/dependencies\"}");
     assertEquals(expected, entries(spec.env()));
     assertEquals("qits-net", spec.network());
-    assertEquals(List.of("host.docker.internal:host-gateway"), spec.addHosts());
+    assertEquals(List.of("host.docker.internal:host-gateway"), spec.extraHosts());
   }
 
   @Test
   public void anInternalPlainStepOnADeploymentThatCommissionsNothingIsExactlyTheStepThatShipped() {
-    CiDaemonLauncher launcher = shippedLauncher(idp.authServerUrl());
-    launcher.commissions = StubIdp.disabledCommissions();
+    StepContainerSettings launcher = shippedLauncher(idp.authServerUrl());
+    RunCommissions commissions = StubIdp.disabledCommissions();
     launcher.buildkitEnabled = false;
     launcher.mavenCentralMirrorEnabled = false;
+    LaunchSpec step = sampleStep(0, false, true);
 
-    Spec spec = launcher.buildWorkloadSpec(sampleStep(0, false, true)).spec();
+    WorkloadSpec spec = compose(launcher, launcher.internalPlane(), step, commissions);
 
     List<String> expected =
         List.of(
@@ -217,8 +214,20 @@ public class StepEnvironmentCharacterizationTest {
             "QITS_EVENT_PAYLOAD={\"branch\":\"maintenance/dependencies\"}");
     assertEquals(expected, entries(spec.env()));
     assertEquals("qits-net", spec.network());
-    assertEquals(List.of("host.docker.internal:host-gateway"), spec.addHosts());
+    assertEquals(List.of("host.docker.internal:host-gateway"), spec.extraHosts());
     assertNull(spec.env().get("QITS_COMMISSIONED_CLIENT_ID"));
+  }
+
+  /** Composes exactly what {@code StepContainerSettings#launch} used to, before it was deleted. */
+  static WorkloadSpec compose(
+      StepContainerSettings launcher,
+      StepAddressPlane plane,
+      LaunchSpec step,
+      RunCommissions commissions) {
+    RunCommissions.Credential credential =
+        RunCommissions.Credential.client(
+            commissions == null ? null : commissions.forRun(step.runId(), step.env()));
+    return StepWorkloadSpecs.compose(launcher.workloadSettings(), plane, step, credential, null);
   }
 
   /** The env as {@code KEY=value} lines in its own iteration order, so order is asserted too. */

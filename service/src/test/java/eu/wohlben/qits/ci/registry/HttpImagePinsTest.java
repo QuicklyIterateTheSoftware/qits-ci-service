@@ -207,7 +207,7 @@ public class HttpImagePinsTest {
 
   /**
    * The client wired by hand: the derivation under test is the maven root's origin, which is what a
-   * live deployment sets and what {@code CiDaemonLauncher.resolvedArtifactsUrl} reads too.
+   * live deployment sets and what {@code StepContainerSettings.resolvedArtifactsUrl} reads too.
    */
   private HttpImagePins pins(String origin) {
     HttpImagePins pins = new HttpImagePins();

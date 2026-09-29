@@ -31,7 +31,7 @@ import org.eclipse.microprofile.health.Readiness;
  * <p><b>What the deleted DOWN arm cost qits-cd's {@code awaitHealthy}: nothing.</b> That gate is
  * the single most valuable thing a readiness check here reaches, and it is not lost, because
  * {@link CiRunnerReadinessCheck} is the real gate and was always the better one — a qits-ci with
- * no claim loop and no runner accepts runs and executes none, which is the failure that actually shipped
+ * no runner connected accepts runs and executes none, which is the failure that actually shipped
  * (2026-09-07, green-while-dead) and the one a restored previous container actually fixes. A bad
  * daemon version, by contrast, is now a bad <em>pom</em>, and a pom is gated by this repository's
  * own release request, which runs that binary at that version against this host before the merge —

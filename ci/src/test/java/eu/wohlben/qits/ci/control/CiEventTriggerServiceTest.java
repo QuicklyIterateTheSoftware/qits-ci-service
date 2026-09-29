@@ -106,7 +106,7 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
   /** Drives evaluation and the run it enqueues to completion, without either worker's timing. */
   private void deliver(CiEventTriggerService.Arrival arrival) throws Exception {
     engine.evaluate(arrival);
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
   }
 
@@ -397,7 +397,7 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
 
     fakeCandidates.release();
     engine.awaitIdle();
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     assertEquals(1, runService.runsFor(repoId).size());
   }
@@ -429,7 +429,7 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
     assertEquals(1, done.runIds().size());
     // No waiting for a worker: the row the caller was told about exists as the call returns.
     assertEquals(done.runIds(), runService.runsFor(repoId).stream().map(r -> r.id).toList());
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
   }
 
   @Test
@@ -514,7 +514,7 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
     } finally {
       fakeCandidates.freeTheTriggerWorker();
       awaitEvaluatorDrained();
-      runService.awaitIdle();
+      suiteRunner.awaitIdle();
     }
   }
 
@@ -544,7 +544,7 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
 
     assertEquals(1, done.repositoriesRead(), "one project, one candidate asked");
     assertEquals(1, done.runIds().size());
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     assertEquals(1, runService.runsFor(repoId).size());
     assertEquals(
@@ -567,7 +567,7 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
 
     assertEquals(2, done.repositoriesRead(), "null scope is every project, exactly as before");
     assertEquals(2, done.runIds().size());
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
   }
 
   /**
@@ -638,7 +638,7 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
       fakeCandidates.freeTheTriggerWorker();
     }
     engine.awaitIdle();
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
     assertEquals(1, runService.runsFor(repoId).size());
@@ -666,7 +666,7 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
 
     engine.sweepOwed(Instant.now());
 
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     List<CiRun> recorded = runService.runsFor(repoId);
     assertEquals(1, recorded.size(), "the sweep is what the release request was waiting for");
@@ -689,7 +689,7 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
 
     engine.sweepOwed(Instant.now());
 
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     assertEquals(1, runService.runsFor(repoId).size(), "the dedupe holds, so the replay is a no-op");
     assertNull(owedRow(eventId));

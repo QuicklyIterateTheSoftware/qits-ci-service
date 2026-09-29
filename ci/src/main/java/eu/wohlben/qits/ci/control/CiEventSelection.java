@@ -12,7 +12,7 @@ import java.util.List;
  * another service and reaching qits-ci through an unauthenticated intake; interpolating it into a
  * shell "just for a true/false" would be remote influence over {@code sh -c} on the CI host, which
  * is the class of surface this repository has carefully avoided everywhere else (see {@code
- * CiIdentifiers} and {@code CiDaemonLauncher.BOOTSTRAP}). Bash stays what it already is here: the
+ * CiIdentifiers} and {@code StepContainerSettings.BOOTSTRAP}). Bash stays what it already is here: the
  * <em>step</em> language, running in a step container after the trigger has decided.
  *
  * <h2>The shape, and why it is this one</h2>

@@ -1,7 +1,6 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -19,32 +18,30 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 /**
- * <b>The claim loop outlives what happens on it.</b> {@code CiRunClaimOrderTest} owns which row a
- * worker takes and {@code CiQueuedRunTest} owns what a row means; this class owns the one question
- * neither of them asks — <b>is there still a worker afterwards</b>.
+ * <b>A reserved run is settled whatever happens on it, and one poison row costs one row.</b> {@code
+ * CiRunClaimOrderTest} owns which row a runner takes and {@code CiQueuedRunTest} owns what a row
+ * means; this class owns what a run's end leaves behind for the runs after it.
  *
- * <p>It exists because the answer was measured to be "no". After a redeploy on 2026-09-07 every run
- * this instance accepted sat {@code QUEUED} indefinitely: the fixed pool's claim loops had ended,
- * one at a time and silently, nothing resubmitted them, no health check said so, and only a process
- * restart healed it. Four ways they ended, and one row that stopped every surviving worker anyway:
+ * <p>It began as the in-process claim loop's resilience suite (2026-09-07: every run an instance
+ * accepted sat {@code QUEUED} after a redeploy, because the pool's loops had ended one at a time).
+ * The loop is deleted (qits-506) — every run is a runner's reservation — and so are the cases that
+ * were only about the loop's own thread (a leaked interrupt flag, the census). What stayed is what
+ * still decides whether the queue moves:
  *
  * <ul>
- *   <li>a helper on the run path caught an {@code InterruptedException} and <b>restored the flag</b>
- *       before returning its fallback, which the loop then read as a shutdown;
  *   <li>an {@code Error} — and in a native image a missing reflection registration <em>is</em> one —
- *       killed a pool thread the pool never refills;
- *   <li>a throw before the claimed run's own try left the row {@code RUNNING} with nothing to settle
- *       it;
- *   <li>a {@code QUEUED} row whose snapshot no longer parses abandoned the scan, so everything the
- *       ordering put behind it was unreachable by every worker, forever.
+ *       still settles the claimed run, so the runner's slot is freed and its next run runs;
+ *   <li>a throw before the claimed run's own try must not leave the row {@code RUNNING} with
+ *       nothing to settle it;
+ *   <li>a {@code QUEUED} row whose snapshot no longer parses is settled by the reservation that
+ *       walks past it, so everything the ordering put behind it still runs.
  * </ul>
  *
- * <p>Every case here is staged the way this suite's siblings stage theirs — {@code
- * qits.ci.concurrent-builds=1}, so the sole worker really is the whole of CI, and a run accepted
- * after the damage is genuinely a run the queue would have lost.
+ * <p>Every case runs on {@link SuiteRunner}'s one slot, so the sole runner really is the whole of CI,
+ * and a run accepted after the damage is genuinely a run the queue would have lost.
  */
 @QuarkusTest
-public class CiRunWorkerResilienceTest extends CiTestSupport {
+public class CiReservedRunResilienceTest extends CiTestSupport {
 
   private static final String CONFIG_ONE_STEP =
       """
@@ -74,23 +71,13 @@ public class CiRunWorkerResilienceTest extends CiTestSupport {
     return all.get(0);
   }
 
-  /** The census after the damage, which is the assertion every case here shares. */
-  private void assertTheQueueStillHasItsWorker() {
-    CiRunService.WorkerCensus census = service.workerCensus();
-    assertEquals(
-        census.configured(),
-        census.live(),
-        "every configured claim loop is still live — the pool was refilled or never emptied");
-  }
-
-  // --- a worker that dies of an Error ----------------------------------------------------------
+  // --- a run that dies of an Error ------------------------------------------------------------
 
   @Test
-  public void aWorkerThatSuffersAnErrorMidRunStillClaimsTheNextRun() throws Exception {
+  public void aRunThatSuffersAnErrorIsSettledAndItsRunnerTakesTheNextRun() throws Exception {
     // NoClassDefFoundError rather than a made-up Error, because it is the one this deployable really
     // risks: service/ compiles to a native image, and a type nobody registered surfaces at runtime,
-    // in the binary, as exactly this — while the JVM suite stays green. The loop used to catch
-    // RuntimeException only, so one of these cost a build slot for the life of the process.
+    // in the binary, as exactly this — while the JVM suite stays green.
     AtomicBoolean thrown = new AtomicBoolean();
     fakeRunner.during(
         0,
@@ -102,78 +89,39 @@ public class CiRunWorkerResilienceTest extends CiTestSupport {
 
     String exploding = seedRepo();
     accept(exploding);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     // The row is terminal rather than stranded RUNNING: an Error is settled like any other way a
     // claimed run can end, because the run is over either way and the row has to say so.
     CiRun died = soleRun(exploding);
     assertEquals(CiRunStatus.FAILED, died.status);
     assertNotNull(died.finishedAt);
-    assertTheQueueStillHasItsWorker();
+    assertTrue(fakeRunner.closed().contains(died.id), "the run closed, so its slot was given back");
 
     String next = seedRepo();
     accept(next);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     assertEquals(
         CiRunStatus.SUCCESS,
         soleRun(next).status,
-        "the worker survived the Error and claimed the next run");
-    assertTheQueueStillHasItsWorker();
-  }
-
-  // --- a worker whose interrupt flag was restored under it -------------------------------------
-
-  @Test
-  public void aLeakedInterruptFlagDoesNotRetireTheWorker() throws Exception {
-    // Exactly what CiDaemonRegistry.await, CiDaemonLauncher's sleep, IdpCommissioner,
-    // HttpGitConfigSource and DbRetry each do when their wait is interrupted: restore the flag and
-    // return a fallback. Every one of them is locally correct; the loop is what has to tell the
-    // restored flag from a shutdown, and it does it by asking whether this process is stopping.
-    AtomicBoolean leaked = new AtomicBoolean();
-    fakeRunner.during(
-        0,
-        spec -> {
-          if (leaked.compareAndSet(false, true)) {
-            Thread.currentThread().interrupt();
-          }
-        });
-
-    String leaky = seedRepo();
-    accept(leaky);
-    service.awaitIdle();
-
-    assertTrue(leaked.get(), "the flag really was restored on the run worker");
-    assertNotEquals(
-        CiRunStatus.QUEUED, soleRun(leaky).status, "the run was claimed with the flag raised");
-    assertTheQueueStillHasItsWorker();
-
-    String next = seedRepo();
-    accept(next);
-    service.awaitIdle();
-
-    assertEquals(
-        CiRunStatus.SUCCESS,
-        soleRun(next).status,
-        "a restored flag costs a step, never the claim loop");
-    assertTheQueueStillHasItsWorker();
+        "the runner's slot came back and it took the next run");
   }
 
   // --- one poison row costs one row ------------------------------------------------------------
 
   @Test
   public void aRowThatCannotBeReconstructedIsSettledAndTheRunsBehindItStillRun() throws Exception {
-    // The regression the queue's own notes recorded as "the follow-up". The poison row is the OLDEST
-    // and both rows state nothing else, so CiRunOrdering's last tie-break puts it first — which is
-    // what made it a wedge rather than a curiosity: a loop that abandoned the scan there left every
-    // row behind it unreachable by every worker, on every pass, and the boot sweep handed the same
-    // row straight back.
+    // The poison row is the OLDEST and both rows state nothing else, so CiRunOrdering's last
+    // tie-break puts it first — which is what made it a wedge once: a scan that stopped there left
+    // every row behind it unreachable, on every pass, and the boot sweep handed the same row back.
+    // The reservation walks past it, takes the row behind, and settles it after its own claim.
     String poisonRepo = "poison-" + UUID.randomUUID();
     String poison = insertUnreadableQueuedRow(poisonRepo, Instant.now().minusSeconds(60));
     String behind = seedRepo();
 
     accept(behind);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     forgetLoadedEntities();
     CiRun settled = service.requireRun(poison);
@@ -189,18 +137,17 @@ public class CiRunWorkerResilienceTest extends CiTestSupport {
     assertEquals(
         CiRunStatus.SUCCESS,
         soleRun(behind).status,
-        "and the row the ordering put behind it ran in the same pass");
+        "and the row the ordering put behind it was reserved and ran");
 
     // The other half of the wedge: a settled row is not QUEUED, so the sweep a successor runs has
     // nothing to hand back.
     service.sweepInterrupted();
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     assertEquals(
         CiRunStatus.CANCELLED,
         service.requireRun(poison).status,
         "a boot sweep does not resurrect it");
-    assertTheQueueStillHasItsWorker();
   }
 
   // --- a throw between the claim and the run ---------------------------------------------------
@@ -208,15 +155,14 @@ public class CiRunWorkerResilienceTest extends CiTestSupport {
   @Test
   public void aDaemonPinThatThrowsSettlesTheClaimedRunRatherThanStrandingItRunning()
       throws Exception {
-    // startQueued has already flipped the row RUNNING by the time the pin is resolved, and the pin
-    // ladder's answer() is deliberately not DbRetry-wrapped — so this throw used to happen with the
-    // row RUNNING, no steps, no finishedAt and no handler above it. Nothing short of the next
+    // The reservation has already flipped the row RUNNING by the time the pin is resolved — so this
+    // throw used to happen with the row RUNNING, no steps, no finishedAt and no handler above it. Nothing short of the next
     // process's boot sweep could settle such a row; a person had to do it in SQL.
     fakeRunner.failPin(new IllegalStateException("the daemon pin ladder could not be read"));
 
     String repoId = seedRepo();
     accept(repoId);
-    service.awaitIdle();
+    suiteRunner.awaitIdle();
 
     CiRun run = soleRun(repoId);
     assertEquals(CiRunStatus.FAILED, run.status, "settled like any other way a claimed run ends");
@@ -224,13 +170,12 @@ public class CiRunWorkerResilienceTest extends CiTestSupport {
     assertNotNull(run.finishedAt, "and it is not RUNNING for a successor to find");
     assertNull(run.daemonVersion, "nothing was pinned, so nothing is recorded as pinned");
     assertEquals(0, service.stepsFor(run.id).size(), "it never reached a step");
-    assertTheQueueStillHasItsWorker();
   }
 
   // --- staging ---------------------------------------------------------------------------------
 
   /**
-   * A {@code QUEUED} event row a worker can look at and never run: its {@code trigger_config} is not
+   * A {@code QUEUED} event row a runner can look at and never run: its {@code trigger_config} is not
    * a trigger file at all, so {@code CiEventTriggerParser} refuses it.
    *
    * <p>Written straight through the repository, because the engine cannot produce one — the snapshot

@@ -90,7 +90,7 @@ public class CiPlatformTriggerTest extends CiTestSupport {
 
   private void deliver(CiEventTriggerService.Arrival arrival) throws Exception {
     engine.evaluate(arrival);
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
   }
 

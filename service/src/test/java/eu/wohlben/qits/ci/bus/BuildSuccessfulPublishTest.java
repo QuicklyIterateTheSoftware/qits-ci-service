@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.FakeCiStepRunner;
+import eu.wohlben.qits.ci.control.SuiteRunner;
 import eu.wohlben.qits.ci.githost.FakeGitHostRepoListing;
 import eu.wohlben.qits.ci.projects.FakeProjectsRepoListing;
 import eu.wohlben.qits.ci.githost.StubGitHost;
@@ -27,6 +28,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -101,14 +103,23 @@ public class BuildSuccessfulPublishTest {
 
   @Inject FakeCiStepRunner fakeRunner;
 
+  /** Executes this suite's runs: every run is a runner's since qits-506 — see {@link SuiteRunner}. */
+  @Inject SuiteRunner suiteRunner;
+
   @Inject FakeGitHostRepoListing gitHostListing;
 
   /** The platform catalogue, which is the only listing that can answer a public NAME. */
   @Inject FakeProjectsRepoListing projectsListing;
 
+  @AfterEach
+  void stopTheSuiteRunner() throws Exception {
+    suiteRunner.disable();
+  }
+
   @BeforeEach
   void resetState() {
     fakeRunner.reset();
+    suiteRunner.enable();
     StubEventsServer.reset();
     gitHostListing.set();
     projectsListing.unset();

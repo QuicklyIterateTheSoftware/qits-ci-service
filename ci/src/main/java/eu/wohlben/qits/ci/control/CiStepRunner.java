@@ -3,14 +3,15 @@ package eu.wohlben.qits.ci.control;
 import java.util.Map;
 
 /**
- * Executes one pipeline step. The sole implementation is {@code CiDaemonStepRunner} in the service
- * module: it starts a container, waits for that container's own {@code qits-ci-daemon} to dial back,
- * and hands the step's script over as the reply to the daemon's {@code Initialized}. <b>Nothing on
+ * Executes one pipeline step. The contract {@link CiRunnerStepRunner} extends, and that is the one
+ * seam asked for since qits-506: the service module's {@code RunnerStepRunner} asks the runner that
+ * holds the run to start a container, waits for that container's own {@code qits-ci-daemon} to dial
+ * back, and hands the step's script over as the reply to the daemon's {@code Initialized}. <b>Nothing on
  * this side of the seam ever runs a step's script</b> — see the invariant in {@code CLAUDE.md}.
  *
  * <p>The seam survived the swap as a name and as a <em>shape</em>: still exactly one blocking call
  * per step, so {@code CiRunService.runSteps} stays a sequential loop with one transaction per row
- * and each run worker remains sequential within one pipeline. What changed is that a step now <b>emits events</b>
+ * and each run's driver remains sequential within one pipeline. What changed is that a step now <b>emits events</b>
  * while it runs — chunks as the container produces them, and the two lifecycle instants the host
  * stamps — instead of only answering once at the end.
  *

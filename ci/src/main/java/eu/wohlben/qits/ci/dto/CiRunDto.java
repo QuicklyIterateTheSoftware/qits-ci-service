@@ -53,7 +53,7 @@ import java.util.UUID;
  *
  * <p><b>{@code priority} is why the queue reorders</b>, and it is here for exactly that reason. It
  * is the triggering event's own word — the release request's effective priority, folded in
- * qits-projects — recorded verbatim at accept, and it is one of the two inputs the claim loop ranks
+ * qits-projects — recorded verbatim at accept, and it is one of the two inputs a runner's reservation ranks
  * {@code QUEUED} runs by. An operator looking at {@code /active} and asking why the newest run was
  * claimed before the oldest must be able to read the answer off the rows rather than infer it, so
  * the value is exposed even though this service compares it to nothing outside its ordering.
@@ -124,7 +124,7 @@ import java.util.UUID;
  *
  * <p><b>{@code queuePosition} is the run's 0-based index in the suggested claim order</b> — where
  * this service would really get to it, not where it sits in whatever order the listing happens to
- * be sorted in. It is computed by the same pure function the claim loop walks, so a client asking
+ * be sorted in. It is computed by the same pure function a runner's reservation walks, so a client asking
  * "how far down the queue am I" gets qits-ci's own answer rather than a reconstruction. <b>A client
  * must not compute this for itself</b>: the criteria are kind, then dependency topology, then
  * priority, then queue time, and any second implementation of them is a second implementation that

@@ -54,30 +54,29 @@ import java.util.UUID;
  * and dialled back) rather than a missing fact, and reading it as anything else would need a second
  * timeline this service deliberately does not keep.
  *
- * <p><b>The slots are the model and they are the whole of it.</b> {@code concurrentBuilds} slots,
- * each holding the instant it frees; seeded with the {@code RUNNING} runs' remaining times,
- * fewest-remaining first, and padded with zero for every idle slot. Then the queued runs in claim
- * order, each into the earliest-free slot: its start is that slot's free-at, its finish is that plus
- * its own expected total, and the slot frees at that finish. With {@code concurrentBuilds == 1} this
- * degenerates to plain addition — each run starts when the one before it ends — which is worth
- * saying out loud because it is the case that actually ships.
+ * <p><b>The slots are the model and they are the whole of it.</b> {@code slots} slots — the
+ * connected runners' own, see {@link #slotCount} — each holding the instant it frees; seeded with
+ * the {@code RUNNING} runs' remaining times, fewest-remaining first, and padded with zero for every
+ * idle slot. Then the queued runs in claim order, each into the earliest-free slot: its start is
+ * that slot's free-at, its finish is that plus its own expected total, and the slot frees at that
+ * finish. With {@code slots == 1} this degenerates to plain addition — each run starts when the one
+ * before it ends.
  *
  * <p><b>More {@code RUNNING} runs than slots is a real shape, not a contradiction to refuse.</b> A
- * shrunk {@code qits.ci.concurrent-builds}, or a leftover a predecessor was holding, both produce
- * it. The extras are <em>folded onto the earliest-free slot</em> rather than dropped: the remainings
- * are seeded smallest-first and each one is added to whichever slot frees soonest, so the surplus
- * work queues behind the rest exactly as a queued run would. Taking the {@code concurrentBuilds}
- * smallest and discarding the others was the alternative and it is worse in the direction that
- * matters — it would forecast a queue that starts sooner than any process could possibly start it,
- * by pretending work in flight is not in flight.
+ * runner whose slots an operator shrank, one that disconnected while holding runs, or a leftover a
+ * predecessor was holding all produce it. The extras are <em>folded onto the earliest-free
+ * slot</em> rather than dropped: the remainings are seeded smallest-first and each one is added to
+ * whichever slot frees soonest, so the surplus work queues behind the rest exactly as a queued run
+ * would. Taking the {@code slots} smallest and discarding the others was the alternative and it is
+ * worse in the direction that matters — it would forecast a queue that starts sooner than anything
+ * could possibly start it, by pretending work in flight is not in flight.
  *
- * <p><b>Zero slots is a real estate, and answers no ETA rather than a guess</b> (qits-503). With
- * {@code qits.ci.concurrent-builds=0} every run is a runner's, so a moment with no runner connected
- * — or only quarantined ones — is a queue nothing will move until one arrives. Every queued run's
- * start is then {@link Unknown#NO_BUILD_SLOTS}, and so is its finish unless its own total is
- * unknown too, which wins as it always does; the running half is forecast as ever, since a run
- * already executing somewhere has its own remaining time whatever the slots now say. A negative
- * count is read as zero.
+ * <p><b>Zero slots is a real estate, and answers no ETA rather than a guess</b> (qits-503). Every
+ * run is a runner's, so a moment with no runner connected — or only quarantined ones — is a queue
+ * nothing will move until one arrives. Every queued run's start is then {@link
+ * Unknown#NO_BUILD_SLOTS}, and so is its finish unless its own total is unknown too, which wins as
+ * it always does; the running half is forecast as ever, since a run already executing somewhere has
+ * its own remaining time whatever the slots now say. A negative count is read as zero.
  *
  * <h2>Unknown poisons forward, and only forward</h2>
  *
@@ -129,8 +128,8 @@ public final class CiQueueForecast {
     RUNNING_RUN_HAS_NO_PREDICTION,
 
     /**
-     * No build slot exists to start it in: the local pool is sized 0 and no runner that takes work
-     * is connected (qits-503). Heals the moment one connects.
+     * No build slot exists to start it in: no runner that takes work is connected (qits-503).
+     * Heals the moment one connects.
      */
     NO_BUILD_SLOTS
   }
@@ -239,8 +238,8 @@ public final class CiQueueForecast {
   }
 
   /**
-   * How many runs the estate executes at once: the local pool plus the slots of every
-   * <b>connected</b> runner.
+   * How many runs the estate executes at once: the slots of every <b>connected</b> runner, since a
+   * runner is the only thing that executes a run (qits-506).
    *
    * <p><b>A runner's whole slot count, not its free slots.</b> The runs a runner holds are already
    * {@code RUNNING} rows, so they are already in the forecast's running half, where each occupies
@@ -250,8 +249,8 @@ public final class CiQueueForecast {
    * would claim for it, whatever its row grants — and neither does a quarantined one, which takes
    * nothing from the queue but its own health check (see {@link RunnerCapacity#effectiveSlots}).
    */
-  public static int slotCount(int concurrentBuilds, List<RunnerCapacity> runners) {
-    int slots = Math.max(0, concurrentBuilds);
+  public static int slotCount(List<RunnerCapacity> runners) {
+    int slots = 0;
     for (RunnerCapacity runner : runners == null ? List.<RunnerCapacity>of() : runners) {
       if (runner.connected()) {
         slots += runner.effectiveSlots();
@@ -275,9 +274,8 @@ public final class CiQueueForecast {
    *     queue then starts at zero
    * @param queuedInClaimOrder the queued runs <b>already in claim order</b>, as {@link
    *     CiRunOrdering#explain(List)} answers them; null or empty answers an empty list
-   * @param concurrentBuilds how many runs this deployment executes at once — the local pool plus
-   *     every connected runner's slots, see {@link #slotCount}; 0 forecasts every queued run {@link
-   *     Unknown#NO_BUILD_SLOTS}
+   * @param slots how many runs the estate executes at once — every connected runner's slots, see
+   *     {@link #slotCount}; 0 forecasts every queued run {@link Unknown#NO_BUILD_SLOTS}
    * @param now the instant every millisecond in the answer is relative to; never read from a clock
    *     in here
    * @return one entry per input run on each side
@@ -285,12 +283,12 @@ public final class CiQueueForecast {
   public static Forecast forecast(
       List<CiRun> running,
       List<CiRunOrdering.OrderedRun> queuedInClaimOrder,
-      int concurrentBuilds,
+      int slots,
       Instant now) {
     List<CiRun> live = running == null ? List.of() : running;
     List<CiRunOrdering.OrderedRun> queue =
         queuedInClaimOrder == null ? List.of() : queuedInClaimOrder;
-    int slotCount = Math.max(0, concurrentBuilds);
+    int slotCount = Math.max(0, slots);
 
     // The running half, and the one fact the queued half needs from it: whether any slot's free-at
     // is unknowable. One unpredicted run in flight is enough — it holds a slot for an unknown time,

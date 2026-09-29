@@ -59,9 +59,8 @@ import org.jboss.logging.Logger;
  * QUEUED} or {@code RUNNING}, that this process is not holding, and that is older than {@link
  * #TOKEN_GRACE} is deleted. Same listing, same rule: unread, nothing is reaped.
  *
- * <p><b>Boot, on its own thread.</b> The observer runs after both existing boot observers ({@code
- * CiDaemonLauncher.BOOT_REAP_PRIORITY}, then {@code CiRunService.BOOT_SWEEP_PRIORITY}) so the run
- * table it reads is the one the sweep left, and it hands the work to a thread of its own rather than
+ * <p><b>Boot, on its own thread.</b> The observer runs after the run sweep ({@code
+ * CiRunService.BOOT_SWEEP_PRIORITY}) so the run table it reads is the one the sweep left, and it hands the work to a thread of its own rather than
  * blocking the startup thread on the network. That lesson was paid live by the daemon pin ladder's
  * own startup discovery — a startup observer that waits on a service loses the container
  * healthcheck's race and cd kills the deployment — and it outlived the discovery, which is deleted.
@@ -72,9 +71,8 @@ public class CommissionReconciler {
   private static final Logger LOG = Logger.getLogger(CommissionReconciler.class);
 
   /**
-   * Boot order, third. Both halves of the existing reconciliation run first — the container reap at
-   * 2000 and the run sweep at 2100 — because what is reaped here is decided by which runs are still
-   * {@code QUEUED} or {@code RUNNING}, and the sweep is what settles that.
+   * Boot order: after the run sweep at 2100, because what is reaped here is decided by which runs
+   * are still {@code QUEUED} or {@code RUNNING}, and the sweep is what settles that.
    */
   public static final int BOOT_RECONCILE_PRIORITY = 2200;
 
@@ -95,7 +93,7 @@ public class CommissionReconciler {
   static final Duration TOKEN_GRACE = Duration.ofMinutes(10);
 
   /**
-   * Skipped under {@code TEST}, like both boot observers it follows: the suites reach no idp by
+   * Skipped under {@code TEST}, like the run sweep it follows: the suites reach no idp by
    * intent. {@link #reconcile()} is what a test drives instead.
    */
   void onStart(@Observes @Priority(BOOT_RECONCILE_PRIORITY) StartupEvent event) {

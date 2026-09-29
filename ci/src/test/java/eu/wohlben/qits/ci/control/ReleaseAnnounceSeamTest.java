@@ -164,7 +164,7 @@ public class ReleaseAnnounceSeamTest extends CiTestSupport {
     engine.evaluate(
         new CiEventTriggerService.Arrival(
             eventId, "SCMRelease", Instant.parse("2026-08-01T09:00:00Z"), payload));
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
     forgetLoadedEntities();
     return eventId;
   }

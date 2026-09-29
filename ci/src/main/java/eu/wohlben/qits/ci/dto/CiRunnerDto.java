@@ -30,7 +30,7 @@ import java.util.UUID;
  *
  * <p>{@code stepMemoryLimit} is the memory cap this runner's step containers get, a docker size such
  * as {@code 6g}; null means the platform's own {@code qits.ci.memory-limit}, which is what every
- * runner that never set one — and the in-process executor, which has no row — runs its steps under.
+ * runner that never set one runs its steps under.
  */
 public record CiRunnerDto(
     UUID id,

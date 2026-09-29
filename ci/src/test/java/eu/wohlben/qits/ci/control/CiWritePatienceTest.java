@@ -127,7 +127,7 @@ public class CiWritePatienceTest extends CiTestSupport {
     QuarkusMock.installMockForType(flaky, CiRunRepository.class);
 
     engine.evaluate(arrival());
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
 
     assertTrue(flaky.flushes() > 1, "the severed insert was not retried at all");
     List<CiRun> runs = recorded();
@@ -146,7 +146,7 @@ public class CiWritePatienceTest extends CiTestSupport {
     QuarkusMock.installMockForType(broken, CiRunRepository.class);
 
     CiEventTriggerService.Evaluation evaluation = engine.evaluate(arrival());
-    runService.awaitIdle();
+    suiteRunner.awaitIdle();
 
     assertEquals(1, broken.flushes(), "a business failure was waited on");
     assertEquals(List.of(), evaluation.runIds());

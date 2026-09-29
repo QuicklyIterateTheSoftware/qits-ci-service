@@ -76,7 +76,7 @@ import org.jboss.logging.Logger;
  * secret at all; the launch is still minted one (below), but an EDGE launch's step container is
  * never handed it.
  *
- * <p>{@link CiDaemonStepRunner} is what drives this in production, one step at a time.
+ * <p>{@code RunnerStepRunner} is what drives this in production, one step at a time.
  */
 @ApplicationScoped
 public class CiDaemonRegistry {
@@ -296,7 +296,7 @@ public class CiDaemonRegistry {
    * delivery — which is what a real run actually depends on, since {@code Ack} and every frame after
    * it (not least {@code RunStep}) travel that direction.
    *
-   * <p><b>Nothing calls this today, and it is kept deliberately.</b> {@link CiDaemonStepRunner}
+   * <p><b>Nothing calls this today, and it is kept deliberately.</b> {@code RunnerStepRunner}
    * moves straight from {@link #awaitRegistered} to {@link #awaitInitialized}, so a real container's
    * {@link AckReceived} is recorded here and never awaited. Its one caller was the pin ladder's
    * container probe, whose whole job was to prove the host→daemon round trip before a version was

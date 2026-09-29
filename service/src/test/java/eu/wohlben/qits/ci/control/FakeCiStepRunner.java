@@ -1,9 +1,10 @@
 package eu.wohlben.qits.ci.control;
 
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
-import io.quarkus.arc.properties.IfBuildProperty;
+import eu.wohlben.qits.ci.runnerhost.RunnerStepRunner;
 import io.quarkus.test.Mock;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Typed;
 import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -23,8 +24,7 @@ import java.util.function.Consumer;
  * the approach it modelled. Running a repository's script as a host process is precisely the thing
  * qits-ci does not do, and a fixture that kept doing it would have kept the retired approach alive
  * in the test sources after it was deleted from the main ones — the residue the eradication decision
- * exists to forbid. **No fake in this repository executes a step.** Real step semantics are proven
- * in exactly one place, {@code CiDaemonGateIT}, against a real container running a real daemon.
+ * exists to forbid. **No fake in this repository executes a step.**
  *
  * <p>What a test scripts here is therefore only what the seam promises: some chunks, then a result.
  *
@@ -34,21 +34,20 @@ import java.util.function.Consumer;
  * could not see {@code GET /ci/api/runs/&#123;runId&#125;}'s {@code live} object at all and every
  * assertion about it would have to be made against a hand-wired relay instead of against the read
  * surface. What is still scripted rather than performed is everything a step does; the four calls
- * below are the ones {@code CiDaemonStepRunner} makes around a step, in its order.
+ * below are the ones {@code RunnerStepRunner} makes around a step, in its order.
  *
- * <p><b>It is on by default and off for the gate.</b> A {@code @Mock} alternative replaces its bean
- * across the whole test application, which would have made {@code CiDaemonGateIT} assert against
- * this class instead of against real containers — silently, and very fast. The build property below
- * is what lets that one test profile switch it off; {@code enableIfMissing} keeps every other suite
- * exactly as it was, and the condition is build-time because that is when a bean is removed.
+ * <p><b>It is the runner seam, and it scripts only the {@link SuiteRunner}'s runs.</b> Since qits-506
+ * every run is a runner's and {@link CiRunnerStepRunner} is the only seam {@code CiRunService} asks,
+ * so this {@code @Mock} alternative stands in for it across the test application — but a run a real
+ * runner holds over the real socket ({@code CiRunnerSocketTest}, {@code RunnerStepRunnerTest}) is
+ * handed straight to the real {@link RunnerStepRunner}, untouched. Which is which is decided by
+ * {@link #hold}: the suite's runner holds its runs here from its reservation until they close, the
+ * way the real registry holds a socket runner's.
  */
 @Mock
 @ApplicationScoped
-@IfBuildProperty(name = FakeCiStepRunner.ENABLED, stringValue = "true", enableIfMissing = true)
-public class FakeCiStepRunner implements CiStepRunner {
-
-  /** Set to {@code false} by a test profile that wants the real {@code CiDaemonStepRunner}. */
-  public static final String ENABLED = "qits.ci.fake-step-runner";
+@Typed({FakeCiStepRunner.class, CiRunnerStepRunner.class})
+public class FakeCiStepRunner implements CiRunnerStepRunner {
 
   /** What a scripted step emits before it answers. */
   public record Script(List<String> chunks, StepResult result) {
@@ -60,10 +59,10 @@ public class FakeCiStepRunner implements CiStepRunner {
 
   // Accessed via the getters — a direct field read through the CDI client proxy would see the
   // proxy's own (empty) field, not the contextual instance's.
-  private final List<StepSpec> executed = new ArrayList<>();
+  private final List<StepSpec> executed = java.util.Collections.synchronizedList(new ArrayList<>());
   private final Map<Integer, Script> scripted = new HashMap<>();
   private final Map<Integer, Consumer<StepSpec>> during = new HashMap<>();
-  private final List<String> cancelled = new ArrayList<>();
+  private final List<String> cancelled = java.util.Collections.synchronizedList(new ArrayList<>());
 
   // Written on the worker thread and read on the request thread — the same crossing the real
   // runner's in-flight map makes, and the reason this one is concurrent.
@@ -71,6 +70,21 @@ public class FakeCiStepRunner implements CiStepRunner {
 
   /** The live surface, fed here exactly where the real runner feeds it — see the class javadoc. */
   @Inject CiStepRelay relay;
+
+  /** The real seam, for every run the suite's runner does not hold. */
+  @Inject RunnerStepRunner real;
+
+  /** The suite's runner's runs, from reservation to close — see {@link #hold}. */
+  private final Set<String> held = ConcurrentHashMap.newKeySet();
+
+  /** What {@link SuiteRunner} does at its reservation: this run is scripted here until it closes. */
+  public void hold(String runId) {
+    held.add(runId);
+  }
+
+  private boolean scripted(String runId) {
+    return held.contains(runId);
+  }
 
   public List<StepSpec> executed() {
     return executed;
@@ -103,15 +117,24 @@ public class FakeCiStepRunner implements CiStepRunner {
     during.clear();
     cancelled.clear();
     inFlight.clear();
+    held.clear();
   }
 
+  /**
+   * The pin is asked before the run's first step and carries no run id, so it cannot tell whose run
+   * it is — and it needs no telling: the real pin is a constant off the classpath, so every run in
+   * this suite pins exactly what a deployed one would.
+   */
   @Override
   public DaemonPin pinDaemon() {
-    return new DaemonPin("fake-daemon", "http://fake.invalid/ci-daemon/fake-daemon");
+    return real.pinDaemon();
   }
 
   @Override
   public StepResult run(StepSpec spec, StepListener listener) {
+    if (!scripted(spec.runId())) {
+      return real.run(spec, listener);
+    }
     inFlight.add(spec.runId());
     relay.begin(spec.runId(), spec.stepIndex());
     try {
@@ -142,17 +165,25 @@ public class FakeCiStepRunner implements CiStepRunner {
 
   @Override
   public void cancel(String runId) {
+    if (!scripted(runId)) {
+      real.cancel(runId);
+      return;
+    }
     cancelled.add(runId);
   }
 
-  /** True exactly while a step of the run is executing here — what the real runner answers. */
+  /** Held by the suite's runner, or by a real runner through the real seam. */
   @Override
   public boolean owns(String runId) {
-    return inFlight.contains(runId);
+    return scripted(runId) || inFlight.contains(runId) || real.owns(runId);
   }
 
   @Override
   public void runClosed(String runId) {
+    if (!held.remove(runId)) {
+      real.runClosed(runId);
+      return;
+    }
     // The relay is the one thing that IS held between steps, and dropping it is what makes `live`
     // null on a finished run — the real runner's own last act.
     relay.drop(runId);

@@ -167,7 +167,7 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
    * (qits-556, {@code V27__run_avoid_runners.sql}). A runner joins it when a step it held failed by
    * the infrastructure ({@code CiRunnerHealth.isInfra}); every retry copies it whole, so neither an
    * automatic nor a person's re-fire goes back to a runner that already failed the work. Only a
-   * runner's reservation reads it — a local worker, and any other runner, may take the run.
+   * runner's reservation reads it — any other runner may take the run.
    */
   @Column(name = "avoid_runner_ids", columnDefinition = "text")
   public String avoidRunnerIds;
@@ -286,7 +286,7 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
    * row: a push was not caused by an event, and the intake that recorded one retired on 2026-09-05.
    *
    * <p><b>It is the carrier across a thread hop.</b> The engine consumes a frame on the bus's
-   * dispatch thread and <em>enqueues</em> the run, which executes later on {@code ci-run-worker}; a
+   * dispatch thread and <em>enqueues</em> the run, which executes later on a runner's driver thread; a
    * {@code CausationScope} thread-local is long gone by then, deliberately (it does not follow work).
    * This column is what survives that hop <em>and</em> a restart, and it is what {@code
    * RunAnnouncer.onRunSucceeded} passes to {@code publish(event, parent)} — so the events a triggered
@@ -421,8 +421,9 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
 
   /**
    * The {@link CiRunner} that held this run, or null for every run a runner did not execute — which
-   * is every run whose steps qits-ci launched through qits-containers, and every row recorded before
-   * {@code V23__runners.sql}.
+   * is every run the since-deleted in-process executor ran (its steps launched through
+   * qits-containers), and every row recorded before {@code V23__runners.sql}. Every run a live
+   * qits-ci executes carries one (qits-506).
    *
    * <p><b>No foreign key, for {@link #repoId}'s reason.</b> A decommissioned runner leaves its runs
    * behind as history: a key would either refuse the decommission or cascade the history away. What

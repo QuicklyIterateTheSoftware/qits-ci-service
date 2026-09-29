@@ -1,10 +1,9 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
-import eu.wohlben.qits.containers.client.ContainersWire.Security;
-import eu.wohlben.qits.containers.client.ContainersWire.Spec;
+import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -14,21 +13,24 @@ import java.util.Map;
 import java.util.TreeMap;
 
 /**
- * <b>What one step container is</b>: the whole workload spec, composed once, for whichever
- * transport starts it. {@link CiDaemonLauncher} hands it to qits-containers; {@code
- * RunnerStepRunner} maps it onto the runner protocol's {@code WorkloadSpec} and hands it to a
- * runner. Two compositions would be two chances for a step on a runner to be a different step —
- * a missing variable, a sandbox flag dropped — and the difference would surface as a build that
- * passes in one place and fails in the other with nothing in either spec to say why.
+ * <b>What one step container is</b>: the whole workload spec, composed once, as the runner
+ * protocol's {@link WorkloadSpec} — what {@link RunnerStepRunner} sends in a {@code Launch} and the
+ * runner turns into its host's {@code docker run}. It used to be qits-containers' spec, composed
+ * for two transports (the in-process executor asked qits-containers for the container); the runner
+ * is the only transport since qits-506, so the spec is the protocol's own.
  *
- * <p><b>Pure</b>: settings, the address plane, the launch and the run's commission in, a spec out,
- * no I/O. The commission is looked up by each caller (it is the one input that can fail, and each
- * transport records that failure its own way), everything configured that is not an address arrives
- * as {@link Settings}, read off the launcher at the moment of asking, and every address arrives as a
- * {@link StepAddressPlane} — the launcher's internal one for a local step and an INTERNAL runner, its
- * edge rendering for an EDGE runner. The reasoning for every line is where it always was,
- * on {@link CiDaemonLauncher#buildWorkloadSpec}; the lines themselves moved here unchanged, and
- * {@code CiDaemonLauncherTest} and {@code RunCommissioningTest} assert the result literally.
+ * <p><b>Pure</b>: settings, the address plane, the launch, the run's commission and the runner's
+ * step memory limit in, a spec out, no I/O. The commission is looked up by the caller (it is the one
+ * input that can fail, and the caller records that failure as the step's own), everything configured
+ * that is not an address arrives as {@link Settings}, read off {@link StepContainerSettings} at the
+ * moment of asking, and every address arrives as a {@link StepAddressPlane} — its internal one for an
+ * INTERNAL runner, the edge rendering for an EDGE runner. {@code StepContainerSettingsTest} and
+ * {@code RunCommissioningTest} assert the result literally.
+ *
+ * <p><b>No {@code qits.ci.runner} label is added here, and none may be.</b> That namespace is the
+ * runner's own: it stamps {@code qits.ci.runner=<runner id>} and {@code qits.ci.runner.run} on every
+ * container it starts (its boot sweep selects by them), and it refuses a spec whose labels reach
+ * into it — so a label written here would fail every launch.
  */
 public final class StepWorkloadSpecs {
 
@@ -54,13 +56,28 @@ public final class StepWorkloadSpecs {
   /**
    * The step container's spec, on {@code plane}. {@code credential} is this run's commissioned
    * credential — its client on qits-net, its {@code ci-run} token through the edge — or null on a
-   * deployment that commissions nothing; see {@link CiDaemonLauncher#buildWorkloadSpec}.
+   * deployment that commissions nothing. {@code stepMemoryLimit} is the runner row's own cap, which
+   * replaces the platform's {@code qits.ci.memory-limit} as memory AND memory-swap, so a runner's
+   * steps still get no swap beyond their cap; null keeps the platform default.
+   *
+   * <p><b>The socket is the one privilege a repository can ask for.</b> A step declaring {@code
+   * docker: true} sets {@code hostDockerSocket}, and the runner bind-mounts its host's socket at the
+   * path the step image's CLI looks at by default. The sandbox stays exactly as it is for such a step
+   * — {@code capDropAll} and {@code noNewPrivileges} cost a socket <em>client</em> nothing, and
+   * keeping them unconditional keeps them meaning what they mean for every step that does not opt
+   * in. They also do not make the opt-in safe: a step holding this socket is <b>root-equivalent on
+   * the runner's host</b>, because those flags fence the step's own process tree and not what the
+   * daemon will do on its behalf. That is accepted and it is per step, declared in the repository's
+   * config where a diff shows it — see {@code AGENTS.md}'s untrusted-input section.
+   *
+   * <p>{@code buildPlane} is the step's {@code docker: || build:} — the one fact the protocol adds.
    */
-  public static Spec compose(
+  public static WorkloadSpec compose(
       Settings settings,
       StepAddressPlane plane,
-      CiDaemonLauncher.LaunchSpec spec,
-      RunCommissions.Credential credential) {
+      StepContainerSettings.LaunchSpec spec,
+      RunCommissions.Credential credential,
+      String stepMemoryLimit) {
     IdpCommissioner.Commission commission = credential == null ? null : credential.client();
     IdpCommissioner.CommissionedToken token = credential == null ? null : credential.token();
     Map<String, String> env = new LinkedHashMap<>();
@@ -138,7 +155,7 @@ public final class StepWorkloadSpecs {
       env.put("QITS_COMMISSIONED_CLIENT_SECRET", value(commission.secret()));
       env.put("QITS_GIT_AUTH_TOKEN_URL", tokenUrl(plane.idpUrl()));
       env.put("QITS_GIT_AUTH_HOST", gitAuthority(plane.gitBaseUrl()));
-      env.put("QITS_GIT_AUTH_AUDIENCE", CiDaemonLauncher.CONTAINER_GIT_AUDIENCE);
+      env.put("QITS_GIT_AUTH_AUDIENCE", StepContainerSettings.CONTAINER_GIT_AUDIENCE);
       env.put("GIT_CONFIG_GLOBAL", "/tmp/qits-gitconfig");
       // And the same credential in the form a PUBLISHING step needs: the script BOOTSTRAP writes,
       // named so a recipe can re-mint whenever it likes. $QITS_PUBLISH_TOKEN itself is exported by
@@ -148,7 +165,7 @@ public final class StepWorkloadSpecs {
       // NOT gated on the run's phase. A release-request (QA) run publishes too — the java-service
       // archetype PUTs its userflows bundle to the docs store from a QA step — so the only honest
       // gate is the one above: has this run a commission to mint with.
-      env.put("QITS_PUBLISH_TOKEN_COMMAND", CiDaemonLauncher.PUBLISH_TOKEN_COMMAND);
+      env.put("QITS_PUBLISH_TOKEN_COMMAND", StepContainerSettings.PUBLISH_TOKEN_COMMAND);
     }
     // THE EDGE PLANE'S CREDENTIAL, and it replaces the whole block above rather than joining it. A
     // step outside the swarm cannot reach the idp's alias to mint from a pair, and the edge
@@ -184,7 +201,7 @@ public final class StepWorkloadSpecs {
       env.put("QITS_MAVEN_AUTH_USR", value(token.subject()));
       env.put("QITS_MAVEN_AUTH_PSW", value(token.token()));
       env.put("GIT_CONFIG_GLOBAL", "/tmp/qits-gitconfig");
-      env.put("QITS_PUBLISH_TOKEN_COMMAND", CiDaemonLauncher.PUBLISH_TOKEN_COMMAND);
+      env.put("QITS_PUBLISH_TOKEN_COMMAND", StepContainerSettings.PUBLISH_TOKEN_COMMAND);
     }
     if (spec.docker() || spec.build()) {
       // The two flags are the two generations of the same declaration — `docker: true` mounts the
@@ -203,18 +220,16 @@ public final class StepWorkloadSpecs {
         env.put("BUILDX_NO_DEFAULT_ATTESTATIONS", "1");
       }
       // The platform-builder pair, and the kill switch's whole reach. ON, the step composes a
-      // buildctl push ref from $QITS_BUILD_REGISTRY and $BUILDKIT_HOST arrives from
-      // qits-containers, which owns the builder and its address — this service deliberately does
-      // not spell an address it does not own (the docker-socket-path lesson). OFF, both keys are
-      // sent EMPTY, the mirror pair's off value, and the empty BUILDKIT_HOST is load-bearing:
-      // qits-containers fills the key in only when the caller left it absent, so empty is how this
-      // service says "do not". A converted recipe then fails loudly at its first buildctl call
+      // buildctl push ref from $QITS_BUILD_REGISTRY and $BUILDKIT_HOST arrives from the runner,
+      // which owns the builder and its address — this service deliberately does not spell an
+      // address it does not own (the docker-socket-path lesson). OFF, both keys are sent EMPTY, the
+      // mirror pair's off value, and the empty BUILDKIT_HOST is load-bearing: the runner fills the
+      // key in only when the caller left it absent, so empty is how this service says "do not". A converted recipe then fails loudly at its first buildctl call
       // rather than silently building through the socket it still holds; an unconverted one reads
       // neither variable and is untouched.
       //
       // ON THE EDGE PLANE THE SAME TWO KEYS, AND NOTHING SPELLED BEHIND THE PLANE'S BACK. The builder
-      // is then the runner's own — it fills BUILDKIT_HOST exactly where qits-containers does, when
-      // the key is absent — and $QITS_BUILD_REGISTRY is the registry's public vhost, the one address
+      // is the runner's own on either plane — it fills BUILDKIT_HOST when the key is absent — and $QITS_BUILD_REGISTRY is the registry's public vhost, the one address
       // a builder outside the swarm can push to, authenticated by the token document below. The
       // kill switch is unchanged: off, both keys go empty on either plane.
       env.put("QITS_BUILD_REGISTRY", settings.buildkitEnabled() ? value(plane.buildRegistryHost()) : "");
@@ -226,7 +241,7 @@ public final class StepWorkloadSpecs {
       // and reused by every later one; absent whole on a deployment with no oidc client, where a
       // step container's environment is exactly what it always was.
       if (commission != null) {
-        env.put("DOCKER_CONFIG", CiDaemonLauncher.REGISTRY_AUTH_DIR);
+        env.put("DOCKER_CONFIG", StepContainerSettings.REGISTRY_AUTH_DIR);
         env.put("QITS_CI_REGISTRY_AUTH_CONFIG", registryAuthConfig(commission, plane.authHosts()));
         env.put("QITS_COMMISSIONED_CLIENT_ID", value(commission.clientId()));
         env.put("QITS_COMMISSIONED_CLIENT_SECRET", value(commission.secret()));
@@ -234,7 +249,7 @@ public final class StepWorkloadSpecs {
         // The same document for the edge plane: one login per public registry host, each
         // `token:<qits_tok_…>` — the Basic form the edge's docker realm introspects. No pair beside
         // it, for the block above's reason.
-        env.put("DOCKER_CONFIG", CiDaemonLauncher.REGISTRY_AUTH_DIR);
+        env.put("DOCKER_CONFIG", StepContainerSettings.REGISTRY_AUTH_DIR);
         env.put(
             "QITS_CI_REGISTRY_AUTH_CONFIG",
             registryAuthConfig(TOKEN_LOGIN, token.token(), withPullHost(plane, spec.image())));
@@ -256,58 +271,51 @@ public final class StepWorkloadSpecs {
     // Run-scoped extras, LAST and in sorted key order. Today these are the four QITS_EVENT_* of an
     // event-triggered run and the map is empty on every push; none of them is ever repo-authored.
     // Last is the construction the argv had, where a repeated --env meant the later one won, so a
-    // map's later put means exactly what the old argv meant. Sorted because the whole request is
-    // asserted literally by CiDaemonLauncherTest, and a set's iteration order is not a thing to
-    // assert against.
+    // map's later put means exactly what the old argv meant. Sorted because the whole spec is
+    // asserted literally by StepContainerSettingsTest, and a set's iteration order is not a thing
+    // to assert against.
     for (Map.Entry<String, String> extra : new TreeMap<>(spec.env()).entrySet()) {
       env.put(extra.getKey(), value(extra.getValue()));
     }
 
-    return new Spec(
+    String memory = stepMemoryLimit == null ? settings.memoryLimit() : stepMemoryLimit;
+    return new WorkloadSpec(
         // The image as THIS plane pulls it: exactly the run's reference on qits-net, and on the edge
         // plane a platform registry host moved to its public vhost, path, tag and digest kept.
         plane.imageReference(spec.image()),
         // The entrypoint and the bootstrap, as two lists rather than a command line. Nothing is
         // concatenated on either side of the wire, so the zero-interpolation property BOOTSTRAP
-        // has always claimed now holds BY CONSTRUCTION rather than by inspection of an argv.
+        // has always claimed holds BY CONSTRUCTION rather than by inspection of an argv.
         List.of("/bin/sh"),
-        List.of("-c", CiDaemonLauncher.BOOTSTRAP),
+        List.of("-c", StepContainerSettings.BOOTSTRAP),
         env,
-        // The human hint. It selects nothing any more — see RUN_LABEL.
-        Map.of(CiDaemonLauncher.RUN_LABEL, value(spec.runId())),
+        // The human hint. It selects nothing — see RUN_LABEL.
+        Map.of(StepContainerSettings.RUN_LABEL, value(spec.runId())),
         plane.network(),
-        null,
         plane.extraHosts(),
-        null,
-        null,
-        // The declared opt-in, and the only thing about a step that ever changes this request.
-        spec.docker(),
-        // The step's script is repo-controlled: drop privileges and bound the blast radius. The
-        // daemon runs inside this sandbox and the script is its child, so these bound both.
-        new Security(
-            true,
-            true,
-            settings.memoryLimit(),
-            settings.memoryLimit(),
-            settings.pidsLimit(),
-            settings.cpus(),
-            settings.oomScoreAdj()),
-        null,
-        CiDaemonLauncher.containerName(spec.runId(), spec.stepIndex()),
         // The other declared opt-in, and the reason it is here rather than in the script: the
-        // sandbox above takes CAP_SETUID, CAP_SETGID and CAP_CHOWN away, so `su` and `chown`
+        // sandbox below takes CAP_SETUID, CAP_SETGID and CAP_CHOWN away, so `su` and `chown`
         // both fail inside the container whatever it tries. Empty is the image's own default.
         // The parser refuses this beside `docker`, so a socket-holding step is always root.
         value(spec.user()),
-        // No tini: the daemon is PID 1, exactly as it was before the spec could say otherwise.
-        // Known cost, known already: killed orphans stay zombies until the container exits.
-        // Flipping this on is a behavior decision for its own change, not this call site's.
-        null);
+        // The declared opt-in, and the only thing about a step that ever changes the sandbox.
+        spec.docker(),
+        // The step's script is repo-controlled: drop privileges and bound the blast radius. The
+        // daemon runs inside this sandbox and the script is its child, so these bound both.
+        true,
+        true,
+        memory,
+        memory,
+        settings.pidsLimit(),
+        settings.cpus(),
+        settings.oomScoreAdj(),
+        StepContainerSettings.containerName(spec.runId(), spec.stepIndex()),
+        spec.docker() || spec.build());
   }
 
   /**
    * The smart-HTTP url of a repository as a step container clones it — see {@link
-   * CiDaemonLauncher#cloneUrl}, which is this with the launcher's own base.
+   * StepContainerSettings#cloneUrl}, which is this with that bean's own base.
    */
   static String cloneUrl(String containerGitUrl, CiRepoRef repo) {
     String base = containerGitUrl.replaceAll("/+$", "") + "/git/";
@@ -324,7 +332,7 @@ public final class StepWorkloadSpecs {
    * to push with, so the narrow scope costs nothing and keeps the secret out of every container
    * that cannot use it.
    *
-   * <p><b>One entry per host in {@code hosts} — {@code CiDaemonLauncher.authHosts}' union — all
+   * <p><b>One entry per host in {@code hosts} — {@code StepContainerSettings.authHosts}' union — all
    * carrying the same pair.</b> The docker
    * client picks a login by registry hostname and buildctl does the same, so a build that pulls
    * from one host and pushes to another needs both named — which is exactly the shipped shape

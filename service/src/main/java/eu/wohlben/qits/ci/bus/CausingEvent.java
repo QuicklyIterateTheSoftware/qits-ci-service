@@ -11,7 +11,7 @@ import org.jboss.logging.Logger;
  * <p><b>This is where the platform's automatic causation edge is drawn.</b> The id comes off the
  * run's own row rather than out of {@code CausationScope}, because there is no ambient value left to
  * read: the engine consumed the frame on the bus's dispatch thread and the publish happens later on
- * {@code ci-run-worker}. An explicit non-null argument outranks the ambient context by design,
+ * a runner's driver thread. An explicit non-null argument outranks the ambient context by design,
  * precisely for this case. A null passes through and publishes a root, which is what a historical
  * push row does — a push was not caused by an event.
  */

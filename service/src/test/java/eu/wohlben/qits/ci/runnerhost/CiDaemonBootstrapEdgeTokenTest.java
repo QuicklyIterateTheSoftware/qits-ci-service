@@ -1,4 +1,4 @@
-package eu.wohlben.qits.ci.daemonhost;
+package eu.wohlben.qits.ci.runnerhost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -9,7 +9,6 @@ import com.sun.net.httpserver.HttpServer;
 import eu.wohlben.qits.ci.HermeticEnvironment;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
-import eu.wohlben.qits.ci.runnerhost.RunnerAddressesFixture;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -32,7 +31,7 @@ import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 
 /**
- * The REAL {@link CiDaemonLauncher#BOOTSTRAP}, run through {@code /bin/sh} with the environment
+ * The REAL {@link StepContainerSettings#BOOTSTRAP}, run through {@code /bin/sh} with the environment
  * {@link StepWorkloadSpecs} composes for an EDGE build step: what a step outside the swarm makes of
  * its {@code ci-run} token, proved by reading back the five files it writes and the download it
  * makes rather than by grepping the text that would.
@@ -53,9 +52,9 @@ public class CiDaemonBootstrapEdgeTokenTest {
   private static final String SUBJECT = "tok-ci-run-0123456789abcdef-run-1";
 
   private static final String DAEMON_PATH = "/tmp/qits-ci-daemon";
-  private static final String TOKEN_SCRIPT_PATH = CiDaemonLauncher.PUBLISH_TOKEN_COMMAND;
+  private static final String TOKEN_SCRIPT_PATH = StepContainerSettings.PUBLISH_TOKEN_COMMAND;
   private static final String GIT_HELPER_PATH = "/tmp/qits-git-credential";
-  private static final String SETTINGS_PATH = CiDaemonLauncher.DEPLOY_SETTINGS_FILE;
+  private static final String SETTINGS_PATH = StepContainerSettings.DEPLOY_SETTINGS_FILE;
 
   private HttpServer server;
   private Path work;
@@ -197,7 +196,7 @@ public class CiDaemonBootstrapEdgeTokenTest {
 
   /** The env the composition sends an EDGE {@code build: true} step holding a ci-run token. */
   private static Map<String, String> composedEdgeEnv() {
-    CiDaemonLauncher launcher =
+    StepContainerSettings launcher =
         StepEnvironmentCharacterizationTest.shippedLauncher("http://dev-qits-platform-idp:8080/idp");
     StepAddressPlane edge =
         StepAddressPlane.edge(
@@ -208,7 +207,8 @@ public class CiDaemonBootstrapEdgeTokenTest {
             edge,
             StepEnvironmentCharacterizationTest.sampleStep(1, false, true),
             RunCommissions.Credential.token(
-                new IdpCommissioner.CommissionedToken("token-1", TOKEN, SUBJECT)))
+                new IdpCommissioner.CommissionedToken("token-1", TOKEN, SUBJECT)),
+            null)
         .env();
   }
 
@@ -263,7 +263,7 @@ public class CiDaemonBootstrapEdgeTokenTest {
 
   /** The shipped text with its four {@code /tmp} literals moved under this test's directory. */
   private String bootstrapUnderTemp() {
-    String shipped = CiDaemonLauncher.BOOTSTRAP;
+    String shipped = StepContainerSettings.BOOTSTRAP;
     for (String literal : List.of(DAEMON_PATH, TOKEN_SCRIPT_PATH, GIT_HELPER_PATH, SETTINGS_PATH)) {
       assertTrue(shipped.contains(literal), literal + " moved");
     }
