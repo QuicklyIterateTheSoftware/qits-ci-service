@@ -74,7 +74,7 @@ public class StepEnvironmentCharacterizationTest {
     launcher.buildkitEnabled = true;
     launcher.buildkitRegistryHost = "dev-qits-artifacts:8080";
     launcher.artifactsNpmHostedUrl = "http://dev-qits-artifacts:8080/artifacts/npm/npm/";
-    launcher.artifactsNpmProxyUrl = "http://dev-qits-platform-mirror:8080/npm/npmjs/";
+    launcher.environment = "dev";
     launcher.artifactsMavenRegistryUrl = "http://dev-qits-artifacts:8080/artifacts/maven/maven";
     launcher.mavenCentralMirrorEnabled = true;
     launcher.mavenCentralMirrorBuildUrl =

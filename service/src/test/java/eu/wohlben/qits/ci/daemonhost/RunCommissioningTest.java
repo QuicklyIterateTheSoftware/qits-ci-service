@@ -79,7 +79,7 @@ public class RunCommissioningTest {
     launcher.buildkitEnabled = true;
     launcher.buildkitRegistryHost = "dev-qits-artifacts:8080";
     launcher.artifactsNpmHostedUrl = "http://qits-artifacts:8080/artifacts/npm/npm/";
-    launcher.artifactsNpmProxyUrl = "http://qits-artifacts:8080/npm/npmjs/";
+    launcher.environment = "dev";
     launcher.artifactsMavenRegistryUrl = "http://qits-artifacts:8080/artifacts/maven/maven";
     launcher.artifactsDocsUrl = "http://qits-artifacts:8080/artifacts/docs/docs";
     launcher.artifactsUrl = java.util.Optional.of("http://qits-artifacts:8080");

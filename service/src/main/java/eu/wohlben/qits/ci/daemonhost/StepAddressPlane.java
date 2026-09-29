@@ -72,14 +72,13 @@ public record StepAddressPlane(
   static final String HOST_GATEWAY = "host.docker.internal:host-gateway";
 
   /**
-   * qits-platform-mirror's own path for its npm pull-through, on the EDGE plane only. It is composed
-   * independently of the internal plane's {@code npmProxyUrl} rather than rebasing that value's
-   * path: the internal address is dialled over qits-net at whatever route qits-platform-mirror
-   * happens to answer on internally, which is a separately configured value
-   * ({@code qits.artifacts.npm.proxy-url}) and not guaranteed to track the edge's. qits-platform-mirror
-   * serves the npm cache at the root of its own hostname, {@code /npm/npmjs/}, on both planes today.
+   * qits-platform-mirror's own path for its npm pull-through cache, shared by both planes: {@code
+   * CiDaemonLauncher.internalNpmProxyUrl} composes the internal address from it too now, since the
+   * mirror address is never a deployment fact — it is always {@code
+   * <environment-or-public-origin>-qits-platform-mirror/npm/npmjs/}, on qits-net or through the
+   * edge. There is no config key left to diverge from.
    */
-  private static final String EDGE_NPM_PROXY_PATH = "/npm/npmjs/";
+  static final String NPM_PROXY_PATH = "/npm/npmjs/";
 
   public StepAddressPlane {
     Objects.requireNonNull(plane, "plane");
@@ -267,10 +266,11 @@ public record StepAddressPlane(
    * network, no extra host, and no idp — an edge step carries a {@code ci-run} token, never a client
    * to mint with.
    *
-   * <p><b>The npm proxy is composed from {@link #EDGE_NPM_PROXY_PATH} rather than the internal
-   * path.</b> The internal {@code npmProxyUrl} is a separately configured value
-   * ({@code qits.artifacts.npm.proxy-url}), not guaranteed to track the edge's route, so it is not
-   * simply rebased the way every other mirror address is.
+   * <p><b>The npm proxy is composed from {@link #NPM_PROXY_PATH} rather than rebased off the
+   * internal plane's value.</b> Both planes compose it from the same path now — the internal one
+   * against the qits-net alias, this one against the edge's public origin — rather than one being
+   * rebased from the other, because the two origins are reached through different mechanisms
+   * entirely and there is no shared url to rebase from.
    *
    * <p>A value that is empty on the internal plane stays empty: the mirror's off state is an empty
    * value, and it means the same thing on either side of the edge.
@@ -293,7 +293,7 @@ public record StepAddressPlane(
         registry,
         registry,
         rebase(internal.npmHostedUrl(), origins.artifacts()),
-        blank(internal.npmProxyUrl()) ? "" : strip(origins.mirror()) + EDGE_NPM_PROXY_PATH,
+        blank(internal.npmProxyUrl()) ? "" : strip(origins.mirror()) + NPM_PROXY_PATH,
         rebase(internal.mavenRegistryUrl(), origins.artifacts()),
         rebase(internal.mavenCentralMirrorBuildUrl(), origins.mirror()),
         rebase(internal.mavenCentralMirrorStepUrl(), origins.mirror()),

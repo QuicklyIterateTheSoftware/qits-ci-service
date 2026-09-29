@@ -128,7 +128,7 @@ rest of qits it reaches over a URL it is configured with:
 | out | `POST/DELETE/GET /idp/api/clients` — one commissioned oidc client per run, minted at the run's first step and deleted when the run closes; every step clones with it, and a publishing step pushes with it | `quarkus.oidc-client.qits.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.qits.client-enabled` |
 | out | `POST/DELETE/GET /idp/api/tokens` — a runner's one-use registration token (`ci-runner-registration`), and the same clients door for its own client once it registers (`ci-runner`); both given back when the runner is decommissioned — see "Runners" below. And one `ci-run` TOKEN per run on an EDGE runner, instead of the client, deleted when the run closes | the same keys as the row above |
 | out | the registry a publishing step pushes to, as `$QITS_REGISTRY` and `$QITS_IMAGE_REPOSITORY` in **every** step container — dialled by the *host's docker daemon*, never by this process | `qits.artifacts.registry-host`, `qits.artifacts.image-repository` |
-| out | the npm registry roots, as `$QITS_NPM_REGISTRY_URL` (hosted, `@qits/*` publishes) and `$QITS_NPM_PROXY_URL` (the npmjs pull-through cache) in **every** step container — dialled by the *step container itself* on the shared network | `qits.artifacts.npm.hosted-url`, `qits.artifacts.npm.proxy-url` |
+| out | the npm registry roots, as `$QITS_NPM_REGISTRY_URL` (hosted, `@qits/*` publishes) and `$QITS_NPM_PROXY_URL` (the npmjs pull-through cache, composed in code — never a deployment config entry) in **every** step container — dialled by the *step container itself* on the shared network | `qits.artifacts.npm.hosted-url` |
 | out | the hosted Maven repository root, as `$QITS_MAVEN_REGISTRY_URL` in **every** step container — also dialled by the step container on the shared network | `qits.artifacts.maven.registry-url` |
 
 ### Runners
@@ -292,10 +292,12 @@ hostname, `/npm/npmjs/` (qits-474)**: both the internal plane's `$QITS_NPM_PROXY
 (`https://mirror.qits.<domain>/npm/npmjs/`) name that same path now. The earlier
 `/artifacts/npm/npmjs/` — qits-artifacts' own route, which an EDGE step could not simply rebase to
 since `/artifacts/**` is routed to qits-artifacts on every vhost — and the briefly used
-`/mirror/npm/npmjs/` are both gone; nothing hands either to a step any more. `StepAddressPlane.edge`
-still composes the edge value from `https://mirror.qits.<domain>` plus its own
-`EDGE_NPM_PROXY_PATH` constant rather than rebasing the internal path, since the internal dial is
-qits-platform-mirror's own route and not guaranteed to keep tracking the edge's.
+`/mirror/npm/npmjs/` are both gone; nothing hands either to a step any more. **Neither plane's value
+is configuration any more (qits-474 continued)**: `qits.artifacts.npm.proxy-url` is deleted along
+with its deployment entry, and both `StepAddressPlane.NPM_PROXY_PATH` composers are code —
+`CiDaemonLauncher.internalNpmProxyUrl` builds the internal one from `QITS_ENVIRONMENT` plus that
+constant, and `StepAddressPlane.edge` builds the edge one from `https://mirror.qits.<domain>` plus
+the same constant. A leftover deployment row for the old key is therefore dead and never read.
 
 A run a runner executed carries `runnerId` and `runnerName` on every run read; the id outlives the
 runner (no foreign key), the name does not.
@@ -2267,12 +2269,13 @@ a repository's own listing will show.
   being asked for**, since that is the address a converted recipe pushes to; behind the edge it is
   `QITS_CI_DOCKER_AUTH_HOSTS=registry.dev.localhost:8080,mirror.dev.localhost:8080`. All entries
   share the run's one commissioned pair.
-- Leave `qits.artifacts.npm.hosted-url` / `qits.artifacts.npm.proxy-url` and
-  `qits.artifacts.maven.registry-url` alone on a deployment where
-  qits-artifacts answers to its usual alias: they are reached **from a step container**, on
-  `qits.ci.network`, so the shipped defaults are already the right values and the host-published
-  address used for `registry-host` is exactly the wrong one to copy here. Override them only when
-  qits-artifacts moves off the alias.
+- Leave `qits.artifacts.npm.hosted-url` and `qits.artifacts.maven.registry-url` alone on a
+  deployment where qits-artifacts answers to its usual alias: they are reached **from a step
+  container**, on `qits.ci.network`, so the shipped defaults are already the right values and the
+  host-published address used for `registry-host` is exactly the wrong one to copy here. Override
+  them only when qits-artifacts moves off the alias. There is no npm proxy key to leave alone: the
+  pull-through cache's address is not configuration at all, on either plane — see the qits-474 note
+  above "Publishing an npm package needs none of that.".
 - Leave `qits.ci.workspaces-url` alone for the same reason: it is qits-workspaces' root as reached
   **from a step container**, and the shipped `http://qits-workspaces:8080` is already right on
   qits-net. Scheme, host and port, **no path** — a step appends `/workspaces/api/…` itself.

@@ -69,7 +69,7 @@ public class CiDaemonLauncherTest {
     launcher.buildkitEnabled = true;
     launcher.buildkitRegistryHost = "dev-qits-artifacts:8080";
     launcher.artifactsNpmHostedUrl = "http://qits-artifacts:8080/artifacts/npm/npm/";
-    launcher.artifactsNpmProxyUrl = "http://qits-artifacts:8080/npm/npmjs/";
+    launcher.environment = "dev";
     launcher.artifactsMavenRegistryUrl = "http://qits-artifacts:8080/artifacts/maven/maven";
     launcher.mavenCentralMirrorEnabled = true;
     launcher.mavenCentralMirrorBuildUrl =
@@ -191,7 +191,7 @@ public class CiDaemonLauncherTest {
     env.put("QITS_REGISTRY", "qits-artifacts:8080");
     env.put("QITS_IMAGE_REPOSITORY", "qits");
     env.put("QITS_NPM_REGISTRY_URL", "http://qits-artifacts:8080/artifacts/npm/npm/");
-    env.put("QITS_NPM_PROXY_URL", "http://qits-artifacts:8080/npm/npmjs/");
+    env.put("QITS_NPM_PROXY_URL", "http://dev-qits-platform-mirror:8080/npm/npmjs/");
     env.put("QITS_MAVEN_REGISTRY_URL", "http://qits-artifacts:8080/artifacts/maven/maven");
     // Both planes carry the mirror on /mirror/maven: the build plane the edge vhost, the step plane
     // the in-network alias.
@@ -491,7 +491,7 @@ public class CiDaemonLauncherTest {
     for (LaunchSpec each : List.of(spec, publishing())) {
       Map<String, String> env = launcher().buildWorkloadSpec(each).spec().env();
       assertEquals("http://qits-artifacts:8080/artifacts/npm/npm/", env.get("QITS_NPM_REGISTRY_URL"));
-      assertEquals("http://qits-artifacts:8080/npm/npmjs/", env.get("QITS_NPM_PROXY_URL"));
+      assertEquals("http://dev-qits-platform-mirror:8080/npm/npmjs/", env.get("QITS_NPM_PROXY_URL"));
     }
   }
 

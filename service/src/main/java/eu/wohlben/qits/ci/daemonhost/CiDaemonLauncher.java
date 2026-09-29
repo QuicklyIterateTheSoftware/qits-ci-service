@@ -768,8 +768,13 @@ public class CiDaemonLauncher {
   @ConfigProperty(name = "qits.artifacts.npm.hosted-url")
   String artifactsNpmHostedUrl;
 
-  @ConfigProperty(name = "qits.artifacts.npm.proxy-url")
-  String artifactsNpmProxyUrl;
+  /**
+   * The environment label qits-deployments injects into every container ({@code QITS_ENVIRONMENT}),
+   * read directly rather than through a dotted key: this is the one address on the internal plane
+   * that is no longer a deployment fact — see {@link #internalNpmProxyUrl()}.
+   */
+  @ConfigProperty(name = "QITS_ENVIRONMENT", defaultValue = "dev")
+  String environment;
 
   /**
    * qits-artifacts' hosted Maven repository root. Dialled by the step container over qits-net, like
@@ -1492,7 +1497,7 @@ public class CiDaemonLauncher {
         artifactsRegistryHost,
         buildkitRegistryHost,
         artifactsNpmHostedUrl,
-        artifactsNpmProxyUrl,
+        internalNpmProxyUrl(),
         artifactsMavenRegistryUrl,
         mavenCentralMirrorBuildUrl == null ? "" : mavenCentralMirrorBuildUrl.orElse(""),
         mavenCentralMirrorStepUrl,
@@ -1501,6 +1506,18 @@ public class CiDaemonLauncher {
         workspacesUrl,
         authHosts(),
         network);
+  }
+
+  /**
+   * qits-platform-mirror's own npm pull-through cache, on qits-net — code-derived rather than a
+   * deployment fact, because the address is never anything but this: {@code
+   * <environment>-qits-platform-mirror:8080}, the same alias every other in-network address in this
+   * class composes off {@code QITS_ENVIRONMENT}, plus {@link StepAddressPlane#NPM_PROXY_PATH}, the
+   * path the EDGE plane has always composed its own npm proxy from. A leftover deployment config
+   * entry for this address (formerly {@code qits.artifacts.npm.proxy-url}) is therefore never read.
+   */
+  String internalNpmProxyUrl() {
+    return "http://" + environment + "-qits-platform-mirror:8080" + StepAddressPlane.NPM_PROXY_PATH;
   }
 
   private static String value(String text) {

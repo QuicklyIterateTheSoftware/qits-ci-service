@@ -131,10 +131,6 @@ keys:
     type: string
     description: "The hosted npm registry, handed to steps as $QITS_NPM_REGISTRY_URL."
 
-  env.QITS_ARTIFACTS_NPM_PROXY_URL:
-    type: string
-    description: "The npm pull-through cache, handed to steps as $QITS_NPM_PROXY_URL."
-
   env.QITS_ARTIFACTS_MAVEN_REGISTRY_URL:
     type: string
     description: "The hosted Maven repository, handed to steps as $QITS_MAVEN_REGISTRY_URL."
