@@ -21,10 +21,14 @@ steps:
       if [ -n "${QITS_ARTIFACTS_CLI_PACKAGE:-}" ]; then
         : "${QITS_ARTIFACTS_CLI_VERSION:?the qits CLI package is configured but no version was injected; the qits-ci that launched this step predates the CLI pin}"
         mkdir -p /tmp/qits-bin
+        set --
+        if [ -n "${QITS_TOKEN:-}" ]; then
+          set -- --header "Authorization: Bearer $QITS_TOKEN"
+        fi
         if command -v curl > /dev/null 2>&1; then
-          curl -fsSL --retry 2 --retry-delay 2 -o /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
+          curl -fsSL --retry 2 --retry-delay 2 "$@" -o /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
         elif command -v wget > /dev/null 2>&1; then
-          wget -q -O /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
+          wget -q "$@" -O /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
         else
           echo 'qits-ci: the image for this step (docker:28-dind) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
           exit 1
@@ -37,8 +41,16 @@ steps:
       fi
       (
         umask 077
-        printf '%s' "${QITS_COMMISSIONED_CLIENT_ID:-}" > /tmp/qits-client-id
-        printf '%s' "${QITS_COMMISSIONED_CLIENT_SECRET:-}" > /tmp/qits-client-secret
+        if [ -n "${QITS_COMMISSIONED_CLIENT_ID:-}" ]; then
+          printf '%s' "$QITS_COMMISSIONED_CLIENT_ID" > /tmp/qits-client-id
+          printf '%s' "$QITS_COMMISSIONED_CLIENT_SECRET" > /tmp/qits-client-secret
+        elif [ -n "${QITS_TOKEN:-}" ]; then
+          printf '%s' "${QITS_TOKEN_SUBJECT:-qits-ci-run}" > /tmp/qits-client-id
+          printf '%s' "$QITS_TOKEN" > /tmp/qits-client-secret
+        else
+          printf '' > /tmp/qits-client-id
+          printf '' > /tmp/qits-client-secret
+        fi
       )
       # --- the declared step, run as data -------------------------------------------
       cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'

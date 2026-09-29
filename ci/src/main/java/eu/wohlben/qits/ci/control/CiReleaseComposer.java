@@ -420,16 +420,32 @@ public final class CiReleaseComposer {
       // Only the FETCH degrades: the CLI itself is a static binary, so everything downstream of
       // this block, the postlude's `qits artifacts publish` included, is unaffected by which arm
       // ran.
+      // EDGE PLANE (epic qits-441): this download is anonymous, which is fine inside the swarm and
+      // a 401 in 0s through the public edge. `$QITS_TOKEN` is this run's ci-run token — set only on
+      // the edge, exactly as `CiDaemonLauncher.BOOTSTRAP` reads it for the daemon binary's own
+      // download — and the fix mirrors that idiom exactly: a local `set --` builds the bearer header
+      // as a positional list, spent as `"$@"` on both arms and never interpolated into the url.
+      // `set --` is safe here because nothing else this method emits reads `$@`/`$1`/`$2` — check
+      // that before adding a second such block. With no token (the internal plane) `"$@"` expands
+      // to nothing and both arms are byte-identical to what they were before this block existed.
+      out.append("  set --\n");
+      out.append("  if [ -n \"${QITS_TOKEN:-}\" ]; then\n");
+      out.append("    set -- --header \"Authorization: Bearer $QITS_TOKEN\"\n");
+      out.append("  fi\n");
       String cliUrl =
           " \"$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
       out.append("  if command -v curl > /dev/null 2>&1; then\n");
-      out.append("    curl -fsSL --retry 2 --retry-delay 2 -o ")
+      out.append("    curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o ")
           .append(CLI_DIR)
           .append("/qits")
           .append(cliUrl)
           .append('\n');
       out.append("  elif command -v wget > /dev/null 2>&1; then\n");
-      out.append("    wget -q -O ").append(CLI_DIR).append("/qits").append(cliUrl).append('\n');
+      out.append("    wget -q \"$@\" -O ")
+          .append(CLI_DIR)
+          .append("/qits")
+          .append(cliUrl)
+          .append('\n');
       out.append("  else\n");
       out.append("    echo ")
           .append(
@@ -464,10 +480,29 @@ public final class CiReleaseComposer {
       // The commissioned pair as FILES, for a buildctl `--secret id=…,src=…` that writes no layer.
       // In a subshell, so `umask 077` bounds these two files and does not silently follow the whole
       // script — the fleet's hand-written form leaves it set for everything after it.
+      //
+      // EDGE PLANE (epic qits-441): a step here has no commissioned pair, only `$QITS_TOKEN` — so
+      // both variables above are empty and a Dockerfile's `--secret id=qits-client-id`/
+      // `qits-client-secret` (consumed as `QITS_MAVEN_AUTH_USR`/`PSW` for the maven mirror) writes
+      // an empty credential, which is a 401 from the mirror rather than an anonymous read. The pair
+      // still wins when it is there — an edge run never carries both, but this reads as "prefer the
+      // pair" rather than "branch on the plane" — and with neither, the files stay exactly the
+      // empty strings they always were. `$QITS_TOKEN_SUBJECT` is this run's own subject, sent
+      // alongside `$QITS_TOKEN` by `StepWorkloadSpecs`; a step holding a token but no subject (a
+      // qits-ci older than the pair) still gets SOME id rather than an empty one.
       out.append("(\n");
       out.append("  umask 077\n");
-      out.append("  printf '%s' \"${QITS_COMMISSIONED_CLIENT_ID:-}\" > /tmp/qits-client-id\n");
-      out.append("  printf '%s' \"${QITS_COMMISSIONED_CLIENT_SECRET:-}\" > /tmp/qits-client-secret\n");
+      out.append("  if [ -n \"${QITS_COMMISSIONED_CLIENT_ID:-}\" ]; then\n");
+      out.append("    printf '%s' \"$QITS_COMMISSIONED_CLIENT_ID\" > /tmp/qits-client-id\n");
+      out.append("    printf '%s' \"$QITS_COMMISSIONED_CLIENT_SECRET\" > /tmp/qits-client-secret\n");
+      out.append("  elif [ -n \"${QITS_TOKEN:-}\" ]; then\n");
+      out.append(
+          "    printf '%s' \"${QITS_TOKEN_SUBJECT:-qits-ci-run}\" > /tmp/qits-client-id\n");
+      out.append("    printf '%s' \"$QITS_TOKEN\" > /tmp/qits-client-secret\n");
+      out.append("  else\n");
+      out.append("    printf '' > /tmp/qits-client-id\n");
+      out.append("    printf '' > /tmp/qits-client-secret\n");
+      out.append("  fi\n");
       out.append(")\n");
     }
     out.append("# --- the declared step, run as data -------------------------------------------\n");

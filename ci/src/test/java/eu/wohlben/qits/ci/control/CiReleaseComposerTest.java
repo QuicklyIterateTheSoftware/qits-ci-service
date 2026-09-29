@@ -12,6 +12,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -194,7 +195,7 @@ public class CiReleaseComposerTest {
         document);
     assertTrue(
         document.contains("elif command -v wget > /dev/null 2>&1; then")
-            && document.contains("wget -q -O /tmp/qits-bin/qits"),
+            && document.contains("wget -q \"$@\" -O /tmp/qits-bin/qits"),
         document);
     // And the refusal names the image, so an author reads a sentence about their own file rather
     // than `curl: not found` out of a line they never wrote.
@@ -226,9 +227,313 @@ public class CiReleaseComposerTest {
         composed
             .releaseDocument()
             .contains(
-                "curl -fsSL --retry 2 --retry-delay 2 -o /tmp/qits-bin/qits"
+                "curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o /tmp/qits-bin/qits"
                     + " \"$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n"),
         composed.releaseDocument());
+  }
+
+  @Test
+  public void theCliDownloadCarriesTheEdgeBearerOnBothArms() {
+    // epic qits-441: a release-phase step on the EDGE plane authenticates with this run's ci-run
+    // token, $QITS_TOKEN — the CLI download is anonymous otherwise and a 401 in 0s through the
+    // public edge. The composer emits no per-deployment branch for this; the choice is made at
+    // RUN TIME by the same `set --`/`"$@"` idiom CiDaemonLauncher.BOOTSTRAP already uses for the
+    // ci-daemon binary's own download, so a token-less internal run is byte-identical to before.
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO, slots("archetype: java-service\n"), archetype("java-service", JAVA_SERVICE));
+
+    String document = composed.releaseDocument();
+    assertTrue(
+        document.contains(
+            "        set --\n"
+                + "        if [ -n \"${QITS_TOKEN:-}\" ]; then\n"
+                + "          set -- --header \"Authorization: Bearer $QITS_TOKEN\"\n"
+                + "        fi\n"),
+        document);
+    assertTrue(
+        document.contains(
+            "curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o /tmp/qits-bin/qits"
+                + " \"$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n"),
+        document);
+    assertTrue(
+        document.contains(
+            "wget -q \"$@\" -O /tmp/qits-bin/qits"
+                + " \"$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n"),
+        document);
+    // The `set --` block sits ONCE, before both arms, rather than once per arm — a second copy
+    // would be a second place for the two to drift.
+    assertEquals(1, occurrences(document, "set --\n"));
+  }
+
+  @Test
+  public void theDockerBuildSecretFilesFallBackToTheRunToken() {
+    // The second instance of the same defect (epic qits-441): the commissioned pair is what a
+    // buildctl `--secret id=…` mount reads for the maven mirror's credential, and on the EDGE
+    // plane a step holds no pair — only $QITS_TOKEN. Both files used to come out empty in that
+    // case (`printf '%s' "${QITS_COMMISSIONED_CLIENT_ID:-}"` with nothing to substitute), which
+    // is an empty Basic credential and a 401 from the mirror rather than an anonymous read. The
+    // pair still wins when both halves are present; only their absence falls back to the token.
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO, slots("archetype: java-service\n"), archetype("java-service", JAVA_SERVICE));
+
+    String document = composed.releaseDocument();
+    assertTrue(
+        document.contains(
+            "      (\n"
+                + "        umask 077\n"
+                + "        if [ -n \"${QITS_COMMISSIONED_CLIENT_ID:-}\" ]; then\n"
+                + "          printf '%s' \"$QITS_COMMISSIONED_CLIENT_ID\" > /tmp/qits-client-id\n"
+                + "          printf '%s' \"$QITS_COMMISSIONED_CLIENT_SECRET\" >"
+                + " /tmp/qits-client-secret\n"
+                + "        elif [ -n \"${QITS_TOKEN:-}\" ]; then\n"
+                + "          printf '%s' \"${QITS_TOKEN_SUBJECT:-qits-ci-run}\" >"
+                + " /tmp/qits-client-id\n"
+                + "          printf '%s' \"$QITS_TOKEN\" > /tmp/qits-client-secret\n"
+                + "        else\n"
+                + "          printf '' > /tmp/qits-client-id\n"
+                + "          printf '' > /tmp/qits-client-secret\n"
+                + "        fi\n"
+                + "      )\n"),
+        document);
+  }
+
+  @Test
+  public void theDockerBuildSecretFilesReachARealShellCorrectlyInAllThreeArms() throws Exception {
+    // Same shape as the CLI-download execution test below: the string assertion above proves
+    // what bytes are emitted, this proves a shell reads them the way the comment claims, across
+    // the pair, the token-only fallback, and neither.
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO, slots("archetype: java-service\n"), archetype("java-service", JAVA_SERVICE));
+    String fragment = extractSecretFilesFragment(composed.releaseDocument());
+
+    Path work = Files.createTempDirectory("docker-secret-fragment");
+    try {
+      Path scriptFile = work.resolve("run.sh");
+      Files.writeString(scriptFile, fragment);
+
+      // The pair present: it wins even though a token is also set.
+      run(scriptFile, work, Map.of(
+          "QITS_COMMISSIONED_CLIENT_ID", "the-client-id",
+          "QITS_COMMISSIONED_CLIENT_SECRET", "the-client-secret",
+          "QITS_TOKEN", "the-run-token",
+          "QITS_TOKEN_SUBJECT", "the-run-subject"));
+      assertEquals("the-client-id", Files.readString(work.resolve("qits-client-id")));
+      assertEquals("the-client-secret", Files.readString(work.resolve("qits-client-secret")));
+
+      // No pair, a token: the fallback.
+      run(scriptFile, work, Map.of(
+          "QITS_TOKEN", "the-run-token",
+          "QITS_TOKEN_SUBJECT", "the-run-subject"));
+      assertEquals("the-run-subject", Files.readString(work.resolve("qits-client-id")));
+      assertEquals("the-run-token", Files.readString(work.resolve("qits-client-secret")));
+
+      // No pair, a token, and no subject — an older qits-ci: still a real id rather than an
+      // empty one.
+      run(scriptFile, work, Map.of("QITS_TOKEN", "the-run-token"));
+      assertEquals("qits-ci-run", Files.readString(work.resolve("qits-client-id")));
+      assertEquals("the-run-token", Files.readString(work.resolve("qits-client-secret")));
+
+      // Neither: the internal-plane case, unchanged — both files empty rather than the script
+      // failing under -eu on an unset variable.
+      run(scriptFile, work, Map.of());
+      assertEquals("", Files.readString(work.resolve("qits-client-id")));
+      assertEquals("", Files.readString(work.resolve("qits-client-secret")));
+    } finally {
+      try (var stream = Files.walk(work)) {
+        stream
+            .sorted(java.util.Comparator.reverseOrder())
+            .forEach(
+                path -> {
+                  try {
+                    Files.deleteIfExists(path);
+                  } catch (IOException ignored) {
+                    // best-effort cleanup
+                  }
+                });
+      }
+    }
+  }
+
+  private static void run(Path scriptFile, Path work, Map<String, String> env) throws Exception {
+    Files.deleteIfExists(work.resolve("qits-client-id"));
+    Files.deleteIfExists(work.resolve("qits-client-secret"));
+    ProcessBuilder pb =
+        new ProcessBuilder("/bin/sh", "-eu", scriptFile.toString())
+            .directory(work.toFile())
+            .redirectErrorStream(true);
+    pb.environment().clear();
+    pb.environment().put("PATH", System.getenv("PATH"));
+    pb.environment().putAll(env);
+    Process p = pb.start();
+    String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    int exit = p.waitFor();
+    assertEquals(0, exit, "script exited " + exit + ": " + out);
+  }
+
+  /**
+   * Cuts the {@code (} … {@code )} docker-build-secret fragment out of a composed document's step
+   * script and rewrites the two output files to land beside the script rather than at
+   * {@code /tmp}, so the test can read them back without root or a shared {@code /tmp} state.
+   */
+  private static String extractSecretFilesFragment(String document) {
+    int begin = document.indexOf("      (\n        umask 077\n");
+    int end = document.indexOf("      )\n", begin) + "      )\n".length();
+    assertTrue(begin >= 0 && end > begin, document);
+    String indented = document.substring(begin, end);
+    StringBuilder out = new StringBuilder();
+    for (String line : indented.split("\n", -1)) {
+      out.append(line.length() >= 6 ? line.substring(6) : line).append('\n');
+    }
+    return "set -eu\n"
+        + out.toString()
+            .replace("/tmp/qits-client-id", "qits-client-id")
+            .replace("/tmp/qits-client-secret", "qits-client-secret");
+  }
+
+  @Test
+  public void theCliDownloadReachesARealCurlWithTheBearerHeader() throws Exception {
+    // The composed text is never executed by this suite anywhere else — the goldens and the
+    // string assertions above prove what bytes are emitted, not that a shell reads them the way
+    // this test means. This drives the actual CLI-download fragment under `sh -eu` with a stub
+    // `curl` on PATH that records its own argv, once with $QITS_TOKEN set and once without, and
+    // asserts the header reaches curl in exactly the case it must.
+    // A non-build, non-docker step, deliberately: it composes with neither the BUILDKIT_HOST guard
+    // nor the commissioned-secret subshell in front of the CLI download, so the extracted fragment
+    // below is exactly the download and nothing this test would otherwise have to stage platform
+    // config for.
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO,
+            slots(
+                """
+                release:
+                  - image: alpine:3
+                    script: echo hi
+                artifacts:
+                  - { type: docker, name: qits/thing, sbom: out/sbom.json }
+                """),
+            null);
+    String document = composed.releaseDocument();
+    String script = extractStepScript(document);
+
+    Path work = Files.createTempDirectory("cli-download-fragment");
+    try {
+      Path bin = work.resolve("bin");
+      Files.createDirectories(bin);
+      Path stubCurl = bin.resolve("curl");
+      Files.writeString(
+          stubCurl,
+          "#!/bin/sh\n"
+              + "printf '%s\\n' \"$*\" >> \""
+              + work.resolve("curl-argv.txt")
+              + "\"\n"
+              // Find the file named after -o and create it, so the caller's `chmod +x` on it
+              // does not fail the script under -eu.
+              + "prev=\n"
+              + "for a in \"$@\"; do\n"
+              + "  if [ \"$prev\" = \"-o\" ]; then\n"
+              + "    touch \"$a\"\n"
+              + "  fi\n"
+              + "  prev=\"$a\"\n"
+              + "done\n"
+              + "exit 0\n");
+      stubCurl.toFile().setExecutable(true);
+
+      // The extracted fragment still opens with the release phase's own git fetch/checkout —
+      // extractStepScript only rewrites the CLI-package guard, deliberately, so the fragment stays
+      // the composer's real text. A stub `git` that no-ops keeps that preamble truthful without
+      // this test standing up a real repository.
+      Path stubGit = bin.resolve("git");
+      Files.writeString(stubGit, "#!/bin/sh\nexit 0\n");
+      stubGit.toFile().setExecutable(true);
+
+      Path scriptFile = work.resolve("run.sh");
+      Files.writeString(scriptFile, script);
+
+      // Run WITH a token.
+      ProcessBuilder withToken =
+          new ProcessBuilder("/bin/sh", "-eu", scriptFile.toString())
+              .directory(work.toFile())
+              .redirectErrorStream(true);
+      withToken.environment().clear();
+      // The stub curl has to win over any real one, so it leads; the rest of the real PATH stays
+      // so mkdir/chmod/command — ordinary external programs this fragment also runs — resolve.
+      withToken.environment().put("PATH", bin + ":" + System.getenv("PATH"));
+      withToken.environment().put("QITS_TOKEN", "the-run-token");
+      withToken.environment().put("QITS_ARTIFACTS_CLI_PACKAGE", "");
+      withToken.environment().put("QITS_VERSION", "2026.929.1");
+      withToken.environment().put("QITS_CI_REPOSITORY_URL", "http://githost.invalid/x");
+      Process p1 = withToken.start();
+      String out1 = new String(p1.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+      p1.waitFor();
+
+      String argvWithToken = Files.readString(work.resolve("curl-argv.txt"));
+      assertTrue(
+          argvWithToken.contains("--header Authorization: Bearer the-run-token"),
+          "expected the bearer header in curl's argv, got: " + argvWithToken + " / stdout: " + out1);
+
+      // Run again with NO token: the internal-plane case must be unchanged.
+      Files.deleteIfExists(work.resolve("curl-argv.txt"));
+      ProcessBuilder noToken =
+          new ProcessBuilder("/bin/sh", "-eu", scriptFile.toString())
+              .directory(work.toFile())
+              .redirectErrorStream(true);
+      noToken.environment().clear();
+      noToken.environment().put("PATH", bin + ":" + System.getenv("PATH"));
+      noToken.environment().put("QITS_ARTIFACTS_CLI_PACKAGE", "");
+      noToken.environment().put("QITS_VERSION", "2026.929.1");
+      noToken.environment().put("QITS_CI_REPOSITORY_URL", "http://githost.invalid/x");
+      Process p2 = noToken.start();
+      String out2 = new String(p2.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+      p2.waitFor();
+
+      String argvNoToken = Files.readString(work.resolve("curl-argv.txt"));
+      assertTrue(
+          !argvNoToken.contains("Authorization"),
+          "expected no bearer header with no token, got: " + argvNoToken + " / stdout: " + out2);
+    } finally {
+      try (var stream = Files.walk(work)) {
+        stream
+            .sorted(java.util.Comparator.reverseOrder())
+            .forEach(
+                path -> {
+                  try {
+                    Files.deleteIfExists(path);
+                  } catch (IOException ignored) {
+                    // best-effort cleanup
+                  }
+                });
+      }
+    }
+  }
+
+  /**
+   * Cuts the {@code set -eu} … {@code fi} CLI-download fragment out of a composed document's
+   * step script, dropping the qits-artifacts-cli-package guard so a test with the package unset
+   * still exercises the fetch itself (this class's fixtures never inject
+   * {@code QITS_ARTIFACTS_CLI_PACKAGE}, and the real guard would just skip the block).
+   */
+  private static String extractStepScript(String document) {
+    int begin = document.indexOf("      set -eu\n");
+    int end = document.indexOf("# --- the declared step");
+    assertTrue(begin >= 0 && end > begin, document);
+    String indented = document.substring(begin, end);
+    StringBuilder out = new StringBuilder();
+    for (String line : indented.split("\n", -1)) {
+      // Strip the YAML block-scalar indent (6 spaces) so the fragment is a plain shell script.
+      out.append(line.length() >= 6 ? line.substring(6) : line).append('\n');
+    }
+    // Force the fetch branch open regardless of whether the package var is set, and replace the
+    // guard's hard failure on a missing version with a harmless local default so the fragment
+    // runs to completion under a stub curl with no other platform config supplied.
+    return out.toString()
+        .replace(
+            "if [ -n \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]; then",
+            "QITS_ARTIFACTS_CLI_PACKAGE=qits\nQITS_ARTIFACTS_CLI_VERSION=1\n"
+                + "QITS_ARTIFACTS_URL=http://artifacts.invalid\nif true; then");
   }
 
   // --- the properties the goldens are there to hold ------------------------------------------------

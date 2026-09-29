@@ -16,8 +16,16 @@ steps:
       : "${QITS_BUILD_REGISTRY:?}"
       (
         umask 077
-        printf '%s' "${QITS_COMMISSIONED_CLIENT_ID:-}" > /tmp/qits-client-id
-        printf '%s' "${QITS_COMMISSIONED_CLIENT_SECRET:-}" > /tmp/qits-client-secret
+        if [ -n "${QITS_COMMISSIONED_CLIENT_ID:-}" ]; then
+          printf '%s' "$QITS_COMMISSIONED_CLIENT_ID" > /tmp/qits-client-id
+          printf '%s' "$QITS_COMMISSIONED_CLIENT_SECRET" > /tmp/qits-client-secret
+        elif [ -n "${QITS_TOKEN:-}" ]; then
+          printf '%s' "${QITS_TOKEN_SUBJECT:-qits-ci-run}" > /tmp/qits-client-id
+          printf '%s' "$QITS_TOKEN" > /tmp/qits-client-secret
+        else
+          printf '' > /tmp/qits-client-id
+          printf '' > /tmp/qits-client-secret
+        fi
       )
       # --- the declared step, run as data -------------------------------------------
       cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
