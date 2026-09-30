@@ -50,7 +50,11 @@ import org.junit.jupiter.api.io.TempDir;
  *   <li>so each recipe's declared script body is checked directly as well — under {@code bash -n}
  *       when its step image is one of the platform's {@code qits/build-images/*}, which carry bash
  *       and are therefore where the composed runner picks {@code bash -eu}, and under {@code sh -n}
- *       for any other image, where nothing says bash exists.
+ *       for any other image, where nothing says bash exists;
+ *   <li>no declared step reaches the platform without the run's credential on the EDGE plane — the
+ *       five textual rules {@link #everyDeclaredStepPresentsTheRunsCredentialOnTheEdgePlane} states,
+ *       each one a failure a live run on an EDGE runner has already produced. Text, not behaviour:
+ *       it proves a recipe still SPELLS the credential, never that the edge accepts it.
  * </ul>
  *
  * <p><b>{@code -n} is a SYNTAX check by whichever {@code sh} and {@code bash} this host has</b> (on
@@ -241,6 +245,131 @@ public class PackagedReleaseArchetypesTest {
         }
       }
     }
+  }
+
+  /**
+   * <b>On an EDGE runner every platform address is the public edge, which refuses an anonymous
+   * read</b> (qits-443: the platform's only executor is one). What a step holds there is {@code
+   * $QITS_TOKEN} and what qits-ci derives from it — {@code $QITS_MAVEN_AUTH_USR}/{@code _PSW} for a
+   * repository's own {@code -s .qits-maven-settings.xml}, the {@code -gs} in {@code MAVEN_ARGS}, the
+   * publish-token command, {@code ~/.npmrc}, and the composed {@code /tmp/qits-client-id}/{@code
+   * -secret} files — and it holds NO commissioned pair. Each rule below is a way a recipe has
+   * thrown that away on a live run:
+   *
+   * <ol>
+   *   <li><b>never assign {@code QITS_MAVEN_AUTH_USR}/{@code _PSW}, never name the commissioned
+   *       pair.</b> Run b92c5a85 (qits-workspace-editor-oci's own recipe, 2026-09-30): {@code
+   *       QITS_MAVEN_AUTH_USR="${QITS_COMMISSIONED_CLIENT_ID-}" ./mvnw …} overwrote the credential
+   *       the plane had injected with a pair that does not exist there, and the mirror answered 401
+   *       on the first plugin pom;
+   *   <li><b>every {@code curl}/{@code wget} spends a {@code "$@"} bearer list</b> built from the
+   *       token — the same run's {@code curl: (22) … 401}, and maven-library's before it (eaf249d6);
+   *   <li><b>a script that writes {@code ~/.npmrc} writes the {@code _authToken} lines too</b>: its
+   *       {@code >} replaces the file the bootstrap put the token in (8265733a, {@code
+   *       ERR_PNPM_FETCH_401});
+   *   <li><b>a {@code buildctl build} handed a platform address as a build arg is handed the
+   *       credential for it as a secret</b> — the composed pair files for a maven address, the npm
+   *       token file for an npm one, {@code $tarball_auth} for the musl tarballs (qits-541);
+   *   <li>and the census: each rule met at least one command, so a refactor that hides every {@code
+   *       curl} behind a helper fails here rather than passing on nothing.
+   * </ol>
+   */
+  @Test
+  public void everyDeclaredStepPresentsTheRunsCredentialOnTheEdgePlane() throws Exception {
+    int fetches = 0;
+    int npmrcs = 0;
+    int mavenBuilds = 0;
+    int npmBuilds = 0;
+    int tarballBuilds = 0;
+    for (String name : names()) {
+      CiReleaseSlots recipe = recipe(name);
+      for (CiPipeline slot :
+          Stream.of(recipe.releaseRequest(), recipe.release()).filter(s -> s != null).toList()) {
+        for (CiStepDecl step : slot.steps()) {
+          String what = name + " (" + step.image() + ")";
+          List<String> commands = commands(step.script());
+          String code = String.join("\n", commands);
+          for (String command : commands) {
+            assertFalse(
+                command.matches("(?s).*\\bQITS_MAVEN_AUTH_(USR|PSW)=.*"),
+                what + " overwrites the maven credential the plane injected: " + command);
+            assertFalse(
+                command.contains("QITS_COMMISSIONED_CLIENT_"),
+                what + " names the commissioned pair, which an EDGE step does not hold: " + command);
+            if (command.matches("(?s)(.*[\\s(|;&!])?(curl|wget)\\s.*")) {
+              fetches++;
+              assertTrue(
+                  command.contains("\"$@\""),
+                  what + " fetches without the bearer list: " + command);
+              assertTrue(
+                  code.contains("QITS_TOKEN") || code.contains("QITS_PUBLISH_TOKEN_COMMAND"),
+                  what + " fetches in a script that never reads the run's token");
+            }
+            if (command.contains("buildctl build")) {
+              if (command.contains("build-arg:QITS_MAVEN_")) {
+                mavenBuilds++;
+                assertTrue(
+                    command.contains("--secret id=qits-client-id,src=/tmp/qits-client-id")
+                        && command.contains(
+                            "--secret id=qits-client-secret,src=/tmp/qits-client-secret"),
+                    what + " builds against the maven stores with no credential: " + command);
+              }
+              if (command.contains("build-arg:QITS_NPM_")) {
+                npmBuilds++;
+                assertTrue(
+                    command.contains("--secret id=qits-npm-token,src=/tmp/qits-npm-token")
+                        && code.contains("QITS_PUBLISH_TOKEN_COMMAND"),
+                    what + " builds against the npm stores with no credential: " + command);
+              }
+              if (command.contains("build-arg:MUSL_URL")) {
+                tarballBuilds++;
+                assertTrue(
+                    command.contains("$tarball_auth")
+                        && code.contains("HTTP_AUTH_TOKEN_$tarball_host,env=QITS_TOKEN"),
+                    what + " ADDs a registry tarball with no credential: " + command);
+              }
+            }
+          }
+          if (code.contains("> ~/.npmrc")) {
+            npmrcs++;
+            assertTrue(
+                code.contains(":_authToken=") && code.contains("QITS_PUBLISH_TOKEN_COMMAND"),
+                what + " replaces ~/.npmrc and leaves the run's token out of it");
+          }
+        }
+      }
+    }
+    assertTrue(fetches >= 2, "only " + fetches + " curl/wget commands were found to check");
+    assertTrue(npmrcs >= 2, "only " + npmrcs + " ~/.npmrc writers were found to check");
+    assertTrue(mavenBuilds >= 5, "only " + mavenBuilds + " maven builds were found to check");
+    assertTrue(npmBuilds >= 1, "only " + npmBuilds + " npm builds were found to check");
+    assertTrue(tarballBuilds >= 2, "only " + tarballBuilds + " tarball builds were found to check");
+  }
+
+  /**
+   * A script as its commands: comment lines dropped, a {@code \}-continued line joined to the one
+   * it continues. Line-wise and deliberately crude — enough to read one {@code curl} or one {@code
+   * buildctl build} as a whole, which is all the rules above ask.
+   */
+  private static List<String> commands(String script) {
+    List<String> commands = new ArrayList<>();
+    StringBuilder current = new StringBuilder();
+    for (String line : script.split("\n")) {
+      String trimmed = line.strip();
+      if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+        continue;
+      }
+      if (trimmed.endsWith("\\")) {
+        current.append(trimmed, 0, trimmed.length() - 1).append(' ');
+        continue;
+      }
+      commands.add(current.append(trimmed).toString());
+      current.setLength(0);
+    }
+    if (current.length() > 0) {
+      commands.add(current.toString());
+    }
+    return commands;
   }
 
   /** {@code <shell> -n} over one script: a parse, not a run. A missing shell is a failure. */

@@ -83,7 +83,7 @@ keys:
 
   env.QITS_CI_CONCURRENT_BUILDS:
     type: number
-    description: "How many runs this instance executes itself at once, in its own claim loops; size it to the host. 0 hands every run to runners (set it only once a qits-ci carrying the ci-runners readiness check is live). Never negative."
+    description: "How many runs this instance executes itself at once, in its own claim loops; size it to the host. 0 hands every run to runners (set it only once a qits-ci carrying the ci-runners readiness check is live). Never negative. Read only while qits.ci.in-process-executor.enabled is true, and that ships false: until then the effective count is 0 whatever this says."
 
   env.QITS_CI_MEMORY_LIMIT:
     type: string
