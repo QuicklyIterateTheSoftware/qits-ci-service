@@ -412,29 +412,38 @@ runs as a swarm service on the platform host; the curl line is for a machine a p
 
 #### Readiness counts runners
 
-**`/q/health/ready`'s gate is `ci-runners` (`api/CiRunnerReadinessCheck`), which replaced
-`ci-run-workers`** (qits-503). It is UP while at least one claim loop is live **or** at least one runner
-is connected (a quarantined one included — `localhost`'s first health check is a run this process has
-to accept), UP while the process is stopping, and DOWN otherwise; its data is `liveWorkers`,
-`configuredWorkers`, `connectedRunners` and `totalSlots` (the connected runners' effective slots, a
-quarantined one counting none). The old check counted claim loops alone, so it read
-`qits.ci.concurrent-builds=0` — no loop, by design — as the outage it was written for.
+**`/q/health/ready`'s `ci-runners` entry (`api/CiRunnerReadinessCheck`, which replaced
+`ci-run-workers` in qits-503) is ALWAYS UP: a readout, not a gate** (qits-443). Its data is
+`liveWorkers`, `configuredWorkers`, `connectedRunners` and `totalSlots` (the connected runners'
+effective slots, a quarantined one counting none), plus a **`warning`** — "nothing can execute a run:
+…; an accepted run sits QUEUED until a runner connects" — exactly when no claim loop is live, no
+runner is connected (a quarantined one counts as connected) and the process is not stopping.
+
+**It never goes DOWN because readiness cannot depend on an inbound connection.** Swarm gates routing
+on container health — an unhealthy task is never put behind the service's VIP and alias — and a
+runner connects *through* that routing (edge → alias → qits-ci). Until qits-443 this check was DOWN
+with no live loop and no connected runner, and on a zero-pool qits-ci that can never come up: the
+runner it waits for cannot reach the task that is waiting. Observed 2026-09-30, when the deployment
+of `2026.930.103022` was killed `unhealthy` and rolled back — and, the update being stop-first, the
+runner had been disconnected from the old task too. Restarting qits-ci because a remote runner is
+offline would fix nothing either. The state the DOWN stood for is still stated, as the `warning`.
 
 **The in-process executor ships switched off: `qits.ci.in-process-executor.enabled=false`** (qits-443).
 The platform's executor is a runner, and the pool stays off until it is deleted (qits-506). While the
 key is false the effective worker count is 0 **whatever `qits.ci.concurrent-builds` says**: no claim
 loop starts, `GET /ci/api/runs/queue` answers `concurrentBuilds: 0`, its forecast counts the runners'
-slots alone, and this check's census reads `configuredWorkers: 0` — UP on a connected runner, DOWN
-with none. It is a key of its own rather than a new default for `concurrent-builds` because the live
+slots alone, and this check's census reads `configuredWorkers: 0` — with the `warning` until a
+runner connects. It is a key of its own rather than a new default for `concurrent-builds` because the live
 deployment carries `QITS_CI_CONCURRENT_BUILDS=1` as an environment entry, which beats any shipped
 default. `true` (`QITS_CI_IN_PROCESS_EXECUTOR_ENABLED=true`) restores the old pool, sized by
 `qits.ci.concurrent-builds` — an emergency fallback; both test suites set it, because they drive
 their runs through the in-process worker.
 
-**THIS READINESS CHANGE MUST BE RELEASED AND LIVE BEFORE QITS_CI_CONCURRENT_BUILDS=0 IS SET, OR THE
-ZERO-THREAD QITS-CI FAILS ITS OWN DEPLOYMENT GATE.** And with the pool at 0, a qits-ci that boots with
-no runner connected is DOWN until one dials — so `localhost` has to be registered and running before
-the cutover, not after.
+**The zero pool is safe to deploy because readiness no longer depends on runners.** The capitals that
+stood here (qits-503) said the runner-counting check had to be live before the pool went to 0, and
+that a zero-pool qits-ci booting with no runner connected was DOWN until one dialled. That second
+half was the deadlock above. Now a zero-pool qits-ci comes up healthy with nobody connected, carries
+the `warning`, and loses it when the first runner dials in; runs accepted in between wait `QUEUED`.
 
 #### Quarantine, and the health check that ends one
 
@@ -2117,9 +2126,9 @@ document's shape, and an always-blank key costs it nothing while a removed one c
 `ci-daemon-pin`), it is UP unconditionally, and it reports the name, version and source as health
 data. It had a DOWN arm while the ladder could fall all the way through — every candidate rejected
 and nothing configured — and that state no longer exists. Nothing is lost at qits-cd's `awaitHealthy`
-gate: `CiRunnerReadinessCheck` (`ci-runners`, formerly `ci-run-workers`) is the real gate and always
-was the better one, since a qits-ci with no claim loop and no runner accepts runs and executes none,
-which is the failure that actually shipped.
+gate, and since qits-443 nothing else is either: `CiRunnerReadinessCheck` (`ci-runners`, formerly
+`ci-run-workers`) was the real gate and is an always-UP readout too now — see "Readiness counts
+runners" for why a check that waits for a runner cannot gate a deployment.
 
 **Failures stay distinguishable.** The orchestrator refusing the launch (or not answering at all), a
 container whose bootstrap never produced a daemon (its own log tail comes back on the very call that

@@ -13,8 +13,9 @@ import org.eclipse.microprofile.health.Readiness;
 import org.junit.jupiter.api.Test;
 
 /**
- * The verdict is a pure function of the census and the connected runners, so the whole truth table
- * is assertable here — including the rows a running suite cannot stage, since killing this
+ * The answer is a pure function of the census and the connected runners, so the whole truth table
+ * is assertable here: every row UP, the {@code warning} present exactly when nothing can execute a
+ * run — including the rows a running suite cannot stage, since killing this
  * instance's claim loops to prove the check would leave every later test with no worker.
  *
  * <p>The last case is the wiring: a real instance, its real census and its real (empty) runner
@@ -37,16 +38,34 @@ public class CiRunnerReadinessCheckTest {
     return String.valueOf(response.getData().orElseThrow().get(key));
   }
 
+  private static boolean warns(HealthCheckResponse response) {
+    return response.getData().orElseThrow().containsKey(CiRunnerReadinessCheck.WARNING);
+  }
+
+  /** UP on this row, and the warning present exactly when {@code nothingCanExecute}. */
+  private static void row(HealthCheckResponse response, boolean nothingCanExecute, String what) {
+    assertEquals(HealthCheckResponse.Status.UP, response.getStatus(), what + ": never DOWN");
+    assertEquals(nothingCanExecute, warns(response), what + ": the warning");
+  }
+
   @Test
   public void theTruthTableOfWorkersAndRunners() {
-    // live workers × connected runners, not stopping: DOWN only where both are zero.
-    assertEquals(HealthCheckResponse.Status.DOWN, verdict(0, 4, false, 0, 0).getStatus());
-    assertEquals(HealthCheckResponse.Status.UP, verdict(0, 4, false, 1, 2).getStatus());
-    assertEquals(HealthCheckResponse.Status.UP, verdict(4, 4, false, 0, 0).getStatus());
-    assertEquals(HealthCheckResponse.Status.UP, verdict(4, 4, false, 1, 2).getStatus());
-    // The zero-thread qits-ci (qits-503): no loop by design, and a runner is what keeps it ready.
-    assertEquals(HealthCheckResponse.Status.UP, verdict(0, 0, false, 1, 1).getStatus());
-    assertEquals(HealthCheckResponse.Status.DOWN, verdict(0, 0, false, 0, 0).getStatus());
+    // live workers × connected runners, not stopping: EVERY row is UP — a runner connects through
+    // the routing that health gates, so DOWN-until-connected could never come up — and the warning
+    // is on exactly the rows where both are zero.
+    row(verdict(0, 4, false, 0, 0), true, "dead loops, no runner");
+    row(verdict(0, 4, false, 1, 2), false, "dead loops, a runner");
+    row(verdict(4, 4, false, 0, 0), false, "live loops, no runner");
+    row(verdict(4, 4, false, 1, 2), false, "live loops, a runner");
+    // The zero-pool qits-ci (qits-503, qits-443): no loop by design.
+    row(verdict(0, 0, false, 1, 1), false, "zero pool, a runner");
+    row(verdict(0, 0, false, 0, 0), true, "zero pool, no runner — the state a fresh task boots in");
+    // A quarantined runner is connected with no usable slot: still something to hand a run to.
+    row(verdict(0, 0, false, 1, 0), false, "zero pool, a quarantined runner");
+    row(verdict(0, 0, false, 2, null), false, "zero pool, runners whose rows could not be read");
+    // Shutting down: zero of everything is what a shutdown is, and nothing to warn about.
+    row(verdict(0, 4, true, 0, 0), false, "stopping");
+    row(verdict(0, 0, true, 0, 0), false, "stopping, zero pool");
   }
 
   @Test
@@ -62,22 +81,27 @@ public class CiRunnerReadinessCheckTest {
   }
 
   @Test
-  public void nothingToExecuteARunAndNoShutdownUnderWayIsDownAndSaysWhy() {
-    // The measured state: qits-ci accepting runs, writing QUEUED rows, releasing permits nobody
-    // consumes — and now also no runner to Reserve them.
+  public void nothingToExecuteARunAndNoShutdownUnderWayIsStillUpAndSaysSo() {
+    // The measured state (2026-09-07): accepting runs, writing QUEUED rows, nobody to take them. It
+    // was DOWN; it is UP with the sentence as data, because the deployment of 2026.930.103022 showed
+    // DOWN here deadlocks a zero-pool qits-ci against the runner that would have lifted it.
     HealthCheckResponse response = verdict(0, 4, false, 0, 0);
 
-    assertEquals(HealthCheckResponse.Status.DOWN, response.getStatus());
+    assertEquals(HealthCheckResponse.Status.UP, response.getStatus());
     assertEquals("0", data(response, "liveWorkers"));
+    assertEquals("4", data(response, "configuredWorkers"));
     assertEquals("0", data(response, "connectedRunners"));
-    assertTrue(data(response, "message").contains("QUEUED"), "naming the consequence");
+    assertEquals("0", data(response, "totalSlots"));
+    String warning = data(response, CiRunnerReadinessCheck.WARNING);
+    assertTrue(warning.startsWith("nothing can execute a run"), warning);
+    assertTrue(warning.contains("QUEUED until a runner connects"), "naming the consequence");
   }
 
   @Test
-  public void nothingLeftBECAUSEitIsShuttingDownIsUp() {
+  public void nothingLeftBECAUSEitIsShuttingDownIsUpWithNoWarning() {
     // Zero live loops during a shutdown is what a shutdown is, runners or not.
-    assertEquals(HealthCheckResponse.Status.UP, verdict(0, 4, true, 0, 0).getStatus());
-    assertEquals(HealthCheckResponse.Status.UP, verdict(0, 0, true, 0, 0).getStatus());
+    row(verdict(0, 4, true, 0, 0), false, "stopping");
+    row(verdict(0, 0, true, 0, 0), false, "stopping, zero pool");
   }
 
   @Test
@@ -102,5 +126,6 @@ public class CiRunnerReadinessCheckTest {
         "every configured claim loop is live on an instance that is serving");
     assertEquals("0", data(response, "connectedRunners"));
     assertEquals("0", data(response, "totalSlots"));
+    assertFalse(warns(response), "a live claim loop can execute a run");
   }
 }

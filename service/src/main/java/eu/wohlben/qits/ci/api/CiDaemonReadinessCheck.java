@@ -28,14 +28,12 @@ import org.eclipse.microprofile.health.Readiness;
  * second lookup and no credential — and it is cheap by construction, because the underlying read is
  * two constants and a trim rather than the query-and-maybe-probe it once was.
  *
- * <p><b>What the deleted DOWN arm cost qits-cd's {@code awaitHealthy}: nothing.</b> That gate is
- * the single most valuable thing a readiness check here reaches, and it is not lost, because
- * {@link CiRunnerReadinessCheck} is the real gate and was always the better one — a qits-ci with
- * no claim loop and no runner accepts runs and executes none, which is the failure that actually shipped
- * (2026-09-07, green-while-dead) and the one a restored previous container actually fixes. A bad
- * daemon version, by contrast, is now a bad <em>pom</em>, and a pom is gated by this repository's
- * own release request, which runs that binary at that version against this host before the merge —
- * a deployment cannot be the first thing to find out.
+ * <p><b>What the deleted DOWN arm cost qits-cd's {@code awaitHealthy}: nothing worth keeping.</b>
+ * A bad daemon version is now a bad <em>pom</em>, and a pom is gated by this repository's own
+ * release request, which runs that binary at that version against this host before the merge — a
+ * deployment cannot be the first thing to find out. {@link CiRunnerReadinessCheck} was the real
+ * gate when this was written and is an always-UP readout too since qits-443, for a reason of its
+ * own: a check that waits for a runner cannot gate the deployment the runner connects through.
  *
  * <p><b>The name is {@code ci-daemon-version} and the rename is the honest half of the same
  * point.</b> It was {@code ci-daemon-pin}, which is ladder vocabulary: a "pin" there was a rung

@@ -760,14 +760,16 @@ a process restart healed it. Four things close it and each closes a different ha
   `shutdownNow`, which is what makes a shutdown a shutdown rather than a stream of replacements.
 - **The count is a surface.** `CiRunService.workerCensus()` answers `(live, configured, stopping)`
   and `api/CiRunnerReadinessCheck` (`ci-runners`, which replaced `ci-run-workers` in qits-503) is
-  DOWN exactly when live is zero, no runner is connected and `stopping` is false — a connected
-  runner executes runs as well as a loop does, and `qits.ci.concurrent-builds=0` has no loop by
-  design.
-  Zero live loops *during* a shutdown is what a shutdown is, so that arm is UP; `busyWorkers` is
-  deliberately not consulted, because an idle instance is legitimately zero-busy for days. What DOWN
-  buys is qits-cd's `awaitHealthy` restoring the previous container, plus a `/q/health/ready` that
-  says "0 of 4" instead of nothing at all. **It is the only readiness check here that reaches that
-  gate.** `CiDaemonReadinessCheck` had a DOWN arm of its own while the daemon pin ladder could fall
+  **always UP** (qits-443) and carries a `warning` data entry exactly when live is zero, no runner
+  is connected and `stopping` is false. It was DOWN on that state until the deployment of
+  `2026.930.103022` was rolled back (2026-09-30): swarm routes only to a healthy task, a runner
+  connects through that routing, so a zero-pool qits-ci that is DOWN until a runner connects never
+  comes up. **Readiness must not depend on an inbound connection — do not give this check a DOWN
+  arm again.** Zero live loops *during* a shutdown is what a shutdown is, so that arm has no
+  warning; `busyWorkers` is deliberately not consulted, because an idle instance is legitimately
+  zero-busy for days. What is left is a `/q/health/ready` that says "0 of 4" instead of nothing at
+  all; **no readiness check here reaches qits-cd's `awaitHealthy` any more.**
+  `CiDaemonReadinessCheck` had a DOWN arm of its own while the daemon pin ladder could fall
   all the way through; the version comes from the pom now and cannot be absent, so that check is an
   unconditional readout (renamed `ci-daemon-pin` → `ci-daemon-version` to say so) and a bad daemon
   version is caught by this repository's own release request rather than by a deployment.

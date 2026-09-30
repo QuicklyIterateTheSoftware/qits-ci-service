@@ -141,7 +141,7 @@ public class CiPackagedSurfaceIT {
           // defaults — src/test/resources/application.properties never reaches it — and the jar
           // ships this key false: the platform's executor is a runner. Every class on this profile
           // and on PackagedWithMockIdp, which extends it, exercises the in-process executor, which
-          // exists until qits-506: with it off the readiness gate is DOWN (no loop, no runner) and
+          // exists until qits-506: with it off no claim loop starts and
           // an accepted run waits QUEUED for a Reserve nobody sends. concurrent-builds stays the
           // shipped 4.
           "qits.ci.in-process-executor.enabled", "true");

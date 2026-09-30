@@ -15,39 +15,40 @@ import org.eclipse.microprofile.health.Readiness;
 import org.jboss.logging.Logger;
 
 /**
- * DOWN exactly when nothing could execute an accepted run and this instance is not shutting down:
- * no claim loop of its own is live AND no runner is connected (qits-503). It replaced {@code
- * ci-run-workers}, which counted the claim loops alone.
+ * <b>Always UP: a readout of what could execute a run, never a gate</b> — live claim loops,
+ * configured ones, connected runners and their slots, plus a {@code warning} when nothing can
+ * execute one (no live claim loop, no connected runner, and not shutting down).
  *
- * <p><b>Why the runners count now.</b> {@code qits.ci.concurrent-builds=0} hands every run to the
- * runners, so a qits-ci configured that way has zero claim loops by design — and the old check read
- * exactly that as the outage it was written for, so a zero-thread qits-ci would have failed its own
- * deployment gate and been rolled back. What the old check stood for is unchanged: "would an
- * accepted run sit {@code QUEUED} forever". A connected runner answers that as well as a live loop
- * does, so either keeps this UP.
+ * <p><b>Why it never goes DOWN.</b> Swarm gates routing on container health: a task that is not
+ * healthy is never put behind the service's VIP and alias. A runner connects THROUGH that routing —
+ * edge, alias, this process. So a check that is DOWN until a runner connects can never come up on a
+ * qits-ci with no claim loop of its own: the runner it waits for cannot reach the task that is
+ * waiting. Observed 2026-09-30: the deployment of 2026.930.103022 ({@code
+ * qits.ci.in-process-executor.enabled=false}, so zero workers) was killed {@code unhealthy} and
+ * rolled back, and because the update is stop-first the runner had been cut off from the old task
+ * as well. Readiness cannot depend on an inbound connection. And the remedy DOWN buys is the wrong
+ * one anyway: restarting or rolling back qits-ci because a remote runner is offline fixes nothing
+ * about the runner.
  *
- * <p><b>A quarantined runner still counts as connected</b>, deliberately. The bootstrap's {@code
- * localhost} runner registers quarantined awaiting its first health check, and that check is a run
- * this process has to accept and hand to it; a readiness that demanded slots would hold the
- * deployment DOWN over the one runner whose health check is what lifts the quarantine. {@code
- * totalSlots} says how much of that connection is usable, for a person reading it.
+ * <p><b>What it replaced, and what is kept of it.</b> {@code ci-run-workers} counted the claim
+ * loops alone and was DOWN at zero; qits-503 made this check count runners too, DOWN only with
+ * neither. The state both were written for is still real — after a redeploy (2026-09-07) runs sat
+ * {@code QUEUED} while every check stayed green, because no surface stated that every claim loop
+ * had died — and it is still stated, here, as data: the counts on every answer and the {@code
+ * warning} sentence exactly where the old DOWN stood. A dead claim loop is separately replaced by
+ * {@code CiRunService.supervised} and logged at ERROR. What is given up is only qits-cd's {@code
+ * awaitHealthy} restoring the previous container on that state, which no readiness check here
+ * reaches any more ({@link CiDaemonReadinessCheck} is a readout too).
  *
- * <p><b>This check exists because the alternative was measured.</b> After a redeploy, runs sat
- * {@code QUEUED} indefinitely while every health check this service declared stayed green: the
- * thing that had died — every one of {@code qits.ci.concurrent-builds} claim loops — was a fact no
- * surface stated. Green-while-dead cost the diagnosis hours and the fix a process restart.
+ * <p><b>A quarantined runner still counts as connected</b>: the bootstrap's {@code localhost}
+ * registers quarantined awaiting its first health check, which is a run this process hands to it.
+ * {@code totalSlots} says how much of the connection is usable — a quarantined runner counts none.
  *
- * <p><b>The disjunction is the whole check.</b> Zero live loops during a shutdown is what a shutdown
- * is, so {@code stopping} is UP; {@code busyWorkers} is deliberately not consulted — an idle instance
- * is legitimately zero-busy for days. The verdict needs no database: the connected runners are the
- * socket registry's, in memory. Only {@code totalSlots} reads the runner rows, best effort — a read
- * that fails costs the data point, never the verdict.
+ * <p>{@code busyWorkers} is deliberately not consulted — an idle instance is legitimately zero-busy
+ * for days. Nothing here needs the database except {@code totalSlots}, best effort: a read that
+ * fails costs that data point and nothing else.
  *
- * <p><b>What DOWN buys is qits-cd's health gate, and this is the ONLY readiness check here that
- * reaches it.</b> A deployment that lands with nothing to execute a run fails {@code awaitHealthy}
- * and the previous container is restored; beyond the gate it is what a person or a monitor reads.
- *
- * <p>The verdict itself is {@link #responseFor}, a pure function, so every arm is assertable without
+ * <p>The answer itself is {@link #responseFor}, a pure function, so every arm is assertable without
  * a process whose workers really have died.
  */
 @Readiness
@@ -57,6 +58,14 @@ public class CiRunnerReadinessCheck implements HealthCheck {
   private static final Logger LOG = Logger.getLogger(CiRunnerReadinessCheck.class);
 
   static final String NAME = "ci-runners";
+
+  /** The data key present exactly when nothing can execute a run. */
+  static final String WARNING = "warning";
+
+  static final String NOTHING_CAN_EXECUTE =
+      "nothing can execute a run: no CI run worker is claiming and no runner is connected, and"
+          + " this process is not shutting down; an accepted run sits QUEUED until a runner"
+          + " connects";
 
   @Inject CiRunService runs;
 
@@ -93,31 +102,25 @@ public class CiRunnerReadinessCheck implements HealthCheck {
   }
 
   /**
-   * The verdict, as a function of the census and the connected runners and nothing else.
+   * The readout, as a function of the census and the connected runners and nothing else. UP on
+   * every input — see the class javadoc for why.
    *
-   * @param totalSlots the connected runners' effective slots, null when they could not be read —
-   *     reported, never judged
+   * @param totalSlots the connected runners' effective slots, null when they could not be read
    */
   static HealthCheckResponse responseFor(
       CiRunService.WorkerCensus census, int connectedRunners, Integer totalSlots) {
     HealthCheckResponseBuilder response =
         HealthCheckResponse.named(NAME)
+            .up()
             .withData("liveWorkers", census.live())
             .withData("configuredWorkers", census.configured())
             .withData("connectedRunners", connectedRunners);
     if (totalSlots != null) {
       response.withData("totalSlots", totalSlots);
     }
-    if (census.live() > 0 || connectedRunners > 0 || census.stopping()) {
-      return response.up().build();
+    if (census.live() == 0 && connectedRunners == 0 && !census.stopping()) {
+      response.withData(WARNING, NOTHING_CAN_EXECUTE);
     }
-    return response
-        .down()
-        .withData(
-            "message",
-            "nothing can execute a run: no CI run worker is claiming and no runner is connected,"
-                + " and this process is not shutting down, so an accepted run would sit QUEUED"
-                + " forever")
-        .build();
+    return response.build();
   }
 }
