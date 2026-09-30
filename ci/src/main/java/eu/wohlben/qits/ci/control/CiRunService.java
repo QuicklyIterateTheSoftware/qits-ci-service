@@ -1890,11 +1890,6 @@ public class CiRunService {
     // BEFORE the verdict: an infra failure re-fired here is not announced as BuildFailed at all, so
     // a release request's gate never hears a red it would reject on — it waits for the retry, whose
     // verdict carries retryOfRunId and lands on the same commit. See autoRetry.
-    // First of all, the runner that failed it is written onto the run's avoid set, so neither the
-    // automatic retry below nor a person's later one is handed back to it — see avoidRunner.
-    if (outcome == CiRunStatus.FAILED && infraResult != null) {
-      avoidRunner(run);
-    }
     CiRun autoRetried =
         outcome == CiRunStatus.FAILED && infraResult != null
             ? autoRetry(run, infraStep, infraResult)
@@ -2353,9 +2348,16 @@ public class CiRunService {
    * docker: true} or {@code build: true} step needs a host that will run docker for it, and a runner
    * whose capabilities do not say {@code docker: true} is never handed one; a {@code build: true}
    * pipeline is never handed to a runner whose id range cannot map uids/gids 0..65535 ({@link
-   * #tooNarrowToBuild}, qits-556, qits-443), nor any run to a runner in its avoid set ({@link #avoidRunner}); a row that is not an
-   * event run, or whose snapshot will not reconstruct, is left for the claim loop, which is the one
-   * place that settles such rows — this path only ever takes.
+   * #tooNarrowToBuild}, qits-556, qits-443); a row that is not an event run, or whose snapshot will
+   * not reconstruct, is left for the claim loop, which is the one place that settles such rows —
+   * this path only ever takes. A passed-over row never holds back the rows behind it: the walk
+   * continues to the next candidate.
+   *
+   * <p><b>Which runner failed a run before is not asked</b> (qits-443, the owner's ruling of
+   * 2026-09-30): a retry used to be kept off the runner that failed it, which nobody specified and
+   * which, with a single runner, stranded the retry {@code QUEUED} forever. {@code
+   * ci_run.avoid_runner_ids} is still in the schema and is read by nothing, so a row written while
+   * the feature lived is taken like any other.
    *
    * @return the reservation, or empty when there was nothing this runner could have
    */
@@ -2403,11 +2405,6 @@ public class CiRunService {
                   for (CiRun candidate :
                       CiRunOrdering.suggestedOrder(builds(runs.listQueuedOldestFirst()))) {
                     if (!runnable(candidate)) {
-                      continue;
-                    }
-                    // A run this runner failed by the infrastructure is left for anyone else — a
-                    // local worker or another runner; with neither, it waits QUEUED (qits-556).
-                    if (AvoidRunnerIds.decode(candidate.avoidRunnerIds).contains(row.id)) {
                       continue;
                     }
                     EventRun request;
@@ -3653,9 +3650,9 @@ public class CiRunService {
    * <p><b>Never a failure of the run.</b> A retry that could not be accepted (the git host, the
    * registry, the database) is logged and answers null, so the red is announced as it always was.
    * The runner's quarantine streak has already been recorded by then and is untouched: the retry
-   * does not un-count the failure, and it is not pinned anywhere — it re-enters the queue, carrying
-   * the failed runner in its avoid set ({@link #avoidRunner}), so any worker but that runner may
-   * take it.
+   * does not un-count the failure, and it is neither pinned anywhere nor kept off anything — it
+   * re-enters the ordinary queue, and any worker may take it, the runner that failed it included
+   * (with one runner, that is the only worker there is).
    */
   private CiRun autoRetry(CiRun run, int failedStep, StepResult failure) {
     if (run.healthCheck() || autoRetryMax <= 0) {
@@ -3691,16 +3688,13 @@ public class CiRunService {
               + " accepted — it settles FAILED", run.id, what);
       return null;
     }
-    // The failed run's own record says where its question went, and where it may not go. Best
-    // effort: the retry exists whether or not this line lands, and its row names the run it re-fires
-    // and the runners it avoids either way.
+    // The failed run's own record says where its question went. Best effort: the retry exists
+    // whether or not this line lands, and its row names the run it re-fires either way.
     try {
       appendToStepOutput(
           run.id,
           failedStep,
-          "[infra failure (" + what + ") — retried automatically as run " + retry.id
-              + (run.runnerId == null ? "" : ", which " + runnerWords(run.runnerId) + " is not handed")
-              + "]");
+          "[infra failure (" + what + ") — retried automatically as run " + retry.id + "]");
     } catch (RuntimeException e) {
       LOG.warnf(e, "CI run %s: could not note its automatic retry %s", run.id, retry.id);
     }
@@ -3747,35 +3741,6 @@ public class CiRunService {
   private String runnerWords(UUID runnerId) {
     CiRunner row = QuarkusTransaction.requiringNew().call(() -> runnerRows.findById(runnerId));
     return "runner " + (row == null ? runnerId.toString() : row.name);
-  }
-
-  /**
-   * <b>A runner that failed a run by the infrastructure is never handed that work again</b>
-   * (qits-556): its id joins the run's {@code avoid_runner_ids}, which every re-fire copies ({@link
-   * #insertRetry}) and {@link #reserveFor} honours. Written on the FAILED row itself rather than only
-   * on the automatic retry, so a person's {@code qits ci retry} of that row avoids the runner too —
-   * and a retry of a build's own red, whose row gained nothing here, avoids nobody new, because a
-   * code failure says nothing about the machine. Local runs have no runner to avoid. Best effort: a
-   * set that could not be written costs the retry its preference, never the run its verdict.
-   */
-  private void avoidRunner(CiRun run) {
-    if (run.runnerId == null || run.healthCheck()) {
-      return;
-    }
-    try {
-      QuarkusTransaction.requiringNew()
-          .run(
-              () -> {
-                CiRun row = runs.findById(run.id);
-                if (row != null) {
-                  row.avoidRunnerIds =
-                      AvoidRunnerIds.encode(
-                          AvoidRunnerIds.with(AvoidRunnerIds.decode(row.avoidRunnerIds), run.runnerId));
-                }
-              });
-    } catch (RuntimeException e) {
-      LOG.warnf(e, "CI run %s: could not record that runner %s must not retry it", run.id, run.runnerId);
-    }
   }
 
   /** Appends one line to a recorded step's output. */
@@ -4032,10 +3997,7 @@ public class CiRunService {
     retry.retryReason = autoRetryReason;
     // runner_id and target_runner_id are deliberately NOT copied: a retry re-enters the ordinary
     // queue, and pinning an infra failure's retry to the runner that just failed it would be perverse.
-    // The avoid set IS copied, whole: it names every runner that failed this work by the
-    // infrastructure (avoidRunner wrote the source's own onto it), so a retry — automatic or a
-    // person's, of the failed run or of any retry behind it — is never handed back to one of them.
-    retry.avoidRunnerIds = source.avoidRunnerIds;
+    // Nor is it kept OFF that runner (qits-443): any worker may take it.
     retry.triggerType = source.triggerType;
     retry.configPath = source.configPath;
     // The bypass. Unique by construction, unmistakably local, and the constraint is untouched.

@@ -2621,12 +2621,12 @@ queue's reads (`listActiveNewestFirst`, `listQueuedOldestFirst`, `countQueued`) 
 commission reconciler must not reap a pending check's credential — and their callers filter
 (`CiRunService.builds`). A new repository-scoped read owes the predicate too.
 
-`V27__run_avoid_runners.sql` is V8's shape once more, on `ci_run`: `avoid_runner_ids text`, the
-runners a run must not be reserved by, as `infra_failure_runs`' JSON array text (codec
-`AvoidRunnerIds`), nullable, no default, no backfill, part of no constraint and carrying no index —
-`reserveFor` reads it off the candidate it already holds, so nothing queries into it (qits-556). It is
-written on the FAILED row by an infra failure (`CiRunnerHealth.isInfra`) rather than only on the
-automatic retry, so that a person's retry copies it too; a build's own red writes nothing.
+`V27__run_avoid_runners.sql` added `ci_run.avoid_runner_ids text` (nullable, no default, no
+constraint, no index) for "a retry is not handed back to the runner that failed it" (qits-556). That
+behaviour was removed (qits-443, the owner's ruling of 2026-09-30: never specified; with a single
+runner it strands the retry forever). **The column is debt**: it stays in the schema because an
+applied migration is never edited, the entity does not map it, and nothing reads or writes it — rows
+that still carry a set are reserved like any other. Dropping it is a later migration of its own.
 
 `V18__retire_daemon_pin_ladder.sql` is the **first migration in this lineage that drops anything**,
 and it owes an argument the additive ones do not. Every file since V1 has added a nullable column and

@@ -248,8 +248,6 @@ public class CiAutoRetryTest extends CiTestSupport {
     assertEquals(runner.id, all.get(0).runnerId);
     assertEquals(CiRunStatus.QUEUED, retry.status, "the local worker is busy, so it waits");
     assertNull(retry.runnerId, "not pinned to the runner that failed it");
-    assertEquals(
-        List.of(runner.id), AvoidRunnerIds.decode(retry.avoidRunnerIds), "and kept off it");
     assertNull(retry.targetRunnerId);
     assertEquals(
         "infra failure (runner qits-ci disconnected) on run " + original
@@ -258,7 +256,7 @@ public class CiAutoRetryTest extends CiTestSupport {
     assertTrue(
         service.stepsFor(original).get(0).output.endsWith(
             "[infra failure (runner qits-ci disconnected) — retried automatically as run "
-                + retry.id + ", which runner qits-ci is not handed]"),
+                + retry.id + "]"),
         service.stepsFor(original).get(0).output);
     assertTrue(announcer.failed().isEmpty());
 
@@ -266,15 +264,22 @@ public class CiAutoRetryTest extends CiTestSupport {
     CiRunner counted = QuarkusTransaction.requiringNew().call(() -> runnerRows.findById(runner.id));
     assertEquals(1, counted.infraFailures);
 
-    service.cancel(retry.id);
+    // The ONLY runner is the one that failed it, and it is handed its own retry (qits-443): a retry
+    // is not kept off the runner that failed the run, or with one runner nothing could ever take it.
+    runnerSteps.reset();
+    CiRunService.Reservation again = service.reserveFor(runner).orElseThrow();
+    assertEquals(retry.id, again.run().id, "the same runner reserves the retry");
+    service.executeReserved(again);
+    forgetLoadedEntities();
+    assertEquals(CiRunStatus.SUCCESS, service.requireRun(retry.id).status);
+    assertEquals(runner.id, service.requireRun(retry.id).runnerId);
   }
 
   @Test
-  public void anIdMappingFailureIsRetriedAwayFromTheRunnerThatFailedItAndTheGateHearsNoRed()
+  public void anIdMappingFailureIsRetriedIntoTheOrdinaryQueueAndTheGateHearsNoRed()
       throws Exception {
     occupyTheWorker();
     CiRunner narrow = runner("qits-ci");
-    CiRunner other = runner("roomy");
     runnerSteps.answer(
         spec -> new StepResult(1, false, StepOutcome.OK, CiRunnerHealthTest.LCHOWN));
     String repo = "auto-" + UUID.randomUUID();
@@ -297,8 +302,6 @@ public class CiAutoRetryTest extends CiTestSupport {
             + " qits-ci — its uid/gid range is too narrow) on run " + original
             + " — automatic retry 1 of 2",
         retry.retryReason);
-    assertEquals(List.of(narrow.id), AvoidRunnerIds.decode(failed.avoidRunnerIds));
-    assertEquals(List.of(narrow.id), AvoidRunnerIds.decode(retry.avoidRunnerIds));
     assertTrue(announcer.failed().isEmpty(), "no BuildFailed while an automatic retry follows");
     assertEquals(
         1,
@@ -306,23 +309,21 @@ public class CiAutoRetryTest extends CiTestSupport {
         "and it counts toward the runner's quarantine");
     assertTrue(
         service.stepsFor(original).get(0).output.endsWith(
-            " — retried automatically as run " + retry.id + ", which runner qits-ci is not handed]"),
+            " — retried automatically as run " + retry.id + "]"),
         service.stepsFor(original).get(0).output);
 
-    // The runner that failed it is passed over; any other takes it.
-    assertTrue(service.reserveFor(narrow).isEmpty(), "the retry is never handed back to it");
+    // The retry is ordinary queued work: the runner that failed it may take it again.
     runnerSteps.reset();
-    CiRunService.Reservation elsewhere = service.reserveFor(other).orElseThrow();
-    assertEquals(retry.id, elsewhere.run().id);
-    service.executeReserved(elsewhere);
+    CiRunService.Reservation again = service.reserveFor(narrow).orElseThrow();
+    assertEquals(retry.id, again.run().id);
+    service.executeReserved(again);
     forgetLoadedEntities();
     assertEquals(CiRunStatus.SUCCESS, service.requireRun(retry.id).status);
-    assertEquals(other.id, service.requireRun(retry.id).runnerId);
+    assertEquals(narrow.id, service.requireRun(retry.id).runnerId);
   }
 
   @Test
-  public void aPersonsRetryAvoidsARunnerThatFailedTheRunByTheInfrastructureButNotOneThatRanIt()
-      throws Exception {
+  public void aPersonsRetryOfAnInfraFailureIsHandedToTheRunnerThatFailedIt() throws Exception {
     service.autoRetryMax(0);
     occupyTheWorker();
     CiRunner runner = runner("qits-ci");
@@ -334,19 +335,9 @@ public class CiAutoRetryTest extends CiTestSupport {
     forgetLoadedEntities();
     assertNull(service.requireRun(manual.id).retryReason, "a person's, not automatic");
     assertEquals(
-        List.of(runner.id), AvoidRunnerIds.decode(service.requireRun(manual.id).avoidRunnerIds));
-    assertTrue(service.reserveFor(runner).isEmpty(), "not handed back to the runner that lost it");
-
-    // A build's own red says nothing about the machine, and its retry may go anywhere.
-    runnerSteps.answer(spec -> new StepResult(1, false, StepOutcome.OK, "tests failed\n"));
-    String red = accept("auto-" + UUID.randomUUID(), "rr-b");
-    service.executeReserved(service.reserveFor(runner).orElseThrow());
-    forgetLoadedEntities();
-    assertNull(service.requireRun(red).avoidRunnerIds);
-    CiRun again = service.retry(red);
-    forgetLoadedEntities();
-    assertNull(service.requireRun(again.id).avoidRunnerIds);
-    assertEquals(again.id, service.reserveFor(runner).orElseThrow().run().id);
+        manual.id,
+        service.reserveFor(runner).orElseThrow().run().id,
+        "the only runner takes the retry of the run it lost");
 
     service.cancel(manual.id);
   }

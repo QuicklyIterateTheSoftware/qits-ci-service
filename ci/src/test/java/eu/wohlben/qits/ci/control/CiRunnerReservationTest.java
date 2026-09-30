@@ -227,37 +227,27 @@ public class CiRunnerReservationTest extends CiTestSupport {
   }
 
   @Test
-  public void aRunIsNeverHandedToARunnerItAvoidsButAnyOtherRunnerMayTakeIt() throws Exception {
+  public void aRowStillCarryingAnAvoidSetIsReservedByTheRunnerItNames() throws Exception {
+    // ci_run.avoid_runner_ids outlived the feature that wrote it (qits-443): rows queued while it
+    // lived still name a runner, and the column is read by nothing — so the named runner takes them.
     occupyTheWorker();
-    CiRunner failedIt = runner("failed-it", 5, true);
-    CiRunner other = runner("other", 5, true);
-    String runId = accept("avoiding", BUILD);
-    QuarkusTransaction.requiringNew()
-        .run(
-            () ->
-                runs.update(
-                    "avoidRunnerIds = ?1 where id = ?2",
-                    AvoidRunnerIds.encode(List.of(failedIt.id)),
-                    runId));
+    CiRunner only = runner("qits-ci", 5, true);
+    String runId = accept("once-avoiding", BUILD);
+    int written =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    runs.getEntityManager()
+                        .createNativeQuery(
+                            "update ci_run set avoid_runner_ids = ?1 where id = ?2")
+                        .setParameter(1, "[\"" + only.id + "\"]")
+                        .setParameter(2, runId)
+                        .executeUpdate());
+    assertEquals(1, written, "the column is still in the schema, and the row carries a set");
 
-    assertTrue(
-        service.reserveFor(failedIt).isEmpty(), "the runner that failed the work is passed over");
-    assertEquals(CiRunStatus.QUEUED, row(runId).status, "passed over, never settled");
-
-    CiRunService.Reservation taken = service.reserveFor(other).orElseThrow();
+    CiRunService.Reservation taken = service.reserveFor(only).orElseThrow();
     assertEquals(runId, taken.run().id);
-    assertEquals(other.id, row(runId).runnerId);
-  }
-
-  @Test
-  public void anAvoidSetThatCannotBeReadAvoidsNobody() {
-    assertEquals(List.of(), AvoidRunnerIds.decode("not json"));
-    assertEquals(List.of(), AvoidRunnerIds.decode("{\"a\":1}"));
-    UUID id = UUID.randomUUID();
-    assertEquals(List.of(id), AvoidRunnerIds.decode("[\"" + id + "\", \"junk\", 7]"));
-    assertEquals(
-        List.of(id), AvoidRunnerIds.with(AvoidRunnerIds.with(List.of(), id), id), "a set");
-    assertNull(AvoidRunnerIds.encode(List.of()));
+    assertEquals(only.id, row(runId).runnerId);
   }
 
   @Test

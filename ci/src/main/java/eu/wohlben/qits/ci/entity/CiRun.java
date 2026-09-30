@@ -162,15 +162,11 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   @Column(name = "retry_reason", length = 255)
   public String retryReason;
 
-  /**
-   * The runners that must not be handed this run, as a JSON array of runner ids, or null for none
-   * (qits-556, {@code V27__run_avoid_runners.sql}). A runner joins it when a step it held failed by
-   * the infrastructure ({@code CiRunnerHealth.isInfra}); every retry copies it whole, so neither an
-   * automatic nor a person's re-fire goes back to a runner that already failed the work. Only a
-   * runner's reservation reads it — a local worker, and any other runner, may take the run.
-   */
-  @Column(name = "avoid_runner_ids", columnDefinition = "text")
-  public String avoidRunnerIds;
+  // DEBT (qits-443): ci_run.avoid_runner_ids (V27__run_avoid_runners.sql) is still in the schema and
+  // is deliberately NOT mapped here — nothing reads or writes it. "A retry is kept off the runner
+  // that failed it" was removed on the owner's ruling of 2026-09-30 (never specified; with a single
+  // runner it strands the retry forever). The applied migration is never edited; dropping the
+  // column is a later migration of its own.
 
   /**
    * What the triggering event said this work was worth, verbatim, or null when it said nothing —

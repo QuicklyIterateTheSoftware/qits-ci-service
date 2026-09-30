@@ -367,9 +367,8 @@ a run with a `build:` step for a runner whose advertised `idRange` (its user nam
 uid/gid count, stored in `capabilities` from its `Hello`) is below 65536 — its builder cannot map
 the 16-bit id space every layer on this estate owns since qits-556 rebuilt the images that owned
 ids above it, so a rootless or LXC range such as `qits-ci`'s 458752 takes builds (qits-443); a
-runner that sends no range is allowed — and a
-run whose `avoid_runner_ids` names the runner (see "retried automatically" below), and refuses a
-runner already holding its slots. The answer is `Take` or `Nothing`. A taken run is
+runner that sends no range is allowed — and refuses a
+runner already holding its slots. A run passed over never holds back the runs behind it. The answer is `Take` or `Nothing`. A taken run is
 driven on its own `ci-runner-run-<runId>` thread, never a `ci-run-worker`, through
 `runnerhost/RunnerStepRunner`: each step is a `Launch{workloadSpec}` to the runner — the spec
 `daemonhost/StepWorkloadSpecs` composes for the local path too — answered `Launched`/`LaunchFailed`
@@ -2195,8 +2194,7 @@ this same retry path, into the ordinary queue with no runner pinned, and announc
 automatic retries in a row per original run, counted along `retryOfRunId`; the next infra failure
 settles as an ordinary red. The retry says so on the run — `autoRetry: true` and `retryReason`
 (`V25__run_auto_retry.sql`); the failed run keeps its `FAILED` row, its failing step's output ends
-with `[infra failure (runner … disconnected) — retried automatically as run <id>, which runner … is
-not handed]`, and the failure still counts toward the runner's quarantine. A retry a person presses is
+with `[infra failure (runner … disconnected) — retried automatically as run <id>]`, and the failure still counts toward the runner's quarantine. A retry a person presses is
 not marked and starts the count again.
 
 **One exit code is infrastructure too** (qits-556): a step that ran and exited non-zero whose output
@@ -2208,11 +2206,10 @@ share — counts it like an infra outcome, and the retry line names it (`the bui
 owner ("failed to Lchown") on runner …`). Only the last 40 lines are read, so a signature a build
 printed and survived is not one.
 
-**A retry is not handed back to the runner that failed it** (`V27__run_avoid_runners.sql`). An infra
-failure on a runner writes that runner onto the FAILED run's `avoid_runner_ids`, and every retry copies
-the set whole — so an automatic retry and a person's `qits ci retry` of that run (or of any retry behind
-it) are passed over by that runner's `Reserve`, while a local worker and every other runner may take
-them. With neither, the run waits `QUEUED`. A build's own red adds nobody: its retry may go anywhere.
+**A retry is not kept off the runner that failed it.** It re-enters the ordinary queue and any worker
+may take it, that runner included. Keeping it off (`avoid_runner_ids`, qits-556) was removed on the
+owner's ruling of 2026-09-30: it was never specified, and with a single runner it strands the retry
+`QUEUED` forever.
 
 **How it gets past the dedupe.** `unique (trigger_event_id, repo_id, config_path)` is the
 at-most-one-run-per-(event, trigger file) guarantee, and a retry is by definition the same three
