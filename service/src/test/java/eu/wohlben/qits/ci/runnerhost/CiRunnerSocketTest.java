@@ -235,11 +235,13 @@ class CiRunnerSocketTest {
               pins.version(),
               CiRunnerProtocol.CAPABILITY_VERSION,
               1,
-              new Capabilities(true, "amd64", "linux", Map.of(), 65536L)));
+              new Capabilities(true, "amd64", "linux", Map.of(), 458752L)));
       assertNotNull(runner.next(Ack.class, SOON));
       JsonNode capabilities = RunnerCapabilities.decode(row().capabilities);
-      assertEquals(65536L, capabilities.path("idRange").asLong());
-      assertTrue(CiRunService.narrowIdRange(row()), "and placement reads it as narrow");
+      assertEquals(458752L, capabilities.path("idRange").asLong());
+      assertFalse(
+          CiRunService.tooNarrowToBuild(row()),
+          "and placement reads an unprivileged LXC's range as wide enough to build (qits-443)");
     }
     awaitDisconnected();
     try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {

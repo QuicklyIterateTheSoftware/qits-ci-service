@@ -186,11 +186,12 @@ public class CiRunnerReservationTest extends CiTestSupport {
   }
 
   @Test
-  public void aBuildIsNeverHandedToARunnerWhoseIdRangeIsNarrowButAnUnknownRangeIsAllowed()
+  public void aBuildIsNeverHandedToARunnerThatCannotMapTheSixteenBitIdSpaceButAnUnknownRangeIsAllowed()
       throws Exception {
     occupyTheWorker();
-    CiRunner narrow = runner("narrow", 5, true, "65536");
+    CiRunner narrow = runner("narrow", 5, true, "65535");
     CiRunner unknown = runner("older-runner", 5, true);
+    CiRunner lxc = runner("qits-ci-like", 5, true, "458752");
     CiRunner full = runner("full-host", 5, true, "4294967295");
     String buildRun = accept("needs-builder", BUILD);
     String dockerRun = accept("needs-socket", DOCKER);
@@ -201,7 +202,10 @@ public class CiRunnerReservationTest extends CiTestSupport {
         "a narrow runner still takes what does not run in its builder");
     assertTrue(service.reserveFor(narrow).isEmpty(), "the build is left for a runner that can map it");
     assertEquals(CiRunStatus.QUEUED, row(buildRun).status);
-    assertEquals(buildRun, service.reserveFor(full).orElseThrow().run().id);
+    assertEquals(
+        buildRun,
+        service.reserveFor(lxc).orElseThrow().run().id,
+        "an unprivileged LXC's range maps 0..65535 and so takes a build (qits-443)");
 
     String another = accept("needs-builder-too", BUILD);
     assertEquals(
@@ -209,10 +213,17 @@ public class CiRunnerReservationTest extends CiTestSupport {
         service.reserveFor(unknown).orElseThrow().run().id,
         "a runner that says nothing about its range is not refused");
 
-    assertTrue(CiRunService.narrowIdRange(runnerRow("{\"idRange\":65537}")));
-    assertFalse(CiRunService.narrowIdRange(runnerRow("{\"idRange\":4294967295}")));
-    assertFalse(CiRunService.narrowIdRange(runnerRow("{\"idRange\":\"narrow\"}")));
-    assertFalse(CiRunService.narrowIdRange(runnerRow(null)));
+    String third = accept("needs-builder-three", BUILD);
+    assertEquals(third, service.reserveFor(full).orElseThrow().run().id);
+
+    assertTrue(CiRunService.tooNarrowToBuild(runnerRow("{\"idRange\":65535}")));
+    assertTrue(CiRunService.tooNarrowToBuild(runnerRow("{\"idRange\":0}")));
+    assertFalse(CiRunService.tooNarrowToBuild(runnerRow("{\"idRange\":65536}")));
+    assertFalse(CiRunService.tooNarrowToBuild(runnerRow("{\"idRange\":458752}")));
+    assertFalse(CiRunService.tooNarrowToBuild(runnerRow("{\"idRange\":4294967295}")));
+    assertFalse(CiRunService.tooNarrowToBuild(runnerRow("{\"idRange\":\"narrow\"}")));
+    assertFalse(CiRunService.tooNarrowToBuild(runnerRow("{}")));
+    assertFalse(CiRunService.tooNarrowToBuild(runnerRow(null)));
   }
 
   @Test
