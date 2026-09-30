@@ -45,7 +45,7 @@ import java.util.UUID;
  * rather than written as an explicit null.
  *
  * <p><b>Plain strings, never this service's enums</b>: {@code plane} is {@code CiRunnerPlane}'s word
- * ({@code EDGE} or {@code INTERNAL}), and a wire vocabulary that imported the enum would make every
+ * ({@code EDGE}, the only one since qits-515), and a wire vocabulary that imported the enum would make every
  * subscriber depend on qits-ci's storage model — {@link BuildFailed#outcome}'s rule.
  *
  * <p><b>Published only once the row committed</b>, and never for a refused create: a malformed

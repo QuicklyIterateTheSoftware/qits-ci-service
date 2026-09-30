@@ -23,7 +23,7 @@ import java.util.Set;
  * client_credentials} token when it dials, and qits-idp gives it an hour ({@code
  * qits.idp.token-ttl-seconds=3600}), so every runner lost its socket exactly one hour after each
  * connect — measured 2026-09-29 at 11:00:58, 12:00:58 and 13:21:12, each an hour to the second after
- * the dial before it, and the first of them failed run 286b4b9d mid-step (qits-545). An EDGE step's
+ * the dial before it, and the first of them failed run 286b4b9d mid-step (qits-545). A step's
  * daemon is worse off: the edge swaps its {@code qits_tok_} for a JWT that lives five minutes
  * ({@code qits.idp.token-introspection-jwt-ttl-seconds=300}), so no step through the edge could have
  * outlived that.

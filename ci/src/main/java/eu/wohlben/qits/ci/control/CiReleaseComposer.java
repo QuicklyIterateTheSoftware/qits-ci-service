@@ -130,7 +130,7 @@ import java.util.List;
  * <p><b>Environment, in every case but two.</b> A step reads {@code $QITS_VERSION} (seeded by
  * {@code CiRunService} from the triggering event — the three inconsistent {@code jq} grammars in the
  * fleet die with it), {@code $QITS_CI_REPO_NAME}, {@code $QITS_ARTIFACTS_URL}, {@code
- * $QITS_ARTIFACTS_CLI_PACKAGE}, the registry variables and the commissioned pair. The two exceptions
+ * $QITS_ARTIFACTS_CLI_PACKAGE}, the registry variables and the run's credential files. The two exceptions
  * are an artifact's {@code type}/{@code name} and its {@code sbom:} path, which are interpolated into
  * the postlude — held to {@link CiReleaseSlotParser#SCRIPT_SAFE} at parse time and single-quoted
  * here, so the value cannot be anything but a word.

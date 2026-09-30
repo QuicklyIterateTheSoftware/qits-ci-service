@@ -192,7 +192,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
   /** What a runner may hold right now — its {@code Ack} — whatever its row's slots say. */
   @Inject CiRunnerHealth health;
 
-  /** What an EDGE runner's builder rewrites — every {@code Ack} to one carries it. */
+  /** What a runner's builder rewrites — every {@code Ack} carries it. */
   @Inject RunnerRegistryMirrors registryMirrors;
 
   /**

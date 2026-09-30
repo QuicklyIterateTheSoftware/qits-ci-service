@@ -271,7 +271,6 @@ components:
     CiRunnerPlane:
       type: string
       enum:
-      - INTERNAL
       - EDGE
     CiStepDto:
       type: object
@@ -322,11 +321,12 @@ components:
           format: int32
           description: How many steps it may hold at once; 0 drains it. Default 1
         plane:
-          $ref: "#/components/schemas/CiRunnerPlane"
           type: string
-          description: "Where its steps reach the platform: EDGE through the public\
-            \ names, INTERNAL on qits-net. Default EDGE when this qits-ci knows its\
-            \ public domain, INTERNAL when it does not"
+          enum:
+          - EDGE
+          description: "Where its steps reach the platform. There is one plane, EDGE\
+            \ — through the public names — and absent means EDGE. Any other value\
+            \ is refused 400"
         stepMemoryLimit:
           type: string
           description: "The memory cap its step containers get, memory and memory-swap\
@@ -451,10 +451,11 @@ components:
           type: string
           description: Blank clears it; absent leaves it
         plane:
-          $ref: "#/components/schemas/CiRunnerPlane"
           type: string
-          description: EDGE or INTERNAL; absent leaves it. Reaches the runner's next
-            run
+          enum:
+          - EDGE
+          description: "EDGE, or absent; it changes nothing. Any other value is refused\
+            \ 400"
         stepMemoryLimit:
           type: string
           description: "A docker size (6g, 6144m) its step containers are capped at;\
@@ -804,15 +805,16 @@ paths:
                 $ref: "#/components/schemas/CiRunnerCreated"
         "400":
           description: "A malformed name, slots, description or stepMemoryLimit, or\
-            \ EDGE_PLANE_UNCONFIGURED: an EDGE plane on a qits-ci that knows no public\
-            \ domain"
+            \ UNKNOWN_PLANE: a plane other than EDGE — INTERNAL included, which no\
+            \ longer exists"
         "409":
           description: The name is taken
         "502":
           description: qits-idp refused the registration token
         "503":
           description: "This deployment commissions nothing, or cannot render an install\
-            \ script"
+            \ script — which includes knowing no public domain to address a runner\
+            \ by"
         "401":
           description: Not Authorized
         "403":
@@ -850,7 +852,7 @@ paths:
         - qits:agent
   /ci/api/runners/{id}:
     patch:
-      summary: "Change a runner's slots, description, plane or step memory limit"
+      summary: "Change a runner's slots, description or step memory limit"
       parameters:
       - name: id
         in: path
@@ -872,8 +874,7 @@ paths:
                 $ref: "#/components/schemas/CiRunnerDto"
         "400":
           description: "Negative slots, an overlong description, a malformed stepMemoryLimit,\
-            \ or EDGE_PLANE_UNCONFIGURED: an EDGE plane on a qits-ci that knows no\
-            \ public domain"
+            \ or UNKNOWN_PLANE: a plane other than EDGE"
         "404":
           description: No such runner
         "401":
@@ -1033,7 +1034,8 @@ paths:
         "502":
           description: qits-idp refused the runner's client
         "503":
-          description: This deployment commissions nothing
+          description: "This deployment commissions nothing, or knows no public domain\
+            \ to tell the runner its addresses by"
         "401":
           description: Not Authorized
       tags:

@@ -8,11 +8,11 @@ at all — only `Launch`/`Reap` and the claim — and is drawn below.)
 
 | | the control WebSocket | the host's docker daemon socket |
 |---|---|---|
-| what | `ws://qits-ci:8080/ci/daemon` (`qits.ci.container-daemon-url`) | a unix socket on the **runner's** host — that host's fact, not qits-ci's |
-| who opens it | the **step container**, dialling **out**; qits-ci never dials in | nobody opens it — the runner bind-mounts its own host's socket into the container as a file |
+| what | `wss://ci.qits.<domain>/ci/daemon`, qits-ci's public name behind the platform edge (composed from `QITS_DOMAIN`) | a unix socket on the **runner's** host — that host's fact, not qits-ci's |
+| who opens it | the **step container**, dialling **out** through the edge; qits-ci never dials in | nobody opens it — the runner bind-mounts its own host's socket into the container as a file |
 | which steps have it | **every** step, always, since the daemon landed | only a step that declared `docker: true` |
 | what rides it | the step's script one way, output chunks and lifecycle frames the other | the docker Engine API, spoken by whatever CLI the step image carries |
-| what it grants | "deliver data about this run", authenticated by a per-container secret | **root on the host** — the socket *is* the daemon |
+| what it grants | "deliver data about this run", authenticated by the run's `ci-run` token; the launch is named in the daemon's first frame | **root on the host** — the socket *is* the daemon |
 | if it is missing | the step is recorded `NEVER_STARTED` / `CONNECTION_LOST` | a step that asked for it cannot build or push; every other step never notices |
 
 They are unrelated. The control socket is how a step *is* a step; the docker socket is one optional
@@ -49,9 +49,14 @@ The dotted line from the daemon is the control socket: outbound, per step, alway
 line is the docker socket: a mount, only on a declared step, and root-equivalent. Note that `dockerd`
 is *also* what starts the container in the first place — but it is the **runner's** `dockerd`, driven
 by the runner's own `docker run`/`docker rm` on a `Launch`/`Reap` qits-ci sends it. qits-ci holds no
-docker socket and calls no orchestrator; the platform host's steps are the `localhost` runner's, which
-qits-deployments runs beside qits-ci. What `docker: true` changes is that the step gets to talk to
+docker socket and calls no orchestrator. What `docker: true` changes is that the step gets to talk to
 that `dockerd` too.
+
+**One address plane.** A step container joins no docker network and is given no extra host. Every
+address it is told is the public name of a service, `https://<host>.qits.<domain>`, reached through
+the platform edge with the run's token: qits-ci's daemon socket, the git host it clones from, the
+registry, the mirror, qits-workspaces. The plane on which a step stood on qits-net and dialled each
+service by its wire alias was deleted in qits-515.
 
 ## The whole flow, once
 
@@ -63,6 +68,7 @@ sequenceDiagram
     participant Git as qits-githost
     participant Bus as qits-events
     participant Art as qits-artifacts
+    participant Idp as qits-idp
     participant Ci as qits-ci
     participant Runner as ci-runner
     participant Dockerd as runner-host dockerd
@@ -79,16 +85,18 @@ sequenceDiagram
     Ci->>Ci: reserveFor — one conditional UPDATE: RUNNING, runner_id = this runner<br/>then pin the daemon version
     Ci-->>Runner: Take{runId}
 
+    Ci->>Idp: POST /idp/api/tokens {contextKind: ci-run, contextId: runId}<br/>at the run's first step — one token for the whole run
+
     loop one fresh container per step, in sequence
-        Ci-->>Runner: Launch{workloadSpec} — entrypoint = the host-authored BOOTSTRAP,<br/>the contract as env, --cap-drop=ALL, no-new-privileges
+        Ci-->>Runner: Launch{workloadSpec} — entrypoint = the host-authored BOOTSTRAP,<br/>the contract as env (public names, $QITS_TOKEN), --cap-drop=ALL, no-new-privileges
         Runner->>Dockerd: docker run -d …
         Note over Runner,Dockerd: a step that declared docker: true also gets<br/>the runner host's docker socket mounted here.<br/>Nothing else about the spec differs.
         Dockerd->>Step: started, detached
         Runner-->>Ci: Launched{containerId} | LaunchFailed{docker's words}
-        Step->>Art: GET $QITS_CI_DAEMON_BINARY_URL → chmod +x → exec
-        Step-->>Ci: ⇠ dials the CONTROL WebSocket, Hello{daemonId, secret}
-        Note over Step,Ci: the container dials OUT. qits-ci never dials in and<br/>never learns an address from a container.
-        Step->>Git: shallow clone --depth 50, checkout $QITS_CI_SHA
+        Step->>Art: GET $QITS_CI_DAEMON_BINARY_URL, Bearer $QITS_TOKEN → chmod +x → exec
+        Step-->>Ci: ⇠ dials the CONTROL WebSocket with Bearer $QITS_TOKEN, then Hello{daemonId}
+        Note over Step,Ci: the container dials OUT, through the platform edge, which introspects<br/>the token and forwards its subject. qits-ci never dials in and<br/>never learns an address from a container.
+        Step->>Git: shallow clone --depth 50 with the token, checkout $QITS_CI_SHA
         Step-->>Ci: Initialized — or InitFailed{SHA_GONE}, and ci then asks the host whether<br/>the repository still HOLDS the sha and discards the run only if it does not
         Ci-->>Step: RunStep{script, timeoutSeconds} — the reply IS the step<br/>← host-stamped started_at
         Step-->>Ci: Output{chunk} … many, streamed as the script prints
@@ -100,6 +108,7 @@ sequenceDiagram
         Runner-->>Ci: Reaped{log tail}
     end
     Ci-->>Runner: Released{runId} — the slot is free
+    Ci->>Idp: DELETE /idp/api/tokens/{tokenId} — the run's token is given back
 
     Note over Ci: a red step skips the rest; the remaining rows are written SKIPPED
     Ci->>Bus: BuildSuccessful — only on SUCCESS; BuildFailed with the terminal word otherwise
@@ -141,7 +150,7 @@ sequenceDiagram
         Ci-->>Runner: Launch{workloadSpec}
         Runner->>Step: docker run -d
         Runner-->>Ci: Launched{containerId} | LaunchFailed{docker's words}
-        Step-->>Ci: dials the CONTROL WebSocket, as every step does
+        Step-->>Ci: dials the CONTROL WebSocket through the edge, as every step does
         Ci-->>Step: RunStep … Finished
         Ci-->>Runner: Reap{containerName}
         Runner->>Step: docker rm
@@ -170,7 +179,7 @@ sequenceDiagram
     Ci-->>Step: RunStep{script} over the control WebSocket
     Note over Step: the script is just a script:<br/>ref="$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/APP:$QITS_CI_SHA"<br/>docker build -t "$ref" . && docker push "$ref"
     Step->>Dockerd: build, over the MOUNTED docker socket<br/>(the CLI streams the context; the daemon builds)
-    Dockerd->>Reg: PUT blobs + manifest — tokenless for producers
+    Dockerd->>Reg: PUT blobs + manifest, logged in with the run's token
     Step-->>Ci: Output{chunks} — the build log, over the control WebSocket
     Step-->>Ci: Finished{exitCode}
     Ci->>Bus: SoftwareRelease{repoId, projectId, version, package} — one per published declaration
@@ -190,14 +199,13 @@ names no deployment fact; `$QITS_CI_SHA` was already there.
 
 And note who dials the registry in that diagram: **`Dockerd`, not `Step` and not `Ci`.** The CLI on
 the far side of the mounted socket is a client; the host's daemon is what resolves the registry name,
-negotiates TLS and performs both the build and the push. That is why the deployment prerequisite is
-about the *runner host's* view of the registry — resolvable from there, and in
-`insecure-registries` while it speaks plain HTTP.
+negotiates TLS and performs both the build and the push. `$QITS_REGISTRY` is the registry's public
+name, `registry.qits.<domain>`, which is what the runner host's daemon resolves.
 
-**A converted recipe replaces `Dockerd` in that diagram with the platform builder.** The step calls
+**A converted recipe replaces `Dockerd` in that diagram with the runner's builder.** The step calls
 `buildctl` against `$BUILDKIT_HOST` — the builder the runner owns, which fills that variable in — and
-the *builder* pulls the bases (rewriting the committed vhost spellings to
-the in-network aliases via its own registry config) and pushes the ref the step composed from
-`$QITS_BUILD_REGISTRY`, all without the host daemon in the path. The socket stays mounted until the
+the *builder* pulls the bases (rewriting the committed vhost spellings to the public names by the
+`registryMirrors` table qits-ci sends the runner) and pushes the ref the step composed from
+`$QITS_BUILD_REGISTRY`, the registry's public name, all without the host daemon in the path. The socket stays mounted until the
 last recipe converts; see the README's `docker: true` section and the wrapper's
 `qits-buildkit-plan.md`.

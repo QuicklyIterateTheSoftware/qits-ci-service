@@ -7,13 +7,13 @@ import java.util.Map;
  * starts it states every other variable the child reads.
  *
  * <p><b>Why an allow-list and not a remove-list.</b> This suite runs inside a qits-ci step
- * container, and which variables that container carries depends on the plane the step ran on: an
- * INTERNAL step gets a commissioned client pair and a token endpoint, an EDGE step gets {@code
- * QITS_TOKEN}, {@code QITS_MAVEN_AUTH_*}, {@code GIT_CONFIG_GLOBAL}, {@code
- * QITS_PUBLISH_TOKEN_COMMAND} and public-edge {@code QITS_*_URL}s instead (see {@code
- * StepWorkloadSpecs.compose}). A remove-list names only the variables that existed when it was
- * written: on qits-ci's first edge run {@code CiDaemonBootstrapFetchTest} removed the pair and
- * {@code GIT_CONFIG_GLOBAL} but inherited {@code QITS_TOKEN}, so the bootstrap took its token branch
+ * container, which carries whatever qits-ci composes for a step: {@code QITS_TOKEN}, {@code
+ * QITS_MAVEN_AUTH_*}, {@code GIT_CONFIG_GLOBAL}, {@code QITS_PUBLISH_TOKEN_COMMAND} and the public
+ * {@code QITS_*_URL}s today (see {@code StepWorkloadSpecs.compose}), a commissioned client pair and
+ * a token endpoint before qits-515. A remove-list names only the variables that existed when it was
+ * written: on qits-ci's first run through the edge {@code CiDaemonBootstrapFetchTest} removed the
+ * pair and {@code GIT_CONFIG_GLOBAL} but inherited {@code QITS_TOKEN}, so the bootstrap took its
+ * token branch
  * and wrote its git helper config to an empty {@code $GIT_CONFIG_GLOBAL} ({@code can't create :
  * nonexistent directory}). Starting from nothing makes a new ambient variable irrelevant rather
  * than a new way to fail.
