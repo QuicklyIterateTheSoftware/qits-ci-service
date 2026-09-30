@@ -230,6 +230,7 @@ release-request:
     script: |
       # $QITS_CI_BRANCH is release/<id> and $QITS_CI_SHA is the merged sha. The fold is already
       # checked out; nothing here fetches or switches refs.
+      echo "verifying $QITS_CI_BRANCH at $QITS_CI_SHA"
 
       # THE SUBMODULES, READ OUT OF .gitmodules BY GIT ITSELF. The daemon's clone is shallow and
       # does not recurse, so a gitlink arrives as an EMPTY DIRECTORY — and an empty webui directory
