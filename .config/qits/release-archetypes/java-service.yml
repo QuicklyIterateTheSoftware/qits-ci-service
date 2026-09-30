@@ -1,0 +1,530 @@
+# java-service — the release cycle of a Quarkus service that ships ONE container image.
+#
+# Most services on the estate run this recipe, and qits-ci resolves `archetype: java-service` in two
+# steps: `.config/qits/release-archetypes/java-service.yml` in the repository the run is for, at the
+# revision its `release.yml` was read at, and otherwise the copy PACKAGED into the running qits-ci —
+# which is this file, built into the `qits-ci-domain` jar. So a change here reaches every repository
+# that does not carry a copy of its own when the qits-ci release carrying it is deployed, with no
+# repository edit. Of the eight recipes in this directory, this repository's own release request
+# gates only this one — qits-ci-service is a java-service, so it reads this file at its own fold —
+# and the other seven are covered by `PackagedReleaseArchetypesTest`. (It was read from the
+# wrapper's newest released tag until qits-583.)
+#
+# ---------------------------------------------------------------------------------------------
+# THE PHASES, AND WHAT GATES BETWEEN THEM
+#
+# A phase is a unit of work with a state and a rerun — QA, publish, deploy. Nothing else is one: a
+# step is not, and neither is half of one. A gate is the condition between
+# two phases, and it DELAYS rather than fails: an unmet gate holds the pipeline where it sits, and
+# when the gate opens the next phase starts. This file's `release-request:` below is phase one and
+# `release:` is phase two:
+#
+#     P1 · QA          a qits-ci run at release/<id>@mergedSha     (trigger: ReleaseRequestChanged)
+#       ⟂ gates        the CI verdict, and a person's approval where policy asks for one
+#     P2 · Publish     a qits-ci run at <version>@commitSha        (trigger: SCMRelease)
+#       ⟂ gate         the publish run green
+#     P3 · Deploy      a qits-deployments deployment request for (repoId, version)
+#       ⟂ gate         DeploymentActive for the released version
+#     → FINALIZED
+#
+# Phase three is in no slot file: it is qits-deployments' own deployment request, reached because a
+# green phase two announces `SoftwareRelease`. This archetype declares steps for phases one and two
+# and for nothing else. Nothing below names a phase either — qits-ci records which phase a run
+# belongs to from the TRIGGERING EVENT, `ReleaseRequestChanged` versus `SCMRelease`, never from
+# which config file produced the run, which is why a repository still on a hand-written
+# `ci-event-release-request.yml`/`ci-event-release.yml` pair gets phases with no edit to its files.
+#
+# ---------------------------------------------------------------------------------------------
+# EVERY STEP OF PHASE ONE GATES, AND THAT IS THE RULE THIS WHOLE FEATURE IS HELD TO
+#
+# The composed document must do what the hand-written pair did, and the pair GATES. A repository
+# migrating to this archetype hands its release request's only verdict to the text below; if that
+# text can announce something the fleet's own files could not, the migration is a regression
+# wearing a refactor's clothes.
+#
+# A step cannot opt out. There is no per-step exemption to declare: qits-ci REFUSES the key at parse
+# time, so a recipe that tries to spell one does not compile. The verdict is one PER RUN, and every
+# step of phase one contributes to it.
+#
+# THE INCIDENT THAT SETTLED IT, 2026-09-06: a port-bind flake in one story stalled a qits-workspaces
+# release request for FOURTEEN HOURS, where a plain red settles it in seconds. That is a deliberate
+# trade and it is this file's trade too: a red verify costs the RELEASE, and a stall nobody can see
+# is the worse of the two.
+#
+# WHAT THE ORDERING BUYS, AND IT IS NOT THE RELEASE. The verify step is LAST and everything after a
+# failing step is SKIPPED, so by the time a story can fail, the build step has already run to the
+# end and published whatever it publishes — nothing in phase one, and in phase two the image. That
+# is the whole of what "a red verify must not cost the image" can mean here. It never meant the
+# fold survives a red verify: nothing could buy that inside one run, because one run has one
+# verdict.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT A REPOSITORY DECLARES
+#
+#     # .config/qits/release.yml
+#     archetype: java-service
+#     artifacts:
+#       - { type: docker, name: qits/qits-platform-idp, sbom: .sbom/sbom.json }
+#     userflows: true            # or `userflows: <site>` when the bundle's site is not the repo name
+#
+# and nothing else. `artifacts:` and `userflows:` MUST be in the repository's own file rather than
+# here: qits-projects reads both out of the repository at the tag, so an archetype default is
+# invisible to it — a bundle nobody is told about, or a release announcing nothing.
+#
+# ---------------------------------------------------------------------------------------------
+# THE ONE THING THIS RECIPE READS OUT OF A REPOSITORY, AND WHY IT IS THE DECLARATION
+#
+# The release pushes `$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/<image>:$QITS_VERSION` and the
+# `<image>` half is per-repository. It is NOT derivable from `$QITS_CI_REPO_NAME`: measured across
+# all nineteen, `qits-idp-service` publishes `qits/qits-platform-idp` while
+# `qits-deployments-service` publishes `qits/qits-deployments`, and no rule covers both. The
+# REPOSITORY was renamed and the application deliberately was not, which is the whole reason
+# `application:` exists — so the gap between the two names is wider now, not narrower.
+#
+# So the script reads the `artifacts:` entry the repository already declares — the SAME declaration
+# qits-ci announces the `SoftwareRelease` from, and the same one the composed postlude submits the
+# SBOM under. One spelling: the coordinate pushed and the coordinate announced cannot drift, because
+# they are one string. (`.config/qits/deployments.yml`'s `application:` matches it in all nineteen
+# today and would have worked too — it was rejected because it is a SECOND spelling of one fact,
+# and two spellings are how a release announces an image nobody pushed.)
+#
+# The declaration's first path segment is the platform's own namespace and is replaced by
+# `$QITS_IMAGE_REPOSITORY`, exactly as every hand-written file spelled it, so a deployment that
+# re-points that key still works.
+#
+# THE SPELLING IS LOAD-BEARING. The extractor is a `sed` over one line, so an artifact entry must be
+# the fleet's own flow form on ONE line:
+#
+#     - { type: docker, name: qits/qits-ci, sbom: .sbom/sbom.json }
+#
+# Two docker entries, a block-form entry or none at all is a loud failure naming this file, never a
+# ref composed out of an empty string.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT ELSE IS DISCOVERED RATHER THAN DECLARED
+#
+# - THE FRONTEND SUBMODULE, from `.gitmodules` through git's own parser. Every entry's name is its
+#   sibling repository's name (the `--name` ritual in the wrapper's CLAUDE.md guarantees it), so the
+#   url is `${QITS_CI_REPOSITORY_URL%/*}/<name>`, and the path is whatever the file says —
+#   `service/src/main/webui` in sixteen repositories and `src/main/webui` in two. A repository with
+#   no submodule (qits-containers, qits-edge, qits-stt) walks an empty list and pays nothing.
+# - THE STORY DIRECTORY, `*/target/userstories`, because the module holding the deployable is
+#   `service/` in most repositories and the root in two.
+# - THE USERFLOW SITE, from `release.yml`'s own `userflows:` key, because that value is not derivable
+#   either: every service on the estate SPELLS it — `qits-observability-service` publishes
+#   `@userflows/qits-observability`, `qits-idp-service` publishes `@userflows/qits-idp`.
+#   `userflows: true` means the repository's own name, which is what `Userflows.derived()` says on
+#   the engine's side — and NOTHING relies on that any more. It was used by the eight repositories
+#   the renames touched, where the derived value would have carried the retired tier modifier into
+#   a storage id and then MOVED that id the day the repository was renamed, stranding a bundle's
+#   history under a name nothing publishes to. Spell the component; do not lean on the default.
+# - THE STORY ALLOW-LIST, from `.config/qits/userflow-stories` when the repository keeps one: one
+#   class name per line, `#` comments and blank lines ignored. It becomes `-Dit.test=<list>`.
+#   ABSENT MEANS THE REPOSITORY'S POM DECIDES which ITs run, which is the shape qits-artifacts,
+#   qits-docs, qits-githost and qits-stt already use and document as the better one — a class added
+#   without touching a list is then never silently skipped. The list has to live in a file rather
+#   than in `release.yml`: that document's top-level vocabulary is five keys and refuses a sixth.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT THE PLATFORM ADDS AROUND THESE SCRIPTS, SO THAT THEY DO NOT
+#
+# CiReleaseComposer wraps every step: `set -eu`; on the release phase the `$QITS_VERSION` guard, the
+# tag fetch and `git checkout --detach`, and `qits-publish` on `$PATH`; on a `build:` step the
+# `$BUILDKIT_HOST`/`$QITS_BUILD_REGISTRY` guards; on a `build:`/`docker:` step the run's credential
+# written to /tmp/qits-client-id|secret under `umask 077` in a subshell — the commissioned pair on
+# the INTERNAL plane, the run's token subject and token on the EDGE one. The SBOM is SUBMITTED by
+# the composed postlude on the last building step, per declared artifact carrying `sbom:`. So none
+# of that appears below — a copy here would be a second implementation of a platform guarantee.
+#
+# WHAT THE SCRIPTS THEREFORE STILL DO: they GENERATE the SBOM at the declared path. Generating is
+# the build's business; submitting is the platform's.
+#
+# qits-publish IS NOT ON $PATH DURING QA. The composer downloads it in release-phase preludes only,
+# so the QA step's lockfile rewrite and its docs PUT are the fleet's own inline shell rather than
+# `qits-publish npm rewrite-lockfile-origin` / `qits-publish docs submit`. That is a deliberate cost
+# and it is the only duplication in this file.
+#
+# THE PUBLISH CREDENTIAL, WHICH EVERY STEP OF EVERY PHASE GETS. A step container whose run carries a
+# commission is handed two names: `$QITS_PUBLISH_TOKEN`, a qits-platform-audience bearer for the
+# run's own `ci-run` client minted when the container started, and `$QITS_PUBLISH_TOKEN_COMMAND`,
+# an executable that mints and prints a FRESH raw token — no `Bearer ` prefix — on every call.
+#
+# USE THE COMMAND, NEVER THE VARIABLE, and use it at the call site rather than once at the top.
+# `qits.idp.token-ttl-seconds` is 3600 and a step's `timeout-seconds` is 3600 too, and a publish is
+# always the LAST thing a step does, after a build that can spend most of that hour — so the
+# variable is a token that may already have expired and the command is one that cannot have.
+#
+# AND GUARD IT. This file is packaged with one qits-ci and executed against a tag, on whatever
+# qits-ci the estate is running, so both names may be absent and a mint may fail. Every use degrades to sending NO
+# Authorization header, which is the anonymous publish qits-artifacts still accepts; none of them
+# sends an empty bearer, and none aborts the step. This recipe must not be what breaks a release
+# before the store's refusal has landed.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT EVERY STEP CONSUMES THAT THIS BUILD DID NOT PRODUCE, AND WHERE EACH ONE IS PINNED
+#
+# The rule these recipes are held to is that a step consumes the artifacts and the version of the
+# build it is part of. Everything a release PUBLISHES already obeys it: the image ref is
+# `$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/<declared>:$QITS_VERSION`, the SBOM the postlude
+# submits is `$QITS_VERSION`, and the coordinate is read out of this repository's own `artifacts:`
+# rather than derived. What is left is TOOLING, which by definition this build does not produce, and
+# the question for each is only whether two steps of one build can get two different versions of it:
+#
+#   the qits CLI          PINNED, and pinned ONCE PER BUILD. The composed release prelude fetches
+#                         `$QITS_ARTIFACTS_CLI_PACKAGE` at `$QITS_ARTIFACTS_CLI_VERSION`, which
+#                         CiDaemonLauncher injects from qits-ci's own pom pin
+#                         (eu.wohlben.qits:qits-platform-access-cli-binary). It is one value for
+#                         one run — every step of one build fetches the same bytes — and it is a
+#                         line somebody can revert, which the `latestVersion` read it replaced was
+#                         not. A run printing `fetched qits-platform-access-cli <v>` twice with two
+#                         different `<v>` would be a qits-ci bug, not a recipe one.
+#   cyclonedx-maven       PINNED in the text: `org.cyclonedx:cyclonedx-maven-plugin:2.9.1`.
+#   cdxgen (npm-library)  PINNED in the text: `@cyclonedx/cdxgen@11.2.7`.
+#   the musl/zlib tarballs (daemon)
+#                         PINNED BY THIS BUILD'S OWN TREE: the coordinate is read out of the
+#                         repository's `docker/Dockerfile.musl-builder` at the checked-out rev and
+#                         only its ORIGIN is swapped for the run's registry.
+#   the step image        FLOATING, and it is the one thing on this list a recipe cannot fix.
+#                         `qits/build-images/<x>:latest` is a mutable tag, one container is started
+#                         per step, and two steps of one build are therefore two pulls that may
+#                         land on two different images — a release whose QA ran on one maven-base
+#                         and whose publish ran on the next is ordinary rather than exotic.
+#                         THE FIX IS NOT EXPRESSIBLE HERE. `image:` is emitted verbatim by
+#                         CiReleaseComposer, with no environment expansion and no per-run
+#                         resolution, so nothing a recipe can write makes the tag resolve once.
+#                         Hand-pinning a version instead would be worse: a version named only in
+#                         this YAML is a version qits-platform-maintenance files no keep for, so
+#                         the docker GC would eventually evict the image every step on the estate
+#                         starts from. What this needs is qits-ci resolving `:latest` to a digest
+#                         ONCE when it accepts a run and emitting that digest into every step of
+#                         it — one place, one resolution, and a run that records which image it
+#                         really used. Until that lands, this line is the honest statement of the
+#                         gap rather than a silent one.
+#
+# ---------------------------------------------------------------------------------------------
+# WHEN TO OVERRIDE
+#
+# A repository declaring `release-request:` (phase one) or `release:` (phase two) replaces THAT slot
+# entirely — there is no per-step merging. Override when:
+#
+# - the release publishes more than one image, or something other than an image (qits-ci-service
+#   also PUTs `@apidocs/qits-ci`; qits-projects-daemon pushes two; qits-build-images-oci five);
+# - the image build needs a build-arg, a target or a context this recipe does not pass;
+# - the QA verify needs flags beyond the allow-list (qits-ci-service must keep `-Dit.test`, because
+#   its `extended` docker gates would otherwise run and fail on a step container).
+#
+# The QA build and the release build are BYTE-IDENTICAL buildctl invocations on purpose: the
+# builder's cache is content-addressed, so a release following a green fold is a stack of cache hits
+# rather than a second native compile. If you change one, change the other in the same commit.
+
+release-request:
+
+  # --- the first half of phase one: build the fold, publish nothing -----------------------------
+  # node-docker-base carries node, npm, git and buildctl. `build: true` is the diff-visible
+  # declaration that gets this step a builder and the run's credential (the commissioned pair on
+  # the INTERNAL plane, the run's token on the EDGE one) — and, unlike the `docker: true` it
+  # replaced, no docker socket at all.
+  - image: qits/build-images/node-docker-base:latest
+    build: true
+    timeout-seconds: 3600
+    script: |
+      # $QITS_CI_BRANCH is release/<id> and $QITS_CI_SHA is the merged sha. The fold is already
+      # checked out; nothing here fetches or switches refs.
+
+      # THE SUBMODULES, READ OUT OF .gitmodules BY GIT ITSELF. The daemon's clone is shallow and
+      # does not recurse, so a gitlink arrives as an EMPTY DIRECTORY — and an empty webui directory
+      # is the one case Quinoa treats as a misconfiguration rather than as "no client", so the image
+      # build dies on `No package.json found in Web UI directory` if the Dockerfile's own `test -f`
+      # guard has not stopped it first.
+      #
+      # The url is overridden per entry rather than taken from the file: the committed url is the
+      # public GitHub address, and a step container resolves the sibling next to the origin it was
+      # cloned from. The entry NAME is the sibling repository's name, which the wrapper's
+      # `git submodule add --name <name>` ritual is what guarantees.
+      origin_parent="${QITS_CI_REPOSITORY_URL%/*}"
+      webui_dirs=""
+      if [ -f .gitmodules ]; then
+        for key in $(git config -f .gitmodules --name-only --get-regexp '^submodule\..*\.path$'); do
+          name=${key#submodule.}
+          name=${name%.path}
+          path=$(git config -f .gitmodules --get "$key")
+          git -c "submodule.$name.url=$origin_parent/$name" submodule update --init "$path"
+          if [ -f "$path/package.json" ]; then
+            webui_dirs="$webui_dirs $path"
+          fi
+        done
+      fi
+
+      # THE LOCKFILE is the one file this step edits, and npm leaves no alternative. npm pins a full
+      # resolved URL per package and these lockfiles are generated on the deployment host, so every
+      # entry names an address that does not exist in this container; `npm ci` fetches by that URL
+      # and never asks the configured registry, so the environment below does not reach it. The
+      # paths are identical on every address, so replacing the ORIGIN and keeping the path is all it
+      # takes, and the integrity hashes are what make that safe.
+      #
+      # THE BYTE PLANE IS TWO SERVICES, WHICH IS WHY THE SWAP READS THE PATH. qits-platform-mirror
+      # holds the npmjs pull-through cache; qits-artifacts hosts the @qits scope. No single origin
+      # serves both, so an entry under the hosted registry's own pathname is a @qits tarball and
+      # gets the hosted origin; everything else gets the proxy's.
+      #
+      # THE ORDER OF THE TWO EXPRESSIONS IS THE WHOLE TRICK. sed applies -e in sequence per line, so
+      # the broad proxy swap runs FIRST and the narrow path-anchored one corrects the @qits entries
+      # after it. The other order lets the broad expression undo the narrow one.
+      #
+      # `qits-publish npm rewrite-lockfile-origin` is exactly this, and it is NOT usable here: the
+      # composer installs the CLI in release-phase preludes only, so a QA step calling it would get
+      # `command not found`. Keep this block matched with the release step's below.
+      npm_hosted_origin=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).origin')
+      npm_proxy_origin=$(node -p 'new URL(process.env.QITS_NPM_PROXY_URL).origin')
+      npm_hosted_path=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).pathname')
+      for dir in $webui_dirs; do
+        (
+          cd "$dir"
+          if [ -f package-lock.json ]; then
+            sed -i -E \
+              -e "s#(\"resolved\": \")https?://[^/\"]+#\1$npm_proxy_origin#" \
+              -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
+              package-lock.json
+          fi
+          # ENVIRONMENT, not a file. Every frontend repository COMMITS an .npmrc naming the edge
+          # vhosts (right for a developer on the deployment host), and npm ranks a project .npmrc
+          # ABOVE ~/.npmrc — so a `cat > ~/.npmrc` preamble would be written and silently ignored.
+          # `npm_config_*` environment outranks both files without touching the submodule's tree.
+          env npm_config_registry="$QITS_NPM_PROXY_URL" \
+              "npm_config_@qits:registry=$QITS_NPM_REGISTRY_URL" \
+              npm ci --no-audit --no-fund
+          # The bundle the image build consumes. Lint and test are the frontend repository's own
+          # pipeline's job; repeating them here would make this repository red for someone else's
+          # commit.
+          npm run build
+        )
+      done
+
+      # NOTHING IS PUBLISHED, SO THERE IS NO `--output` AT ALL: buildctl solves the whole graph and
+      # exports nothing. The build IS the gate on the fold, and the per-push `:$QITS_CI_SHA`
+      # coordinate went with per-push CI — a fold's merged sha is not something cd could deploy.
+      #
+      # NO --network host, AND NOTHING REPLACES IT. Every `RUN` executes in the builder's own
+      # namespace, so the two addresses a build dials are the RUN's: the in-network ones on the
+      # INTERNAL plane, the public ones on the EDGE plane.
+      #
+      # THE CREDENTIAL IS A SECRET IN FILE FORM, never a build arg — an arg is recorded in the image
+      # history. The composer wrote /tmp/qits-client-id and /tmp/qits-client-secret under umask 077
+      # before this script ran — the commissioned pair on the INTERNAL plane, the run's token
+      # subject and token on the EDGE one; they are outside the clone, so neither can enter the
+      # build context.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=docker \
+        --opt build-arg:QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --secret id=qits-client-id,src=/tmp/qits-client-id \
+        --secret id=qits-client-secret,src=/tmp/qits-client-secret
+
+  # --- the second half of phase one: verify, and publish what the run observed -------------------
+  # THIS STEP GATES, like every other step here — see the header's "EVERY STEP OF PHASE ONE GATES".
+  # A red here is a red verdict for the whole fold, which is the fleet's deliberate 2026-09-06
+  # trade. There is no exemption to reach for: qits-ci refuses a per-step gating key at parse time.
+  #
+  # It is still part of phase one, not a phase of its own — the phase is the whole QA run, and the
+  # run announces one verdict for both steps. IT MUST STAY LAST anyway: everything after a failing
+  # step is SKIPPED, so a red verify costs the release and never the work the step before it did.
+  #
+  # `user: build`, and NOT a switch inside the script: a story IT hands the launched artifact an
+  # embedded postgres, initdb refuses to run as root and calls getpwuid, so the step needs a
+  # passwd-backed non-root user — maven-base carries one (uid 1001). A step container starts
+  # `--cap-drop=ALL`, so `su` could not have switched user from inside at all.
+  - image: qits/build-images/maven-base:latest
+    user: build
+    timeout-seconds: 2400
+    script: |
+      # The platform registry: the poms' default names a host-published address unreachable from a
+      # step container, and the exact-id mirror in .qits-maven-settings.xml is what passes Maven's
+      # HTTP blocker. Central rides the run's mirror address — EMPTY IS THE OFF
+      # SWITCH, which deactivates the settings profile and resolves Central directly.
+      export QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL"
+      export QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}"
+
+      # The story allow-list, if this repository keeps one. See the header: absent means the
+      # repository's pom decides, which is the shape four repositories already prefer.
+      it_selection=""
+      if [ -f .config/qits/userflow-stories ]; then
+        stories=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' .config/qits/userflow-stories \
+          | grep -v '^$' | tr '\n' ',')
+        stories=${stories%,}
+        : "${stories:?.config/qits/userflow-stories is present and names no story class}"
+        it_selection="-Dit.test=$stories"
+      fi
+
+      # Quinoa off: the client is the build step's business, and the stories assert nothing about
+      # the SPA. It is also what keeps this step from needing the submodule at all — the daemon's
+      # clone does not recurse, so the webui directory is empty here, which is the one state Quinoa
+      # calls a misconfiguration.
+      ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
+        -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
+        -Dquarkus.quinoa=false \
+        -DskipITs=false \
+        ${it_selection:+"$it_selection"}
+
+      # The bundle. `-C <dir> .` so the story directories are the bundle's roots — nesting one level
+      # deep would put the directory in every served URL. The directory is `<module>/target/
+      # userstories`, and which module holds the deployable differs, so it is found rather than
+      # spelled.
+      stories_dir=$(find . -maxdepth 3 -type d -path '*/target/userstories' | head -1)
+      : "${stories_dir:?the verify produced no */target/userstories — this repository declares userflows and generated none}"
+      tar -czf /tmp/userstories.tgz -C "$stories_dir" .
+
+      # THE SITE, out of this repository's own release.yml. `userflows: true` means the repository's
+      # own name; a spelled value wins, because the fleet's sites are not derivable — and every
+      # repository spells one, so the derived arm is a fallback nothing takes (qits-projects
+      # publishes @userflows/qits-projects, qits-system-service publishes @userflows/qits-system).
+      site=$(sed -n 's/^userflows:[[:space:]]*//p' .config/qits/release.yml | head -1)
+      site=${site%%#*}
+      site=$(printf '%s' "$site" | tr -d '[:space:]')
+      case "$site" in
+        ''|true) site="$QITS_CI_REPO_NAME" ;;
+      esac
+
+      # THE RUN'S OWN BEARER, AND IT IS MINTED HERE RATHER THAN READ FROM $QITS_PUBLISH_TOKEN.
+      # qits-ci hands a step both: the variable, minted when the container started, and
+      # $QITS_PUBLISH_TOKEN_COMMAND, which prints a FRESH raw token on every call. The mint's TTL
+      # and this step's timeout are the same number (3600s), and this PUT is the last thing the
+      # step does — after a verify that can spend most of that hour — so the variable can already
+      # be expired where the command cannot. Every publish in this estate re-mints at the call site
+      # for that reason.
+      #
+      # IT DEGRADES TO ANONYMOUS, NEVER TO A BROKEN HEADER. This file is read at main and runs
+      # against a tag, on whatever qits-ci the estate is running, so the command may be absent
+      # entirely and a mint may fail. qits-artifacts still accepts an anonymous publish today, so
+      # sending no Authorization header is exactly the call that worked yesterday; sending
+      # `Bearer ` with nothing after it is a 401 that would cost a release before the store's
+      # refusal has even landed. Neither case may abort the step.
+      publish_token=""
+      if [ -n "${QITS_PUBLISH_TOKEN_COMMAND:-}" ] \
+        && command -v "$QITS_PUBLISH_TOKEN_COMMAND" >/dev/null 2>&1; then
+        publish_token=$("$QITS_PUBLISH_TOKEN_COMMAND" 2>/dev/null) || publish_token=""
+      fi
+      # THE ARGUMENT LIST, not an unquoted `${publish_token:+-H "Authorization: …"}`: that value
+      # contains spaces and would word-split into four arguments, of which curl would read the
+      # first as the whole header. `set --` builds it as words, which needs no curl semantics at
+      # all — an empty `"$@"` under `set -u` expands to nothing in both dash and bash.
+      set --
+      if [ -n "$publish_token" ]; then
+        set -- -H "Authorization: Bearer $publish_token"
+      fi
+
+      # Branch and commit ride as metadata (the docs store's exact-match discovery keys); the
+      # version is the merged sha itself, so a bundle URL never changes meaning. `qits-publish docs
+      # submit` is this call and is unavailable on the QA phase — see the header, which is also why
+      # the bearer is assembled by hand above rather than left to the CLI that credentials itself.
+      #
+      # PUBLISH-IF-ABSENT: events redeliver and docs versions are immutable, so 409 is success.
+      status=$(curl -sS -o /tmp/docs-publish.out -w '%{http_code}' \
+        -X PUT --data-binary @/tmp/userstories.tgz "$@" \
+        -H "X-Artifacts-Meta-git.branch.name: $QITS_CI_BRANCH" \
+        -H "X-Artifacts-Meta-git.commit.hash: $QITS_CI_SHA" \
+        -H "X-Artifacts-Meta-git.repository.name: ${site##*/}" \
+        "$QITS_DOCS_URL/@userflows/$site/-/$QITS_CI_SHA")
+      case "$status" in
+        201) echo "published userflows for $site@$QITS_CI_SHA ($QITS_CI_BRANCH)" ;;
+        409) echo "userflows for $site@$QITS_CI_SHA are already published — skipping" ;;
+        *)   echo "docs publish failed: HTTP $status"; cat /tmp/docs-publish.out; exit 1 ;;
+      esac
+
+release:
+
+  # The same image and the same build as the QA half, plus the two exports. The composer has already
+  # fetched the release tag and detached at it before this script runs.
+  - image: qits/build-images/node-docker-base:latest
+    build: true
+    timeout-seconds: 3600
+    script: |
+      # THE COORDINATE, OUT OF THE DECLARATION THAT ANNOUNCES IT. See the header for why this is
+      # read rather than derived, and why the spelling is one line of flow YAML.
+      declared=$(sed -n \
+        's/^[[:space:]]*-[[:space:]]*{[[:space:]]*type:[[:space:]]*docker[[:space:]]*,[[:space:]]*name:[[:space:]]*\([^,}[:space:]]*\).*/\1/p' \
+        .config/qits/release.yml)
+      count=$(printf '%s' "$declared" | grep -c . || true)
+      if [ "$count" != 1 ]; then
+        echo "release.yml declares $count docker artifacts and java-service pushes exactly one." >&2
+        echo "Spell it as one flow line — '- { type: docker, name: qits/x, sbom: .sbom/sbom.json }'" >&2
+        echo "— or declare this repository's own 'release:' steps." >&2
+        exit 1
+      fi
+      case "$declared" in
+        *[!A-Za-z0-9._:/@+-]*)
+          echo "release.yml's docker artifact name is not a coordinate: $declared" >&2
+          exit 1 ;;
+      esac
+      # The first segment is the platform namespace and is re-supplied from the environment, which
+      # is how every hand-written file spelled it: a deployment may re-point the namespace and the
+      # declaration may not have to move.
+      image=${declared#*/}
+      ref="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
+      echo "releasing $ref"
+
+      # --- half one: the bundle -------------------------------------------------------------------
+      # Byte-identical to the QA step's, deliberately. `checkout --detach` on the tag is what makes
+      # the submodule update land on the gitlink the RELEASE recorded rather than on main's.
+      origin_parent="${QITS_CI_REPOSITORY_URL%/*}"
+      webui_dirs=""
+      if [ -f .gitmodules ]; then
+        for key in $(git config -f .gitmodules --name-only --get-regexp '^submodule\..*\.path$'); do
+          name=${key#submodule.}
+          name=${name%.path}
+          path=$(git config -f .gitmodules --get "$key")
+          git -c "submodule.$name.url=$origin_parent/$name" submodule update --init "$path"
+          if [ -f "$path/package.json" ]; then
+            webui_dirs="$webui_dirs $path"
+          fi
+        done
+      fi
+
+      npm_hosted_origin=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).origin')
+      npm_proxy_origin=$(node -p 'new URL(process.env.QITS_NPM_PROXY_URL).origin')
+      npm_hosted_path=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).pathname')
+      for dir in $webui_dirs; do
+        (
+          cd "$dir"
+          if [ -f package-lock.json ]; then
+            sed -i -E \
+              -e "s#(\"resolved\": \")https?://[^/\"]+#\1$npm_proxy_origin#" \
+              -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
+              package-lock.json
+          fi
+          env npm_config_registry="$QITS_NPM_PROXY_URL" \
+              "npm_config_@qits:registry=$QITS_NPM_REGISTRY_URL" \
+              npm ci --no-audit --no-fund
+          npm run build
+        )
+      done
+
+      # --- half two: the image --------------------------------------------------------------------
+      # `push=true` IS THE PUBLISH: the image goes from the builder straight to the registry and
+      # never enters any local image store. $QITS_BUILD_REGISTRY is the registry as the BUILDER
+      # resolves it; $QITS_REGISTRY stays the host daemon's view and is not dialled here.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=docker \
+        --opt build-arg:QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --secret id=qits-client-id,src=/tmp/qits-client-id \
+        --secret id=qits-client-secret,src=/tmp/qits-client-secret \
+        --output "type=image,name=$ref,push=true"
+
+      # --- the SBOM, GENERATED HERE AND SUBMITTED BY THE PLATFORM ---------------------------------
+      # The second build reaches the Dockerfile's `sbom` stage — a `FROM scratch` holding the
+      # service module's CycloneDX document, exported with `type=local` instead of pushed. Build
+      # args and secrets are byte-identical to the image build above, which is what makes every
+      # layer a cache hit in the same builder and this export seconds rather than a second native
+      # compile.
+      #
+      # NOTHING SUBMITS IT HERE. The composed postlude runs `qits-publish sbom submit` for every
+      # declared artifact carrying `sbom:`, after this script and before the step's exit code — so
+      # "SBOM before green" holds by construction. Declare `sbom: .sbom/sbom.json` and stop.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=docker \
+        --opt target=sbom \
+        --opt build-arg:QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --secret id=qits-client-id,src=/tmp/qits-client-id \
+        --secret id=qits-client-secret,src=/tmp/qits-client-secret \
+        --output type=local,dest=.sbom

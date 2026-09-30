@@ -1,0 +1,281 @@
+# app — the release cycle of an Angular application that SERVES ITSELF and ships ONE container image.
+#
+# The `-app` role is the third thing an Angular repository can be on this estate, and it is defined
+# by what it publishes rather than by how it is written:
+#
+#   - `jslib`      a package on the @qits scope                      → npm-library.yml
+#   - `frontend`   a bundle a service carries at src/main/webui      → spa-frontend.yml
+#   - `app`        an image the platform deploys on its own          → THIS FILE
+#
+# An `-app` is an SSR Angular server: it has its own Dockerfile, its own image coordinate, its own
+# `.config/qits/deployments.yml` and its own application identity. So it has a phase two, which
+# spa-frontend does not — and phase two is a container image, which is exactly what java-service's
+# is. This recipe is therefore a COMPOSITION of the two that already exist, and every half below
+# names the file it came from so that a fix lands in both:
+#
+#     release-request:   spa-frontend.yml's one step, UNCHANGED.
+#     release:           java-service.yml's release step, IMAGE HALF ONLY.
+#
+# A migrating repository's `.config/qits/release.yml` is therefore:
+#
+#     archetype: app
+#     artifacts:
+#       - { type: docker, name: qits/<application> }
+#
+# `artifacts:` MUST be in the repository's own file rather than here — qits-projects reads it out of
+# the repository at the tag, so an archetype default is invisible to it. See java-service.yml's
+# header for the three-phase model, for what the platform's prelude and postlude add around these
+# scripts, and for why the coordinate is READ out of that declaration rather than derived from the
+# repository name.
+#
+# ---------------------------------------------------------------------------------------------
+# THE DOCKERFILE CONTRACT — READ THIS BEFORE WRITING THE FIRST APPLICATION'S docker/Dockerfile
+#
+# THE NPM INSTALL AND THE ANGULAR BUILD HAPPEN INSIDE THE DOCKERFILE, NOT IN THE RELEASE STEP.
+# That is decided, and it is the one place this recipe deliberately diverges from java-service's
+# shape: there, the bundle is built in the step and COPY'd into a context the image build consumes,
+# because the bundle belongs to a submodule the service merely carries. Here the tree being built IS
+# the repository, so the step runs `buildctl` and nothing else and the image build is
+# self-contained — the same Dockerfile produces the same image whether a person runs `docker build`
+# on a workstation or CI runs it through the platform builder below. A step that pre-built `dist/`
+# would make those two builds different, and the one a person can run would be the one nobody gates.
+#
+# The consequence is the real work, and it is what the `--opt build-arg:` and `--secret` lines in the
+# release step exist for: `npm ci` now runs INSIDE THE BUILDER, which has none of the step
+# container's environment. The registry origins and the credential have to be handed in. The
+# division is java-service's own and is not negotiable:
+#
+#   an ORIGIN is a build-arg          it is not a secret, and the build needs it in a `FROM`-visible
+#                                     `ARG`/`ENV` pair
+#   a CREDENTIAL is a buildkit SECRET a build arg is recorded in the image history, and this image is
+#                                     pullable — so the token would ship with it
+#
+# What the release step hands the builder, and what the Dockerfile must therefore declare:
+#
+#     ARG QITS_NPM_REGISTRY_URL           the hosted registry that serves the @qits scope
+#     ARG QITS_NPM_PROXY_URL              the pull-through cache of npmjs every other install uses
+#     RUN --mount=type=secret,id=qits-npm-token       → /run/secrets/qits-npm-token
+#
+# FILE FORM (`/run/secrets/<id>`), never the `env=` mount form: `env=` needs a dockerfile frontend
+# the BUILDER picks, while the bare file mount is served identically by every frontend version, and
+# under the platform builder the frontend is the builder's choice rather than this file's. That is
+# the same call qits-ci-service's own Dockerfile writes out at length.
+#
+# AN ABSENT OR EMPTY SECRET IS A SUPPORTED STATE and must leave the install ANONYMOUS rather than
+# broken. The file is always written by the step below, and it is empty whenever the run holds no
+# commission or the mint failed; qits-artifacts still accepts an anonymous read today, so no
+# `_authToken` line at all is the call that worked yesterday, where an empty one is npm sending
+# `Bearer ` with nothing after it — a 401 that would cost a release before the store's refusal has
+# even landed. See java-service.yml's header, "AND GUARD IT".
+#
+# THE LOCKFILE-ORIGIN SWAP MOVES WITH THE INSTALL. It is in the QA step below, because the install
+# is; in the image it is inside the Dockerfile, in the same `RUN` as `npm ci`, with THE SAME TWO sed
+# EXPRESSIONS IN THE SAME ORDER — the broad proxy swap first, the path-anchored `@qits` correction
+# second. The QA step's comment carries the whole argument (two services on the byte plane, and why
+# the other order lets the broad expression undo the narrow one); what the Dockerfile owes is this:
+#
+#     RUN --mount=type=secret,id=qits-npm-token \
+#         hosted_origin=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).origin'); \
+#         proxy_origin=$(node -p 'new URL(process.env.QITS_NPM_PROXY_URL).origin'); \
+#         hosted_path=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).pathname'); \
+#         sed -i -E \
+#           -e "s#(\"resolved\": \")https?://[^/\"]+#\1$proxy_origin#" \
+#           -e "s#(\"resolved\": \")https?://[^/\"]+($hosted_path)#\1$hosted_origin\2#" \
+#           package-lock.json; \
+#         token=$(cat /run/secrets/qits-npm-token 2>/dev/null || true); \
+#         ( umask 077; \
+#           printf 'registry=%s\n@qits:registry=%s\n' \
+#             "$QITS_NPM_PROXY_URL" "$QITS_NPM_REGISTRY_URL" > ~/.npmrc; \
+#           [ -n "$token" ] && printf '%s:_authToken=%s\n%s:_authToken=%s\n' \
+#             "${QITS_NPM_REGISTRY_URL#*:}" "$token" \
+#             "${QITS_NPM_PROXY_URL#*:}" "$token" >> ~/.npmrc; ) ; \
+#         npm ci --no-audit --no-fund && npm run build
+#
+# Two things in that block are measured rather than stylistic. The `_authToken` KEY has to match the
+# registry url EXACTLY, TRAILING SLASH INCLUDED — npm looks the token up under the scheme-less form
+# of the registry it is about to dial and does not normalise the two ends together, so a dropped
+# slash is a silent anonymous install (npm-library.yml's header has the measurement, on npm 10.9.8).
+# And a committed project `.npmrc` OUTRANKS `~/.npmrc`, so a repository that commits one — every
+# frontend repository here does, naming the edge vhosts — must either not copy it into the context
+# or must let the `npm_config_*` environment form win instead, exactly as the QA step below does.
+#
+# THE RUNTIME STAGE OWES THE DEPLOYER A `curl`, AND ONLY AN `-app` HAS TO SAY SO. The swarm health
+# gate qits-deployments installs is the shell string `curl -fsS http://localhost:<port><health_path>
+# || exit 1`, run INSIDE the container — so the probe binary is part of the deployable, and
+# `health_path:` in a repository's `.config/qits/deployments.yml` is only half of that decision.
+# Every other image on the estate is built on `ubi-minimal` and gets curl from the base for free,
+# which is why the requirement has never had to be written down before; the `node:*-alpine` bases
+# these repositories build on carry busybox — `wget`, no `curl` at all. An image that omits it boots
+# perfectly, logs that it is listening, and is then killed on the probe's exit 127 by
+# `--update-failure-action rollback`, which reads as an application fault and is not one. The
+# runtime stage therefore carries, before it drops to the non-root user:
+#
+#     RUN apk add --no-cache curl
+#
+# Not `health_cmd:` with wget instead. `health_cmd:` is for a deployable with NO HTTP surface at all
+# — postgres, which has neither curl nor anything to dial — and an SSR node server answers a path.
+#
+# ---------------------------------------------------------------------------------------------
+# WHEN TO OVERRIDE
+#
+# Declaring a slot replaces it ENTIRELY; there is no per-step merging. Override when the repository
+# publishes more than one image or something other than an image, when the image build needs a
+# build-arg, a target or a context this recipe does not pass, or when QA needs a step this does not
+# have (a second target, a browser-mode test run, a bundle-size assertion).
+
+release-request:
+
+  # --- phase one (QA): spa-frontend.yml's step, unchanged ---------------------------------------
+  # NO `docker:` AND NO `build:`. Nothing here needs a builder, a socket or a credential — the image
+  # is phase two's business — so this step keeps the ordinary sandbox a publishing step gives up.
+  - image: qits/build-images/node-base:latest
+    timeout-seconds: 1800
+    script: |
+      # THE LOCKFILE is the one file this step edits, and npm leaves no alternative. npm pins a full
+      # resolved URL per package, and this lockfile is generated on the deployment host, so every
+      # entry names an address that does not exist in this container. `npm ci` fetches tarballs by
+      # that URL and never asks the configured registry for them, so the environment below does not
+      # reach them: without this swap the install dies on connection refused. The paths are
+      # identical on every address, so replacing the ORIGIN and keeping the path is all it takes,
+      # and the integrity hashes are what make that safe.
+      #
+      # THE BYTE PLANE IS TWO SERVICES, WHICH IS WHY THE SWAP READS THE PATH. qits-platform-mirror
+      # holds the npmjs pull-through cache; qits-artifacts hosts the @qits scope. No single origin
+      # serves both, so an entry under the hosted registry's own pathname is a @qits tarball and
+      # gets the hosted origin; every other entry gets the proxy's. Flattening all of them to one
+      # origin sends every @qits tarball to the mirror, which has never held one: 404, on every run.
+      #
+      # THE ORDER OF THE TWO EXPRESSIONS IS THE WHOLE TRICK. sed applies -e in sequence per line, so
+      # the broad proxy swap runs FIRST and the narrow path-anchored one corrects the @qits entries
+      # after it. The other order lets the broad expression undo the narrow one. The Dockerfile's
+      # own copy of this block — see the header's contract — is the same two expressions in the same
+      # order, and they move together.
+      #
+      # `qits-publish npm rewrite-lockfile-origin` is exactly this block, and it is NOT usable here:
+      # CiReleaseComposer installs the CLI in RELEASE-phase preludes only, and this is a QA step, so
+      # calling it would be `command not found`. The inline form stays until that changes.
+      if [ -f package-lock.json ]; then
+        npm_hosted_origin=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).origin')
+        npm_proxy_origin=$(node -p 'new URL(process.env.QITS_NPM_PROXY_URL).origin')
+        npm_hosted_path=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).pathname')
+        sed -i -E \
+          -e "s#(\"resolved\": \")https?://[^/\"]+#\1$npm_proxy_origin#" \
+          -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
+          package-lock.json
+      fi
+
+      # ENVIRONMENT, not a file. These repositories COMMIT an .npmrc naming the edge vhosts (right
+      # for a developer on the deployment host), and npm ranks a project .npmrc ABOVE ~/.npmrc — so
+      # a `cat > ~/.npmrc` preamble would be written and silently ignored. `npm_config_*`
+      # environment outranks both files, so it wins without touching the tree.
+      env npm_config_registry="$QITS_NPM_PROXY_URL" \
+          "npm_config_@qits:registry=$QITS_NPM_REGISTRY_URL" \
+          npm ci --no-audit --no-fund
+
+      # `--if-present` rather than a hard call: one recipe covers repositories that do not all carry
+      # the same scripts, and a missing script must not be a red gate for one that never had it.
+      # ADDING the script is what turns the check on — no pipeline edit.
+      npm run --if-present lint
+
+      # The jsdom target. This image has no browser and CI is not the place to download one. A
+      # component that genuinely needs a layout engine gets a `.browser.spec.ts` and its own target,
+      # run locally until a build image ships a browser.
+      npm run --if-present test
+
+      # The same `npm run build` the Dockerfile runs, on the same tree — which is the point of the
+      # step rather than a duplication of it. This one is the GATE on the fold and exports nothing;
+      # the Dockerfile's is what goes into the image. A build that only ever happened inside a
+      # `buildctl` invocation would put every compile error behind a builder.
+      npm run build
+
+release:
+
+  # --- phase two (Publish): java-service.yml's release step, image half only ---------------------
+  # node-docker-base rather than node-base, and `build: true`: this step needs a BUILDER. `build:`
+  # is the diff-visible declaration that gets it the platform builder and the run's commissioned
+  # credential — and, unlike the `docker: true` it replaced, no docker socket at all. The longer
+  # timeout comes with it: an image build is not an `npm ci`.
+  #
+  # The composer has already fetched the release tag and detached at it before this script runs, and
+  # it has already written /tmp/qits-client-id and /tmp/qits-client-secret under `umask 077`.
+  - image: qits/build-images/node-docker-base:latest
+    build: true
+    timeout-seconds: 3600
+    script: |
+      # THE COORDINATE, OUT OF THE DECLARATION THAT ANNOUNCES IT — java-service.yml's block verbatim,
+      # and see its header for why this is read rather than derived from $QITS_CI_REPO_NAME: the
+      # repository name is not the application name, and no rule maps one onto the other. One
+      # spelling means the coordinate pushed and the coordinate announced cannot drift.
+      declared=$(sed -n \
+        's/^[[:space:]]*-[[:space:]]*{[[:space:]]*type:[[:space:]]*docker[[:space:]]*,[[:space:]]*name:[[:space:]]*\([^,}[:space:]]*\).*/\1/p' \
+        .config/qits/release.yml)
+      count=$(printf '%s' "$declared" | grep -c . || true)
+      if [ "$count" != 1 ]; then
+        echo "release.yml declares $count docker artifacts and app pushes exactly one." >&2
+        echo "Spell it as one flow line — '- { type: docker, name: qits/x, sbom: .sbom/sbom.json }'" >&2
+        echo "— or declare this repository's own 'release:' steps." >&2
+        exit 1
+      fi
+      case "$declared" in
+        *[!A-Za-z0-9._:/@+-]*)
+          echo "release.yml's docker artifact name is not a coordinate: $declared" >&2
+          exit 1 ;;
+      esac
+      # The first segment is the platform namespace and is re-supplied from the environment, which
+      # is how every hand-written file spelled it: a deployment may re-point the namespace and the
+      # declaration may not have to move.
+      image=${declared#*/}
+      ref="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
+      echo "releasing $ref"
+
+      # --- the @qits CREDENTIAL, ON ITS WAY TO THE BUILDER ------------------------------------------
+      # `npm ci` runs inside the image build now (see the header's Dockerfile contract), and the
+      # builder has none of this container's environment — so the credential has to be handed over
+      # explicitly, and a SECRET is the only form that does not end up in a layer.
+      #
+      # MINTED AT THE CALL SITE, NOT READ FROM $QITS_PUBLISH_TOKEN. qits-ci hands a step both: the
+      # variable, minted when the container started, and $QITS_PUBLISH_TOKEN_COMMAND, which prints a
+      # FRESH raw token — no `Bearer ` prefix — on every call. A mint's TTL and this step's timeout
+      # are the same number (3600s), so the variable can already be expired by the time the builder
+      # dials the registry; the command cannot be.
+      #
+      # IT DEGRADES TO ANONYMOUS, NEVER TO A BROKEN HEADER, and the FILE IS ALWAYS WRITTEN. This
+      # file is read at main and runs against a tag on whatever qits-ci the estate is running, so the
+      # command may be absent entirely and a mint may fail — and `--secret src=` on a path that does
+      # not exist is a refusal, so the empty file is what keeps a commission-less run building at
+      # all. An empty secret means the Dockerfile writes no `_authToken` line, which is the
+      # anonymous read qits-artifacts still accepts.
+      #
+      # /tmp, beside the two files the composer wrote, and NEVER a path in the clone: anything under
+      # the checkout is inside the `--local context=.` the builder uploads.
+      npm_publish_token=""
+      if [ -n "${QITS_PUBLISH_TOKEN_COMMAND:-}" ] \
+        && command -v "$QITS_PUBLISH_TOKEN_COMMAND" >/dev/null 2>&1; then
+        npm_publish_token=$("$QITS_PUBLISH_TOKEN_COMMAND" 2>/dev/null) || npm_publish_token=""
+      fi
+      ( umask 077
+        printf '%s' "$npm_publish_token" > /tmp/qits-npm-token )
+
+      # --- the image --------------------------------------------------------------------------------
+      # `push=true` IS THE PUBLISH: the image goes from the builder straight to the registry and
+      # never enters any local image store. $QITS_BUILD_REGISTRY is the registry as the BUILDER
+      # resolves it; $QITS_REGISTRY stays the host daemon's view and is not dialled here.
+      #
+      # NO --network host, AND NOTHING REPLACES IT. Every `RUN` executes in the builder's own
+      # namespace on qits-net, so the two npm addresses below are the IN-NETWORK ones — which is the
+      # whole reason they can be passed at all, and why a Dockerfile of this kind could not have
+      # installed from the @qits scope before the platform builder existed.
+      #
+      # THE TWO ORIGINS ARE BUILD ARGS AND THE TOKEN IS A SECRET, and that split is the contract the
+      # header states: an origin is not a credential and the build needs it in an `ARG`; a credential
+      # in a build arg is written into the image history, where anyone who pulls the image reads it.
+      #
+      # The Maven pair java-service passes is DROPPED — there is no Maven in an `-app` — and so is
+      # the .gitmodules walk and the per-webui npm build: an `-app` has no webui submodule and builds
+      # its own tree, inside the Dockerfile.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=docker \
+        --opt build-arg:QITS_NPM_REGISTRY_URL="$QITS_NPM_REGISTRY_URL" \
+        --opt build-arg:QITS_NPM_PROXY_URL="$QITS_NPM_PROXY_URL" \
+        --secret id=qits-npm-token,src=/tmp/qits-npm-token \
+        --output "type=image,name=$ref,push=true"

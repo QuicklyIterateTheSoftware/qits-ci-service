@@ -186,6 +186,30 @@
     </dependencies>
 
     <build>
+        <resources>
+            <!-- Declaring <resources> REPLACES Maven's default rather than adding to it, so the
+                 module's own directory is restated here — unfiltered, as it always was. -->
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <!-- The release archetypes, packaged: `release-archetypes/<name>.yml` on this jar's
+                 classpath is the copy CiReleaseArchetypes falls back to when the repository a run
+                 is for carries no `.config/qits/release-archetypes/<name>.yml` of its own. The
+                 directory is this repository's own `.config/qits/`, so the file this repository's
+                 release request reads locally (java-service) and the file every other repository
+                 gets are one file. NOT filtered: a recipe is shell full of `${...}`, and Maven
+                 rewriting one of them would change what every release on the estate runs.
+                 docker/Dockerfile's `COPY . .` carries `.config` into the image build, and the
+                 native image needs `quarkus.native.resources.includes` in `service` to bundle
+                 them — a resource loaded by computed name is otherwise left out, silently. -->
+            <resource>
+                <directory>../.config/qits/release-archetypes</directory>
+                <targetPath>release-archetypes</targetPath>
+                <includes>
+                    <include>*.yml</include>
+                </includes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <artifactId>maven-compiler-plugin</artifactId>

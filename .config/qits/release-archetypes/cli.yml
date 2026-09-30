@@ -1,0 +1,69 @@
+# cli — the release cycle of a Java CLI that people run and nothing deploys. One repository today:
+# qits-bootstrap-cli.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT A REPOSITORY DECLARES
+#
+#     # .config/qits/release.yml
+#     archetype: cli
+#
+# One line. No `artifacts:`, no `userflows:`, and NO `release:` SLOT ANYWHERE — which is the
+# statement rather than an omission. This repository publishes nothing: it ships a program a person
+# runs, it declares no `deployments.yml` because there is no application for a deployer to move, and
+# there is no phase two (Publish) to wait on. Publish is a phase this repository does not have, not
+# an empty phase — see java-service.yml's header for the full three-phase model. The released tag
+# merges to main at the release and the request is done the moment the step below, the one step of
+# phase one (QA), is green. A phase nobody declares steps for gets no trigger document and therefore
+# no run.
+#
+# ---------------------------------------------------------------------------------------------
+# WHY THERE IS A GATE AT ALL
+#
+# A release request releases on exactly one thing: a `BuildSuccessful` for its current fold —
+# the phase-one gate, which delays rather than fails: it holds the release where it is until a
+# verdict lands. NO VERDICT IS NOT A PASS. Without this recipe the repository cannot release at all —
+# qits-bootstrap-cli was the last of the 48 with no `.config/qits` of any kind, for exactly that
+# reason.
+#
+# THIS IS AN INTERIM GATE AND THE FILE SAYS SO. It is unit tests only. The real proof of a bootstrap
+# CLI is a cold bootstrap on a fresh node, and the phases that shell docker are deliberately not
+# unit-tested — a fake docker daemon would only prove the fake works. The pipeline that would cover
+# it needs a disposable machine with a docker daemon, which no step container is, and building that
+# is a campaign of its own. Do not read a green run here as "the bootstrap works".
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT IS DELIBERATELY ABSENT FROM THE COMMAND
+#
+# `verify` IS the unit suite here, not a wider phase: there are no `*IT.java`, the failsafe plugin is
+# declared with no executions bound, and `./mvnw clean verify` green on a clone with no docker is the
+# repository's own documented contract. The gate runs the command the repository already holds itself
+# to rather than inventing a second one — so no `-DskipITs`, no `-Dit.test`, no `-Dquarkus.quinoa`.
+#
+# NO `QITS_MAVEN_REPOSITORY_URL` EITHER, and that is the difference from maven-library: this pom is
+# parentless and has no qits dependency, so the platform registry is never consulted. Exporting it
+# would name an address the build has no reason to dial.
+#
+# ---------------------------------------------------------------------------------------------
+# WHEN TO OVERRIDE
+#
+# A CLI that grows a published artifact stops being this archetype: it declares `artifacts:` and a
+# `release:` slot of its own, or moves to `daemon` if what it ships is a static binary the platform
+# downloads. A CLI whose suite needs a wider phase declares its own `release-request:` — declaring
+# the slot replaces this one entirely.
+
+release-request:
+
+  - image: qits/build-images/maven-base:latest
+    # The image's non-root build user (uid 1001, with a passwd entry). Nothing here spawns a
+    # postgres or an initdb — the usual reason a sibling needs it — and the suite writes only into
+    # the checkout and /tmp, both of which that user owns. It is chosen at launch and not switched
+    # to inside the script: a step container starts `--cap-drop=ALL`, so without CAP_SETUID and
+    # CAP_SETGID `su` cannot switch user at all.
+    user: build
+    timeout-seconds: 1800
+    script: |
+      # Maven Central through the platform mirror's in-network alias. EMPTY IS THE OFF SWITCH: an
+      # older qits-ci that injects nothing, or a deployment with the mirror plane off, leaves this
+      # empty, which deactivates the settings profile so Central is dialled directly.
+      export QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}"
+      ./mvnw -B -ntp -s .qits-maven-settings.xml verify

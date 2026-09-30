@@ -1,0 +1,100 @@
+# spa-frontend — the whole release cycle of an Angular client that ships no artifact of its own.
+#
+# Fifteen repositories run this recipe, and thirteen of their QA files were byte-identical modulo one
+# line before it existed. A migrating repository's `.config/qits/release.yml` is ONE LINE:
+#
+#     archetype: spa-frontend
+#
+# No `artifacts:`, no `userflows:`, and no `release:` slot anywhere — which is the point rather than
+# an omission. Publish is a phase this repository does not have, not an empty phase: a frontend
+# repository publishes nothing, the consuming service carries it as a Quinoa submodule at
+# `service/src/main/webui` and builds the bundle into its own image, so a release of this repository
+# is a TAG and what acts on the tag is the service's own maintenance pipeline. A phase nobody
+# declares steps for gets no trigger document and therefore no run, which is exactly what a missing
+# `ci-event-release.yml` meant before — this file declares phase one (QA) alone, and with no phase
+# two (Publish) there is no `SoftwareRelease` for a phase three (Deploy) to gate on either. See
+# java-service.yml's header for the full three-phase model.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT THIS STEP IS FOR
+#
+# One step, and like every step it gates: install, lint, test, build. The verdict returns on the
+# ordinary `BuildSuccessful`/`BuildFailed` with `commitSha` = the merged sha, which is what
+# qits-projects' gate matches on together with `repoId`. There is no trailing verify-and-publish
+# half, because there is nothing to publish from a fold — and had there been one it would gate like
+# this one, since a run announces ONE verdict for all of its steps. See java-service.yml's header.
+#
+# NO `docker:` AND NO `build:`. Nothing here needs a builder, a socket or a credential, so this step
+# keeps the ordinary sandbox that a publishing step has to give up.
+#
+# ---------------------------------------------------------------------------------------------
+# WHEN TO OVERRIDE
+#
+# `npm run --if-present lint` and `--if-present test` are how one recipe covers fifteen repositories
+# that do not all carry the same scripts: qits-spa-observability has an eslint.config.js and a `lint`
+# script, several siblings do not, and a missing script must not be a red gate for a repository that
+# never had one. ADDING the script is what turns the check on — no pipeline edit.
+#
+# Override `release-request:` (phase one, QA — the only phase this archetype has) when the
+# repository needs a step this does not have (a second target, a browser-mode test run against an
+# image that ships a browser, a bundle-size assertion). Declaring the slot replaces this list
+# entirely; there is no per-step merging.
+
+release-request:
+
+  - image: qits/build-images/node-base:latest
+    timeout-seconds: 1800
+    script: |
+      # THE LOCKFILE is the one file this step edits, and npm leaves no alternative. npm pins a full
+      # resolved URL per package, and this lockfile is generated on the deployment host, so every
+      # entry names an address that does not exist in this container. `npm ci` fetches tarballs by
+      # that URL and never asks the configured registry for them, so the environment below does not
+      # reach them: without this swap the install dies on connection refused. The paths are
+      # identical on every address, so replacing the ORIGIN and keeping the path is all it takes,
+      # and the integrity hashes are what make that safe.
+      #
+      # THE BYTE PLANE IS TWO SERVICES, WHICH IS WHY THE SWAP READS THE PATH. qits-platform-mirror
+      # holds the npmjs pull-through cache; qits-artifacts hosts the @qits scope. No single origin
+      # serves both, so an entry under the hosted registry's own pathname is a @qits tarball and
+      # gets the hosted origin; every other entry gets the proxy's. Flattening all of them to one
+      # origin sends every @qits tarball to the mirror, which has never held one: 404, on every run.
+      #
+      # THE ORDER OF THE TWO EXPRESSIONS IS THE WHOLE TRICK. sed applies -e in sequence per line, so
+      # the broad proxy swap runs FIRST and the narrow path-anchored one corrects the @qits entries
+      # after it. The other order lets the broad expression undo the narrow one.
+      #
+      # npm's own knob, `--replace-registry-host=always`, cannot do it against a registry mounted
+      # under a path and could not have told two registries apart either; @npmcli/arborist glues
+      # rather than resolves, so every tarball 404s. Measured on npm 10.9.4.
+      #
+      # `qits-publish npm rewrite-lockfile-origin` is exactly this block, and it is NOT usable here:
+      # CiReleaseComposer installs the CLI in RELEASE-phase preludes only, and this is a QA step, so
+      # calling it would be `command not found`. The inline form stays until that changes.
+      if [ -f package-lock.json ]; then
+        npm_hosted_origin=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).origin')
+        npm_proxy_origin=$(node -p 'new URL(process.env.QITS_NPM_PROXY_URL).origin')
+        npm_hosted_path=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).pathname')
+        sed -i -E \
+          -e "s#(\"resolved\": \")https?://[^/\"]+#\1$npm_proxy_origin#" \
+          -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
+          package-lock.json
+      fi
+
+      # ENVIRONMENT, not a file. These repositories COMMIT an .npmrc naming the edge vhosts (right
+      # for a developer on the deployment host), and npm ranks a project .npmrc ABOVE ~/.npmrc — so
+      # a `cat > ~/.npmrc` preamble would be written and silently ignored. `npm_config_*`
+      # environment outranks both files, so it wins without touching the tree.
+      env npm_config_registry="$QITS_NPM_PROXY_URL" \
+          "npm_config_@qits:registry=$QITS_NPM_REGISTRY_URL" \
+          npm ci --no-audit --no-fund
+
+      # `--if-present` rather than a hard call: see the header. A repository that grows the script
+      # gets the check with no pipeline edit.
+      npm run --if-present lint
+
+      # The jsdom target. This image has no browser and CI is not the place to download one. A
+      # component that genuinely needs a layout engine gets a `.browser.spec.ts` and its own target,
+      # run locally until a build image ships a browser.
+      npm run --if-present test
+
+      npm run build

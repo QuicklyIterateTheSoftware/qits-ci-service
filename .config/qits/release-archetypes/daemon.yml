@@ -1,0 +1,279 @@
+# daemon — the release cycle of a statically-linked binary the platform downloads and runs.
+# Two repositories name it today — qits-ci-daemon and qits-platform-access-cli — and BOTH declare
+# both slots, so as of 2026-09-30 the scripts below run for nobody: they are the recipe the next
+# repository that does not override gets.
+#
+# A daemon is not a package any third-party tool installs; qits-artifacts holds it under
+# `/artifacts/daemons/<name>/<version>` and the platform fetches it by URL. Before the type existed,
+# the one binary every CI run downloads and execs was the only artifact on this platform no release
+# train could announce — it arrived as a bootstrap script's blob upload, bytes with no row, no name
+# and no version.
+#
+# `release-request:` below is phase one (QA, on ReleaseRequestChanged) and `release:` is phase two
+# (Publish, on SCMRelease). See java-service.yml's header for the full three-phase model, including
+# the phase three (Deploy) that lives in no slot file at all — reached, if this daemon's consumer
+# has one, off the `SoftwareRelease` a green phase two announces.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT A REPOSITORY DECLARES
+#
+#     # .config/qits/release.yml
+#     archetype: daemon
+#     artifacts:
+#       - { type: daemon, name: qits-ci-daemon, sbom: out/sbom.json }
+#
+# The name is UNQUALIFIED for the reason a docker declaration's is: no repository states a
+# deployment's addresses, and the reader supplies its own host. `artifacts:` belongs in the
+# repository's own file — qits-projects reads it at the tag and qits-ci announces from it.
+#
+# THE BINARY'S FILENAME IS NOT THE ARTIFACT NAME and must not be assumed to be:
+# qits-platform-access-cli publishes `qits-platform-access-cli` from a file called `qits`. It names
+# this archetype but overrides both slots with its own recipes, and it publishes into the same store
+# under the same `daemon` type; the mismatch there is the ordinary case rather than a slip. So the
+# step takes whatever the `target=binary` export left in `out/` beside the document, and refuses
+# anything but one file.
+#
+# THE REPOSITORY'S `docker/Dockerfile` MUST MOUNT THE TWO SECRETS THIS RECIPE PASSES:
+# `qits-client-id` and `qits-client-secret`, as `--mount=type=secret` on its `mvnw` RUN, exported
+# there as QITS_MAVEN_AUTH_USR/QITS_MAVEN_AUTH_PSW. qits-ci-daemon's docker/Dockerfile is the
+# exemplar. Without the mounts the secrets do nothing, and a build on the EDGE plane 401s on the
+# mirror.
+#
+# ---------------------------------------------------------------------------------------------
+# THE BUILD, AND THE ONE CONDITIONAL HALF
+#
+# A daemon repository compiles a GraalVM native image inside a musl toolchain image as a build stage
+# and ends on `FROM scratch` holding the one file, so the export is
+# `--opt target=binary --output type=local,dest=out`, and a second `target=sbom` stage exports the
+# CycloneDX document from the SAME reactor resolve — which is why it is a cache hit rather than a
+# second native compile, and why the document describes the very resolve that produced the bytes
+# beside it. Build args must stay BYTE-IDENTICAL between the two invocations or the cache misses.
+#
+# THE TOOLCHAIN IMAGE IS BUILT AND PUSHED ONLY BY THE REPOSITORY THAT OWNS ITS DOCKERFILE.
+# `docker/Dockerfile.musl-builder` is qits-ci-daemon's, and qits-ci-daemon declares both slots, so
+# today that build-and-push happens in its own recipe and not here; qits-platform-access-cli, the
+# other repository naming this archetype, overrides both slots too, so nothing rides the pushed
+# result through this file either. The guard on the file's presence stays anyway: it is what lets a
+# repository that does not own the Dockerfile ride this recipe with no override, which is the whole
+# reason the toolchain is a pushed image rather than a per-repository build. And the image is
+# deliberately NOT one of the `artifacts:`: nothing declares it, nothing deploys it.
+#
+# ITS TAG IS A FUNCTION OF THIS BUILD'S OWN TREE, AND THAT IS RULE ONE APPLIED TO AN IMAGE THE
+# PIPELINE ITSELF PRODUCES. It used to be the fixed `jdk-25` — one mutable coordinate shared by
+# every build of every repository on this recipe. The step PUSHES that coordinate and then, lines
+# later, the native compile PULLS it back as `BUILDER_IMAGE`; a build overlapping this one (the QA
+# half of one release and the publish half of another overlap routinely, and a retry always does)
+# can have replaced it in between, so the compile silently links against somebody else's toolchain
+# and nothing in the run says so. "Every step consumes the artifacts of the build it is part of"
+# is exactly what a shared in-place tag cannot promise.
+#
+# HASHED, NOT VERSIONED, because the cache contract has to survive. `$QITS_VERSION` would give a
+# per-release coordinate and would also give the QA build and the release build DIFFERENT
+# `BUILDER_IMAGE` arguments — a different `FROM`, a cold cache, and a second native compile on
+# every release. The hash is taken over the Dockerfile's own bytes together with the two resolved
+# tarball urls, which is everything that decides what the toolchain IS: identical inputs land on
+# the identical tag, so the two phases of one release still share every layer, and a toolchain
+# that actually changed gets a NEW coordinate rather than overwriting the one a running build is
+# about to pull.
+#
+# THE TARBALL URLS ARE THE RUN'S, NOT THE DOCKERFILE'S DEFAULTS. BuildKit resolves an `ADD <url>` in
+# the BUILDER's network context, not the step's; the committed defaults name an edge vhost on the
+# host loopback. The route is `$QITS_MAVEN_REGISTRY_URL`, the run's registry: the in-network one on
+# the INTERNAL plane, where the read is anonymous, and the public one on the EDGE plane, where an
+# anonymous read answers 401. There the `ADD` carries the run's token as the BuildKit session secret
+# `HTTP_AUTH_TOKEN_<host>`, which BuildKit's HTTP source sends as `Authorization: Bearer`; it is
+# passed only when `$QITS_TOKEN` is set. The maven COORDINATE is read out of the Dockerfile rather
+# than restated here, so a toolchain bump stays one file.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT THE PLATFORM ADDS, SO THAT THIS SCRIPT DOES NOT
+#
+# `set -eu`; the `$BUILDKIT_HOST`/`$QITS_BUILD_REGISTRY` guards and /tmp/qits-client-id|secret on a
+# `build:` step — the commissioned pair on the INTERNAL plane, the run's token subject and token on
+# the EDGE one; the `$QITS_VERSION` guard, the tag fetch, `git checkout --detach` and `qits-publish`
+# on `$PATH` on a release step; and `qits-publish sbom submit` afterwards for every declared
+# artifact carrying `sbom:`. So nothing below parses a version, fetches a tag, writes a secret file
+# or PUTs a document.
+#
+# THE 409 POLICY IS THE CLI'S NOW, AND IT CHANGED ON PURPOSE. The hand-written step treated an
+# occupied coordinate as a HARD FAILURE while the maven and npm steps beside it treated one as a
+# skip — two contradictory policies in one estate. `qits-publish daemon submit` runs the one policy:
+# occupied with identical bytes is success (a re-fired release run, a rebootstrap tag replay and a
+# retried step all go green), occupied with DIFFERENT bytes is a hard failure naming both digests,
+# which is the property the old 409 was reaching for and states correctly.
+#
+# ---------------------------------------------------------------------------------------------
+# WHEN TO OVERRIDE
+#
+# A repository whose QA half needs more than a compile — qits-ci-daemon's smoke probe really starts
+# a container on the built binary and therefore keeps `docker: true` — declares its own
+# `release-request:` (phase one). Declaring a slot replaces it entirely.
+
+release-request:
+
+  - image: qits/build-images/ci-base:latest
+    build: true
+    timeout-seconds: 3600
+    script: |
+      # THE FALLBACK COORDINATE, for a repository that rides this recipe and does NOT own the
+      # Dockerfile: it can only name what the owning repository last pushed, so it keeps the bare
+      # tag. The owner, below, computes its own — and the owner is the only one that could ever
+      # race itself, because it is the only one that pushes.
+      builder="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25"
+
+      # The toolchain image, when this repository owns it. See the header, both for why it is a
+      # pushed image and for why its tag is derived from the inputs rather than fixed.
+      if [ -f docker/Dockerfile.musl-builder ]; then
+        maven_root="${QITS_MAVEN_REGISTRY_URL%/}"
+        musl_url=$(sed -n 's/^ARG MUSL_URL=//p' docker/Dockerfile.musl-builder)
+        zlib_url=$(sed -n 's/^ARG ZLIB_URL=//p' docker/Dockerfile.musl-builder)
+        : "${musl_url:?docker/Dockerfile.musl-builder declares no ARG MUSL_URL}"
+        : "${zlib_url:?docker/Dockerfile.musl-builder declares no ARG ZLIB_URL}"
+        musl_url="$maven_root${musl_url#*/artifacts/maven/maven}"
+        zlib_url="$maven_root${zlib_url#*/artifacts/maven/maven}"
+        # The Dockerfile's bytes AND the two urls it will be built with — the urls carry
+        # $QITS_MAVEN_REGISTRY_URL, so a deployment that re-points the registry gets its own
+        # toolchain rather than inheriting one built against an address it does not use.
+        builder_tag=$( { cat docker/Dockerfile.musl-builder; printf '%s\n%s\n' "$musl_url" "$zlib_url"; } | sha256sum | cut -c1-16 )
+        builder="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25-$builder_tag"
+        # ON THE EDGE PLANE THE TARBALL `ADD` NEEDS THE RUN'S TOKEN (qits-441, qits-541): there
+        # $maven_root is the public registry, which answers an anonymous read 401. BuildKit's HTTP
+        # source sends a session secret named HTTP_AUTH_TOKEN_<url host> as `Authorization: Bearer`,
+        # so the secret is keyed by exactly that host and passed only when the step holds
+        # $QITS_TOKEN, which qits-ci sets on the EDGE plane alone. On the INTERNAL plane nothing is
+        # passed and the in-network read stays anonymous, as qits-ci intends. It comes after the
+        # tag on purpose: the credential is no part of what the toolchain IS.
+        tarball_auth=
+        if [ -n "${QITS_TOKEN:-}" ]; then
+          tarball_host=$(printf '%s\n' "$maven_root" | sed -E 's|^[A-Za-z]+://||; s|[/:?].*$||')
+          tarball_auth="--secret id=HTTP_AUTH_TOKEN_$tarball_host,env=QITS_TOKEN"
+        fi
+        buildctl build --frontend dockerfile.v0 \
+          --local context=docker --local dockerfile=docker \
+          --opt filename=Dockerfile.musl-builder \
+          --opt build-arg:MUSL_URL="$musl_url" \
+          --opt build-arg:ZLIB_URL="$zlib_url" \
+          $tarball_auth \
+          --output "type=image,name=$builder,push=true"
+      fi
+
+      # No `--network host` and nothing replaces it: the `RUN` executes in the builder's namespace —
+      # qits-net on the INTERNAL plane, the runner's own buildkitd on the EDGE one — so Maven
+      # Central goes through the run's mirror, and an empty $QITS_MAVEN_PROXY_URL still deactivates
+      # the settings profile so the resolve goes to Central directly.
+      #
+      # THE CREDENTIAL IS THE TWO SECRET FILES, AND IT IS UNCONDITIONAL, unlike the tarball's: the
+      # files qits-ci's prelude writes become QITS_MAVEN_AUTH_USR/PSW inside the mvnw RUN
+      # (docker/Dockerfile). They hold the commissioned pair on the INTERNAL plane, where the
+      # in-network mirror never challenges and so Maven never sends it, and the run's token on the
+      # EDGE plane, where the public mirror answers an anonymous read 401.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=docker \
+        --opt target=binary \
+        --opt build-arg:BUILDER_IMAGE="$builder" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --secret id=qits-client-id,src=/tmp/qits-client-id \
+        --secret id=qits-client-secret,src=/tmp/qits-client-secret \
+        --output type=local,dest=out
+
+      # A static binary that cannot be executed is a green build that publishes nothing runnable.
+      # The export loses the mode bit, so the chmod is not optional.
+      binary=$(find out -maxdepth 1 -type f ! -name 'sbom.json')
+      count=$(printf '%s' "$binary" | grep -c . || true)
+      if [ "$count" != 1 ]; then
+        echo "the binary export left $count files in out/ besides sbom.json" >&2
+        exit 1
+      fi
+      chmod +x "$binary"
+      echo "built $binary: $(sha256sum "$binary" | cut -d' ' -f1)"
+
+release:
+
+  - image: qits/build-images/ci-base:latest
+    build: true
+    timeout-seconds: 3600
+    script: |
+      # THE COORDINATE, OUT OF THE DECLARATION THAT ANNOUNCES IT — the same reading java-service and
+      # oci make, and for the same reason: the name published and the name announced are one string.
+      declared=$(sed -n \
+        's/^[[:space:]]*-[[:space:]]*{[[:space:]]*type:[[:space:]]*daemon[[:space:]]*,[[:space:]]*name:[[:space:]]*\([^,}[:space:]]*\).*/\1/p' \
+        .config/qits/release.yml)
+      count=$(printf '%s' "$declared" | grep -c . || true)
+      if [ "$count" != 1 ]; then
+        echo "release.yml declares $count daemon artifacts and this archetype publishes exactly one." >&2
+        echo "Spell it as one flow line — '- { type: daemon, name: qits-ci-daemon, sbom: out/sbom.json }'" >&2
+        exit 1
+      fi
+      echo "releasing $declared $QITS_VERSION"
+
+      # Byte-identical to the QA step's, and the tag derivation is half of why: the same tree and
+      # the same registry produce the same `jdk-25-<hash>` in both phases, so `BUILDER_IMAGE` is
+      # the same string and the native compile below is a cache hit on the fold that gated this
+      # release rather than a second one. See the header.
+      builder="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25"
+
+      if [ -f docker/Dockerfile.musl-builder ]; then
+        maven_root="${QITS_MAVEN_REGISTRY_URL%/}"
+        musl_url=$(sed -n 's/^ARG MUSL_URL=//p' docker/Dockerfile.musl-builder)
+        zlib_url=$(sed -n 's/^ARG ZLIB_URL=//p' docker/Dockerfile.musl-builder)
+        : "${musl_url:?docker/Dockerfile.musl-builder declares no ARG MUSL_URL}"
+        : "${zlib_url:?docker/Dockerfile.musl-builder declares no ARG ZLIB_URL}"
+        musl_url="$maven_root${musl_url#*/artifacts/maven/maven}"
+        zlib_url="$maven_root${zlib_url#*/artifacts/maven/maven}"
+        builder_tag=$( { cat docker/Dockerfile.musl-builder; printf '%s\n%s\n' "$musl_url" "$zlib_url"; } | sha256sum | cut -c1-16 )
+        builder="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25-$builder_tag"
+        # The QA step's tarball credential, byte for byte: the run's token on the EDGE plane only.
+        tarball_auth=
+        if [ -n "${QITS_TOKEN:-}" ]; then
+          tarball_host=$(printf '%s\n' "$maven_root" | sed -E 's|^[A-Za-z]+://||; s|[/:?].*$||')
+          tarball_auth="--secret id=HTTP_AUTH_TOKEN_$tarball_host,env=QITS_TOKEN"
+        fi
+        buildctl build --frontend dockerfile.v0 \
+          --local context=docker --local dockerfile=docker \
+          --opt filename=Dockerfile.musl-builder \
+          --opt build-arg:MUSL_URL="$musl_url" \
+          --opt build-arg:ZLIB_URL="$zlib_url" \
+          $tarball_auth \
+          --output "type=image,name=$builder,push=true"
+      fi
+
+      # The QA pipeline's build, byte for byte.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=docker \
+        --opt target=binary \
+        --opt build-arg:BUILDER_IMAGE="$builder" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --secret id=qits-client-id,src=/tmp/qits-client-id \
+        --secret id=qits-client-secret,src=/tmp/qits-client-secret \
+        --output type=local,dest=out
+
+      # THE DOCUMENT COMES OUT OF THE SAME BUILD AS THE BINARY, and it has to: the reactor and its
+      # resolved dependency tree exist only in there — this step's container carries no maven at
+      # all. Build args are byte-identical to the export above, which is what makes every layer a
+      # cache hit and this seconds rather than a second native compile.
+      #
+      # GENERATED, NEVER SUBMITTED: the composed postlude PUTs `out/sbom.json` for the artifact that
+      # declares it, after this script and before the step's exit code.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=docker \
+        --opt target=sbom \
+        --opt build-arg:BUILDER_IMAGE="$builder" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --secret id=qits-client-id,src=/tmp/qits-client-id \
+        --secret id=qits-client-secret,src=/tmp/qits-client-secret \
+        --output type=local,dest=out
+
+      binary=$(find out -maxdepth 1 -type f ! -name 'sbom.json')
+      count=$(printf '%s' "$binary" | grep -c . || true)
+      if [ "$count" != 1 ]; then
+        echo "the binary export left $count files in out/ besides sbom.json" >&2
+        exit 1
+      fi
+      chmod +x "$binary"
+
+      # ONE REQUEST STAGES THE BYTES, PROMOTES THEM AND INSERTS THE ROW, so publishing without an
+      # identity is not expressible. The idempotency policy — and the digest comparison an occupied
+      # coordinate gets — is qits-publish's, once, rather than a `case "$status"` block per
+      # repository. See the header for what that changed.
+      qits-publish daemon submit \
+        --name "$declared" --version "$QITS_VERSION" --file "$binary"

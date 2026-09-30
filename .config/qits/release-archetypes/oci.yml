@@ -1,0 +1,145 @@
+# oci — the release cycle of a repository whose whole product is ONE container image built from a
+# Dockerfile it holds. Four repositories, of which three publish a single image: qits-database-oci,
+# qits-workspace-oci and qits-workspace-editor-oci. (qits-build-images-oci publishes five and
+# declares its own `release:` — see "when to override".)
+#
+# `release-request:` below is phase one (QA, on ReleaseRequestChanged) and `release:` is phase two
+# (Publish, on SCMRelease). See java-service.yml's header for the full three-phase model; phase
+# three (Deploy) is a consumer's own deployment request off the `SoftwareRelease` a green phase two
+# announces, and appears in no slot file, this one included.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT A REPOSITORY DECLARES
+#
+#     # .config/qits/release.yml
+#     archetype: oci
+#     artifacts:
+#       - { type: docker, name: qits/qits-oci-postgresql, sbom: .sbom/sbom.json }
+#
+# and nothing else. `artifacts:` must be the repository's own — qits-projects reads it at the tag,
+# so a default here would be invisible to it, and qits-ci announces the `SoftwareRelease` from it.
+#
+# THE IMAGE NAME IS READ OUT OF THAT DECLARATION, for the reason java-service.yml argues in full:
+# it is not derivable from the repository name (qits-database-oci publishes qits/qits-oci-postgresql,
+# deliberately and permanently — every environment's database container, volume and DNS alias is
+# spelled that way), and the declaration is the ONE place the coordinate is already written down.
+# Reading it means the ref pushed and the coordinate announced are one string and cannot drift.
+#
+# THE SPELLING IS LOAD-BEARING: the extractor is a `sed` over one line, so the entry is the fleet's
+# own flow form on a single line. Zero or two docker entries is a loud failure naming this file,
+# never a ref composed out of an empty string. The declaration's first path segment is the platform
+# namespace and is replaced by `$QITS_IMAGE_REPOSITORY`, exactly as every hand-written file spelled
+# it, so a deployment that re-points that key still works.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT THIS RECIPE DELETED
+#
+# ~100 lines of `sed`/`case`/`printf` per repository, hand-writing a CycloneDX document out of the
+# Dockerfile's `FROM` lines: stage-alias exclusion, distinct-base collapsing, digest-versus-tag,
+# the `host:5000/image` colon, purl construction, three `printf` appends. `qits-publish sbom
+# from-dockerfile` is that generator with a real parser behind it — byte-identical output, verified
+# against both repositories' documents, plus two things the shell could not do: `${BUILDER_IMAGE}`
+# in a `FROM` resolves from the file's own `ARG` default or from `--build-arg`, and `FROM scratch`
+# produces no component because the empty base names no image.
+#
+# NOT buildkit attestations and not syft: either would change the build's inputs, and the QA build
+# and the release build must stay byte-identical LLB or a release stops being a stack of cache hits
+# on the fold that gated it.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT THE PLATFORM ADDS, SO THAT THESE SCRIPTS DO NOT
+#
+# CiReleaseComposer wraps every step with `set -eu`; a `build:` step with the `$BUILDKIT_HOST` and
+# `$QITS_BUILD_REGISTRY` guards and the commissioned pair as /tmp files under `umask 077`; a RELEASE
+# step with the `$QITS_VERSION` guard, the tag fetch, `git checkout --detach` and `qits-publish` on
+# `$PATH`. It then submits the generated document per declared artifact carrying `sbom:`. So the
+# script below GENERATES the SBOM and never PUTs it.
+#
+# ---------------------------------------------------------------------------------------------
+# WHEN TO OVERRIDE
+#
+# - More than one image from one tree (qits-build-images-oci builds five step images from five
+#   directories): declare `release:` (phase two), and keep the `from-dockerfile` call per image
+#   rather than the old shell.
+# - A build needing `--opt build-arg:` or a target. This recipe passes none, because none of the
+#   three single-image repositories does — a Dockerfile that needs an argument is a repository that
+#   declares its own steps.
+#
+# The QA build and the release build are BYTE-IDENTICAL buildctl invocations apart from the
+# `--output`, and that is the cache contract: change one, change the other in the same commit.
+
+release-request:
+
+  # ci-base: buildctl for the build, git for the checkout. `build: true` is the diff-visible
+  # declaration that gets this step the platform builder and the run's commissioned credential —
+  # and, unlike the `docker: true` it replaced, no docker socket at all.
+  - image: qits/build-images/ci-base:latest
+    build: true
+    timeout-seconds: 3600
+    script: |
+      # NOTHING IS PUBLISHED, SO THERE IS NO `--output` AT ALL: buildctl solves the whole graph and
+      # exports nothing. The build IS the gate on the fold.
+      #
+      # WHERE THE DOCKERFILE IS. An OCI repository keeps it at the root; a repository that keeps a
+      # `docker/` directory gets that instead, so one recipe covers both without a key for it.
+      dockerfile_dir=.
+      if [ ! -f Dockerfile ] && [ -f docker/Dockerfile ]; then
+        dockerfile_dir=docker
+      fi
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile="$dockerfile_dir"
+
+release:
+
+  - image: qits/build-images/ci-base:latest
+    build: true
+    timeout-seconds: 3600
+    script: |
+      # THE COORDINATE, OUT OF THE DECLARATION THAT ANNOUNCES IT. See the header.
+      declared=$(sed -n \
+        's/^[[:space:]]*-[[:space:]]*{[[:space:]]*type:[[:space:]]*docker[[:space:]]*,[[:space:]]*name:[[:space:]]*\([^,}[:space:]]*\).*/\1/p' \
+        .config/qits/release.yml)
+      count=$(printf '%s' "$declared" | grep -c . || true)
+      if [ "$count" != 1 ]; then
+        echo "release.yml declares $count docker artifacts and the oci archetype pushes exactly one." >&2
+        echo "Spell it as one flow line — '- { type: docker, name: qits/x, sbom: .sbom/sbom.json }'" >&2
+        echo "— or declare this repository's own 'release:' steps." >&2
+        exit 1
+      fi
+      case "$declared" in
+        *[!A-Za-z0-9._:/@+-]*)
+          echo "release.yml's docker artifact name is not a coordinate: $declared" >&2
+          exit 1 ;;
+      esac
+      image=${declared#*/}
+      ref="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
+      echo "releasing $ref"
+
+      dockerfile_dir=.
+      if [ ! -f Dockerfile ] && [ -f docker/Dockerfile ]; then
+        dockerfile_dir=docker
+      fi
+
+      # `push=true` IS THE PUBLISH: the image goes from the builder straight to the registry and
+      # never enters any local image store, which is why there is no `docker rmi` question here at
+      # all. $QITS_BUILD_REGISTRY is the registry as the BUILDER resolves it; $QITS_REGISTRY stays
+      # the host daemon's view and is not dialled from a step.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile="$dockerfile_dir" \
+        --output "type=image,name=$ref,push=true"
+
+      # THE SBOM FOR AN IMAGE LIKE THIS ONE IS ITS `FROM` LINES, and there is nothing else it could
+      # honestly be: these Dockerfiles layer this platform's configuration onto an upstream and
+      # declare no manifest a scanner could read. What a consumer needs to know is which upstream it
+      # inherits and at which tag — exactly one `FROM` per stage.
+      #
+      # THE ROOT IS THE DECLARED NAME, unqualified, because `(packageType, packageName, version)` is
+      # how a SoftwareRelease consumer asks for it. The components keep the refs the build actually
+      # resolved, registry host and all, because that is what the image is really made of.
+      #
+      # GENERATED, NEVER SUBMITTED: the composed postlude PUTs `.sbom/sbom.json` for the artifact
+      # that declares it, after this script and before the step's exit code.
+      qits-publish sbom from-dockerfile \
+        --root-name "$declared" --root-version "$QITS_VERSION" \
+        --dockerfile "$dockerfile_dir/Dockerfile" \
+        -o .sbom/sbom.json

@@ -1,0 +1,257 @@
+# npm-library — the release cycle of an Angular library published to the platform's @qits scope.
+# Two repositories: qits-ui-components-jslib and qits-integrations-angular-jslib.
+#
+# `release-request:` below is phase one (QA, on ReleaseRequestChanged) and `release:` is phase two
+# (Publish, on SCMRelease). See java-service.yml's header for the full three-phase model; phase
+# three (Deploy) is a consumer's own deployment request off the `SoftwareRelease` a green phase two
+# announces, and appears in no slot file, this one included.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT A REPOSITORY DECLARES
+#
+#     # .config/qits/release.yml
+#     archetype: npm-library
+#     artifacts:
+#       - { type: npm, name: "@qits/ui-components", sbom: sbom.json }
+#       - { type: docs, name: "@qits/ui-components" }      # only if the repo builds a workbench
+#
+# The name is quoted because `@` is a reserved YAML indicator. `artifacts:` belongs in the
+# repository's own file and never here: qits-projects reads it at the tag, and it is what qits-ci
+# announces one `SoftwareRelease` per — a declaration, not a report.
+#
+# THE REPEATED NAME ON THE TWO ENTRIES IS THE POINT rather than duplication: the tarball and the
+# workbench are two things arriving at two addresses, one resolvable by `pnpm add` and one readable
+# in a browser. Only the npm entry carries `sbom:` — the docs bundle has no bill of materials of its
+# own.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT IS DISCOVERED RATHER THAN DECLARED, AND WHY THAT IS RIGHT HERE
+#
+# - THE BUILT PACKAGE. `pnpm build` writes an Angular library to `dist/<project>/`, and the project
+#   directory differs per repository (`dist/qits-spa-ui-components`, `dist/qits-integrations-angular`).
+#   The step finds the one directory under `dist/` holding a package.json and reads BOTH the package
+#   NAME and the VERSION out of that manifest. So the coordinate published is the coordinate the
+#   build produced — which is exactly what the fleet's hand-written "the tag says X and the built
+#   manifest says Y" assertion was checking, now with nothing left to disagree.
+# - THE WORKBENCH, from the presence of a `build-storybook` script. A repository that has one
+#   publishes its storybook as a `docs` artifact under the package's own name; one that does not
+#   skips the half entirely. That is what lets one recipe serve both repositories with no override.
+#
+# ---------------------------------------------------------------------------------------------
+# WHAT THE PLATFORM ADDS, SO THAT THIS SCRIPT DOES NOT
+#
+# CiReleaseComposer wraps the step with `set -eu`, the `$QITS_VERSION` guard, the tag fetch,
+# `git checkout --detach` and `qits-publish` on `$PATH`; and it submits the SBOM afterwards for
+# every declared artifact carrying `sbom:`. Nothing below parses the event payload, checks a CalVer
+# shape, fetches a tag or PUTs a document.
+#
+# It also injects `$QITS_PUBLISH_TOKEN` and `$QITS_PUBLISH_TOKEN_COMMAND` — the run's own bearer, and
+# an executable that mints a FRESH one on every call. `.npmrc`'s `_authToken` below is fed by the
+# COMMAND and rewritten immediately before the publish, and degrades to no token line at all when
+# neither name is there. See java-service.yml's header for why that is the rule.
+#
+# THE IDEMPOTENCY POLICY IS THE CLI'S, ONCE. `qits-publish npm plan` answers `publish`,
+# `publish-replay` or `skip` — the replay comparator that used to be an inline `node -p` one-liner
+# copied between two repositories, and the "already published" probe beside it, decided in one
+# place. Its one word is the only thing on stdout, which is what makes `$(…)` safe.
+#
+# IDEMPOTENT REPAIRS ALWAYS RUN. The dist-tag move, the SBOM and the docs bundle are outside the
+# publish decision on purpose: a redelivery whose npm half landed and whose tag move did not would
+# otherwise report green with `@qits/…@main` a release behind and nothing saying so. That happened.
+#
+# ---------------------------------------------------------------------------------------------
+# WHEN TO OVERRIDE
+#
+# A repository that publishes more than one package from one tree, or that builds with npm rather
+# than pnpm, declares its own `release:` (phase two). Declaring a slot replaces it entirely.
+
+release-request:
+
+  - image: qits/build-images/node-base:latest
+    timeout-seconds: 1800
+    script: |
+      # THE RUN'S OWN BEARER, MINTED AT THE CALL SITE. qits-ci hands a step both a
+      # $QITS_PUBLISH_TOKEN minted when the container started and a $QITS_PUBLISH_TOKEN_COMMAND
+      # that prints a FRESH raw token on every call. This uses the command: the mint's TTL and a
+      # step's timeout are the same number (3600s) and a publish is always the last thing a step
+      # does, so the variable can be expired where a re-mint cannot.
+      #
+      # IT DEGRADES TO ANONYMOUS, NEVER TO A BROKEN HEADER. This file is read at main and runs
+      # against a tag on whatever qits-ci the estate is running, so the command may be absent and a
+      # mint may fail. qits-artifacts still accepts an anonymous publish today, so NO `_authToken`
+      # LINE AT ALL is the call that worked yesterday; an empty one is npm sending `Bearer ` with
+      # nothing after it, which is a 401 that would cost a release before the store's refusal has
+      # landed. Neither case may abort the step, which is what the two `return 0`s are.
+      mint_publish_token() {
+        [ -n "${QITS_PUBLISH_TOKEN_COMMAND:-}" ] || return 0
+        command -v "$QITS_PUBLISH_TOKEN_COMMAND" >/dev/null 2>&1 || return 0
+        _minted=$("$QITS_PUBLISH_TOKEN_COMMAND" 2>/dev/null) || return 0
+        printf '%s' "$_minted"
+      }
+
+      # -u is load-bearing here (the composer supplies it): with the registry vars unset, an
+      # unset-tolerant script writes a registry-less .npmrc and the install resolves the @qits scope
+      # against npmjs.org, where these packages do not exist and never will. The subshell inherits
+      # it, so an unset variable still kills the step.
+      #
+      # `_authToken` IS THE HOOK because it is the only one npm offers: npm sends it as
+      # `Authorization: Bearer <value>`, which is what a publish into qits-artifacts is identified
+      # by. The literal `qits-ci` that used to sit here, and the comment calling the credential
+      # ceremony, were true only while the store accepted anyone.
+      #
+      # THE KEY HAS TO MATCH THE REGISTRY URL EXACTLY, TRAILING SLASH INCLUDED. npm looks the token
+      # up under the scheme-less form of the registry it is about to dial and does NOT normalise
+      # the two ends together — measured on npm 10.9.8 against a real `npm publish`: with
+      # `…/npm/hosted` the publish died on ENEEDAUTH with the line sitting right there in the file,
+      # and with `…/npm/hosted/` it sent `Authorization: Bearer …`. `$QITS_NPM_REGISTRY_URL` ends
+      # in a slash today, which is the only reason the `#*:` form below lands on the right key.
+      # A deployment that drops that slash turns this into a silent anonymous publish. `#*:` and not
+      # `#http:`: the latter leaves `https:` on an https address, and npm then never finds the key.
+      #
+      # THE MIRROR GETS THE TOKEN TOO. qits-ci writes a token for both hosts into ~/.npmrc before
+      # the step runs, and this function overwrites that file. Since the mirror stopped accepting
+      # anonymous reads, dropping its line made every install die on a 401 (2026-09-29).
+      #
+      # A FUNCTION THAT REWRITES THE WHOLE FILE, not a preamble that appends: the release step
+      # calls it a SECOND time immediately before its publish, because a build sits between the two
+      # and would otherwise hand npm a token older than its own TTL. Rewriting means the second
+      # call replaces the stale line instead of stacking a second one. 077 because the last line is
+      # a bearer.
+      #
+      # This preamble is byte-identical to the release step's. Keep them matched.
+      write_npmrc() {
+        _npmrc_token=$(mint_publish_token)
+        ( umask 077
+          printf 'registry=%s\n@qits:registry=%s\n' \
+            "${QITS_NPM_PROXY_URL}" "${QITS_NPM_REGISTRY_URL}" > ~/.npmrc
+          if [ -n "$_npmrc_token" ]; then
+            printf '%s:_authToken=%s\n%s:_authToken=%s\n' \
+              "${QITS_NPM_REGISTRY_URL#*:}" "$_npmrc_token" \
+              "${QITS_NPM_PROXY_URL#*:}" "$_npmrc_token" >> ~/.npmrc
+          fi )
+      }
+      write_npmrc
+
+      pnpm install --frozen-lockfile
+      pnpm lint
+      pnpm test
+      pnpm build
+      # The workbench ships nothing FROM HERE — storybook-static/ dies with the container. It runs
+      # so the workbench cannot rot unnoticed: a story that stops compiling, a broken .storybook
+      # config or a compodoc pass that fails to produce the property tables all fail here instead of
+      # the next time somebody runs `pnpm storybook`. Like the build it is Vite compiling, not a
+      # browser rendering, so the browserless image is enough.
+      if node -e "process.exit((require('./package.json').scripts||{})['build-storybook']?0:1)"; then
+        pnpm build-storybook
+      fi
+
+release:
+
+  - image: qits/build-images/node-base:latest
+    timeout-seconds: 1800
+    script: |
+      # Byte-identical to the QA step's preamble; read the rationale there. The second call, below,
+      # is what this step has and that one does not.
+      mint_publish_token() {
+        [ -n "${QITS_PUBLISH_TOKEN_COMMAND:-}" ] || return 0
+        command -v "$QITS_PUBLISH_TOKEN_COMMAND" >/dev/null 2>&1 || return 0
+        _minted=$("$QITS_PUBLISH_TOKEN_COMMAND" 2>/dev/null) || return 0
+        printf '%s' "$_minted"
+      }
+      write_npmrc() {
+        _npmrc_token=$(mint_publish_token)
+        ( umask 077
+          printf 'registry=%s\n@qits:registry=%s\n' \
+            "${QITS_NPM_PROXY_URL}" "${QITS_NPM_REGISTRY_URL}" > ~/.npmrc
+          if [ -n "$_npmrc_token" ]; then
+            printf '%s:_authToken=%s\n%s:_authToken=%s\n' \
+              "${QITS_NPM_REGISTRY_URL#*:}" "$_npmrc_token" \
+              "${QITS_NPM_PROXY_URL#*:}" "$_npmrc_token" >> ~/.npmrc
+          fi )
+      }
+      write_npmrc
+
+      pnpm install --frozen-lockfile
+      pnpm build
+
+      # THE BUILT PACKAGE, FOUND RATHER THAN SPELLED. Exactly one directory under dist/ carries a
+      # manifest; more than one means this repository publishes more than one package and wants its
+      # own `release:` steps.
+      manifests=$(find dist -mindepth 2 -maxdepth 2 -name package.json | sort)
+      count=$(printf '%s' "$manifests" | grep -c . || true)
+      if [ "$count" != 1 ]; then
+        echo "expected exactly one dist/*/package.json after the build, found $count" >&2
+        exit 1
+      fi
+      dist=${manifests%/package.json}
+      package=$(node -p "require('./$dist/package.json').name")
+      built=$(node -p "require('./$dist/package.json').version")
+
+      # THE ONE ASSERTION WORTH MAKING. The release commit carries the stamped version in its
+      # manifest and the tag is the coordinate everything else names — two sources for one number.
+      # If they disagreed, the tarball published under the tag would carry a different version
+      # inside it, and the SoftwareRelease qits-ci announces would name one nobody published.
+      if [ "$built" != "$QITS_VERSION" ]; then
+        echo "the release is $QITS_VERSION and the built manifest says $built" >&2
+        exit 1
+      fi
+      echo "releasing $package@$QITS_VERSION from $dist"
+
+      # THE PLAN, from the one place the policy lives. `publish` = absent; `publish-replay` = below
+      # the registry's `latest`, so it takes the throwaway tag and leaves `main` alone (npm refuses
+      # to move `latest` backwards, and a bootstrap replays every version the estate still pins);
+      # `skip` = this exact version is already there, which a redelivered event makes ordinary.
+      plan=$(qits-publish npm plan --package "$package" --version "$QITS_VERSION")
+
+      # THE TOKEN IS REWRITTEN IMMEDIATELY BEFORE THE PUBLISH, and this is the whole reason
+      # write_npmrc is a function. `pnpm install --frozen-lockfile` and `pnpm build` sit between
+      # the preamble and here, and a mint's TTL (3600s) is the same number as this step's timeout —
+      # so on a slow build the token the preamble wrote is expired by the moment `npm publish`
+      # sends it, which is the one moment it has to be valid. The `qits-publish` calls around this
+      # block credential themselves and take nothing from ~/.npmrc.
+      write_npmrc
+
+      case "$plan" in
+        publish)        npm publish "./$dist" ;;
+        publish-replay) npm publish "./$dist" --tag replay ;;
+        skip)           echo "$package@$QITS_VERSION is already published — skipping the publish" ;;
+        *)              echo "qits-publish npm plan answered '$plan'" >&2; exit 1 ;;
+      esac
+
+      # AND `main` NAMES THE SAME VERSION. Not a second publish — `npm publish` claims exactly one
+      # dist-tag and a version is immutable, so the only way to be under both is to move the tag
+      # afterwards. UNCONDITIONAL except on a replay, because moving a tag onto the version it
+      # already names costs one request and skipping the repair is how `main` falls a release
+      # behind in silence. A replay is the one exception: an older version must not pull `main` back.
+      if [ "$plan" != publish-replay ]; then
+        qits-publish npm dist-tag --package "$package" --version "$QITS_VERSION" --tag main
+      fi
+
+      # THE SBOM, GENERATED HERE AND SUBMITTED BY THE COMPOSED POSTLUDE. Declare
+      # `sbom: sbom.json` on the npm artifact and nothing else.
+      #
+      # cdxgen, NOT @cyclonedx/cyclonedx-npm: these repositories' lockfile is `pnpm-lock.yaml` and
+      # cyclonedx-npm reads `package-lock.json` only — there is no flag that changes that. It comes
+      # through the mirror like every other package; `--registry` explicitly, because `npm exec`
+      # resolves the tool itself and the `@qits:` line in ~/.npmrc covers only that scope.
+      npm exec --yes --registry "$QITS_NPM_PROXY_URL" -- \
+        @cyclonedx/cdxgen@11.2.7 -t pnpm --spec-version 1.6 -o sbom.json .
+
+      # THE WORKBENCH, AS THE SECOND DECLARED ARTIFACT — same tree, same version, same run. Built
+      # here rather than reused from the fold because no state crosses runs, let alone steps: this
+      # container cloned the tag itself and has to produce everything it publishes.
+      #
+      # `-C storybook-static .` names every entry `./index.html`; the alternative would nest the
+      # whole site one directory deep and every URL would carry the directory.
+      #
+      # The site is the PACKAGE name, which is what the `docs` declaration spells. Idempotency,
+      # including the "occupied and the bytes cannot be compared" WARN the docs store forces, is
+      # qits-publish's — there is no `case "$status"` block here because there is no status here.
+      if node -e "process.exit((require('./package.json').scripts||{})['build-storybook']?0:1)"; then
+        pnpm build-storybook
+        tar -czf /tmp/storybook.tgz -C storybook-static .
+        qits-publish docs submit \
+          --site "$package" --version "$QITS_VERSION" --archive /tmp/storybook.tgz \
+          --meta git.commit.hash="$QITS_CI_SHA" \
+          --meta git.repository.name="$QITS_CI_REPO_NAME"
+      fi
