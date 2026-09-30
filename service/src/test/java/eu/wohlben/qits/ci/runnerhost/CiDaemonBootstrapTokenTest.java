@@ -7,8 +7,6 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.sun.net.httpserver.HttpServer;
 import eu.wohlben.qits.ci.HermeticEnvironment;
-import eu.wohlben.qits.ci.idp.IdpCommissioner;
-import eu.wohlben.qits.ci.idp.RunCommissions;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -32,12 +30,12 @@ import org.w3c.dom.NodeList;
 
 /**
  * The REAL {@link StepContainerSettings#BOOTSTRAP}, run through {@code /bin/sh} with the environment
- * {@link StepWorkloadSpecs} composes for an EDGE build step: what a step outside the swarm makes of
- * its {@code ci-run} token, proved by reading back the five files it writes and the download it
- * makes rather than by grepping the text that would.
+ * {@link StepWorkloadSpecs} composes for a build step: what a step makes of its {@code ci-run}
+ * token — its only credential (qits-515) — proved by reading back the five files it writes and the
+ * download it makes rather than by grepping the text that would.
  *
- * <p><b>The environment is the composition's, not a hand-written copy.</b> The step is composed on
- * the edge plane for {@code example.org} with a token credential, and only the addresses this suite
+ * <p><b>The environment is the composition's, not a hand-written copy.</b> The step is composed
+ * for {@code example.org} with the run's token, and only the addresses this suite
  * has to serve itself (the daemon binary) and the paths it has to keep out of {@code /tmp} are
  * replaced — so a key the composition stops sending, or a value it spells differently, fails here.
  *
@@ -46,10 +44,9 @@ import org.w3c.dom.NodeList;
  * whose {@code /tmp/qits-ci-daemon} is the running daemon), and every ambient {@code QITS_}
  * variable is stripped first, so nothing here depends on where it runs.
  */
-public class CiDaemonBootstrapEdgeTokenTest {
+public class CiDaemonBootstrapTokenTest {
 
-  private static final String TOKEN = "qits_tok_edge-run-123";
-  private static final String SUBJECT = "tok-ci-run-0123456789abcdef-run-1";
+  private static final String TOKEN = StepFixtures.TOKEN;
 
   private static final String DAEMON_PATH = "/tmp/qits-ci-daemon";
   private static final String TOKEN_SCRIPT_PATH = StepContainerSettings.PUBLISH_TOKEN_COMMAND;
@@ -100,10 +97,10 @@ public class CiDaemonBootstrapEdgeTokenTest {
 
   @Test
   @EnabledOnOs(OS.LINUX)
-  public void anEdgeStepTurnsItsTokenIntoEveryCredentialItNeeds() throws Exception {
+  public void aStepTurnsItsTokenIntoEveryCredentialItNeeds() throws Exception {
     assumeShell();
 
-    Map<String, String> composed = composedEdgeEnv();
+    Map<String, String> composed = composedEnv();
     Result result = runBootstrap(composed);
 
     assertEquals(0, result.exitCode, result.diagnosis());
@@ -186,7 +183,7 @@ public class CiDaemonBootstrapEdgeTokenTest {
     assumeShell();
     Files.writeString(work.resolve("home").resolve(".npmrc"), "fund=false\n");
 
-    Result result = runBootstrap(composedEdgeEnv());
+    Result result = runBootstrap(composedEnv());
 
     assertEquals(0, result.exitCode, result.diagnosis());
     assertTrue(
@@ -194,20 +191,59 @@ public class CiDaemonBootstrapEdgeTokenTest {
         "appended, never clobbered");
   }
 
-  /** The env the composition sends an EDGE {@code build: true} step holding a ci-run token. */
-  private static Map<String, String> composedEdgeEnv() {
-    StepContainerSettings launcher =
-        StepEnvironmentCharacterizationTest.shippedLauncher("http://dev-qits-platform-idp:8080/idp");
-    StepAddressPlane edge =
-        StepAddressPlane.edge(
-            RunnerAddressesFixture.withDomain("example.org").edgeOrigins().orElseThrow(),
-            launcher.internalPlane());
+  /**
+   * MAVEN_ARGS is appended to, never assigned: a step image may already set it, and clobbering it
+   * would break that image's builds.
+   */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  public void anImagesOwnMavenArgsSurviveAndGainTheSettingsFile() throws Exception {
+    assumeShell();
+    Map<String, String> composed = new java.util.LinkedHashMap<>(composedEnv());
+    composed.put("MAVEN_ARGS", "-Dstyle.color=never -Dfoo=bar");
+
+    Result result = runBootstrap(composed);
+
+    assertEquals(0, result.exitCode, result.diagnosis());
+    assertEquals(
+        "-Dstyle.color=never -Dfoo=bar -gs " + path(SETTINGS_PATH) + "\n",
+        Files.readString(work.resolve("inherited-maven-args")));
+  }
+
+  /**
+   * qits-515: the text holds no second credential path. It names neither the commissioned pair nor
+   * the git-auth variables, and a pair left in the environment changes nothing it writes.
+   */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  public void aCommissionedPairInTheEnvironmentIsReadByNothing() throws Exception {
+    assumeShell();
+    assertFalse(StepContainerSettings.BOOTSTRAP.contains("QITS_COMMISSIONED_CLIENT"));
+    assertFalse(StepContainerSettings.BOOTSTRAP.contains("QITS_GIT_AUTH_"));
+    assertFalse(StepContainerSettings.BOOTSTRAP.contains("grant_type"));
+    Map<String, String> composed = new java.util.LinkedHashMap<>(composedEnv());
+    composed.put("QITS_COMMISSIONED_CLIENT_ID", "a-client");
+    composed.put("QITS_COMMISSIONED_CLIENT_SECRET", "a-secret");
+    composed.put("QITS_GIT_AUTH_TOKEN_URL", "http://127.0.0.1:1/idp/token");
+    composed.put("QITS_GIT_AUTH_HOST", "githost.qits.example.org");
+
+    Result result = runBootstrap(composed);
+
+    assertEquals(0, result.exitCode, result.diagnosis());
+    assertEquals(TOKEN + "\n", Files.readString(work.resolve("inherited-token")));
+    assertEquals(
+        "username=oauth2\npassword=" + TOKEN + "\n\n",
+        gitCredential(composed, "https", "githost.qits.example.org"));
+  }
+
+  /** The env the composition sends a {@code build: true} step holding its run's token. */
+  private static Map<String, String> composedEnv() {
+    StepContainerSettings launcher = StepFixtures.shippedLauncher();
     return StepWorkloadSpecs.compose(
             launcher.workloadSettings(),
-            edge,
-            StepEnvironmentCharacterizationTest.sampleStep(1, false, true),
-            RunCommissions.Credential.token(
-                new IdpCommissioner.CommissionedToken("token-1", TOKEN, SUBJECT)),
+            StepFixtures.plane(launcher),
+            StepFixtures.sampleStep(1, false, true),
+            StepFixtures.token(),
             null)
         .env();
   }

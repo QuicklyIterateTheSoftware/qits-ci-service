@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import eu.wohlben.qits.ci.QitsTokenAuth;
 import eu.wohlben.qits.ci.api.TokenValidationBootstrapIT;
 import eu.wohlben.qits.ci.stories.support.StoryDaemon;
+import eu.wohlben.qits.ci.stories.support.StoryEdge;
 import eu.wohlben.qits.ci.stories.support.StoryIdentities;
 import eu.wohlben.qits.ci.stories.support.StoryOrigin;
 import eu.wohlben.qits.ci.stories.support.StoryRunner;
@@ -17,7 +18,6 @@ import eu.wohlben.qits.ci.stories.support.StoryTarget;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonBinary;
 import io.quarkus.test.junit.QuarkusIntegrationTest;
 import io.quarkus.test.junit.TestProfile;
-import io.restassured.RestAssured;
 import io.restassured.http.ContentType;
 import java.io.IOException;
 import java.io.InputStream;
@@ -106,7 +106,7 @@ import org.junit.jupiter.api.condition.EnabledIf;
  *
  * <p>No {@code @Tag("extended")}: this one has to run, and it needs no docker, because the runner is
  * {@link StoryRunner} — qits-ci sends a runner a workload spec, nothing starts a container, and the
- * test starts the daemon itself with the credentials it reads <b>out of that recorded spec</b>. Nothing
+ * test starts the daemon itself with the launch id and token it reads <b>out of that recorded spec</b>. Nothing
  * here reads the host's launch table, which is what makes an admitted dial a measurement of the whole
  * path rather than of a fixture.
  *
@@ -245,6 +245,7 @@ public class CiDaemonPinIT {
 
     Process daemon = null;
     StoryRunner runner = null;
+    StoryEdge edge = null;
     try {
       String runId = trigger();
 
@@ -256,9 +257,11 @@ public class CiDaemonPinIT {
       StoryRunner.Launch launch = runner.awaitLaunch(LAUNCH_PATIENCE);
       assertEquals(REPO_ID, launch.environment().get("QITS_CI_REPO_ID"), "the launch is for our run");
       String daemonId = launch.environment().get(StoryDaemon.ID_VARIABLE);
-      String secret = launch.environment().get(StoryDaemon.SECRET_VARIABLE);
-      assertNotNull(daemonId, "the spec must carry the per-container daemon id");
-      assertNotNull(secret, "…and the secret that is the whole of this socket's authentication");
+      String token = launch.environment().get(StoryDaemon.TOKEN_VARIABLE);
+      String subject = launch.environment().get(StoryDaemon.TOKEN_SUBJECT_VARIABLE);
+      assertNotNull(daemonId, "the spec must carry the per-container launch id");
+      assertNotNull(token, "…and the run's token, which is the whole of the daemon's handshake");
+      assertNotNull(subject, "…and the subject the edge forwards that token as");
       assertTrue(
           launch.environment().get(StoryDaemon.URL_VARIABLE).endsWith(StoryTarget.DAEMON_PATH),
           "the container is told to dial " + StoryTarget.DAEMON_PATH);
@@ -266,7 +269,10 @@ public class CiDaemonPinIT {
       // start the binary itself.
       runner.launched(launch);
 
-      daemon = start(binary, checkout, launch, publishedSha, log);
+      // The binary presents the raw token and nothing else, which is the platform edge's to
+      // introspect — so what the edge does stands between it and the host under test.
+      edge = StoryEdge.inFrontOf(StoryTarget.daemonSocket(), token, subject);
+      daemon = start(binary, checkout, launch, publishedSha, log, edge.socketUrl());
       assertPinnedVersion(log);
 
       // The step's end is the container's removal: qits-ci asks the runner to remove it before the
@@ -308,6 +314,9 @@ public class CiDaemonPinIT {
     } finally {
       if (runner != null) {
         runner.close();
+      }
+      if (edge != null) {
+        edge.close();
       }
       if (daemon != null) {
         daemon.destroy();
@@ -402,8 +411,8 @@ public class CiDaemonPinIT {
         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build()) {
       HttpRequest.Builder request =
           HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofMinutes(5)).GET();
-      // On an EDGE runner this reaches the registry through the public edge, which refuses an
-      // anonymous read; QITS_TOKEN is the step's own job token, and unset on the internal plane.
+      // In a CI step this reaches the registry through the public edge, which refuses an anonymous
+      // read; QITS_TOKEN is the step's own run token, and unset where this suite runs outside one.
       QitsTokenAuth.addIfPresent(request);
       HttpResponse<InputStream> answer =
           client.send(request.build(), HttpResponse.BodyHandlers.ofInputStream());
@@ -432,24 +441,22 @@ public class CiDaemonPinIT {
    * <p><b>Every ambient {@code QITS_} variable is removed first, and that is the difference between a
    * test and a coincidence.</b> {@link ProcessBuilder} seeds the child from this process's
    * environment, and this process runs somewhere with opinions: a workspace container carries a full
-   * commissioned credential set, and a CI step container carries {@code QITS_COMMISSIONED_CLIENT_ID}
-   * / {@code …_SECRET} and little else — including, on a release-request run, {@code QITS_CI_DAEMON_URL},
-   * {@code QITS_CI_BRANCH} and {@code QITS_CI_SHA} of the build this very test is part of, which name
-   * a different host, a different branch and a different commit. A pin test whose result depends on
-   * where it runs proves nothing about the pin, which is the same class of defect as the
-   * configuration entry this whole change replaced. So the child gets the six variables {@code
-   * DaemonEnv} requires and no others.
+   * commissioned credential set, and a CI step container carries {@code QITS_TOKEN}, {@code
+   * QITS_CI_DAEMON_URL}, {@code QITS_CI_BRANCH} and {@code QITS_CI_SHA} of the build this very test
+   * is part of — which name a different run, a different host, a different branch and a different
+   * commit. A pin test whose result depends on where it runs proves nothing about the pin. So the
+   * child gets the six variables {@code DaemonEnv} requires and no others.
    *
-   * <p>Three of those six are the spec's own — the id, the secret and the sha/branch qits-ci decided
-   * this run is about. Two are not, and both substitutions are named here rather than left to be
-   * discovered:
+   * <p>Four of those six are the spec's own — the launch id, the run's token, and the sha/branch
+   * qits-ci decided this run is about. Two are not, and both substitutions are named here rather
+   * than left to be discovered:
    *
    * <ul>
-   *   <li><b>The url.</b> The spec carries {@code qits.ci.container-daemon-url}, whose default is
-   *       {@code ws://qits-ci:8080/ci/daemon} — a name that resolves on {@code qits-net} and nowhere
-   *       else. What is asserted about it at the call site is the part that is a cross-repo contract
-   *       (the path the binary dials verbatim); the authority is this JVM's own, because the host
-   *       under test is a process on loopback and not a service on a network.
+   *   <li><b>The url.</b> The spec carries {@code wss://ci.qits.<domain>/ci/daemon}, the platform
+   *       edge's name for this service, which resolves nowhere in a test. What is asserted about it
+   *       at the call site is the part that is a cross-repo contract (the path the binary dials
+   *       verbatim); the authority is {@link StoryEdge}'s, which does for this one socket what the
+   *       edge does — takes the raw token, forwards its subject — in front of the host under test.
    *   <li><b>The repository url.</b> {@code StubGitHost} serves qits-githost's two CONTENT routes
    *       ({@code /git/<repoId>/blob|tree/…}) and is not a git server: there is no {@code
    *       git-upload-pack} behind it, so the daemon's {@code git clone --depth 50} could not talk to
@@ -465,17 +472,20 @@ public class CiDaemonPinIT {
    * on this machine is somebody's checkout.
    */
   private static Process start(
-      Path binary, Path checkout, StoryRunner.Launch launch, String sha, Path log)
+      Path binary,
+      Path checkout,
+      StoryRunner.Launch launch,
+      String sha,
+      Path log,
+      String daemonUrl)
       throws IOException {
     ProcessBuilder builder =
         new ProcessBuilder(binary.toString(), "-Dqits.ci.workspace-dir=" + checkout);
     Map<String, String> env = builder.environment();
     env.keySet().removeIf(key -> key.startsWith("QITS_"));
-    env.put(
-        StoryDaemon.URL_VARIABLE,
-        "ws://127.0.0.1:" + RestAssured.port + StoryTarget.DAEMON_PATH);
+    env.put(StoryDaemon.URL_VARIABLE, daemonUrl);
     env.put(StoryDaemon.ID_VARIABLE, launch.environment().get(StoryDaemon.ID_VARIABLE));
-    env.put(StoryDaemon.SECRET_VARIABLE, launch.environment().get(StoryDaemon.SECRET_VARIABLE));
+    env.put(StoryDaemon.TOKEN_VARIABLE, launch.environment().get(StoryDaemon.TOKEN_VARIABLE));
     env.put("QITS_CI_REPOSITORY_URL", StoryOrigin.bare(REPO_ID).toUri().toString());
     env.put("QITS_CI_BRANCH", launch.environment().get("QITS_CI_BRANCH"));
     env.put("QITS_CI_SHA", sha);

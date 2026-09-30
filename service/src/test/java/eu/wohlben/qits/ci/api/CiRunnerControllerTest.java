@@ -22,6 +22,7 @@ import eu.wohlben.qits.ci.idp.StubIdp;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
 import eu.wohlben.qits.ci.runnerhost.RunnerAddresses;
+import eu.wohlben.qits.ci.testdb.HermeticConfigSource;
 import eu.wohlben.qits.ci.runnerhost.RunnerAddressesFixture;
 import eu.wohlben.qits.ci.runnerhost.CiRunnerPins;
 import eu.wohlben.qits.ci.runnerhost.CiRunnerSocket;
@@ -153,7 +154,7 @@ class CiRunnerControllerTest {
     UUID id = UUID.fromString(created.getString("id"));
     assertEquals("build-host-1", created.getString("name"));
     assertEquals(2, created.getInt("slots"));
-    assertEquals("INTERNAL", created.getString("plane"));
+    assertEquals("EDGE", created.getString("plane"));
     assertFalse(created.getBoolean("registered"));
     assertFalse(created.getBoolean("connected"));
     assertEquals(0, created.getInt("heldRuns"));
@@ -162,10 +163,9 @@ class CiRunnerControllerTest {
     // The token is in the install line — as the fetch's bearer and as the script's value — and in
     // no field of its own.
     assertFalse(created.getMap("").containsKey("registrationToken"));
-    String environment = System.getenv().getOrDefault("QITS_ENVIRONMENT", "dev");
-    // The suite knows no public domain, so the line names the internal alias (see
-    // RunnerAddressesTest and theRegisterAnswerNamesThePublicEdgeWhenADomainIsKnown for the edge).
-    String base = "http://" + environment + "-qits-ci:8080";
+    // The suite's own public domain (testdb/HermeticConfigSource): the line names the edge's name
+    // for qits-ci, never a qits-net alias.
+    String base = "https://ci.qits." + HermeticConfigSource.DOMAIN;
     assertEquals(
         "curl -fsSL -H 'Authorization: Bearer qits_tok_stub-1' "
             + base
@@ -336,7 +336,7 @@ class CiRunnerControllerTest {
               runner.id = id;
               runner.name = "agent-read-memory";
               runner.slots = 1;
-              runner.plane = eu.wohlben.qits.ci.entity.CiRunnerPlane.INTERNAL;
+              runner.plane = eu.wohlben.qits.ci.entity.CiRunnerPlane.EDGE;
               runner.stepMemoryLimit = "6g";
               runner.createdAt = Instant.now();
               runnerRows.persist(runner);
@@ -635,7 +635,7 @@ class CiRunnerControllerTest {
               runner.id = id;
               runner.name = name;
               runner.slots = 1;
-              runner.plane = eu.wohlben.qits.ci.entity.CiRunnerPlane.INTERNAL;
+              runner.plane = eu.wohlben.qits.ci.entity.CiRunnerPlane.EDGE;
               runner.registrationTokenId = "token-of-" + name;
               runner.registrationTokenSubject = "unset";
               runner.createdAt = Instant.now();
@@ -670,12 +670,13 @@ class CiRunnerControllerTest {
     assertEquals("run-client-1", answer.getString("clientId"));
     assertEquals("run-s3cr3t-1", answer.getString("secret"));
     assertEquals("qits-platform", answer.getString("audience"));
-    assertTrue(answer.getString("tokenUrl").endsWith("/idp/token"), answer.getString("tokenUrl"));
-    // The shipped base: the internal alias, derived from the environment exactly as the step
-    // daemons' own dial-back address is.
-    String environment = System.getenv().getOrDefault("QITS_ENVIRONMENT", "dev");
+    // The edge's names, composed from the suite's domain: where the runner mints and where it dials.
     assertEquals(
-        "ws://" + environment + "-qits-ci:8080/ci/runners/socket", answer.getString("socketUrl"));
+        "https://idp.qits." + HermeticConfigSource.DOMAIN + "/idp/token",
+        answer.getString("tokenUrl"));
+    assertEquals(
+        "wss://ci.qits." + HermeticConfigSource.DOMAIN + "/ci/runners/socket",
+        answer.getString("socketUrl"));
     // What was commissioned: a ci-runner client for exactly this runner, pushing nothing.
     assertEquals(
         List.of("{\"contextKind\":\"ci-runner\",\"contextId\":\"" + id + "\",\"gitRefs\":[]}"),
@@ -696,7 +697,7 @@ class CiRunnerControllerTest {
   @TestSecurity(user = SUBJECT, roles = {REGISTRATION})
   @OidcSecurity(
       claims = {@Claim(key = "aud", value = OWN_AUDIENCE), @Claim(key = "sub", value = SUBJECT)})
-  void theRegisterAnswerNamesThePublicEdgeWhenADomainIsKnown() {
+  void theRegisterAnswerNamesTheLiveEstatesEdge() {
     // The live estate's domain: a runner outside the swarm is told the edge's names, never an alias.
     QuarkusMock.installMockForType(
         RunnerAddressesFixture.withDomain("wohlben.eu"), RunnerAddresses.class);
@@ -712,7 +713,7 @@ class CiRunnerControllerTest {
 
   @Test
   @TestSecurity(user = "operator", roles = {ADMIN})
-  void theInstallLineNamesThePublicEdgeWhenADomainIsKnown() {
+  void theInstallLineNamesTheLiveEstatesEdge() {
     QuarkusMock.installMockForType(
         RunnerAddressesFixture.withDomain("wohlben.eu"), RunnerAddresses.class);
 
@@ -733,35 +734,62 @@ class CiRunnerControllerTest {
         script);
   }
 
-  // --- the plane (qits-474) -----------------------------------------------------------------------
+  // --- no public domain: nothing is handed out (qits-515) ------------------------------------------
 
   @Test
   @TestSecurity(user = "operator", roles = {ADMIN})
-  void aRunnerIsCreatedOnTheEdgePlaneWhenThePublicDomainIsKnown() {
-    // The owner's ruling: a runner is a remote host, so it goes through the edge unless told not to.
-    QuarkusMock.installMockForType(
-        RunnerAddressesFixture.withDomain("example.org"), RunnerAddresses.class);
+  void aQitsCiThatKnowsNoPublicDomainDeclaresNoRunnerAndRendersNoScript() {
+    // There is no internal alias to fall back to: a runner is outside the swarm and could resolve
+    // none. The refusal names the key, and it comes before anything is minted.
+    QuarkusMock.installMockForType(RunnerAddressesFixture.withDomain(null), RunnerAddresses.class);
 
-    JsonPath created = create("remote-by-default");
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body("{\"name\":\"nowhere-to-go\"}")
+        .when()
+        .post(RUNNERS)
+        .then()
+        .statusCode(503)
+        .body("message", org.hamcrest.Matchers.containsString("QITS_DOMAIN"))
+        .body("message", not(org.hamcrest.Matchers.containsString("-qits-")));
+    given()
+        .when()
+        .get(RUNNERS + "/install.sh")
+        .then()
+        .statusCode(503)
+        .body(org.hamcrest.Matchers.containsString("QITS_DOMAIN"));
 
-    assertEquals("EDGE", created.getString("plane"));
-    assertEquals(
-        "EDGE", row(UUID.fromString(created.getString("id"))).plane.name(), "and the row says so");
-    // The install line does not change with the plane: the runner itself always uses the edge.
+    assertTrue(idp.postedTokens.isEmpty(), "a refused create commissions no registration token");
     assertTrue(
-        created.getString("installScript").contains("QITS_CI_RUNNER_URL='https://ci.qits.example.org'"));
+        QuarkusTransaction.requiringNew().call(() -> runnerRows.count()) == 0L, "and writes no row");
   }
 
   @Test
-  @TestSecurity(user = "operator", roles = {ADMIN})
-  void anInternalPlaneMayStillBeAskedForWhenThePublicDomainIsKnown() {
-    QuarkusMock.installMockForType(
-        RunnerAddressesFixture.withDomain("example.org"), RunnerAddresses.class);
+  @TestSecurity(user = SUBJECT, roles = {REGISTRATION})
+  @OidcSecurity(
+      claims = {@Claim(key = "aud", value = OWN_AUDIENCE), @Claim(key = "sub", value = SUBJECT)})
+  void theRegisterDoorMintsNoClientItCouldNotTellTheRunnerWhereToUse() {
+    QuarkusMock.installMockForType(RunnerAddressesFixture.withDomain(null), RunnerAddresses.class);
+    UUID id = declaredRunner("unaddressable");
 
-    JsonPath created =
+    register(id, "{\"capabilities\":{}}")
+        .statusCode(503)
+        .body("message", org.hamcrest.Matchers.containsString("QITS_DOMAIN"));
+
+    assertEquals(List.of(), idp.posted, "no client was commissioned");
+    assertNull(row(id).clientId);
+  }
+
+  // --- the plane: EDGE and nothing else (qits-515) -------------------------------------------------
+
+  @Test
+  @TestSecurity(user = "operator", roles = {ADMIN})
+  void aRunnerIsCreatedOnTheEdgePlaneWhetherItSaysSoOrNot() {
+    JsonPath unsaid = create("remote-by-default");
+    JsonPath said =
         given()
             .contentType(MediaType.APPLICATION_JSON)
-            .body("{\"name\":\"on-the-swarm\",\"plane\":\"INTERNAL\"}")
+            .body("{\"name\":\"remote-by-name\",\"plane\":\"EDGE\"}")
             .when()
             .post(RUNNERS)
             .then()
@@ -769,23 +797,37 @@ class CiRunnerControllerTest {
             .extract()
             .jsonPath();
 
-    assertEquals("INTERNAL", created.getString("plane"));
+    for (JsonPath created : List.of(unsaid, said)) {
+      assertEquals("EDGE", created.getString("plane"));
+      assertEquals(
+          "EDGE", row(UUID.fromString(created.getString("id"))).plane.name(), "and the row says so");
+    }
   }
 
   @Test
   @TestSecurity(user = "operator", roles = {ADMIN})
-  void anEdgePlaneOnAQitsCiThatKnowsNoDomainIs400AndMintsNothing() {
-    // The suite knows no public domain: the default there is INTERNAL (see the create case above),
-    // and asking for EDGE is refused by name before a token is commissioned.
+  void creatingARunnerOnTheInternalPlaneOrAnUnknownOneIs400AndMintsNothing() {
+    // INTERNAL — a runner on qits-net — is deleted; the API refuses the word, and any other it
+    // does not know, by name, before a token is commissioned.
+    for (String plane : List.of("INTERNAL", "internal", "edge", "SIDEWAYS", "")) {
+      given()
+          .contentType(MediaType.APPLICATION_JSON)
+          .body("{\"name\":\"on-the-swarm\",\"plane\":\"" + plane + "\"}")
+          .when()
+          .post(RUNNERS)
+          .then()
+          .statusCode(400)
+          .body("code", equalTo("UNKNOWN_PLANE"))
+          .body("message", org.hamcrest.Matchers.startsWith("UNKNOWN_PLANE: "));
+    }
     given()
         .contentType(MediaType.APPLICATION_JSON)
-        .body("{\"name\":\"nowhere-to-go\",\"plane\":\"EDGE\"}")
+        .body("{\"name\":\"on-the-swarm\",\"plane\":\"INTERNAL\"}")
         .when()
         .post(RUNNERS)
         .then()
         .statusCode(400)
-        .body("code", equalTo("EDGE_PLANE_UNCONFIGURED"))
-        .body("message", org.hamcrest.Matchers.startsWith("EDGE_PLANE_UNCONFIGURED: "));
+        .body("message", org.hamcrest.Matchers.containsString("INTERNAL"));
 
     assertTrue(idp.postedTokens.isEmpty(), "a refused plane commissions no registration token");
     assertTrue(
@@ -794,21 +836,23 @@ class CiRunnerControllerTest {
 
   @Test
   @TestSecurity(user = "operator", roles = {ADMIN})
-  void patchMovesTheRunnerBetweenPlanesAndRefusesAnEdgeItCannotCompose() {
+  void patchingARunnerToTheInternalPlaneOrAnUnknownOneIs400AndChangesNothing() {
     String id = create("mover").getString("id");
 
-    given()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body("{\"plane\":\"EDGE\"}")
-        .when()
-        .patch(RUNNERS + "/" + id)
-        .then()
-        .statusCode(400)
-        .body("code", equalTo("EDGE_PLANE_UNCONFIGURED"));
-    assertEquals("INTERNAL", row(UUID.fromString(id)).plane.name());
+    for (String plane : List.of("INTERNAL", "SIDEWAYS")) {
+      given()
+          .contentType(MediaType.APPLICATION_JSON)
+          .body("{\"slots\":5,\"plane\":\"" + plane + "\"}")
+          .when()
+          .patch(RUNNERS + "/" + id)
+          .then()
+          .statusCode(400)
+          .body("code", equalTo("UNKNOWN_PLANE"));
+    }
+    assertEquals("EDGE", row(UUID.fromString(id)).plane.name());
+    assertEquals(2, row(UUID.fromString(id)).slots, "the refused patch moved nothing else either");
 
-    QuarkusMock.installMockForType(
-        RunnerAddressesFixture.withDomain("example.org"), RunnerAddresses.class);
+    // EDGE, and no plane at all — what the SPA sends — are both accepted and change no plane.
     given()
         .contentType(MediaType.APPLICATION_JSON)
         .body("{\"plane\":\"EDGE\"}")
@@ -820,12 +864,13 @@ class CiRunnerControllerTest {
         .body("slots", equalTo(2));
     given()
         .contentType(MediaType.APPLICATION_JSON)
-        .body("{\"plane\":\"INTERNAL\"}")
+        .body("{\"slots\":3}")
         .when()
         .patch(RUNNERS + "/" + id)
         .then()
         .statusCode(200)
-        .body("plane", equalTo("INTERNAL"));
+        .body("plane", equalTo("EDGE"))
+        .body("slots", equalTo(3));
   }
 
   // --- the generic install script -----------------------------------------------------------------
@@ -848,10 +893,8 @@ class CiRunnerControllerTest {
     assertTrue(script.startsWith("#!/bin/sh\n"), script);
     assertFalse(script.contains("{{"), script);
     assertFalse(script.contains("qits_tok_"), script);
-    // No public domain in the suite: the registry is the one the platform host's docker pulls from.
-    String registry =
-        org.eclipse.microprofile.config.ConfigProvider.getConfig()
-            .getValue("qits.artifacts.registry-host", String.class);
+    // The registry's public name under the suite's domain — never a qits-net alias.
+    String registry = "registry.qits." + HermeticConfigSource.DOMAIN;
     assertTrue(
         script.contains(
             "image='" + registry + "/qits/qits-ci-runner:" + CiRunnerBinary.VERSION + "'\n"),
@@ -861,40 +904,6 @@ class CiRunnerControllerTest {
   @Test
   void anAnonymousReaderGetsNoInstallScript() {
     given().when().get(RUNNERS + "/install.sh").then().statusCode(401);
-  }
-
-  @Test
-  void theRawRegistrationTokenReadsTheInstallScriptToo() {
-    UUID id = declaredRunner("raw-installing");
-    stageLiveToken(
-        "qits_tok_raw-install", IdpCommissioner.RUNNER_REGISTRATION_KIND, id.toString(), SUBJECT);
-    String bearer = "Bearer qits_tok_raw-install";
-
-    String script =
-        given()
-            .header("Authorization", bearer)
-            .when()
-            .get(RUNNERS + "/install.sh")
-            .then()
-            .statusCode(200)
-            .extract()
-            .asString();
-    assertTrue(script.startsWith("#!/bin/sh\n"), script);
-    // A live token of another kind carries no role: refused, like at the register door.
-    stageLiveToken("qits_tok_raw-socket", IdpCommissioner.RUNNER_KIND, id.toString(), SUBJECT);
-    given()
-        .header("Authorization", "Bearer qits_tok_raw-socket")
-        .when()
-        .get(RUNNERS + "/install.sh")
-        .then()
-        .statusCode(403);
-    // And one qits-idp does not call live is 401.
-    given()
-        .header("Authorization", "Bearer qits_tok_raw-unknown")
-        .when()
-        .get(RUNNERS + "/install.sh")
-        .then()
-        .statusCode(401);
   }
 
   @Test
@@ -915,86 +924,29 @@ class CiRunnerControllerTest {
     assertNull(row(theirs).clientId);
   }
 
-  // --- the raw token, presented on qits-net where there is no edge ---------------------------------
+  // --- the raw token: this service no longer reads one (qits-515) ---------------------------------
 
-  /** What qits-idp answers about a raw token: a live one of {@code kind} for {@code contextId}. */
-  private void stageLiveToken(String value, String kind, String contextId, String subject) {
-    String role =
-        IdpCommissioner.RUNNER_REGISTRATION_KIND.equals(kind) ? REGISTRATION : "qits:" + kind;
-    idp.introspection.put(
-        value,
-        "{\"tokenId\":\"token-" + value + "\",\"subject\":\"" + subject + "\",\"roles\":[\""
-            + role + "\",\"clients/" + subject + "\"],\"claims\":{},\"gitRefs\":[],"
-            + "\"contextKind\":\"" + kind + "\",\"contextId\":\"" + contextId + "\","
-            + "\"accessToken\":\"eyJ.not.used\",\"expiresIn\":300}");
-  }
+  /**
+   * The mechanism that let a runner on qits-net present a raw {@code qits_tok_} to qits-ci itself —
+   * introspected here, at qits-idp — is deleted. A runner comes through the edge, which does that
+   * and forwards a JWT (the cases above, whose identity is that JWT's). A raw value presented
+   * directly is a bearer quarkus-oidc cannot verify: 401 on every route, the register door and the
+   * install script included, and qits-idp is asked nothing.
+   */
+  @Test
+  void aRawRegistrationTokenOpensNoRouteAtAllAndQitsIdpIsNeverAsked() {
+    UUID id = declaredRunner("raw-confined");
+    String bearer = "Bearer qits_tok_raw-registration";
 
-  private io.restassured.response.ValidatableResponse registerRaw(UUID id, String token) {
-    return given()
-        .header("Authorization", "Bearer " + token)
+    given()
+        .header("Authorization", bearer)
         .contentType(MediaType.APPLICATION_JSON)
         .body("{\"capabilities\":{\"docker\":true}}")
         .when()
         .post(RUNNERS + "/" + id + "/register")
-        .then();
-  }
-
-  @Test
-  void theRawRegistrationTokenRegistersItsOwnRunnerWithNoEdgeInBetween() {
-    UUID id = declaredRunner("on-qits-net");
-    stageLiveToken(
-        "qits_tok_raw-own", IdpCommissioner.RUNNER_REGISTRATION_KIND, id.toString(), SUBJECT);
-
-    JsonPath answer =
-        registerRaw(id, "qits_tok_raw-own").statusCode(200).extract().jsonPath();
-
-    assertEquals("run-client-1", answer.getString("clientId"));
-    assertEquals("run-client-1", row(id).clientId);
-    // This service asked qits-idp itself, with its own pair — the edge's question, asked here.
-    assertEquals(List.of("qits_tok_raw-own"), idp.introspected);
-    assertTrue(idp.introspectionCallers.get(0).startsWith("Basic "));
-    assertEquals(List.of("token-of-on-qits-net"), idp.deletedTokens);
-  }
-
-  @Test
-  void aRawTokenForAnotherRunnerOrOfAnotherKindIs403AndCommissionsNothing() {
-    UUID mine = declaredRunner("raw-mine");
-    UUID theirs = declaredRunner("raw-theirs");
-    // A live registration token — for the other runner, presented at mine.
-    stageLiveToken(
-        "qits_tok_raw-theirs", IdpCommissioner.RUNNER_REGISTRATION_KIND, theirs.toString(), SUBJECT);
-    registerRaw(mine, "qits_tok_raw-theirs").statusCode(403);
-    // Its context is mine, but its subject is not the one my row was issued.
-    stageLiveToken(
-        "qits_tok_raw-stale",
-        IdpCommissioner.RUNNER_REGISTRATION_KIND,
-        mine.toString(),
-        "tok-an-older-token");
-    registerRaw(mine, "qits_tok_raw-stale").statusCode(403);
-    // A live token of another kind entirely — a runner's socket token, say — for this runner.
-    stageLiveToken("qits_tok_raw-kind", IdpCommissioner.RUNNER_KIND, mine.toString(), SUBJECT);
-    registerRaw(mine, "qits_tok_raw-kind").statusCode(403);
-
-    assertEquals(List.of(), idp.posted);
-    assertNull(row(mine).clientId);
-  }
-
-  @Test
-  void aRawTokenQitsIdpDoesNotCallLiveIs401() {
-    UUID id = declaredRunner("raw-deleted");
-    // Nothing staged: qits-idp's 404, which is what a deleted token gets.
-    registerRaw(id, "qits_tok_raw-deleted").statusCode(401);
-    assertEquals(List.of("qits_tok_raw-deleted"), idp.introspected);
-    assertEquals(List.of(), idp.posted);
-  }
-
-  @Test
-  void aRawTokenOpensNoOtherRoute() {
-    UUID id = declaredRunner("raw-confined");
-    stageLiveToken(
-        "qits_tok_raw-confined", IdpCommissioner.RUNNER_REGISTRATION_KIND, id.toString(), SUBJECT);
-    String bearer = "Bearer qits_tok_raw-confined";
-
+        .then()
+        .statusCode(401);
+    given().header("Authorization", bearer).when().get(RUNNERS + "/install.sh").then().statusCode(401);
     given().header("Authorization", bearer).when().get(RUNNERS).then().statusCode(401);
     given().header("Authorization", bearer).when().get(RUNNERS + "/" + id).then().statusCode(401);
     given()
@@ -1004,12 +956,11 @@ class CiRunnerControllerTest {
         .then()
         .statusCode(401);
     given().header("Authorization", bearer).when().get("/ci/api/runs/active").then().statusCode(401);
-    given().header("Authorization", bearer).when().get("/ci/api/runs/queue").then().statusCode(401);
-    // Not even the register door by another verb, and no other route ever asked qits-idp.
-    given().header("Authorization", bearer).when().get(RUNNERS + "/" + id + "/register").then()
-        .statusCode(org.hamcrest.Matchers.anyOf(org.hamcrest.Matchers.is(401),
-            org.hamcrest.Matchers.is(405)));
-    assertEquals(List.of(), idp.introspected);
+
+    assertEquals(List.of(), idp.posted, "no client was commissioned");
+    assertEquals(List.of(), idp.postedTokens, "and the tokens door — introspection included — was not asked");
+    assertEquals(List.of(), idp.authorizations, "qits-idp was not called at all");
+    assertNull(row(id).clientId);
   }
 
   @Test

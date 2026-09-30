@@ -2,133 +2,89 @@ package eu.wohlben.qits.ci.runnerhost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import eu.wohlben.qits.ci.entity.CiRunnerPlane;
-import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
+import eu.wohlben.qits.ci.control.CiRepoRef;
 import java.util.List;
-import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
- * The two planes' addresses: the internal one is the launcher's keys as they always were (the whole
- * environment is pinned by {@link StepEnvironmentCharacterizationTest}), and the edge one is each of
- * those with its origin moved to the public name of the service that answers it — asserted value by
- * value for {@code example.org}, so a service composed onto the wrong vhost fails here by name.
+ * The addresses a step is told: the public name of each service, composed from the platform's
+ * domain, with the service's own path. Plain JUnit — the plane is a pure value.
  */
 class StepAddressPlaneTest {
 
   private static final String D = "example.org";
 
-  private static StepAddressPlane edge() {
-    RunnerAddresses addresses = RunnerAddressesFixture.withDomain(D);
-    StepAddressPlane internal = StepEnvironmentCharacterizationTest.shippedLauncher("http://dev-qits-platform-idp:8080/idp").internalPlane();
-    return StepAddressPlane.edge(addresses.edgeOrigins().orElseThrow(), internal);
-  }
-
   @Test
-  void theInternalPlaneIsTheLaunchersOwnKeys() {
-    StepAddressPlane internal =
-        StepEnvironmentCharacterizationTest.shippedLauncher("http://dev-qits-platform-idp:8080/idp")
-            .internalPlane();
+  void everyAddressIsThePublicNameOfTheServiceThatAnswersIt() {
+    StepAddressPlane plane = StepFixtures.plane();
 
-    assertEquals(CiRunnerPlane.INTERNAL, internal.plane());
-    assertFalse(internal.isEdge());
-    assertEquals("qits-net", internal.network());
-    assertEquals(List.of("host.docker.internal:host-gateway"), internal.extraHosts());
-    // The pinned url is the internal plane's as it is — never recomposed.
-    assertEquals("http://anything/at/all", internal.daemonBinaryUrl("http://anything/at/all"));
-  }
-
-  @Test
-  void everyEdgeAddressIsThePublicNameOfTheSameServiceWithThePathKept() {
-    StepAddressPlane edge = edge();
-
-    assertEquals(CiRunnerPlane.EDGE, edge.plane());
-    assertTrue(edge.isEdge());
-    assertEquals("wss://ci.qits.example.org/ci/daemon", edge.daemonUrl());
-    assertEquals(
-        "https://registry.qits.example.org/artifacts/daemons/qits-ci-daemon/2026.927.1",
-        edge.daemonBinaryUrl(
-            "http://dev-qits-artifacts:8080/artifacts/daemons/qits-ci-daemon/2026.927.1"));
-    assertEquals("https://githost.qits.example.org", edge.gitBaseUrl());
+    assertEquals("wss://ci.qits.example.org/ci/daemon", plane.daemonUrl());
+    assertEquals("https://githost.qits.example.org", plane.gitBaseUrl());
     assertEquals(
         "https://githost.qits.example.org/git/qits/qits-ci-service",
-        StepWorkloadSpecs.cloneUrl(
-            edge.gitBaseUrl(),
-            eu.wohlben.qits.ci.control.CiRepoRef.of("r", "qits", "qits-ci-service")));
-    assertNull(edge.idpUrl(), "an edge step carries a token, never a client to mint with");
-    assertEquals("registry.qits.example.org", edge.registryHost());
-    assertEquals("registry.qits.example.org", edge.buildRegistryHost());
-    assertEquals("https://registry.qits.example.org/artifacts/npm/npm/", edge.npmHostedUrl());
-    assertEquals("https://mirror.qits.example.org/npm/npmjs/", edge.npmProxyUrl());
-    assertEquals("https://registry.qits.example.org/artifacts/maven/maven", edge.mavenRegistryUrl());
+        StepWorkloadSpecs.cloneUrl(plane.gitBaseUrl(), CiRepoRef.of("r", "qits", "qits-ci-service")));
+    assertEquals("registry.qits.example.org", plane.registryHost());
+    assertEquals("https://registry.qits.example.org/artifacts/npm/npm/", plane.npmHostedUrl());
+    assertEquals("https://mirror.qits.example.org/npm/npmjs/", plane.npmProxyUrl());
+    assertEquals("https://registry.qits.example.org/artifacts/maven/maven", plane.mavenRegistryUrl());
     assertEquals(
-        "https://mirror.qits.example.org/mirror/maven/central", edge.mavenCentralMirrorBuildUrl());
+        "https://mirror.qits.example.org/mirror/maven/central", plane.mavenCentralMirrorUrl());
+    assertEquals("https://registry.qits.example.org/artifacts/docs/docs", plane.docsUrl());
+    assertEquals("https://registry.qits.example.org", plane.artifactsUrl());
+    assertEquals("https://workspaces.qits.example.org", plane.workspacesUrl());
     assertEquals(
-        "https://mirror.qits.example.org/mirror/maven/central", edge.mavenCentralMirrorStepUrl());
-    assertEquals("https://registry.qits.example.org/artifacts/docs/docs", edge.docsUrl());
-    assertEquals("https://registry.qits.example.org", edge.artifactsUrl());
-    assertEquals("https://workspaces.qits.example.org", edge.workspacesUrl());
-    assertEquals(
-        List.of("registry.qits.example.org", "mirror.qits.example.org"), edge.authHosts());
-    assertNull(edge.network(), "no network: the runner's host has no qits-net");
-    assertEquals(List.of(), edge.extraHosts());
+        List.of("registry.qits.example.org", "mirror.qits.example.org"), plane.authHosts());
   }
 
   @Test
-  void aValueSwitchedOffInternallyStaysOffOnTheEdge() {
-    StepContainerSettings launcher =
-        StepEnvironmentCharacterizationTest.shippedLauncher("http://dev-qits-platform-idp:8080/idp");
-    launcher.mavenCentralMirrorBuildUrl = Optional.empty();
-    StepAddressPlane edge =
-        StepAddressPlane.edge(
-            RunnerAddressesFixture.withDomain(D).edgeOrigins().orElseThrow(),
-            launcher.internalPlane());
-
-    assertEquals("", edge.mavenCentralMirrorBuildUrl());
+  void theDaemonSocketPathIsTheSocketsOwnLiteral() {
+    // One string in two packages: move the socket's path and this composition moves with it.
+    assertEquals(eu.wohlben.qits.ci.daemonhost.CiDaemonSocket.PATH, StepAddressPlane.DAEMON_SOCKET_PATH);
   }
 
   @Test
-  void noPublicDomainMeansNoEdgePlane() {
+  void theRunsPinnedDaemonPathIsDownloadedFromThePublicRegistry() {
+    StepAddressPlane plane = StepFixtures.plane();
+    String pinned = StepAddressPlane.daemonBinaryPath("qits-ci-daemon", "2026.927.1");
+
+    assertEquals("/artifacts/daemons/qits-ci-daemon/2026.927.1", pinned);
+    assertEquals(
+        "https://registry.qits.example.org/artifacts/daemons/qits-ci-daemon/2026.927.1",
+        plane.daemonBinaryUrl(pinned));
+    // What the settings bean pins for a run is exactly that path.
+    assertEquals(pinned, StepFixtures.shippedLauncher().resolveBinaryUrl("2026.927.1"));
+    // A whole url — a pin taken by a qits-ci that still spelled the store's alias — keeps its path
+    // and loses its origin.
+    assertEquals(
+        "https://registry.qits.example.org/artifacts/daemons/qits-ci-daemon/2026.927.1",
+        plane.daemonBinaryUrl(
+            "http://dev-qits-artifacts:8080/artifacts/daemons/qits-ci-daemon/2026.927.1"));
+    assertEquals("", plane.daemonBinaryUrl(null));
+    assertThrows(IllegalStateException.class, () -> plane.daemonBinaryUrl("not a url"));
+  }
+
+  @Test
+  void noPublicDomainMeansNoAddressesToCompose() {
     RunnerAddresses local = RunnerAddressesFixture.withDomain("localhost");
 
     assertFalse(local.edgeAvailable());
     assertTrue(local.edgeOrigins().isEmpty());
+    assertTrue(RunnerAddressesFixture.withDomain(null).edgeOrigins().isEmpty());
     assertTrue(RunnerAddressesFixture.withDomain(D).edgeAvailable());
   }
 
   @Test
-  void anEdgeStepHasNoNetworkNoExtraHostAndThePublicNamesInItsEnvironment() {
-    StepContainerSettings launcher =
-        StepEnvironmentCharacterizationTest.shippedLauncher("http://dev-qits-platform-idp:8080/idp");
+  void theSpellingsOfThePlatformsStoresAreTheRegistryKeyTheMachineVhostsAndThisEnvironmentsAliases() {
+    StepAddressPlane.ImageRegistries spellings = StepFixtures.shippedLauncher().imageSpellings();
 
-    WorkloadSpec spec =
-        StepWorkloadSpecs.compose(
-            launcher.workloadSettings(),
-            edge(),
-            StepEnvironmentCharacterizationTest.sampleStep(0, false, false),
-            null,
-            null);
-
-    assertNull(spec.network());
-    assertEquals(List.of(), spec.extraHosts());
-    // The image is an address too, and the one the runner's own docker dials (qits-479).
-    assertEquals("registry.qits.example.org/qits/java-builder:25", spec.image());
-    assertEquals("wss://ci.qits.example.org/ci/daemon", spec.env().get("QITS_CI_DAEMON_URL"));
     assertEquals(
-        "https://registry.qits.example.org/artifacts/daemons/qits-ci-daemon/2026.927.1",
-        spec.env().get("QITS_CI_DAEMON_BINARY_URL"));
+        List.of("dev-qits-artifacts:8080", "registry.dev.localhost:8080", "localhost:8081"),
+        spellings.registrySpellings());
     assertEquals(
-        "https://githost.qits.example.org/git/qits/qits-ci-service",
-        spec.env().get("QITS_CI_REPOSITORY_URL"));
-    // And not one internal alias anywhere in it.
-    spec.env()
-        .forEach(
-            (key, value) ->
-                assertFalse(
-                    value.contains("dev-qits-") || value.contains(".localhost"),
-                    key + " still names an internal address: " + value));
+        List.of("mirror.dev.localhost:8080", "localhost:8082", "dev-qits-platform-mirror:8080"),
+        spellings.mirrorSpellings());
   }
 }

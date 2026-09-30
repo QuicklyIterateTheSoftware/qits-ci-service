@@ -3,6 +3,7 @@ package eu.wohlben.qits.ci.daemonhost;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -50,18 +51,18 @@ public class CiDaemonRegistryTimeoutTest {
   @Test
   public void everyAwaitReturnsWhenNothingEverDials() {
     CiDaemonRegistry registry = new CiDaemonRegistry();
-    CiDaemonRegistry.Credentials credentials = registry.registerLaunch("run-silent", 0, null);
+    String daemonId = registry.registerLaunch("run-silent", 0, "tok-ci-run-run-silent-1", null);
 
     long start = System.nanoTime();
     assertFalse(
-        registry.awaitRegistered(credentials.daemonId(), DEADLINE),
+        registry.awaitRegistered(daemonId, DEADLINE),
         "a container that never dialled is the never-registered state, not a wait forever");
     assertEquals(
         CiDaemonRegistry.Initialization.Status.NEVER_INITIALIZED,
-        registry.awaitInitialized(credentials.daemonId(), DEADLINE).status());
+        registry.awaitInitialized(daemonId, DEADLINE).status());
     assertEquals(
         CiDaemonRegistry.Completion.Status.NO_ANSWER,
-        registry.awaitFinished(credentials.daemonId(), DEADLINE).status());
+        registry.awaitFinished(daemonId, DEADLINE).status());
     long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
     assertTrue(elapsedMs >= DEADLINE.toMillis(), "the deadlines must actually be waited out");
@@ -85,7 +86,7 @@ public class CiDaemonRegistryTimeoutTest {
   @Test
   public void reapingResolvesWhateverTheWorkerIsParkedOn() throws Exception {
     CiDaemonRegistry registry = new CiDaemonRegistry();
-    CiDaemonRegistry.Credentials credentials = registry.registerLaunch("run-reaped", 0, null);
+    String daemonId = registry.registerLaunch("run-reaped", 0, "tok-ci-run-run-reaped-1", null);
 
     Thread reaper =
         new Thread(
@@ -95,13 +96,13 @@ public class CiDaemonRegistryTimeoutTest {
               } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
               }
-              registry.reap(credentials.daemonId());
+              registry.reap(daemonId);
             });
     reaper.start();
 
     long start = System.nanoTime();
     CiDaemonRegistry.Completion completion =
-        registry.awaitFinished(credentials.daemonId(), Duration.ofSeconds(30));
+        registry.awaitFinished(daemonId, Duration.ofSeconds(30));
     long elapsedMs = (System.nanoTime() - start) / 1_000_000;
     reaper.join();
 
@@ -110,17 +111,19 @@ public class CiDaemonRegistryTimeoutTest {
   }
 
   @Test
-  public void secretsAreFreshPerLaunchAndLongEnoughToBeWorthComparing() {
+  public void aLaunchIsMintedAFreshIdAndNoSecret() {
     CiDaemonRegistry registry = new CiDaemonRegistry();
-    CiDaemonRegistry.Credentials first = registry.registerLaunch("run-a", 0, null);
-    CiDaemonRegistry.Credentials second = registry.registerLaunch("run-a", 1, null);
+    String first = registry.registerLaunch("run-a", 0, "tok-ci-run-run-a-1", null);
+    String second = registry.registerLaunch("run-a", 1, "tok-ci-run-run-a-1", null);
 
-    assertNotEquals(first.daemonId(), second.daemonId());
-    assertNotEquals(first.secret(), second.secret());
-    // 32 bytes of SecureRandom, base64url without padding.
-    assertEquals(43, first.secret().length(), first.secret());
-    assertTrue(first.secret().matches("[A-Za-z0-9_-]+"), first.secret());
+    // Two steps of one run are two launches under one token subject; what tells them apart is the
+    // id each daemon names, which is a random UUID and not a secret (qits-515).
+    assertNotEquals(first, second);
+    java.util.UUID.fromString(first);
     assertEquals(2, registry.size());
+    // A launch is always bound to its run's token: there is nothing else to admit a dial by.
+    assertThrows(
+        NullPointerException.class, () -> registry.registerLaunch("run-a", 2, null, null));
   }
 
   /**

@@ -14,10 +14,12 @@ import eu.wohlben.qits.cidaemon.protocol.RunStep;
 import eu.wohlben.qits.cidaemon.protocol.StepChunk;
 import eu.wohlben.qits.cidaemon.protocol.StepFinished;
 import eu.wohlben.qits.cidaemon.protocol.Stream;
+import eu.wohlben.qits.servicemock.idp.MockIdp;
 import eu.wohlben.qits.userflows.NetworkCapture;
 import eu.wohlben.qits.userflows.NetworkEdge;
 import java.net.URI;
 import java.time.Duration;
+import java.util.Map;
 
 /**
  * The step container's own {@code qits-ci-daemon}, as a story drives it — and the tap for the one
@@ -25,24 +27,25 @@ import java.time.Duration;
  *
  * <h2>Why this is a real client and not a fixture</h2>
  *
- * <p>{@link FakeCiDaemon} is a real Vert.x WebSocket dialling the real endpoint with the real
- * handshake headers and framing the real protocol through the vendored {@code CiDaemonCodec} — the
- * host cannot tell it from a container. What this class adds is the <b>credential's provenance</b>
- * and the <b>edges</b>. The id and the secret come out of the workload spec qits-ci sent a runner
- * in a {@code Launch} ({@link StoryRunner#awaitLaunch}), which is exactly where a container gets
- * them and the only place they exist: nothing in the story reads the host's launch
- * table, so an admitted dial here is evidence that the credential really travelled the way the
- * service says it does.
+ * <p>{@link FakeCiDaemon} is a real Vert.x WebSocket dialling the real endpoint and framing the
+ * real protocol through the vendored {@code CiDaemonCodec} — the host cannot tell it from a
+ * container. What this class adds is the <b>credential's provenance</b> and the <b>edges</b>. The
+ * launch id and the run's token come out of the workload spec qits-ci sent a runner in a {@code
+ * Launch} ({@link StoryRunner#awaitLaunch}), which is exactly where a container gets them and the
+ * only place they exist: nothing in the story reads the host's launch table, so an admitted dial
+ * here is evidence that the credential really travelled the way the service says it does.
  *
- * <h2>The handshake carries two credentials, not one</h2>
+ * <h2>One credential, and the edge in between</h2>
  *
- * <p>{@code CiDaemonSocket} is annotated {@code @RolesAllowed("qits:system")}, enforced at the HTTP
- * <b>upgrade</b>, so the container's per-launch secret is not on its own enough to get through the
- * door: the daemon also asserts {@code X-Qits-User: qits-ci-daemon} / {@code X-Qits-Roles:
- * qits:system}, which it may because the dial is intra-network and never crosses the edge that
- * strips that header namespace. {@link FakeCiDaemon} sends both pairs for that reason, and the two
- * do different jobs — the role opens the route, the secret says <em>which launch</em> this is, and
- * only the second one is checked against anything qits-ci minted.
+ * <p>A step's daemon presents its run's {@code ci-run} token — {@code $QITS_TOKEN} — to the platform
+ * edge, which introspects it and forwards the caller to qits-ci as a short JWT: {@code sub} the
+ * token's subject, role {@code qits:ci-run}. There is no edge in this suite, so this client arrives
+ * as what the edge forwards: a JWT minted by the mock idp the launched process validates against,
+ * carrying the subject the spec names as {@code $QITS_TOKEN_SUBJECT}. {@code CiDaemonSocket}'s
+ * {@code @RolesAllowed} is enforced at the HTTP <b>upgrade</b>, so that JWT is what opens the
+ * route; which launch this is, the daemon says in its first frame, and the host admits it only
+ * when that launch was recorded against the JWT's subject. There is no per-container secret and no
+ * launch header (qits-515).
  *
  * <h2>The tap, and why it is written here</h2>
  *
@@ -78,8 +81,11 @@ public final class StoryDaemon implements AutoCloseable {
   /** The environment variable the daemon reads its identity out of. */
   public static final String ID_VARIABLE = "QITS_CI_DAEMON_ID";
 
-  /** …and its one-container-lifetime credential. */
-  public static final String SECRET_VARIABLE = "QITS_CI_DAEMON_SECRET";
+  /** …its run's {@code ci-run} token, the step's only credential. */
+  public static final String TOKEN_VARIABLE = "QITS_TOKEN";
+
+  /** …and the subject the edge forwards that token as. */
+  public static final String TOKEN_SUBJECT_VARIABLE = "QITS_TOKEN_SUBJECT";
 
   /** The address a container dials, injected as {@code $QITS_CI_DAEMON_URL}. */
   public static final String URL_VARIABLE = "QITS_CI_DAEMON_URL";
@@ -94,22 +100,43 @@ public final class StoryDaemon implements AutoCloseable {
   }
 
   /**
-   * Dial the control socket with one step container's credentials, and record the connection.
+   * Dial the control socket as one step container's daemon arrives behind the edge, and record the
+   * connection. {@code environment} is the workload spec's, as the runner was sent it.
    *
-   * <p>The upgrade completing is not admission: a refused dial is a 1008 <b>close</b> after a
-   * successful upgrade, because the host validates the two headers in {@code @OnOpen} and closes
-   * rather than failing a handshake. So the edge is recorded here — the connection was made — and
-   * whether it was kept is what the story's own assertions say.
+   * <p>The upgrade completing is not admission: the connection is bound to no launch until its
+   * {@link #hello(String)} names one, and a refusal is a 1008 <b>close</b> after a successful
+   * upgrade. So the edge is recorded here — the connection was made — and whether it was kept is
+   * what the story's own assertions say.
    */
-  public static StoryDaemon dial(URI endpoint, String daemonId, String secret) throws Exception {
-    assertNotNull(daemonId, ID_VARIABLE + " was not in the workload spec");
-    assertNotNull(secret, SECRET_VARIABLE + " was not in the workload spec");
-    FakeCiDaemon socket = FakeCiDaemon.dial(endpoint, daemonId, secret);
+  public static StoryDaemon dial(URI endpoint, Map<String, String> environment) throws Exception {
+    assertNotNull(environment.get(ID_VARIABLE), ID_VARIABLE + " was not in the workload spec");
+    assertNotNull(environment.get(TOKEN_VARIABLE), TOKEN_VARIABLE + " was not in the workload spec");
+    String subject = environment.get(TOKEN_SUBJECT_VARIABLE);
+    assertNotNull(subject, TOKEN_SUBJECT_VARIABLE + " was not in the workload spec");
+    FakeCiDaemon socket =
+        FakeCiDaemon.dial(endpoint, Map.of("Authorization", "Bearer " + forwardedFor(subject)));
     pushed(ACTOR, StoryTarget.SERVICE, NetworkEdge.SOCKET, "CONNECT " + StoryTarget.DAEMON_PATH);
     return new StoryDaemon(socket);
   }
 
-  /** {@code Hello} — the daemon naming itself, which the host checks against the connection. */
+  /**
+   * What the platform edge forwards for a run's {@code ci-run} token once it has introspected it: a
+   * JWT addressed to the platform, whose {@code sub} is the token's subject and whose one role is
+   * {@code qits:ci-run}.
+   */
+  public static String forwardedFor(String tokenSubject) {
+    return MockIdp.attach()
+        .token()
+        .subject(tokenSubject)
+        .audience(StoryIdentities.AUDIENCE)
+        .groups(FakeCiDaemon.RUN_ROLE)
+        .mint();
+  }
+
+  /**
+   * {@code Hello} — the daemon naming the launch it is, which is what admits the connection: the
+   * host checks that launch against the token subject the connection arrived as.
+   */
   public void hello(String daemonId) throws Exception {
     socket.send(new Hello(daemonId, CiDaemonProtocol.CAPABILITY_VERSION));
     fromDaemon("hello");

@@ -163,7 +163,6 @@ public class HttpImagePinsTest {
   public void aDeploymentWithNoArtifactsOriginCannotAskAndSaysSo() {
     HttpImagePins pins = new HttpImagePins();
     pins.artifactsRegistryHost = REGISTRY;
-    pins.buildkitRegistryHost = "";
     pins.artifactsUrl = Optional.empty();
     pins.artifactsMavenRegistryUrl = "";
 
@@ -176,15 +175,15 @@ public class HttpImagePinsTest {
   }
 
   @Test
-  public void theBuildersSpellingOfTheSameRegistryIsAlsoOurs() {
+  public void aHostThatIsNotTheConfiguredRegistryIsNotOursToPin() {
+    // Ours is qits.artifacts.registry-host and nothing else. The second spelling this class used
+    // to recognise, qits.ci.buildkit.registry-host, is deleted with the key (qits-515).
     HttpImagePins pins = pins();
     pins.artifactsRegistryHost = "somewhere-else:8080";
-    pins.buildkitRegistryHost = REGISTRY;
 
     assertEquals(
-        Status.PINNED,
-        pins.pin(REGISTRY + "/qits/build-images/ci-base:latest").status(),
-        "one registry, two network positions — a recipe naming either is naming this store");
+        Status.FOREIGN, pins.pin(REGISTRY + "/qits/build-images/ci-base:latest").status());
+    assertEquals(0, reads.get(), "and a foreign reference asks no registry");
   }
 
   @Test
@@ -207,12 +206,11 @@ public class HttpImagePinsTest {
 
   /**
    * The client wired by hand: the derivation under test is the maven root's origin, which is what a
-   * live deployment sets and what {@code StepContainerSettings.resolvedArtifactsUrl} reads too.
+   * live deployment sets.
    */
   private HttpImagePins pins(String origin) {
     HttpImagePins pins = new HttpImagePins();
     pins.artifactsRegistryHost = REGISTRY;
-    pins.buildkitRegistryHost = "";
     pins.artifactsUrl = Optional.empty();
     pins.artifactsMavenRegistryUrl = origin + "/artifacts/maven/maven";
     return pins;

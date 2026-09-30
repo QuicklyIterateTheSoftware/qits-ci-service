@@ -44,26 +44,13 @@ public class CommissionReconcilerTest {
     return new IdpCommissioner.LiveClient(clientId, kind, contextId);
   }
 
-  @Test
-  public void aCredentialWhoseRunIsOverIsReapedAndALiveRunsIsLeftAlone() {
-    int reaped =
-        reconciler.reap(
-            List.of(row("client-dead", "ci-run", "run-dead"), row("client-live", "ci-run", "run-live")),
-            Set.of("run-live"));
-
-    // The whole feature in one assertion: what a killed process left behind goes, what a running
-    // build is pushing with stays.
-    assertEquals(1, reaped);
-    assertEquals(List.of("client-dead"), idp.deleted);
-  }
-
   private static IdpCommissioner.LiveToken token(
       String tokenId, String kind, String contextId, Instant createdAt) {
     return new IdpCommissioner.LiveToken(tokenId, "tok-" + tokenId, kind, contextId, createdAt);
   }
 
   @Test
-  public void anEdgeRunsTokenIsReapedOnceItsRunIsOverAndNotBefore() {
+  public void aRunsTokenIsReapedOnceItsRunIsOverAndNotBefore() {
     Instant now = Instant.parse("2026-09-28T12:00:00Z");
     Instant old = now.minus(Duration.ofMinutes(30));
 
@@ -79,21 +66,24 @@ public class CommissionReconcilerTest {
             Set.of("run-live"),
             now);
 
+    // The whole feature in one assertion: what a killed process left behind goes, what a running
+    // build is pushing with stays.
     assertEquals(1, reaped);
     assertEquals(List.of("tok-dead"), idp.deletedTokens);
   }
 
   @Test
   public void aTokenThisProcessIsHoldingIsSparedAndAnUnreadRunTableReapsNothing() {
-    RunCommissions.Credential held =
-        reconciler.commissions.forRun(
-            "run-finishing", Map.of(), eu.wohlben.qits.ci.entity.CiRunnerPlane.EDGE);
+    // The window between a run's row going terminal and its runClosed. The row says the run is over
+    // and the credential is still in use, so memory outranks the table here.
+    IdpCommissioner.CommissionedToken held =
+        reconciler.commissions.forRun("run-finishing", Map.of());
     Instant now = Instant.now().plus(Duration.ofHours(1));
 
     assertEquals(
         0,
         reconciler.reapRunTokens(
-            List.of(token(held.token().tokenId(), "ci-run", "run-finishing", Instant.EPOCH)),
+            List.of(token(held.tokenId(), "ci-run", "run-finishing", Instant.EPOCH)),
             Set.of(),
             now));
     assertEquals(
@@ -103,27 +93,24 @@ public class CommissionReconcilerTest {
     assertEquals(List.of(), idp.deletedTokens);
   }
 
+  /**
+   * qits-515: the reconciler stops looking for {@code ci-run} CLIENTS. A run commissions a token and
+   * never a client, so a row of that kind in the listing — whatever a qits-ci before this one left —
+   * is none of this sweep's business: the client half of a pass touches {@code ci-runner} rows only.
+   */
   @Test
-  public void aCommissionThisProcessIsHoldingIsSparedEvenWithNoRunRowLeft() {
-    // The window between a run's row going terminal and its runClosed. The row says the run is over
-    // and the credential is still in use, so memory outranks the table here.
-    IdpCommissioner.Commission held =
-        reconciler.commissions.forRun("run-finishing", java.util.Map.of());
+  public void aCiRunClientInTheListingIsNoLongerReaped() {
+    idp.listingBody =
+        "[{\"clientId\":\"client-dead\",\"owner\":\"dev-qits-ci\",\"contextKind\":\"ci-run\","
+            + "\"contextId\":\"run-dead\",\"createdAt\":\"2026-08-14T10:00:00Z\"}]";
 
-    int reaped = reconciler.reap(List.of(row(held.clientId(), "ci-run", "run-finishing")), Set.of());
-
-    assertEquals(0, reaped);
+    // Read off the wire as it always was...
+    assertEquals(
+        List.of(row("client-dead", "ci-run", "run-dead")), reconciler.idp.live().orElseThrow());
+    // ...and left alone by the whole pass, which does not even read the run table for it.
+    reconciler.reconcile();
     assertEquals(List.of(), idp.deleted);
-  }
-
-  @Test
-  public void aCommissionOfAnotherContextKindIsNoneOfThisSweepsBusiness() {
-    // The listing is this owner's whole set, and qits-ci may one day commission for something that
-    // is not a run. A sweep that reaped by owner alone would take those with it.
-    int reaped =
-        reconciler.reap(List.of(row("client-workspace", "workspace", "ws-1")), Set.of());
-
-    assertEquals(0, reaped);
+    assertEquals(0, reconciler.reapRunnerClients(reconciler.idp.live().orElseThrow(), Map.of()));
     assertEquals(List.of(), idp.deleted);
   }
 
@@ -133,26 +120,11 @@ public class CommissionReconcilerTest {
     // build's credential the first time qits-idp answered badly. An unreadable listing is an empty
     // Optional, and reconcile returns before it even asks which runs are live.
     idp.listingBody = "{\"not\":\"an array\"}";
+    idp.tokenListingBody = "{\"not\":\"an array\"}";
     reconciler.reconcile();
     assertEquals(List.of(), idp.deleted);
+    assertEquals(List.of(), idp.deletedTokens);
     assertTrue(idp.listings.get() > 0, "it did ask");
-
-    // And the same for a run table that could not be read: a null id set reaps nothing.
-    assertEquals(0, reconciler.reap(List.of(row("client-dead", "ci-run", "run-dead")), null));
-    assertEquals(List.of(), idp.deleted);
-  }
-
-  @Test
-  public void aRealListingIsReadOffTheWireAndThenReaped() {
-    idp.listingBody =
-        "[{\"clientId\":\"client-dead\",\"owner\":\"dev-qits-ci\",\"contextKind\":\"ci-run\","
-            + "\"contextId\":\"run-dead\",\"createdAt\":\"2026-08-14T10:00:00Z\"}]";
-
-    List<IdpCommissioner.LiveClient> live = reconciler.idp.live().orElseThrow();
-
-    assertEquals(List.of(row("client-dead", "ci-run", "run-dead")), live);
-    assertEquals(1, reconciler.reap(live, Set.of("run-other")));
-    assertEquals(List.of("client-dead"), idp.deleted);
   }
 
   // --- runners ------------------------------------------------------------------------------------
@@ -189,7 +161,7 @@ public class CommissionReconcilerTest {
                 row("client-in-flight", "ci-runner", "runner-registering"),
                 row("client-loser", "ci-runner", "runner-reregistered"),
                 row("client-orphan", "ci-runner", "runner-deleted"),
-                // Another kind is the run sweep's business, not this one's.
+                // Another kind is not a runner's client, and nothing reaps it (qits-515).
                 row("client-run", "ci-run", "runner-deleted")),
             rows);
 

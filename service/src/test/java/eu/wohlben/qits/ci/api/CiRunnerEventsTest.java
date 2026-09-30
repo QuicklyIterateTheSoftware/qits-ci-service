@@ -128,8 +128,8 @@ class CiRunnerEventsTest {
     Announced created = announced.get(0);
     assertEquals("events-created", created.fact("runnerName"));
     assertEquals(2, created.fact("slots"));
-    // The suite knows no public domain, so the default plane is INTERNAL — as a plain word.
-    assertEquals("INTERNAL", created.fact("plane"));
+    // The one plane there is, as a plain word.
+    assertEquals("EDGE", created.fact("plane"));
     assertEquals("a test runner", created.fact("description"));
     // The row's own createdAt, not a clock read at announce time.
     assertWithinAMicrosecond(row(id).createdAt, (Instant) created.fact("occurredAt"));
@@ -149,12 +149,12 @@ class CiRunnerEventsTest {
         .post(RUNNERS)
         .then()
         .statusCode(409);
-    // 400: a malformed name, negative slots, an EDGE plane this qits-ci cannot compose.
+    // 400: a malformed name, negative slots, a plane that no longer exists.
     for (String body :
         List.of(
             "{\"name\":\"Not_A_Name\",\"slots\":1}",
             "{\"name\":\"events-negative\",\"slots\":-1}",
-            "{\"name\":\"events-edge\",\"plane\":\"EDGE\"}")) {
+            "{\"name\":\"events-internal\",\"plane\":\"INTERNAL\"}")) {
       given()
           .contentType(MediaType.APPLICATION_JSON)
           .body(body)
@@ -205,7 +205,7 @@ class CiRunnerEventsTest {
     Announced drained = announcer.of(id).get(0);
     assertEquals(List.of("slots"), drained.fact("changed"));
     assertEquals(0, drained.fact("slots"));
-    assertEquals("INTERNAL", drained.fact("plane"));
+    assertEquals("EDGE", drained.fact("plane"));
     assertEquals("a test runner", drained.fact("description"), "the whole state, not the delta");
 
     // Two settings in one PATCH are one event naming both, in RunnerChanged's order; a cleared
@@ -226,11 +226,11 @@ class CiRunnerEventsTest {
     announcer.reset();
 
     // The row's own values again, and an empty body: nothing moved, so nothing is said.
-    patch(id, "{\"slots\":2,\"description\":\"a test runner\",\"plane\":\"INTERNAL\"}", 200);
+    patch(id, "{\"slots\":2,\"description\":\"a test runner\",\"plane\":\"EDGE\"}", 200);
     patch(id, "{}", 200);
     // 400 and 404.
     patch(id, "{\"slots\":-1}", 400);
-    patch(id, "{\"plane\":\"EDGE\"}", 400);
+    patch(id, "{\"plane\":\"INTERNAL\"}", 400);
     patch(UUID.randomUUID().toString(), "{\"slots\":1}", 404);
 
     assertEquals(List.of(), announcer.all());
@@ -275,7 +275,7 @@ class CiRunnerEventsTest {
               runner.id = id;
               runner.name = name;
               runner.slots = 1;
-              runner.plane = CiRunnerPlane.INTERNAL;
+              runner.plane = CiRunnerPlane.EDGE;
               runner.registrationTokenId = "token-of-" + name;
               runner.registrationTokenSubject = SUBJECT;
               runner.createdAt = Instant.now();

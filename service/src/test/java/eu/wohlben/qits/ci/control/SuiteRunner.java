@@ -29,7 +29,7 @@ import org.jboss.logging.Logger;
  *
  * <p><b>Off unless a suite turns it on</b> ({@link #enable}, and {@link #disable} after): its row is
  * a real {@code ci_runner} row, and the runner suites here assert on exactly which rows exist. On,
- * it is one slot, docker-capable and INTERNAL — the old {@code qits.ci.concurrent-builds=1} — so a
+ * it is one slot and docker-capable — the old {@code qits.ci.concurrent-builds=1} — so a
  * run parked in its first step still holds everything accepted behind it {@code QUEUED}.
  */
 @ApplicationScoped
@@ -73,7 +73,7 @@ public class SuiteRunner implements CiBacklogListener {
               row.id = fresh;
               row.name = NAME;
               row.slots = 1;
-              row.plane = CiRunnerPlane.INTERNAL;
+              row.plane = CiRunnerPlane.EDGE;
               row.clientId = "client-" + NAME + "-" + fresh;
               row.capabilities = "{\"docker\":true,\"arch\":\"amd64\"}";
               row.registeredAt = Instant.now();
