@@ -530,6 +530,32 @@ public class CiRunService {
   int concurrentBuilds;
 
   /**
+   * Whether this process executes runs itself at all (qits-443). Shipped {@code false}: the
+   * platform's executor is a runner, and the in-process pool is off until it is deleted (qits-506).
+   *
+   * <p><b>A switch of its own rather than {@code concurrent-builds=0}</b>, because the live
+   * deployment carries {@code QITS_CI_CONCURRENT_BUILDS=1} as an environment entry nobody will edit,
+   * and an environment entry beats the default this jar ships — so a changed default alone would
+   * have switched nothing off. {@code true} restores the old pool, sized by {@code
+   * qits.ci.concurrent-builds}: an emergency fallback, and what both test suites set.
+   *
+   * <p>Read through {@link #effectiveWorkers()} and nowhere else.
+   */
+  @ConfigProperty(name = "qits.ci.in-process-executor.enabled")
+  boolean inProcessExecutorEnabled;
+
+  /**
+   * How many claim loops this process really runs: {@code qits.ci.concurrent-builds} while the
+   * in-process executor is enabled, and 0 — whatever that key says — while it is not. Every reader
+   * of the pool's size reads this, so "off" is one decision: no loop starts, the census is zero of
+   * zero, the queue answers {@code concurrentBuilds: 0} and its forecast counts runners alone.
+   * That is qits-503's zero pool, reached by a second road.
+   */
+  int effectiveWorkers() {
+    return inProcessExecutorEnabled ? concurrentBuilds : 0;
+  }
+
+  /**
    * How long an idle worker waits for a wake before scanning the queue anyway.
    *
    * <p><b>A net under the wake, not the mechanism.</b> Every accept, retry and boot sweep releases a
@@ -665,13 +691,20 @@ public class CiRunService {
    */
   @PostConstruct
   void initializeWorkers() {
-    worker = createWorkerPool(concurrentBuilds);
-    if (concurrentBuilds == 0) {
+    int workers = effectiveWorkers();
+    worker = createWorkerPool(workers);
+    if (!inProcessExecutorEnabled) {
+      LOG.infof(
+          "qits.ci.in-process-executor.enabled is false: this process runs no claim loop, whatever"
+              + " qits.ci.concurrent-builds (%d) says, and every run is executed by a connected"
+              + " runner",
+          concurrentBuilds);
+    } else if (workers == 0) {
       LOG.infof(
           "qits.ci.concurrent-builds is 0: this process runs no claim loop, and every run is"
               + " executed by a connected runner");
     }
-    for (int i = 0; i < concurrentBuilds; i++) {
+    for (int i = 0; i < workers; i++) {
       worker.submit(supervised(worker, () -> !stopping, this::workerLoop));
     }
   }
@@ -734,7 +767,7 @@ public class CiRunService {
    */
   private void workerLoop() {
     int live = liveWorkers.incrementAndGet();
-    LOG.debugf("A CI run worker is claiming — %d of %d claim loop(s) live", live, concurrentBuilds);
+    LOG.debugf("A CI run worker is claiming — %d of %d claim loop(s) live", live, effectiveWorkers());
     try {
       claimLoop();
     } finally {
@@ -750,7 +783,7 @@ public class CiRunService {
         LOG.errorf(
             "A CI run worker left its claim loop while this process is not stopping — %d of %d"
                 + " left, and a replacement is being started",
-            remaining, concurrentBuilds);
+            remaining, effectiveWorkers());
       }
     }
   }
@@ -850,7 +883,7 @@ public class CiRunService {
 
   /** @see WorkerCensus */
   public WorkerCensus workerCensus() {
-    return new WorkerCensus(liveWorkers.get(), concurrentBuilds, stopping);
+    return new WorkerCensus(liveWorkers.get(), effectiveWorkers(), stopping);
   }
 
   /**
@@ -976,7 +1009,7 @@ public class CiRunService {
   @PreDestroy
   void shutdown() {
     stopping = true;
-    work.release(concurrentBuilds);
+    work.release(effectiveWorkers());
     worker.shutdownNow();
     LOG.debugf("The CI run worker pool is stopping — %d claim loop(s) still live", liveWorkers.get());
   }
@@ -1083,7 +1116,7 @@ public class CiRunService {
       LOG.infof("Re-enqueued %d CI run(s) left QUEUED by a previous shutdown", sweep.requeued());
       // One permit per worker rather than one per row: the rows are in the table and the claim loop
       // re-derives their order for itself, so what a sweep owes is "wake up", once, to everybody.
-      work.release(concurrentBuilds);
+      work.release(effectiveWorkers());
       announceBacklog();
     }
   }
@@ -4115,14 +4148,14 @@ public class CiRunService {
     List<CiQueueForecast.RunnerCapacity> runnerCapacity = runnerCapacity();
     return new Snapshot(
         generatedAt,
-        concurrentBuilds,
+        effectiveWorkers(),
         active,
         List.copyOf(running),
         ordered,
         CiQueueForecast.forecast(
             running,
             ordered,
-            CiQueueForecast.slotCount(concurrentBuilds, runnerCapacity),
+            CiQueueForecast.slotCount(effectiveWorkers(), runnerCapacity),
             generatedAt),
         runnerCapacity);
   }

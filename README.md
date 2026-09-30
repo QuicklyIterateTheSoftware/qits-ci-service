@@ -420,6 +420,17 @@ to accept), UP while the process is stopping, and DOWN otherwise; its data is `l
 quarantined one counting none). The old check counted claim loops alone, so it read
 `qits.ci.concurrent-builds=0` — no loop, by design — as the outage it was written for.
 
+**The in-process executor ships switched off: `qits.ci.in-process-executor.enabled=false`** (qits-443).
+The platform's executor is a runner, and the pool stays off until it is deleted (qits-506). While the
+key is false the effective worker count is 0 **whatever `qits.ci.concurrent-builds` says**: no claim
+loop starts, `GET /ci/api/runs/queue` answers `concurrentBuilds: 0`, its forecast counts the runners'
+slots alone, and this check's census reads `configuredWorkers: 0` — UP on a connected runner, DOWN
+with none. It is a key of its own rather than a new default for `concurrent-builds` because the live
+deployment carries `QITS_CI_CONCURRENT_BUILDS=1` as an environment entry, which beats any shipped
+default. `true` (`QITS_CI_IN_PROCESS_EXECUTOR_ENABLED=true`) restores the old pool, sized by
+`qits.ci.concurrent-builds` — an emergency fallback; both test suites set it, because they drive
+their runs through the in-process worker.
+
 **THIS READINESS CHANGE MUST BE RELEASED AND LIVE BEFORE QITS_CI_CONCURRENT_BUILDS=0 IS SET, OR THE
 ZERO-THREAD QITS-CI FAILS ITS OWN DEPLOYMENT GATE.** And with the pool at 0, a qits-ci that boots with
 no runner connected is DOWN until one dials — so `localhost` has to be registered and running before
@@ -2302,7 +2313,9 @@ a repository's own listing will show.
   environment sharing capacity are not a supported shape — size a single instance with
   `qits.ci.concurrent-builds` instead.
 - Set `qits.ci.concurrent-builds` to the maximum number of pipelines this qits-ci instance may run
-  itself at once (default **4**, minimum **0**). **`0` hands every run to the runners** (qits-503):
+  itself at once (default **4**, minimum **0**) — **read only while
+  `qits.ci.in-process-executor.enabled` is `true`, and that ships `false`** (qits-443; see "Readiness
+  counts runners"), so as shipped the effective count is 0 whatever this key says. **`0` hands every run to the runners** (qits-503):
   no claim loop starts, nothing is claimed locally, an accepted run waits `QUEUED` for a runner's
   `Reserve`, `GET /ci/api/runs/queue` answers `concurrentBuilds: 0`, and its forecast counts the
   connected runners' slots alone — with none connected every queued run's ETA is

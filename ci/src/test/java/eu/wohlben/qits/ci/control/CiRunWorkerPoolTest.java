@@ -48,6 +48,7 @@ class CiRunWorkerPoolTest {
   @Test
   void aZeroPoolStartsNoClaimLoopAndReservesNothingLocally() throws Exception {
     CiRunService service = new CiRunService();
+    service.inProcessExecutorEnabled = true;
     service.concurrentBuilds = 0;
     service.initializeWorkers();
     try {
@@ -60,6 +61,52 @@ class CiRunWorkerPoolTest {
       service.shutdown();
     }
     assertEquals(new CiRunService.WorkerCensus(0, 0, true), service.workerCensus());
+  }
+
+  /**
+   * qits-443: the switch beats the size. The live deployment carries {@code
+   * QITS_CI_CONCURRENT_BUILDS=1} and nobody will edit it, so {@code
+   * qits.ci.in-process-executor.enabled=false} has to mean zero whatever that key says — no claim
+   * loop, a census of zero of zero, and a queue that answers {@code concurrentBuilds: 0} with a
+   * forecast that has no local slot in it.
+   */
+  @Test
+  void aSwitchedOffExecutorRunsNoClaimLoopWhateverConcurrentBuildsSays() throws Exception {
+    // The queue's two reads, stood in for: no rows, and (ciRunners being null here) no runners —
+    // queueSnapshot answers an unreadable runner listing as an empty one.
+    CiRunService service =
+        new CiRunService() {
+          @Override
+          public java.util.List<eu.wohlben.qits.ci.entity.CiRun> activeRuns() {
+            return java.util.List.of();
+          }
+        };
+    service.inProcessExecutorEnabled = false;
+    service.concurrentBuilds = 4;
+    service.initializeWorkers();
+    try {
+      Thread.sleep(100);
+      assertEquals(0, service.effectiveWorkers(), "the effective pool is 0, not the configured 4");
+      assertEquals(
+          new CiRunService.WorkerCensus(0, 0, false),
+          service.workerCensus(),
+          "no claim loop is live and none is configured, so readiness counts runners alone");
+      CiRunService.Snapshot queue = service.queueSnapshot();
+      assertEquals(0, queue.concurrentBuilds(), "the queue reports the pool it really has");
+      assertTrue(queue.runners().isEmpty());
+    } finally {
+      service.shutdown();
+    }
+  }
+
+  /** The same service with the switch on is the pool {@code concurrent-builds} sizes. */
+  @Test
+  void aSwitchedOnExecutorRunsTheConfiguredClaimLoops() {
+    CiRunService service = new CiRunService();
+    service.inProcessExecutorEnabled = true;
+    service.concurrentBuilds = 4;
+    assertEquals(4, service.effectiveWorkers());
+    assertEquals(4, service.workerCensus().configured());
   }
 
   /**
