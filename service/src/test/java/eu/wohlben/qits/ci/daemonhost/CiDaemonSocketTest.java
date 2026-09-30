@@ -139,28 +139,25 @@ public class CiDaemonSocketTest {
   }
 
   /**
-   * qits-515: the header path is gone. The pair a daemon on qits-net presented —
-   * {@code X-Qits-Ci-Daemon-Id} and {@code -Secret} under a self-asserted {@code qits:system} — is
-   * read by nothing: the upgrade still opens on that role (its removal from the socket is qits-516),
-   * and the connection is admitted to no launch, by its headers or by a Hello.
+   * qits-516: the socket admits one role. The pair a daemon on qits-net presented — {@code
+   * X-Qits-Ci-Daemon-Id} and {@code -Secret} under a self-asserted {@code qits:system} — used to
+   * open the upgrade and then admit nothing (qits-515 deleted what read the headers); now the
+   * {@code qits:system} role is refused 403 at the handshake itself, before any launch is looked at,
+   * and the launch it names is never registered.
    */
   @Test
-  public void theDeletedHeaderHandshakeAdmitsNoLaunch() throws Exception {
+  public void aSystemCallerIsRefusedAtTheUpgrade() throws Exception {
     String daemonId = launch("run-headers");
     java.util.Map<String, String> onQitsNet =
         java.util.Map.of(
             FakeCiDaemon.USER_HEADER, "qits-ci-daemon",
-            FakeCiDaemon.ROLES_HEADER, CiDaemonSocket.SYSTEM_ROLE,
+            FakeCiDaemon.ROLES_HEADER, "qits:system",
             "X-Qits-Ci-Daemon-Id", daemonId,
             "X-Qits-Ci-Daemon-Secret", "anything-at-all");
-    try (FakeCiDaemon daemon = FakeCiDaemon.dial(endpoint, onQitsNet)) {
-      // The headers alone register nothing...
-      assertFalse(registry.awaitRegistered(daemonId, Duration.ofMillis(300)));
-      // ...and naming the launch as a caller that is not its run's token is WRONG_RUN.
-      daemon.hello(daemonId);
-      assertEquals((Short) (short) CiDaemonRegistry.CLOSE_UNAUTHORIZED, daemon.awaitClose(SOON));
-      assertEquals("WRONG_RUN", daemon.closeReason());
+    try {
+      assertEquals(403, FakeCiDaemon.refusedUpgradeStatus(endpoint, onQitsNet));
       assertFalse(registry.awaitRegistered(daemonId, Duration.ofMillis(200)));
+      assertEquals(CiDaemonRegistry.Phase.LAUNCHED, registry.phaseOf(daemonId));
     } finally {
       registry.reap(daemonId);
     }

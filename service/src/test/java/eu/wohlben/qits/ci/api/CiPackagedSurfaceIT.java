@@ -95,6 +95,18 @@ public class CiPackagedSurfaceIT {
   private static final String BASE_HREF = "<base href=\"/\">";
 
   /**
+   * The operator the two trigger probes arrive as. The manual trigger is {@code
+   * @RolesAllowed({qits:admin, qits:system})} and the run listing admits those two and {@code
+   * qits:agent}, and the launched artifact runs under neither {@code %dev} nor {@code %test}, so no
+   * forward-auth dev user stands in for a caller that names none: an anonymous POST is the 401
+   * answered before the resource is reached, which is what both probes got until they named one. The gate is off here, so the forward-auth pair
+   * is the identity — a person's forwarded session, the door's other real caller, whose arm of
+   * {@code CiEventController.scopeOf} evaluates against every project.
+   */
+  private static final Map<String, String> OPERATOR =
+      Map.of(FakeCiDaemon.USER_HEADER, "an-operator", FakeCiDaemon.ROLES_HEADER, "qits:admin");
+
+  /**
    * Hands the launched artifact its two databases the way a deployment does — as the generic
    * resource triples, not as the datasource keys. The ci jar ships {@code
    * jdbc.url=${QITS_RESOURCE_DB_URL}} and the qits-eventstream jar ships {@code
@@ -179,6 +191,7 @@ public class CiPackagedSurfaceIT {
     // running. That endpoint is gone: a push is an SCMPublishCommit off the event log now, and what
     // would be wrong is a listener that does not subscribe — which no HTTP probe can see.
     given()
+        .headers(OPERATOR)
         .contentType(ContentType.JSON)
         .body("{}")
         .when()
@@ -288,34 +301,36 @@ public class CiPackagedSurfaceIT {
   }
 
   @Test
-  public void theDaemonSocketAdmitsACiRunCallerAtTheUpgradeAndNoOtherRole() throws Exception {
+  public void theDaemonSocketAdmitsARunsTokenSubjectAtTheUpgrade() throws Exception {
     // A step's daemon (qits-477) arrives as its run's ci-run token — the role qits:ci-run, the
-    // token's subject as its name. The gate is off here, so the forward-auth pair carries that
-    // identity as the edge's validated JWT would with it on; @RolesAllowed is enforced at the
-    // upgrade either way, which is what only the artifact's own router can show. Admitted, the
-    // dial reaches the launch table and is refused there for the unknown launch it names — a
-    // subject compared against a real launch is CiDaemonSocketTest's (right subject admitted,
-    // wrong one WRONG_RUN), since no launch can be made in here.
+    // token's subject as its name, which is the one credential the socket takes (qits-516). The
+    // gate is off here, so the forward-auth pair carries that identity as the edge's validated JWT
+    // would with it on; @RolesAllowed is enforced at the upgrade either way, which is what only the
+    // artifact's own router can show. Admitted, the dial reaches the launch table and is refused
+    // there for the unknown launch it names — a subject compared against a real launch is
+    // CiDaemonSocketTest's (right subject admitted, wrong one WRONG_RUN), since no launch can be
+    // made in here.
     URI socket = URI.create("http://localhost:" + RestAssured.port + "/ci/daemon");
     try (FakeCiDaemon daemon = FakeCiDaemon.dial(socket, "tok-ci-run-packaged-1")) {
       daemon.hello("not-a-launched-daemon");
       assertEquals((Short) (short) 1008, daemon.awaitClose(Duration.ofSeconds(20)));
       assertEquals("UNKNOWN_DAEMON", daemon.closeReason());
     }
-    // And a role that is not on the socket is refused at the upgrade itself, before any launch is
-    // looked at.
-    try (FakeCiDaemon stranger =
-        FakeCiDaemon.dial(
-            socket,
-            Map.of(
-                FakeCiDaemon.USER_HEADER, "somebody",
-                FakeCiDaemon.ROLES_HEADER, "qits:agent"))) {
-      fail("a qits:agent caller must not get past the daemon socket's upgrade");
-    } catch (Exception refusedAtTheUpgrade) {
-      assertTrue(
-          String.valueOf(refusedAtTheUpgrade).contains("401")
-              || String.valueOf(refusedAtTheUpgrade).contains("403"),
-          "refused at the upgrade: " + refusedAtTheUpgrade);
+  }
+
+  @Test
+  public void theDaemonSocketRefusesEveryOtherRoleAtTheUpgrade() throws Exception {
+    // qits:system opened this upgrade until qits-516 and then admitted no launch — every dial it
+    // made ended WRONG_RUN or UNKNOWN_DAEMON after the handshake. It is refused AT the handshake
+    // now, 403 before any launch is looked at, like any other role that is not a run's token.
+    URI socket = URI.create("http://localhost:" + RestAssured.port + "/ci/daemon");
+    for (String role : List.of("qits:system", "qits:agent")) {
+      assertEquals(
+          403,
+          FakeCiDaemon.refusedUpgradeStatus(
+              socket,
+              Map.of(FakeCiDaemon.USER_HEADER, "somebody", FakeCiDaemon.ROLES_HEADER, role)),
+          "a " + role + " caller must be refused at the daemon socket's upgrade");
     }
   }
 
@@ -381,6 +396,17 @@ public class CiPackagedSurfaceIT {
    * that intake has since retired outright.) So what this test can still see through the artifact's
    * own surface is unchanged: YAML, Flyway, Panache and the store it wrote to. The engine's own
    * semantics are a {@code @QuarkusTest}'s ({@code CiPipelineBoundaryTest}).
+   *
+   * <p><b>The run is asserted ACCEPTED, not finished.</b> This used to wait for {@code SUCCESS},
+   * back when an in-process executor ran even a {@code steps: []} pipeline; since qits-506 every run
+   * is a runner's, and no runner connects to this process (this profile has no idp to mint a runner
+   * a bearer — the stories play one). So the row is {@code QUEUED} for good, which still proves
+   * the parse, the migration and the write. The probe then <b>cancels</b> it — a second Panache write
+   * — and deletes the row, and that is load-bearing rather than tidiness: {@code
+   * TokenValidationBootstrapIT}'s profile extends this one, so every story class shares this
+   * database. A row left queued here is a run the next story's runner is handed instead of its own,
+   * and even a cancelled one keeps its repository a trigger candidate there — one no story git host
+   * serves, so every story evaluation reports it skipped (both measured, running the two together).
    */
   @Test
   public void aTriggeredRunGoesThroughYamlFlywayAndPanache() throws Exception {
@@ -392,6 +418,7 @@ public class CiPackagedSurfaceIT {
             "event: " + eventName + "\nwhen:\n  - repoId: { exact: " + repoId + " }\nsteps: []\n");
 
     given()
+        .headers(OPERATOR)
         .contentType(ContentType.JSON)
         .body(
             Map.of(
@@ -404,8 +431,8 @@ public class CiPackagedSurfaceIT {
         .then()
         .statusCode(200);
 
-    Map<String, Object> run = awaitTerminalRun(repoId);
-    assertEquals("SUCCESS", run.get("status"));
+    Map<String, Object> run = awaitRecordedRun(repoId);
+    assertEquals("QUEUED", run.get("status"), "no runner is connected, so the accepted run waits");
     assertEquals(sha, run.get("commitSha"));
 
     // The run above proves the ci store. Read the row back out of the database this JVM handed the
@@ -421,6 +448,33 @@ public class CiPackagedSurfaceIT {
       try (ResultSet found = rows.executeQuery()) {
         assertTrue(found.next() && found.getInt(1) == 1, "the run must be in the injected database");
       }
+    }
+
+    // Settle it, so no later story's runner is handed this row (see the javadoc).
+    String runId = String.valueOf(run.get("id"));
+    given()
+        .headers(OPERATOR)
+        .when()
+        .post("/ci/api/runs/" + runId + "/cancel")
+        .then()
+        .statusCode(202);
+    assertEquals(
+        "CANCELLED",
+        given()
+            .headers(OPERATOR)
+            .when()
+            .get("/ci/api/runs/" + runId)
+            .then()
+            .statusCode(200)
+            .extract()
+            .jsonPath()
+            .getString("status"));
+    try (Connection ci =
+            DriverManager.getConnection(
+                EmbeddedPg.url("ci_packaged_it"), EmbeddedPg.USER, EmbeddedPg.PASSWORD);
+        PreparedStatement delete = ci.prepareStatement("delete from ci_run where id = ?")) {
+      delete.setString(1, runId);
+      assertEquals(1, delete.executeUpdate(), "the probe's own row, and nothing else");
     }
   }
 
@@ -480,11 +534,13 @@ public class CiPackagedSurfaceIT {
     git(clone, "-c", "user.email=ci@test", "-c", "user.name=ci", "commit", "-q", "-m", message);
   }
 
-  private Map<String, Object> awaitTerminalRun(String repoId) throws Exception {
+  /** The run the trigger recorded for {@code repoId}, once the listing shows it. */
+  private Map<String, Object> awaitRecordedRun(String repoId) throws Exception {
     long deadline = System.currentTimeMillis() + 30_000;
     while (System.currentTimeMillis() < deadline) {
       List<Map<String, Object>> runs =
           given()
+              .headers(OPERATOR)
               .when()
               .get("/ci/api/runs?repositoryId=" + repoId)
               .then()
@@ -492,12 +548,12 @@ public class CiPackagedSurfaceIT {
               .extract()
               .jsonPath()
               .getList("runs");
-      if (runs.size() == 1 && !"RUNNING".equals(runs.get(0).get("status"))) {
+      if (runs.size() == 1) {
         return runs.get(0);
       }
       Thread.sleep(100);
     }
-    return fail("no terminal CI run for " + repoId + " within the deadline");
+    return fail("no CI run recorded for " + repoId + " within the deadline");
   }
 
   private String git(Path cwd, String... args) throws Exception {

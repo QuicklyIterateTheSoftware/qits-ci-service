@@ -62,7 +62,7 @@ release-request:
     user: build
     timeout-seconds: 1800
     script: |
-      # Maven Central through the platform mirror's in-network alias. EMPTY IS THE OFF SWITCH: an
+      # Maven Central through the platform mirror's public name. EMPTY IS THE OFF SWITCH: an
       # older qits-ci that injects nothing, or a deployment with the mirror plane off, leaves this
       # empty, which deactivates the settings profile so Central is dialled directly.
       export QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}"

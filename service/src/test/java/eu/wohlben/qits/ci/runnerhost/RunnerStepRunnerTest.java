@@ -76,10 +76,11 @@ import org.junit.jupiter.api.Test;
  * runner is asked to start is the step whose daemon then dials this host, exactly as a runner host
  * would arrange it, so the whole sequence is real except the two containers.
  *
- * <p>The identity is the test's {@code @TestSecurity}, carrying both roles, because Quarkus applies
- * it to every upgrade in the method — the runner's and the daemon's. So the daemon arrives as the
- * {@code sub} {@link #CLIENT}, and every run's {@code ci-run} token is scripted to carry that
- * subject ({@link ScriptedRunTokens}): a step's daemon is admitted only as its run's token. The gate is on for the runner
+ * <p>The identity is the test's {@code @TestSecurity}, carrying both roles — the runner's and
+ * {@code qits:ci-run}, the only role the daemon socket's upgrade admits (qits-516) — because Quarkus
+ * applies it to every upgrade in the method, the runner's and the daemon's. So the daemon arrives
+ * as the {@code sub} {@link #CLIENT}, and every run's {@code ci-run} token is scripted to carry
+ * that subject ({@link ScriptedRunTokens}): a step's daemon is admitted only as its run's token. The gate is on for the runner
  * socket's reason ({@link CiRunnerSocketTest}); the profile is the same class, so the same start.
  */
 @QuarkusTest
@@ -192,7 +193,7 @@ class RunnerStepRunnerTest {
   // --- the step, through the seam -----------------------------------------------------------------
 
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aGreenStepIsLaunchedByTheRunnerAndRunByTheDaemonThatDialsBack() throws Exception {
     String runId = "runner-green-" + UUID.randomUUID();
@@ -255,7 +256,7 @@ class RunnerStepRunnerTest {
   }
 
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aLaunchTheRunnerCouldNotMakeIsLaunchFailedInDockersWords() throws Exception {
     String runId = "runner-refused-" + UUID.randomUUID();
@@ -285,7 +286,7 @@ class RunnerStepRunnerTest {
   // --- the runner's step memory limit ------------------------------------------------------------
 
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void theLaunchCarriesTheRunnersStepMemoryLimitReadAtEachStepElseThePlatformDefault()
       throws Exception {
@@ -349,7 +350,7 @@ class RunnerStepRunnerTest {
   // --- the runner's own container log (qits-467) --------------------------------------------------
 
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aGreenStepIgnoresTheRunnersContainerLog() throws Exception {
     String runId = "runner-green-logtail-" + UUID.randomUUID();
@@ -388,7 +389,7 @@ class RunnerStepRunnerTest {
   }
 
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aNeverDialledStepCarriesTheRunnersContainerLogBelowAPointer() throws Exception {
     String runId = "runner-never-dialled-logtail-" + UUID.randomUUID();
@@ -427,7 +428,7 @@ class RunnerStepRunnerTest {
   }
 
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aNeverDialledStepWithNoLogTailKeepsTodaysMessage() throws Exception {
     String runId = "runner-never-dialled-notail-" + UUID.randomUUID();
@@ -463,7 +464,7 @@ class RunnerStepRunnerTest {
   }
 
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aReapedArrivingAfterTheBoundIsNotAppendedAndNothingHangs() throws Exception {
     String runId = "runner-late-reaped-" + UUID.randomUUID();
@@ -501,7 +502,7 @@ class RunnerStepRunnerTest {
    * never to the runner's current one — the successor never counted that run against a slot.
    */
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aRunHeldByTheDrainingConnectionIsLaunchedAndReapedThere() throws Exception {
     String runId = "runner-draining-" + UUID.randomUUID();
@@ -543,7 +544,7 @@ class RunnerStepRunnerTest {
   // --- the run's token, and the two things without which no step is launched ----------------------
 
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aStepIsToldThePublicNamesAndCarriesTheRunsTokenCommissionedAtQitsIdp() throws Exception {
     // qits-idp is a stub behind the REAL RunCommissions: the Launch the runner is asked for carries
@@ -588,7 +589,7 @@ class RunnerStepRunnerTest {
   }
 
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aQitsCiThatCommissionsNothingLaunchesNoStepAndSaysWhy() throws Exception {
     // The shipped posture: the qits oidc client is off. A step's only credential is its run's
@@ -611,7 +612,7 @@ class RunnerStepRunnerTest {
   }
 
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aQitsCiThatKnowsNoPublicDomainLaunchesNoStepAndSaysWhy() throws Exception {
     // No address to tell the step, and no qits-net alias to fall back to (qits-515).
@@ -633,7 +634,7 @@ class RunnerStepRunnerTest {
   }
 
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aDaemonThatIsNotTheRunsTokenIsNotAdmittedToTheRunsLaunch() throws Exception {
     // The launch is bound to ITS run's token subject. This suite's daemon arrives as CLIENT, so a
@@ -672,7 +673,7 @@ class RunnerStepRunnerTest {
   @Test
   @TestSecurity(
       user = "runner",
-      roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system", "qits:admin"})
+      roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run", "qits:admin"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aRunnerVanishingMidStepFailsTheRunNamingItAndTheRunIsRetryable() throws Exception {
     // Nobody comes back for it here, so the grace (a minute shipped) is what the run waits out.
@@ -756,7 +757,7 @@ class RunnerStepRunnerTest {
    * its teardown reaps on the connection that came back.
    */
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aRunnerThatComesBackForItsRunInsideTheGraceCarriesTheStepOn() throws Exception {
     String runId = "runner-blip-" + UUID.randomUUID();
@@ -820,7 +821,7 @@ class RunnerStepRunnerTest {
    * — did not keep its container, so the step is lost at that {@code Hello}, not a grace later.
    */
   @Test
-  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aRunnerThatComesBackWithoutTheRunLosesItAtItsHello() throws Exception {
     String runId = "runner-back-empty-" + UUID.randomUUID();

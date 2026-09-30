@@ -131,10 +131,10 @@
 # CiReleaseComposer wraps every step: `set -eu`; on the release phase the `$QITS_VERSION` guard, the
 # tag fetch and `git checkout --detach`, and `qits-publish` on `$PATH`; on a `build:` step the
 # `$BUILDKIT_HOST`/`$QITS_BUILD_REGISTRY` guards; on a `build:`/`docker:` step the run's credential
-# written to /tmp/qits-client-id|secret under `umask 077` in a subshell — the commissioned pair on
-# the INTERNAL plane, the run's token subject and token on the EDGE one. The SBOM is SUBMITTED by
-# the composed postlude on the last building step, per declared artifact carrying `sbom:`. So none
-# of that appears below — a copy here would be a second implementation of a platform guarantee.
+# written to /tmp/qits-client-id|secret under `umask 077` in a subshell — the run's token subject
+# and token. The SBOM is SUBMITTED by the composed postlude on the last building step, per declared
+# artifact carrying `sbom:`. So none of that appears below — a copy here would be a second
+# implementation of a platform guarantee.
 #
 # WHAT THE SCRIPTS THEREFORE STILL DO: they GENERATE the SBOM at the declared path. Generating is
 # the build's business; submitting is the platform's.
@@ -221,9 +221,8 @@ release-request:
 
   # --- the first half of phase one: build the fold, publish nothing -----------------------------
   # node-docker-base carries node, npm, git and buildctl. `build: true` is the diff-visible
-  # declaration that gets this step a builder and the run's credential (the commissioned pair on
-  # the INTERNAL plane, the run's token on the EDGE one) — and, unlike the `docker: true` it
-  # replaced, no docker socket at all.
+  # declaration that gets this step a builder and the run's credential (its token) — and, unlike the
+  # `docker: true` it replaced, no docker socket at all.
   - image: qits/build-images/node-docker-base:latest
     build: true
     timeout-seconds: 3600
@@ -306,14 +305,12 @@ release-request:
       # coordinate went with per-push CI — a fold's merged sha is not something cd could deploy.
       #
       # NO --network host, AND NOTHING REPLACES IT. Every `RUN` executes in the builder's own
-      # namespace, so the two addresses a build dials are the RUN's: the in-network ones on the
-      # INTERNAL plane, the public ones on the EDGE plane.
+      # namespace, so the two addresses a build dials are the RUN's: the platform's public names.
       #
       # THE CREDENTIAL IS A SECRET IN FILE FORM, never a build arg — an arg is recorded in the image
       # history. The composer wrote /tmp/qits-client-id and /tmp/qits-client-secret under umask 077
-      # before this script ran — the commissioned pair on the INTERNAL plane, the run's token
-      # subject and token on the EDGE one; they are outside the clone, so neither can enter the
-      # build context.
+      # before this script ran — the run's token subject and token; they are outside the clone, so
+      # neither can enter the build context.
       buildctl build --frontend dockerfile.v0 \
         --local context=. --local dockerfile=docker \
         --opt build-arg:QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL" \

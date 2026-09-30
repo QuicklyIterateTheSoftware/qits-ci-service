@@ -262,9 +262,8 @@ release:
       # resolves it; $QITS_REGISTRY stays the host daemon's view and is not dialled here.
       #
       # NO --network host, AND NOTHING REPLACES IT. Every `RUN` executes in the builder's own
-      # namespace on qits-net, so the two npm addresses below are the IN-NETWORK ones — which is the
-      # whole reason they can be passed at all, and why a Dockerfile of this kind could not have
-      # installed from the @qits scope before the platform builder existed.
+      # namespace — the runner's buildkitd — so the two npm addresses below are the RUN's, the
+      # platform's public names, which the builder reaches exactly as the step does.
       #
       # THE TWO ORIGINS ARE BUILD ARGS AND THE TOKEN IS A SECRET, and that split is the contract the
       # header states: an origin is not a credential and the build needs it in an `ARG`; a credential

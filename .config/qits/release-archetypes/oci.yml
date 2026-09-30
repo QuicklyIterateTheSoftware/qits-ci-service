@@ -50,10 +50,10 @@
 # WHAT THE PLATFORM ADDS, SO THAT THESE SCRIPTS DO NOT
 #
 # CiReleaseComposer wraps every step with `set -eu`; a `build:` step with the `$BUILDKIT_HOST` and
-# `$QITS_BUILD_REGISTRY` guards and the commissioned pair as /tmp files under `umask 077`; a RELEASE
-# step with the `$QITS_VERSION` guard, the tag fetch, `git checkout --detach` and `qits-publish` on
-# `$PATH`. It then submits the generated document per declared artifact carrying `sbom:`. So the
-# script below GENERATES the SBOM and never PUTs it.
+# `$QITS_BUILD_REGISTRY` guards and the run's token subject and token as /tmp files under
+# `umask 077`; a RELEASE step with the `$QITS_VERSION` guard, the tag fetch, `git checkout --detach`
+# and `qits-publish` on `$PATH`. It then submits the generated document per declared artifact
+# carrying `sbom:`. So the script below GENERATES the SBOM and never PUTs it.
 #
 # ---------------------------------------------------------------------------------------------
 # WHEN TO OVERRIDE

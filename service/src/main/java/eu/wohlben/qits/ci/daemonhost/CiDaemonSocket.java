@@ -27,14 +27,15 @@ import org.jboss.logging.Logger;
  * second-level segment beside {@code api} because this is not a JSON API. No machine guard reaches
  * it — that guard is a call inside a resource method, not a filter over a path.
  *
- * <p><b>The {@code @RolesAllowed} above shuts first.</b> websockets-next enforces it at the HTTP
- * <em>upgrade</em>, so a dial with no identity is answered <b>401 and never reaches {@link
- * #onOpen}</b>. A step's daemon dials through the platform edge presenting its run's {@code ci-run}
- * token as {@code Authorization: Bearer $QITS_TOKEN}; the edge introspects the token and forwards
- * a JWT whose {@code sub} is the token's subject and whose role is {@code qits:ci-run}. That opens
- * the upgrade. {@code qits:system} is still in the list and still opens the upgrade too; it admits
- * nothing by itself, since admission is the subject check below, and narrowing the list to {@code
- * qits:ci-run} alone is a separate change (qits-516).
+ * <p><b>The {@code @RolesAllowed} above shuts first, and it names one role.</b> websockets-next
+ * enforces it at the HTTP <em>upgrade</em>, so a dial with no identity is answered <b>401</b>, and
+ * one with any role but {@code qits:ci-run} <b>403</b>, and neither ever reaches {@link #onOpen}. A
+ * step's daemon dials through the platform edge presenting its run's {@code ci-run} token as {@code
+ * Authorization: Bearer $QITS_TOKEN}; the edge introspects the token and forwards a JWT whose {@code
+ * sub} is the token's subject and whose role is {@code qits:ci-run}. That is the one credential
+ * that opens the upgrade. {@code qits:system} used to open it too, for the daemon on qits-net that
+ * qits-515 deleted; it was narrowed away in qits-516, so a machine peer is refused at the handshake
+ * rather than admitted to an upgrade that could only ever end in {@code WRONG_RUN}.
  *
  * <p><b>A connection is matched to its launch only by the launch id it names, bound to its run's
  * token.</b> When {@link #onOpen} returns the connection is bound to nothing. The daemon names its
@@ -64,22 +65,16 @@ import org.jboss.logging.Logger;
  * from a container took the socket with it.
  */
 @WebSocket(path = CiDaemonSocket.PATH)
-@jakarta.annotation.security.RolesAllowed({CiDaemonSocket.SYSTEM_ROLE, CiDaemonSocket.RUN_ROLE})
+@jakarta.annotation.security.RolesAllowed(CiDaemonSocket.RUN_ROLE)
 public class CiDaemonSocket {
-
-  /**
-   * The machine role. It opens the upgrade and admits no launch: see the class javadoc. Its removal
-   * from this socket's {@code @RolesAllowed} is qits-516.
-   */
-  static final String SYSTEM_ROLE = "qits:system";
 
   /** The literal, {@code /ci} and all — see the class javadoc; {@code SocketBearerLifetime} reads it. */
   public static final String PATH = "/ci/daemon";
 
   /**
-   * The role a {@code ci-run} token carries through the edge — what a step's daemon dials with,
-   * bound to its run by the token's subject ({@link CiDaemonRegistry#admitByToken(String, String,
-   * WebSocketConnection)}).
+   * The role a {@code ci-run} token carries through the edge — what a step's daemon dials with, and
+   * the only role this socket's upgrade admits — bound to its run by the token's subject ({@link
+   * CiDaemonRegistry#admitByToken(String, String, WebSocketConnection)}).
    */
   static final String RUN_ROLE = "qits:ci-run";
 

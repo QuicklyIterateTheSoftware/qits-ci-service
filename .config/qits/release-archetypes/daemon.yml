@@ -36,8 +36,7 @@
 # THE REPOSITORY'S `docker/Dockerfile` MUST MOUNT THE TWO SECRETS THIS RECIPE PASSES:
 # `qits-client-id` and `qits-client-secret`, as `--mount=type=secret` on its `mvnw` RUN, exported
 # there as QITS_MAVEN_AUTH_USR/QITS_MAVEN_AUTH_PSW. qits-ci-daemon's docker/Dockerfile is the
-# exemplar. Without the mounts the secrets do nothing, and a build on the EDGE plane 401s on the
-# mirror.
+# exemplar. Without the mounts the secrets do nothing, and the build 401s on the public mirror.
 #
 # ---------------------------------------------------------------------------------------------
 # THE BUILD, AND THE ONE CONDITIONAL HALF
@@ -78,22 +77,20 @@
 #
 # THE TARBALL URLS ARE THE RUN'S, NOT THE DOCKERFILE'S DEFAULTS. BuildKit resolves an `ADD <url>` in
 # the BUILDER's network context, not the step's; the committed defaults name an edge vhost on the
-# host loopback. The route is `$QITS_MAVEN_REGISTRY_URL`, the run's registry: the in-network one on
-# the INTERNAL plane, where the read is anonymous, and the public one on the EDGE plane, where an
-# anonymous read answers 401. There the `ADD` carries the run's token as the BuildKit session secret
-# `HTTP_AUTH_TOKEN_<host>`, which BuildKit's HTTP source sends as `Authorization: Bearer`; it is
-# passed only when `$QITS_TOKEN` is set. The maven COORDINATE is read out of the Dockerfile rather
-# than restated here, so a toolchain bump stays one file.
+# host loopback. The route is `$QITS_MAVEN_REGISTRY_URL`, the run's registry — its public name,
+# where an anonymous read answers 401. So the `ADD` carries the run's token as the BuildKit session
+# secret `HTTP_AUTH_TOKEN_<host>`, which BuildKit's HTTP source sends as `Authorization: Bearer`; it
+# is passed only when `$QITS_TOKEN` is set. The maven COORDINATE is read out of the Dockerfile
+# rather than restated here, so a toolchain bump stays one file.
 #
 # ---------------------------------------------------------------------------------------------
 # WHAT THE PLATFORM ADDS, SO THAT THIS SCRIPT DOES NOT
 #
 # `set -eu`; the `$BUILDKIT_HOST`/`$QITS_BUILD_REGISTRY` guards and /tmp/qits-client-id|secret on a
-# `build:` step — the commissioned pair on the INTERNAL plane, the run's token subject and token on
-# the EDGE one; the `$QITS_VERSION` guard, the tag fetch, `git checkout --detach` and `qits-publish`
-# on `$PATH` on a release step; and `qits-publish sbom submit` afterwards for every declared
-# artifact carrying `sbom:`. So nothing below parses a version, fetches a tag, writes a secret file
-# or PUTs a document.
+# `build:` step — the run's token subject and token; the `$QITS_VERSION` guard, the tag fetch,
+# `git checkout --detach` and `qits-publish` on `$PATH` on a release step; and
+# `qits-publish sbom submit` afterwards for every declared artifact carrying `sbom:`. So nothing
+# below parses a version, fetches a tag, writes a secret file or PUTs a document.
 #
 # THE 409 POLICY IS THE CLI'S NOW, AND IT CHANGED ON PURPOSE. The hand-written step treated an
 # occupied coordinate as a HARD FAILURE while the maven and npm steps beside it treated one as a
@@ -136,13 +133,12 @@ release-request:
         # toolchain rather than inheriting one built against an address it does not use.
         builder_tag=$( { cat docker/Dockerfile.musl-builder; printf '%s\n%s\n' "$musl_url" "$zlib_url"; } | sha256sum | cut -c1-16 )
         builder="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25-$builder_tag"
-        # ON THE EDGE PLANE THE TARBALL `ADD` NEEDS THE RUN'S TOKEN (qits-441, qits-541): there
-        # $maven_root is the public registry, which answers an anonymous read 401. BuildKit's HTTP
-        # source sends a session secret named HTTP_AUTH_TOKEN_<url host> as `Authorization: Bearer`,
-        # so the secret is keyed by exactly that host and passed only when the step holds
-        # $QITS_TOKEN, which qits-ci sets on the EDGE plane alone. On the INTERNAL plane nothing is
-        # passed and the in-network read stays anonymous, as qits-ci intends. It comes after the
-        # tag on purpose: the credential is no part of what the toolchain IS.
+        # THE TARBALL `ADD` NEEDS THE RUN'S TOKEN (qits-441, qits-541): $maven_root is the public
+        # registry, which answers an anonymous read 401. BuildKit's HTTP source sends a session
+        # secret named HTTP_AUTH_TOKEN_<url host> as `Authorization: Bearer`, so the secret is keyed
+        # by exactly that host and passed only when the step holds $QITS_TOKEN, which qits-ci sets
+        # on every step. It comes after the tag on purpose: the credential is no part of what the
+        # toolchain IS.
         tarball_auth=
         if [ -n "${QITS_TOKEN:-}" ]; then
           tarball_host=$(printf '%s\n' "$maven_root" | sed -E 's|^[A-Za-z]+://||; s|[/:?].*$||')
@@ -158,15 +154,14 @@ release-request:
       fi
 
       # No `--network host` and nothing replaces it: the `RUN` executes in the builder's namespace —
-      # qits-net on the INTERNAL plane, the runner's own buildkitd on the EDGE one — so Maven
-      # Central goes through the run's mirror, and an empty $QITS_MAVEN_PROXY_URL still deactivates
-      # the settings profile so the resolve goes to Central directly.
+      # the runner's own buildkitd — so Maven Central goes through the run's mirror, and an empty
+      # $QITS_MAVEN_PROXY_URL still deactivates the settings profile so the resolve goes to Central
+      # directly.
       #
       # THE CREDENTIAL IS THE TWO SECRET FILES, AND IT IS UNCONDITIONAL, unlike the tarball's: the
       # files qits-ci's prelude writes become QITS_MAVEN_AUTH_USR/PSW inside the mvnw RUN
-      # (docker/Dockerfile). They hold the commissioned pair on the INTERNAL plane, where the
-      # in-network mirror never challenges and so Maven never sends it, and the run's token on the
-      # EDGE plane, where the public mirror answers an anonymous read 401.
+      # (docker/Dockerfile). They hold the run's token subject and token, because the public mirror
+      # answers an anonymous read 401.
       buildctl build --frontend dockerfile.v0 \
         --local context=. --local dockerfile=docker \
         --opt target=binary \
@@ -222,7 +217,7 @@ release:
         zlib_url="$maven_root${zlib_url#*/artifacts/maven/maven}"
         builder_tag=$( { cat docker/Dockerfile.musl-builder; printf '%s\n%s\n' "$musl_url" "$zlib_url"; } | sha256sum | cut -c1-16 )
         builder="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25-$builder_tag"
-        # The QA step's tarball credential, byte for byte: the run's token on the EDGE plane only.
+        # The QA step's tarball credential, byte for byte: the run's token, when the step holds one.
         tarball_auth=
         if [ -n "${QITS_TOKEN:-}" ]; then
           tarball_host=$(printf '%s\n' "$maven_root" | sed -E 's|^[A-Za-z]+://||; s|[/:?].*$||')

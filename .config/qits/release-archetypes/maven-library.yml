@@ -80,7 +80,7 @@ release-request:
       # from inside a step container, and the derived non-localhost address then needs the exact-id
       # mirror in .qits-maven-settings.xml to get past Maven's HTTP blocker.
       export QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL"
-      # Maven Central through the platform mirror's in-network alias. EMPTY IS THE OFF SWITCH — an
+      # Maven Central through the platform mirror's public name. EMPTY IS THE OFF SWITCH — an
       # older qits-ci that injects nothing, or a deployment with the mirror plane off, leaves this
       # empty, which deactivates the settings profile so Central is resolved directly.
       export QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}"
@@ -226,9 +226,9 @@ release:
         .config/qits/release.yml)
       : "${declared:?release.yml declares no maven artifact, so this release publishes nothing}"
       maven_root="${QITS_MAVEN_REGISTRY_URL%/}"
-      # ON AN EDGE RUNNER THIS GET CROSSES THE PUBLIC EDGE, which refuses an anonymous read and
-      # needs the run's own job token; on the internal plane $QITS_TOKEN is unset and the internal
-      # alias needs no auth at all, so the header is added only when there is a token to send. The
+      # THIS GET CROSSES THE PUBLIC EDGE, which refuses an anonymous read and needs the run's own
+      # job token; the header is added only when there is a token to send, so an older qits-ci that
+      # sets no $QITS_TOKEN still reads anonymously rather than sending an empty bearer. The
       # argument list, not an unquoted `${QITS_TOKEN:+-H "Authorization: …"}`, for the same
       # word-splitting reason as the docs publish above: `set --` builds it as words, and an empty
       # `"$@"` under `set -u` expands to nothing in both dash and bash.

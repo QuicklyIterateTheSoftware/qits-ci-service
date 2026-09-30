@@ -3,6 +3,7 @@ package eu.wohlben.qits.ci.daemonhost;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonCodec;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonMessage;
 import io.vertx.core.Vertx;
+import io.vertx.core.http.UpgradeRejectedException;
 import io.vertx.core.http.WebSocket;
 import io.vertx.core.http.WebSocketClient;
 import io.vertx.core.http.WebSocketConnectOptions;
@@ -12,6 +13,7 @@ import java.time.Duration;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -87,6 +89,26 @@ public final class FakeCiDaemon implements AutoCloseable {
     } catch (Exception failedToUpgrade) {
       vertx.close();
       throw failedToUpgrade;
+    }
+  }
+
+  /**
+   * Dial with exactly the handshake headers given and answer the HTTP status the <b>upgrade</b> was
+   * refused with — the 401/403 {@code @RolesAllowed} answers before {@code @OnOpen} is reached. An
+   * upgrade that is admitted instead is the caller's assertion failing, so it throws rather than
+   * answering a status.
+   */
+  public static int refusedUpgradeStatus(URI endpoint, java.util.Map<String, String> headers)
+      throws Exception {
+    try (FakeCiDaemon admitted = dial(endpoint, headers)) {
+      throw new AssertionError("the upgrade was admitted; it must be refused at the handshake");
+    } catch (ExecutionException failed) {
+      for (Throwable cause = failed; cause != null; cause = cause.getCause()) {
+        if (cause instanceof UpgradeRejectedException rejected) {
+          return rejected.getStatus();
+        }
+      }
+      throw failed;
     }
   }
 

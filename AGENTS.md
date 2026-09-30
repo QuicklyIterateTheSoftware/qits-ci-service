@@ -310,8 +310,8 @@ Four things bite:
   with the role `qits:ci-run`, the daemon's first frame (`Hello`) names its launch, and
   `CiDaemonRegistry.admitByToken` admits it only when that launch is recorded against that subject
   (`WRONG_RUN` otherwise). There is no per-container secret and no `X-Qits-Ci-Daemon-*` header
-  (qits-515). `qits:system` is still in the socket's `@RolesAllowed` and admits no launch by itself;
-  narrowing the list to `qits:ci-run` is qits-516.
+  (qits-515). `@RolesAllowed` names `qits:ci-run` alone (qits-516): a `qits:system` dial is refused
+  403 at the handshake rather than admitted to an upgrade that could only end in `WRONG_RUN`.
 - **The path is a cross-repo contract.** `StepAddressPlane` composes
   `wss://ci.qits.<QITS_DOMAIN>/ci/daemon` as `$QITS_CI_DAEMON_URL` and the daemon dials it verbatim.
   Move the `@WebSocket` literal and `StepAddressPlane.DAEMON_SOCKET_PATH` moves with it
@@ -879,9 +879,10 @@ prefix then shows up as a 404 rather than as a pass.
 controller carries a class-level role: **the pair** `{qits:admin, qits:system}` on `CiRunController`
 and `CiRepositoryController` — `qits:system` is the machine role and `qits:admin` the human one, and
 a peer that polls a run it asked for must not be handed a person's role to do it — and `qits:system`
-on `CiEventController`, `CiDaemonController` and `CiDaemonSocket`, which is what a machine peer
-holds — with the trigger method naming the pair itself, since an operator invoking it by hand is one
-of its two real callers and a method-level list replaces the class's rather than adding to it. **Nothing that mutates was widened with them**: `CiRunController.cancelRun` and
+on `CiEventController` and `CiDaemonController`, which is what a machine peer holds
+(`CiDaemonSocket` takes `qits:ci-run` alone, the run's token as the edge forwards it) — with the
+trigger method naming the pair itself, since an operator invoking it by hand is one of its two real
+callers and a method-level list replaces the class's rather than adding to it. **Nothing that mutates was widened with them**: `CiRunController.cancelRun` and
 `CiRunController.retryRun` carry their own method-level `qits:admin`, which replaces the class's list
 rather than adding to it. `cancelReleaseRequestRuns` keeps the class pair, because a peer service
 (qits-projects, withdrawing a release request) and an operator both legitimately call it. So three doors shut in
