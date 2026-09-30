@@ -126,9 +126,19 @@ public class CiPackagedSurfaceIT {
     private static final String EVENTSTREAM_URL_PROPERTY =
         "qits.test.packaged-it.eventstream-url";
 
+    /**
+     * The public domain the launched process states. Every address a runner or a step is told is
+     * composed from it and there is nothing to fall back to (qits-515), so a process launched with
+     * none renders no install script and launches no step. It is the suite's own ({@code
+     * HermeticConfigSource}, which a launched artifact does not see) — a runtime key, handed over
+     * as the {@code -D} a deployment's {@code QITS_DOMAIN} becomes.
+     */
+    public static final String DOMAIN = eu.wohlben.qits.ci.testdb.HermeticConfigSource.DOMAIN;
+
     @Override
     public Map<String, String> getConfigOverrides() {
       return Map.of(
+          "qits.ci.domain", DOMAIN,
           "QITS_RESOURCE_DB_URL", databaseUrl(CI_URL_PROPERTY, "ci_packaged_it"),
           "QITS_RESOURCE_DB_USERNAME", EmbeddedPg.USER,
           "QITS_RESOURCE_DB_PASSWORD", EmbeddedPg.PASSWORD,
@@ -258,51 +268,45 @@ public class CiPackagedSurfaceIT {
 
   @Test
   public void theCiDaemonControlSocketIsOnTheArtifactsRouter() throws Exception {
-    // Route presence, not behaviour: a step container's daemon dials this literal (it is
-    // qits.ci.container-daemon-url's path) and a native build that silently dropped the endpoint
-    // would leave every run stuck at "never registered" with nothing in any log to say why.
+    // Route presence, not behaviour: a step container's daemon dials this literal (it is the path
+    // of the $QITS_CI_DAEMON_URL every step is told) and a native build that silently dropped the
+    // endpoint would leave every run stuck at "never registered" with nothing in any log to say why.
     //
-    // The dial carries credentials the registry cannot know, so the assertion is: the upgrade
-    // SUCCEEDS — proving the endpoint is registered and reachable at /ci/daemon — and the server
-    // then closes it 1008. A missing route fails the upgrade instead, with a 404.
+    // The dial names a launch the registry cannot know, so the assertion is: the upgrade SUCCEEDS —
+    // proving the endpoint is registered and reachable at /ci/daemon — and the server then closes
+    // it 1008 at its Hello. A missing route fails the upgrade instead, with a 404.
     URI socket = URI.create("http://localhost:" + RestAssured.port + "/ci/daemon");
-    try (FakeCiDaemon daemon = FakeCiDaemon.dial(socket, "not-a-launched-daemon", "not-a-secret")) {
+    try (FakeCiDaemon daemon = FakeCiDaemon.dial(socket, "tok-ci-run-packaged-0")) {
+      daemon.hello("not-a-launched-daemon");
       assertEquals(
           (Short) (short) 1008,
           daemon.awaitClose(Duration.ofSeconds(20)),
           "the packaged artifact must serve /ci/daemon and refuse an unknown daemon on it");
-      // Refused by the launch table, which is to say the header form got past the upgrade.
+      // Refused by the launch table, which is to say the dial got past the upgrade.
       assertEquals("UNKNOWN_DAEMON", daemon.closeReason());
     }
   }
 
   @Test
   public void theDaemonSocketAdmitsACiRunCallerAtTheUpgradeAndNoOtherRole() throws Exception {
-    // The edge plane's daemon (qits-477) arrives as its run's ci-run token — the role qits:ci-run,
-    // the token's subject as its name. The gate is off here, so the forward-auth pair carries that
+    // A step's daemon (qits-477) arrives as its run's ci-run token — the role qits:ci-run, the
+    // token's subject as its name. The gate is off here, so the forward-auth pair carries that
     // identity as the edge's validated JWT would with it on; @RolesAllowed is enforced at the
     // upgrade either way, which is what only the artifact's own router can show. Admitted, the
-    // dial reaches the launch table and is refused there for its unknown pair — a subject
-    // compared against a real launch is CiDaemonSocketTest's (right subject admitted, wrong one
-    // WRONG_RUN, a token on an INTERNAL launch WRONG_RUN), since no launch can be made in here.
+    // dial reaches the launch table and is refused there for the unknown launch it names — a
+    // subject compared against a real launch is CiDaemonSocketTest's (right subject admitted,
+    // wrong one WRONG_RUN), since no launch can be made in here.
     URI socket = URI.create("http://localhost:" + RestAssured.port + "/ci/daemon");
-    try (FakeCiDaemon daemon =
-        FakeCiDaemon.dial(
-            socket,
-            "not-a-launched-daemon",
-            "not-a-secret",
-            Map.of(
-                FakeCiDaemon.USER_HEADER, "tok-ci-run-packaged-1",
-                FakeCiDaemon.ROLES_HEADER, "qits:ci-run"))) {
+    try (FakeCiDaemon daemon = FakeCiDaemon.dial(socket, "tok-ci-run-packaged-1")) {
+      daemon.hello("not-a-launched-daemon");
       assertEquals((Short) (short) 1008, daemon.awaitClose(Duration.ofSeconds(20)));
       assertEquals("UNKNOWN_DAEMON", daemon.closeReason());
     }
-    // And a role that is neither is refused at the upgrade itself, before any launch is looked at.
+    // And a role that is not on the socket is refused at the upgrade itself, before any launch is
+    // looked at.
     try (FakeCiDaemon stranger =
         FakeCiDaemon.dial(
             socket,
-            "not-a-launched-daemon",
-            "not-a-secret",
             Map.of(
                 FakeCiDaemon.USER_HEADER, "somebody",
                 FakeCiDaemon.ROLES_HEADER, "qits:agent"))) {
@@ -334,6 +338,10 @@ public class CiPackagedSurfaceIT {
             .asString();
     assertTrue(script.startsWith("#!/bin/sh\n"), script);
     assertFalse(script.contains("{{"), script);
+    // The runner image is named on the registry's public name under the launched process's domain.
+    assertTrue(
+        script.contains("image='registry.qits." + PackagedUnderTarget.DOMAIN + "/qits/qits-ci-runner:"),
+        script);
   }
 
   @Test

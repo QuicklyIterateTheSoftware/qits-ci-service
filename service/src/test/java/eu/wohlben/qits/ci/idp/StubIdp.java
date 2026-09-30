@@ -58,7 +58,7 @@ public final class StubIdp implements AutoCloseable {
   public volatile String mintBody = null;
 
   /**
-   * Answer 400 to a commission whose {@code gitRefs} list is not empty, as a qits-idp with the
+   * Answer 400 to a commission — of a client or of a token — whose {@code gitRefs} list is not empty, as a qits-idp with the
    * Git-scope contract does when it refuses the list. An empty list is still minted. (A qits-idp
    * without the contract ignores the field and mints, which is the default here.)
    */
@@ -83,25 +83,22 @@ public final class StubIdp implements AutoCloseable {
 
   private final AtomicInteger tokensMinted = new AtomicInteger();
 
-  /**
-   * What {@code POST /idp/api/tokens/introspect} answers, per presented value: the body of a 200.
-   * A value with no entry is qits-idp's one 404, {@code no live token for that value} — unknown,
-   * deleted, or its owner gone, which the real door does not tell apart either.
-   */
-  public final java.util.Map<String, String> introspection =
-      new java.util.concurrent.ConcurrentHashMap<>();
-
-  /** Every value the stub was asked to introspect, in order, and who asked. */
-  public final List<String> introspected = Collections.synchronizedList(new ArrayList<>());
-
-  public final List<String> introspectionCallers = Collections.synchronizedList(new ArrayList<>());
-
   public StubIdp() {
     server = vertx.createHttpServer();
     server.requestHandler(
         req -> {
           if (req.path().contains("/api/tokens")) {
             tokens(req);
+            return;
+          }
+          if (req.path().endsWith("/token")) {
+            // The oidc client's own token endpoint, which a process with its qits client switched
+            // on asks for a bearer to present to its peers. This stub mints none: the caller then
+            // sends its request without the header, which is its documented behaviour.
+            req.response()
+                .setStatusCode(400)
+                .putHeader("Content-Type", "application/json")
+                .end("{\"error\":\"unsupported_grant_type\"}");
             return;
           }
           if (req.method() == HttpMethod.POST) {
@@ -179,30 +176,15 @@ public final class StubIdp implements AutoCloseable {
    * id, {@code GET} answers {@link #tokenListingBody}.
    */
   private void tokens(io.vertx.core.http.HttpServerRequest req) {
-    if (req.method() == HttpMethod.POST && req.path().endsWith("/api/tokens/introspect")) {
-      introspectionCallers.add(req.getHeader("Authorization"));
-      req.bodyHandler(
-          body -> {
-            String token = body.toJsonObject().getString("token");
-            introspected.add(token);
-            String answer = token == null ? null : introspection.get(token);
-            req.response()
-                .setStatusCode(answer == null ? 404 : 200)
-                .putHeader("Content-Type", "application/json")
-                .end(
-                    answer == null
-                        ? "{\"error\":\"not_found\",\"error_description\":\"no live token for"
-                            + " that value\"}"
-                        : answer);
-          });
-      return;
-    }
     if (req.method() == HttpMethod.POST) {
       authorizations.add(req.getHeader("Authorization"));
       req.bodyHandler(
           body -> {
             postedTokens.add(body.toString());
-            int status = tokenMintStatus;
+            int status =
+                refuseGitRefList && body.toString().contains("\"gitRefs\":[\"")
+                    ? 400
+                    : tokenMintStatus;
             if (status != 201 && status != 200) {
               req.response()
                   .setStatusCode(status)

@@ -249,7 +249,7 @@ public class CiRunnerHealthTest extends CiTestSupport {
   @Test
   public void aNewlyRegisteredRunnerStartsQuarantinedAndIsQueuedAHealthCheck() {
     UUID id = UUID.randomUUID();
-    runners.create(id, "fresh-host", null, 3, CiRunnerPlane.INTERNAL, "tok", "sub-fresh");
+    runners.create(id, "fresh-host", null, 3, CiRunnerPlane.EDGE, "tok", "sub-fresh");
     runners.markRegistered(id, "client-fresh", "{\"docker\":true}");
     health.onRegistered(id);
 
@@ -485,7 +485,7 @@ public class CiRunnerHealthTest extends CiTestSupport {
               runner.id = UUID.randomUUID();
               runner.name = name;
               runner.slots = slots;
-              runner.plane = CiRunnerPlane.INTERNAL;
+              runner.plane = CiRunnerPlane.EDGE;
               runner.clientId = "client-" + name;
               runner.capabilities = "{\"docker\":true,\"arch\":\"amd64\"}";
               runner.registeredAt = Instant.now();

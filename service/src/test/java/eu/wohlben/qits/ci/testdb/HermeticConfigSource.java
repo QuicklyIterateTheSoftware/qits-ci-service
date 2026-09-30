@@ -31,13 +31,16 @@ import org.eclipse.microprofile.config.spi.ConfigSource;
  * artifact, which does not see this test-classpath source.
  *
  * <p><b>{@code qits.artifacts.url} is blanked because every step container names it by
- * accident.</b> {@code StepWorkloadSpecs} sends {@code QITS_ARTIFACTS_URL} on both planes — an
- * internal alias on one, the public edge vhost on the other — and the environment source maps it
- * onto this key, which the service ships unset. So the plane a QA run happened to land on decided
- * {@code StepContainerSettings}'s and {@code HttpImagePins}' answers. It is the only key in the step
- * environment that maps onto a config key this service reads; {@code QITS_DOMAIN} reaches {@code
- * qits.ci.domain} only through an expression the shipped {@code %test.qits.ci.domain=} already
- * replaces.
+ * accident.</b> {@code StepWorkloadSpecs} sends {@code QITS_ARTIFACTS_URL} — the registry's public
+ * name — and the environment source maps it onto this key, which the service ships unset and {@code
+ * HttpImagePins} reads. It is the only key in the step environment that maps onto a config key this
+ * service reads.
+ *
+ * <p><b>{@code qits.ci.domain} is the suite's own, {@link #DOMAIN}.</b> Every address a runner or a
+ * step is told is composed from the platform's public domain and there is nothing to fall back to
+ * (qits-515), so a suite with no domain could declare no runner and launch no step. The shipped key
+ * is {@code ${QITS_DOMAIN:}}, which an ambient variable would decide; this pin is above it. A case
+ * about a qits-ci that knows no domain installs a {@code RunnerAddresses} of its own over the bean.
  */
 public class HermeticConfigSource implements ConfigSource {
 
@@ -49,8 +52,12 @@ public class HermeticConfigSource implements ConfigSource {
           + "YfLJVKyOY2TUwobGmiyNh+ZevqeTLQ2txavZjeh/vDcHIKfSWo7GfHlAXVeCHS6igp4pCc0vAJwoBk3gTf+kAav3+"
           + "irYhO16f80pQXjrMOxBySoy45KhciQIDAQAB";
 
+  /** The public domain the suite's qits-ci states: its names are {@code <host>.qits.suite.example}. */
+  public static final String DOMAIN = "suite.example";
+
   private final Map<String, String> values =
       Map.of(
+          "qits.ci.domain", DOMAIN,
           "quarkus.oidc.auth-server-url", "",
           "quarkus.oidc.public-key", NOBODYS_PUBLIC_KEY,
           "qits.artifacts.url", "");

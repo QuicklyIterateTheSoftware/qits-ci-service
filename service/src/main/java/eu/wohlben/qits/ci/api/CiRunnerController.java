@@ -15,9 +15,7 @@ import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.CiException;
 import eu.wohlben.qits.ci.error.NotFoundException;
 import eu.wohlben.qits.ci.error.UnavailableException;
-import eu.wohlben.qits.ci.error.ForbiddenException;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
-import eu.wohlben.qits.ci.runnerhost.RegistrationTokenIdentityProvider;
 import eu.wohlben.qits.ci.runnerhost.RunnerAddresses;
 import eu.wohlben.qits.ci.runnerhost.RunnerInstallScript;
 import io.quarkus.security.identity.SecurityIdentity;
@@ -115,10 +113,10 @@ public class CiRunnerController {
           Integer slots,
       @Schema(
               description =
-                  "Where its steps reach the platform: EDGE through the public names, INTERNAL on"
-                      + " qits-net. Default EDGE when this qits-ci knows its public domain,"
-                      + " INTERNAL when it does not")
-          CiRunnerPlane plane,
+                  "Where its steps reach the platform. There is one plane, EDGE — through the"
+                      + " public names — and absent means EDGE. Any other value is refused 400",
+              enumeration = {"EDGE"})
+          String plane,
       @Schema(
               description =
                   "The memory cap its step containers get, memory and memory-swap alike: a docker"
@@ -129,8 +127,10 @@ public class CiRunnerController {
   public record PatchRunnerRequest(
       @Schema(description = "0 drains the runner; absent leaves it") Integer slots,
       @Schema(description = "Blank clears it; absent leaves it") String description,
-      @Schema(description = "EDGE or INTERNAL; absent leaves it. Reaches the runner's next run")
-          CiRunnerPlane plane,
+      @Schema(
+              description = "EDGE, or absent; it changes nothing. Any other value is refused 400",
+              enumeration = {"EDGE"})
+          String plane,
       @Schema(
               description =
                   "A docker size (6g, 6144m) its step containers are capped at; blank clears it back"
@@ -138,8 +138,8 @@ public class CiRunnerController {
                       + " the runner's next step")
           String stepMemoryLimit) {}
 
-  /** The refusal of an EDGE plane on a qits-ci that knows no public domain — code and message. */
-  static final String EDGE_PLANE_UNCONFIGURED = "EDGE_PLANE_UNCONFIGURED";
+  /** The refusal of a plane that is not {@code EDGE} — code and message. */
+  static final String UNKNOWN_PLANE = "UNKNOWN_PLANE";
 
   /**
    * A runner together with the secret-bearing answer only the request that minted it gets: the
@@ -232,13 +232,15 @@ public class CiRunnerController {
   @APIResponse(
       responseCode = "400",
       description =
-          "A malformed name, slots, description or stepMemoryLimit, or EDGE_PLANE_UNCONFIGURED: an"
-              + " EDGE plane on a qits-ci that knows no public domain")
+          "A malformed name, slots, description or stepMemoryLimit, or UNKNOWN_PLANE: a plane"
+              + " other than EDGE — INTERNAL included, which no longer exists")
   @APIResponse(responseCode = "409", description = "The name is taken")
   @APIResponse(responseCode = "502", description = "qits-idp refused the registration token")
   @APIResponse(
       responseCode = "503",
-      description = "This deployment commissions nothing, or cannot render an install script")
+      description =
+          "This deployment commissions nothing, or cannot render an install script — which"
+              + " includes knowing no public domain to address a runner by")
   public Response create(CreateRunnerRequest request) {
     requireMachineAudience();
     if (request == null) {
@@ -246,9 +248,9 @@ public class CiRunnerController {
     }
     runners.requireCreatable(
         request.name(), request.description(), request.slots(), request.stepMemoryLimit());
-    CiRunnerPlane plane = request.plane() == null ? defaultPlane() : requireComposable(request.plane());
+    CiRunnerPlane plane = requirePlane(request.plane());
     requireCommissioning();
-    requireRenderable(plane);
+    requireRenderable();
     UUID id = UUID.randomUUID();
     IdpCommissioner.CommissionedToken token = commissionRegistrationToken(id);
     CiRunner runner;
@@ -290,9 +292,8 @@ public class CiRunnerController {
    * The generic install script the install line pipes into {@code sh}: this deployment's artifacts
    * base and pinned runner version, and no secret and no runner — those four values reach it from
    * the line's {@code env}. Read with the registration token, which is what a host holds before it
-   * holds anything else; behind the edge that token arrives as the edge's JWT, on qits-net as the
-   * raw value {@code runnerhost/RegistrationTokenMechanism} introspects for this route and the
-   * register door alone.
+   * holds anything else: the install line presents it to the platform edge, which introspects it and
+   * forwards the JWT it mints for it.
    */
   @GET
   @Path("/install.sh")
@@ -304,7 +305,7 @@ public class CiRunnerController {
       responseCode = "503",
       description = "This deployment cannot render an install script")
   public String installScript() {
-    requireGenericRenderable();
+    requireRenderable();
     return installScript.generic();
   }
 
@@ -322,56 +323,42 @@ public class CiRunnerController {
   @Path("/{id}")
   @Consumes(MediaType.APPLICATION_JSON)
   @RolesAllowed({ADMIN_ROLE, SYSTEM_ROLE})
-  @Operation(summary = "Change a runner's slots, description, plane or step memory limit")
+  @Operation(summary = "Change a runner's slots, description or step memory limit")
   @APIResponse(responseCode = "200", description = "The runner as it now is")
   @APIResponse(
       responseCode = "400",
       description =
           "Negative slots, an overlong description, a malformed stepMemoryLimit, or"
-              + " EDGE_PLANE_UNCONFIGURED: an EDGE plane on a qits-ci that knows no public domain")
+              + " UNKNOWN_PLANE: a plane other than EDGE")
   @APIResponse(responseCode = "404", description = "No such runner")
   public CiRunnerDto patch(@PathParam("id") String id, PatchRunnerRequest request) {
     requireMachineAudience();
     PatchRunnerRequest change =
         request == null ? new PatchRunnerRequest(null, null, null, null) : request;
     UUID runnerId = runnerId(id);
-    if (change.plane() != null) {
-      requireComposable(change.plane());
-    }
+    CiRunnerPlane plane = change.plane() == null ? null : requirePlane(change.plane());
     return runners.view(
         runners.patch(
-            runnerId,
-            change.slots(),
-            change.description(),
-            change.plane(),
-            change.stepMemoryLimit()));
+            runnerId, change.slots(), change.description(), plane, change.stepMemoryLimit()));
   }
 
   /**
-   * The plane a runner is created on when the request names none: <b>EDGE whenever this qits-ci knows
-   * its public domain</b> — a runner is a machine a person owns, outside the swarm, so the edge is
-   * the only way its steps can reach anything (the owner's ruling on qits-474) — and INTERNAL on a
-   * clone or a suite that knows none, where the qits-net aliases are the only addresses there are.
+   * The plane a request names: {@code EDGE}, or none, which is {@code EDGE}. Anything else is 400
+   * {@code UNKNOWN_PLANE} — {@code INTERNAL} included, the qits-net plane deleted in qits-515 — and
+   * it is asked before anything is minted, so the refusal leaves nothing behind. Exact, not
+   * case-folded: the wire word is the constant's name.
    */
-  private CiRunnerPlane defaultPlane() {
-    return addresses.edgeAvailable() ? CiRunnerPlane.EDGE : CiRunnerPlane.INTERNAL;
-  }
-
-  /**
-   * 400 {@code EDGE_PLANE_UNCONFIGURED} for an EDGE plane this qits-ci cannot compose: with no public
-   * domain there is no public name to tell a step, and an internal alias would name nothing the
-   * runner's host can resolve. Asked before anything is minted, so the refusal leaves nothing
-   * behind.
-   */
-  private CiRunnerPlane requireComposable(CiRunnerPlane plane) {
-    if (plane == CiRunnerPlane.EDGE && !addresses.edgeAvailable()) {
-      throw new BadRequestException(
-          EDGE_PLANE_UNCONFIGURED,
-          EDGE_PLANE_UNCONFIGURED
-              + ": this qits-ci knows no public domain (QITS_DOMAIN), so a step on an EDGE runner"
-              + " has no public name to reach the platform by");
+  private static CiRunnerPlane requirePlane(String plane) {
+    if (plane == null || CiRunnerPlane.EDGE.name().equals(plane)) {
+      return CiRunnerPlane.EDGE;
     }
-    return plane;
+    throw new BadRequestException(
+        UNKNOWN_PLANE,
+        UNKNOWN_PLANE
+            + ": a runner's plane is EDGE and nothing else"
+            + ("INTERNAL".equals(plane)
+                ? " — INTERNAL, a runner on qits-net, no longer exists"
+                : ""));
   }
 
   /**
@@ -397,9 +384,9 @@ public class CiRunnerController {
   public CiRunnerCreated rotateRegistrationToken(@PathParam("id") String id) {
     requireMachineAudience();
     UUID runnerId = runnerId(id);
-    CiRunnerPlane plane = runners.requireUnregistered(runnerId).plane;
+    runners.requireUnregistered(runnerId);
     requireCommissioning();
-    requireRenderable(plane);
+    requireRenderable();
     IdpCommissioner.CommissionedToken token = commissionRegistrationToken(runnerId);
     String previous;
     try {
@@ -491,12 +478,12 @@ public class CiRunnerController {
   public record HealthCheckQueued(String runId) {}
 
   /**
-   * The register door. A runner presents its registration token — as the JWT the edge mints for it,
-   * or, on qits-net where there is no edge, as the raw {@code qits_tok_} value, which {@code
-   * runnerhost/RegistrationTokenMechanism} introspects at qits-idp for this route alone — with what
-   * it says about itself, and is answered its own client, once. A raw token must be a {@code
-   * ci-runner-registration} token whose context is this runner (403 otherwise); a value qits-idp
-   * does not call live is a 401 before this method runs.
+   * The register door. A runner presents its registration token to the platform edge, which
+   * introspects it and forwards the short JWT it mints for it — role {@code
+   * qits:ci-runner-registration}, {@code sub} the token's subject — with what the runner says about
+   * itself, and is answered its own client, once. That JWT is the only way in: the mechanism that
+   * let a runner on qits-net present the raw {@code qits_tok_} value to this service directly was
+   * deleted with the internal plane (qits-515), so a raw value here is a bearer quarkus-oidc refuses.
    *
    * <p><b>Four refusals, in this order</b>: a bearer that is no machine token, or is not addressed to
    * this platform, is {@code MachineAuth}'s; no such runner is 404; a {@code sub} that is not this
@@ -524,30 +511,29 @@ public class CiRunnerController {
   @APIResponse(responseCode = "404", description = "No such runner")
   @APIResponse(responseCode = "409", description = "The runner is already registered")
   @APIResponse(responseCode = "502", description = "qits-idp refused the runner's client")
-  @APIResponse(responseCode = "503", description = "This deployment commissions nothing")
+  @APIResponse(
+      responseCode = "503",
+      description =
+          "This deployment commissions nothing, or knows no public domain to tell the runner its"
+              + " addresses by")
   public RegisteredRunner register(@PathParam("id") String id, RegisterRunnerRequest request) {
-    IdpCommissioner.IntrospectedToken raw =
-        identity.getAttribute(RegistrationTokenIdentityProvider.INTROSPECTED);
-    if (raw == null) {
-      // Behind the edge: a short JWT the edge minted for the token, checked like any machine bearer.
-      machineAuth.require();
-    }
+    // A short JWT the edge minted for the registration token, checked like any machine bearer.
+    machineAuth.require();
     UUID runnerId = runnerId(id);
     String capabilities = capabilities(request);
-    String subject;
-    if (raw != null) {
-      // The raw token, introspected by this service itself: qits-idp vouched that it is live, and
-      // what it said must name this door and this runner before the subject is compared at all.
-      if (!IdpCommissioner.RUNNER_REGISTRATION_KIND.equals(raw.contextKind())
-          || !runnerId.toString().equals(raw.contextId())) {
-        throw new ForbiddenException("This registration token is not this runner's");
-      }
-      subject = raw.subject();
-    } else {
-      subject = MachineIdentity.claim(identity, "sub").orElse(null);
-    }
+    String subject = MachineIdentity.claim(identity, "sub").orElse(null);
     CiRunner runner = runners.requireRegistrable(runnerId, subject);
     requireCommissioning();
+    // Before the client is minted: a runner that could not be told where to use it would hold a
+    // client nobody can reach anything with.
+    String tokenUrl;
+    String socketUrl;
+    try {
+      tokenUrl = addresses.tokenUrl();
+      socketUrl = addresses.socketUrl();
+    } catch (RunnerAddresses.UnconfiguredException unconfigured) {
+      throw new UnavailableException(unconfigured.getMessage());
+    }
     IdpCommissioner.Commission client;
     try {
       client = idp.commission(IdpCommissioner.RUNNER_KIND, runnerId.toString(), List.of());
@@ -575,10 +561,7 @@ public class CiRunnerController {
     health.onRegistered(runnerId);
     return new RegisteredRunner(
         client.clientId(),
-        client.secret(),
-        addresses.tokenUrl(runner.plane),
-        addresses.audience(),
-        addresses.socketUrl(runner.plane));
+        client.secret(), tokenUrl, addresses.audience(), socketUrl);
   }
 
   private static String capabilities(RegisterRunnerRequest request) {
@@ -630,16 +613,7 @@ public class CiRunnerController {
    * 503 when this deployment's runner addresses or pinned binary version could not be rendered into
    * an install script — checked before anything is minted, so a misconfiguration costs no token.
    */
-  private void requireRenderable(CiRunnerPlane plane) {
-    try {
-      installScript.requireRenderable(plane);
-    } catch (IllegalStateException unrenderable) {
-      throw new UnavailableException(unrenderable.getMessage());
-    }
-  }
-
-  /** {@link #requireRenderable(CiRunnerPlane)} for the generic script, which names no runner. */
-  private void requireGenericRenderable() {
+  private void requireRenderable() {
     try {
       installScript.requireRenderable();
     } catch (IllegalStateException unrenderable) {

@@ -49,7 +49,7 @@ import org.junit.jupiter.api.Test;
  * deployment has.
  *
  * <p><b>It lives in its own {@code config} package deliberately.</b> What it pins spans the idp
- * tenant, the telemetry receiver and the ci jar's container-facing addresses, so no feature package
+ * tenant, the telemetry receiver and the ci jar's own peer addresses, so no feature package
  * owns it; a test-only package is the same shape {@code testdb} already is here.
  */
 class DerivedEnvironmentAddressTest {
@@ -143,15 +143,15 @@ class DerivedEnvironmentAddressTest {
 
   @Test
   void theCiJarsOwnDefaultsDeriveTheSameWayAtTheirOwnOrdinal() throws IOException {
-    // The same expression in a library jar's defaults, which is where most of this service's
-    // container-facing addresses live. The address a step container is TOLD to dial back at is the
-    // one worth pinning of them: the container parses nothing out of it, so the derivation is the
-    // host's and happens here, before the string is ever sent.
+    // The same expression in a library jar's defaults: the addresses qits-ci ITSELF dials from
+    // inside the swarm. (The ones a step container used to be told — the daemon socket among them —
+    // are not keys any more: a step is told public names composed from QITS_DOMAIN, qits-515.)
+    assertEquals("http://dev-qits-githost:8080", value(config(Map.of()), "qits.ci.git-host-url"));
     assertEquals(
-        "ws://dev-qits-ci:8080/ci/daemon",
-        value(config(Map.of()), "qits.ci.container-daemon-url"));
+        "http://staging-qits-githost:8080",
+        value(config(Map.of("QITS_ENVIRONMENT", "staging")), "qits.ci.git-host-url"));
     assertEquals(
-        "ws://staging-qits-ci:8080/ci/daemon",
-        value(config(Map.of("QITS_ENVIRONMENT", "staging")), "qits.ci.container-daemon-url"));
+        "http://staging-qits-artifacts:8080/artifacts/maven/maven",
+        value(config(Map.of("QITS_ENVIRONMENT", "staging")), "qits.artifacts.maven.registry-url"));
   }
 }

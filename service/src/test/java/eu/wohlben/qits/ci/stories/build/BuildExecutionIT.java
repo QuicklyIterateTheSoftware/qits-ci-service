@@ -3,6 +3,7 @@ package eu.wohlben.qits.ci.stories.build;
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -47,11 +48,12 @@ import org.junit.jupiter.api.condition.EnabledIf;
  * <ol>
  *   <li>A <b>runner</b> — a machine registered with qits-ci, holding {@code /ci/runners/socket}
  *       open — reserves the run, and qits-ci sends it a {@code Launch} for the step: the whole
- *       workload spec, whose environment carries a per-container id and secret minted for this one
- *       step. The runner's host starts that container with its own docker; this process holds no
+ *       workload spec, whose environment carries a launch id minted for this one step and the
+ *       run's own token. The runner's host starts that container with its own docker; this process holds no
  *       docker socket, spawns no process and calls no orchestrator (qits-506).
- *   <li>The container's own {@code qits-ci-daemon} <b>dials out</b> to {@code ws://…/ci/daemon} with
- *       those two headers. qits-ci never dials in, which is why a step container needs no address.
+ *   <li>The container's own {@code qits-ci-daemon} <b>dials out</b> to {@code wss://…/ci/daemon},
+ *       through the platform edge, presenting the run's token, and names its launch in its first
+ *       frame. qits-ci never dials in, which is why a step container needs no address.
  *   <li>The daemon says {@code Initialized} once its checkout is done, and <b>the step is the reply
  *       to that</b>. The host initiates nothing: a script leaves this process as one field of one
  *       JSON frame, and executes as the daemon's child inside the sandbox.
@@ -64,9 +66,9 @@ import org.junit.jupiter.api.condition.EnabledIf;
  * Vert.x WebSocket framing the vendored protocol exactly as the native binary does, and — the part
  * that makes this evidence rather than a fixture — it learns its credentials <b>only</b> from the
  * workload spec that reached {@link StoryRunner} in a {@code Launch}. Nothing here reads the host's
- * launch table. An admitted dial is therefore a measurement of the whole path: qits-ci minted a
- * secret, put it in a container spec, sent it to the runner, and then recognised it coming back off a
- * socket.
+ * launch table. An admitted dial is therefore a measurement of the whole path: qits-ci commissioned
+ * the run a token, minted the launch an id, put both in a container spec, sent it to the runner,
+ * and then recognised the launch coming back off a socket as that token's subject.
  *
  * <p>What is <b>not</b> proved here, and is out of reach in this container: a real image, a real
  * daemon binary and a real docker daemon. The real daemon binary is {@code CiDaemonPinIT}'s; the
@@ -133,12 +135,12 @@ public class BuildExecutionIT {
 
   /**
    * The two credentials this story handles, kept so {@code @AfterAll} can assert neither reached the
-   * bundle. The second one matters most: a per-container secret is what admits a dial to the control
-   * socket, and a report is a document somebody publishes.
+   * bundle. The second one matters most: the run's token is everything a step container may do on
+   * the platform, and a report is a document somebody publishes.
    */
   private static String platformBearer;
 
-  private static String daemonSecret;
+  private static String runToken;
 
   private static String triggerFile() {
     return """
@@ -169,8 +171,8 @@ public class BuildExecutionIT {
   @UserStoryDescription(
       """
       A pipeline declares a step, and the step runs somewhere qits-ci cannot reach. A runner takes
-      the run, and qits-ci asks it to start a container for the step, handing it an id and a secret
-      nobody else holds, and then waits — because the container's daemon is what dials back. The
+      the run, and qits-ci asks it to start a container for the step, handing it an id and the
+      run's own token, and then waits — because the container's daemon is what dials back. The
       step itself travels down that connection as the reply to the daemon saying its checkout is
       done, and the build's output comes back up it a frame at a time. This story is that whole
       exchange, played by a real client of the real socket that learns its credentials the way a
@@ -198,17 +200,22 @@ public class BuildExecutionIT {
     runId = runIds.getFirst();
     story.note("a release this repository depends on is announced, and a run is accepted").as("run-accepted");
 
-    // --- a runner takes the run, and qits-ci asks it for a container: that is where the secret is
+    // --- a runner takes the run, and qits-ci asks it for a container: that is where the token is
     NetworkCapture.actor(StoryRunner.ACTOR);
     StoryRunner runner = StoryRunner.connect();
     runner.take(runId);
     StoryRunner.Launch launch = runner.awaitLaunch(LAUNCH_PATIENCE);
     String daemonId = launch.environment().get(StoryDaemon.ID_VARIABLE);
-    String secret = launch.environment().get(StoryDaemon.SECRET_VARIABLE);
-    daemonSecret = secret;
-    // Read once, used twice: to dial with, and afterwards to prove it is nowhere in the bundle.
-    assertNotNull(daemonId, "the spec must carry the per-container daemon id");
-    assertNotNull(secret, "…and the secret that is the whole of this socket's authentication");
+    runToken = launch.environment().get(StoryDaemon.TOKEN_VARIABLE);
+    // Read once, used twice: what the container would present to the edge, and afterwards to
+    // prove it is nowhere in the bundle.
+    assertNotNull(daemonId, "the spec must carry the per-container launch id");
+    assertNotNull(runToken, "…and the run's token, which is the whole of the step's credential");
+    assertTrue(runToken.startsWith("qits_tok_"), "…an opaque token, not a client pair");
+    assertNull(
+        launch.environment().get("QITS_CI_DAEMON_SECRET"), "there is no per-container secret");
+    assertNull(
+        launch.environment().get("QITS_COMMISSIONED_CLIENT_ID"), "and no commissioned client");
     // The address is a cross-repo contract: the daemon binary dials this string verbatim, so the
     // path in it and the @WebSocket literal on the endpoint are the same fact spelled twice.
     assertTrue(
@@ -217,13 +224,14 @@ public class BuildExecutionIT {
     runner.launched(launch);
     story
         .note(
-            "a runner takes the run, and qits-ci asks it for one container, carrying an id and a"
-                + " secret for it")
+            "a runner takes the run, and qits-ci asks it for one container, carrying an id for"
+                + " it and the run's token")
         .as("container-requested");
 
     // --- the container's daemon dials back ------------------------------------------------------
     NetworkCapture.actor(StoryDaemon.ACTOR);
-    try (StoryDaemon daemon = StoryDaemon.dial(StoryTarget.daemonSocket(), daemonId, secret)) {
+    try (StoryDaemon daemon =
+        StoryDaemon.dial(StoryTarget.daemonSocket(), launch.environment())) {
       daemon.hello(daemonId);
       assertEquals(
           CiDaemonProtocol.CAPABILITY_VERSION,
@@ -232,8 +240,8 @@ public class BuildExecutionIT {
       daemon.heartbeat();
       story
           .note(
-              "the step container's daemon dials out, asserts its own qits:system role at the"
-                  + " handshake, and is admitted on the secret minted for this container")
+              "the step container's daemon dials out through the edge as its run's token, names"
+                  + " its launch, and is admitted as that run's")
           .as("daemon-admitted");
 
       // The checkout is the daemon's own business; the host learns of it as one frame, and answers
@@ -456,9 +464,9 @@ public class BuildExecutionIT {
         STEP_SLUG,
         List.of(PLATFORM, StoryRunner.ACTOR, StoryDaemon.ACTOR, StoryTarget.SERVICE));
     // Neither credential is in the bundle: not the bearer that opened the trigger, and not the
-    // per-container secret that admitted the socket.
+    // run's token the container was handed.
     ReportAssertions.assertNotLeaked(BUILDS, STEP_SLUG, platformBearer);
-    ReportAssertions.assertNotLeaked(BUILDS, STEP_SLUG, daemonSecret);
+    ReportAssertions.assertNotLeaked(BUILDS, STEP_SLUG, runToken);
 
     // --- the transcript ------------------------------------------------------------------------
     ReportAssertions.assertComplete(OPERATIONS, TRANSCRIPT_SLUG, UserflowReport.PASSED);

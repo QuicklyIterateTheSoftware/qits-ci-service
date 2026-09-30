@@ -145,10 +145,10 @@ public class CiDaemonBootstrapFetchTest {
       ProcessBuilder builder = new ProcessBuilder("/bin/sh", "-c", bootstrap);
       builder.redirectOutput(out.toFile());
       builder.redirectError(err.toFile());
-      // Nothing inherited but PATH and HOME, so every conditional block — the registry login, the
-      // client pair's and QITS_TOKEN's credential setup — is skipped: this test is about the fetch,
-      // and the credential-to-file mechanism is StepContainerSettingsTest's subject. A remove-list here
-      // missed QITS_TOKEN on qits-ci's first edge run; see HermeticEnvironment.
+      // Nothing inherited but PATH and HOME, so every conditional block — the registry login and
+      // QITS_TOKEN's credential setup — is skipped: this test is about the fetch, and what the
+      // token becomes is CiDaemonBootstrapTokenTest's subject. A remove-list here missed QITS_TOKEN
+      // on qits-ci's first run through the edge; see HermeticEnvironment.
       Map<String, String> env = HermeticEnvironment.of(builder);
       env.put("QITS_CI_DAEMON_BINARY_URL", "http://127.0.0.1:" + port + "/qits-ci-daemon");
       process = builder.start();

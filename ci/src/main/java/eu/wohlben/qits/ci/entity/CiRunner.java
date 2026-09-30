@@ -4,10 +4,9 @@ import eu.wohlben.qits.eventstream.CausationStamp;
 import eu.wohlben.qits.eventstream.CausedRow;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.Instant;
@@ -69,9 +68,14 @@ public class CiRunner extends PanacheEntityBase implements CausedRow {
   @Column(nullable = false)
   public int slots;
 
-  @Enumerated(EnumType.STRING)
+  /**
+   * Always {@link CiRunnerPlane#EDGE}. Converted rather than {@code @Enumerated} so that a row still
+   * storing the retired {@code INTERNAL} reads instead of throwing — see {@link
+   * CiRunnerPlaneConverter}.
+   */
+  @Convert(converter = CiRunnerPlaneConverter.class)
   @Column(nullable = false, length = 32)
-  public CiRunnerPlane plane;
+  public CiRunnerPlane plane = CiRunnerPlane.EDGE;
 
   /**
    * The memory cap this runner's step containers get — memory and memory-swap alike — as the docker

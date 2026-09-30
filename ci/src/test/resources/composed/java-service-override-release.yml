@@ -43,10 +43,7 @@ steps:
       : "${QITS_BUILD_REGISTRY:?}"
       (
         umask 077
-        if [ -n "${QITS_COMMISSIONED_CLIENT_ID:-}" ]; then
-          printf '%s' "$QITS_COMMISSIONED_CLIENT_ID" > /tmp/qits-client-id
-          printf '%s' "$QITS_COMMISSIONED_CLIENT_SECRET" > /tmp/qits-client-secret
-        elif [ -n "${QITS_TOKEN:-}" ]; then
+        if [ -n "${QITS_TOKEN:-}" ]; then
           printf '%s' "${QITS_TOKEN_SUBJECT:-qits-ci-run}" > /tmp/qits-client-id
           printf '%s' "$QITS_TOKEN" > /tmp/qits-client-secret
         else

@@ -18,7 +18,7 @@ import java.net.URI;
  *   <li><b>{@code /ci/daemon}</b> — the control socket, a {@code @WebSocket} literal that does
  *       <em>not</em> follow {@code quarkus.rest.path} and therefore spells the {@code /ci} segment
  *       itself. It is the string every step container's daemon dials verbatim
- *       ({@code qits.ci.container-daemon-url}), which is why it is written here as an absolute
+ *       (the path of every step's {@code $QITS_CI_DAEMON_URL}), which is why it is written here as an absolute
  *       literal rather than derived from anything.
  *   <li><b>{@code /ci/q/…}</b> — what Quarkus itself serves. The framework's RestAssured tap skips
  *       any path with a {@code /q/} segment, and this service's non-application root is

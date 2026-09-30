@@ -99,7 +99,7 @@ public final class StoryRunner implements AutoCloseable {
 
   /**
    * Seeds the runner's row in the launched process's database, once — see the class javadoc. One
-   * slot, INTERNAL, docker-capable, not quarantined.
+   * slot, docker-capable, not quarantined.
    */
   public static synchronized void register() throws Exception {
     if (registered) {
@@ -111,7 +111,7 @@ public final class StoryRunner implements AutoCloseable {
         PreparedStatement insert =
             db.prepareStatement(
                 "insert into ci_runner (id, name, slots, plane, client_id, capabilities,"
-                    + " registered_at, created_at) values (?, ?, 1, 'INTERNAL', ?, cast(? as jsonb), ?, ?)"
+                    + " registered_at, created_at) values (?, ?, 1, 'EDGE', ?, cast(? as jsonb), ?, ?)"
                     + " on conflict do nothing")) {
       Timestamp now = Timestamp.from(Instant.now());
       insert.setObject(1, ID);

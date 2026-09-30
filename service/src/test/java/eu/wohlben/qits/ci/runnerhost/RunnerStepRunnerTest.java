@@ -18,6 +18,8 @@ import eu.wohlben.qits.ci.control.CiStepRunner.StepSpec;
 import eu.wohlben.qits.ci.control.FakeCiStepRunner;
 import eu.wohlben.qits.ci.daemonhost.FakeCiDaemon;
 import eu.wohlben.qits.ci.idp.RunCommissions;
+import eu.wohlben.qits.ci.idp.ScriptedRunTokens;
+import eu.wohlben.qits.ci.testdb.HermeticConfigSource;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiRunner;
@@ -46,6 +48,7 @@ import eu.wohlben.qits.cirunner.protocol.Take;
 import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.common.http.TestHTTPResource;
+import io.quarkus.test.junit.QuarkusMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.quarkus.test.security.TestSecurity;
@@ -74,7 +77,9 @@ import org.junit.jupiter.api.Test;
  * would arrange it, so the whole sequence is real except the two containers.
  *
  * <p>The identity is the test's {@code @TestSecurity}, carrying both roles, because Quarkus applies
- * it to every upgrade in the method — the runner's and the daemon's. The gate is on for the runner
+ * it to every upgrade in the method — the runner's and the daemon's. So the daemon arrives as the
+ * {@code sub} {@link #CLIENT}, and every run's {@code ci-run} token is scripted to carry that
+ * subject ({@link ScriptedRunTokens}): a step's daemon is admitted only as its run's token. The gate is on for the runner
  * socket's reason ({@link CiRunnerSocketTest}); the profile is the same class, so the same start.
  */
 @QuarkusTest
@@ -115,6 +120,8 @@ class RunnerStepRunnerTest {
 
   @Inject StepContainerSettings launcher;
 
+  @Inject RunnerAddresses addresses;
+
   @Inject CiRunnerRepository runnerRows;
 
   @Inject CiRunRepository runs;
@@ -129,6 +136,8 @@ class RunnerStepRunnerTest {
 
   private UUID runnerId;
 
+  private ScriptedRunTokens runTokens;
+
   @BeforeEach
   void declareARegisteredRunner() {
     // Create the bean HERE, on the test thread. The cases call steps.run from supplyAsync, and a
@@ -137,6 +146,9 @@ class RunnerStepRunnerTest {
     // keys, so the register, init and grace deadlines all read 0 and a step fails NEVER_STARTED
     // before its daemon has dialled. Measured 2026-09-28 in a narrow run (-Dtest=RunnerStepRunnerTest).
     steps.owns("warm-up");
+    // The suite ships the qits oidc client off, and a step with no token is not launched.
+    runTokens = new ScriptedRunTokens(CLIENT);
+    QuarkusMock.installMockForType(runTokens, RunCommissions.class);
     localSteps.reset();
     runnerId = UUID.randomUUID();
     QuarkusTransaction.requiringNew()
@@ -147,7 +159,7 @@ class RunnerStepRunnerTest {
               runner.id = runnerId;
               runner.name = RUNNER_NAME;
               runner.slots = 1;
-              runner.plane = CiRunnerPlane.INTERNAL;
+              runner.plane = CiRunnerPlane.EDGE;
               runner.clientId = CLIENT;
               runner.registeredAt = Instant.now();
               runner.createdAt = Instant.now();
@@ -199,15 +211,20 @@ class RunnerStepRunnerTest {
       assertTrue(
           workload.labels().keySet().stream().noneMatch(k -> k.startsWith("qits.ci.runner")),
           "the runner refuses its own namespace in a spec, and stamps it itself");
-      // The local composition, field for field: a step on a runner is the same step.
+      // The composition, field for field: the suite's public names and the run's token.
       assertEquals(
           StepWorkloadSpecs.compose(
               launcher.workloadSettings(),
-              launcher.internalPlane(),
+              launcher.plane(addresses.edgeOrigins().orElseThrow()),
               launchSpec(runId, workload),
-              (RunCommissions.Credential) null,
+              runTokens.forRun(runId, Map.of()),
               null),
           workload);
+      assertEquals(
+          "wss://ci.qits." + HermeticConfigSource.DOMAIN + "/ci/daemon",
+          workload.env().get("QITS_CI_DAEMON_URL"));
+      assertEquals(CLIENT, workload.env().get("QITS_TOKEN_SUBJECT"));
+      assertNull(workload.env().get("QITS_CI_DAEMON_SECRET"), "there is no per-container secret");
       runner.send(new Launched(runId, 0, "c0ffee"));
 
       try (FakeCiDaemon daemon = dialAsTheContainer(workload)) {
@@ -523,22 +540,18 @@ class RunnerStepRunnerTest {
     }
   }
 
-  // --- an EDGE runner (qits-474/475) ---------------------------------------------------------------
+  // --- the run's token, and the two things without which no step is launched ----------------------
 
   @Test
   @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
-  void anEdgeRunnersStepIsToldThePublicNamesAndCarriesTheRunsToken() throws Exception {
-    // The row says EDGE, the deployment knows its domain, and qits-idp is a stub: the Launch the
-    // runner is asked for is the edge plane's step, with a ci-run token and no client.
-    QuarkusTransaction.requiringNew()
-        .run(() -> runnerRows.findById(runnerId).plane = CiRunnerPlane.EDGE);
-    io.quarkus.test.junit.QuarkusMock.installMockForType(
+  void aStepIsToldThePublicNamesAndCarriesTheRunsTokenCommissionedAtQitsIdp() throws Exception {
+    // qits-idp is a stub behind the REAL RunCommissions: the Launch the runner is asked for carries
+    // a ci-run token and no client, and the run's close gives the token back.
+    QuarkusMock.installMockForType(
         RunnerAddressesFixture.withDomain("example.org"), RunnerAddresses.class);
     try (eu.wohlben.qits.ci.idp.StubIdp idp = new eu.wohlben.qits.ci.idp.StubIdp()) {
-      io.quarkus.test.junit.QuarkusMock.installMockForType(
-          idp.commissioner(Duration.ofMillis(200)),
-          eu.wohlben.qits.ci.idp.IdpCommissioner.class);
+      QuarkusMock.installMockForType(idp.runCommissions(Duration.ofMillis(200)), RunCommissions.class);
       String runId = "runner-edge-" + UUID.randomUUID();
       try (FakeCiRunner runner = greeted()) {
         registry.hold(registry.current(runnerId), runId);
@@ -554,7 +567,8 @@ class RunnerStepRunnerTest {
             workload.env().get("QITS_CI_REPOSITORY_URL"));
         assertEquals("qits_tok_stub-1", workload.env().get("QITS_TOKEN"));
         assertNull(workload.env().get("QITS_COMMISSIONED_CLIENT_ID"));
-        assertNull(workload.network(), "no qits-net on a host outside the swarm");
+        assertNull(workload.env().get("QITS_CI_DAEMON_SECRET"));
+        assertNull(workload.network(), "no docker network on a host outside the swarm");
         assertTrue(workload.extraHosts() == null || workload.extraHosts().isEmpty());
         assertEquals(1, idp.postedTokens.size(), "one ci-run token for the run");
         assertTrue(idp.posted.isEmpty(), "and no client");
@@ -570,6 +584,86 @@ class RunnerStepRunnerTest {
       }
       // The run's close gave the token back.
       assertEquals(List.of("token-1"), idp.deletedTokens);
+    }
+  }
+
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aQitsCiThatCommissionsNothingLaunchesNoStepAndSaysWhy() throws Exception {
+    // The shipped posture: the qits oidc client is off. A step's only credential is its run's
+    // token, so none is launched — recorded at once, naming the key, rather than sitting out the
+    // register deadline as a container that can reach nothing.
+    QuarkusMock.installMockForType(
+        eu.wohlben.qits.ci.idp.StubIdp.disabledCommissions(), RunCommissions.class);
+    String runId = "runner-uncommissioned-" + UUID.randomUUID();
+    try (FakeCiRunner runner = greeted()) {
+      registry.hold(registry.current(runnerId), runId);
+
+      StepResult refused = steps.run(step(runId), new Recorder());
+
+      assertEquals(StepOutcome.LAUNCH_FAILED, refused.outcome());
+      assertTrue(refused.output().contains("quarkus.oidc-client.qits.client-enabled"), refused.output());
+      assertNull(runner.next(Launch.class, Duration.ofMillis(300)), "the runner was asked for nothing");
+    } finally {
+      steps.runClosed(runId);
+    }
+  }
+
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aQitsCiThatKnowsNoPublicDomainLaunchesNoStepAndSaysWhy() throws Exception {
+    // No address to tell the step, and no qits-net alias to fall back to (qits-515).
+    QuarkusMock.installMockForType(RunnerAddressesFixture.withDomain(null), RunnerAddresses.class);
+    String runId = "runner-undomained-" + UUID.randomUUID();
+    try (FakeCiRunner runner = greeted()) {
+      registry.hold(registry.current(runnerId), runId);
+
+      StepResult refused = steps.run(step(runId), new Recorder());
+
+      assertEquals(StepOutcome.LAUNCH_FAILED, refused.outcome());
+      assertTrue(refused.output().startsWith("EDGE_PLANE_UNCONFIGURED: "), refused.output());
+      assertTrue(refused.output().contains("QITS_DOMAIN"), refused.output());
+      assertNull(runner.next(Launch.class, Duration.ofMillis(300)), "the runner was asked for nothing");
+      assertTrue(runTokens.released.isEmpty(), "and no token was commissioned for it");
+    } finally {
+      steps.runClosed(runId);
+    }
+  }
+
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:system"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aDaemonThatIsNotTheRunsTokenIsNotAdmittedToTheRunsLaunch() throws Exception {
+    // The launch is bound to ITS run's token subject. This suite's daemon arrives as CLIENT, so a
+    // run whose token carries another subject refuses it WRONG_RUN — and the step never registers.
+    QuarkusMock.installMockForType(
+        new ScriptedRunTokens("tok-ci-run-somebody-else"), RunCommissions.class);
+    String runId = "runner-wrong-token-" + UUID.randomUUID();
+    steps.registerTimeoutSeconds(2);
+    try (FakeCiRunner runner = greeted()) {
+      registry.hold(registry.current(runnerId), runId);
+      CompletableFuture<StepResult> result =
+          CompletableFuture.supplyAsync(() -> steps.run(step(runId), new Recorder()));
+
+      Launch launch = runner.next(Launch.class, SOON);
+      assertNotNull(launch);
+      runner.send(new Launched(runId, 0, "c0ffee"));
+      try (FakeCiDaemon daemon = FakeCiDaemon.dial(daemonEndpoint, Map.of())) {
+        daemon.hello(launch.workloadSpec().env().get("QITS_CI_DAEMON_ID"));
+        assertEquals((Short) (short) 1008, daemon.awaitClose(SOON));
+        assertEquals("WRONG_RUN", daemon.closeReason());
+      }
+
+      Reap reap = runner.next(Reap.class, SOON);
+      assertNotNull(reap);
+      runner.send(new Reaped(runId, 0));
+      assertEquals(
+          StepOutcome.NEVER_STARTED, result.get(SOON.toSeconds(), TimeUnit.SECONDS).outcome());
+    } finally {
+      steps.registerTimeoutSeconds(180);
+      steps.runClosed(runId);
     }
   }
 
@@ -790,12 +884,14 @@ class RunnerStepRunnerTest {
     return runner;
   }
 
-  /** What the runner host's container does first: dial back with the credentials it was handed. */
+  /**
+   * What the runner host's container does first: dial back. The upgrade arrives as this method's
+   * {@code @TestSecurity} identity — what the edge would have forwarded for the run's token — and
+   * the launch is named in the Hello each case sends next.
+   */
   private FakeCiDaemon dialAsTheContainer(WorkloadSpec workload) throws Exception {
-    return FakeCiDaemon.dial(
-        daemonEndpoint,
-        workload.env().get("QITS_CI_DAEMON_ID"),
-        workload.env().get("QITS_CI_DAEMON_SECRET"));
+    assertEquals(CLIENT, workload.env().get("QITS_TOKEN_SUBJECT"), "the token this suite arrives as");
+    return FakeCiDaemon.dial(daemonEndpoint, Map.of());
   }
 
   private static StepSpec step(String runId) {
@@ -807,7 +903,7 @@ class RunnerStepRunnerTest {
         "e".repeat(40),
         "alpine:3",
         "echo on the runner",
-        "http://daemon.invalid/qits-ci-daemon",
+        "/artifacts/daemons/qits-ci-daemon/0.0.0-suite",
         60,
         false,
         false,
@@ -826,7 +922,6 @@ class RunnerStepRunnerTest {
         step.sha(),
         step.image(),
         workload.env().get("QITS_CI_DAEMON_ID"),
-        workload.env().get("QITS_CI_DAEMON_SECRET"),
         step.daemonBinaryUrl(),
         step.timeoutSeconds(),
         false,

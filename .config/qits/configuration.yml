@@ -34,13 +34,23 @@
 #     `qits` client's audience is the constant `qits-platform`.
 #   * QUARKUS_OIDC_CLIENT_GITHOST_* (five keys) — the old `githost` client. There is no such client:
 #     `application.properties` ships one named block, `qits`, and nothing binds these.
-#   * QITS_CI_CONTAINER_GIT_AUDIENCE — the audience a step container's Git helper asks for is the
-#     constant `qits-platform` now (StepContainerSettings.CONTAINER_GIT_AUDIENCE).
+#   * QITS_CI_CONTAINER_GIT_AUDIENCE — a step container's Git helper asks the idp for nothing; it
+#     presents the run's ci-run token.
 #   * QITS_CONTAINERS_URL and QITS_CI_CONCURRENT_BUILDS — the in-process executor's two keys, gone
 #     with it (qits-506): qits-ci asks no qits-containers for a step container and runs no claim
 #     loop of its own. Every run is a runner's, the platform host's `localhost` runner included.
 #   * QITS_CI_REGISTRY_AUTH_CLIENT_ID / _SECRET — the old static push credential, replaced by one
 #     commissioned per run.
+#   * The internal step-address plane's keys, gone with it (qits-515): QITS_CI_CONTAINER_GIT_URL,
+#     QITS_CI_CONTAINER_DAEMON_URL, QITS_CI_NETWORK, QITS_CI_DOCKER_AUTH_HOSTS,
+#     QITS_CI_BUILDKIT_ENABLED, QITS_CI_BUILDKIT_REGISTRY_HOST, QITS_CI_WORKSPACES_URL,
+#     QITS_CI_DAEMON_BINARY_URL_TEMPLATE, QITS_ARTIFACTS_NPM_HOSTED_URL, QITS_ARTIFACTS_DOCS_URL,
+#     QITS_MIRROR_MAVEN_CENTRAL_BUILD_URL, QITS_MIRROR_MAVEN_CENTRAL_STEP_URL,
+#     QITS_CI_RUNNER_INTERNAL_URL and QITS_CI_RUNNER_ARTIFACTS_INTERNAL_URL. Each spelled a qits-net
+#     address for a step or a runner; both are told public names composed from QITS_DOMAIN now.
+#   * QITS_DOMAIN and QITS_ENVIRONMENT — written into every container by the deployer, like
+#     QITS_RESOURCE_*. QITS_DOMAIN is what every address a runner and a step are told is composed
+#     from; without it qits-ci hands out none and launches no step.
 #   * QITS_RESOURCE_* — injected by the deployer from its resource registry. Configuration cannot
 #     state or delete one.
 #
@@ -58,14 +68,6 @@ keys:
     type: string
     description: "Where the git host answers; ci reads pipeline config from it. Scheme, host and port only; ci adds /git itself."
 
-  env.QITS_CI_CONTAINER_GIT_URL:
-    type: string
-    description: "The git host as a step container reaches it: the platform edge, which turns the step's Basic credential into a bearer."
-
-  env.QITS_CI_WORKSPACES_URL:
-    type: string
-    description: "qits-workspaces' root, handed to every step container as $QITS_WORKSPACES_URL."
-
   env.QITS_EVENTS_URL:
     type: string
     description: "The event bus this service publishes to and consumes from."
@@ -75,10 +77,6 @@ keys:
     description: "Where this service's OTLP telemetry goes. Scheme, host and port only."
 
   # --- step containers ---------------------------------------------------------------------------
-
-  env.QITS_CI_NETWORK:
-    type: string
-    description: "The docker network every step container on an INTERNAL runner joins."
 
   env.QITS_CI_MEMORY_LIMIT:
     type: string
@@ -104,35 +102,17 @@ keys:
     type: string
     description: "Emergency override for the qits-ci-daemon version. Blank (the expected state) uses the version of the protocol dependency qits-ci is built against."
 
-  env.QITS_CI_DAEMON_BINARY_URL_TEMPLATE:
-    type: string
-    description: "Where a step container downloads qits-ci-daemon; {version} is replaced with the run's pinned version."
-
-  env.QITS_CI_CONTAINER_DAEMON_URL:
-    type: string
-    description: "Where a step container's daemon dials back to this service, the /ci/daemon websocket."
-
-  # --- registries handed to step containers --------------------------------------------------------
+  # --- the artifacts store, as this service itself names and reaches it ----------------------------
 
   env.QITS_ARTIFACTS_REGISTRY_HOST:
     type: string
-    description: "The image registry as the host's docker daemon reaches it, handed to steps as $QITS_REGISTRY."
-
-  env.QITS_CI_DOCKER_AUTH_HOSTS:
-    type: string
-    description: "Comma-separated registry hosts a publishing step's docker config holds the run's credential for."
-
-  env.QITS_ARTIFACTS_NPM_HOSTED_URL:
-    type: string
-    description: "The hosted npm registry, handed to steps as $QITS_NPM_REGISTRY_URL."
+    description: "The registry host a run's pinned step image is addressed under, and by which a platform image is recognised. Not handed to a step: a step is told the registry's public name."
 
   env.QITS_ARTIFACTS_MAVEN_REGISTRY_URL:
     type: string
-    description: "The hosted Maven repository, handed to steps as $QITS_MAVEN_REGISTRY_URL."
+    description: "The hosted Maven repository as qits-ci reaches it. Its scheme and authority are where qits-ci asks the registry for a step image's digest. Not handed to a step."
 
-  env.QITS_ARTIFACTS_DOCS_URL:
-    type: string
-    description: "The docs repository root, handed to steps as $QITS_DOCS_URL."
+  # --- the qits CLI a release-phase step downloads ---------------------------------------------------
 
   env.QITS_CI_ARTIFACTS_CLI_PACKAGE:
     type: string

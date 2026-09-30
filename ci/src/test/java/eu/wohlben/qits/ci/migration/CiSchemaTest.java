@@ -185,7 +185,9 @@ public class CiSchemaTest {
         runner.setString(1, "schema-probe");
         try (ResultSet defaults = runner.executeQuery()) {
           assertTrue(defaults.next());
-          // The shape a runner is created in when nobody says: one slot, on the internal plane.
+          // The COLUMN's own defaults: one slot, and the retired word INTERNAL — V23 is applied
+          // and never edited, so the default stays. No code path relies on it: CiRunners.create
+          // always writes EDGE, and CiRunnerPlaneConverter reads whatever is stored as EDGE.
           assertEquals(1, defaults.getInt(1));
           assertEquals("INTERNAL", defaults.getString(2));
         }

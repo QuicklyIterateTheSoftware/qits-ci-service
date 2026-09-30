@@ -89,10 +89,10 @@ public class IdpCommissionerGitRefsTest {
   public void aScopedCommissionIsPostedAsIs() {
     IdpCommissioner idp = stub.commissioner(PATIENCE);
 
-    IdpCommissioner.Commission minted = idp.commission("ci-run", "run-1", BUMP);
+    IdpCommissioner.CommissionedToken minted = idp.commissionToken("ci-run", "run-1", BUMP);
 
-    assertEquals("run-client-1", minted.clientId());
-    assertEquals(List.of(SCOPED), stub.posted);
+    assertEquals("token-1", minted.tokenId());
+    assertEquals(List.of(SCOPED), stub.postedTokens);
     assertEquals(List.of(), errors);
   }
 
@@ -101,11 +101,11 @@ public class IdpCommissionerGitRefsTest {
     stub.refuseGitRefList = true;
     IdpCommissioner idp = stub.commissioner(PATIENCE);
 
-    IdpCommissioner.Commission minted = idp.commission("ci-run", "run-1", BUMP);
+    IdpCommissioner.CommissionedToken minted = idp.commissionToken("ci-run", "run-1", BUMP);
 
     // Fail closed: the second ask states [], never no scope at all.
-    assertEquals("run-client-1", minted.clientId());
-    assertEquals(List.of(SCOPED, PUSH_NOTHING), stub.posted);
+    assertEquals("token-1", minted.tokenId());
+    assertEquals(List.of(SCOPED, PUSH_NOTHING), stub.postedTokens);
     assertEquals(1, errors.size(), errors.toString());
     assertTrue(errors.get(0).contains("run-1"), "the error names the run: " + errors.get(0));
     assertTrue(
@@ -115,30 +115,30 @@ public class IdpCommissionerGitRefsTest {
 
   @Test
   public void aFourHundredOnThePushNothingFormFailsTheCommission() {
-    stub.mintStatus = 400;
+    stub.tokenMintStatus = 400;
     IdpCommissioner idp = stub.commissioner(PATIENCE);
 
     IdpCommissioner.CommissionFailedException failed =
         assertThrows(
             IdpCommissioner.CommissionFailedException.class,
-            () -> idp.commission("ci-run", "run-1", BUMP));
+            () -> idp.commissionToken("ci-run", "run-1", BUMP));
 
     // Scoped, then [], then stop. No unscoped ask, and a 400 is not held through.
-    assertEquals(List.of(SCOPED, PUSH_NOTHING), stub.posted);
+    assertEquals(List.of(SCOPED, PUSH_NOTHING), stub.postedTokens);
     assertTrue(failed.getMessage().contains("400"), failed.getMessage());
     assertTrue(failed.getMessage().contains("gitRefs=[]"), failed.getMessage());
   }
 
   @Test
   public void aRefusedPushNothingScopeIsNotAskedAgain() {
-    stub.mintStatus = 400;
+    stub.tokenMintStatus = 400;
     IdpCommissioner idp = stub.commissioner(PATIENCE);
 
     assertThrows(
         IdpCommissioner.CommissionFailedException.class,
-        () -> idp.commission("ci-run", "run-1", List.of()));
+        () -> idp.commissionToken("ci-run", "run-1", List.of()));
 
-    assertEquals(List.of(PUSH_NOTHING), stub.posted);
+    assertEquals(List.of(PUSH_NOTHING), stub.postedTokens);
     assertEquals(List.of(), errors);
   }
 
@@ -147,23 +147,23 @@ public class IdpCommissionerGitRefsTest {
     stub.refuseGitRefList = true;
     IdpCommissioner idp = stub.commissioner(PATIENCE);
 
-    IdpCommissioner.Commission minted = idp.commission("ci-run", "run-1", null);
+    IdpCommissioner.CommissionedToken minted = idp.commissionToken("ci-run", "run-1", null);
 
-    assertEquals("run-client-1", minted.clientId());
-    assertEquals(List.of(UNSCOPED), stub.posted);
+    assertEquals("token-1", minted.tokenId());
+    assertEquals(List.of(UNSCOPED), stub.postedTokens);
     assertEquals(List.of(), errors);
   }
 
   @Test
   public void aCommissionThatStatesNoScopeIsNeverRetriedOnFourHundred() {
-    stub.mintStatus = 400;
+    stub.tokenMintStatus = 400;
     IdpCommissioner idp = stub.commissioner(PATIENCE);
 
     assertThrows(
         IdpCommissioner.CommissionFailedException.class,
-        () -> idp.commission("ci-run", "run-1", null));
+        () -> idp.commissionToken("ci-run", "run-1", null));
 
-    assertEquals(List.of(UNSCOPED), stub.posted);
+    assertEquals(List.of(UNSCOPED), stub.postedTokens);
     assertEquals(List.of(), errors);
   }
 }

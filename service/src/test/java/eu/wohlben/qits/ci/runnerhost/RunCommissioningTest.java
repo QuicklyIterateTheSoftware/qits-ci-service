@@ -1,11 +1,15 @@
 package eu.wohlben.qits.ci.runnerhost;
 
-import eu.wohlben.qits.ci.control.CiRepoRef;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.ci.control.CiRepoRef;
+import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.ci.idp.StubIdp;
 import eu.wohlben.qits.ci.runnerhost.StepContainerSettings.LaunchSpec;
@@ -20,24 +24,28 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * The per-run push credential, end to end on this side of the wire: a real {@link StubIdp} on a real
- * socket, the real {@link StepContainerSettings} assembling a real spec from what it minted, and
- * {@link RunCommissions#release} giving it back.
+ * The per-run credential, end to end on this side of the wire: a real {@link StubIdp} on a real
+ * socket, the real {@link StepWorkloadSpecs} assembling a real spec from what it minted, and {@link
+ * RunCommissions#release} giving it back.
  *
- * <p><b>Why it is its own class.</b> {@code StepContainerSettingsTest} is spec assembly with no
- * collaborator that sends anything, and it stays that way; what is under test here is the
- * <em>lifecycle</em> — one commission per run rather than per step, a second run's own, a failure
- * that fails the step, and a close that deletes.
+ * <p><b>The credential is one {@code ci-run} TOKEN</b> (qits-475), and since qits-515 it is the only
+ * kind: a run never commissions a client, so every case here reads the stub's tokens door and
+ * asserts the clients door was left alone.
  *
- * <p><b>Plain JUnit, no Quarkus.</b> The launcher takes its config in fields, the commissioner takes
- * its own the same way, and {@code StubIdp} hands out a wired pair because those fields are
+ * <p><b>Why it is its own class.</b> {@code StepContainerSettingsTest} and {@code
+ * StepEnvironmentTest} are spec assembly with no collaborator that sends anything, and they stay
+ * that way; what is under test here is the <em>lifecycle</em> — one commission per run rather than
+ * per step, the Git scope it states, a second run's own, and a close that deletes.
+ *
+ * <p><b>Plain JUnit, no Quarkus.</b> The settings take their config in fields, the commissioner
+ * takes its own the same way, and {@code StubIdp} hands out a wired pair because those fields are
  * package-private in another package. Nothing here needs an application.
  */
 public class RunCommissioningTest {
 
   private static final String RUN = "0123456789abcdef-run";
 
-  /** Short enough that the failure case's whole retry window is a fraction of a second. */
+  /** Short, so a refusal case costs milliseconds rather than the shipped thirty seconds. */
   private static final Duration PATIENCE = Duration.ofMillis(200);
 
   private StubIdp idp;
@@ -52,52 +60,15 @@ public class RunCommissioningTest {
     idp.close();
   }
 
-  private StepContainerSettings launcher() {
-    StepContainerSettings launcher = new StepContainerSettings();
-    launcher.network = "qits-net";
-    launcher.containerGitUrl = "http://qits-githost:8080/";
-    launcher.idpUrl = idp.authServerUrl();
-    launcher.containerDaemonUrl = "ws://qits-ci:8080/ci/daemon";
-    launcher.daemonBinaryUrlTemplate = "http://qits-artifacts:8080/artifacts/daemons/{version}";
-    launcher.memoryLimit = "4g";
-    launcher.pidsLimit = 2048;
-    launcher.cpus = "2";
-    launcher.artifactsRegistryHost = "qits-artifacts:8080";
-    launcher.artifactsImageRepository = "qits";
-    // The shipped default: the push registry alone, which is what the key's own default expression
-    // resolves to. The widened case is its own test below.
-    launcher.dockerAuthHosts = List.of("qits-artifacts:8080");
-    // AND THE SHIPPED BUILDKIT STATE, which the document depends on. This fixture left both at the
-    // field defaults (false/null) until 2026-09-20, so every assertion about the auth document here
-    // was made against a deployment state the fleet is not in — buildkit ships ON, and the host
-    // buildctl pushes to is in the document for that reason (authHosts).
-    launcher.buildkitEnabled = true;
-    launcher.buildkitRegistryHost = "dev-qits-artifacts:8080";
-    launcher.artifactsNpmHostedUrl = "http://qits-artifacts:8080/artifacts/npm/npm/";
-    launcher.environment = "dev";
-    launcher.artifactsMavenRegistryUrl = "http://qits-artifacts:8080/artifacts/maven/maven";
-    launcher.artifactsDocsUrl = "http://qits-artifacts:8080/artifacts/docs/docs";
-    launcher.artifactsUrl = java.util.Optional.of("http://qits-artifacts:8080");
-    launcher.artifactsCliPackage = "qits-platform-access-cli";
-    // The shipped state of the CLI pin: no override, so the version is the pinned dependency's
-    // own constant. A field write rather than a left-null Optional — these launchers are hand-built,
-    // so nothing injects it and `null` would NPE where the real bean cannot.
-    launcher.artifactsCliVersionOverride = java.util.Optional.empty();
-    launcher.workspacesUrl = "http://qits-workspaces:8080";
-    return launcher;
-  }
-
-  /** Composes one step's whole spec against a fresh, shipped launcher and the given commissions. */
+  /** Commissions the run's token as {@code RunnerStepRunner} does, then composes the step with it. */
   private WorkloadSpec compose(RunCommissions commissions, LaunchSpec step) {
-    return compose(launcher(), commissions, step);
-  }
-
-  /** Composes one step's whole spec against {@code launcher} and the given commissions. */
-  private WorkloadSpec compose(StepContainerSettings launcher, RunCommissions commissions, LaunchSpec step) {
-    RunCommissions.Credential credential =
-        RunCommissions.Credential.client(
-            commissions == null ? null : commissions.forRun(step.runId(), step.env()));
-    return StepWorkloadSpecs.compose(launcher.workloadSettings(), launcher.internalPlane(), step, credential, null);
+    StepContainerSettings launcher = StepFixtures.shippedLauncher();
+    return StepWorkloadSpecs.compose(
+        launcher.workloadSettings(),
+        StepFixtures.plane(launcher),
+        step,
+        commissions.forRun(step.runId(), step.env()),
+        null);
   }
 
   /** One step of a run, publishing or not. */
@@ -124,28 +95,6 @@ public class RunCommissioningTest {
             + "\",\"baseRef\":\"main\",\"changes\":[]}");
   }
 
-  /**
-   * A {@code build: true} step: build mode with no socket, which is the shape the java-service, oci
-   * and daemon archetypes publish images from.
-   */
-  private static LaunchSpec buildStep(String runId, int index) {
-    return new LaunchSpec(
-        runId,
-        index,
-        CiRepoRef.of("repo-1"),
-        "main",
-        "cafebabe",
-        "maven:3.9",
-        "daemon-7",
-        "s3cr3t",
-        "http://qits-artifacts:8080/artifacts/daemons/deadbeef",
-        0,
-        false,
-        true,
-        "",
-        Map.of());
-  }
-
   /** One step of a run with its run-scoped environment. */
   private static LaunchSpec step(String runId, int index, boolean docker, Map<String, String> env) {
     return new LaunchSpec(
@@ -156,8 +105,7 @@ public class RunCommissioningTest {
         "cafebabe",
         "maven:3.9",
         "daemon-7",
-        "s3cr3t",
-        "http://qits-artifacts:8080/artifacts/daemons/deadbeef",
+        "/artifacts/daemons/qits-ci-daemon/deadbeef",
         0,
         docker,
         false,
@@ -174,7 +122,7 @@ public class RunCommissioningTest {
             "{\"contextKind\":\"ci-run\",\"contextId\":\""
                 + RUN
                 + "\",\"gitRefs\":[\"refs/heads/maintenance/dependencies\"]}"),
-        idp.posted);
+        idp.postedTokens);
   }
 
   @Test
@@ -186,7 +134,7 @@ public class RunCommissioningTest {
             "{\"contextKind\":\"ci-run\",\"contextId\":\""
                 + RUN
                 + "\",\"gitRefs\":[\"refs/heads/task/pin-the-frontend\"]}"),
-        idp.posted);
+        idp.postedTokens);
   }
 
   @Test
@@ -203,7 +151,7 @@ public class RunCommissioningTest {
 
     assertEquals(
         List.of("{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\",\"gitRefs\":[]}"),
-        idp.posted);
+        idp.postedTokens);
   }
 
   @Test
@@ -211,250 +159,51 @@ public class RunCommissioningTest {
     compose(idp.runCommissions(PATIENCE), step(RUN, 0, false, event("SCMPublishTag", "{\"tagName\":\"1.0\"}")));
 
     assertEquals(
-        List.of("{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\"}"), idp.posted);
-  }
-
-  @Test
-  public void aRefusedScopeGivesTheRunACredentialThatMayPushNothing() {
-    idp.refuseGitRefList = true;
-
-    Map<String, String> env =
-        compose(idp.runCommissions(PATIENCE), step(RUN, 0, false, bump("dependencies", "maintenance/dependencies")))
-            .env();
-
-    // Fail closed: the second commission states [], never no scope at all.
-    assertEquals(
-        List.of(
-            "{\"contextKind\":\"ci-run\",\"contextId\":\""
-                + RUN
-                + "\",\"gitRefs\":[\"refs/heads/maintenance/dependencies\"]}",
-            "{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\",\"gitRefs\":[]}"),
-        idp.posted);
-    assertEquals("run-client-1", env.get("QITS_COMMISSIONED_CLIENT_ID"));
-    assertEquals("/tmp/qits-gitconfig", env.get("GIT_CONFIG_GLOBAL"));
+        List.of("{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\"}"), idp.postedTokens);
   }
 
   @Test
   public void oneRunCommissionsOnceAndEveryLaterStepReusesIt() {
-    StepContainerSettings launcher = launcher();
     RunCommissions commissions = idp.runCommissions(PATIENCE);
 
-    Map<String, String> first = compose(launcher, commissions, step(RUN, 1, false)).env();
-    Map<String, String> second = compose(launcher, commissions, step(RUN, 2, true)).env();
+    IdpCommissioner.CommissionedToken held = commissions.forRun(RUN, Map.of());
+    Map<String, String> first = compose(commissions, step(RUN, 1, false)).env();
+    Map<String, String> second = compose(commissions, step(RUN, 2, true)).env();
 
-    // The credential belongs to the RUN, not to the step: one commission, and the second step is
-    // handed the same pair. One per step would be N clients to leak instead of one.
-    assertEquals(1, idp.posted.size(), "one commission for the whole run");
-    assertEquals("run-client-1", first.get("QITS_COMMISSIONED_CLIENT_ID"));
-    assertEquals(first.get("QITS_COMMISSIONED_CLIENT_ID"), second.get("QITS_COMMISSIONED_CLIENT_ID"));
-    assertEquals(
-        first.get("QITS_COMMISSIONED_CLIENT_SECRET"), second.get("QITS_COMMISSIONED_CLIENT_SECRET"));
-    assertEquals(idp.authServerUrl() + "/token", first.get("QITS_GIT_AUTH_TOKEN_URL"));
-    assertEquals("qits-githost:8080", first.get("QITS_GIT_AUTH_HOST"));
-    // The wire value, spelled out: one audience for every service, and no key can change it.
-    assertEquals("qits-platform", first.get("QITS_GIT_AUTH_AUDIENCE"));
+    // The credential belongs to the RUN, not to the step: one commission, and every step is handed
+    // the same token. One per step would be N tokens to leak instead of one.
+    assertEquals(1, idp.postedTokens.size(), "one commission for the whole run");
+    assertSame(held, commissions.forRun(RUN, Map.of()));
+    assertEquals("qits_tok_stub-1", first.get("QITS_TOKEN"));
+    assertEquals(first.get("QITS_TOKEN"), second.get("QITS_TOKEN"));
+    assertEquals(held.subject(), first.get("QITS_TOKEN_SUBJECT"));
+    assertEquals(held.subject(), commissions.tokenSubjectOf(RUN));
+    assertTrue(commissions.holdsToken("token-1"));
     assertEquals("/tmp/qits-gitconfig", first.get("GIT_CONFIG_GLOBAL"));
-    // The same commissioned pair is what a PUBLISH authenticates with, and the command that turns
-    // it into a bearer is named for every step of the run — the token itself is minted inside the
-    // container, so this service never holds one.
     assertEquals("/tmp/qits-publish-token", first.get("QITS_PUBLISH_TOKEN_COMMAND"));
     assertEquals("/tmp/qits-publish-token", second.get("QITS_PUBLISH_TOKEN_COMMAND"));
   }
 
+  /** qits-515: the CLIENT kind of run commission is deleted; the clients door is never asked. */
   @Test
-  public void everyCommissionedStepIsToldHowToMintAPublishToken() {
-    StepContainerSettings launcher = launcher();
+  public void aRunNeverCommissionsAClient() {
     RunCommissions commissions = idp.runCommissions(PATIENCE);
+    compose(commissions, step(RUN, 1, true));
+    commissions.release(RUN);
 
-    // Not gated on the phase and not gated on `docker:`. A release-request (QA) run publishes too —
-    // the java-service archetype PUTs its userflows bundle to the docs store from a QA step — so
-    // the only gate is the commission, exactly as the git credential helper's is.
-    for (LaunchSpec each :
-        List.of(
-            step(RUN, 0, false),
-            step(RUN, 1, true),
-            step(
-                RUN,
-                2,
-                false,
-                event(
-                    "ReleaseRequestChanged",
-                    "{\"backingBranch\":\"release/4711\",\"mergedSha\":\"cafebabe\"}")))) {
-      assertEquals(
-          StepContainerSettings.PUBLISH_TOKEN_COMMAND,
-          compose(launcher, commissions, each).env().get("QITS_PUBLISH_TOKEN_COMMAND"));
-    }
-  }
-
-  @Test
-  public void theTokenItselfIsNeverSentFromHere() {
-    // qits-ci mints nothing for a container: BOOTSTRAP does, inside it, from the pair. A token on
-    // this wire would be a credential recorded in an orchestrator's spec and expired by the time a
-    // long step reached its publish.
-    Map<String, String> env = compose(idp.runCommissions(PATIENCE), step(RUN, 1, true)).env();
-
-    assertFalse(env.containsKey("QITS_PUBLISH_TOKEN"));
-  }
-
-  @Test
-  public void aPlainStepGetsTheSameShortLivedGitCredentialPath() {
-    Map<String, String> env = compose(idp.runCommissions(PATIENCE), step(RUN, 0, false)).env();
-
-    // Every step clones before it can run its script; with githost gated that clone needs the
-    // run-scoped client too. The helper exchanges it only for a short-lived githost bearer.
-    assertEquals(1, idp.posted.size());
-    assertEquals("run-client-1", env.get("QITS_COMMISSIONED_CLIENT_ID"));
-    assertEquals("run-s3cr3t-1", env.get("QITS_COMMISSIONED_CLIENT_SECRET"));
-    assertEquals("/tmp/qits-gitconfig", env.get("GIT_CONFIG_GLOBAL"));
-    assertFalse(env.containsKey("DOCKER_CONFIG"));
-    assertFalse(env.containsKey("QITS_CI_REGISTRY_AUTH_CONFIG"));
-  }
-
-  @Test
-  public void theCommissionedPairIsBothTheDockerConfigAndTheTwoVariables() {
-    Map<String, String> env = compose(idp.runCommissions(PATIENCE), step(RUN, 1, true)).env();
-
-    // The document, byte for byte: the CLI's own base64 of id:secret, against the address the step
-    // reads as $QITS_REGISTRY **and** the one it reads as $QITS_BUILD_REGISTRY, in a directory
-    // under /tmp rather than in the checkout. Two entries on a shipped deployment, not one — see
-    // theDocumentNamesTheHostThePushGoesTo below for why the second is not optional.
-    String auth =
-        Base64.getEncoder()
-            .encodeToString("run-client-1:run-s3cr3t-1".getBytes(StandardCharsets.UTF_8));
-    assertEquals(
-        "{\"auths\":{\"qits-artifacts:8080\":{\"auth\":\""
-            + auth
-            + "\"},\"dev-qits-artifacts:8080\":{\"auth\":\""
-            + auth
-            + "\"}}}",
-        env.get("QITS_CI_REGISTRY_AUTH_CONFIG"));
-    assertEquals("/tmp/qits-ci-registry-auth", env.get("DOCKER_CONFIG"));
-    assertEquals("qits-artifacts:8080", env.get("QITS_REGISTRY"));
-
-    // And the pair itself, which is what a BuildKit secret mount consumes:
-    // --secret id=…,env=QITS_COMMISSIONED_CLIENT_SECRET writes no layer, where a --build-arg would.
-    assertEquals("run-client-1", env.get("QITS_COMMISSIONED_CLIENT_ID"));
-    assertEquals("run-s3cr3t-1", env.get("QITS_COMMISSIONED_CLIENT_SECRET"));
-  }
-
-  @Test
-  public void everyConfiguredHostGetsAnEntryAndTheyShareTheOnePair() {
-    // Post-flip a step pulls its base image `FROM mirror.dev.localhost:8080/...` and pushes to the
-    // registry vhost. The docker client picks a login BY HOSTNAME, so a document naming only the
-    // push registry leaves the pull unauthenticated and the build dies on a 401 no pipeline
-    // mentions. One entry per host, one commissioned identity behind all of them.
-    StepContainerSettings launcher = launcher();
-    launcher.dockerAuthHosts = List.of("registry.dev.localhost:8080", "mirror.dev.localhost:8080");
-
-    String document =
-        compose(launcher, idp.runCommissions(PATIENCE), step(RUN, 1, true)).env().get("QITS_CI_REGISTRY_AUTH_CONFIG");
-
-    String auth =
-        Base64.getEncoder()
-            .encodeToString("run-client-1:run-s3cr3t-1".getBytes(StandardCharsets.UTF_8));
-    assertEquals(
-        "{\"auths\":{\"registry.dev.localhost:8080\":{\"auth\":\""
-            + auth
-            + "\"},\"mirror.dev.localhost:8080\":{\"auth\":\""
-            + auth
-            + "\"},\"dev-qits-artifacts:8080\":{\"auth\":\""
-            + auth
-            + "\"}}}",
-        document);
-    // Still one commission: the hosts are vhosts of one platform and the credential is one identity
-    // at one idp, so widening the document must not widen what is minted.
-    assertEquals(1, idp.posted.size());
-  }
-
-  @Test
-  public void aRepeatedOrBlankHostIsNotASecondEntry() {
-    // A duplicate would be a duplicate JSON key — legal and useless — and a blank one an entry for
-    // the empty host. Both are config slips rather than requests.
-    StepContainerSettings launcher = launcher();
-    launcher.dockerAuthHosts = List.of("qits-artifacts:8080", " ", "qits-artifacts:8080");
-
-    String document =
-        compose(launcher, idp.runCommissions(PATIENCE), step(RUN, 1, true)).env().get("QITS_CI_REGISTRY_AUTH_CONFIG");
-
-    String auth =
-        Base64.getEncoder()
-            .encodeToString("run-client-1:run-s3cr3t-1".getBytes(StandardCharsets.UTF_8));
-    assertEquals(
-        "{\"auths\":{\"qits-artifacts:8080\":{\"auth\":\""
-            + auth
-            + "\"},\"dev-qits-artifacts:8080\":{\"auth\":\""
-            + auth
-            + "\"}}}",
-        document);
-  }
-
-  @Test
-  public void theDocumentNamesTheHostThePushActuallyGoesTo() {
-    // THE HOST A PUSH GOES TO IS NOT THE HOST THE DOCUMENT WOULD OTHERWISE NAME. A converted
-    // recipe composes its push reference from $QITS_BUILD_REGISTRY — qits.ci.buildkit.registry-host,
-    // the qits-net alias buildkitd pushes through — while qits.ci.docker-auth-hosts defaults to
-    // qits.artifacts.registry-host, the HOST DAEMON's view of the same registry. Two network
-    // positions, two keys, on purpose. A document naming only the second leaves buildctl with no
-    // login for the address it is pushing to, which costs nothing for exactly as long as the store
-    // lets an anonymous /v2 publish through and fails every image push on the estate the moment it
-    // answers one with a Bearer challenge.
-    Map<String, String> env = compose(idp.runCommissions(PATIENCE), buildStep(RUN, 1)).env();
-    String document = env.get("QITS_CI_REGISTRY_AUTH_CONFIG");
-
-    assertTrue(document.contains("\"" + env.get("QITS_BUILD_REGISTRY") + "\""), document);
-    assertTrue(document.contains("\"" + env.get("QITS_REGISTRY") + "\""), document);
-    // A `build: true` step is the archetypes' publishing shape and holds no socket, so the document
-    // has to reach it on the same terms as a `docker: true` one.
-    assertEquals("/tmp/qits-ci-registry-auth", env.get("DOCKER_CONFIG"));
-  }
-
-  @Test
-  public void oneAddressUnderTwoKeysIsStillOneEntry() {
-    // The two keys are separate because the two network positions are, not because the values must
-    // differ: a deployment whose host daemon and whose builder resolve the registry by the same
-    // name is legitimate. Naming it twice would be a duplicate JSON key — legal, useless, and one
-    // typo away from a document a client reads differently than it looks.
-    StepContainerSettings launcher = launcher();
-    launcher.buildkitRegistryHost = "qits-artifacts:8080";
-
-    String document =
-        compose(launcher, idp.runCommissions(PATIENCE), step(RUN, 1, true)).env().get("QITS_CI_REGISTRY_AUTH_CONFIG");
-
-    String auth =
-        Base64.getEncoder()
-            .encodeToString("run-client-1:run-s3cr3t-1".getBytes(StandardCharsets.UTF_8));
-    assertEquals("{\"auths\":{\"qits-artifacts:8080\":{\"auth\":\"" + auth + "\"}}}", document);
-  }
-
-  @Test
-  public void theKillSwitchTakesTheBuildersHostOutOfTheDocumentToo() {
-    // QITS_CI_BUILDKIT_ENABLED=false sends $QITS_BUILD_REGISTRY empty, so no step pushes through
-    // that alias and a login for it would be an entry for an address nothing addresses. The
-    // document follows the switch rather than the key.
-    StepContainerSettings launcher = launcher();
-    launcher.buildkitEnabled = false;
-
-    Map<String, String> env = compose(launcher, idp.runCommissions(PATIENCE), step(RUN, 1, true)).env();
-
-    String auth =
-        Base64.getEncoder()
-            .encodeToString("run-client-1:run-s3cr3t-1".getBytes(StandardCharsets.UTF_8));
-    assertEquals(
-        "{\"auths\":{\"qits-artifacts:8080\":{\"auth\":\"" + auth + "\"}}}",
-        env.get("QITS_CI_REGISTRY_AUTH_CONFIG"));
-    assertEquals("", env.get("QITS_BUILD_REGISTRY"));
+    assertEquals(List.of(), idp.posted, "no client was commissioned for the run");
+    assertEquals(List.of(), idp.deleted, "and none was given back");
   }
 
   @Test
   public void theCommissioningCallSaysWhatItIsForAndWhoIsAsking() {
     compose(idp.runCommissions(PATIENCE), step(RUN, 1, true));
 
-    // The context is what makes the reconciliation possible at all: a row qits-idp holds says which
-    // run owns it, so a row whose run is over is reapable without any bookkeeping of ours.
+    // The context is what makes the reconciliation possible at all: a token qits-idp holds says
+    // which run owns it, so one whose run is over is reapable without any bookkeeping of ours.
     assertEquals(
-        List.of("{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\"}"), idp.posted);
-    // And the caller is the service's OWN oidc client — a commissioned one is refused 403, which is
-    // what keeps the tree one level deep.
+        List.of("{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\"}"), idp.postedTokens);
+    // And the caller is the service's OWN oidc client.
     String expected =
         "Basic "
             + Base64.getEncoder()
@@ -471,18 +220,27 @@ public class RunCommissioningTest {
     Map<String, String> first = compose(commissions, step("run-a", 1, true)).env();
     Map<String, String> second = compose(commissions, step("run-b", 1, true)).env();
 
-    assertEquals(2, idp.posted.size());
-    assertNotEquals(
-        first.get("QITS_COMMISSIONED_CLIENT_ID"), second.get("QITS_COMMISSIONED_CLIENT_ID"));
-    assertTrue(idp.posted.get(0).contains("run-a"));
-    assertTrue(idp.posted.get(1).contains("run-b"));
+    assertEquals(2, idp.postedTokens.size());
+    assertNotEquals(first.get("QITS_TOKEN"), second.get("QITS_TOKEN"));
+    assertNotEquals(first.get("QITS_TOKEN_SUBJECT"), second.get("QITS_TOKEN_SUBJECT"));
+    assertTrue(idp.postedTokens.get(0).contains("run-a"));
+    assertTrue(idp.postedTokens.get(1).contains("run-b"));
   }
 
-  // aCommissionThatCouldNotBeMadeFailsTheStepAndNamesTheCall and aRefusalAboutTheRequestIsOneAttempt
-  // used to prove the retry/refusal behaviour of StepContainerSettings#launch. That method is
-  // deleted with the in-process executor (qits-506): a runner-side commission failure now fails the
-  // step from RunnerStepRunner#run instead (its own suite, and RunnerStepRunnerTest's), so there is
-  // nothing left of that behaviour for a plain-JUnit spec-composition class to hold.
+  @Test
+  public void aCommissionThatCannotBeMadeIsAnExceptionNamingTheCall() {
+    idp.tokenMintStatus = 403;
+
+    IdpCommissioner.CommissionFailedException failed =
+        assertThrows(
+            IdpCommissioner.CommissionFailedException.class,
+            () -> idp.runCommissions(PATIENCE).forRun(RUN, Map.of()));
+
+    // What RunnerStepRunner records as the step's LAUNCH_FAILED output.
+    assertTrue(failed.getMessage().contains("/api/tokens"), failed.getMessage());
+    assertTrue(failed.getMessage().contains(RUN), failed.getMessage());
+    assertEquals(1, idp.postedTokens.size(), "a 403 is about the request: one attempt");
+  }
 
   @Test
   public void closingTheRunGivesTheCredentialBack() {
@@ -493,60 +251,52 @@ public class RunCommissioningTest {
     // credential lifecycle itself is RunCommissions' own and is what this class pins.
     commissions.release(RUN);
 
-    assertEquals(List.of("run-client-1"), idp.deleted);
+    assertEquals(List.of("token-1"), idp.deletedTokens);
     // And it is gone from memory too, so a run id that came round again would commission afresh
     // rather than hand out a credential qits-idp no longer knows.
-    assertFalse(commissions.holds("run-client-1"));
-  }
-
-  @Test
-  public void closingARunThatOnlyClonedStillDeletesItsCredential() {
-    RunCommissions commissions = idp.runCommissions(PATIENCE);
-    compose(commissions, step(RUN, 0, false));
-
+    assertFalse(commissions.holdsToken("token-1"));
+    assertNull(commissions.tokenSubjectOf(RUN));
+    // Releasing a run that holds nothing asks qits-idp nothing.
     commissions.release(RUN);
-
-    assertEquals(List.of("run-client-1"), idp.deleted);
+    assertEquals(List.of("token-1"), idp.deletedTokens);
   }
 
   @Test
-  public void aDeploymentWithNoOidcClientCommissionsNothingAndInjectsNothing() {
-    // The fallback arm, and it must be byte-identical to what shipped before per-run credentials
-    // existed: quarkus.oidc-client.qits.client-enabled is false out of the box, so there is nothing
-    // to commission with and a step container's environment gains nothing at all.
-    Map<String, String> env = compose(StubIdp.disabledCommissions(), step(RUN, 1, true)).env();
-
-    assertEquals(List.of(), idp.posted);
-    assertFalse(env.containsKey("DOCKER_CONFIG"));
-    assertFalse(env.containsKey("QITS_CI_REGISTRY_AUTH_CONFIG"));
-    assertFalse(env.containsKey("QITS_COMMISSIONED_CLIENT_ID"));
-    assertFalse(env.containsKey("QITS_COMMISSIONED_CLIENT_SECRET"));
-    // Including the publish token's command: with nothing to mint from, naming a script that cannot
-    // work would be worse than naming none — a recipe reads the variable to decide whether it can
-    // authenticate at all.
-    assertFalse(env.containsKey("QITS_PUBLISH_TOKEN_COMMAND"));
-    // The BuildKit pair is not a credential and rides along regardless.
-    assertEquals("1", env.get("DOCKER_BUILDKIT"));
+  public void aDeploymentWithNoOidcClientCommissionsNothing() {
+    // quarkus.oidc-client.qits.client-enabled is false out of the box, so there is nothing to
+    // commission with. The answer is null and RunnerStepRunner launches no step on it.
+    assertNull(StubIdp.disabledCommissions().forRun(RUN, Map.of()));
+    assertEquals(List.of(), idp.postedTokens);
   }
 
   @Test
-  public void theSecretIsNeverASubstringOfAnythingSentBesideItsOwnVariable() {
+  public void theTokenReachesTheContainerInExactlyTheFormsItIsSpentIn() {
     WorkloadSpec request = compose(idp.runCommissions(PATIENCE), step(RUN, 1, true));
-    String secret = "run-s3cr3t-1";
+    String token = "qits_tok_stub-1";
 
-    // It reaches the container in exactly two forms: base64 inside the docker document, and raw
-    // under one name a BuildKit secret mount reads. Anywhere else — a second variable, an argv, a
-    // label, the bootstrap — is a leak into something that gets logged or baked into an image.
+    // Raw under two names — $QITS_TOKEN, and the password half of the pair a repository's own
+    // maven settings read — and base64 inside the docker document. Anywhere else — an argv, a
+    // label, the container's name, the bootstrap — is a leak into something that gets logged or
+    // baked into an image.
     List<String> carrying =
         request.env().entrySet().stream()
-            .filter(entry -> entry.getValue().contains(secret))
+            .filter(entry -> entry.getValue().contains(token))
             .map(Map.Entry::getKey)
             .toList();
-    assertEquals(List.of("QITS_COMMISSIONED_CLIENT_SECRET"), carrying);
-    assertFalse(String.valueOf(request.args()).contains(secret));
-    assertFalse(String.valueOf(request.entrypoint()).contains(secret));
-    assertFalse(String.valueOf(request.labels()).contains(secret));
-    assertFalse(String.valueOf(request.name()).contains(secret));
-    assertFalse(StepContainerSettings.BOOTSTRAP.contains(secret));
+    assertEquals(List.of("QITS_TOKEN", "QITS_MAVEN_AUTH_PSW"), carrying);
+    String encoded =
+        Base64.getEncoder().encodeToString(("token:" + token).getBytes(StandardCharsets.UTF_8));
+    assertTrue(request.env().get("QITS_CI_REGISTRY_AUTH_CONFIG").contains(encoded));
+    assertFalse(String.valueOf(request.args()).contains(token));
+    assertFalse(String.valueOf(request.entrypoint()).contains(token));
+    assertFalse(String.valueOf(request.labels()).contains(token));
+    assertFalse(String.valueOf(request.name()).contains(token));
+    assertFalse(StepContainerSettings.BOOTSTRAP.contains(token));
+    // And nothing sent names the idp it was minted at.
+    request
+        .env()
+        .forEach(
+            (key, value) ->
+                assertFalse(value.contains(idp.authServerUrl()), key + " names the idp: " + value));
   }
 }

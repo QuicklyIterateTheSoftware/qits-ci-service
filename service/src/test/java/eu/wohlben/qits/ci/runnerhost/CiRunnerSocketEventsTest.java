@@ -90,7 +90,7 @@ class CiRunnerSocketEventsTest {
               runner.id = runnerId;
               runner.name = "events-runner";
               runner.slots = 2;
-              runner.plane = CiRunnerPlane.INTERNAL;
+              runner.plane = CiRunnerPlane.EDGE;
               runner.clientId = CLIENT;
               runner.registeredAt = Instant.now();
               runner.createdAt = Instant.now();

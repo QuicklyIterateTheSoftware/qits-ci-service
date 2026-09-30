@@ -89,9 +89,9 @@ class QitsOidcClientShippedConfigTest {
 
   @Test
   void theContainerGitAudienceIsNoLongerAConfigKey() {
-    // What StepContainerSettings hands a step container as $QITS_GIT_AUTH_AUDIENCE is the constant
-    // qits-platform now. The key is not shipped, so a leftover QITS_CI_CONTAINER_GIT_AUDIENCE entry
-    // has nothing to override.
+    // A step container's git helper presents the run's token and asks the idp for nothing, so
+    // there is no audience to name. The key is not shipped, so a leftover
+    // QITS_CI_CONTAINER_GIT_AUDIENCE entry has nothing to override.
     assertTrue(
         ConfigProvider.getConfig()
             .getOptionalValue("qits.ci.container-git-audience", String.class)

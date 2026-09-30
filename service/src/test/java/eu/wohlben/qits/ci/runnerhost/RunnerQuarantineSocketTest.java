@@ -52,7 +52,7 @@ import org.junit.jupiter.api.Test;
 /**
  * What a connected runner is TOLD about its standing (qits-466), over a real WebSocket from a
  * scripted {@link FakeCiRunner} — the {@code Ack} it holds its slots by, the {@code Quarantined} and
- * {@code Reinstated} frames, the {@code registryMirrors} an EDGE runner's builder applies — and the
+ * {@code Reinstated} frames, the {@code registryMirrors} a runner's builder applies — and the
  * operator's two doors that move it.
  *
  * <p><b>Every change of what a connected runner may hold is a fresh {@code Ack} and a {@code
@@ -124,7 +124,7 @@ class RunnerQuarantineSocketTest {
   @TestSecurity(user = "runner", roles = RUNNER_ROLE)
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aQuarantinedRunnerIsAckedNoSlotsAndToldWhy() throws Exception {
-    declare(3, CiRunnerPlane.INTERNAL, Instant.parse("2026-09-28T10:00:00Z"), "for the test");
+    declare(3, CiRunnerPlane.EDGE, Instant.parse("2026-09-28T10:00:00Z"), "for the test");
 
     try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
       runner.send(hello());
@@ -143,7 +143,7 @@ class RunnerQuarantineSocketTest {
   @TestSecurity(user = "runner", roles = {RUNNER_ROLE, "qits:admin"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aPatchOfAConnectedRunnersSlotsReAcksItAndPushesTheBacklog() throws Exception {
-    declare(0, CiRunnerPlane.INTERNAL, null, null);
+    declare(0, CiRunnerPlane.EDGE, null, null);
 
     try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
       runner.send(hello());
@@ -170,7 +170,7 @@ class RunnerQuarantineSocketTest {
   @TestSecurity(user = "runner", roles = {RUNNER_ROLE, "qits:admin"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
   void aQuarantineAcksZeroAndAGreenlightAcksTheConfiguredSlotsAgain() throws Exception {
-    declare(2, CiRunnerPlane.INTERNAL, null, null);
+    declare(2, CiRunnerPlane.EDGE, null, null);
 
     try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
       runner.send(hello());
@@ -222,7 +222,7 @@ class RunnerQuarantineSocketTest {
   @Test
   @TestSecurity(user = "runner", roles = RUNNER_ROLE)
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
-  void anEdgeRunnersAckCarriesTheRegistryMirrorsItsBuilderApplies() throws Exception {
+  void aRunnersAckCarriesTheRegistryMirrorsItsBuilderApplies() throws Exception {
     QuarkusMock.installMockForType(
         RunnerAddressesFixture.withDomain("example.org"), RunnerAddresses.class);
     declare(1, CiRunnerPlane.EDGE, null, null);
@@ -231,7 +231,7 @@ class RunnerQuarantineSocketTest {
       runner.send(hello());
       Map<String, String> mirrors = runner.next(Ack.class, SOON).registryMirrors();
 
-      assertNotNull(mirrors, "an EDGE runner is told what its builder must rewrite");
+      assertNotNull(mirrors, "a runner is told what its builder must rewrite");
       // The machine spellings the estate's Dockerfiles commit — registry.<env>.localhost:8080 and
       // its mirror twin, with the tier derived — and the older host-published ports.
       Config config = ConfigProvider.getConfig();
@@ -250,6 +250,10 @@ class RunnerQuarantineSocketTest {
       expected.put(
           config.getValue("qits.artifacts.registry-host", String.class),
           "registry.qits.example.org");
+      // And the two stores' qits-net aliases in this environment, which a committed file may name.
+      String environment = config.getOptionalValue("QITS_ENVIRONMENT", String.class).orElse("dev");
+      expected.put(environment + "-qits-artifacts:8080", "registry.qits.example.org");
+      expected.put(environment + "-qits-platform-mirror:8080", "mirror.qits.example.org");
       // The bare upstreams, through the public mirror's namespaces.
       expected.put("quay.io", "mirror.qits.example.org/quay");
       expected.put("registry.access.redhat.com", "mirror.qits.example.org/redhat");
@@ -265,14 +269,15 @@ class RunnerQuarantineSocketTest {
   @Test
   @TestSecurity(user = "runner", roles = RUNNER_ROLE)
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
-  void anInternalRunnersAckCarriesNone() throws Exception {
-    QuarkusMock.installMockForType(
-        RunnerAddressesFixture.withDomain("example.org"), RunnerAddresses.class);
-    declare(1, CiRunnerPlane.INTERNAL, null, null);
+  void aRunnersAckCarriesNoneWhenThisQitsCiKnowsNoPublicDomain() throws Exception {
+    // Nothing to map the spellings to: null, "not sent" — and such a runner's steps are refused
+    // EDGE_PLANE_UNCONFIGURED anyway.
+    QuarkusMock.installMockForType(RunnerAddressesFixture.withDomain(null), RunnerAddresses.class);
+    declare(1, CiRunnerPlane.EDGE, null, null);
 
     try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
       runner.send(hello());
-      assertNull(runner.next(Ack.class, SOON).registryMirrors(), "on qits-net, nothing to rewrite");
+      assertNull(runner.next(Ack.class, SOON).registryMirrors(), "no public name to rewrite to");
     }
   }
 
@@ -282,7 +287,7 @@ class RunnerQuarantineSocketTest {
   @TestSecurity(user = "admin", roles = "qits:admin")
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE)})
   void theHealthCheckDoorRefusesASecondAndSaysWhenItCannotAsk() {
-    declare(1, CiRunnerPlane.INTERNAL, null, null);
+    declare(1, CiRunnerPlane.EDGE, null, null);
 
     // This suite's catalogue holds no health-check repository: the question cannot be asked.
     given().post(RUNNERS + "/" + runnerId + "/healthcheck").then().statusCode(503);
@@ -314,7 +319,7 @@ class RunnerQuarantineSocketTest {
   @TestSecurity(user = "agent", roles = "qits:agent")
   @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE)})
   void anAgentPressesNeitherButton() {
-    declare(1, CiRunnerPlane.INTERNAL, null, null);
+    declare(1, CiRunnerPlane.EDGE, null, null);
 
     given().post(RUNNERS + "/" + runnerId + "/greenlight").then().statusCode(403);
     given().post(RUNNERS + "/" + runnerId + "/healthcheck").then().statusCode(403);

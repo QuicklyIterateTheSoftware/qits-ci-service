@@ -20,16 +20,19 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
- * The qits-idp commissioning client: one short-lived oidc client per CI run, minted on demand and
- * deleted when the run closes — and, since the runners, a runner's registration token and its own
- * client, minted by {@code CiRunnerController} and given back when the runner is decommissioned.
+ * The qits-idp commissioning client. It mints three things: one {@code ci-run} TOKEN per CI run,
+ * commissioned on demand and deleted when the run closes; a runner's one-use registration token;
+ * and a registered runner's own client — the last two asked for by {@code CiRunnerController} and
+ * given back when the runner is decommissioned.
  *
  * <p><b>What replaced what.</b> A publishing step used to push with {@code
  * qits.ci.registry-auth.client-id}/{@code …client-secret} — one static credential, shared by every
  * run of every repository, living in a deployment's environment for as long as the deployment did.
- * qits-idp grew a commissioning API, so the credential a step holds is now this run's own: it exists
+ * qits-idp grew a commissioning API, so the credential a step holds is this run's own: it exists
  * for the length of one pipeline, it is readable only by containers of that pipeline, and a leak
- * costs what one run could have done rather than what every run could.
+ * costs what one run could have done rather than what every run could. A run's credential was a
+ * commissioned CLIENT while steps ran on qits-net; it is a token only since qits-515, and {@link
+ * #commission} now mints a runner's client and nothing else.
  *
  * <p><b>Hand-rolled {@code java.net.http}, like every other client in this deployable.</b> The rule
  * is {@code AGENTS.md}'s native-image one — prefer what the image already has over a REST client
@@ -51,15 +54,15 @@ import org.jboss.logging.Logger;
  *
  * <p><b>{@link #enabled()} is the fallback arm.</b> With {@code
  * quarkus.oidc-client.qits.client-enabled} off — the shipped posture, and every test's — there is no
- * credential to present and nothing to commission with, so this class does nothing at all and a
- * step container's environment is byte-identical to what it was before any of this existed.
+ * credential to present and nothing to commission with, so this class does nothing at all, and no
+ * step can be launched: {@code RunnerStepRunner} refuses one that has no token.
  */
 @ApplicationScoped
 public class IdpCommissioner {
 
   private static final Logger LOG = Logger.getLogger(IdpCommissioner.class);
 
-  /** What a commission made here is <b>about</b>: one CI run, named by its run id. */
+  /** What a run's token is <b>about</b>: one CI run, named by its run id. */
   public static final String CONTEXT_KIND = "ci-run";
 
   /**
@@ -162,7 +165,8 @@ public class IdpCommissioner {
   }
 
   /**
-   * Commission one credential for a context, holding through the answers that are about the moment.
+   * Commission one client for a context — a registered runner's ({@link #RUNNER_KIND}) — holding
+   * through the answers that are about the moment.
    *
    * <p><b>The classification holds through what is about the moment.</b> Nothing answered, a 5xx and a 401 are held through — the last one because an idp that
    * has just been replaced answers exactly that to a credential that was valid a minute ago, which
@@ -179,16 +183,16 @@ public class IdpCommissioner {
    * @throws CommissionFailedException when every attempt inside the patience window failed
    */
   public Commission commission(String contextKind, String contextId, List<String> gitRefs) {
-    return holdThrough(clientsUrl(), "a per-run credential", contextKind, contextId, gitRefs,
+    return holdThrough(clientsUrl(), "a client", contextKind, contextId, gitRefs,
         this::readCommission);
   }
 
   /**
    * Commission one opaque token for a context — {@code POST <idp>/api/tokens}, the third credential
    * qits-idp issues (its README, "Commissioned tokens"). Same caller, same body, same retry window
-   * and the same classification as {@link #commission}: a runner's registration token is minted on
-   * an operator's request rather than on a run worker, but a qits-idp in its cutover window is the
-   * same moment either way.
+   * and the same classification as {@link #commission}. A run's {@code ci-run} token is minted on
+   * the run's driver and a runner's registration token on an operator's request, but a qits-idp in
+   * its cutover window is the same moment either way.
    *
    * @throws CommissionFailedException when every attempt inside the patience window failed
    */
@@ -439,85 +443,6 @@ public class IdpCommissioner {
           tokenId, url, e.toString());
     }
     return false;
-  }
-
-  /**
-   * What qits-idp says about one opaque token presented to this service directly — the answer of
-   * {@code POST <idp>/api/tokens/introspect}, the call the edge makes for every {@code qits_tok_}
-   * bearer it sees. {@code roles} are the token's kind's, never its owner's.
-   */
-  public record IntrospectedToken(
-      String tokenId, String subject, List<String> roles, String contextKind, String contextId) {}
-
-  /** How an introspection came out: live, not a live token, or nothing learned. */
-  public enum Introspection {
-    LIVE,
-    /** qits-idp answered that the value is no live token — unknown, deleted, or its owner gone. */
-    NOT_LIVE,
-    /** Nothing was learned: qits-idp did not answer, refused this caller, or this process has no
-     * credential to ask with. */
-    UNKNOWN
-  }
-
-  /** {@link #introspectToken}'s answer; {@code token} is set exactly when the outcome is LIVE. */
-  public record IntrospectionAnswer(Introspection outcome, IntrospectedToken token, String detail) {}
-
-  /**
-   * Ask qits-idp about a {@code qits_tok_} value — one attempt, never held through: the caller is a
-   * request waiting on an answer, and a registration that failed is re-knocked by the runner's own
-   * retry. Authenticated with this service's own Basic pair, which qits-idp admits because it holds
-   * {@code qits:system} (the edge's door and this one share the caller rule). The value is sent in
-   * the body and appears in no log line here.
-   */
-  public IntrospectionAnswer introspectToken(String token) {
-    if (!enabled()) {
-      return new IntrospectionAnswer(
-          Introspection.UNKNOWN, null, "this qits-ci commissions nothing, so it cannot ask qits-idp");
-    }
-    String url = tokensUrl() + "/introspect";
-    try {
-      HttpRequest request =
-          HttpRequest.newBuilder(URI.create(url))
-              .timeout(REQUEST_TIMEOUT)
-              .header("Authorization", basic())
-              .header("Content-Type", "application/json")
-              .POST(
-                  HttpRequest.BodyPublishers.ofString(
-                      "{\"token\":\"" + escape(token) + "\"}", StandardCharsets.UTF_8))
-              .build();
-      HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
-      int status = response.statusCode();
-      if (status == 404) {
-        return new IntrospectionAnswer(Introspection.NOT_LIVE, null, "no live token for that value");
-      }
-      if (status != 200) {
-        LOG.warnf(
-            "Could not introspect a presented token (POST %s): HTTP %d %s",
-            url, status, errorOf(response.body()));
-        return new IntrospectionAnswer(Introspection.UNKNOWN, null, "qits-idp answered " + status);
-      }
-      JsonNode node = objectMapper.readTree(response.body());
-      List<String> roles = new java.util.ArrayList<>();
-      JsonNode listed = node.get("roles");
-      if (listed != null && listed.isArray()) {
-        listed.forEach(role -> roles.add(role.asText()));
-      }
-      return new IntrospectionAnswer(
-          Introspection.LIVE,
-          new IntrospectedToken(
-              text(node, "tokenId"),
-              text(node, "subject"),
-              List.copyOf(roles),
-              text(node, "contextKind"),
-              text(node, "contextId")),
-          null);
-    } catch (InterruptedException interrupted) {
-      Thread.currentThread().interrupt();
-      return new IntrospectionAnswer(Introspection.UNKNOWN, null, "interrupted");
-    } catch (Exception e) {
-      LOG.warnf("Could not introspect a presented token (POST %s): %s", url, e.toString());
-      return new IntrospectionAnswer(Introspection.UNKNOWN, null, e.toString());
-    }
   }
 
   /**

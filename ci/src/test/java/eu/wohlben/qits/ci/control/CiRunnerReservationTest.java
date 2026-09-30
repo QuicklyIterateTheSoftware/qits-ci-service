@@ -371,7 +371,7 @@ public class CiRunnerReservationTest extends CiTestSupport {
               runner.id = UUID.randomUUID();
               runner.name = name;
               runner.slots = slots;
-              runner.plane = CiRunnerPlane.INTERNAL;
+              runner.plane = CiRunnerPlane.EDGE;
               runner.clientId = "client-" + name;
               runner.capabilities =
                   "{\"docker\":" + docker + ",\"arch\":\"amd64\""

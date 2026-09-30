@@ -108,8 +108,11 @@ package:
   a reserved run (`RunnerStepRunner`, the `ci/control/CiRunnerStepRunner` implementation, typed so it
   never competes for `CiStepRunner`), and `RunnerAddresses`, the single composition of what a runner is told — every address a PUBLIC edge
   name, `https://<host>.qits.${QITS_DOMAIN}` as qits-idp's `PlatformDomain` composes its own origin
-  (the CI base and so the `wss://` socket, the idp token url, the artifacts base), each with an
-  override, and the qits-net aliases only as the no-domain fallback. The register door answers it,
+  (the CI base and so the `wss://` socket, the idp token url, the registry host), each with an
+  override, and **no fallback**: with no public domain and no override it throws
+  `RunnerAddresses.UnconfiguredException` naming the key (qits-515 deleted the qits-net aliases it
+  used to answer). The same domain is what every address a STEP is told is composed from
+  (`StepAddressPlane`). The register door answers it,
   and `RunnerInstallScript` renders the generic script `GET /ci/api/runners/install.sh` serves (the
   runner image — the registry host and the version `CiRunnerPins` reads off the pinned protocol jar —
   which the registry's `Upgrade` to a runner of any other version names too) and the
@@ -204,32 +207,35 @@ that assertion still means what it meant.
 
 ### The credential is commissioned per run
 
-**`qits.ci.registry-auth.client-id`/`…client-secret` are gone.** They were one static pair, shared
-by every run of every repository, readable by every publishing step's repo-authored script, and
-alive for as long as the deployment was. qits-idp grew a commissioning API and `service/…/idp/` is
-the adapter for it:
+**A run's credential is one `ci-run` TOKEN, and nothing else** (qits-475; the only kind since
+qits-515). `qits.ci.registry-auth.client-id`/`…client-secret` — one static pair, shared by every run
+of every repository — went first; the per-run commissioned CLIENT that replaced them, which a step on
+qits-net exchanged for bearers at the idp's alias, went with the internal plane. qits-idp's
+commissioning API is what mints the token, and `service/…/idp/` is the adapter for it:
 
-- **`IdpCommissioner`** — hand-rolled `java.net.http`, like every other client here. `POST
-  <quarkus.oidc-client.qits.auth-server-url>/api/clients` with HTTP Basic of **this service's own**
-  oidc client and `{"contextKind":"ci-run","contextId":"<runId>"}`; `DELETE …/{clientId}` gives one back
-  (404 is "already gone", which is what was asked for); `GET …/clients` lists this owner's live ones.
-  **The address is derived, never configured** — a second key would be a second thing to keep in step
-  with the first, and two idps would mean minting against one and presenting tokens signed by the
-  other.
-- **`RunCommissions`** — the run-scoped memory, one entry per run, populated **lazily at the run's
+- **`IdpCommissioner`** — hand-rolled `java.net.http`, like every other client here.
+  `commissionToken` is `POST <quarkus.oidc-client.qits.auth-server-url>/api/tokens` with HTTP Basic
+  of **this service's own** oidc client and `{"contextKind":"ci-run","contextId":"<runId>"}`;
+  `deleteToken` gives one back (404 is "already gone"); `liveTokens` lists this owner's live ones.
+  `commission`/`decommission`/`live` are the same three verbs on `/api/clients`, and they are a
+  **runner's** now: the register door commissions a `ci-runner` client, and no run commissions one.
+  **The address is derived, never configured** — a second key would be a second thing to keep in
+  step with the first, and two idps would mean minting against one and presenting tokens signed by
+  the other.
+- **`RunCommissions`** — the run-scoped memory, one token per run, populated **lazily at the run's
   first step** and reused by every later one. Every step clones from the authenticated git host, so
-  every step needs the pair; a run is one credential rather than one per step, which is one thing to
-  leak instead of N.
-  Not a row: a commission is worth exactly one run, and a run does not survive this process.
+  every step needs it; a run is one credential rather than one per step, which is one thing to leak
+  instead of N. Not a row: a commission is worth exactly one run, and a run does not survive this
+  process.
 - **`CommissionReconciler`** — the durable half. On boot (after both existing boot observers, on its
   own `ci-commission-reconcile` thread — the daemon pin ladder's healthcheck lesson, which outlived
-  the ladder) and hourly, it
-  lists and deletes every `ci-run` row whose `contextId` is not a `QUEUED`/`RUNNING` run and which
-  this process is not holding right now. **A listing it could not read reaps nothing**: `live()`
-  answers an empty `Optional` rather than an empty list precisely so the two cannot be confused.
-  The same pass reaps a runner's `ci-runner` client and `ci-runner-registration` token against the
-  runner table (`GET /idp/api/tokens` is its second listing, under the same rule); the predicate is
-  in its class javadoc and `README.md` under "Runners".
+  the ladder) and hourly, it lists and deletes every `ci-run` TOKEN whose `contextId` is not a
+  `QUEUED`/`RUNNING` run, which this process is not holding right now, and which is older than ten
+  minutes. **A listing it could not read reaps nothing**: `liveTokens()` answers an empty `Optional`
+  rather than an empty list precisely so the two cannot be confused. The same pass reaps a runner's
+  `ci-runner` client and `ci-runner-registration` token against the runner table; the predicate is
+  in its class javadoc and `README.md` under "Runners". **It does not look for `ci-run` clients**:
+  one a run of an older qits-ci was still holding at the cutover is not reaped here.
 - **`RunGitRefs`** — the Git scope the commission states as `gitRefs` (C6 of the superproject's
   `principal-bound-git-refs-plan.md`; the table is in `README.md`). It reads the run's own
   `QITS_EVENT_NAME` and `QITS_EVENT_PAYLOAD` from `LaunchSpec.env`, so no seam changed.
@@ -264,61 +270,52 @@ Three decisions worth keeping in front of you:
 
 - **A commission that cannot be made fails the STEP.** `RunnerStepRunner` catches
   `CommissionFailedException` and records `LAUNCH_FAILED` with a message naming the call. Launching
-  credential-less would turn an idp blip into a push 401 minutes later, inside somebody's build, with
+  credential-less would turn an idp blip into a 401 minutes later, inside somebody's build, with
   nothing in the record naming the cause. The retry window is `qits.ci.commission.patience` and its
   classification is `holdThrough`'s — 401, a 5xx and nothing answering are about the moment; a 403
   (a commissioned client may not commission) and a 400 are about the request and stand at once.
-- **The fallback arm is byte-identical to the old unset-keys behaviour.** With
-  `quarkus.oidc-client.qits.client-enabled` off there is nothing to commission with, so nothing is
-  commissioned and nothing is injected — the arm every test in this repo is on.
-- **The secret reaches the container in exactly two forms**: base64 inside the docker document, and
-  raw as `$QITS_COMMISSIONED_CLIENT_SECRET` beside `$QITS_COMMISSIONED_CLIENT_ID`, which is what a
-  BuildKit secret mount (`--secret id=…,env=QITS_COMMISSIONED_CLIENT_SECRET`) consumes without
-  writing a layer. `RunCommissioningTest` asserts that list is exactly one environment entry long and
-  that nothing else sent — argv, entrypoint, labels, the container name, the bootstrap — contains it.
+- **A qits-ci that commissions nothing launches no step.** With
+  `quarkus.oidc-client.qits.client-enabled` off — the shipped posture — `RunCommissions.forRun`
+  answers null and `RunnerStepRunner` records `LAUNCH_FAILED` naming that key: the token is the
+  step's only credential, so a step without one could download no daemon, clone nothing and be
+  admitted by no socket. A suite that launches steps installs `idp/ScriptedRunTokens` over the bean.
+- **The token reaches the container in the forms it is spent in**: raw as `$QITS_TOKEN` and as
+  `$QITS_MAVEN_AUTH_PSW` (the password half of the pair a repository's own maven settings read), and
+  base64 inside the docker document. `RunCommissioningTest` asserts that list and that nothing else
+  sent — argv, entrypoint, labels, the container name, the bootstrap — contains it.
 
-**The document names every host in `qits.ci.docker-auth-hosts` AND `qits.ci.buildkit.registry-host`,
-not just the push registry.** The docker client picks a login by registry hostname and buildctl does
-the same, so one entry is one host's worth of auth — which was enough while a step pulled and pushed
-against the same address, and stopped being enough when a step image started arriving `FROM
-mirror.dev.localhost:8080/…`: a document naming only the registry leaves the *pull* unauthenticated
-and the build dies on a 401 no pipeline mentions. Behind the edge the key is both vhosts, and every
-entry carries the same commissioned pair because it is one identity at one idp whatever hostname
-fronts it.
+**The docker document names the registry's and the mirror's public hosts**
+(`registry.qits.<domain>`, `mirror.qits.<domain>`) — `StepAddressPlane.authHosts`, composed from the
+domain. The docker client picks a login by registry hostname and buildctl does the same, so a build
+that pulls its base image from the mirror and pushes to the registry needs both named, and every
+entry is `token:<the run's token>`. `qits.ci.docker-auth-hosts`, `qits.ci.buildkit.registry-host`
+and the `qits.ci.buildkit.enabled` kill switch are deleted (qits-515). A step that is not a build
+gets no `$DOCKER_CONFIG`; when its image is the platform's, its spec carries a one-entry document
+for the runner's pull of that image.
 
-**The builder's host is the half a deployment never has to ask for, and the half that would fail
-silently.** `$QITS_BUILD_REGISTRY` (`qits.ci.buildkit.registry-host`) is where a converted recipe's
-push actually GOES, while the auth list defaults to `$QITS_REGISTRY` (`qits.artifacts.registry-host`),
-the host daemon's view of the same registry — one registry, two network positions, two keys, one
-document. So `StepContainerSettings.authHosts` unions them rather than the config expression doing it,
-which is what makes the union follow the buildkit kill switch: off, `$QITS_BUILD_REGISTRY` is sent
-empty and a login for that alias would be an entry for an address nothing addresses. Duplicates
-collapse, so two keys holding one value are one entry and never a duplicate JSON key. **A document
-missing the builder's host costs nothing for exactly as long as the store lets an anonymous `/v2`
-publish through** — which is why `RunCommissioningTest` now fixtures the SHIPPED buildkit state
-(it left the fields at `false`/`null` until 2026-09-20, so every document assertion was made
-against a deployment state the fleet is not in) and pins the two-host document, the collapse, the
-kill switch's arm and the `build: true` step that gets the document with no socket.
-
-**`DOCKER_BUILDKIT=1` and `BUILDX_NO_DEFAULT_ATTESTATIONS=1` ride along on the same docker-only
-scope.** Every step image ships buildx as of qits-build-images-oci 2026.814.110556, so a legacy
+**`DOCKER_BUILDKIT=1` and `BUILDX_NO_DEFAULT_ATTESTATIONS=1` ride along on a `docker: true` step.**
+Every step image ships buildx as of qits-build-images-oci 2026.814.110556, so a legacy
 build here is a *silent fallback* rather than an image with no choice — and a silent fallback is
 what quietly drops a `--secret` mount. The first flag turns that into a loud error; the second keeps a push a single
 manifest, because buildx attaches provenance and SBOM attestations by default and the platform
-registry expects one manifest per tag. Neither is a credential, so both reach a docker step on a
-deployment that commissions nothing.
+registry expects one manifest per tag.
 
 Four things bite:
 
 - **`@WebSocket(path = "/ci/daemon")` is a literal that does not follow `quarkus.rest.path`**, so it
   carries the `/ci` segment itself — and no machine guard reaches it, which is correct rather than an
-  oversight: the callers are step containers holding no qits-idp token, and the authentication is the
-  per-container secret. Nothing has to be excluded for that to hold. `MachineAuth` guards only where
-  a handler calls it, and this endpoint calls it nowhere.
-- **The path is a cross-repo contract.** `qits.ci.container-daemon-url` (default
-  `ws://qits-ci:8080/ci/daemon`) is injected as `$QITS_CI_DAEMON_URL` and dialled verbatim. Move one,
-  move both. It is not a gateway route and must not become one: one process per container with a
-  lifetime of one step has no stable address worth configuring.
+  oversight: `MachineAuth` guards only where a handler calls it, and this endpoint calls it nowhere.
+  What admits a connection is `@RolesAllowed` at the upgrade and then the launch it names: a step's
+  daemon dials through the edge with its run's `ci-run` token, the edge forwards the token's subject
+  with the role `qits:ci-run`, the daemon's first frame (`Hello`) names its launch, and
+  `CiDaemonRegistry.admitByToken` admits it only when that launch is recorded against that subject
+  (`WRONG_RUN` otherwise). There is no per-container secret and no `X-Qits-Ci-Daemon-*` header
+  (qits-515). `qits:system` is still in the socket's `@RolesAllowed` and admits no launch by itself;
+  narrowing the list to `qits:ci-run` is qits-516.
+- **The path is a cross-repo contract.** `StepAddressPlane` composes
+  `wss://ci.qits.<QITS_DOMAIN>/ci/daemon` as `$QITS_CI_DAEMON_URL` and the daemon dials it verbatim.
+  Move the `@WebSocket` literal and `StepAddressPlane.DAEMON_SOCKET_PATH` moves with it
+  (`StepAddressPlaneTest` holds the two equal).
 - **No untimed wait may enter this package.** A run's driver thread parks here instead of on
   a process, so anything that never returns wedges *all* of CI. That covers three kinds of wait, not
   one: the lifecycle futures (`CiDaemonRegistry.await`), writing a frame (`send`), and closing a
@@ -357,8 +354,9 @@ Four things bite:
   retry window (`qits.ci.containers.launch-patience`), the boot-reap patience
   (`qits.ci.containers.boot-reap-patience`) and the owner key (`qits.ci.containers.owner`). What
   survived was renamed `runnerhost/StepContainerSettings`: `BOOTSTRAP` and its paths, the config a
-  step spec is composed from, `workloadSettings()`, `internalPlane()`, `daemonVersion()` /
-  `resolveBinaryUrl()`, `containerName()`, `cloneUrl()` and `resolvedArtifactsUrl()`. Do not
+  step spec is composed from, `workloadSettings()`, `imageSpellings()`/`plane()`, `daemonVersion()` /
+  `resolveBinaryUrl()` and `containerName()` (`internalPlane()`, `cloneUrl()` and
+  `resolvedArtifactsUrl()` went with the internal plane, qits-515). Do not
   reintroduce a docker or orchestrator call here to "help" a runner: the runner owns its host.
 
 - **A teardown that needs the log still gets it ON the removal.** `Reaped` carries the tail the runner
@@ -591,10 +589,10 @@ launched with `pinnedImage(...)`. Two steps naming one tag get one digest by con
   six publish surfaces while letting every READ through — so no credential is presented, and one
   would be a credential offered where the store asks for none.
 - **The address is derived, never configured**, `IdpCommissioner`'s rule: the origin of
-  `qits.artifacts.maven.registry-url`, which is `StepContainerSettings.resolvedArtifactsUrl`'s own ladder.
-  Two derivations would mean a step publishing to one address and its pin resolved against another.
-  The *pinned reference* is built with `qits.artifacts.registry-host` — the host daemon's view, which
-  is what a pull must name. Resolving through one position and pulling through the other is sound
+  `qits.artifacts.maven.registry-url` (or `qits.artifacts.url` when a deployment sets it) — where
+  qits-ci itself reaches the store from inside the swarm. The *pinned reference* is built with
+  `qits.artifacts.registry-host`, and `StepAddressPlane` moves that host to the registry's public
+  name for the runner's pull. Resolving through one address and pulling through another is sound
   rather than sloppy: a digest is content-addressed.
 - **Four answers, and `UNRESOLVED` must never be collapsed into `FOREIGN`** — `commitHeld`'s
   `UNKNOWN`/`GONE` rule one seam over. Pinned; already pinned by the author (no registry is asked,
@@ -940,7 +938,7 @@ That is true of the **upgrade** and of nothing else. **Measured on the packaged 
 `quarkus.quinoa.ignored-path-prefixes` was set**, a plain `GET /ci/daemon` — no `Upgrade` header —
 and `GET /ci/daemon/nope` each answered **200 `text/html`** with the SPA's `index.html`; the socket
 route claims only the handshake and the fallback took the rest. `/ci/daemon` is a cross-repo machine
-contract (`qits.ci.container-daemon-url`, dialled verbatim by every step container's daemon), and a
+contract (the path of every step's `$QITS_CI_DAEMON_URL`, dialled verbatim by its daemon), and a
 machine client handed a web page parses it as data. The correct answer to a mistyped machine path is
 a 404, which is what it is now.
 
@@ -2310,7 +2308,7 @@ Four things reaching this code are attacker-controlled and must stay that way in
   step code runs in it, so its frames are data about a run: recorded, never trusted. The `daemonId`
   in a `Hello` is a claim the host checks against the connection it already authenticated rather than
   an identity it accepts; timestamps are host-stamped rather than daemon-reported, because a clock is
-  the cheapest thing to forge; and the per-container secret authorizes exactly "deliver data about
+  the cheapest thing to forge; and an admitted connection is authorized for exactly "deliver data about
   this run" and nothing else, ever.
 
 Step output is bounded by a rolling tail while it is read, so a chatty step cannot OOM the JVM.
@@ -2899,22 +2897,19 @@ contract, tested where it lives.
     taps register a **floor** at their first `install()` and are cumulative and
     prefix-stable, which is what the framework's per-source cursor requires: a skipped line is never
     in the list, so skipping cannot shift an earlier story's slice while moving a floor would.
-  - **The story learns the daemon's secret the way a container learns it.** `StoryRunner` holds the
-    `Launch` it was sent, so `StoryDaemon` reads `QITS_CI_DAEMON_ID` and `QITS_CI_DAEMON_SECRET` out
-    of the workload spec qits-ci actually sent (`BuildExecutionIT`, `BuildTriggerIT` and
-    `CiDaemonPinIT` all read the daemon credentials there). Nothing reads the host's
-    launch table, which is what makes an admitted dial a measurement of the whole path rather than a
-    fixture with privileged access.
-  - **The handshake carries two credentials and forgetting the second costs the whole plane.**
-    `CiDaemonSocket` is `@RolesAllowed("qits:system")`, enforced at the HTTP *upgrade*, so the
-    per-container secret alone gets a **401 before `@OnOpen` runs**. The real binary asserts
-    `X-Qits-User: qits-ci-daemon` / `X-Qits-Roles: qits:system` itself (`ControlSocket.connect`),
-    which it may because the dial is intra-network and never crosses the edge that strips that
-    namespace. `FakeCiDaemon` now sends both pairs; it did not, and no suite could see it, because
-    every test that dials it in TEST mode inherits the forward-auth `dev` identity, which already
-    holds `qits:system`. Measured against a deployed qits-ci on 2026-08-29 as a raw
-    `HTTP/1.1 401 Unauthorized` on the upgrade. **`CiPackagedSurfaceIT`'s socket probe was red on
-    exactly this** and nothing noticed, because CI names its IT classes and never named that one.
+  - **The story learns its launch id and the run's token the way a container learns them.**
+    `StoryRunner` holds the `Launch` it was sent, so `StoryDaemon` reads `QITS_CI_DAEMON_ID`,
+    `QITS_TOKEN` and `QITS_TOKEN_SUBJECT` out of the workload spec qits-ci actually sent. Nothing
+    reads the host's launch table, which is what makes an admitted dial a measurement of the whole
+    path rather than a fixture with privileged access. The launched qits-ci can mint that token
+    because the shared profile switches its qits oidc client on and points it at a stub of
+    qits-idp's commissioning surface (`stories/support/StoryRunTokens`).
+  - **There is no edge in the suite, so a story daemon arrives as what the edge forwards.**
+    `CiDaemonSocket`'s `@RolesAllowed` is enforced at the HTTP *upgrade*. `StoryDaemon` presents a
+    JWT minted by the mock idp — `sub` the token's subject, role `qits:ci-run` — and names its launch
+    in its `Hello`. The real binary presents the RAW token, which qits-ci does not read, so
+    `CiDaemonPinIT` puts `stories/support/StoryEdge` in between: it takes the binary's bearer and
+    forwards the connection as that JWT, relaying frames both ways.
   - **Fixture setup is invisible to both taps by construction.** `stories/support/StoryOrigin`
     writes a bare repository onto the stub git host's disk with a plain `ProcessBuilder` `git` — no
     RestAssured call and no HTTP to the stub — so nothing a story did *not* do appears in its
@@ -2981,12 +2976,11 @@ contract, tested where it lives.
   container, which is the point: admission, framing, dispatch and the blocking bridge are all
   provable with no docker and no published binary, and only the round trip through a real image is
   left out (the runner's suite owns the real `docker run`).
-  <br>**Its handshake carries four headers, not two.** The two `X-Qits-Ci-Daemon-*` are the launch
-  credential `@OnOpen` checks; `X-Qits-User: qits-ci-daemon` / `X-Qits-Roles: qits:system` are what
-  gets past `CiDaemonSocket`'s `@RolesAllowed`, which websockets-next enforces at the **upgrade**.
-  A `@QuarkusTest` cannot see the difference — the forward-auth `%test` `dev` identity already holds
-  `qits:system` — so this was invisible until a packaged story dialled and got a 401. Never drop
-  them, and never assume a socket assertion that passes in TEST mode passes against the artifact.
+  <br>**It dials as what the edge forwards**: `X-Qits-User: <the run token's subject>` /
+  `X-Qits-Roles: qits:ci-run`, which the forward-auth mechanism reads into an identity, and then
+  names its launch with `hello(daemonId)`. There is no launch header and no secret (qits-515). An
+  identity is needed at all because websockets-next enforces `@RolesAllowed` at the **upgrade**;
+  never assume a socket assertion that passes in TEST mode passes against the artifact.
   <br>**A REFUSED dial can be over before the fixture is listening, and that was a live flake.** The
   two unauthorized cases close 1008 from `@OnOpen`, microseconds after the handshake, while
   `FakeCiDaemon`'s constructor is still installing its handlers on the test thread — and Vert.x

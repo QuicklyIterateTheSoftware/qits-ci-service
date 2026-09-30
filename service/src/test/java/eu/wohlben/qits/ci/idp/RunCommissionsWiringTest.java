@@ -50,13 +50,17 @@ public class RunCommissionsWiringTest {
           }
 
           @Override
-          public Commission commission(String contextKind, String contextId, List<String> gitRefs) {
+          public CommissionedToken commissionToken(
+              String contextKind, String contextId, List<String> gitRefs) {
             stated.add(gitRefs);
-            return new Commission("run-client-" + contextId, "run-s3cr3t");
+            return new CommissionedToken(
+                "token-" + contextId, "qits_tok_wiring", "tok-ci-run-" + contextId);
           }
 
           @Override
-          public void decommission(String commissionedClientId) {}
+          public boolean deleteToken(String tokenId) {
+            return true;
+          }
         };
     QuarkusMock.installMockForType(recording, IdpCommissioner.class);
   }

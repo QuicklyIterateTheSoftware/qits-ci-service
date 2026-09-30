@@ -145,6 +145,12 @@ public class TokenValidationBootstrapIT {
       // datasource), which is why the second triple the parent supplies is not optional.
       overrides.put("quarkus.otel.sdk.disabled", "true");
       overrides.put("qits.eventstream.enabled", "false");
+      // THE RUN'S TOKEN. A step's only credential is its run's ci-run token, and a qits-ci that
+      // commissions nothing launches no step (qits-515) — so the build stories need this process
+      // able to mint one. The qits oidc client is switched on and pointed at a stub answering
+      // qits-idp's commissioning surface (stories/support/StoryRunTokens); what this service
+      // VALIDATES still comes from the mock idp above.
+      overrides.putAll(eu.wohlben.qits.ci.stories.support.StoryRunTokens.configOverrides());
       // THERE IS NO THIRD DIAL ANY MORE. This block used to carry a second switch —
       // qits.ci.daemon-autoadopt-enabled=false — because the daemon pin ladder's startup discovery
       // was a SEPARATE HTTP call to qits.events.url that the key above did not cover, and a launched

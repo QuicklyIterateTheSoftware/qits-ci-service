@@ -130,7 +130,7 @@ import java.util.List;
  * <p><b>Environment, in every case but two.</b> A step reads {@code $QITS_VERSION} (seeded by
  * {@code CiRunService} from the triggering event — the three inconsistent {@code jq} grammars in the
  * fleet die with it), {@code $QITS_CI_REPO_NAME}, {@code $QITS_ARTIFACTS_URL}, {@code
- * $QITS_ARTIFACTS_CLI_PACKAGE}, the registry variables and the commissioned pair. The two exceptions
+ * $QITS_ARTIFACTS_CLI_PACKAGE}, the registry variables and the run's credential files. The two exceptions
  * are an artifact's {@code type}/{@code name} and its {@code sbom:} path, which are interpolated into
  * the postlude — held to {@link CiReleaseSlotParser#SCRIPT_SAFE} at parse time and single-quoted
  * here, so the value cannot be anything but a word.
@@ -429,14 +429,13 @@ public final class CiReleaseComposer {
       // Only the FETCH degrades: the CLI itself is a static binary, so everything downstream of
       // this block, the postlude's `qits artifacts publish` included, is unaffected by which arm
       // ran.
-      // EDGE PLANE (epic qits-441): this download is anonymous, which is fine inside the swarm and
-      // a 401 in 0s through the public edge. `$QITS_TOKEN` is this run's ci-run token — set only on
-      // the edge, exactly as `StepContainerSettings.BOOTSTRAP` reads it for the daemon binary's own
-      // download — and the fix mirrors that idiom exactly: a local `set --` builds the bearer header
-      // as a positional list, spent as `"$@"` on both arms and never interpolated into the url.
-      // `set --` is safe here because nothing else this method emits reads `$@`/`$1`/`$2` — check
-      // that before adding a second such block. With no token (the internal plane) `"$@"` expands
-      // to nothing and both arms are byte-identical to what they were before this block existed.
+      // The download goes through the public edge, which answers an anonymous read with a 401.
+      // `$QITS_TOKEN` is this run's ci-run token, exactly as `StepContainerSettings.BOOTSTRAP` reads
+      // it for the daemon binary's own download, and the idiom is the same: a local `set --` builds
+      // the bearer header as a positional list, spent as `"$@"` on both arms and never interpolated
+      // into the url. `set --` is safe here because nothing else this method emits reads
+      // `$@`/`$1`/`$2` — check that before adding a second such block. With no token `"$@"`
+      // expands to nothing.
       out.append("  set --\n");
       out.append("  if [ -n \"${QITS_TOKEN:-}\" ]; then\n");
       out.append("    set -- --header \"Authorization: Bearer $QITS_TOKEN\"\n");
@@ -486,25 +485,19 @@ public final class CiReleaseComposer {
       out.append(": \"${QITS_BUILD_REGISTRY:?}\"\n");
     }
     if (step.build() || step.docker()) {
-      // The commissioned pair as FILES, for a buildctl `--secret id=…,src=…` that writes no layer.
-      // In a subshell, so `umask 077` bounds these two files and does not silently follow the whole
-      // script — the fleet's hand-written form leaves it set for everything after it.
+      // The run's credential as two FILES, for a buildctl `--secret id=…,src=…` that writes no
+      // layer: a Dockerfile's `--secret id=qits-client-id`/`qits-client-secret` is consumed as
+      // `QITS_MAVEN_AUTH_USR`/`PSW` for the maven mirror. In a subshell, so `umask 077` bounds these
+      // two files and does not silently follow the whole script.
       //
-      // EDGE PLANE (epic qits-441): a step here has no commissioned pair, only `$QITS_TOKEN` — so
-      // both variables above are empty and a Dockerfile's `--secret id=qits-client-id`/
-      // `qits-client-secret` (consumed as `QITS_MAVEN_AUTH_USR`/`PSW` for the maven mirror) writes
-      // an empty credential, which is a 401 from the mirror rather than an anonymous read. The pair
-      // still wins when it is there — an edge run never carries both, but this reads as "prefer the
-      // pair" rather than "branch on the plane" — and with neither, the files stay exactly the
-      // empty strings they always were. `$QITS_TOKEN_SUBJECT` is this run's own subject, sent
-      // alongside `$QITS_TOKEN` by `StepWorkloadSpecs`; a step holding a token but no subject (a
-      // qits-ci older than the pair) still gets SOME id rather than an empty one.
+      // The file NAMES are history: they carried a commissioned client's id and secret while a step
+      // ran on qits-net. A step holds `$QITS_TOKEN` and nothing else now (qits-515), so the id is
+      // `$QITS_TOKEN_SUBJECT` — this run's own subject, sent alongside the token by
+      // `StepWorkloadSpecs` — and the secret is the token, which is what the edge's Basic realm
+      // introspects. With no token the files are empty.
       out.append("(\n");
       out.append("  umask 077\n");
-      out.append("  if [ -n \"${QITS_COMMISSIONED_CLIENT_ID:-}\" ]; then\n");
-      out.append("    printf '%s' \"$QITS_COMMISSIONED_CLIENT_ID\" > /tmp/qits-client-id\n");
-      out.append("    printf '%s' \"$QITS_COMMISSIONED_CLIENT_SECRET\" > /tmp/qits-client-secret\n");
-      out.append("  elif [ -n \"${QITS_TOKEN:-}\" ]; then\n");
+      out.append("  if [ -n \"${QITS_TOKEN:-}\" ]; then\n");
       out.append(
           "    printf '%s' \"${QITS_TOKEN_SUBJECT:-qits-ci-run}\" > /tmp/qits-client-id\n");
       out.append("    printf '%s' \"$QITS_TOKEN\" > /tmp/qits-client-secret\n");

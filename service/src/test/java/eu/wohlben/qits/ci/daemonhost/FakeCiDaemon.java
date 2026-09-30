@@ -16,42 +16,37 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * A ci-daemon that never leaves this JVM: a real Vert.x WebSocket client dialling the real endpoint
- * with the real handshake headers, framing the real protocol messages the same way the native binary
- * does — {@code new JsonObject(CiDaemonCodec.encode(m))} out, {@code CiDaemonCodec.decode(json)} in.
- * The host cannot tell it from a container, which is the point: {@link CiDaemonSocket} and {@link
- * CiDaemonRegistry} are provable in a docker-free suite, and only {@code CiDaemonPinIT} needs
- * a published binary.
+ * and framing the real protocol messages the same way the native binary does — {@code new
+ * JsonObject(CiDaemonCodec.encode(m))} out, {@code CiDaemonCodec.decode(json)} in. The host cannot
+ * tell it from a container, which is the point: {@link CiDaemonSocket} and {@link CiDaemonRegistry}
+ * are provable in a docker-free suite, and only {@code CiDaemonPinIT} needs a published binary.
  *
  * <p>Deliberately dumb — it holds no state machine and answers nothing on its own. Each test scripts
  * the frames it wants, including the wrong ones, which is how the refused dials and the malformed
  * frame are testable at all.
  *
- * <p><b>The handshake carries FOUR headers, not two, and the pair that is easy to forget is the one
- * that gets past the door.</b> {@link CiDaemonSocket} is annotated {@code
- * @RolesAllowed("qits:system")}, which quarkus-websockets-next enforces at the HTTP <em>upgrade</em>
- * — so a dial with no identity is answered <b>401 and never reaches {@code @OnOpen} at all</b>. The
- * real binary asserts the pair itself ({@code ControlSocket.connect}: {@code X-Qits-User:
- * qits-ci-daemon}, {@code X-Qits-Roles: qits:system}), which it may because the dial is
- * intra-network and never crosses the edge that strips the {@code X-Qits-*} namespace.
+ * <p><b>It arrives the way a step's daemon arrives BEHIND THE EDGE.</b> The real binary presents its
+ * run's {@code ci-run} token as {@code Authorization: Bearer}; the platform edge introspects it and
+ * forwards the caller as the token's subject with the role {@code qits:ci-run}. No suite here has
+ * an edge, so this dials as what the edge forwards: {@code X-Qits-User: <subject>}, {@code
+ * X-Qits-Roles: qits:ci-run}, which the forward-auth mechanism reads into the same identity. {@link
+ * CiDaemonSocket}'s {@code @RolesAllowed} is enforced at the HTTP <em>upgrade</em>, so a dial with
+ * no identity is answered <b>401 and never reaches {@code @OnOpen} at all</b>.
  *
- * <p>Measured 2026-08-29 against a <b>deployed</b> qits-ci: a raw upgrade carrying only the two
- * ci-daemon headers comes back {@code HTTP/1.1 401 Unauthorized}. In a {@code @QuarkusTest} it does
- * not, because the forward-auth mechanism's {@code %test} synthetic {@code dev} identity already
- * holds {@code qits:system} — so this omission was invisible to every suite that runs in TEST mode
- * and cost a packaged story its socket. That is exactly the class of gap a launched-artifact test
- * exists to close, and it is why the pair is spelled here rather than at one call site.
+ * <p><b>There is no launch header and no secret</b> (qits-515). The connection names its launch in
+ * its first frame, a {@code Hello} — {@link #hello(String)} — and is admitted when that launch was
+ * recorded against the subject it arrived as.
  */
 public final class FakeCiDaemon implements AutoCloseable {
 
-  /** How the daemon names itself to the forward-auth mechanism — {@code ControlSocket}'s literal. */
+  /** How the edge names the caller to the forward-auth mechanism: the token's subject. */
   public static final String USER_HEADER = "X-Qits-User";
 
-  public static final String DAEMON_USER = "qits-ci-daemon";
-
-  /** …and the role {@link CiDaemonSocket} demands, asserted the same way. */
+  /** …and its roles. */
   public static final String ROLES_HEADER = "X-Qits-Roles";
 
-  public static final String DAEMON_ROLES = "qits:system";
+  /** The role a {@code ci-run} token carries — {@code CiDaemonSocket.RUN_ROLE}. */
+  public static final String RUN_ROLE = "qits:ci-run";
 
   private final Vertx vertx;
   private final WebSocketClient client;
@@ -61,28 +56,21 @@ public final class FakeCiDaemon implements AutoCloseable {
   private final CompletableFuture<String> closeReason = new CompletableFuture<>();
 
   /**
-   * Dial the endpoint with the given credentials. Returns once the HTTP upgrade completed — a
-   * refused dial is a 1008 <em>close</em> after a successful upgrade, not a failed handshake, so the
-   * caller asserts on {@link #awaitClose} rather than on this throwing.
+   * Dial the endpoint as the {@code ci-run} token of {@code subject}, the way the edge forwards one.
+   * Returns once the HTTP upgrade completed; nothing is admitted until {@link #hello(String)} names a
+   * launch. A refused dial is a 1008 <em>close</em> after a successful upgrade, not a failed
+   * handshake, so the caller asserts on {@link #awaitClose} rather than on this throwing.
    */
-  public static FakeCiDaemon dial(URI endpoint, String daemonId, String secret) throws Exception {
-    // The identity half of the handshake — see the class javadoc. The default, because on qits-net
-    // it is not a credential that varies: nearly every case is about the ci-daemon pair, and
-    // without these two none of them would get past the upgrade.
-    return dial(
-        endpoint,
-        daemonId,
-        secret,
-        java.util.Map.of(USER_HEADER, DAEMON_USER, ROLES_HEADER, DAEMON_ROLES));
+  public static FakeCiDaemon dial(URI endpoint, String subject) throws Exception {
+    return dial(endpoint, java.util.Map.of(USER_HEADER, subject, ROLES_HEADER, RUN_ROLE));
   }
 
   /**
-   * {@link #dial(URI, String, String)} as another identity — an EDGE step's daemon, which arrives
-   * as a {@code qits:ci-run} token's subject rather than asserting {@code qits:system}.
-   * {@code identity} is the whole set of identity headers sent; the ci-daemon pair is added to it.
+   * {@link #dial(URI, String)} with exactly the handshake headers given — another identity, a header
+   * the host no longer reads, or none at all where the test's own {@code @TestSecurity} identity is
+   * what every upgrade in the method arrives as.
    */
-  public static FakeCiDaemon dial(
-      URI endpoint, String daemonId, String secret, java.util.Map<String, String> identity)
+  public static FakeCiDaemon dial(URI endpoint, java.util.Map<String, String> headers)
       throws Exception {
     Vertx vertx = Vertx.vertx();
     try {
@@ -92,13 +80,7 @@ public final class FakeCiDaemon implements AutoCloseable {
               .setHost(endpoint.getHost())
               .setPort(endpoint.getPort())
               .setURI(endpoint.getPath());
-      identity.forEach(options::addHeader);
-      if (daemonId != null) {
-        options.addHeader(CiDaemonRegistry.HEADER_ID, daemonId);
-      }
-      if (secret != null) {
-        options.addHeader(CiDaemonRegistry.HEADER_SECRET, secret);
-      }
+      headers.forEach(options::addHeader);
       WebSocket socket =
           client.connect(options).toCompletionStage().toCompletableFuture().get(20, TimeUnit.SECONDS);
       return new FakeCiDaemon(vertx, client, socket);
@@ -112,8 +94,7 @@ public final class FakeCiDaemon implements AutoCloseable {
     this.vertx = vertx;
     this.client = client;
     this.socket = socket;
-    // A REFUSED dial may already be over by the time the upgrade's future resolves on this thread:
-    // the two unauthorized cases close 1008 from @OnOpen, microseconds after the handshake, and
+    // A socket may already be closed by the time a handler is set on this thread, and
     // Vert.x answers every handler setter on a closed socket with IllegalStateException("WebSocket
     // is closed"). So both orderings are handled — check first, and catch the one that slips
     // between the check and the setter — and the code is read off the socket, since a closeHandler
@@ -136,6 +117,16 @@ public final class FakeCiDaemon implements AutoCloseable {
     }
     closeReason.complete(socket.closeReason());
     closeCode.complete(socket.closeStatusCode());
+  }
+
+  /**
+   * The daemon's first frame: name the launch this connection is, at the capability version this
+   * suite is built against. The host answers an admitted one with an {@code Ack}.
+   */
+  public void hello(String daemonId) throws Exception {
+    send(
+        new eu.wohlben.qits.cidaemon.protocol.Hello(
+            daemonId, eu.wohlben.qits.cidaemon.protocol.CiDaemonProtocol.CAPABILITY_VERSION));
   }
 
   /** Send one frame, framed exactly as the binary frames it. */

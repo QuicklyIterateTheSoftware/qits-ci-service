@@ -95,7 +95,7 @@ public class RunnerLifecyclePublishTest {
     UUID cause = UUID.randomUUID();
 
     CausationScope.with(
-        cause, () -> announcer.onRunnerCreated(id, "caused-host", 1, "INTERNAL", null, null, AT));
+        cause, () -> announcer.onRunnerCreated(id, "caused-host", 1, "EDGE", null, null, AT));
 
     JsonNode envelope = awaitEnvelopes(id, 1).get(0);
     assertEquals(cause.toString(), envelope.get("parentId").asText());
