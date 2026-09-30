@@ -1,13 +1,18 @@
 package eu.wohlben.qits.ci.control;
 
 import eu.wohlben.qits.ci.control.CiConfigSource.FileLookup;
+import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -82,6 +87,20 @@ public class CiReleaseArchetypes {
    * resource name, so always {@code /}-separated and never leading with one.
    */
   static final String PACKAGED_DIR = "release-archetypes/";
+
+  /**
+   * The recipes this build <b>must</b> carry — the eight the estate's {@code release.yml} files name.
+   *
+   * <p><b>It is what {@link #requirePackaged} checks at boot and nothing else</b>: never an
+   * allow-list for {@link #read}, which resolves any name a repository carries itself and any
+   * further recipe a later build packages. {@code PackagedReleaseArchetypesTest} holds it equal to
+   * the {@code *.yml} files in {@code .config/qits/release-archetypes/}, so a ninth file added
+   * without naming it here, or a name left here after its file went, is a red build.
+   */
+  static final Set<String> REQUIRED_PACKAGED =
+      Set.of(
+          "app", "cli", "daemon", "java-service", "maven-library", "npm-library", "oci",
+          "spa-frontend");
 
   @Inject CiReleaseSlotParser slotParser;
 
@@ -177,6 +196,53 @@ public class CiReleaseArchetypes {
 
     static Resolution unreadable(String detail) {
       return new Resolution(Status.UNREADABLE, null, detail);
+    }
+  }
+
+  /**
+   * <b>Refuses to boot a build that does not carry its recipes.</b>
+   *
+   * <p>The failure this exists for has no other symptom. {@code service/} compiles to a native
+   * image, a resource opened by a computed name is bundled only if {@code
+   * quarkus.native.resources.includes} names it, and no JVM suite can see that key missing — on a
+   * JVM the classpath has the files regardless. A binary without them would deploy, serve, and
+   * answer "no such archetype" to every {@code archetype:} nobody shadows: no release-request run
+   * for some fifty repositories, each event settled, one WARN apiece. A boot failure instead fails
+   * the deployment's health gate, which keeps the previous container.
+   *
+   * <p><b>A refusal, where {@link RetiredDaemonKeys} beside it only warns</b>, and the difference
+   * is the one that class states: its stale key is harmless by construction, while this process
+   * starting without its recipes is a platform-wide stop of release QA that looks healthy.
+   *
+   * <p><b>It runs in every launch mode, test included</b> — no {@code LaunchMode} check. The files
+   * are on the classpath of every suite that boots this bean, so there is nothing to skip for, and
+   * a guard that skipped test mode would be a guard no test ever ran. It can sit on this bean
+   * because nothing this bean injects is mandatory configuration ({@link #applicationVersion} is
+   * {@code Optional}), which is the trap {@link RetiredDaemonKeys} records.
+   *
+   * <p>Eight classpath reads and eight parses, no other IO, and not wasted: each success lands in
+   * the cache {@link #packaged} would have filled on first use.
+   */
+  void onStart(@Observes StartupEvent startup) {
+    requirePackaged();
+  }
+
+  /** The guard itself, apart from the event so a hand-wired test can call it. */
+  void requirePackaged() {
+    List<String> unusable = new TreeSet<>(REQUIRED_PACKAGED).stream()
+        .filter(name -> packaged(name) == null)
+        .toList();
+    if (!unusable.isEmpty()) {
+      throw new IllegalStateException(
+          "This qits-ci does not carry the release archetypes it must package: "
+              + unusable
+              + " could not be read off the classpath as "
+              + PACKAGED_DIR
+              + "<name>.yml, or did not parse. Without them every repository naming one composes"
+              + " no release pipeline. In a native image, check that"
+              + " quarkus.native.resources.includes (service/src/main/resources/"
+              + "application.properties) names release-archetypes/*.yml; otherwise check the"
+              + " <resources> block in ci/pom.xml that packages .config/qits/release-archetypes/.");
     }
   }
 

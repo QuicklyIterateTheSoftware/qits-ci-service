@@ -2099,8 +2099,13 @@ phase.
   CI gate on the mere presence of `archetype:`), composes, and every script passes a shell `-n`.
   <br>**The native image bundles them only because it is told to**:
   `quarkus.native.resources.includes` in `service`'s `application.properties`. No JVM test can see
-  that key missing, and the symptom in the binary is every unshadowed `archetype:` answering "no
-  such archetype" — no run, settled, one WARN. Check it on the binary before leaving a release.
+  that key missing, and the symptom in the binary would be every unshadowed `archetype:` answering
+  "no such archetype" — no run, settled, one WARN. **So the binary refuses to boot without them**:
+  `CiReleaseArchetypes.requirePackaged`, a `StartupEvent` observer in every launch mode (test
+  included), reads and parses the eight names in `REQUIRED_PACKAGED` and throws naming the missing
+  ones, which fails the health gate and keeps the previous container. That set is what this build
+  must carry and never an allow-list for `read`; `PackagedReleaseArchetypesTest` holds it equal to
+  the files in `.config/qits/release-archetypes/`.
 - **The pipeline that gates a revision is read FROM that revision.** A candidate's `release.yml`
   is read at the commit the arriving release event is about — the request's fold (`payload.mergedSha`) for a `ReleaseRequestChanged`, the released
   tag's commit (`payload.commitSha`) for an `SCMRelease` — which is the same commit the composed run

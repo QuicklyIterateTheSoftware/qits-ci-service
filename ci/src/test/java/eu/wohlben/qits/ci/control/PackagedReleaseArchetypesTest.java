@@ -68,12 +68,6 @@ public class PackagedReleaseArchetypesTest {
   /** This repository's own copy, relative to the {@code ci} module surefire runs in. */
   private static final Path SOURCE = Path.of("..", ".config", "qits", "release-archetypes");
 
-  /** The eight the estate's {@code release.yml} files name today. More may be added; none removed. */
-  private static final List<String> KNOWN =
-      List.of(
-          "app", "cli", "daemon", "java-service", "maven-library", "npm-library", "oci",
-          "spa-frontend");
-
   private static final CiRepoRef REPO = CiRepoRef.of("repo-1", "qits", "qits-target");
 
   private final CiReleaseSlotParser slotParser = new CiReleaseSlotParser();
@@ -91,7 +85,7 @@ public class PackagedReleaseArchetypesTest {
                       file.substring(0, file.length() - CiEventTriggerParser.CONFIG_SUFFIX.length()))
               .sorted()
               .toList();
-      assertTrue(names.containsAll(KNOWN), "an archetype the estate names is gone: " + names);
+      assertFalse(names.isEmpty(), "no recipe at all under " + SOURCE.toAbsolutePath());
       return names;
     }
   }
@@ -107,6 +101,52 @@ public class PackagedReleaseArchetypesTest {
 
   private CiReleaseSlots recipe(String name) throws Exception {
     return slotParser.parseArchetype(CiReleaseSlotParser.archetypePath(name), packaged(name));
+  }
+
+  @Test
+  public void theBootGuardsSetIsExactlyTheFilesThisRepositoryCarries() throws Exception {
+    // Both directions: a ninth file nobody named would ship unguarded, and a name whose file went
+    // would fail every boot.
+    assertEquals(
+        new java.util.TreeSet<>(names()),
+        new java.util.TreeSet<>(CiReleaseArchetypes.REQUIRED_PACKAGED),
+        "CiReleaseArchetypes.REQUIRED_PACKAGED and .config/qits/release-archetypes/ disagree");
+  }
+
+  @Test
+  public void theBootGuardPassesOnTheRealClasspathAndNamesEveryRecipeThatIsMissing()
+      throws Exception {
+    CiReleaseArchetypes real = new CiReleaseArchetypes();
+    real.slotParser = slotParser;
+    real.applicationVersion = Optional.empty();
+    real.requirePackaged();
+
+    // A binary built without the resource include, staged through the packaged-content seam: two
+    // recipes absent, one present and broken, the rest the real ones.
+    CiReleaseArchetypes stripped =
+        new CiReleaseArchetypes() {
+          @Override
+          String packagedContent(String resource) {
+            if (resource.endsWith("/oci.yml") || resource.endsWith("/cli.yml")) {
+              return null;
+            }
+            if (resource.endsWith("/daemon.yml")) {
+              return "archetype: another\n";
+            }
+            return super.packagedContent(resource);
+          }
+        };
+    stripped.slotParser = slotParser;
+    stripped.applicationVersion = Optional.empty();
+
+    IllegalStateException refused =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            IllegalStateException.class, stripped::requirePackaged);
+    assertTrue(refused.getMessage().contains("[cli, daemon, oci]"), refused.getMessage());
+    assertFalse(refused.getMessage().contains("spa-frontend"), refused.getMessage());
+    assertTrue(
+        refused.getMessage().contains("quarkus.native.resources.includes"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("ci/pom.xml"), refused.getMessage());
   }
 
   @Test
