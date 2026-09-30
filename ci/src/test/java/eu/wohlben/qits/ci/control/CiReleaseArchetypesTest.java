@@ -1,152 +1,220 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.ci.control.CiReleaseArchetypes.Resolution;
+import eu.wohlben.qits.ci.control.CiReleaseArchetypes.Status;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * {@link CiReleaseArchetypes} on its own, which it had never been.
+ * {@link CiReleaseArchetypes} on its own: the two-step resolution and the three answers it must
+ * keep apart.
  *
- * <p>Every case below was reachable only transitively before — through a whole evaluation, a real
- * database and a worker — and two of its arms were reached by no test <b>by name</b> at all: the
- * one where this deployment has no platform-pipelines repository, and the belt-and-braces refusal of
- * a name the parser would never have produced. Both are WARN-and-empty, which is the engine's
- * standing rule that an unreadable candidate is skipped rather than run, and both are exactly the
- * kind of arm that goes quietly wrong: an empty {@code Optional} is a correct-looking value.
+ * <p>The order — the repository's own recipe first, the packaged one otherwise — is the seam, and
+ * every case here stages <b>both</b> sources so that the wrong order, or a fall-through that should
+ * not happen, answers with a perfectly usable recipe. An {@code Optional}-shaped "found something"
+ * assertion would pass all of them; what is asserted is <em>which</em> recipe came back, by the
+ * script it carries and by the {@code rev}/{@code version} pair it is recorded under.
  *
- * <p><b>Plain JUnit and hand-wired</b>, for {@code CiRunOrderingTest}'s reason: this class holds no
- * state, reaches no database and needs no application — it is a parser and a port. A
- * {@code @QuarkusTest} here would be a second Quarkus start to assert two null checks, which is what
- * this repository's test-profile budget rule is about.
+ * <p><b>The packaged set is stood in here</b> ({@link #packaged}), so these cases do not depend on
+ * which recipes the repository happens to ship; the real classpath is {@code
+ * PackagedReleaseArchetypesTest}'s.
+ *
+ * <p><b>Plain JUnit and hand-wired</b>, for {@code CiRunOrderingTest}'s reason: this class reaches
+ * no database and needs no application — it is a parser, a port and a resource lookup. A
+ * {@code @QuarkusTest} here would be a second Quarkus start for nothing, which is what this
+ * repository's test-profile budget rule is about.
  */
 public class CiReleaseArchetypesTest {
 
-  private static final String WRAPPER_SHA = "d".repeat(40);
+  /** The revision the repository's {@code release.yml} was read at — the fold, or the tag. */
+  private static final String REV = "e".repeat(40);
 
-  /** The released wrapper version that sha is — what a recipe read is now addressed by. */
-  private static final CiReleasedVersions.ReleasedVersion RELEASED =
-      new CiReleasedVersions.ReleasedVersion("2026.922.161358", WRAPPER_SHA);
+  private static final String VERSION = "2026.930.40058";
 
-  private static final String RECIPE =
+  private static final String LOCAL =
       """
       release-request:
         - image: alpine:3
-          script: ./mvnw verify
+          script: echo local
+      """;
+
+  private static final String PACKAGED =
+      """
+      release-request:
+        - image: alpine:3
+          script: echo packaged
       """;
 
   private CiReleaseArchetypes archetypes;
   private FakeCiConfigSource config;
-  private CiRepoRef wrapper;
+  private CiRepoRef repo;
+
+  /** The stand-in packaged set: resource name to text. */
+  private final Map<String, String> packaged = new HashMap<>();
 
   @BeforeEach
   void wire() {
     config = new FakeCiConfigSource();
-    archetypes = new CiReleaseArchetypes();
+    packaged.clear();
+    archetypes =
+        new CiReleaseArchetypes() {
+          @Override
+          String packagedContent(String resource) {
+            return packaged.get(resource);
+          }
+        };
     archetypes.configSource = config;
     archetypes.slotParser = new CiReleaseSlotParser();
-    wrapper = CiRepoRef.of("wrapper-1", "qits", "qits-qits");
+    archetypes.applicationVersion = Optional.of(VERSION);
+    repo = CiRepoRef.of("repo-1", "qits", "qits-target");
+  }
+
+  private void packageRecipe(String name, String content) {
+    packaged.put(CiReleaseArchetypes.PACKAGED_DIR + name + ".yml", content);
+  }
+
+  private void commitRecipe(String name, String content) {
+    config.putFile(repo.repoId(), REV, CiReleaseSlotParser.archetypePath(name), content);
+  }
+
+  private static String script(Resolution found) {
+    return found.archetype().slots().releaseRequest().steps().get(0).script();
   }
 
   @Test
-  public void aRecipeIsReadAtTheReleasedVersionItWasAskedFor() {
-    config.putFile(
-        wrapper.repoId(), WRAPPER_SHA, CiReleaseSlotParser.archetypePath("java-service"), RECIPE);
+  public void theRepositorysOwnRecipeWinsOverThePackagedOneAtTheRevisionItWasAskedAt() {
+    commitRecipe("java-service", LOCAL);
+    packageRecipe("java-service", PACKAGED);
 
-    Optional<CiReleaseArchetypes.Archetype> found =
-        archetypes.read(wrapper, RELEASED, "java-service");
+    Resolution found = archetypes.read(repo, REV, "java-service");
 
-    assertTrue(found.isPresent());
-    assertEquals("java-service", found.get().name());
-    assertEquals(CiReleaseSlotParser.archetypePath("java-service"), found.get().configPath());
-    // The rev rides back out on the answer, which is the whole of what a run row records: a recipe
-    // name without the revision it was read at says which recipe and not which version of it.
-    assertEquals(WRAPPER_SHA, found.get().rev());
-    // And the VERSION beside it, which is that revision as a person holds it. A sha alone cannot be
-    // read back as "which approved wrapper release was this" — no git host answers that question.
-    assertEquals("2026.922.161358", found.get().version());
-    assertEquals(found.get().ref().rev(), found.get().rev(), "ref() is the identity half, verbatim");
-    assertEquals(found.get().ref().version(), found.get().version());
+    assertEquals(Status.FOUND, found.status());
+    assertEquals("echo local", script(found), "local first: a repository may shadow a recipe");
+    assertEquals("java-service", found.archetype().name());
+    assertEquals(CiReleaseSlotParser.archetypePath("java-service"), found.archetype().configPath());
+    // rev non-null IS "shadowed locally", and a local recipe belongs to no qits-ci release.
+    assertEquals(REV, found.archetype().rev());
+    assertNull(found.archetype().version());
+    assertEquals(found.archetype().ref().rev(), found.archetype().rev(), "ref() is the identity half");
     assertEquals(
-        wrapper.repoId() + "@" + WRAPPER_SHA + "/" + CiReleaseSlotParser.archetypePath("java-service"),
-        config.fileReads().get(0),
-        "read at the rev it was handed, never at a branch of its own choosing");
-  }
-
-  @Test
-  public void noPlatformPipelinesRepositoryIsEmptyAndReadsNOTHING() {
-    // This deployment declares none, or the catalogue does not hold the one it declares. The arm is
-    // reached on every deployment that has not armed the key, and what makes it worth pinning is
-    // that it must not touch the rev: there is no repository to address, so there is nothing a
-    // revision could be a revision OF, and a read attempted here would go out against null.
-    Optional<CiReleaseArchetypes.Archetype> found =
-        archetypes.read(null, RELEASED, "java-service");
-
-    assertTrue(found.isEmpty());
-    assertEquals(
-        java.util.List.of(), config.fileReads(), "no wrapper, no read: " + config.fileReads());
-  }
-
-  @Test
-  public void aNameThisParserWouldNeverHaveProducedIsRefusedBeforeItBecomesAPath() {
-    // Belt and braces, and the belt is real: the value becomes a URL segment against ANOTHER
-    // repository, so the refusal has to be here as well as in the parser rather than only there. A
-    // caller that built a name some other way is the case, and traversal is the shape of it.
-    config.putFile(
-        wrapper.repoId(),
-        WRAPPER_SHA,
-        ".config/qits/release-archetypes/../../../etc/passwd.yml",
-        RECIPE);
-
-    assertTrue(archetypes.read(wrapper, RELEASED, "../../../etc/passwd").isEmpty());
-    assertTrue(archetypes.read(wrapper, RELEASED, "Java-Service").isEmpty());
-    assertTrue(archetypes.read(wrapper, RELEASED, "").isEmpty());
-    assertTrue(archetypes.read(wrapper, RELEASED, null).isEmpty());
-    assertEquals(
-        java.util.List.of(),
+        List.of(repo.repoId() + "@" + REV + "/" + CiReleaseSlotParser.archetypePath("java-service")),
         config.fileReads(),
-        "refused before a read is attempted at all: " + config.fileReads());
+        "one read, of THIS repository, at the rev it was handed — never a branch of its choosing");
   }
 
   @Test
-  public void aRecipeThatIsNotThereIsEmptyRatherThanAnException() {
-    // The ordinary broken-declaration case: release.yml names a recipe the wrapper does not carry.
-    // Empty, so the caller records no run — never a throw, which would cost the candidates beside it
-    // their evaluation.
-    assertTrue(archetypes.read(wrapper, RELEASED, "does-not-exist").isEmpty());
-    assertFalse(config.fileReads().isEmpty(), "it did ask, and the answer was ABSENT");
+  public void aRecipeTheRepositoryDoesNotCarryIsThePackagedOneRecordedByThisQitsCisVersion() {
+    packageRecipe("java-service", PACKAGED);
+
+    Resolution found = archetypes.read(repo, REV, "java-service");
+
+    assertEquals(Status.FOUND, found.status());
+    assertEquals("echo packaged", script(found));
+    assertEquals(CiReleaseSlotParser.archetypePath("java-service"), found.archetype().configPath());
+    assertNull(found.archetype().rev(), "it was read from no revision of any repository");
+    assertEquals(VERSION, found.archetype().version());
+    assertEquals(1, config.fileReads().size(), "the repository was asked first: " + config.fileReads());
   }
 
   @Test
-  public void noReleasedVersionReadsNOTHINGRatherThanFallingBack() {
-    // The fail-closed belt, here rather than only in the caller: with no released wrapper version
-    // there is no approved revision to read at, and the one thing this must never do is build a url
-    // out of a null rev or reach for a branch name. The caller (CiEventTriggerService) states the
-    // same refusal in its own terms and leaves the event owed; this is what happens if it ever
-    // stops.
+  public void aPackagedRecipeWhoseVersionCannotBeNamedStillComposesWithANullVersion() {
+    // quarkus.application.version absent must cost a row one column, never the composition.
+    archetypes.applicationVersion = Optional.empty();
+    packageRecipe("java-service", PACKAGED);
+
+    Resolution found = archetypes.read(repo, REV, "java-service");
+
+    assertEquals(Status.FOUND, found.status());
+    assertNull(found.archetype().version());
+    assertNull(found.archetype().rev());
+  }
+
+  @Test
+  public void aRecipeOnlyTheRepositoryCarriesResolves() {
+    // An archetype of the repository's own invention: nothing packaged under that name at all.
+    commitRecipe("house-recipe", LOCAL);
+
+    Resolution found = archetypes.read(repo, REV, "house-recipe");
+
+    assertEquals(Status.FOUND, found.status());
+    assertEquals("echo local", script(found));
+    assertEquals(REV, found.archetype().rev());
+  }
+
+  @Test
+  public void aNameInNeitherPlaceIsUnknownRatherThanAnException() {
+    // The ordinary broken declaration: release.yml names a recipe that does not exist. Final — the
+    // caller records no run and settles — and never a throw, which would cost the candidates beside
+    // it their evaluation.
+    packageRecipe("java-service", PACKAGED);
+
+    Resolution found = archetypes.read(repo, REV, "does-not-exist");
+
+    assertEquals(Status.UNKNOWN, found.status());
+    assertNull(found.archetype());
+    assertTrue(found.detail().contains("does-not-exist"), found.detail());
+    assertEquals(1, config.fileReads().size(), "it did ask, and the answer was ABSENT");
+  }
+
+  @Test
+  public void aLocalReadThatCouldNotBeMadeIsUnreadableAndNotThePackagedCopy() {
+    // Nothing was learned about whether the repository shadows the recipe. Answering with the
+    // packaged one — which is right there — would let a git-host blip decide which of two pipelines
+    // a commit gets.
+    config.putFileUnreachable(repo.repoId(), REV, CiReleaseSlotParser.archetypePath("java-service"));
+    packageRecipe("java-service", PACKAGED);
+
+    Resolution found = archetypes.read(repo, REV, "java-service");
+
+    assertEquals(Status.UNREADABLE, found.status(), "owed, not answered");
+    assertNull(found.archetype());
+  }
+
+  @Test
+  public void aLocalRecipeThatWillNotParseIsUnknownAndNotThePackagedCopy() {
+    // A broken shadow is final. Falling through would run the pipeline the repository replaced, and
+    // report it green with nothing to say the replacement was ignored.
+    commitRecipe("java-service", "archetype: another\n");
+    packageRecipe("java-service", PACKAGED);
+
+    Resolution found = archetypes.read(repo, REV, "java-service");
+
+    assertEquals(Status.UNKNOWN, found.status());
+    assertNull(found.archetype());
+    assertTrue(found.detail().contains("not a usable release archetype"), found.detail());
+  }
+
+  @Test
+  public void aPackagedRecipeThatWillNotParseIsUnknownRatherThanAnException() {
+    // A defect of the build, not of the repository — PackagedReleaseArchetypesTest is what keeps it
+    // from shipping. If it did ship, it must not take the evaluation down with it.
+    packageRecipe("java-service", "archetype: another\n");
+
+    assertEquals(Status.UNKNOWN, archetypes.read(repo, REV, "java-service").status());
+  }
+
+  @Test
+  public void aNameThisParserWouldNeverHaveProducedIsRefusedBeforeAnyRead() {
+    // Belt and braces, and the belt is real: the value becomes a URL segment in the local read and
+    // a classpath segment in the packaged one. Both sources are staged under the traversal's own
+    // spelling, so a guard that came second would find a recipe.
     config.putFile(
-        wrapper.repoId(), WRAPPER_SHA, CiReleaseSlotParser.archetypePath("java-service"), RECIPE);
+        repo.repoId(), REV, ".config/qits/release-archetypes/../../../etc/passwd.yml", LOCAL);
+    packaged.put(CiReleaseArchetypes.PACKAGED_DIR + "../../../etc/passwd.yml", PACKAGED);
 
-    assertTrue(archetypes.read(wrapper, null, "java-service").isEmpty());
+    assertEquals(Status.UNKNOWN, archetypes.read(repo, REV, "../../../etc/passwd").status());
+    assertEquals(Status.UNKNOWN, archetypes.read(repo, REV, "Java-Service").status());
+    assertEquals(Status.UNKNOWN, archetypes.read(repo, REV, "").status());
+    assertEquals(Status.UNKNOWN, archetypes.read(repo, REV, null).status());
     assertEquals(
-        java.util.List.of(),
-        config.fileReads(),
-        "nothing is read at all — no null rev, no branch name: " + config.fileReads());
-  }
-
-  @Test
-  public void aRecipeThatWillNotParseIsEmptyRatherThanAnException() {
-    // One broken recipe must not read as "this repository declares nothing", and must not take the
-    // repositories on other archetypes down with it.
-    config.putFile(
-        wrapper.repoId(),
-        WRAPPER_SHA,
-        CiReleaseSlotParser.archetypePath("java-service"),
-        "archetype: another\n");
-
-    assertTrue(archetypes.read(wrapper, RELEASED, "java-service").isEmpty());
+        List.of(), config.fileReads(), "refused before a read is attempted: " + config.fileReads());
   }
 }

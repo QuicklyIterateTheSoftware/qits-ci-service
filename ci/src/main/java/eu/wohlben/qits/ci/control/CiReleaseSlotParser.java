@@ -10,7 +10,8 @@ import java.util.Set;
 
 /**
  * Parses {@code .config/qits/release.yml} — the repository's release SLOTS — and the archetype
- * recipes in the wrapper repository, which are the same document minus {@code archetype:}.
+ * recipes — a repository's own, or the ones packaged into qits-ci — which are the same document minus
+ * {@code archetype:}.
  *
  * <pre>{@code
  * archetype: java-service
@@ -65,7 +66,10 @@ public class CiReleaseSlotParser {
   /** The repository-scope slot file. One fixed name — it is not a prefix and never a set. */
   public static final String CONFIG_PATH = CiEventTriggerParser.CONFIG_DIR + "release.yml";
 
-  /** Where the wrapper repository keeps its recipes, one file per archetype. */
+  /**
+   * Where a repository keeps recipes of its own, one file per archetype — and where qits-ci-service
+   * keeps the ones it packages, which is why a packaged recipe is recorded under this path too.
+   */
   public static final String ARCHETYPE_DIR =
       CiEventTriggerParser.CONFIG_DIR + "release-archetypes/";
 
@@ -93,7 +97,8 @@ public class CiReleaseSlotParser {
 
   /**
    * What an archetype name may be. It becomes a path segment under {@link #ARCHETYPE_DIR} in a URL
-   * against the wrapper repository, and it arrives from a repository's own committed file — so what
+   * against the git host and a segment of a classpath resource name, and it arrives from a
+   * repository's own committed file — so what
    * it may contain is decided here rather than trusted, exactly as a trigger file's own {@code *} is.
    */
   private static final String ARCHETYPE_NAME = "[a-z0-9][a-z0-9-]{0,63}";
@@ -111,7 +116,7 @@ public class CiReleaseSlotParser {
   }
 
   /**
-   * Parses one archetype recipe out of the wrapper repository. Same document, and {@code archetype:}
+   * Parses one archetype recipe, local or packaged. Same document, and {@code archetype:}
    * is a parse error rather than a second level of indirection.
    */
   public CiReleaseSlots parseArchetype(String configPath, String content) {
@@ -171,7 +176,7 @@ public class CiReleaseSlotParser {
   }
 
   /**
-   * The recipe this repository asks the wrapper for. Absent is {@code ""} — the base composition,
+   * The recipe this repository asks for. Absent is {@code ""} — the base composition,
    * platform prelude and postlude only, which is what a genuinely bespoke repository declares.
    */
   private static String parseArchetypeName(

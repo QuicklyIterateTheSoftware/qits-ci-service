@@ -28,6 +28,15 @@ import java.util.List;
  * rather than a snapshot: a diff in a composed document is a reviewable fact about a change to this
  * class, and nothing else can move it.
  *
+ * <p><b>The platform's half of a composed pipeline is THIS CLASS, and that is what lets a recipe be
+ * read from the revision under test.</b> The prelude and the postlude are emitted here, in Java,
+ * and no file in any repository contributes to them. An archetype recipe contributes only what a
+ * slot file can: slot steps, {@code artifacts:} and {@code userflows:} — every one of which a
+ * repository may already replace wholesale in its own {@code release.yml}. So a repository carrying
+ * its own copy of a recipe ({@link CiReleaseArchetypes}) gains nothing over one that overrides a
+ * slot, and the recipe this class is handed may be the repository's own or the one packaged into
+ * qits-ci without the composition caring which.
+ *
  * <h2>What is composed, and why the platform may own it</h2>
  *
  * <p>{@code event:}, {@code when:} and {@code checkout:} are identical in all 78 release files of

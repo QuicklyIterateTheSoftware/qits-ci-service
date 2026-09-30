@@ -94,7 +94,7 @@ public record CiReleaseSlots(
     }
   }
 
-  /** Whether this document asks for a wrapper recipe. */
+  /** Whether this document asks for an archetype recipe — its own copy of one, or a packaged one. */
   public boolean namesArchetype() {
     return !archetype.isEmpty();
   }

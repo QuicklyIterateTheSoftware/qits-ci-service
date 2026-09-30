@@ -1611,7 +1611,7 @@ QA files are byte-identical modulo one line. `event:`, `when:` and `checkout:` a
 the costume off.
 
 ```yaml
-archetype: java-service        # optional; names a recipe in the platform-pipelines repository
+archetype: java-service        # optional; names a recipe — the repository's own, or one qits-ci packages
 release-request:               # optional QA steps — the ordinary `steps:` schema
   - image: qits/build-images/maven-base:latest
     script: ./mvnw verify
@@ -1627,7 +1627,7 @@ userflows: true                # optional; true, or the site name the bundle pub
 An SPA frontend's whole file is `archetype: spa-frontend`.
 
 **It is not a trigger file, and it must not become one.** qits-ci compiles it — at evaluation, at the
-repository's `main`, together with the archetype recipe — into **two ordinary trigger documents** in
+revision the release event is about, together with the archetype recipe — into **two ordinary trigger documents** in
 the format above, and *those* are what land in `trigger_config`:
 
 | | phase one — QA (`release-request:`) | phase two — publish (`release:`) |
@@ -1665,35 +1665,42 @@ both derived runs — the dedupe is `(trigger_event_id, repo_id, config_path)` a
 from two different events, so it still yields at most one run per event per file — and a restart
 reparses the composed text off the row exactly as it reparses a committed file.
 
-**The archetype recipes live in the wrapper**, at
-`.config/qits/release-archetypes/<name>.yml` in the repository
-`qits.ci.platform-pipelines-repository` names, read through the same content route the platform
-pipelines use — **at the newest version that repository has RELEASED**, never at its `main` head and
-never at the branch name. qits-ci reads the wrapper's tags off the git host's own ref advertisement
-(`GET …/info/refs?service=git-upload-pack`), takes the highest `YYYY.MMDD.HHMMSS` tag by version
-order, and reads every recipe of that evaluation at that tag's commit — so every repository composed
-in one pass sees one recipe, and that recipe is one a release request carried, CI gated and a person
-approved. These recipes are most of the steps of a release pipeline, and a release pipeline may not
-be composed out of content nobody gated. A recipe is this same document minus `archetype:` — recipes
-do not chain.
+**An archetype recipe is resolved in two steps.** First
+`.config/qits/release-archetypes/<name>.yml` **in the repository the run is for**, read at the same
+revision its `release.yml` was — the fold, or the released tag's commit. Otherwise the recipe
+**packaged into the running qits-ci**: this repository's own `.config/qits/release-archetypes/` is
+built into the `qits-ci-domain` jar, eight recipes today (`app`, `cli`, `daemon`, `java-service`,
+`maven-library`, `npm-library`, `oci`, `spa-frontend`). No other repository is read for a recipe;
+`qits.ci.platform-pipelines-repository` names where the *platform trigger files* live and nothing
+else. (Until qits-583 the recipes lived in that repository and were read at its newest released
+tag.) A recipe is this same document minus `archetype:` — recipes do not chain.
 
-**So a change to the release cycle is one wrapper commit *and a wrapper release*.** It used to take
-effect on the next event; it now takes effect when the wrapper release carrying it lands. A brand
-new archetype file is invisible to every repository until then.
+**Shadowing is the design.** Any repository may carry its own copy of a packaged archetype, or one
+of its own invention. That hands a branch nothing it did not have: the platform's share of a
+composed pipeline is the prelude and postlude, which `CiReleaseComposer` emits and no file can
+reach, and everything a recipe does contribute — slot steps, `artifacts:`, `userflows:` — a
+repository could already replace in its own `release.yml`.
 
-**A wrapper with no released version composes nothing**, and that covers both a git host that could
-not be asked and a wrapper that has never released. There is then no approved revision to read a
-recipe at, and qits-ci does not fall back to `main` — a repository naming an archetype gets no
-release run and the triggering event is left **owed** for the sweep, exactly as it is when the recipe
-file itself cannot be read. (Owed rather than settled in both cases: the wrapper's next release makes
-the question answerable, so a release request waiting for a verdict must still be there to receive
-it.) A repository whose `release.yml` names no `archetype:` is unaffected — which is how an estate
-whose wrapper has never released still gets its first wrapper release gated. The run row records what
-was used: `archetypeName`, `archetypeConfigPath`, `archetypeRev` and `archetypeVersion` on `GET
-/ci/api/runs/{runId}`, all four null on a run composed from no recipe — a committed
-`ci-event-*.yml`, a platform pipeline, or a `release.yml` that names no `archetype:`. A **retry**
-records its own re-composition rather than the source run's, so two rows at one `commitSha` with
-different `archetypeVersion`s are the record of a platform fix landing between them.
+**So a change to a packaged recipe is one commit here and a qits-ci release.** This repository is a
+`java-service` and carries the recipes at the local path, so its own release request reads
+`java-service.yml` from its fold and runs the changed recipe before it ships; the other seven are
+covered by `PackagedReleaseArchetypesTest` (on the classpath byte-for-byte, parse, declare a QA
+slot, compose, every script passes a shell syntax check).
+
+**Two ways a recipe is not had, and they are opposite.** The repository could not be *asked* whether
+it carries one (the git host did not answer): no run, and the triggering event is left **owed** for
+the sweep — the packaged recipe is deliberately not used instead, because a blip must not decide
+which of two pipelines a commit gets. The name exists **nowhere** — not in the repository at that
+revision, not packaged — or the repository's own copy does not parse: no run, and the event is
+**settled**, because those are committed bytes. A broken local copy never falls back to the packaged
+one either. The run row records what was used, on `GET /ci/api/runs/{runId}`: `archetypeName` and
+`archetypeConfigPath`, then `archetypeRev` for a local recipe (the revision it was read at, equal to
+the run's `commitSha`; `archetypeVersion` null) or `archetypeVersion` for a packaged one (the
+qits-ci-service version that carried it; `archetypeRev` null). All four are null on a run composed
+from no recipe — a committed `ci-event-*.yml`, a platform pipeline, or a `release.yml` that names no
+`archetype:`. A **retry** records its own re-composition rather than the source run's, so two rows at
+one `commitSha` with different `archetypeVersion`s are the record of a recipe fix deployed between
+them.
 
 **A repository slot replaces the archetype's entirely.** Whole slot, never per-step merging: a merge
 order is a thing nobody can read off a file. Parameterisation is environment only.
@@ -1749,12 +1756,13 @@ it under the ordinary "two files, two declared pipelines, two runs" rule, which 
 generic mechanism a real escape hatch rather than a rule with an exception in it.
 
 **What the slot file's three failures do, and the one that is not a failure of the file.** An unknown
-archetype, an unreadable recipe or an unparseable slot file is a WARN and **no run**: those are the
+archetype, a local recipe that does not parse or an unparseable slot file is a WARN and **no run**: those are the
 repository's own committed bytes, the declaration is final, and the triggering event is settled
 because re-asking cannot change anybody's mind. A read of `release.yml` that comes back
 **UNREACHABLE** is the opposite case and is handled the opposite way — nothing was learned, so the
 evaluation records no run **and leaves the event owed**, and the owed-event sweep evaluates it again
-against a git host that has come back. That direction is the retirement's own correction: with a
+against a git host that has come back. The look for the repository's own copy of an archetype is the
+same kind of read and is owed the same way. That direction is the retirement's own correction: with a
 hand-written pair behind it, treating a blip as "no slot file" cost a migrated repository nothing,
 because it had no such file for the fallback to find. With the pair gone, `release.yml` *is* the
 release cycle, so the same reading answers "this repository declares no QA" about a release request
@@ -1777,11 +1785,8 @@ A payload with no usable sha composes **nothing**: no read, no run, one ERROR na
 the missing or refused field, and the event settled rather than left owed. There is no fallback to
 `main`'s head — a pipeline composed from `main` gates a commit nobody released — and the state is
 unreachable on the live path anyway, since a release request whose fold could not be made is
-CONFLICTED and announces nothing at all. **The archetype recipe is the exception and is read at the WRAPPER
-repository's newest RELEASED version**: it is another repository's file, no part of the release
-request, and that is what keeps the platform prelude/postlude out of a branch's reach — while
-reading it at a release rather than at the wrapper's `main` is what keeps it out of the reach of
-whatever landed on the wrapper a minute ago.
+CONFLICTED and announces nothing at all. **An archetype the file names is looked for at that same
+revision** in that same repository, and otherwise comes out of qits-ci's own jar.
 
 **The extra blob read is gated on the two release event names**, so every other event on the bus
 costs exactly what it cost before this feature existed.

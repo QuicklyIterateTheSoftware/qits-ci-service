@@ -334,41 +334,47 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   public String configPath;
 
   /**
-   * Which release archetype recipe this run's pipeline was composed from, which file in the wrapper
-   * repository that recipe is, <b>the revision it was read at</b> and <b>which released wrapper
-   * version that revision is</b> — or all four null.
+   * Which release archetype recipe this run's pipeline was composed from, and <b>whose copy of it</b>
+   * — or all four null.
    *
-   * <p>They are four columns rather than one because they answer four different questions and they
-   * are asked separately: {@code archetypeName} is what the repository's {@code release.yml} asked
-   * for, {@code archetypeConfigPath} is where that turned out to live, {@code archetypeRev} is the
-   * wrapper commit whose bytes were actually used, and {@code archetypeVersion} is the wrapper
-   * RELEASE that commit is. The last two are what the feature is for — the wrapper half of a
-   * composed pipeline is <em>environment</em>, and until these columns existed no run recorded which
-   * version of that environment produced it.
+   * <p>{@code archetypeName} is what the repository's {@code release.yml} asked for and {@code
+   * archetypeConfigPath} is {@code .config/qits/release-archetypes/<name>.yml}. The other two say
+   * which of the two places the recipe came from, and exactly one of them is set:
    *
-   * <p><b>{@code archetypeVersion} is the legible half and it is not derivable from the sha.</b>
-   * The recipe is read at the newest version the wrapper has released, so the revision always IS a
-   * release — but a commit does not carry the names of the tags pointing at it, and asking a git
-   * host "which version was this" is a question it does not answer. A person reading a run row, or
-   * a release request's verdict, is holding {@code 2026.922.161358} rather than a sha. It is null
-   * on every row recorded before the column existed, which is the same no-backfill statement the
-   * three beside it make and for the same reason: naming a version for a run that already happened
-   * would assert which release composed it on no evidence at all.
+   * <ul>
+   *   <li><b>{@code archetypeRev} non-null — shadowed locally.</b> The repository the run is for
+   *       carries its own recipe at that path, and this is the revision it was read at: the same
+   *       revision its {@code release.yml} was, so it equals {@code commitSha}. {@code
+   *       archetypeVersion} is null.
+   *   <li><b>{@code archetypeVersion} non-null — packaged.</b> The repository carries none, so the
+   *       recipe built into qits-ci composed the run, and this is <b>that qits-ci-service's own
+   *       version</b>. The path is then the file's path in qits-ci-service. {@code archetypeRev} is
+   *       null: the recipe was read from no revision of any repository.
+   * </ul>
+   *
+   * <p>So two rows of one repository at one {@code commitSha} whose {@code archetypeVersion}
+   * differs were composed by two qits-ci releases — which is the whole story of a recipe fix
+   * healing an earlier failure by retry.
+   *
+   * <p><b>The columns are older than that meaning, and their migrations still describe the old
+   * one.</b> Until qits-583 the recipe was read from the wrapper repository at its newest released
+   * tag: {@code archetypeRev} was the wrapper commit and {@code archetypeVersion} the wrapper
+   * release that commit was, both set together. {@code V20__run_archetype.sql} and {@code
+   * V22__run_archetype_version.sql} say so in their headers and are not edited — an applied
+   * migration's checksum covers its prose — so the change of meaning is stated here. A row with
+   * both set predates it.
    *
    * <p><b>All four null is the ordinary value and it means three different things, none of them
    * "unknown for this run".</b> A run from a committed {@code ci-event-*.yml} or a platform pipeline
    * was composed from nothing. A composed run whose slot file names no {@code archetype:} declares
-   * both its slots itself, which four repositories on the estate do today. And every row recorded
-   * before this migration genuinely does not know — which is exactly why there is no backfill: a
-   * default would assert a recipe and a revision that nobody can stand behind.
+   * its slots itself. And every row recorded before V20 genuinely does not know — which is exactly
+   * why there is no backfill: a default would assert a recipe nobody can stand behind.
    *
-   * <p><b>A retry records its OWN composition, never the source row's.</b> That is what makes
-   * comparing the two rows the answer to "did the recipe move between these two runs": a retry
-   * re-composes the platform half with the wrapper's newest released version on purpose (see {@code
-   * CiEventTriggerService#recomposedReleaseDocument}), so a differing {@code archetypeRev} beside an
-   * identical {@code commitSha} is the whole story of a platform fix healing an earlier failure. The
-   * one exception is a retry that fell back to the stored pipeline, which copies the source's three
-   * values because those are what will really run.
+   * <p><b>A retry records its OWN composition, never the source row's.</b> A retry re-composes on
+   * purpose (see {@code CiEventTriggerService#recomposedReleaseDocument}): a local recipe is read
+   * again at the run's commit and so names the same revision, a packaged one is the retrying
+   * qits-ci's and names its version. The one exception is a retry that fell back to the stored
+   * pipeline, which copies the source's four values because those are what will really run.
    *
    * <p>Part of no constraint and carrying no index: nothing looks a run up by any of them.
    */

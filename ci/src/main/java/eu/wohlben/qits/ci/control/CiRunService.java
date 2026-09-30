@@ -1282,7 +1282,7 @@ public class CiRunService {
    *
    * <p><b>{@code archetype} is provenance rather than an input</b>: nothing here reads it to decide
    * anything, it is recorded on the row and that is all. It is non-null only for a document {@code
-   * CiEventTriggerService} composed from a wrapper recipe — null for every committed trigger file,
+   * CiEventTriggerService} composed from an archetype recipe — null for every committed trigger file,
    * for every platform pipeline, and for a composed document whose slot file names no {@code
    * archetype:}. It travels on this record rather than being looked up here because the engine has
    * already read it and a second read would be a second answer.
@@ -2759,8 +2759,9 @@ public class CiRunService {
     run.triggerEventOccurredAt = request.occurredAt();
     run.triggerEventPayload = request.payload();
     run.triggerConfig = request.triggerConfig();
-    // Which wrapper recipe, at which wrapper commit, produced the platform half of that document —
-    // all three null for a committed file, which is what most runs are. Recorded and read by nothing
+    // Which archetype recipe that document was composed from — the repository's own at a revision,
+    // or the one this qits-ci packages — all four null for a committed file, which is what most runs
+    // are. Recorded and read by nothing
     // in this service: it is what a person or a client compares between two runs to see whether the
     // environment moved under them.
     archetypeOnto(run, request.archetype());
@@ -3555,7 +3556,7 @@ public class CiRunService {
     // close — "fix the environment, qits ci retry, the request finalizes" — since a broken build
     // image would otherwise be re-run by every retry of every run that ever met it. A differing pin
     // beside an identical commit_sha is then the record of the toolchain having moved, exactly as
-    // archetype_rev is of the recipe. Against the RE-COMPOSED document, since that is what will run.
+    // archetype_version is of the recipe. Against the RE-COMPOSED document, since that is what will run.
     String pins =
         StepImages.encode(
             pinStepImages(
@@ -3926,8 +3927,8 @@ public class CiRunService {
    * <p>This is the one arm where a retry copies rather than re-derives, and it is not an exception
    * to the rule so much as the rule applied honestly: what the retry will actually execute is the
    * source's stored bytes, so the recipe that produced those bytes is what the row must name. Naming
-   * today's wrapper commit here would claim a composition that never happened, and leaving all three
-   * null would lose the provenance the source row had.
+   * this qits-ci's packaged recipe here would claim a composition that never happened, and leaving
+   * all four null would lose the provenance the source row had.
    */
   private static RetriedPipeline storedPipelineOf(CiRun source) {
     return new RetriedPipeline(
@@ -4015,8 +4016,8 @@ public class CiRunService {
     retry.triggerEventPayload = source.triggerEventPayload;
     retry.triggerConfig = pipeline.document();
     // NOT copied from the source row, unlike almost everything above it, and that is what makes the
-    // two rows worth comparing: a retry re-composes the platform half with the wrapper as it is NOW,
-    // so a differing archetype_rev beside an identical commit_sha is the record of the recipe having
+    // two rows worth comparing: a retry re-composes, and a packaged recipe is THIS qits-ci's, so a
+    // differing archetype_version beside an identical commit_sha is the record of the recipe having
     // moved. The one arm that does copy is the fallback to the stored document — see
     // storedPipelineOf, where the source's values are what will really run.
     archetypeOnto(retry, pipeline.archetype());

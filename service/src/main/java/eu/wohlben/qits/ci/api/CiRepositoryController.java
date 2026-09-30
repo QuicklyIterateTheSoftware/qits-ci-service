@@ -183,12 +183,13 @@ public class CiRepositoryController {
    *
    * <p>A 200 means the question was asked and answered. <b>503 means it was not asked at all</b> —
    * the repository is in no catalogue here, the slot file's read was {@code UNREACHABLE}, or the
-   * archetype could not be read from the wrapper repository — and the caller retries. It is never a
+   * look for the repository's own copy of the archetype it names was — and the caller retries. It is never a
    * {@code false}: a {@code false} derived from a failure is the very bug this endpoint fixes, in
    * the direction that publishes a release nothing gated.
    *
-   * <p><b>A slot file that will not parse, or a pair that will not compile, answers {@code declared:
-   * true}.</b> Both are facts about bytes the repository committed, and the two outcomes are not
+   * <p><b>A slot file that will not parse, an archetype name that exists neither in the repository
+   * nor packaged into this qits-ci (or whose local copy is broken), or a pair that will not compile,
+   * answers {@code declared: true}.</b> All are facts about bytes the repository committed, and the two outcomes are not
    * symmetrical: waiting on a pipeline somebody has to fix is recoverable — the fix is a commit and
    * the gate answers afterwards — while waving a release through whose pipeline was never composed
    * is not, because nothing downstream asks again. {@code detail} names which case it was, so a
@@ -196,11 +197,12 @@ public class CiRepositoryController {
    *
    * <h2>What the answer is about in time</h2>
    *
-   * <p>The repository's half is read at {@code rev} — immutable bytes at a tag — and <b>the archetype
-   * is read at the wrapper's {@code main} at ask time</b>, which is where every composition on this
-   * service reads it. So the answer describes the pipeline <em>as it composes now</em>, not as it
-   * composed when the tag was cut: a wrapper commit that gives an archetype a {@code release:} slot
-   * changes what this read says about a tag whose own bytes never moved. That is the direction that
+   * <p>The repository's half is read at {@code rev} — immutable bytes at a tag, its own copy of the
+   * archetype included if it carries one — and <b>a packaged archetype is the one built into the
+   * qits-ci that is asked</b>, which is where every composition on this service gets it. So for a
+   * repository on a packaged recipe the answer describes the pipeline <em>as it composes now</em>,
+   * not as it composed when the tag was cut: a qits-ci release that gives an archetype a {@code
+   * release:} slot changes what this read says about a tag whose own bytes never moved. That is the direction that
    * is wanted, because the run that would satisfy the gate would be composed now too.
    *
    * <p>The role set is the class's, and {@code qits:system} is load-bearing rather than inherited:

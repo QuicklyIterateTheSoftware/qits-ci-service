@@ -27,15 +27,17 @@ import org.junit.jupiter.api.Test;
  * the generic trigger grammar changes around it.
  *
  * <p>Everything below the bus is real, exactly as in {@code CiEventTriggerServiceTest}: the slot
- * parser, the archetype read through the same {@link CiConfigSource} port the platform pipelines use,
- * the composer, the trigger parser reading the composed text back, the run service and the unique
+ * parser, the archetype resolution (the repository's own copy through the {@link CiConfigSource}
+ * port, otherwise the recipes really packaged into this module's jar), the composer, the trigger parser reading the composed text back, the run service and the unique
  * constraint. What is faked is the git host and the frame.
  *
  * <p><b>The contrast this class exists to hold is the last two sections' against each other.</b>
- * Broken committed content — an archetype that does not exist, a slot file that will not parse — is
+ * Broken committed content — an archetype that exists nowhere, a local recipe or a slot file that
+ * will not parse — is
  * no run <em>and the event is settled</em>: a person declared that, the declaration is final, and
  * retrying it forever would be asking a git host to change somebody's mind. A slot file that could
- * not be READ is no run and the event <em>stays owed</em>: nothing was learned, and every repository
+ * not be READ — or a look for a local recipe that could not be made — is no run and the event
+ * <em>stays owed</em>: nothing was learned, and every repository
  * in the estate now keeps its whole release cycle in that one file, so settling on a blip is what
  * silently costs a release request its QA verdict.
  *
@@ -55,30 +57,23 @@ import org.junit.jupiter.api.Test;
  * publish-gated from that tag, and the run composed from a {@code main} with no such file — no run,
  * event settled, request RELEASED forever; measured on qits-landing-app), and no change to {@code
  * release.yml} was ever exercised by the release that carried it. And it did not protect what it
- * claimed: the half of a composed pipeline that is <em>platform process</em> — the prelude, the
- * postlude, the shared recipes — is the archetype's, and that is read from the WRAPPER repository,
- * which no release request of another repository can touch. That split is still here, is asserted
- * below, and is what "a branch cannot rewrite the platform's half of its own gate" really rests on.
+ * claimed: the half of a composed pipeline that is <em>platform process</em> — the prelude and the
+ * postlude — is {@code CiReleaseComposer}'s, in Java, and no file in any repository can reach it.
  *
- * <h2>And which revision of the WRAPPER, which is what the last three sections are about</h2>
+ * <h2>Where a recipe comes from, which is what the last sections are about</h2>
  *
- * <p><b>The archetype recipe is read at the newest version the wrapper has RELEASED</b> — a {@code
- * YYYY.MMDD.HHMMSS} tag that a release request carried, CI gated and a person approved — and never
- * at the wrapper's {@code main} head. Those recipes contribute most of the steps of every release
- * pipeline on the estate, so reading them at {@code main} meant the steps of every release came from
- * whatever landed a minute ago; owner ruling, stated repeatedly: nothing in a release pipeline may
- * come from "whatever is on main". {@link #WRAPPER_HEAD} is therefore seeded all over this class as
- * a <em>decoy</em>: the fixtures put readable recipes at the wrong revisions on purpose, so a
- * regression composes successfully and only an assertion about WHICH bytes ran can catch it.
+ * <p><b>An archetype is the repository's own {@code .config/qits/release-archetypes/<name>.yml} at
+ * the event's revision, and otherwise the recipe packaged into this qits-ci.</b> {@link
+ * #seedArchetype} therefore seeds the <em>candidate</em>, at the fold and the tag — a shadow — and
+ * a test that seeds none composes from the real packaged set, which is on this module's classpath
+ * exactly as it is on the service's.
  *
- * <p><b>Both ways there is no released version leave the event OWED</b>, and the second of them is
- * the decision worth knowing: a git host that could not be asked, obviously; and a wrapper that has
- * genuinely never released, because that is not a person's declaration about this repository — it is
- * a state of the estate that the wrapper's own next release changes, with nothing in the candidate
- * repository having moved. Settling it would answer "no QA" to a release request waiting for exactly
- * that QA. It does not deadlock a fresh estate, and the test that says why is
- * {@code aSlotFileNamingNoArchetypeComposesEvenWhenTheWrapperHasNeverReleased}: the wrapper's own
- * slot file names no archetype, so its first release needs no recipe to exist.
+ * <p><b>The platform-pipelines repository is never read for a recipe</b>, where until qits-583 it
+ * was the only place one came from (at its newest released tag). The wrapper is still armed in every
+ * fixture here, and {@link #noReadOfThePlatformPipelinesRepositoryIsEverMadeForAnArchetype} seeds
+ * readable decoy recipes in it at every revision the old reads used: a regression composes
+ * successfully from them, and only an assertion about WHICH bytes ran and which reads were made
+ * can catch it.
  */
 @QuarkusTest
 public class CiReleaseSlotTriggerTest extends CiTestSupport {
@@ -86,18 +81,10 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
   private static final String HEAD = "c".repeat(40);
 
   /**
-   * The wrapper's {@code main} head — <b>a wrong revision now</b>, and seeded throughout this class
-   * precisely so that it is. The platform trigger listing still resolves it (that is where a {@code
-   * ci-platform-event-*.yml} is read from, and it is a trigger), but no archetype recipe may ever be
-   * read at it: the recipes come from a version somebody released.
+   * The platform-pipelines repository's {@code main} head. Its platform trigger listing resolves
+   * here; no archetype recipe is ever read from that repository, at this revision or any other.
    */
   private static final String WRAPPER_HEAD = "d".repeat(40);
-
-  /** The newest version the wrapper has RELEASED — a tag a person approved, and immutable. */
-  private static final String WRAPPER_VERSION = "2026.922.161358";
-
-  /** The commit that tag names, which is the one revision an archetype recipe is ever read at. */
-  private static final String WRAPPER_RELEASED_SHA = "a".repeat(40);
 
   /** The commit the release event names, and therefore the ref a composed release run builds. */
   private static final String RELEASED_SHA = "f".repeat(40);
@@ -129,12 +116,32 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
           script: echo bespoke
       """;
 
+  /**
+   * A repository's OWN recipe under a name the platform also packages — a shadow. The script is one
+   * the packaged {@code spa-frontend} does not contain, so which of the two composed a run is
+   * readable off the run's stored document.
+   */
   private static final String SPA_FRONTEND =
       """
       release-request:
         - image: qits/build-images/node-base:latest
-          script: npm ci && npm run build
+          script: npm ci && npm run build-the-shadow
       """;
+
+  /** What a wrapper-seeded decoy recipe runs, so a composition from one is unmistakable. */
+  private static final String DECOY =
+      """
+      release-request:
+        - image: alpine:3
+          script: echo read-from-the-wrapper
+      """;
+
+  /** This qits-ci's own version, which is what a packaged recipe is recorded as. */
+  private static String thisVersion() {
+    return org.eclipse.microprofile.config.ConfigProvider.getConfig()
+        .getOptionalValue("quarkus.application.version", String.class)
+        .orElse(null);
+  }
 
   @Inject CiEventTriggerService engine;
   @Inject CiRunService runService;
@@ -152,16 +159,11 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
         CiRepoRef.of(wrapperId, "qits", "qits-qits"));
     fakeConfig.putTriggers(repoId, "main", HEAD);
     fakeConfig.putTriggers(wrapperId, "main", WRAPPER_HEAD);
-    // THE WRAPPER'S OWN LISTING, which is the PLATFORM TRIGGER half and is still read at main: a
-    // ci-platform-event-*.yml is a trigger, and every trigger on this platform is discovered at
-    // main's head. It has nothing to do with archetypes any more.
+    // THE WRAPPER'S OWN LISTING, which is the platform TRIGGER half and the only thing the engine
+    // reads that repository for: a ci-platform-event-*.yml is a trigger, discovered at main's head.
+    // It is armed in every test here so that "the wrapper is never read for a recipe" is asserted
+    // against a wrapper that is really there.
     fakeConfig.putTriggers(wrapperId, "main", CiTriggerScope.PLATFORM, WRAPPER_HEAD);
-    // AND THE WRAPPER'S RELEASED VERSION, which is what makes an archetype readable at all. The
-    // engine resolves the newest released version of the platform repository once per evaluation and
-    // every archetype read of that evaluation is made at that version's sha — so a fixture that
-    // seeds a recipe seeds it under WRAPPER_RELEASED_SHA, and a wrapper with no released version has
-    // no approved revision to read one at.
-    fakeConfig.putReleasedVersion(wrapperId, WRAPPER_VERSION, WRAPPER_RELEASED_SHA);
     engine.platformPipelinesRepository("qits-qits");
     announcer.reset();
   }
@@ -205,22 +207,30 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
   }
 
   /**
-   * A recipe in the wrapper, <b>at the sha of the wrapper's newest RELEASED version</b> — never at
-   * the branch name and never at main's head, which is the whole of what this ticket removed.
+   * The repository's OWN copy of a recipe, at the two revisions the two release events name — the
+   * same two {@link #seedSlots} uses, because a local recipe is read at the revision its {@code
+   * release.yml} was.
    */
   private void seedArchetype(String name, String content) {
-    fakeConfig.putFile(
-        wrapperId, WRAPPER_RELEASED_SHA, CiReleaseSlotParser.archetypePath(name), content);
+    fakeConfig.putFile(repoId, MERGED_SHA, CiReleaseSlotParser.archetypePath(name), content);
+    fakeConfig.putFile(repoId, RELEASED_SHA, CiReleaseSlotParser.archetypePath(name), content);
   }
 
-  /** The same recipe at the wrapper's MAIN head — a revision nothing may ever read one at. */
-  private void seedArchetypeAtMainHead(String name, String content) {
-    fakeConfig.putFile(wrapperId, WRAPPER_HEAD, CiReleaseSlotParser.archetypePath(name), content);
-  }
-
-  /** The read a composed run's archetype must have come from, in {@code FakeCiConfigSource}'s key. */
+  /** The key {@code FakeCiConfigSource} records a local recipe read under. */
   private String archetypeReadAt(String rev, String name) {
-    return wrapperId + "@" + rev + "/" + CiReleaseSlotParser.archetypePath(name);
+    return repoId + "@" + rev + "/" + CiReleaseSlotParser.archetypePath(name);
+  }
+
+  /**
+   * Every read of a RECIPE made against the platform-pipelines repository. Its own {@code
+   * release.yml} is not one: the wrapper is a candidate like any other and is asked for its slot
+   * file at the event's revision like any other.
+   */
+  private List<String> wrapperFileReads() {
+    return fakeConfig.fileReads().stream()
+        .filter(read -> read.startsWith(wrapperId + "@"))
+        .filter(read -> read.contains(CiReleaseSlotParser.ARCHETYPE_DIR))
+        .toList();
   }
 
   private void seedTrigger(String path, String content) {
@@ -258,7 +268,39 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
   // --- the composed run ---------------------------------------------------------------------------
 
   @Test
-  public void aSlotFileNamingAnArchetypeRecordsAComposedQaRun() throws Exception {
+  public void aPackagedArchetypeRecordsItsNameItsPathAndThisQitsCisVersionAndNoRev()
+      throws Exception {
+    // THE ORDINARY CASE ON THE ESTATE: the slot file is one line and the repository carries no
+    // recipe of its own, so the one built into this qits-ci composes. Nothing is seeded but the slot
+    // file — the recipe is the real packaged spa-frontend, off this module's classpath.
+    seedSlots("archetype: spa-frontend\n");
+
+    deliver(releaseRequest());
+
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(1, recorded.size(), "the packaged recipe composes: " + fakeConfig.fileReads());
+    CiRun run = recorded.get(0);
+    assertEquals("spa-frontend", run.archetypeName);
+    assertEquals(CiReleaseSlotParser.archetypePath("spa-frontend"), run.archetypeConfigPath);
+    assertNull(run.archetypeRev, "no revision of any repository: it was not read from one");
+    assertNotNull(thisVersion(), "this suite can name the application's version");
+    assertEquals(
+        thisVersion(),
+        run.archetypeVersion,
+        "and the qits-ci release whose jar carried the recipe, which is what tells two rows apart");
+    assertEquals(
+        List.of(archetypeReadAt(MERGED_SHA, "spa-frontend")),
+        fakeConfig.fileReads().stream()
+            .filter(read -> read.contains(CiReleaseSlotParser.ARCHETYPE_DIR))
+            .toList(),
+        "the repository is asked ONCE whether it shadows the recipe, at the fold, and nothing else"
+            + " is read for it: "
+            + fakeConfig.fileReads());
+  }
+
+  @Test
+  public void aSlotFileNamingAnArchetypeTheRepositoryCarriesRecordsAComposedQaRunFromItsOwnCopy()
+      throws Exception {
     seedSlots("archetype: spa-frontend\n");
     seedArchetype("spa-frontend", SPA_FRONTEND);
     CiEventTriggerService.Arrival arrival = releaseRequest();
@@ -285,20 +327,20 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
             .contains(repoId + "@" + MERGED_SHA + "/" + CiReleaseSlotParser.CONFIG_PATH),
         "the slot file is read at the fold: " + fakeConfig.fileReads());
     assertEquals("a1b2c3", run.releaseRequestId, "the provenance column is unaffected by composition");
-    // WHICH RECIPE, AND WHICH VERSION OF IT. The rev is the sha of the wrapper release the recipe
-    // was read from and the version is that release's name, so the row says what composed it
-    // rather than leaving a reader to guess at the wrapper's history.
+    // WHICH RECIPE, AND WHOSE. The repository carries its own copy, so the row records the revision
+    // that copy was read at — the fold, which is the run's own commit — and NO version: a version
+    // is what a packaged recipe has, and rev non-null is how a reader tells "shadowed locally".
     assertEquals("spa-frontend", run.archetypeName);
     assertEquals(CiReleaseSlotParser.archetypePath("spa-frontend"), run.archetypeConfigPath);
-    assertEquals(WRAPPER_RELEASED_SHA, run.archetypeRev);
-    assertEquals(
-        WRAPPER_VERSION,
-        run.archetypeVersion,
-        "and the APPROVED wrapper release it is, which no sha alone can be read back as");
+    assertEquals(MERGED_SHA, run.archetypeRev);
+    assertEquals(run.commitSha, run.archetypeRev, "declaration and recipe are one commit's bytes");
+    assertNull(run.archetypeVersion, "a local recipe is not any qits-ci release's");
     // trigger_config is the COMPOSED text, which is what restart-reparse will read back.
     assertNotNull(run.triggerConfig);
     assertTrue(run.triggerConfig.contains("event: ReleaseRequestChanged"), run.triggerConfig);
-    assertTrue(run.triggerConfig.contains("npm ci && npm run build"), run.triggerConfig);
+    assertTrue(
+        run.triggerConfig.contains("npm ci && npm run build-the-shadow"),
+        "the LOCAL recipe wins over the packaged one of the same name: " + run.triggerConfig);
     // And it really is the archetype's step that ran.
     // The resolved reference, not the recipe's shorthand: CiStepImage prefixes a platform image
     // with the deployment's registry, and the composer changes nothing about that.
@@ -422,22 +464,16 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
   }
 
   @Test
-  public void theSlotFileIsNeverReadAtMainForAReleaseEventAndTheWrapperOnlyEverIs()
+  public void theSlotFileIsNeverReadAtMainForAReleaseEventAndALocalRecipeIsReadAtTheFold()
       throws Exception {
-    // BOTH HALVES OF THE SPLIT, asserted as absences because nothing else catches either regression.
-    // A read of the repository's release.yml at main passes every other test in this class the day
-    // somebody re-seeds main; and a read of the ARCHETYPE at the fold would pass them all too, while
-    // quietly handing a release request the power to rewrite the platform prelude that gates it.
+    // Asserted as an absence because nothing else catches the regression: a read of the
+    // repository's release.yml at main passes every other test in this class the day somebody
+    // re-seeds main. And the recipe half of the same invariant — a local recipe is read at the
+    // revision the declaration was, never at the repository's main head.
     seedSlots("archetype: spa-frontend\n");
     seedArchetype("spa-frontend", SPA_FRONTEND);
-    // Every wrong revision is seeded, so a regression in any direction SUCCEEDS and only these
-    // assertions stand between it and a green suite: the repository's declaration at its main head,
-    // the recipe at the fold, and the recipe at the WRAPPER'S OWN MAIN HEAD — the last being the
-    // read this ticket removed.
     fakeConfig.putFile(repoId, HEAD, CiReleaseSlotParser.CONFIG_PATH, "archetype: spa-frontend\n");
-    fakeConfig.putFile(
-        wrapperId, MERGED_SHA, CiReleaseSlotParser.archetypePath("spa-frontend"), SPA_FRONTEND);
-    seedArchetypeAtMainHead("spa-frontend", SPA_FRONTEND);
+    fakeConfig.putFile(repoId, HEAD, CiReleaseSlotParser.archetypePath("spa-frontend"), DECOY);
 
     deliver(releaseRequest());
 
@@ -449,14 +485,49 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
         "the repository's own declaration is read at the fold and nowhere else: "
             + fakeConfig.fileReads());
     assertEquals(
-        List.of(archetypeReadAt(WRAPPER_RELEASED_SHA, "spa-frontend")),
+        List.of(archetypeReadAt(MERGED_SHA, "spa-frontend")),
         fakeConfig.fileReads().stream()
-            .filter(read -> read.contains(CiReleaseSlotParser.archetypePath("spa-frontend")))
+            .filter(read -> read.contains(CiReleaseSlotParser.ARCHETYPE_DIR))
             .toList(),
-        "and the wrapper's recipe at the wrapper's newest RELEASED version — never at the fold,"
-            + " which a release request could move, and never at the wrapper's main head, which"
-            + " nobody approved: "
-            + fakeConfig.fileReads());
+        "and its recipe at that same fold: " + fakeConfig.fileReads());
+  }
+
+  @Test
+  public void noReadOfThePlatformPipelinesRepositoryIsEverMadeForAnArchetype() throws Exception {
+    // THE WHOLE OF qits-583, asserted as an ABSENCE with decoys, because a regression here passes
+    // every other test in this class. The wrapper carries a perfectly readable recipe under BOTH
+    // names at every revision the old reads ever used — the branch name, main's head, the fold's
+    // sha, and a released tag's commit — so an engine that still went there would compose
+    // successfully, and only "which bytes ran" and "which reads were made" can tell.
+    String wrapperTagSha = "a".repeat(40);
+    for (String rev : List.of("main", WRAPPER_HEAD, MERGED_SHA, wrapperTagSha)) {
+      fakeConfig.putFile(wrapperId, rev, CiReleaseSlotParser.archetypePath("spa-frontend"), DECOY);
+      fakeConfig.putFile(wrapperId, rev, CiReleaseSlotParser.archetypePath("wrapper-only"), DECOY);
+    }
+
+    // A name the platform packages: composed from the packaged recipe, not the wrapper's decoy.
+    seedSlots("archetype: spa-frontend\n");
+    deliver(releaseRequest());
+
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(1, recorded.size());
+    assertFalse(
+        recorded.get(0).triggerConfig.contains("read-from-the-wrapper"),
+        "the wrapper's recipe composed this run: " + recorded.get(0).triggerConfig);
+    assertNull(recorded.get(0).archetypeRev);
+    assertEquals(
+        List.of(), wrapperFileReads(), "no recipe is read from the wrapper: " + fakeConfig.fileReads());
+
+    // And a name ONLY the wrapper carries is no archetype at all — no run, and settled, where an
+    // engine that still read the wrapper would have composed the decoy.
+    seedSlots("archetype: wrapper-only\n");
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(1, runService.runsFor(repoId).size(), "no second run: the name exists nowhere");
+    assertFalse(stillOwed(arrival.eventId()), "an unknown archetype is final, not retryable");
+    assertEquals(
+        List.of(), wrapperFileReads(), "still none: " + fakeConfig.fileReads());
   }
 
   // --- the composed pipeline beside a repository's own ---------------------------------------------
@@ -482,10 +553,8 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
 
   @Test
   public void anOrdinaryEventNeitherReadsTheSlotFileNorSkipsAnything() throws Exception {
-    // The gate that keeps this feature free for the other 99% of the bus: no blob read at all, and
-    // — since the wrapper's released version is resolved on first use rather than up front — no tag
-    // read either. A resolution hoisted to the top of an evaluation would be one extra git-host call
-    // per frame on the bus, on the single-threaded trigger worker, for a question nothing asked.
+    // The gate that keeps this feature free for the other 99% of the bus: no blob read at all —
+    // not the slot file, and so not the look for a local recipe behind it either.
     seedSlots("archetype: spa-frontend\n");
     seedTrigger(
         ".config/qits/ci-event-upstream.yml",
@@ -509,12 +578,10 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
             .noneMatch(read -> read.contains(CiReleaseSlotParser.CONFIG_PATH)),
         "a BuildSuccessful must cost exactly the reads it cost before this feature existed: "
             + fakeConfig.fileReads());
-    assertEquals(
-        List.of(),
-        fakeConfig.tagReads(),
-        "and the wrapper's tags are not read either — the released version is resolved when a"
-            + " repository actually asks for a recipe: "
-            + fakeConfig.tagReads());
+    assertTrue(
+        fakeConfig.fileReads().stream()
+            .noneMatch(read -> read.contains(CiReleaseSlotParser.ARCHETYPE_DIR)),
+        "and no recipe is looked for either: " + fakeConfig.fileReads());
   }
 
   // --- no slot file: the generic grammar, untouched -------------------------------------------------
@@ -569,6 +636,37 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     assertEquals(1, recovered.size(), "the composed QA run the release request was owed");
     assertEquals(CiReleaseSlotParser.CONFIG_PATH, recovered.get(0).configPath);
     assertEquals(arrival.eventId(), recovered.get(0).triggerEventId, "under the original event");
+    assertFalse(stillOwed(arrival.eventId()), "and the ledger is clear again");
+  }
+
+  @Test
+  public void aLocalArchetypeThatCannotBeLookedForIsOwedAndIsNotAnsweredFromThePackagedCopy()
+      throws Exception {
+    // The slot file's own case, one read later. The name IS packaged — so an engine that fell
+    // through on a blip would compose a run here, from a recipe the repository may have replaced,
+    // and which pipeline a commit got would depend on whether the git host answered. Nothing was
+    // learned about whether the repository shadows the recipe, so nothing is composed and the event
+    // stays owed.
+    seedSlots("archetype: spa-frontend\n");
+    fakeConfig.putFileUnreachable(
+        repoId, MERGED_SHA, CiReleaseSlotParser.archetypePath("spa-frontend"));
+
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(
+        List.of(), runService.runsFor(repoId), "NOT the packaged recipe: nothing was learned");
+    assertTrue(stillOwed(arrival.eventId()), "owed, so a sweep asks the git host again");
+
+    // The git host comes back and says the repository carries its own recipe after all.
+    seedArchetype("spa-frontend", SPA_FRONTEND);
+    engine.sweepOwed(Instant.now().plusSeconds(60));
+    runService.awaitIdle();
+    forgetLoadedEntities();
+
+    List<CiRun> recovered = runService.runsFor(repoId);
+    assertEquals(1, recovered.size(), "the QA run the release request was owed");
+    assertEquals(MERGED_SHA, recovered.get(0).archetypeRev, "composed from the shadow it has");
     assertFalse(stillOwed(arrival.eventId()), "and the ledger is clear again");
   }
 
@@ -659,8 +757,8 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
   public void anUnknownArchetypeIsNoRunAndIsSettled() throws Exception {
     // The contrast with the case above, and it is the whole reason that one needs a ledger seam to
     // be asserted at all. This failure is a person's declaration: the slot file names an archetype
-    // the wrapper does not carry, and it will name it just as wrongly on the next sweep and the one
-    // after. No run — the engine's standing rule that an unreadable candidate is never a run — and
+    // that is neither in the repository at the fold nor packaged into this qits-ci, and it will name
+    // it just as wrongly on the next sweep and the one after. No run — the engine's standing rule that an unreadable candidate is never a run — and
     // the event is settled, because retrying it is asking a git host to change somebody's mind.
     seedSlots("archetype: does-not-exist\n");
 
@@ -669,6 +767,37 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
 
     assertEquals(List.of(), runService.runsFor(repoId));
     assertFalse(stillOwed(arrival.eventId()), "broken committed content is final, not retryable");
+  }
+
+  @Test
+  public void aLocalArchetypeThatDoesNotParseIsNoRunSettledAndNotThePackagedCopy()
+      throws Exception {
+    // A BROKEN SHADOW IS FINAL. The repository replaced spa-frontend and the replacement is not a
+    // recipe; the platform packages a perfectly good one under that name. Composing from it instead
+    // would run a pipeline the repository explicitly did not ask for and report it green — so: no
+    // run, and settled, because these bytes are committed at the fold and a sweep cannot change them.
+    seedSlots("archetype: spa-frontend\n");
+    seedArchetype("spa-frontend", "archetype: another\n");
+
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(List.of(), runService.runsFor(repoId), "not the packaged recipe in its place");
+    assertFalse(stillOwed(arrival.eventId()), "broken committed content is final, not retryable");
+  }
+
+  @Test
+  public void aRecipeOnlyTheRepositoryCarriesComposes() throws Exception {
+    // An archetype of the repository's own invention: a name this qits-ci packages nothing under.
+    seedSlots("archetype: house-recipe\n");
+    seedArchetype("house-recipe", SPA_FRONTEND);
+
+    deliver(releaseRequest());
+
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(1, recorded.size());
+    assertEquals("house-recipe", recorded.get(0).archetypeName);
+    assertEquals(MERGED_SHA, recorded.get(0).archetypeRev);
   }
 
   @Test
@@ -714,22 +843,24 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
   }
 
   @Test
-  public void aRetryOfAComposedRunRecomposesThePlatformHalfAndKeepsTheRepositorysScript()
+  public void aRetryOfAComposedRunRecomposesAndReReadsTheLocalArchetypeAtTheRunsCommit()
       throws Exception {
-    // The whole of the ticket: the platform prelude and postlude on a stored composed document are
-    // as they were when the run was FIRST composed, so a platform fix could never heal an earlier
-    // failed release by retry. Here the wrapper recipe moves between the two runs — one qits-ci-side
-    // change to every migrated repository's pipeline — and the retry has to be composed with it.
+    // A retry does not replay its stored document: it re-composes, so that a fix to the platform's
+    // half — the prelude and postlude in CiReleaseComposer, and a packaged recipe — reaches an
+    // earlier failed release. What this pins is the REPOSITORY's half of that: the slot file and the
+    // local recipe are both read again, at the run's own commit and nowhere else.
+    //
+    // The fixture changes the recipe's bytes at that commit between the two runs, which no git host
+    // can do — a commit's bytes do not move. It is the only way a test can SEE that the retry read
+    // the file again rather than reusing what the source run was composed with.
     seedSlots(OWN_RELEASE_SLOT);
-    // The tag the run builds carries the same declaration, which is where the retry reads it: those
-    // bytes are part of the released commit and cannot move under the retry.
-    fakeConfig.putFile(repoId, RELEASED_SHA, CiReleaseSlotParser.CONFIG_PATH, OWN_RELEASE_SLOT);
     seedArchetype("java-service", javaService("out/sbom.json"));
 
     deliver(release());
     CiRun original = runService.runsFor(repoId).get(0);
     assertEquals(CiRunStatus.SUCCESS, original.status);
     assertTrue(original.triggerConfig.contains("out/sbom.json"), original.triggerConfig);
+    assertEquals(RELEASED_SHA, original.archetypeRev);
 
     seedArchetype("java-service", javaService("target/sbom.json"));
     CiRun retry = runService.retry(original.id);
@@ -739,310 +870,62 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     CiRun refired = runService.requireRun(retry.id);
     assertTrue(
         refired.triggerConfig.contains("target/sbom.json"),
-        "the retry carries today's platform postlude: " + refired.triggerConfig);
+        "the retry was composed again, from what the commit carries now: " + refired.triggerConfig);
     assertFalse(
         refired.triggerConfig.contains("out/sbom.json"),
-        "and not the one the source run was composed with");
-    // The repository's half is the released commit's and does not move with the platform's.
+        "and not replayed from the source run's stored document");
+    // The repository's own slot is the released commit's too.
     assertTrue(refired.triggerConfig.contains("./publish.sh"), refired.triggerConfig);
     assertEquals(CiReleaseSlotParser.CONFIG_PATH, refired.configPath);
     assertEquals(RELEASED_SHA, refired.commitSha, "a retry still builds the commit its source built");
+    assertEquals(RELEASED_SHA, refired.archetypeRev, "and reads its local recipe at that commit");
+    assertNull(refired.archetypeVersion);
+    assertEquals(
+        2,
+        fakeConfig.fileReads().stream()
+            .filter(read -> read.equals(archetypeReadAt(RELEASED_SHA, "java-service")))
+            .count(),
+        "one read for the run, one for its retry, both at the run's commit: "
+            + fakeConfig.fileReads());
   }
 
   @Test
-  public void aRetryWhoseWrapperHasRELEASEDAgainRecordsTheNewVersionWhileTheSourceKeepsTheOld()
+  public void aRetryOfAPackagedCompositionIsComposedFromThisQitsCisRecipeAndRecordsItsVersion()
       throws Exception {
-    // The pair of rows IS the record of the platform fix. The retry re-composes against the wrapper
-    // as it is NOW — deliberately, and that escape hatch is not being pinned to the source run's
-    // revision — so the only way anybody can see which recipe each of the two runs really ran is
-    // that each row names its own.
-    //
-    // WHAT "NOW" MEANS CHANGED WITH THIS TICKET AND THE TEST SAYS SO. It used to be the wrapper's
-    // main head, so a merged fix healed an earlier failure the moment it landed; it is the wrapper's
-    // newest RELEASED version, so the fix heals it once the wrapper release carrying it has landed.
-    // The fixture therefore moves the wrapper by RELEASING a newer version, and it moves main's head
-    // as well — with the fixed recipe on it — so that a regression to the old reading would find the
-    // fix at main and pass this test on the wrong evidence.
-    seedSlots(OWN_RELEASE_SLOT);
-    fakeConfig.putFile(repoId, RELEASED_SHA, CiReleaseSlotParser.CONFIG_PATH, OWN_RELEASE_SLOT);
-    seedArchetype("java-service", javaService("out/sbom.json"));
+    // The platform's half of a retry is TODAY's: the packaged recipe is this process's, not
+    // whatever the source run was composed with. Inside one process the two are the same bytes, so
+    // what is assertable here is the provenance — the retry records its own composition (a null rev
+    // and this qits-ci's version) rather than copying the source row's columns, which is what makes
+    // a differing archetype_version on the two rows mean "a newer qits-ci composed the retry".
+    seedSlots(
+        """
+        archetype: spa-frontend
+        release:
+          - image: alpine:3
+            script: ./publish.sh
+        """);
 
     deliver(release());
     CiRun original = runService.runsFor(repoId).get(0);
-    assertEquals("java-service", original.archetypeName);
-    assertEquals(
-        CiReleaseSlotParser.archetypePath("java-service"), original.archetypeConfigPath);
-    assertEquals(WRAPPER_RELEASED_SHA, original.archetypeRev);
-    assertEquals(WRAPPER_VERSION, original.archetypeVersion);
+    assertNull(original.archetypeRev);
+    assertEquals(thisVersion(), original.archetypeVersion);
 
-    // The wrapper RELEASES the fix: a newer version, at a commit of its own, carrying the fixed
-    // recipe. Main's head moves too and carries the same fix — the decoy.
-    String releasedSha = "9".repeat(40);
-    String newerVersion = "2026.923.101500";
-    fakeConfig.putReleasedVersion(wrapperId, newerVersion, releasedSha);
-    fakeConfig.putFile(
-        wrapperId,
-        releasedSha,
-        CiReleaseSlotParser.archetypePath("java-service"),
-        javaService("target/sbom.json"));
-    seedArchetypeAtMainHead("java-service", javaService("target/sbom.json"));
+    // The source row is rewritten to look like an older qits-ci composed it.
+    QuarkusTransaction.requiringNew()
+        .run(() -> runs.update("archetypeVersion = ?1 where id = ?2", "2026.101.1", original.id));
+    forgetLoadedEntities();
 
     CiRun retry = runService.retry(original.id);
     runService.awaitIdle();
     forgetLoadedEntities();
 
     CiRun refired = runService.requireRun(retry.id);
-    assertEquals(releasedSha, refired.archetypeRev, "the retry records the wrapper as it is NOW");
+    assertEquals("spa-frontend", refired.archetypeName);
+    assertNull(refired.archetypeRev);
     assertEquals(
-        newerVersion, refired.archetypeVersion, "which is a RELEASE, and the row names it");
-    assertEquals("java-service", refired.archetypeName);
-    assertTrue(refired.triggerConfig.contains("target/sbom.json"), refired.triggerConfig);
-    // And the source row is untouched, which is what makes the comparison possible at all.
-    CiRun sourceAgain = runService.requireRun(original.id);
-    assertEquals(WRAPPER_RELEASED_SHA, sourceAgain.archetypeRev);
-    assertEquals(WRAPPER_VERSION, sourceAgain.archetypeVersion);
-    assertEquals(RELEASED_SHA, refired.commitSha, "one commit, two recipes — the whole point");
-  }
-
-  // --- one evaluation, one wrapper revision ---------------------------------------------------------
-
-  @Test
-  public void twoCandidatesOnOneArchetypeReadItOnceAtTheResolvedSha() throws Exception {
-    // The discipline this ticket is about, from both ends. The rev is the sha of ONE released
-    // wrapper version — NOT the string "main", and not a version resolved per candidate — and two
-    // repositories on one archetype in one evaluation cannot see two recipes, because the version is
-    // resolved once for the evaluation and the read is made once at its sha.
-    String secondId = "second-" + UUID.randomUUID().toString().substring(0, 8);
-    fakeCandidates.setRefs(
-        CiRepoRef.of(repoId, "qits", "qits-target"),
-        CiRepoRef.of(secondId, "qits", "qits-second"),
-        CiRepoRef.of(wrapperId, "qits", "qits-qits"));
-    String secondHead = "b".repeat(40);
-    fakeConfig.putTriggers(secondId, "main", secondHead);
-    seedSlots("archetype: spa-frontend\n");
-    // The second candidate's slot file at the SAME revision, because the revision comes from the
-    // event rather than from the repository: every candidate of one release event is read at the
-    // commit that event names. In production only the repository the event is about holds it, and
-    // every other candidate answers ABSENT — which is the same "no document, no run" it reaches
-    // through its `when:` a moment later.
-    fakeConfig.putFile(
-        secondId, MERGED_SHA, CiReleaseSlotParser.CONFIG_PATH, "archetype: spa-frontend\n");
-    seedArchetype("spa-frontend", SPA_FRONTEND);
-
-    // One event both repositories' composed QA pipelines select: the composer's `when:` is each
-    // repository's own name, so the payload has to name one — the second is the one that matters
-    // here, and the first still reads the archetype on its way to not matching.
-    deliver(releaseRequest());
-
-    List<String> archetypeReads =
-        fakeConfig.fileReads().stream()
-            .filter(read -> read.contains(CiReleaseSlotParser.archetypePath("spa-frontend")))
-            .toList();
-    assertEquals(
-        List.of(archetypeReadAt(WRAPPER_RELEASED_SHA, "spa-frontend")),
-        archetypeReads,
-        "one read, at the resolved sha, for both candidates: " + fakeConfig.fileReads());
-    assertFalse(
-        fakeConfig.fileReads().contains(archetypeReadAt("main", "spa-frontend")),
-        "and never at the moving ref: " + fakeConfig.fileReads());
-    // AND THE VERSION ITSELF IS RESOLVED ONCE. Reading the wrapper's tags per candidate would answer
-    // the same sha in this fixture and a different one the day a release lands mid-evaluation, which
-    // is exactly the state nothing on a row could explain afterwards.
-    assertEquals(
-        List.of(wrapperId),
-        fakeConfig.tagReads(),
-        "one tag read for the whole evaluation: " + fakeConfig.tagReads());
-  }
-
-  // --- the recipe comes from a RELEASE, never from the wrapper's main head --------------------------
-
-  @Test
-  public void theArchetypeIsReadAtTheNewestReleasedVersionAndNotAtTheWrappersMainHead()
-      throws Exception {
-    // THE WHOLE OF THIS TICKET, and it is asserted with the two revisions carrying DIFFERENT
-    // recipes, because that is the only shape that can tell them apart: a fixture where main and the
-    // released tag agree passes whichever one the engine reads.
-    seedSlots("archetype: spa-frontend\n");
-    seedArchetype(
-        "spa-frontend",
-        """
-        release-request:
-          - image: qits/build-images/node-base:latest
-            script: echo approved
-        """);
-    // The wrapper's main carries a recipe somebody merged a minute ago and nobody released. It is a
-    // perfectly readable file, and reading it is the defect.
-    seedArchetypeAtMainHead(
-        "spa-frontend",
-        """
-        release-request:
-          - image: qits/build-images/node-base:latest
-            script: echo unreviewed
-        """);
-
-    deliver(releaseRequest());
-
-    CiRun run = runService.runsFor(repoId).get(0);
-    assertTrue(run.triggerConfig.contains("echo approved"), run.triggerConfig);
-    assertFalse(
-        run.triggerConfig.contains("echo unreviewed"),
-        "the steps of a release pipeline may not come from whatever is on the wrapper's main: "
-            + run.triggerConfig);
-    assertEquals(WRAPPER_RELEASED_SHA, run.archetypeRev);
-    assertEquals(WRAPPER_VERSION, run.archetypeVersion);
-    assertFalse(
-        fakeConfig.fileReads().contains(archetypeReadAt(WRAPPER_HEAD, "spa-frontend")),
-        "and the wrapper's main head is never even READ for a recipe: " + fakeConfig.fileReads());
-  }
-
-  @Test
-  public void theNEWESTReleasedVersionWinsAndUnversionedTagsAreNotReleases() throws Exception {
-    // Which tag is "the newest release" is a decision with two ways to get it wrong, and both are
-    // staged here. `98` sorts after `161358` as TEXT and before it as a VERSION, which is what
-    // VersionSort exists for; and `latest`/`v2` are tags anybody can push, so admitting them would
-    // let an unreviewed name out-sort every real release and pin the estate's recipes to it.
-    String olderSha = "1".repeat(40);
-    String newestSha = "2".repeat(40);
-    String decoySha = "3".repeat(40);
-    fakeConfig.putTags(
-        wrapperId,
-        new CiConfigSource.RepoTag("2026.922.98", olderSha),
-        new CiConfigSource.RepoTag("2026.922.161358", newestSha),
-        new CiConfigSource.RepoTag("latest", decoySha),
-        new CiConfigSource.RepoTag("v2", decoySha),
-        new CiConfigSource.RepoTag("release/2026.999.999999", decoySha));
-    seedSlots("archetype: spa-frontend\n");
-    fakeConfig.putFile(
-        wrapperId, newestSha, CiReleaseSlotParser.archetypePath("spa-frontend"), SPA_FRONTEND);
-    // The two losers carry a readable recipe as well, so picking either of them composes a run and
-    // only the assertions below say which one was picked.
-    fakeConfig.putFile(
-        wrapperId, olderSha, CiReleaseSlotParser.archetypePath("spa-frontend"), SPA_FRONTEND);
-    fakeConfig.putFile(
-        wrapperId, decoySha, CiReleaseSlotParser.archetypePath("spa-frontend"), SPA_FRONTEND);
-
-    deliver(releaseRequest());
-
-    CiRun run = runService.runsFor(repoId).get(0);
-    assertEquals(newestSha, run.archetypeRev, "the highest VERSION, not the highest string");
-    assertEquals("2026.922.161358", run.archetypeVersion);
-  }
-
-  // --- no released wrapper version at all: fail closed, never back to "main" -------------------------
-
-  @Test
-  public void aWrapperWhoseTagsCannotBeReadIsNoRunAndNoReadAtMain() throws Exception {
-    // A TRANSPORT FAILURE IS OWED, which is the easy half of the decision: nothing was learned about
-    // the wrapper, and a sweep can learn it. The assertion is also an ABSENCE, because a fallback to
-    // the branch name or to main's head passes every other test in this suite.
-    seedSlots("archetype: spa-frontend\n");
-    seedArchetype("spa-frontend", SPA_FRONTEND);
-    seedArchetypeAtMainHead("spa-frontend", SPA_FRONTEND);
-    fakeConfig.putFile(
-        wrapperId, "main", CiReleaseSlotParser.archetypePath("spa-frontend"), SPA_FRONTEND);
-    fakeConfig.putTagsUnreachable(wrapperId);
-
-    CiEventTriggerService.Arrival arrival = releaseRequest();
-    deliverThroughTheLedger(arrival);
-
-    assertEquals(List.of(), runService.runsFor(repoId), "no released version, no recipe, no run");
-    assertFalse(
-        fakeConfig.fileReads().contains(archetypeReadAt("main", "spa-frontend")),
-        "NOTHING may be read at the literal 'main' — a silent fallback is the regression: "
-            + fakeConfig.fileReads());
-    assertFalse(
-        fakeConfig.fileReads().contains(archetypeReadAt(WRAPPER_HEAD, "spa-frontend")),
-        "nor at the sha main resolves to: " + fakeConfig.fileReads());
-    assertTrue(
-        stillOwed(arrival.eventId()),
-        "and the event is owed: nothing was learned about the wrapper, so a sweep asks again");
-  }
-
-  @Test
-  public void aWrapperThatHasNEVERReleasedIsNoRunAndTheEventIsOWED() throws Exception {
-    // THE DECISION THIS TICKET HAD TO MAKE, and it is the interesting half. A wrapper whose tags
-    // read perfectly well and carry no released version is not a transport failure — but it is not a
-    // person's declaration either, which is what "settled" is reserved for here. Nobody wrote "this
-    // estate has no approved recipes"; the estate has simply not released its wrapper yet, and the
-    // very next wrapper release makes the same question answer differently with nothing in the
-    // candidate repository having moved. So it is OWED, exactly like an unreadable release.yml:
-    // settling it would answer "no release run" to a release request waiting for that run's verdict,
-    // with nothing anywhere to re-drive it.
-    seedSlots("archetype: spa-frontend\n");
-    seedArchetypeAtMainHead("spa-frontend", SPA_FRONTEND);
-    fakeConfig.putTags(wrapperId, new CiConfigSource.RepoTag("nightly", "7".repeat(40)));
-
-    CiEventTriggerService.Arrival arrival = releaseRequest();
-    deliverThroughTheLedger(arrival);
-
-    assertEquals(List.of(), runService.runsFor(repoId), "no approved recipe, no release run");
-    assertFalse(
-        fakeConfig.fileReads().contains(archetypeReadAt(WRAPPER_HEAD, "spa-frontend")),
-        "and the unreleased recipe on main is NOT the fallback: " + fakeConfig.fileReads());
-    assertTrue(
-        stillOwed(arrival.eventId()),
-        "owed, not settled: the wrapper's first release is what makes this answerable, and the"
-            + " release request must still be there to receive its verdict when it lands");
-
-    // And that is exactly what recovery looks like: the wrapper releases, the sweep runs, the run
-    // the release request was owed is recorded under the original event.
-    fakeConfig.putReleasedVersion(wrapperId, WRAPPER_VERSION, WRAPPER_RELEASED_SHA);
-    seedArchetype("spa-frontend", SPA_FRONTEND);
-    engine.sweepOwed(Instant.now().plusSeconds(60));
-    runService.awaitIdle();
-    forgetLoadedEntities();
-
-    List<CiRun> recovered = runService.runsFor(repoId);
-    assertEquals(1, recovered.size(), "the first wrapper release unblocks the estate");
-    assertEquals(WRAPPER_VERSION, recovered.get(0).archetypeVersion);
-    assertFalse(stillOwed(arrival.eventId()));
-  }
-
-  @Test
-  public void aSlotFileNamingNoArchetypeComposesEvenWhenTheWrapperHasNeverReleased()
-      throws Exception {
-    // THE BOOTSTRAP ESCAPE, and it is why "no released wrapper version" does not deadlock an estate.
-    // Only a repository that ASKS for a recipe needs one. The wrapper's own release.yml declares its
-    // single QA slot itself and names no archetype: — so the wrapper's own release request composes,
-    // gates and can be approved with no archetype read anywhere, and that first wrapper release is
-    // what makes every other repository's release pipeline composable.
-    fakeConfig.putTags(wrapperId);
-    seedSlots(
-        """
-        release-request:
-          - image: alpine:3
-            script: echo estate declaration
-        """);
-
-    CiEventTriggerService.Arrival arrival = releaseRequest();
-    deliverThroughTheLedger(arrival);
-
-    List<CiRun> recorded = runService.runsFor(repoId);
-    assertEquals(1, recorded.size(), "a slot file that asks for no recipe needs no released version");
-    assertNull(recorded.get(0).archetypeVersion);
-    assertFalse(stillOwed(arrival.eventId()), "and nothing is left owed on the wrapper's account");
-  }
-
-  // --- the wrapper could not be listed: the PLATFORM TRIGGER half, which is still read at main ------
-
-  @Test
-  public void aWrapperThatCannotBeListedStillComposesFromItsReleasedVersion() throws Exception {
-    // THE TWO READS OF THE WRAPPER ARE INDEPENDENT NOW, and this is what says so. The platform
-    // trigger listing is made at main and answers which ci-platform-event-*.yml files exist; the
-    // archetype recipe is read at the newest released version. A listing that could not be made
-    // costs the platform trigger pass and nothing else — the recipe is somewhere the listing was
-    // never consulted about, and refusing to compose over it would be refusing on unrelated
-    // evidence.
-    seedSlots("archetype: spa-frontend\n");
-    seedArchetype("spa-frontend", SPA_FRONTEND);
-    fakeConfig.putTriggersUnreachable(wrapperId, "main", CiTriggerScope.PLATFORM);
-
-    CiEventTriggerService.Arrival arrival = releaseRequest();
-    deliverThroughTheLedger(arrival);
-
-    List<CiRun> recorded = runService.runsFor(repoId);
-    assertEquals(1, recorded.size(), "the release pipeline composes from the approved recipe");
-    assertEquals(WRAPPER_VERSION, recorded.get(0).archetypeVersion);
+        thisVersion(), refired.archetypeVersion, "the retry names the qits-ci that composed IT");
+    assertEquals("2026.101.1", runService.requireRun(original.id).archetypeVersion);
+    assertEquals(RELEASED_SHA, refired.commitSha, "one commit, two compositions");
   }
 
   // --- what the row records ------------------------------------------------------------------------
@@ -1050,7 +933,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
   @Test
   public void aBespokeRunRecordsNoArchetypeAtAll() throws Exception {
     // Null is a statement here and not a gap: this run was composed from nothing, so there is no
-    // recipe and no revision for it to name. The same three nulls a composed run whose slot file
+    // recipe and no revision for it to name. The same four nulls a composed run whose slot file
     // declares its own slots carries — see below — and never "unknown".
     seedTrigger(BESPOKE_PATH, BESPOKE);
 
@@ -1066,8 +949,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
 
   @Test
   public void aComposedRunNamingNoArchetypeRecordsNoneEither() throws Exception {
-    // The shape four repositories on the estate are in: a slot file that declares both its halves
-    // itself. It composes, it runs, and it names no recipe — which must not be read as "qits-ci
+    // A slot file that declares its slots itself, as the wrapper's own does. It composes, it runs, and it names no recipe — which must not be read as "qits-ci
     // could not work out which recipe this was".
     seedSlots(
         """

@@ -1,7 +1,6 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -17,7 +16,8 @@ import org.junit.jupiter.api.Test;
  * PUBLISH gate, and the whole of what is under test is that its <b>three</b> answers stay apart.
  *
  * <p>Everything below the git host is real, as in {@code CiReleaseSlotTriggerTest}: the slot parser,
- * the archetype read through the same port, and the composer. What is faked is the git host and the
+ * the archetype resolution (the repository's own copy through the same port, otherwise the recipes
+ * really packaged into this module's jar), and the composer. What is faked is the git host and the
  * candidate catalogue, which is what lets a read failure be staged at all.
  *
  * <p>The two cases worth reading first are {@link #anUnreachableSlotFileIsUnknownAndNeverFalse} and
@@ -31,13 +31,8 @@ public class CiReleasePhaseTest extends CiTestSupport {
   /** What the caller really sends: a released tag's ref, never a branch. */
   private static final String REV = "refs/tags/2026.916.114057";
 
-  /** The wrapper's {@code main} head: a revision this door must never read a recipe at. */
+  /** The platform-pipelines repository's {@code main} head. No recipe is read from that repository. */
   private static final String WRAPPER_HEAD = "d".repeat(40);
-
-  /** The newest version the wrapper has RELEASED when this door asks, and its commit. */
-  private static final String WRAPPER_VERSION = "2026.922.161358";
-
-  private static final String WRAPPER_RELEASED_SHA = "a".repeat(40);
 
   /** An archetype that publishes — a service's shape. */
   private static final String JAVA_SERVICE =
@@ -69,11 +64,9 @@ public class CiReleasePhaseTest extends CiTestSupport {
     wrapperId = "wrapper-" + UUID.randomUUID().toString().substring(0, 8);
     fakeCandidates.setRefs(
         CiRepoRef.of(repoId, "qits", "qits-target"), CiRepoRef.of(wrapperId, "qits", "qits-qits"));
-    // This door resolves the wrapper's newest RELEASED version itself, outside any evaluation, and
-    // reads the recipe at that version's commit. A fixture whose wrapper has released nothing leaves
-    // no approved revision to read at, which is the fail-closed case rather than the ordinary one.
+    // The wrapper is armed and listable, so that "this door reads no recipe from it" is asserted
+    // against a wrapper that is really there.
     fakeConfig.putTriggers(wrapperId, "main", CiTriggerScope.PLATFORM, WRAPPER_HEAD);
-    fakeConfig.putReleasedVersion(wrapperId, WRAPPER_VERSION, WRAPPER_RELEASED_SHA);
     engine.platformPipelinesRepository("qits-qits");
   }
 
@@ -86,9 +79,9 @@ public class CiReleasePhaseTest extends CiTestSupport {
     fakeConfig.putFile(repoId, REV, CiReleaseSlotParser.CONFIG_PATH, content);
   }
 
+  /** The repository's OWN copy of a recipe, at the rev the door is asked about — a shadow. */
   private void seedArchetype(String name, String content) {
-    fakeConfig.putFile(
-        wrapperId, WRAPPER_RELEASED_SHA, CiReleaseSlotParser.archetypePath(name), content);
+    fakeConfig.putFile(repoId, REV, CiReleaseSlotParser.archetypePath(name), content);
   }
 
   private CiEventTriggerService.ReleasePhase phase() {
@@ -106,6 +99,37 @@ public class CiReleasePhaseTest extends CiTestSupport {
     seedArchetype("java-service", JAVA_SERVICE);
 
     assertEquals(CiEventTriggerService.Verdict.DECLARED, phase().verdict());
+  }
+
+  @Test
+  public void aPackagedArchetypeWithAReleaseSlotIsDeclared() {
+    // The ordinary case on the estate: a one-line slot file, no recipe in the repository, and the
+    // real java-service packaged into this jar — which publishes an image.
+    seedSlots("archetype: java-service\n");
+
+    assertEquals(CiEventTriggerService.Verdict.DECLARED, phase().verdict());
+  }
+
+  @Test
+  public void aBrokenOrUnknownArchetypeIsDeclaredWithADetailNamingIt() {
+    // Committed bytes, like an unparseable slot file: the name is neither in the repository at the
+    // rev nor packaged, so no amount of asking again composes this pipeline, and the fix is a
+    // commit. It was UNKNOWN (a 503, retried forever) while the recipe came from another repository
+    // and "not there" could still mean "not released yet".
+    seedSlots("archetype: does-not-exist\n");
+
+    CiEventTriggerService.ReleasePhase answer = phase();
+    assertEquals(CiEventTriggerService.Verdict.DECLARED, answer.verdict());
+    assertTrue(answer.detail().contains("does-not-exist"), answer.detail());
+
+    // And the same arm for a local recipe that does not parse — never the packaged one instead,
+    // which for spa-frontend would answer NOT_DECLARED and wave the release through.
+    seedSlots("archetype: spa-frontend\n");
+    seedArchetype("spa-frontend", "archetype: another\n");
+
+    answer = phase();
+    assertEquals(CiEventTriggerService.Verdict.DECLARED, answer.verdict());
+    assertTrue(answer.detail().contains("spa-frontend"), answer.detail());
   }
 
   @Test
@@ -169,6 +193,15 @@ public class CiReleasePhaseTest extends CiTestSupport {
   }
 
   @Test
+  public void aPackagedPublishFreeArchetypeIsNotDeclared() {
+    // The same answer from the recipe this qits-ci really ships, which is the verification the
+    // deployed binary is asked for: an spa-frontend tag is NOT publish-gated.
+    seedSlots("archetype: spa-frontend\n");
+
+    assertEquals(CiEventTriggerService.Verdict.NOT_DECLARED, phase().verdict());
+  }
+
+  @Test
   public void noSlotFileAtTheRevIsNotDeclared() {
     // ABSENT at a rev the host resolved is an honest answer and not a gap: nothing composes at an
     // immutable tag, so there is no release run to wait for and no later reading of it to fear.
@@ -189,14 +222,16 @@ public class CiReleasePhaseTest extends CiTestSupport {
   }
 
   @Test
-  public void anUnreadableArchetypeIsUnknown() {
-    // The repository's own bytes are fine; the wrapper's could not be read. That is a statement
-    // about qits-ci, so it is the one failure that must not be reported as the repository's answer.
-    seedSlots("archetype: does-not-exist\n");
+  public void aLocalArchetypeThatCannotBeLookedForIsUnknownAndNotAnsweredFromThePackagedCopy() {
+    // The repository could not be asked whether it carries its own spa-frontend. The packaged one
+    // is publish-free and would answer NOT_DECLARED — waving a release through on a blip, when the
+    // repository's own recipe may well publish.
+    seedSlots("archetype: spa-frontend\n");
+    fakeConfig.putFileUnreachable(repoId, REV, CiReleaseSlotParser.archetypePath("spa-frontend"));
 
     CiEventTriggerService.ReleasePhase answer = phase();
     assertEquals(CiEventTriggerService.Verdict.UNKNOWN, answer.verdict());
-    assertTrue(answer.detail().contains("does-not-exist"), answer.detail());
+    assertTrue(answer.detail().contains("spa-frontend"), answer.detail());
   }
 
   @Test
@@ -210,79 +245,28 @@ public class CiReleasePhaseTest extends CiTestSupport {
   }
 
   @Test
-  public void theSlotFileIsReadAtTheRevAndTheArchetypeAtTheWrappersReleasedVersion() {
-    // The split every composition on this service makes, asserted rather than argued: the
-    // repository's half is the tag's immutable bytes, the platform's is today's recipe — so the
-    // answer is about the pipeline as it composes NOW, which is how the run that would satisfy the
-    // gate would be composed too.
-    //
-    // "Now" is a RELEASED VERSION and no longer main's head, let alone the branch name. This door
-    // resolves the wrapper's newest release itself and reads at that release's commit; the two
-    // absence assertions are what stand between that and a silent fall back to either moving ref.
-    // Main's head carries a perfectly readable recipe here on purpose, so reading it would PASS.
+  public void theSlotFileAndALocalArchetypeAreReadAtTheRevAndTheWrapperIsNeverRead() {
+    // Both of the repository's reads are the tag's immutable bytes, and nothing is read from the
+    // platform-pipelines repository — which carries a readable, publish-FREE decoy under the same
+    // name at every revision the old read used, so an engine that still went there would answer
+    // NOT_DECLARED with a straight face.
     seedSlots("archetype: java-service\n");
     seedArchetype("java-service", JAVA_SERVICE);
-    fakeConfig.putFile(
-        wrapperId, WRAPPER_HEAD, CiReleaseSlotParser.archetypePath("java-service"), JAVA_SERVICE);
+    for (String rev : java.util.List.of("main", WRAPPER_HEAD, "a".repeat(40))) {
+      fakeConfig.putFile(
+          wrapperId, rev, CiReleaseSlotParser.archetypePath("java-service"), SPA_FRONTEND);
+    }
 
     assertEquals(CiEventTriggerService.Verdict.DECLARED, phase().verdict());
-    assertTrue(
-        fakeConfig.fileReads().contains(repoId + "@" + REV + "/" + CiReleaseSlotParser.CONFIG_PATH),
-        fakeConfig.fileReads().toString());
-    assertTrue(
-        fakeConfig
-            .fileReads()
-            .contains(
-                wrapperId
-                    + "@"
-                    + WRAPPER_RELEASED_SHA
-                    + "/"
-                    + CiReleaseSlotParser.archetypePath("java-service")),
-        fakeConfig.fileReads().toString());
-    assertFalse(
-        fakeConfig
-            .fileReads()
-            .contains(wrapperId + "@main/" + CiReleaseSlotParser.archetypePath("java-service")),
-        fakeConfig.fileReads().toString());
-    assertFalse(
-        fakeConfig
-            .fileReads()
-            .contains(
-                wrapperId + "@" + WRAPPER_HEAD + "/" + CiReleaseSlotParser.archetypePath("java-service")),
-        "and never at the wrapper's main HEAD either: " + fakeConfig.fileReads());
-  }
-
-  @Test
-  public void aWrapperWhoseTagsCannotBeReadIsUnknown() {
-    // Fail closed, and the same answer an unreadable recipe file gets: there is no approved revision
-    // to read the recipe at, so the question was not asked and the caller must retry rather than be
-    // told something about the repository. Reading at the literal branch name, or at main's head,
-    // would answer confidently from content nobody released — which is what this read left behind.
-    seedSlots("archetype: java-service\n");
-    seedArchetype("java-service", JAVA_SERVICE);
-    fakeConfig.putFile(
-        wrapperId, WRAPPER_HEAD, CiReleaseSlotParser.archetypePath("java-service"), JAVA_SERVICE);
-    fakeConfig.putTagsUnreachable(wrapperId);
-
-    CiEventTriggerService.ReleasePhase answer = phase();
-    assertEquals(CiEventTriggerService.Verdict.UNKNOWN, answer.verdict());
-    assertTrue(answer.detail().contains("java-service"), answer.detail());
-  }
-
-  @Test
-  public void aWrapperThatHasNeverReleasedIsUnknownRatherThanNotDeclared() {
-    // THE OTHER HALF OF THE DECISION, at the door qits-projects polls. A wrapper with no released
-    // version is not this repository saying it publishes nothing — it is the question having no
-    // answer yet — and answering NOT_DECLARED would wave a release through a publish gate whose
-    // pipeline was never composed. UNKNOWN is a 503 and the caller asks again, which is exactly what
-    // it should do while the estate waits for its first wrapper release.
-    seedSlots("archetype: java-service\n");
-    fakeConfig.putFile(
-        wrapperId, WRAPPER_HEAD, CiReleaseSlotParser.archetypePath("java-service"), JAVA_SERVICE);
-    fakeConfig.putTags(wrapperId);
-
-    CiEventTriggerService.ReleasePhase answer = phase();
-    assertEquals(CiEventTriggerService.Verdict.UNKNOWN, answer.verdict());
-    assertTrue(answer.detail().contains("java-service"), answer.detail());
+    assertEquals(
+        java.util.List.of(
+            repoId + "@" + REV + "/" + CiReleaseSlotParser.CONFIG_PATH,
+            repoId + "@" + REV + "/" + CiReleaseSlotParser.archetypePath("java-service")),
+        fakeConfig.fileReads(),
+        "two reads, both of the repository, both at the rev asked about");
+    assertEquals(
+        java.util.List.of(),
+        fakeConfig.triggerReads(),
+        "and not even a listing of the wrapper: this door has no use for it");
   }
 }

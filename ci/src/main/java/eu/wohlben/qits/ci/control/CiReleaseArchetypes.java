@@ -3,75 +3,133 @@ package eu.wohlben.qits.ci.control;
 import eu.wohlben.qits.ci.control.CiConfigSource.FileLookup;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
- * Reads one archetype recipe out of the platform-pipelines repository.
+ * Resolves one archetype recipe: the repository's own copy first, and otherwise the one packaged
+ * into this qits-ci.
  *
- * <p><b>The whole point of the feature lives here.</b> A recipe is
- * {@code .config/qits/release-archetypes/<name>.yml} in the wrapper repository, read at <b>the sha
- * of the newest version that repository has RELEASED</b> — the same repository and the same content
- * route the {@code ci-platform-event-*.yml} files already use, at a different revision.
+ * <p><b>Two steps, in this order, and no third.</b> {@code archetype: <name>} in a repository's
+ * {@code .config/qits/release.yml} is answered by
  *
- * <p><b>A released version, not {@code main}'s head, and that is the rule rather than a tuning.</b>
- * These recipes contribute most of the steps of every release pipeline on the platform, so reading
- * them at {@code main} meant the steps of every release came from whatever landed on the wrapper a
- * minute ago — content nobody gated and nobody approved. A released wrapper version is the opposite
- * in every respect: it is a {@code YYYY.MMDD.HHMMSS} tag that a release request carried, CI gated
- * and a person approved, and it is immutable. Owner ruling, stated repeatedly: nothing in a release
- * pipeline may come from "whatever is on main".
+ * <ol>
+ *   <li><b>the local recipe</b> — {@code .config/qits/release-archetypes/<name>.yml} in the
+ *       repository the run is for, read through {@link CiConfigSource#readFile} at <b>the same
+ *       revision its {@code release.yml} was read at</b> (the fold for a {@code
+ *       ReleaseRequestChanged}, the released tag's commit for an {@code SCMRelease});
+ *   <li><b>the packaged recipe</b> — the classpath resource {@code release-archetypes/<name>.yml},
+ *       which {@code ci/pom.xml} builds into this jar from qits-ci-service's own {@code
+ *       .config/qits/release-archetypes/}.
+ * </ol>
  *
- * <p><b>What it costs is that a new recipe is not usable until a wrapper RELEASE carries it.</b>
- * A change to the release cycle used to be one wrapper commit, effective on the next event; it is
- * one wrapper commit plus the wrapper's own release request, effective when that release lands.
- * That is the whole of the trade and it is the point of it — the estate's release pipelines now
- * move only when somebody approves that they should.
+ * <p><b>No other repository is read for a recipe.</b> Until qits-583 the recipe came from the
+ * platform-pipelines repository (the wrapper) at the sha of its newest released tag. That made a
+ * recipe fix live only after a wrapper release — which needs a person's approval and is also what
+ * resolves a workspace, so it could ship only as the last step of a ticket — and it meant no CI run
+ * ever executed a changed recipe before it shipped, since the wrapper's own {@code release.yml}
+ * names no archetype. Packaged, a recipe moves with a qits-ci release, and qits-ci-service's own
+ * release request reads {@code java-service} locally at its fold, so that one recipe is exercised
+ * by the release that carries it. The other seven are held by {@code
+ * PackagedReleaseArchetypesTest}.
  *
- * <p>What reading at a sha buys, on top of that, is the discipline the repository half has always
- * had — resolve once, read at what was resolved. {@code CiEventTriggerService} resolves the
- * wrapper's newest released version once per evaluation; every archetype read of that evaluation is
- * made at that version's sha, so twenty repositories on one archetype cannot be composed from two
- * different recipes because a release landed in between.
+ * <p><b>Shadowing is the design, and it grants nothing a branch could not already do.</b> Any
+ * repository may carry its own copy of a packaged archetype, or one of its own invention. What is
+ * <em>platform process</em> in a composed pipeline — the prelude and the postlude — lives in {@link
+ * CiReleaseComposer}, in Java, and no recipe can touch it; an archetype contributes only slot
+ * steps, {@code artifacts:} and {@code userflows:}, every one of which a repository can already
+ * replace wholesale in its own {@code release.yml}. So reading a recipe at the revision under test
+ * hands that revision no power it did not have.
  *
- * <p><b>Which repository is not this class's to know.</b> {@code CiEventTriggerService} already
- * resolves {@code qits.ci.platform-pipelines-repository} against the candidate catalogue for the
- * platform pass, and hands the resolved reference here. A second injection point for the same key
- * would be a second thing to arm in a test and a second thing to keep in step.
+ * <p><b>Three answers, and they must stay apart</b> ({@link Status}) — {@link
+ * CiConfigSource.FileLookup}'s three, one seam up:
  *
- * <p><b>Every failure is a WARN and an empty answer</b> — the engine's standing rule that an
- * unreadable candidate is skipped rather than run. A repository asking for a recipe that is not
- * there, or one the wrapper could not be read for, gets no release run at all; it does <em>not</em>
- * get a composition with the archetype silently missing, which would be a release pipeline that ran
- * a prelude and published nothing.
+ * <ul>
+ *   <li>{@link Status#FOUND} — a recipe, and which one ({@link ArchetypeRef}).
+ *   <li>{@link Status#UNKNOWN} — there is no usable recipe of that name, and asking again cannot
+ *       change it: the name is in neither place, or the local file is there and will not parse.
+ *       Committed bytes; final.
+ *   <li>{@link Status#UNREADABLE} — the local read came back {@code UNREACHABLE}. Nothing was
+ *       learned, so the caller leaves its event owed.
+ * </ul>
+ *
+ * <p><b>Neither failure of the local read falls through to the packaged copy, and both refusals
+ * are deliberate.</b> A local file that will not parse is a broken shadow: silently composing from
+ * the platform's recipe instead would run a pipeline the repository explicitly replaced, green, with
+ * nothing to say the replacement was ignored. And a local read that could not be made says nothing
+ * about whether a shadow exists — answering with the packaged copy on a git-host blip would compose
+ * a different pipeline for the same commit depending on the weather.
+ *
+ * <p><b>The packaged recipes are immutable for the life of the process</b>, so each is parsed at
+ * most once, on first use, and kept. {@code ci/} gains no {@code java.net.http} for it: the read is
+ * {@code getResourceAsStream}. In the native image the resources have to be named to be bundled —
+ * {@code quarkus.native.resources.includes} in the {@code service} module — and a binary built
+ * without that answers {@link Status#UNKNOWN} for every name nobody shadows.
  */
 @ApplicationScoped
 public class CiReleaseArchetypes {
 
   private static final Logger LOG = Logger.getLogger(CiReleaseArchetypes.class);
 
+  /**
+   * Where the packaged recipes sit on the classpath — {@code ci/pom.xml}'s {@code targetPath}. A
+   * resource name, so always {@code /}-separated and never leading with one.
+   */
+  static final String PACKAGED_DIR = "release-archetypes/";
+
   @Inject CiReleaseSlotParser slotParser;
 
   @Inject CiConfigSource configSource;
 
   /**
-   * <b>Which</b> recipe a composed pipeline was built from, with no bytes attached: the name the
-   * repository asked for, the file in the wrapper it came from, the revision it was read at, and
-   * the released wrapper version that revision IS.
+   * This qits-ci's own version, which is what a packaged recipe is recorded as having come from.
    *
-   * <p>It is a record of its own rather than four loose strings because they only mean anything
-   * together — a name without a rev says which recipe but not which version of it, and a rev
-   * without a name says nothing at all — and because they travel a long way: out of this class,
-   * through the composition, onto {@code ci_run}'s four columns and out to the API. All four are
-   * null together on a composed run whose slot file names no archetype, which is a legitimate shape
+   * <p>{@code quarkus.application.version} is the deployable's pom version, and the pom carries
+   * the released calver — so two run rows with differing {@code archetype_version} were composed by
+   * two qits-ci releases. {@code Optional} rather than a bare string because a missing key must
+   * cost a row one column and never the composition: a packaged recipe whose version cannot be
+   * named is recorded with a null version, which is honest, where a failed injection would be no
+   * release pipeline on the platform at all.
+   */
+  @ConfigProperty(name = "quarkus.application.version")
+  Optional<String> applicationVersion;
+
+  /** Packaged recipes already parsed, by name. Only successes are kept: see {@link #packaged}. */
+  private final Map<String, CiReleaseSlots> packagedByName = new ConcurrentHashMap<>();
+
+  /**
+   * <b>Which</b> recipe a composed pipeline was built from, with no bytes attached.
+   *
+   * <p>Four strings that only mean anything together, and they travel a long way: out of this
+   * class, through the composition, onto {@code ci_run}'s four columns and out to the API. What
+   * they say depends on which of the two steps answered:
+   *
+   * <table>
+   *   <caption>What the four components hold</caption>
+   *   <tr><th></th><th>{@code name}</th><th>{@code configPath}</th><th>{@code rev}</th>
+   *       <th>{@code version}</th></tr>
+   *   <tr><td>local</td><td>the name asked for</td>
+   *       <td>{@code .config/qits/release-archetypes/<name>.yml}</td>
+   *       <td>the revision it was read at — the run's own commit</td><td>null</td></tr>
+   *   <tr><td>packaged</td><td>the name asked for</td>
+   *       <td>the same path, which is the file's path in qits-ci-service</td><td>null</td>
+   *       <td>this qits-ci's own version</td></tr>
+   * </table>
+   *
+   * <p>So <b>{@code rev} non-null means "shadowed locally"</b>, and a null {@code rev} beside a
+   * version means the platform's own recipe as that qits-ci release carried it. All four are null
+   * together on a composed run whose slot file names no archetype, which is a legitimate shape
    * ({@link CiReleaseSlots#namesArchetype()}) and never "unknown".
    *
-   * <p><b>{@code version} is the legible half of {@code rev} and neither replaces the other.</b>
-   * The sha is what was really read, and it is the only value that can be checked out again; the
-   * version is the name a person approved, which is what anybody reading a run row or a release
-   * request is actually holding. Recording only the sha would make "which wrapper release composed
-   * this" a question answerable solely by asking the git host to name a commit's tags, which it
-   * does not do.
+   * <p>The columns are older than this meaning: until qits-583 {@code rev} was a commit of the
+   * wrapper repository and {@code version} the wrapper release that commit was. The schema did not
+   * move — an applied migration is never edited — so a row from before then reads the old way.
    */
   public record ArchetypeRef(String name, String configPath, String rev, String version) {}
 
@@ -85,62 +143,165 @@ public class CiReleaseArchetypes {
     }
   }
 
+  /** The three answers. Collapsing {@link #UNREADABLE} into either of the others is the bug. */
+  public enum Status {
+    /** A recipe was resolved, locally or from the packaged set. */
+    FOUND,
+    /**
+     * No usable recipe of that name exists, and that is final: the name is neither in the
+     * repository nor packaged, or the repository's own copy does not parse, or the name is not one
+     * this qits-ci will build a path from.
+     */
+    UNKNOWN,
+    /** The repository could not be asked whether it carries one. Never an answer; always a retry. */
+    UNREADABLE
+  }
+
   /**
-   * The recipe {@code name} names, or empty when there is none to be had.
+   * What one resolution came to.
    *
-   * @param platformRepo the platform-pipelines repository, resolved against the catalogue, or null
-   *     when this deployment declares none or the catalogue does not hold it
-   * @param released the wrapper's newest released version, resolved once for this evaluation — its
-   *     sha is what the recipe is read at, never a branch name and never a moving ref
-   * @param name the archetype the repository's slot file asked for
+   * @param status which of the three
+   * @param archetype the recipe, on {@link Status#FOUND} and null otherwise
+   * @param detail the sentence behind a failure, for a caller that has to put one in front of a
+   *     person — null on {@link Status#FOUND}
    */
-  public Optional<Archetype> read(
-      CiRepoRef platformRepo, CiReleasedVersions.ReleasedVersion released, String name) {
-    String rev = released == null ? null : released.sha();
-    String version = released == null ? null : released.version();
-    if (platformRepo == null) {
-      LOG.warnf(
-          "A repository asks for release archetype '%s', but this deployment has no"
-              + " platform-pipelines repository in its catalogue — no release run",
-          name);
-      return Optional.empty();
+  public record Resolution(Status status, Archetype archetype, String detail) {
+
+    static Resolution found(Archetype archetype) {
+      return new Resolution(Status.FOUND, archetype, null);
     }
+
+    static Resolution unknown(String detail) {
+      return new Resolution(Status.UNKNOWN, null, detail);
+    }
+
+    static Resolution unreadable(String detail) {
+      return new Resolution(Status.UNREADABLE, null, detail);
+    }
+  }
+
+  /**
+   * Resolves the recipe {@code name} names for one repository at one revision.
+   *
+   * <p><b>The name guard comes first, before any read.</b> The name is a URL segment in the local
+   * read and a classpath segment in the packaged one, and {@link CiReleaseSlotParser} refuses
+   * anything but a plain slug already — so reaching the refusal here means a caller built a name
+   * some other way. Belt and braces, and the belt is real.
+   *
+   * @param repo the repository the run is for — the one whose {@code release.yml} named the
+   *     archetype, never any other
+   * @param rev the revision that {@code release.yml} was read at, so that the declaration and the
+   *     recipe it names come from one commit
+   * @param name the archetype the slot file asked for
+   */
+  public Resolution read(CiRepoRef repo, String rev, String name) {
     if (!CiReleaseSlotParser.isArchetypeName(name)) {
-      // Belt and braces: the parser refuses this shape already, so reaching here means a caller
-      // built a name some other way. The path is a URL segment against another repository.
       LOG.warnf("Release archetype '%s' is not a name this qits-ci will read — no release run", name);
-      return Optional.empty();
-    }
-    if (rev == null) {
-      // NO RELEASED VERSION, NO READ. The caller states this case in its own terms before it gets
-      // here (CiEventTriggerService.attemptCompose), and this is the belt: reading at a null rev
-      // would build a url with the literal "null" in it, and there is no other revision this could
-      // fall back to that a person has approved.
-      LOG.warnf(
-          "Release archetype '%s' cannot be read: %s has no released version to read it at — no"
-              + " release run",
-          name, platformRepo.display());
-      return Optional.empty();
+      return Resolution.unknown("'" + name + "' is not a release archetype name");
     }
     String path = CiReleaseSlotParser.archetypePath(name);
-    FileLookup found = configSource.readFile(platformRepo, rev, path);
-    if (found.status() != FileLookup.Status.FOUND) {
+    FileLookup local = configSource.readFile(repo, rev, path);
+    switch (local.status()) {
+      case FOUND -> {
+        try {
+          return Resolution.found(
+              new Archetype(name, path, rev, null, slotParser.parseArchetype(path, local.content())));
+        } catch (CiConfigException e) {
+          // FINAL, and NOT the packaged copy. The repository replaced this recipe and the
+          // replacement is broken; composing from the platform's instead would run a pipeline its
+          // author explicitly did not ask for and report it green.
+          LOG.warnf(
+              "Release archetype '%s' (%s in %s at %s) is not a usable recipe: %s — no release run,"
+                  + " and the packaged recipe of that name is deliberately not used in its place",
+              name, path, repo.display(), rev, e.getMessage());
+          return Resolution.unknown(
+              path + " at " + rev + " is not a usable release archetype: " + e.getMessage());
+        }
+      }
+      case UNREACHABLE -> {
+        LOG.warnf(
+            "Release archetype '%s' could not be looked for in %s at %s (%s) — whether that"
+                + " repository carries its own recipe is not known, so nothing is composed",
+            name, repo.display(), rev, path);
+        return Resolution.unreadable(path + " could not be read at " + rev);
+      }
+      default -> {
+        // ABSENT: the repository carries no recipe of its own, which is the ordinary case.
+      }
+    }
+    CiReleaseSlots packaged = packaged(name);
+    if (packaged == null) {
       LOG.warnf(
-          "Release archetype '%s' could not be read from %s at %s (%s) (%s: %s) — no release run",
-          name, platformRepo.display(), version, rev, path, found.status());
-      return Optional.empty();
+          "Release archetype '%s' is unknown: %s carries no %s at %s and this qits-ci packages no"
+              + " recipe of that name — no release run",
+          name, repo.display(), path, rev);
+      return Resolution.unknown(
+          "no release archetype '"
+              + name
+              + "' exists: the repository carries no "
+              + path
+              + " at "
+              + rev
+              + " and this qits-ci packages none of that name");
+    }
+    return Resolution.found(
+        new Archetype(name, path, null, applicationVersion.orElse(null), packaged));
+  }
+
+  /**
+   * The packaged recipe of one name, parsed, or null when this qits-ci packages none.
+   *
+   * <p>Parsed on first use and kept: the bytes are in the jar and cannot change under a running
+   * process. <b>Only a success is kept</b> — the names asked for are repository-controlled, so a
+   * memo of misses would be a map anybody can grow, and a miss costs one failed resource lookup.
+   *
+   * <p>A packaged recipe that does not parse is a defect of this build rather than of any
+   * repository, and it is reported at ERROR and answered as "none": {@code
+   * PackagedReleaseArchetypesTest} is what keeps that from shipping.
+   */
+  private CiReleaseSlots packaged(String name) {
+    CiReleaseSlots known = packagedByName.get(name);
+    if (known != null) {
+      return known;
+    }
+    String resource = PACKAGED_DIR + name + CiEventTriggerParser.CONFIG_SUFFIX;
+    String content = packagedContent(resource);
+    if (content == null) {
+      return null;
     }
     try {
-      return Optional.of(
-          new Archetype(
-              name, path, rev, version, slotParser.parseArchetype(path, found.content())));
+      CiReleaseSlots parsed =
+          slotParser.parseArchetype(CiReleaseSlotParser.archetypePath(name), content);
+      packagedByName.put(name, parsed);
+      return parsed;
     } catch (CiConfigException e) {
-      // Loud and per recipe: one broken archetype must not be readable as "this repository declares
-      // nothing", and it must not take the repositories on other archetypes down with it either.
-      LOG.warnf(
-          "Release archetype '%s' (%s in %s) is not a usable recipe: %s — no release run",
-          name, path, platformRepo.display(), e.getMessage());
-      return Optional.empty();
+      LOG.errorf(
+          "The release archetype '%s' packaged into this qits-ci (%s) is not a usable recipe: %s",
+          name, resource, e.getMessage());
+      return null;
     }
+  }
+
+  /**
+   * The text of one classpath resource, or null when there is none.
+   *
+   * <p>Package-private and non-final so a hand-wired test can stand in a packaged set of its own;
+   * production has exactly this one implementation. The context class loader is asked first
+   * because that is the one a Quarkus application's resources are on in dev and test mode, and this
+   * class's own loader second, which is the answer everywhere else.
+   */
+  String packagedContent(String resource) {
+    ClassLoader context = Thread.currentThread().getContextClassLoader();
+    try (InputStream in = open(context, resource)) {
+      return in == null ? null : new String(in.readAllBytes(), StandardCharsets.UTF_8);
+    } catch (IOException e) {
+      LOG.errorf(e, "The packaged release archetype %s could not be read", resource);
+      return null;
+    }
+  }
+
+  private static InputStream open(ClassLoader context, String resource) {
+    InputStream in = context == null ? null : context.getResourceAsStream(resource);
+    return in != null ? in : CiReleaseArchetypes.class.getClassLoader().getResourceAsStream(resource);
   }
 }

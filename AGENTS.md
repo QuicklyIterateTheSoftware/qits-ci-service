@@ -2028,8 +2028,8 @@ is about*.
 ## Release slots: the release cycle as configuration
 
 A **third** source of pipelines, and unlike the two above it is not a trigger file at all.
-`.config/qits/release.yml` declares *slots*; `CiReleaseComposer` compiles them plus a wrapper recipe
-into two ordinary trigger documents at evaluation time, and everything downstream — the parser, the
+`.config/qits/release.yml` declares *slots*; `CiReleaseComposer` compiles them plus an archetype
+recipe into two ordinary trigger documents at evaluation time, and everything downstream — the parser, the
 checkout resolution, the run row, the dedupe, restart-reparse — is the path a committed file already
 takes. `README.md` under "The fourth file" has the format and the rollout story; what follows is what
 biting it feels like.
@@ -2046,8 +2046,8 @@ while the fleet was converting, and what still keeps this feature out of every r
 phase.
 
 - **Four classes, and the split is the usual one.** `CiReleaseSlotParser` and `CiReleaseSlots` are
-  the document; `CiReleaseArchetypes` is the wrapper read, through the existing `CiConfigSource`
-  port; `CiReleaseComposer` is a **pure function** — three arguments in, two strings out, no clock,
+  the document; `CiReleaseArchetypes` resolves a recipe — the repository's own copy through the
+  existing `CiConfigSource` port, otherwise the one packaged into this jar; `CiReleaseComposer` is a **pure function** — three arguments in, two strings out, no clock,
   no config, no lookup and no logging. That purity is what makes the golden-file tests worth having:
   a change to the platform prelude is a change to 47 repositories' behaviour, and the only way it
   stays reviewable is if the diff is the composed text itself. `ci/src/test/resources/composed/` is
@@ -2063,21 +2063,46 @@ phase.
   release request that is waiting for exactly that QA's verdict — and settles the owed row, hanging
   it PENDING forever with nothing to re-drive it. So `UNREACHABLE` is now its own outcome all the way
   out: `ReleaseSlots.UNREADABLE` → `Evaluation.repositoriesUnreadable` → **the event is not settled**,
-  and the owed-event sweep evaluates it again. `ABSENT` and every failure of committed BYTES (unknown
+  and the owed-event sweep evaluates it again. The look for a repository's own archetype recipe is
+  the same read of the same repository and has the same three answers: `UNREACHABLE` is owed,
+  `ABSENT` means the packaged recipe answers. `ABSENT` and every failure of committed BYTES (unknown
   archetype, unparseable slot file, uncomposable pair) are no run and ARE settled — a person's
   declaration is final, and re-asking a git host cannot change it. `CiReleaseSlotTriggerTest` holds
   the contrast from both sides.
 - **The extra read is gated on the two release event names.** `ReleaseRequestChanged` and
   `SCMRelease` and nothing else, so a `BuildSuccessful` costs precisely what it cost before this
   feature existed. `CiReleaseSlotTriggerTest` asserts the *absence* of the read for an ordinary event.
-- **The archetype repository is resolved ONCE per evaluation, LISTED once, and handed down.**
-  `CiEventTriggerService` already resolves `qits.ci.platform-pipelines-repository` against the
-  catalogue for the platform pass; `CiReleaseArchetypes` takes the reference as an argument rather
-  than injecting the key a second time. A second injection point would be a second thing to arm in a
-  test and a second thing to keep in step.
-- **The pipeline that gates a revision is read FROM that revision, and the wrapper's half is
-  deliberately not.** A candidate's `release.yml` is read at the commit the arriving release event
-  is about — the request's fold (`payload.mergedSha`) for a `ReleaseRequestChanged`, the released
+- **An archetype is resolved in two steps and no other repository is read for one.** First
+  `.config/qits/release-archetypes/<name>.yml` in the repository the run is for, through
+  `CiConfigSource.readFile` at the revision its `release.yml` was read at; otherwise the classpath
+  resource `release-archetypes/<name>.yml`, which `ci/pom.xml` packages into this jar from this
+  repository's own `.config/qits/release-archetypes/`. `qits.ci.platform-pipelines-repository` is a
+  source of platform TRIGGER files and nothing else; `evaluatePlatform` makes its one listing itself.
+  Until qits-583 the recipe was read from that repository at its newest released tag, which made a
+  recipe fix ship only with a wrapper release — the last step of a ticket — and meant no CI run ever
+  executed a changed recipe before it shipped.
+  <br>**Shadowing is the design.** Any repository may carry its own copy of a packaged archetype or
+  one of its own invention. It grants nothing a branch could not already do: the platform prelude
+  and postlude are `CiReleaseComposer`'s, in Java, and a recipe contributes only slot steps,
+  `artifacts:` and `userflows:`, all of which a repository can already replace in `release.yml`.
+  <br>**Three answers** (`CiReleaseArchetypes.Status`). `FOUND`. `UNREADABLE` — the local read was
+  `UNREACHABLE`: `ComposeOutcome.ARCHETYPE_UNREADABLE`, the event stays owed, `release-phase`
+  answers 503, a retry falls back to its snapshot. `UNKNOWN` — the name is in neither place, or the
+  local copy does not parse: `ARCHETYPE_UNKNOWN`, no run and the event settled, `release-phase`
+  answers `declared: true`. **Neither local failure falls through to the packaged copy**: a broken
+  shadow silently becoming the platform recipe is a pipeline its author replaced running green, and
+  a blip must not decide which of two pipelines a commit gets.
+  <br>**This repository's own release request gates one recipe of eight.** qits-ci-service is a
+  `java-service`, so its QA run reads `java-service.yml` locally at its fold and executes it.
+  `PackagedReleaseArchetypesTest` is the cover for the other seven: each is on the classpath
+  byte-for-byte (not filtered), parses, declares a `release-request:` slot (qits-projects arms the
+  CI gate on the mere presence of `archetype:`), composes, and every script passes a shell `-n`.
+  <br>**The native image bundles them only because it is told to**:
+  `quarkus.native.resources.includes` in `service`'s `application.properties`. No JVM test can see
+  that key missing, and the symptom in the binary is every unshadowed `archetype:` answering "no
+  such archetype" — no run, settled, one WARN. Check it on the binary before leaving a release.
+- **The pipeline that gates a revision is read FROM that revision.** A candidate's `release.yml`
+  is read at the commit the arriving release event is about — the request's fold (`payload.mergedSha`) for a `ReleaseRequestChanged`, the released
   tag's commit (`payload.commitSha`) for an `SCMRelease` — which is the same commit the composed run
   checks out, resolved by `CiEventTriggerService.releaseRev` through the same payload paths
   `CiReleaseComposer` emits into the composed `checkout:`. It used to be read at `main`'s head, and
@@ -2086,12 +2111,10 @@ phase.
   `releasePhaseAt` has always read at the rev it was asked about — and the run composed from a `main`
   with no such file, so no run was recorded, the event settled and the request sat RELEASED forever
   with `main` unable to move; measured 2026-09-22 on qits-landing-app), and no change to
-  `release.yml` was ever exercised by the release that carried it. **The ARCHETYPE recipe is not
-  read from that revision either, and is read at the wrapper's newest RELEASED version**: that is a
-  different repository, it is no part of the release request, and keeping it out of the revision
-  under test is what keeps the platform prelude/postlude and the shared recipes non-tamperable by a
-  branch. **A payload with no usable sha composes NOTHING — there is no
-  fallback to `main`'s head any more.** It used to answer the head, on the argument that the
+  `release.yml` was ever exercised by the release that carried it. **An archetype that file names
+  is looked for at that same revision**, so a declaration and a local recipe are one commit's
+  bytes. **A payload with no usable sha composes NOTHING — there is no fallback to `main`'s head
+  any more.** It used to answer the head, on the argument that the
   composed `optional:` checkout would build the head anyway; that justified the defect with the
   defect, since a pipeline composed from `main` gates a commit nobody released. It is also
   unreachable by construction: qits-projects announces a release request from the fold path
@@ -2101,74 +2124,20 @@ phase.
   name and the field), no file is read, no run is recorded, and the event is **settled** rather
   than left owed: a payload cannot grow a field afterwards, so an owed row for it is a row
   nothing could ever clear, with the watermark stuck behind it. `CiReleaseSlotTriggerTest`
-  asserts both halves as absences — never the repository's file at `main`, never the recipe at
-  the fold — and the missing and the malformed sha as two more.
-  <br>**The recipe comes from a version somebody RELEASED, which is the last thing on this path
-  that came from a `main` head.** It was read at the literal string `main`, once per candidate;
-  then, briefly, at the sha the wrapper's own trigger listing resolved `main` to, once per
-  evaluation (which fixed a moving ref *inside* one evaluation — twenty repositories on
-  `java-service` were twenty fetches of a moving ref, and a push to the wrapper mid-evaluation could
-  compose two of them from two different recipes). It is read at the sha of the wrapper's **newest
-  released version** now: these recipes contribute most of the steps of every release pipeline on
-  the estate, and `main`'s head is content nobody gated. Owner ruling, stated repeatedly: nothing in
-  a release pipeline may come from "whatever is on main". A released wrapper version is a
-  `YYYY.MMDD.HHMMSS` tag a release request carried, CI gated and a person approved, and it cannot
-  move afterwards.
-  <br>**The cost is real and is the point: a new archetype is not usable until a wrapper RELEASE
-  carries it.** `.config/qits/release-archetypes/<name>.yml` landing on the wrapper's main changes
-  nothing for anybody; the wrapper's own release request, and somebody's approval of it, is what
-  makes the recipe live. A change to the release cycle is one wrapper commit **plus a wrapper
-  release**.
-  <br>**Resolved once per evaluation, exactly as the listing is.** `readWrapper` gets two reads of
-  the wrapper out of one value — the platform trigger listing at `main` (a trigger is discovered at
-  `main` like every other trigger on this platform) and `CiConfigSource.readTags`, whose answer
-  `CiReleasedVersions` picks the newest release-shaped tag out of by `VersionSort`. One repository,
-  two questions, two revisions. The listing is made **unconditionally**, as it always was; the tag
-  read is made by `ArchetypeReads.released()` on **first use** and then fixed, so an evaluation in
-  which nothing names an archetype pays nothing for it — the same gate the `release.yml` blob read
-  is behind, and the reason a `BuildSuccessful` still costs exactly what it cost before any of this
-  existed. Lazy is still once-per-evaluation: one pass runs on one thread, and `ArchetypeReads` is
-  the one value that travels (repository, listing, the resolved released version, and a
-  per-evaluation memo of what has been read — safe only because the sha is resolved).
-  <br>**Which tag is a release is qits-ci's own reading and it is NARROW.** `CiReleasedVersions`
-  admits `[0-9]{4}\.[0-9]{3,4}\.[0-9]{1,6}` and nothing else, so `latest`, `v2` and
-  `release/2026.922.161358` are not releases — a repository can push a tag of any name, and a
-  permissive reading would let an unreviewed name out-sort every real release and pin the estate's
-  recipes to it. The policy is pure and lives in `ci/control`; the port answers refs and judges
-  none of them.
-  <br>**No released version is no run, and BOTH ways of having none leave the event OWED.** The git
-  host could not be asked, or the wrapper has genuinely never released: either way a repository
-  naming an archetype gets `ARCHETYPE_UNREADABLE` — no release run, event left owed for the sweep —
-  exactly as it does when the recipe file itself cannot be read. The second is the decision worth
-  knowing, and it turns on the standing "can asking again change the answer" test: a wrapper with no
-  release is **not** a person's declaration about the candidate repository the way an absent
-  `release.yml` is. Nobody wrote "this estate has no approved recipes"; the next wrapper release
-  makes the same question answer differently with nothing in the candidate repository having moved,
-  and settling it would answer "no QA run" to a release request waiting for exactly that verdict,
-  with nothing to re-drive it. Reading at a branch name or at `main`'s head instead would
-  reintroduce the unapproved ref silently, for the compositions that matter most.
-  `CiReleaseSlotTriggerTest` asserts the absence of any read at `main` or at `main`'s head, which is
-  the only form that assertion can take: a silent fallback passes every other test in the suite, and
-  it seeds readable decoy recipes at both wrong revisions so a regression composes successfully.
-  <br>**The bootstrap case is reachable and does not deadlock, for one reason.** An estate whose
-  wrapper has never been released composes no release pipeline for any repository that names an
-  archetype. Only a repository that ASKS for one needs one — and the wrapper's own
-  `.config/qits/release.yml` names no `archetype:`, declaring its single QA slot itself — so the
-  wrapper's own release request composes, gates and is approved with no archetype read anywhere, and
-  that first wrapper release is what makes every other repository's release pipeline composable. On
-  this estate the question is moot (qits-qits carries 141 released tags), but a fresh one starts
-  there.
+  asserts the absences — never the repository's file at `main`, never a recipe from the
+  platform-pipelines repository, with readable decoys seeded at every revision the old reads used
+  so a regression composes successfully — and the missing and the malformed sha as two more.
   <br>**`ci_run` records what was used** — `archetype_name`, `archetype_config_path`,
   `archetype_rev` (`V20__run_archetype.sql`) and `archetype_version`
-  (`V22__run_archetype_version.sql`), nullable, no backfill. The last is the legible half and is not
-  derivable from the sha: a commit does not carry the names of the tags pointing at it and no git
-  host answers "which release was this", while a person reading a run row is holding
-  `2026.922.161358`. All four null is three different legitimate statements and never "unknown for
-  this run": a committed trigger file composed from nothing, a slot file naming no `archetype:`, or
-  a row older than the columns. **A retry
-  records its own re-composition rather than copying the source row's**, which is what makes the pair
-  of rows the answer to "did the recipe move" — the one arm that copies is a retry that fell back to
-  the stored document, since those bytes are what will really run.
+  (`V22__run_archetype_version.sql`), nullable, no backfill. A **local** recipe records the revision
+  it was read at in `archetype_rev` (the run's own `commit_sha`) and a null version; a **packaged**
+  one records a null rev and this qits-ci-service's own version (`quarkus.application.version`) —
+  so `archetype_rev` non-null means "shadowed locally", and two rows with differing
+  `archetype_version` were composed by two qits-ci releases. All four null is three different
+  legitimate statements and never "unknown for this run": a committed trigger file composed from
+  nothing, a slot file naming no `archetype:`, or a row older than the columns. **A retry records
+  its own re-composition rather than copying the source row's** — the one arm that copies is a
+  retry that fell back to the stored document, since those bytes are what will really run.
 - **A composed document supersedes nothing, and the rule that said otherwise is gone.** While the
   fleet was migrating, a present `release.yml` skipped a still-committed
   `ci-event-release-request.yml`/`ci-event-release.yml` with a WARN naming both paths, so the two
@@ -2176,8 +2145,8 @@ phase.
   supersession, both path constants and the fallback were deleted on 2026-09-18. Every
   `ci-event-*.yml` now evaluates beside the composed documents under the ordinary "two files, two
   declared pipelines, two runs" rule.
-- **`ci/` gained no HTTP and no new dependency.** The composer emits strings; the one read is the
-  port's. There is no migration, no bus change, no endpoint and nothing in `qits-ci-daemon`.
+- **`ci/` gained no HTTP and no new dependency.** The composer emits strings; the git-host reads
+  are the port's and the packaged recipes are a plain `getResourceAsStream`. There is no migration, no bus change, no endpoint and nothing in `qits-ci-daemon`.
 - **A RETRY of a composed run re-composes the platform's half, and that is the one place a run's
   stored snapshot is not replayed verbatim.** The document on such a row is half the repository's
   (its declared script) and half qits-ci's (the prelude and the postlude around it), and the platform
@@ -2190,9 +2159,12 @@ phase.
   `CiReleaseSlotParser.CONFIG_PATH`, and three things about it are load-bearing. The slot file is read
   at the run's **own commit**, never at its branch: the retry builds that commit, and for a publish
   run it is a released tag whose bytes cannot move — so the repository's share of the document is
-  identical by construction and only the platform's changes. Every way the re-composition can fail —
-  the ref is unreadable, `release.yml` is gone from it, the archetype cannot be read, compose throws
-  — **falls back to the stored snapshot** with a WARN naming the reason, because a retry that refused
+  identical by construction and only the platform's changes. A **local** archetype is part of that
+  share and is read again at the same commit; a **packaged** one is the retrying qits-ci's, which
+  is what lets a recipe fix heal an earlier failure by retry once the qits-ci carrying it is
+  deployed. Every way the re-composition can fail —
+  the ref is unreadable, `release.yml` is gone from it, the archetype it names cannot be looked for
+  or exists nowhere, compose throws — **falls back to the stored snapshot** with a WARN naming the reason, because a retry that refused
   is worse than a retry of the old document. And the reads happen **outside** `DbRetry.inNewTx`, like
   every other IO on this class's write paths. A run from a hand-written `ci-event-*.yml` has no
   platform half and is replayed byte for byte, as it always was; the predicted step durations are
@@ -2261,16 +2233,19 @@ phase.
   `false` derived from a read that did not happen publishes a release nothing gated; a `true` derived
   from one hangs a request behind a gate nobody can answer. So `UNKNOWN` is reserved for the question
   not having been asked at all — the repository is in no catalogue here, the slot file's read was
-  `UNREACHABLE`, or the archetype could not be read — and the caller retries. **A slot file that will
-  not parse, and a pair that will not compile, answer `declared: true`**: those are the repository's
+  `UNREACHABLE`, or the look for the repository's own copy of the archetype was — and the caller
+  retries. **A slot file that will not parse, an archetype that exists neither locally nor packaged
+  (or whose local copy is broken), and a pair that will not compile, answer `declared: true`**, the
+  second with a `detail` naming the archetype: those are the repository's
   own committed bytes, the fix is a commit, and waiting is recoverable where publishing past an
   unchecked pipeline is not. `detail` says which case it was, and it is contract rather than log.
   <br>`attemptCompose` is the composition with the outcome named — extracted rather than copied,
-  because the two evaluation callers want a null and a WARN while this one needs "the file is broken"
-  and "the wrapper is unreadable" to be opposite answers. The archetype is still read at the
-  wrapper's head **as it is at ask time** — this door resolves that head with a listing of its own —
-  so the answer is about the pipeline as it composes now; that is the wanted direction, since the run
-  that would satisfy the gate would be composed now too. The endpoint is in
+  because the evaluation and the retry want a null and a WARN while this one needs "the file is
+  broken" and "the git host could not be asked" to be opposite answers. A packaged archetype is the
+  asked qits-ci's own, so for a repository on one the answer is about the pipeline as it composes
+  now; that is the wanted direction, since the run that would satisfy the gate would be composed
+  now too. An unknown archetype was `UNKNOWN` — a 503 retried forever — until qits-583, while "not
+  there" could still mean "not released yet". The endpoint is in
   `docs/openapi.yml` for `GET /ci/api/daemon`'s reason — a machine consumer whose contract is written
   down here and nowhere else.
 - **`POST /ci/api/repositories/{repoId}/release-composition?rev=` was the door beside it and is
@@ -2285,7 +2260,7 @@ phase.
   `@userflows/<site>` in a QA recipe — a search inside a shell script, which stops working the moment
   the script is composed — so it is a declaration for the reader on the other side of the release.
   How a bundle is built and uploaded is the archetype's business, and inventing a step here would be
-  a guess the wrapper recipes have to undo.
+  a guess the recipes have to undo.
 
 ## Adding a dependency on another context
 
@@ -2591,7 +2566,7 @@ the unbounded columns came out `text` and not a large object.
 default, no backfill, part of no constraint and carrying no index. It holds one JSON object per run
 — each distinct image reference its steps named, mapped to the immutable digest reference it was
 pinned to at accept — and it is `V20`'s twin rather than another column beside it: V20 records which
-wrapper commit wrote the prelude a run executed, this records which image that prelude executed
+recipe composed the pipeline a run executed, this records which image that pipeline executed
 inside, and a run row then says what it was built from on both axes. `text` and read whole is
 `downstream_repos`' decision for its reason; nothing queries into the value. **Null means three
 things and none of them is a value that could be filled in**: a pipeline whose every step names an
@@ -2609,7 +2584,11 @@ released wrapper VERSION that commit is — the name a release request carried a
 which no git host will answer back from a sha. It landed with the change that moved the archetype
 read off the wrapper's `main` head and onto the wrapper's newest released version; null means what
 V20's three nulls mean, plus every row composed while the recipe still came from `main`, and there
-is nothing those rows could be filled in with. 64 characters, `archetype_rev`'s width, so a value
+is nothing those rows could be filled in with. **The two columns changed meaning with qits-583 and
+neither migration was edited** (their headers still name the wrapper; a checksum covers prose):
+`archetype_rev` is now non-null only for a recipe the repository itself carries, read at the run's
+own commit, and `archetype_version` is non-null only for a packaged recipe and is this
+qits-ci-service's own version. `CiRun`'s javadoc is where that is stated. 64 characters, `archetype_rev`'s width, so a value
 one of the pair could hold and the other could not can never exist.
 
 `V23__runners.sql` is the first **table** since V13 and the runners epic's (qits-440) whole schema

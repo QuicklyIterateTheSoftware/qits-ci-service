@@ -11,9 +11,9 @@ import java.util.Map;
  * reference this run's steps named to the immutable reference it was pinned to, written once at
  * accept and read back with the row.
  *
- * <p><b>It is {@code archetype_rev}'s shape for the other half of a run's environment.</b> That
- * column records which wrapper commit produced the platform half of the pipeline; this one records
- * which bytes the tools that ran it really were. Between them a finished run says what it was
+ * <p><b>It is the archetype columns' shape for the other half of a run's environment.</b> Those
+ * record which recipe composed the pipeline — the repository's own at a revision, or the one a
+ * qits-ci version packaged; this one records which bytes the tools that ran it really were. Between them a finished run says what it was
  * built from, without anybody having to ask a registry what {@code :latest} used to be.
  *
  * <p><b>A map rather than a list, because the key is what makes it readable.</b> One entry per
