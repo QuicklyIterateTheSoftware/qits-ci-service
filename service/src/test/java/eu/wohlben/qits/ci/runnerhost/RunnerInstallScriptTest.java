@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import eu.wohlben.qits.ci.entity.CiRunner;
+import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import eu.wohlben.qits.ci.HermeticEnvironment;
 import java.io.File;
 import java.io.IOException;
@@ -50,6 +52,45 @@ class RunnerInstallScriptTest {
   /** The runner repository, where the wrapper checks it out beside this one. */
   private static final Path RUNNER_REPO =
       Path.of("").toAbsolutePath().resolve("../../qits-ci-runner-daemon").normalize();
+
+  @Test
+  void theLineOfARunnerDialsTheCiBaseOfItsPlane() {
+    RunnerInstallScript script = new RunnerInstallScript();
+    script.addresses = RunnerAddressesFixture.withDomain("example.org");
+    script.pins = new CiRunnerPins();
+    CiRunner runner = new CiRunner();
+    runner.id = LINE.runnerId();
+    runner.slots = 2;
+
+    runner.plane = CiRunnerPlane.EDGE;
+    assertEquals(RunnerInstallScript.line(LINE), script.line(runner, LINE.registrationToken()));
+
+    // On qits-net, beside qits-ci: the alias, though a domain is known.
+    runner.plane = CiRunnerPlane.INTERNAL;
+    assertEquals(
+        RunnerInstallScript.line(
+            new RunnerInstallScript.Line(
+                "http://dev-qits-ci:8080", LINE.runnerId(), LINE.registrationToken(), 2)),
+        script.line(runner, LINE.registrationToken()));
+  }
+
+  @Test
+  void aPlanesOwnAddressesAreWhatMustRender() {
+    RunnerInstallScript script = new RunnerInstallScript();
+    script.addresses = RunnerAddressesFixture.withDomain("example.org");
+    script.pins = new CiRunnerPins();
+    script.requireRenderable(CiRunnerPlane.EDGE);
+    script.requireRenderable(CiRunnerPlane.INTERNAL);
+
+    // An internal url nothing could quote stops an INTERNAL runner alone, and names its key.
+    script.addresses.internalUrl = "http://dev qits-ci:8080";
+    script.requireRenderable(CiRunnerPlane.EDGE);
+    script.requireRenderable();
+    IllegalStateException refused =
+        assertThrows(
+            IllegalStateException.class, () -> script.requireRenderable(CiRunnerPlane.INTERNAL));
+    assertTrue(refused.getMessage().contains("qits.ci.runner.internal-url"), refused.getMessage());
+  }
 
   @Test
   void theGenericScriptCarriesNoSecretNoRunnerAndNoPlaceholder() throws IOException {

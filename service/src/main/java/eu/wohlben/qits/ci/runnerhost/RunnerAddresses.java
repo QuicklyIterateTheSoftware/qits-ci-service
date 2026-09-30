@@ -1,5 +1,6 @@
 package eu.wohlben.qits.ci.runnerhost;
 
+import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Locale;
 import java.util.Optional;
@@ -38,6 +39,15 @@ import org.jboss.logging.Logger;
  * {@code /token}, {@code qits.ci.runner.artifacts-internal-url}, and for the registry the runner
  * image is pulled from, {@code qits.artifacts.registry-host}. Only a runner on the platform's own
  * host can use those, and the first composition that falls back says so in a WARN.
+ *
+ * <p><b>An {@code INTERNAL} runner is the exception, and is told the qits-net addresses whatever
+ * the domain.</b> Its row says it is on qits-net, beside this service, and there the public names
+ * are the wrong ones: a platform being bootstrapped has a domain and no edge yet, so a public
+ * address names a door nothing answers. The methods taking a {@link CiRunnerPlane} are what a
+ * particular runner is told — {@code INTERNAL} the internal url, the idp's own token endpoint and
+ * the platform host's registry spelling, with no override read and no WARN, since nothing fell
+ * back; {@code EDGE} the plane-less composition above, unchanged. The plane-less methods remain
+ * for what is told to no runner in particular: the generic install script.
  */
 @ApplicationScoped
 public class RunnerAddresses {
@@ -125,9 +135,22 @@ public class RunnerAddresses {
         set(publicUrl).or(() -> publicOrigin(CI_HOST)).orElseGet(() -> internal(internalUrl)));
   }
 
+  /** {@link #ciBase()} for a runner on {@code plane}: an INTERNAL one dials qits-ci on qits-net. */
+  public String ciBase(CiRunnerPlane plane) {
+    return plane == CiRunnerPlane.INTERNAL ? stripSlashes(onNet(internalUrl)) : ciBase();
+  }
+
   /** {@code ws://} or {@code wss://} after {@link #ciBase()}'s own scheme, plus {@link #SOCKET_PATH}. */
   public String socketUrl() {
-    String base = ciBase();
+    return socketUrl(ciBase());
+  }
+
+  /** {@link #socketUrl()} for a runner on {@code plane}, after {@link #ciBase(CiRunnerPlane)}. */
+  public String socketUrl(CiRunnerPlane plane) {
+    return socketUrl(ciBase(plane));
+  }
+
+  private static String socketUrl(String base) {
     String socketBase;
     if (base.startsWith("https://")) {
       socketBase = "wss://" + base.substring("https://".length());
@@ -145,6 +168,14 @@ public class RunnerAddresses {
         .map(RunnerAddresses::stripSlashes)
         .or(() -> publicOrigin(IDP_HOST).map(origin -> origin + "/idp/token"))
         .orElseGet(() -> stripSlashes(internal(idpUrl)) + "/token");
+  }
+
+  /**
+   * {@link #tokenUrl()} for a runner on {@code plane}: an INTERNAL one mints where this service
+   * itself does, {@code quarkus.oidc-client.qits.auth-server-url} plus {@code /token}.
+   */
+  public String tokenUrl(CiRunnerPlane plane) {
+    return plane == CiRunnerPlane.INTERNAL ? stripSlashes(onNet(idpUrl)) + "/token" : tokenUrl();
   }
 
   /**
@@ -176,6 +207,16 @@ public class RunnerAddresses {
   }
 
   /**
+   * {@link #registryHost()} for a runner on {@code plane}: an INTERNAL one's docker is the platform
+   * host's own, so it pulls under {@code qits.artifacts.registry-host} — the name that daemon
+   * already pulls every step image under — and never under a public name it may hold no
+   * certificate for.
+   */
+  public String registryHost(CiRunnerPlane plane) {
+    return plane == CiRunnerPlane.INTERNAL ? onNet(registryInternalHost) : registryHost();
+  }
+
+  /**
    * The runner image of {@code version}: {@code <registryHost>/qits/qits-ci-runner:<version>}. One
    * composition for the install script's {@code docker pull} and the {@code Upgrade} frame's {@code
    * image}, so the container a person started and the one it replaces itself with come from one
@@ -183,6 +224,11 @@ public class RunnerAddresses {
    */
   public String runnerImage(String version) {
     return registryHost() + "/" + RUNNER_IMAGE_REPOSITORY + ":" + version;
+  }
+
+  /** {@link #runnerImage(String)} on {@link #registryHost(CiRunnerPlane)}: an {@code Upgrade}'s image. */
+  public String runnerImage(CiRunnerPlane plane, String version) {
+    return registryHost(plane) + "/" + RUNNER_IMAGE_REPOSITORY + ":" + version;
   }
 
   /**
@@ -239,6 +285,11 @@ public class RunnerAddresses {
           set(domain).orElse(""),
           url);
     }
+    return url == null ? "" : url.trim();
+  }
+
+  /** An internal address told to a runner that is on qits-net: the right one, so no WARN. */
+  private static String onNet(String url) {
     return url == null ? "" : url.trim();
   }
 

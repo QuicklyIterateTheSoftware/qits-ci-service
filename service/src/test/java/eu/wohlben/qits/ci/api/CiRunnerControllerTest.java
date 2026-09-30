@@ -16,6 +16,7 @@ import eu.wohlben.qits.ci.dto.CiRunnerDto;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiRunner;
+import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.StubIdp;
@@ -627,6 +628,10 @@ class CiRunnerControllerTest {
 
   /** A runner the operator declared, with its row's subject set to the one the cases present. */
   private UUID declaredRunner(String name) {
+    return declaredRunner(name, CiRunnerPlane.INTERNAL);
+  }
+
+  private UUID declaredRunner(String name, CiRunnerPlane plane) {
     UUID id = UUID.randomUUID();
     QuarkusTransaction.requiringNew()
         .run(
@@ -635,7 +640,7 @@ class CiRunnerControllerTest {
               runner.id = id;
               runner.name = name;
               runner.slots = 1;
-              runner.plane = eu.wohlben.qits.ci.entity.CiRunnerPlane.INTERNAL;
+              runner.plane = plane;
               runner.registrationTokenId = "token-of-" + name;
               runner.registrationTokenSubject = "unset";
               runner.createdAt = Instant.now();
@@ -700,7 +705,7 @@ class CiRunnerControllerTest {
     // The live estate's domain: a runner outside the swarm is told the edge's names, never an alias.
     QuarkusMock.installMockForType(
         RunnerAddressesFixture.withDomain("wohlben.eu"), RunnerAddresses.class);
-    UUID id = declaredRunner("remote");
+    UUID id = declaredRunner("remote", CiRunnerPlane.EDGE);
 
     JsonPath answer =
         register(id, "{\"capabilities\":{\"docker\":true}}").statusCode(200).extract().jsonPath();
@@ -747,7 +752,7 @@ class CiRunnerControllerTest {
     assertEquals("EDGE", created.getString("plane"));
     assertEquals(
         "EDGE", row(UUID.fromString(created.getString("id"))).plane.name(), "and the row says so");
-    // The install line does not change with the plane: the runner itself always uses the edge.
+    // An EDGE runner is outside the swarm, so its line dials the edge.
     assertTrue(
         created.getString("installScript").contains("QITS_CI_RUNNER_URL='https://ci.qits.example.org'"));
   }
@@ -770,6 +775,46 @@ class CiRunnerControllerTest {
             .jsonPath();
 
     assertEquals("INTERNAL", created.getString("plane"));
+    // It is on qits-net, so its line dials qits-ci's alias there and never the edge — at the create
+    // and at a rotation alike.
+    String id = created.getString("id");
+    assertEquals(
+        "curl -fsSL -H 'Authorization: Bearer qits_tok_stub-1'"
+            + " http://dev-qits-ci:8080/ci/api/runners/install.sh"
+            + " | sudo env QITS_CI_RUNNER_URL='http://dev-qits-ci:8080' QITS_CI_RUNNER_ID='"
+            + id
+            + "' QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_stub-1' QITS_CI_RUNNER_SLOTS='1' sh",
+        created.getString("installScript"));
+    String rotated =
+        given()
+            .when()
+            .post(RUNNERS + "/" + id + "/registration-token")
+            .then()
+            .statusCode(200)
+            .extract()
+            .jsonPath()
+            .getString("installScript");
+    assertTrue(rotated.contains("QITS_CI_RUNNER_URL='http://dev-qits-ci:8080' "), rotated);
+    assertFalse(rotated.contains("example.org"), rotated);
+  }
+
+  @Test
+  @TestSecurity(user = SUBJECT, roles = {REGISTRATION})
+  @OidcSecurity(
+      claims = {@Claim(key = "aud", value = OWN_AUDIENCE), @Claim(key = "sub", value = SUBJECT)})
+  void theRegisterAnswerOfAnInternalRunnerNamesQitsNetThoughADomainIsKnown() {
+    // A platform being bootstrapped has its domain and no edge yet: the runner on qits-net is told
+    // where qits-ci and qits-idp answer there.
+    QuarkusMock.installMockForType(
+        RunnerAddressesFixture.withDomain("wohlben.eu"), RunnerAddresses.class);
+    UUID id = declaredRunner("localhost");
+
+    JsonPath answer =
+        register(id, "{\"capabilities\":{\"docker\":true}}").statusCode(200).extract().jsonPath();
+
+    assertEquals("http://dev-qits-platform-idp:8080/idp/token", answer.getString("tokenUrl"));
+    assertEquals("ws://dev-qits-ci:8080/ci/runners/socket", answer.getString("socketUrl"));
+    assertEquals("qits-platform", answer.getString("audience"));
   }
 
   @Test
