@@ -3,7 +3,6 @@ package eu.wohlben.qits.ci.runnerhost;
 import eu.wohlben.qits.ci.control.CiIdentifiers;
 import eu.wohlben.qits.ci.control.CiRunnerStepRunner;
 import eu.wohlben.qits.ci.control.CiRunners;
-import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import eu.wohlben.qits.ci.daemonhost.CiDaemonRegistry;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
@@ -29,8 +28,9 @@ import org.jboss.logging.Logger;
  * the run is asked over its socket to start each step's container ({@code Launch} → its host's
  * {@code docker run}) and to remove it again ({@code Reap} → {@code docker rm}).
  *
- * <p><b>The sequence per step.</b> The step's identifiers are validated, the launch is registered
- * in the {@link CiDaemonRegistry} with a per-container secret, the spec is composed by {@link
+ * <p><b>The sequence per step.</b> The step's identifiers are validated, the run's {@code ci-run}
+ * token is commissioned (at its first step), the launch is registered in the {@link
+ * CiDaemonRegistry} bound to that token's subject, the spec is composed by {@link
  * StepWorkloadSpecs} from {@link StepContainerSettings}, and the container's own {@code
  * qits-ci-daemon} dials the {@code /ci/daemon} socket and receives its script as the reply to its
  * {@code Initialized}. So there are four deadlines — the runner's answer, register, initialize, the
@@ -74,6 +74,11 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
 
   /** How long a step's teardown waits for the runner's {@code Reaped} before logging and moving on. */
   static final Duration REAP_TIMEOUT = Duration.ofSeconds(30);
+
+  /** What a step is recorded with on a qits-ci that commissions nothing — see {@link #run}. */
+  static final String NOT_COMMISSIONING =
+      "this qits-ci commissions no credentials (quarkus.oidc-client.qits.client-enabled is off), so"
+          + " a step has no ci-run token to reach the platform with";
 
   private volatile Duration reapTimeout = REAP_TIMEOUT;
 
@@ -127,13 +132,6 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
 
   @Inject CiRunners runnerRows;
 
-  /**
-   * The plane each runner run was started on, read off the runner's row at the run's first step and
-   * kept until the run closes — so a {@code PATCH} of the plane reaches the runner's next run, never
-   * the middle of one whose first step was told the other plane's addresses and credential.
-   */
-  private final ConcurrentHashMap<String, CiRunnerPlane> planes = new ConcurrentHashMap<>();
-
   /** The step each runner run has in flight, for a cancellation arriving on another thread. */
   private final ConcurrentHashMap<String, InFlight> inFlight = new ConcurrentHashMap<>();
 
@@ -147,7 +145,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
 
   @Override
   public StepResult run(StepSpec spec, StepListener listener) {
-    // Before a secret is minted or a relay opened: a value that would reach the container's
+    // Before a launch is recorded or a relay opened: a value that would reach the container's
     // environment is validated here, where a refusal has nothing to tear down.
     CiIdentifiers.requireRepo(spec.repo());
     CiIdentifiers.requireBranch(spec.branch());
@@ -158,43 +156,51 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     if (session == null) {
       session = runners.holding(spec.runId()); // gone for good — kept only to name it
     }
-    // The step's plane and the run's credential on it, BEFORE a secret is minted: which kind of
-    // credential the run holds decides what the launch record is bound to (a ci-run token's subject,
-    // or nothing), and a refusal here has nothing to tear down. A session already gone skips both,
-    // and execute reports it lost exactly as before.
-    StepAddressPlane plane = null;
-    RunCommissions.Credential credential = null;
-    if (session != null && session.isOpen()) {
-      try {
-        plane = planeFor(spec.runId(), session);
-      } catch (IllegalStateException unconfigured) {
-        // An EDGE runner on a qits-ci that has since lost its public domain: there is no address to
-        // tell the step, and an internal alias would name nothing the runner's host can resolve.
-        return failed(StepOutcome.LAUNCH_FAILED, unconfigured.getMessage());
-      }
-      try {
-        credential =
-            commissions == null ? null : commissions.forRun(spec.runId(), spec.env(), plane.plane());
-      } catch (IdpCommissioner.CommissionFailedException notCommissioned) {
-        // An idp blip fails the step, never a launch without the credential.
-        return failed(StepOutcome.LAUNCH_FAILED, notCommissioned.getMessage());
-      }
+    // The step's addresses and the run's token, BEFORE a launch is recorded: the launch is bound
+    // to the token's subject, and a refusal here has nothing to tear down. A session already gone
+    // skips both: the step is reported lost, and whichever connection holds the run by then is
+    // still asked to remove what it may carry of it.
+    if (session == null || !session.isOpen()) {
+      relay.begin(spec.runId(), spec.stepIndex());
+      String name = StepContainerSettings.containerName(spec.runId(), spec.stepIndex());
+      Reaped reaped =
+          reapOnRunner(runners.awaitHolding(spec.runId()), spec.runId(), spec.stepIndex(), name);
+      return withContainerLog(lost(session, ""), reaped, session, name);
+    }
+    StepAddressPlane plane;
+    try {
+      plane = planeFor(session);
+    } catch (IllegalStateException unconfigured) {
+      // This qits-ci knows no public domain: there is no address to tell the step.
+      return failed(StepOutcome.LAUNCH_FAILED, unconfigured.getMessage());
+    }
+    IdpCommissioner.CommissionedToken token;
+    try {
+      token = commissions.forRun(spec.runId(), spec.env());
+    } catch (IdpCommissioner.CommissionFailedException notCommissioned) {
+      // An idp blip fails the step, never a launch without the credential.
+      return failed(StepOutcome.LAUNCH_FAILED, notCommissioned.getMessage());
+    }
+    if (token == null) {
+      // The token is the step's only credential: without one it can download no daemon, clone
+      // nothing and is admitted by no socket, so it would sit until the register deadline and be
+      // recorded NEVER_STARTED with nothing naming the cause.
+      return failed(StepOutcome.LAUNCH_FAILED, NOT_COMMISSIONING);
     }
     relay.begin(spec.runId(), spec.stepIndex());
-    // An EDGE step's launch is bound to its run's token subject: its daemon dials through the edge
+    // The launch is bound to its run's token subject: the step's daemon dials through the edge
     // with that token, and CiDaemonSocket admits it only as that subject.
-    CiDaemonRegistry.Credentials credentials =
+    String daemonId =
         daemons.registerLaunch(
             spec.runId(),
             spec.stepIndex(),
-            credential != null && credential.isToken() ? credential.token().subject() : null,
+            token.subject(),
             (stream, seq, text) -> {
               relay.append(spec.runId(), text);
               listener.onChunk(text);
             });
     String containerName = StepContainerSettings.containerName(spec.runId(), spec.stepIndex());
-    inFlight.put(
-        spec.runId(), new InFlight(credentials.daemonId(), containerName, spec.stepIndex()));
+    inFlight.put(spec.runId(), new InFlight(daemonId, containerName, spec.stepIndex()));
 
     // The run being lost ends this step's daemon awaits then rather than at their deadlines: reaping
     // the launch record completes every one of them as lost. Handed to another thread, because the
@@ -205,15 +211,15 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
             spec.runId(),
             () ->
                 java.util.concurrent.CompletableFuture.runAsync(
-                    () -> daemons.reap(credentials.daemonId())));
+                    () -> daemons.reap(daemonId)));
     StepResult result;
     Reaped reaped;
     try {
-      result = execute(spec, listener, session, credentials, containerName, plane, credential);
+      result = execute(spec, listener, session, daemonId, containerName, plane, token);
     } finally {
       closeQuietly(lossWatch);
       inFlight.remove(spec.runId());
-      daemons.reap(credentials.daemonId());
+      daemons.reap(daemonId);
       // Whichever connection holds the run now: one that came back for it after a blip, or none.
       reaped =
           reapOnRunner(
@@ -226,14 +232,10 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
       StepSpec spec,
       StepListener listener,
       CiRunnerRegistry.Session session,
-      CiDaemonRegistry.Credentials credentials,
+      String daemonId,
       String containerName,
       StepAddressPlane plane,
-      RunCommissions.Credential credential) {
-    String daemonId = credentials.daemonId();
-    if (session == null || !session.isOpen() || plane == null) {
-      return lost(session, "");
-    }
+      IdpCommissioner.CommissionedToken token) {
     StepContainerSettings.LaunchSpec launchSpec =
         new StepContainerSettings.LaunchSpec(
             spec.runId(),
@@ -243,7 +245,6 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
             spec.sha(),
             spec.image(),
             daemonId,
-            credentials.secret(),
             spec.daemonBinaryUrl(),
             spec.timeoutSeconds(),
             spec.docker(),
@@ -252,7 +253,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
             spec.env());
     WorkloadSpec workload =
         StepWorkloadSpecs.compose(
-            launcher.workloadSettings(), plane, launchSpec, credential, stepMemoryLimitOf(session));
+            launcher.workloadSettings(), plane, launchSpec, token, stepMemoryLimitOf(session));
 
     Duration launchTimeout = Duration.ofSeconds(launchTimeoutSeconds);
     CiRunnerRegistry.LaunchAnswer answer =
@@ -386,43 +387,33 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
   public void runClosed(String runId) {
     relay.drop(runId);
     inFlight.remove(runId);
-    planes.remove(runId);
-    if (commissions != null) {
-      commissions.release(runId);
-    }
+    commissions.release(runId);
     runners.release(runId);
   }
 
   // --- internals --------------------------------------------------------------------------------
 
   /**
-   * This run's addresses: the launcher's own internal plane for an {@code INTERNAL} runner, and the
-   * same addresses moved onto the public edge names for an {@code EDGE} one.
+   * A step's addresses: the public name of every service it reaches, from this qits-ci's domain.
    *
-   * @throws IllegalStateException for an EDGE runner when this qits-ci knows no public domain
+   * @throws IllegalStateException when this qits-ci knows no public domain
    */
-  StepAddressPlane planeFor(String runId, CiRunnerRegistry.Session session) {
-    CiRunnerPlane kind = planes.computeIfAbsent(runId, id -> planeOf(session));
-    StepAddressPlane internal = launcher.internalPlane();
-    if (kind != CiRunnerPlane.EDGE) {
-      return internal;
-    }
+  StepAddressPlane planeFor(CiRunnerRegistry.Session session) {
     StepAddressPlane.EdgeOrigins origins =
         addresses
             .edgeOrigins()
             .orElseThrow(
                 () ->
                     new IllegalStateException(
-                        "EDGE_PLANE_UNCONFIGURED: runner "
+                        "EDGE_PLANE_UNCONFIGURED: this qits-ci knows no public domain"
+                            + " (QITS_DOMAIN), so a step on runner "
                             + session.runnerName()
-                            + " is on the EDGE plane and this qits-ci knows no public domain"
-                            + " (QITS_DOMAIN), so its step has no address to be told"));
-    return StepAddressPlane.edge(origins, internal);
+                            + " has no address to be told"));
+    return launcher.plane(origins);
   }
 
   /**
-   * The runner row's step memory limit as it is NOW — read per step, unlike the plane, which is
-   * fixed per run: an operator raising a runner's cap for a build that keeps getting OOM-killed
+   * The runner row's step memory limit as it is NOW — read per step: an operator raising a runner's cap for a build that keeps getting OOM-killed
    * wants the very next step to have it, without a reconnect and without waiting for a new run.
    * Null is the platform default ({@code qits.ci.memory-limit}, already in the composed spec). A row
    * that cannot be read falls back to the one the session was admitted as, and a row gone with it to
@@ -434,17 +425,6 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     } catch (RuntimeException gone) {
       return session.runner() == null ? null : session.runner().stepMemoryLimit;
     }
-  }
-
-  /** The runner row's plane as it is now; the row the session was admitted as if it is gone. */
-  private CiRunnerPlane planeOf(CiRunnerRegistry.Session session) {
-    CiRunnerPlane plane;
-    try {
-      plane = runnerRows.get(session.runnerId()).plane;
-    } catch (RuntimeException gone) {
-      plane = session.runner() == null ? null : session.runner().plane;
-    }
-    return plane == null ? CiRunnerPlane.INTERNAL : plane;
   }
 
   /** A failed checkout whose commit is gone is its own outcome; every other refusal is INIT_FAILED. */

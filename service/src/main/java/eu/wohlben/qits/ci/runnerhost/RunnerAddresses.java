@@ -3,9 +3,7 @@ package eu.wohlben.qits.ci.runnerhost;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Locale;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicBoolean;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.jboss.logging.Logger;
 
 /**
  * Every address a runner is told: where it reaches qits-ci (and so its socket), where it asks
@@ -29,20 +27,36 @@ import org.jboss.logging.Logger;
  * https://idp.qits.wohlben.eu/idp/token} and {@code https://registry.qits.wohlben.eu} — measured live,
  * while {@code ci.dev.qits.wohlben.eu} answers 404.
  *
- * <p><b>Each address has an override, and an internal fallback.</b> {@code
+ * <p><b>Each address has an override, and nothing to fall back to.</b> {@code
  * qits.ci.runner.public-url}, {@code qits.ci.runner.token-url} and {@code
  * qits.ci.runner.artifacts-url} replace a derivation outright when set. With no public domain — none
  * stated, or a single label such as {@code localhost}, the test {@code PlatformDomain} uses to tell a
- * clone from an installation — the addresses fall back to the qits-net ones: {@code
- * qits.ci.runner.internal-url}, the idp {@code quarkus.oidc-client.qits.auth-server-url} names plus
- * {@code /token}, {@code qits.ci.runner.artifacts-internal-url}, and for the registry the runner
- * image is pulled from, {@code qits.artifacts.registry-host}. Only a runner on the platform's own
- * host can use those, and the first composition that falls back says so in a WARN.
+ * clone from an installation — and no override, an address cannot be composed and asking for it
+ * throws {@link UnconfiguredException}, which names the keys to set. The qits-net aliases this class
+ * used to answer in that case ({@code qits.ci.runner.internal-url}, {@code
+ * qits.ci.runner.artifacts-internal-url}, the idp's wire alias, {@code
+ * qits.artifacts.registry-host}) were deleted with the internal plane (qits-515): a runner is
+ * outside the swarm and can resolve none of them.
  */
 @ApplicationScoped
 public class RunnerAddresses {
 
-  private static final Logger LOG = Logger.getLogger(RunnerAddresses.class);
+  /**
+   * An address a runner or a step has to be told cannot be composed: this qits-ci knows no public
+   * domain and the address has no override. An {@link IllegalStateException}, which is what the
+   * install script's own refusal is, so the doors that map one to a 503 map this one too.
+   */
+  public static final class UnconfiguredException extends IllegalStateException {
+    UnconfiguredException(String what, String domain, String overrideKey) {
+      super(
+          "qits-ci knows no public domain (QITS_DOMAIN is '"
+              + domain
+              + "'), so it has no "
+              + what
+              + " to hand out; set QITS_DOMAIN"
+              + (overrideKey == null ? "" : ", or " + overrideKey));
+    }
+  }
 
   /** The one audience every platform token is requested with. */
   public static final String AUDIENCE = "qits-platform";
@@ -89,40 +103,28 @@ public class RunnerAddresses {
   @ConfigProperty(name = "qits.ci.domain")
   Optional<String> domain;
 
-  @ConfigProperty(name = "qits.ci.runner.internal-url")
-  String internalUrl;
-
   /** Blank is unset: SmallRye reads an empty property as an absent Optional. */
   @ConfigProperty(name = "qits.ci.runner.public-url")
   Optional<String> publicUrl;
 
-  @ConfigProperty(name = "quarkus.oidc-client.qits.auth-server-url")
-  String idpUrl;
-
   /** Blank is unset, as {@link #publicUrl} is. */
   @ConfigProperty(name = "qits.ci.runner.token-url")
   Optional<String> tokenUrlOverride;
-
-  @ConfigProperty(name = "qits.ci.runner.artifacts-internal-url")
-  String artifactsInternalUrl;
 
   /** Blank is unset, as {@link #publicUrl} is. */
   @ConfigProperty(name = "qits.ci.runner.artifacts-url")
   Optional<String> artifactsUrl;
 
   /**
-   * The registry as the platform host's own docker names it — {@code StepContainerSettings}' key, read
-   * here only as the no-domain fallback of {@link #registryHost()}.
+   * The base a runner reaches qits-ci at: scheme, host and port, no trailing slash.
+   *
+   * @throws UnconfiguredException with no public domain and no {@code qits.ci.runner.public-url}
    */
-  @ConfigProperty(name = "qits.artifacts.registry-host")
-  String registryInternalHost;
-
-  private final AtomicBoolean warned = new AtomicBoolean();
-
-  /** The base a runner reaches qits-ci at: scheme, host and port, no trailing slash. */
   public String ciBase() {
     return stripSlashes(
-        set(publicUrl).or(() -> publicOrigin(CI_HOST)).orElseGet(() -> internal(internalUrl)));
+        set(publicUrl)
+            .or(() -> publicOrigin(CI_HOST))
+            .orElseThrow(() -> unconfigured("CI address", "qits.ci.runner.public-url")));
   }
 
   /** {@code ws://} or {@code wss://} after {@link #ciBase()}'s own scheme, plus {@link #SOCKET_PATH}. */
@@ -139,40 +141,31 @@ public class RunnerAddresses {
     return socketBase + SOCKET_PATH;
   }
 
-  /** The idp token endpoint a runner mints its bearer at. */
+  /**
+   * The idp token endpoint a runner mints its bearer at.
+   *
+   * @throws UnconfiguredException with no public domain and no {@code qits.ci.runner.token-url}
+   */
   public String tokenUrl() {
     return set(tokenUrlOverride)
         .map(RunnerAddresses::stripSlashes)
         .or(() -> publicOrigin(IDP_HOST).map(origin -> origin + "/idp/token"))
-        .orElseGet(() -> stripSlashes(internal(idpUrl)) + "/token");
-  }
-
-  /**
-   * qits-artifacts as a runner reaches it over HTTP: scheme, host and port, no trailing slash. The
-   * install script used to download the runner binary under it; since the runner is an image
-   * (qits-484) nothing a runner is told is composed from it any more except, through {@link
-   * #registryHost()}, its authority — the same store's {@code /v2}.
-   */
-  public String artifactsBase() {
-    return stripSlashes(
-        set(artifactsUrl)
-            .or(() -> publicOrigin(ARTIFACTS_HOST))
-            .orElseGet(() -> internal(artifactsInternalUrl)));
+        .orElseThrow(() -> unconfigured("token endpoint", "qits.ci.runner.token-url"));
   }
 
   /**
    * The registry host a runner's docker pulls the runner image from — {@code host[:port]}, no scheme:
-   * the authority of {@link #artifactsBase()}'s override or public origin, which is the same store
-   * ({@code registry.qits.<domain>} serves both {@code /artifacts} and {@code /v2}), and with no
-   * public domain {@code qits.artifacts.registry-host}, the name the platform host's own docker
-   * pulls under. Not the {@code qits.ci.runner.artifacts-internal-url} alias: that is a qits-net name
-   * a docker daemon cannot resolve, whereas the registry-host key is a docker's view by definition.
+   * the authority of {@code qits.ci.runner.artifacts-url} when that override is set, else of
+   * qits-artifacts' public origin ({@code registry.qits.<domain>} serves both {@code /artifacts} and
+   * {@code /v2}).
+   *
+   * @throws UnconfiguredException with no public domain and no {@code qits.ci.runner.artifacts-url}
    */
   public String registryHost() {
     return set(artifactsUrl)
         .or(() -> publicOrigin(ARTIFACTS_HOST))
         .map(RunnerAddresses::authority)
-        .orElseGet(() -> internal(registryInternalHost));
+        .orElseThrow(() -> unconfigured("registry host", "qits.ci.runner.artifacts-url"));
   }
 
   /**
@@ -186,9 +179,9 @@ public class RunnerAddresses {
   }
 
   /**
-   * The public origin of every service a step on an EDGE runner reaches, or empty when no public
-   * domain is known — in which case an EDGE plane cannot be composed at all, and the runner door
-   * refuses to declare one ({@code EDGE_PLANE_UNCONFIGURED}).
+   * The public origin of every service a step reaches, or empty when no public domain is known — in
+   * which case a step has no address to be told and is not launched ({@code
+   * EDGE_PLANE_UNCONFIGURED}).
    *
    * <p><b>{@link #publicOrigin} and nothing else</b>, deliberately without the three runner overrides
    * above: those re-point what a <em>runner</em> is told, and a step is told the same domain's names
@@ -207,7 +200,7 @@ public class RunnerAddresses {
                     publicOrigin(WORKSPACES_HOST).orElseThrow()));
   }
 
-  /** Whether a public domain is known, which is whether an EDGE plane can be composed. */
+  /** Whether a public domain is known, which is whether a step's addresses can be composed. */
   public boolean edgeAvailable() {
     return publicOrigin(CI_HOST).isPresent();
   }
@@ -228,18 +221,8 @@ public class RunnerAddresses {
         .map(value -> "https://" + host + "." + PLATFORM_PROJECT + "." + value);
   }
 
-  /** An internal alias, with the one WARN that says what it costs. */
-  private String internal(String url) {
-    if (warned.compareAndSet(false, true)) {
-      LOG.warnf(
-          "qits-ci knows no public domain (QITS_DOMAIN is '%s'), so it tells runners the internal"
-              + " qits-net addresses (%s); a runner outside the swarm cannot resolve them. Set"
-              + " QITS_DOMAIN, or qits.ci.runner.public-url, qits.ci.runner.token-url and"
-              + " qits.ci.runner.artifacts-url",
-          set(domain).orElse(""),
-          url);
-    }
-    return url == null ? "" : url.trim();
+  private UnconfiguredException unconfigured(String what, String overrideKey) {
+    return new UnconfiguredException(what, set(domain).orElse(""), overrideKey);
   }
 
   private static Optional<String> set(Optional<String> value) {

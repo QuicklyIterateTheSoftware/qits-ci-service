@@ -10,7 +10,6 @@ import eu.wohlben.qits.ci.control.CiRunnerSignals;
 import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.control.RunnerAnnouncements;
 import eu.wohlben.qits.ci.entity.CiRunner;
-import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import eu.wohlben.qits.ci.entity.RunnerCapabilities;
 import eu.wohlben.qits.ci.events.RunnerDisconnected;
 import eu.wohlben.qits.cirunner.protocol.Ack;
@@ -442,7 +441,20 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
     List<Session> retiring = settle(session);
     announceConnected(session, hello, pin, current, speaks);
     if (!current) {
-      String image = addresses.runnerImage(pin);
+      String image;
+      try {
+        image = addresses.runnerImage(pin);
+      } catch (RunnerAddresses.UnconfiguredException unconfigured) {
+        // No registry name to pull the pinned image from: the runner keeps its version and this
+        // connection drains, which is the state an operator reads the reason for below.
+        LOG.errorf(
+            "Runner %s said hello as %s and the pin is %s, and it cannot be upgraded: %s",
+            row.name, hello.runnerVersion(), pin, unconfigured.getMessage());
+        if (speaks) {
+          send(session, ack(0, adopted));
+        }
+        return Greeting.GREETED;
+      }
       LOG.infof(
           "Runner %s said hello as %s (capability %d) and the pin is %s — upgrading it to %s; this"
               + " connection drains",
@@ -459,7 +471,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
                   Instant.now()));
       send(session, new Upgrade(pin, image, null));
       if (speaks) {
-        send(session, ack(row.plane, 0, adopted));
+        send(session, ack(0, adopted));
       }
       return Greeting.GREETED;
     }
@@ -473,7 +485,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
         "Runner %s said hello: %s, capability %d, %d slot(s)%s",
         row.name, hello.runnerVersion(), hello.capabilityVersion(), slots,
         row.quarantined() ? " — quarantined: " + row.quarantineReason : "");
-    send(session, ack(row.plane, slots, adopted));
+    send(session, ack(slots, adopted));
     if (row.quarantined()) {
       send(session, quarantinedFrame(row.quarantineReason, row.quarantinedAt));
     }
@@ -1073,39 +1085,30 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
   private void reAck(Session session) {
     int slots = effectiveSlots(session.runnerId);
     LOG.infof("Runner %s may hold %d run(s) now; re-sending its Ack", session.runnerName, slots);
-    send(session, ack(planeOf(session), slots));
+    send(session, ack(slots));
     send(session, new Backlog(runService.queuedCount()));
   }
 
   /**
-   * Every {@code Ack} this host sends: the capability, the slots, and — to a runner on the EDGE plane
-   * — the registry mirrors its builder must apply ({@link RunnerRegistryMirrors}), since the estate's
-   * Dockerfiles name the platform's stores by spellings only the platform's own builder rewrites.
-   * An INTERNAL runner's is null, "not sent", as every {@code Ack} before the field was.
+   * Every {@code Ack} this host sends: the capability, the slots, and the registry mirrors the
+   * runner's builder must apply ({@link RunnerRegistryMirrors}), since the estate's Dockerfiles name
+   * the platform's stores by spellings only a builder told about them rewrites. Null, "not sent",
+   * on a qits-ci that knows no public domain to map them to.
    */
-  private Ack ack(CiRunnerPlane plane, int slots) {
-    return ack(plane, slots, null);
+  private Ack ack(int slots) {
+    return ack(slots, null);
   }
 
-  /** {@link #ack(CiRunnerPlane, int)}, answering a {@code Hello}'s claim with what was adopted. */
-  private Ack ack(CiRunnerPlane plane, int slots, List<String> adopted) {
+  /** {@link #ack(int)}, answering a {@code Hello}'s claim with what was adopted. */
+  private Ack ack(int slots, List<String> adopted) {
     Map<String, String> mirrors;
     try {
-      mirrors = registryMirrors.forPlane(plane);
+      mirrors = registryMirrors.mirrors();
     } catch (RuntimeException e) {
-      LOG.warnf("Could not compose the registry mirrors for a %s runner: %s", plane, e.getMessage());
+      LOG.warnf("Could not compose the registry mirrors for a runner: %s", e.getMessage());
       mirrors = null;
     }
     return new Ack(CiRunnerProtocol.CAPABILITY_VERSION, slots, mirrors, adopted);
-  }
-
-  /** The runner's plane as its row says now, or as it was when it dialled if the row is unreadable. */
-  private CiRunnerPlane planeOf(Session session) {
-    try {
-      return runners.get(session.runnerId).plane;
-    } catch (RuntimeException gone) {
-      return session.runner == null ? null : session.runner.plane;
-    }
   }
 
   /**

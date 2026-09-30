@@ -1,6 +1,5 @@
 package eu.wohlben.qits.ci.runnerhost;
 
-import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
@@ -8,105 +7,101 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * <b>Every address a step container is told</b>, as one value — so which network a step stands on is
- * one decision, made once, rather than a question each line of {@link StepWorkloadSpecs} answers for
- * itself.
+ * <b>Every address a step container is told</b>, as one value, composed from the platform's public
+ * domain and nothing else.
  *
- * <p><b>Two planes, and a step is on exactly one.</b> {@link #internal} is the step every run on the
- * estate has always been: a container on {@code qits-net}, dialling each service by its wire alias,
- * with the host gateway as an extra host. It reads exactly the keys the launcher always read and
- * produces byte for byte the values it always produced — {@code StepEnvironmentCharacterizationTest}
- * pins a whole environment to hold that. {@link #edge} is a step on a runner outside the swarm (epic
- * qits-441): no qits-net and no internal DNS, so every address is the PUBLIC name of the same service
- * — the origin swapped for {@code https://<host>.qits.<domain>}, the path kept — and there is no
- * network and no extra host to ask for.
+ * <p><b>One plane.</b> A step runs on a runner outside the swarm: no qits-net and no internal DNS,
+ * so every address is the PUBLIC name of the service that answers it, {@code
+ * https://<host>.qits.<domain>}, reached through the platform edge with the run's {@code ci-run}
+ * token. There is no docker network to join and no extra host to add. The second plane this record
+ * used to describe — a step on qits-net, dialling each service by its wire alias — was deleted in
+ * qits-515 (epic qits-444) together with every config key that spelled one of those aliases for a
+ * step.
  *
  * <p><b>The public names are {@code RunnerAddresses}', not a second composition.</b> A runner is told
  * where qits-ci and qits-idp are by that class; the steps it starts are told where every other service
  * is by the same {@code publicOrigin}, derived from the platform's {@code QITS_DOMAIN} the way qits-idp
- * composes its own origin. The epic spelled these {@code <label>.<env>.<domain>} under two new keys;
- * the platform project carries no environment label ({@code ci.dev.qits.wohlben.eu} answers 404 on the
- * live estate), and {@code qits.ci.domain} already is {@code QITS_DOMAIN}, so neither key exists.
+ * composes its own origin. The platform project carries no environment label ({@code
+ * ci.dev.qits.wohlben.eu} answers 404 on the live estate).
  *
- * <p><b>The daemon binary is the one address that is not a deployment fact.</b> Its url is pinned per
- * run ({@code CiStepRunner.pinDaemon}) so every step downloads the same build; {@link #daemonBinaryUrl}
- * keeps that pinned url as it is on the internal plane and moves only its origin on the edge one.
+ * <p><b>The paths are the services' own routes, spelled here as constants.</b> Each was the path of
+ * a config key's shipped default while those keys existed; an address was then that key's value with
+ * its origin swapped. With the keys gone the path is the only part left, and it is a fact of the
+ * service that serves it rather than of a deployment.
  *
  * <p>Pure: strings in, strings out, no I/O and no config of its own.
  */
 public record StepAddressPlane(
-    CiRunnerPlane plane,
-    /** {@code $QITS_CI_DAEMON_URL}: the {@code /ci/daemon} socket, {@code ws://} or {@code wss://}. */
+    /** {@code $QITS_CI_DAEMON_URL}: the {@code /ci/daemon} socket, {@code wss://}. */
     String daemonUrl,
-    /** Null keeps the run's pinned binary url as it is; set, it replaces that url's origin. */
+    /** qits-artifacts' public origin; a run's pinned daemon path is resolved under it. */
     String daemonBinaryOrigin,
     /** The git host's base; {@code $QITS_CI_REPOSITORY_URL} is this plus {@code /git/…}. */
     String gitBaseUrl,
-    /** The idp a commissioned client's helper mints at; null on a plane that carries no client. */
-    String idpUrl,
-    /** {@code $QITS_REGISTRY}: a host and port, no scheme. */
+    /** {@code $QITS_REGISTRY} and {@code $QITS_BUILD_REGISTRY}: a host and port, no scheme. */
     String registryHost,
-    /** {@code $QITS_BUILD_REGISTRY} when BuildKit is on: a host and port, no scheme. */
-    String buildRegistryHost,
     String npmHostedUrl,
     String npmProxyUrl,
     String mavenRegistryUrl,
-    /** {@code $QITS_MAVEN_CENTRAL_MIRROR_URL} when the mirror is on; may be empty. */
-    String mavenCentralMirrorBuildUrl,
-    /** {@code $QITS_MAVEN_PROXY_URL} when the mirror is on. */
-    String mavenCentralMirrorStepUrl,
+    /** {@code $QITS_MAVEN_CENTRAL_MIRROR_URL} and {@code $QITS_MAVEN_PROXY_URL}, mirror on. */
+    String mavenCentralMirrorUrl,
     String docsUrl,
-    /** {@code $QITS_ARTIFACTS_URL}: the store's origin, no path; may be empty. */
+    /** {@code $QITS_ARTIFACTS_URL}: the store's origin, no path. */
     String artifactsUrl,
     String workspacesUrl,
     /** Every host the run's docker {@code config.json} carries a login for. */
     List<String> authHosts,
-    /** The docker network the container joins; null on the edge plane, where there is none. */
-    String network,
-    /** {@code --add-host} entries; empty on the edge plane. */
-    List<String> extraHosts,
     /** Which registry hosts are the platform's own, and where a step image naming one is pulled. */
     ImageRegistries imageRegistries) {
 
-  /** The one extra host an internal step has always been given. */
-  static final String HOST_GATEWAY = "host.docker.internal:host-gateway";
+  /** {@code CiDaemonSocket}'s literal: the path every step container's daemon dials. */
+  static final String DAEMON_SOCKET_PATH = "/ci/daemon";
 
   /**
-   * qits-platform-mirror's own path for its npm pull-through cache, shared by both planes: {@code
-   * StepContainerSettings.internalNpmProxyUrl} composes the internal address from it too now, since the
-   * mirror address is never a deployment fact — it is always {@code
-   * <environment-or-public-origin>-qits-platform-mirror/npm/npmjs/}, on qits-net or through the
-   * edge. There is no config key left to diverge from.
+   * qits-artifacts' daemons store, under which a run's pinned binary is {@code
+   * qits-ci-daemon/<version>} — the route {@code CiDaemonPinIT} downloads the pin from.
    */
+  static final String DAEMON_BINARY_PATH = "/artifacts/daemons/";
+
+  /** qits-artifacts' hosted npm repository, the one {@code @qits/*} is published to. */
+  static final String NPM_HOSTED_PATH = "/artifacts/npm/npm/";
+
+  /** qits-platform-mirror's npm pull-through cache. */
   static final String NPM_PROXY_PATH = "/npm/npmjs/";
 
+  /** qits-artifacts' hosted Maven repository. */
+  static final String MAVEN_REGISTRY_PATH = "/artifacts/maven/maven";
+
+  /** qits-platform-mirror's Maven Central pull-through. */
+  static final String MAVEN_CENTRAL_MIRROR_PATH = "/mirror/maven/central";
+
+  /** qits-artifacts' docs repository, the {@code docs} namespace segment included. */
+  static final String DOCS_PATH = "/artifacts/docs/docs";
+
   public StepAddressPlane {
-    Objects.requireNonNull(plane, "plane");
     authHosts = List.copyOf(authHosts);
-    extraHosts = List.copyOf(extraHosts);
     Objects.requireNonNull(imageRegistries, "imageRegistries");
   }
 
   /**
-   * <b>The platform's own spellings of its two image stores</b>, and the host a step image naming
-   * one of them is pulled from on this plane (qits-479).
+   * <b>The platform's own spellings of its two image stores</b>, and the public host a step image
+   * naming one of them is pulled from (qits-479).
    *
    * <p>A step's image is the one address a step names that is not in its environment: it is the
-   * spec's {@code image}, pulled by whatever docker starts the container. On qits-net that is the
-   * host daemon, which resolves {@code registry.<env>.localhost:<port>} to the edge on its own
-   * loopback — so an internal step's reference is left exactly as the run pinned it. A runner's
-   * docker is on another machine, where that name dials the runner's own loopback, so an EDGE step's
-   * reference has its registry host moved to the public vhost of the same store, the repository
+   * spec's {@code image}, pulled by the runner's own docker. A run pins a platform image under
+   * {@code qits.artifacts.registry-host}, and a recipe may name {@code
+   * registry.<env>.localhost:<port>}; on the runner's machine neither resolves to the platform, so
+   * the reference has its registry host moved to the public vhost of the same store, the repository
    * path, tag and {@code @sha256:} digest kept byte for byte: a digest is content-addressed, so it
    * names the same bytes at either address.
    *
-   * <p><b>Ours is decided by the host and nothing else</b>, {@code HttpImagePins}' rule: a host is
-   * the registry's when it is one of the keys that already spell qits-artifacts ({@code
-   * qits.artifacts.registry-host}, {@code qits.ci.buildkit.registry-host}, the authority of every
-   * {@code /artifacts} url) or one of {@code qits.ci.docker-auth-hosts} that is not the mirror; it is
-   * qits-platform-mirror's when it is the authority of one of the mirror's two urls. Anything else —
-   * {@code alpine:3}, {@code docker.io/…}, {@code ghcr.io/…} — is somebody else's store and is
-   * pulled as named on either plane.
+   * <p><b>Ours is decided by the host and nothing else</b>, {@code HttpImagePins}' rule. A host is
+   * the registry's when it is {@code qits.artifacts.registry-host}, one of {@code
+   * qits.ci.runner.registry-mirrors.registry-hosts}, or qits-artifacts' alias in this environment;
+   * it is qits-platform-mirror's when it is one of {@code
+   * qits.ci.runner.registry-mirrors.mirror-hosts} or the mirror's alias in this environment.
+   * Anything else — {@code alpine:3}, {@code docker.io/…}, {@code ghcr.io/…} — is somebody else's
+   * store and is pulled as named.
    *
    * @param registrySpellings every host that names qits-artifacts' registry, lower case
    * @param mirrorSpellings every host that names qits-platform-mirror, lower case
@@ -125,18 +120,14 @@ public record StepAddressPlane(
     }
 
     /**
-     * The spellings of the two stores. A host both lists could claim is the registry's — the keys
-     * that name qits-artifacts outright are read first — and an auth host the mirror's urls do not
-     * name is the registry's, because {@code qits.ci.docker-auth-hosts} lists registry hosts and the
-     * mirror vhost is the one addition to it the platform documents.
+     * The spellings of the two stores. A host both lists could claim is the registry's — it is read
+     * first.
      */
-    static ImageRegistries of(
-        List<String> registryHosts, List<String> mirrorHosts, List<String> authHosts) {
+    public static ImageRegistries of(List<String> registryHosts, List<String> mirrorHosts) {
       List<String> registry = new ArrayList<>();
       List<String> mirror = new ArrayList<>();
       registryHosts.forEach(host -> addHost(registry, List.of(), host));
       mirrorHosts.forEach(host -> addHost(mirror, registry, host));
-      authHosts.forEach(host -> addHost(registry, mirror, host));
       return new ImageRegistries(registry, mirror, null, null);
     }
 
@@ -207,76 +198,18 @@ public record StepAddressPlane(
       String ci, String artifacts, String mirror, String githost, String workspaces) {}
 
   /**
-   * Today's addresses, from today's keys and nothing else — the arguments are the launcher's own
-   * fields, resolved the way it always resolved them ({@code artifactsUrl} is its {@code
-   * resolvedArtifactsUrl()}, {@code authHosts} its {@code authHosts()}).
-   */
-  public static StepAddressPlane internal(
-      String containerDaemonUrl,
-      String containerGitUrl,
-      String idpUrl,
-      String artifactsRegistryHost,
-      String buildkitRegistryHost,
-      String npmHostedUrl,
-      String npmProxyUrl,
-      String mavenRegistryUrl,
-      String mavenCentralMirrorBuildUrl,
-      String mavenCentralMirrorStepUrl,
-      String docsUrl,
-      String artifactsUrl,
-      String workspacesUrl,
-      List<String> authHosts,
-      String network) {
-    return new StepAddressPlane(
-        CiRunnerPlane.INTERNAL,
-        containerDaemonUrl,
-        null,
-        containerGitUrl,
-        idpUrl,
-        artifactsRegistryHost,
-        buildkitRegistryHost,
-        npmHostedUrl,
-        npmProxyUrl,
-        mavenRegistryUrl,
-        mavenCentralMirrorBuildUrl,
-        mavenCentralMirrorStepUrl,
-        docsUrl,
-        artifactsUrl,
-        workspacesUrl,
-        authHosts,
-        network,
-        List.of(HOST_GATEWAY),
-        ImageRegistries.of(
-            authorities(
-                artifactsRegistryHost,
-                buildkitRegistryHost,
-                artifactsUrl,
-                mavenRegistryUrl,
-                npmHostedUrl,
-                docsUrl),
-            authorities(mavenCentralMirrorBuildUrl, mavenCentralMirrorStepUrl),
-            authHosts));
-  }
-
-  /**
-   * The same step, through the edge: each internal address's origin swapped for the public origin
-   * of the service that answers it, the path kept. qits-artifacts answers the registry, the hosted
-   * npm and maven roots, the docs store and the daemon binary; qits-platform-mirror the npm and the
-   * two maven pull-through roots; qits-githost the clone url; qits-workspaces its own root. No
-   * network, no extra host, and no idp — an edge step carries a {@code ci-run} token, never a client
-   * to mint with.
+   * The addresses of a step, from the public origin of each service that answers one. qits-artifacts
+   * answers the registry, the hosted npm and maven roots, the docs store and the daemon binary;
+   * qits-platform-mirror the npm and the maven pull-through roots; qits-githost the clone url;
+   * qits-workspaces its own root; qits-ci the daemon socket.
    *
-   * <p><b>The npm proxy is composed from {@link #NPM_PROXY_PATH} rather than rebased off the
-   * internal plane's value.</b> Both planes compose it from the same path now — the internal one
-   * against the qits-net alias, this one against the edge's public origin — rather than one being
-   * rebased from the other, because the two origins are reached through different mechanisms
-   * entirely and there is no shared url to rebase from.
-   *
-   * <p>A value that is empty on the internal plane stays empty: the mirror's off state is an empty
-   * value, and it means the same thing on either side of the edge.
+   * @param spellings the hosts that name the platform's two image stores, which an image reference
+   *     is recognised by; this plane pulls them from the public registry and mirror hosts
    */
-  public static StepAddressPlane edge(EdgeOrigins origins, StepAddressPlane internal) {
+  public static StepAddressPlane of(EdgeOrigins origins, ImageRegistries spellings) {
     Objects.requireNonNull(origins, "origins");
+    String artifacts = strip(origins.artifacts());
+    String mirrorOrigin = strip(origins.mirror());
     String registry = hostOf(origins.artifacts());
     List<String> authHosts = new ArrayList<>();
     authHosts.add(registry);
@@ -285,56 +218,57 @@ public record StepAddressPlane(
       authHosts.add(mirror);
     }
     return new StepAddressPlane(
-        CiRunnerPlane.EDGE,
-        rebase(internal.daemonUrl(), socketOrigin(origins.ci())),
-        origins.artifacts(),
-        rebase(internal.gitBaseUrl(), origins.githost()),
-        null,
+        socketOrigin(origins.ci()) + DAEMON_SOCKET_PATH,
+        artifacts,
+        strip(origins.githost()),
         registry,
-        registry,
-        rebase(internal.npmHostedUrl(), origins.artifacts()),
-        blank(internal.npmProxyUrl()) ? "" : strip(origins.mirror()) + NPM_PROXY_PATH,
-        rebase(internal.mavenRegistryUrl(), origins.artifacts()),
-        rebase(internal.mavenCentralMirrorBuildUrl(), origins.mirror()),
-        rebase(internal.mavenCentralMirrorStepUrl(), origins.mirror()),
-        rebase(internal.docsUrl(), origins.artifacts()),
-        blank(internal.artifactsUrl()) ? "" : strip(origins.artifacts()),
-        rebase(internal.workspacesUrl(), origins.workspaces()),
+        artifacts + NPM_HOSTED_PATH,
+        mirrorOrigin + NPM_PROXY_PATH,
+        artifacts + MAVEN_REGISTRY_PATH,
+        mirrorOrigin + MAVEN_CENTRAL_MIRROR_PATH,
+        artifacts + DOCS_PATH,
+        artifacts,
+        strip(origins.workspaces()),
         authHosts,
-        null,
-        List.of(),
-        internal.imageRegistries().pulledFrom(registry, mirror));
+        spellings.pulledFrom(registry, mirror));
   }
 
   /**
-   * The reference a step's image is pulled by on this plane — see {@link ImageRegistries}: exactly
-   * as given on the internal plane, and with a platform registry host moved to its public vhost on
-   * the edge one.
+   * The reference a step's image is pulled by — see {@link ImageRegistries}: a platform registry
+   * host moved to its public vhost, anything else exactly as given.
    */
   public String imageReference(String image) {
     return imageRegistries.rewrite(image);
   }
 
   /**
-   * The host a pull of {@code image} needs a login for on this plane, or null when it needs none of
-   * the platform's — an internal step, or an image on somebody else's registry.
+   * The host a pull of {@code image} needs a login for, or null when it needs none of the platform's
+   * — an image on somebody else's registry.
    */
   public String imagePullHost(String image) {
     return imageRegistries.pullHost(image);
   }
 
-  /** Whether this is the edge plane — a step on a runner outside the swarm. */
-  public boolean isEdge() {
-    return plane == CiRunnerPlane.EDGE;
+  /**
+   * The path a run pins its daemon binary at: {@code /artifacts/daemons/<name>/<version>}. A path
+   * and no origin, because the pin is taken once per run and must not need a domain to be taken;
+   * {@link #daemonBinaryUrl} puts it under the public registry when a step is composed.
+   */
+  public static String daemonBinaryPath(String daemonName, String version) {
+    return DAEMON_BINARY_PATH + daemonName + "/" + (version == null ? "" : version);
   }
 
   /**
-   * The url this step downloads its daemon from: the run's pinned url, on the internal plane as it
-   * is, on the edge plane with its origin moved to the public registry and its path — {@code
-   * /artifacts/daemons/qits-ci-daemon/<version>} — kept.
+   * The url this step downloads its daemon from: the run's pinned path under qits-artifacts' public
+   * origin. A pinned value that is a whole url — a run pinned before qits-515 and re-run after it —
+   * keeps its path and loses its origin.
    */
   public String daemonBinaryUrl(String pinned) {
-    return daemonBinaryOrigin == null ? pinned : rebase(pinned, daemonBinaryOrigin);
+    if (blank(pinned)) {
+      return "";
+    }
+    return pinned.trim().startsWith("/") ? daemonBinaryOrigin + pinned.trim()
+        : rebase(pinned, daemonBinaryOrigin);
   }
 
   /**
@@ -358,34 +292,6 @@ public record StepAddressPlane(
     String path = parsed.getRawPath() == null ? "" : parsed.getRawPath();
     String query = parsed.getRawQuery() == null ? "" : "?" + parsed.getRawQuery();
     return strip(origin) + path + query;
-  }
-
-  /**
-   * The registry authority of each value: a bare {@code host:port} as it is, an absolute url's
-   * authority, blanks and unreadable values skipped — every one of them a deployment fact that
-   * already names a store, read here only to recognise it again in an image reference.
-   */
-  private static List<String> authorities(String... values) {
-    List<String> hosts = new ArrayList<>();
-    for (String value : values) {
-      if (blank(value)) {
-        continue;
-      }
-      String trimmed = value.trim();
-      if (!trimmed.contains("://")) {
-        hosts.add(trimmed.replaceAll("/.*$", ""));
-        continue;
-      }
-      try {
-        String authority = URI.create(trimmed).getRawAuthority();
-        if (authority != null) {
-          hosts.add(authority);
-        }
-      } catch (IllegalArgumentException unreadable) {
-        // Not an address; nothing to recognise.
-      }
-    }
-    return hosts;
   }
 
   /** {@code https://h} → {@code wss://h}, {@code http://h} → {@code ws://h}: the socket's scheme. */

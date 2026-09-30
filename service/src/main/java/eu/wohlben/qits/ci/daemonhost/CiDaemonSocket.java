@@ -25,52 +25,37 @@ import org.jboss.logging.Logger;
  * straight onto the router and does <em>not</em> follow {@code quarkus.rest.path}, so the segment
  * that every route of this service must serve has to be spelled here. {@code daemon} is a
  * second-level segment beside {@code api} because this is not a JSON API. No machine guard reaches
- * it — the intake's guard is a call inside a resource method, not a filter over a path — and that is
- * correct rather than an oversight: this socket's callers are step containers holding no idp client,
- * and its authentication is the per-container secret below.
+ * it — that guard is a call inside a resource method, not a filter over a path.
  *
- * <p><b>The {@code @RolesAllowed} above is not that guard, and it shuts one door earlier than the
- * secret does.</b> websockets-next enforces it at the HTTP <em>upgrade</em>, so a dial with no
- * identity is answered <b>401 and never reaches {@link #onOpen}</b>. The step container's daemon
- * satisfies it by asserting the forward-auth pair itself — {@code X-Qits-User: qits-ci-daemon},
- * {@code X-Qits-Roles: qits:system}, see {@code qits-ci-daemon}'s {@code ControlSocket.connect} —
- * which it may because it dials this service directly on {@code qits.ci.network} and never crosses
- * the edge that strips the {@code X-Qits-*} namespace. So the two credentials do different jobs and
- * both are required: the role opens the route, and the secret says <em>which launch</em> this is.
- * That is also the one thing a caller of this endpoint must not forget — a client sending only the
- * two {@code X-Qits-Ci-Daemon-*} headers gets a 401 that looks nothing like the 1008 below.
+ * <p><b>The {@code @RolesAllowed} above shuts first.</b> websockets-next enforces it at the HTTP
+ * <em>upgrade</em>, so a dial with no identity is answered <b>401 and never reaches {@link
+ * #onOpen}</b>. A step's daemon dials through the platform edge presenting its run's {@code ci-run}
+ * token as {@code Authorization: Bearer $QITS_TOKEN}; the edge introspects the token and forwards
+ * a JWT whose {@code sub} is the token's subject and whose role is {@code qits:ci-run}. That opens
+ * the upgrade. {@code qits:system} is still in the list and still opens the upgrade too; it admits
+ * nothing by itself, since admission is the subject check below, and narrowing the list to {@code
+ * qits:ci-run} alone is a separate change (qits-516).
  *
- * <p><b>A daemon on an EDGE runner holds the other role</b> (epic qits-441). It dials through the
- * edge, which strips {@code X-Qits-*}, so it presents its run's {@code ci-run} token as {@code
- * Authorization: Bearer $QITS_TOKEN} and sends <em>no</em> {@code X-Qits-Ci-Daemon-Id}/{@code
- * -Secret} headers at all — the edge would have stripped them, so a header a daemon on this plane
- * sent would never arrive, and the per-container secret buys nothing a token-bound connection does
- * not already have. The edge introspects the token and forwards a JWT whose {@code sub} is the
- * token's subject and whose role is {@code qits:ci-run}; that alone opens the upgrade, and the
- * <em>connection</em> is not yet bound to a launch when {@link #onOpen} returns. It names its
- * launch in its first frame instead — {@code ci-daemon}'s {@link Hello#daemonId()}, which every
- * capability version already carries — and {@link #onMessage} completes the admission there: the
- * named launch must exist (else {@code UNKNOWN_DAEMON}) and must be recorded against a run whose
- * {@code ci-run} token subject is this connection's (else 1008 {@code WRONG_RUN}). No secret is
- * compared on this path — the token already proves the run, and what remains is only naming
- * <em>which</em> launch of it this is, which is not a secret.
+ * <p><b>A connection is matched to its launch only by the launch id it names, bound to its run's
+ * token.</b> When {@link #onOpen} returns the connection is bound to nothing. The daemon names its
+ * launch in its first frame — {@code ci-daemon}'s {@link Hello#daemonId()}, which every capability
+ * version carries — and {@link #onMessage} completes the admission there: the named launch must
+ * exist (else {@code UNKNOWN_DAEMON}) and must be recorded against the subject this connection
+ * arrived as (else 1008 {@code WRONG_RUN}). No secret is compared and no handshake header is read:
+ * the {@code X-Qits-Ci-Daemon-Id}/{@code -Secret} pair a daemon on qits-net presented was deleted
+ * with that plane (qits-515) — the edge strips every {@code X-Qits-*} header anyway. The token
+ * proves the run, and what remains is only naming <em>which</em> launch of it this is, which is
+ * not a secret.
  *
- * <p><b>The address is a cross-repo contract.</b> {@code StepContainerSettings} injects {@code
- * qits.ci.container-daemon-url} (default {@code ws://qits-ci:8080/ci/daemon}) as {@code
- * $QITS_CI_DAEMON_URL} into every step container, and qits-ci-daemon dials exactly that string
- * verbatim. Move this path and that default moves with it. It is dialled directly on {@code
- * qits.ci.network} at this service's own port: a daemon is never a gateway route — one process per
- * container with a lifetime of one step has no stable address to configure.
+ * <p><b>The address is a cross-repo contract.</b> {@code StepAddressPlane} composes {@code
+ * wss://ci.qits.<domain>/ci/daemon} as {@code $QITS_CI_DAEMON_URL} for every step container, and
+ * qits-ci-daemon dials exactly that string verbatim. Move this path and that composition moves
+ * with it.
  *
- * <p><b>Nothing is trusted before it is checked, and which check runs depends on the plane.</b> A
- * {@code qits:system} dial (INTERNAL, no token) is checked at {@link #onOpen}: {@code
- * X-Qits-Ci-Daemon-Id} and {@code -Secret} against the launch table, closing 1008 on an unknown id,
- * a wrong secret, or a re-dial for a launch already connected — before a single frame is processed.
- * A {@code qits:ci-run} dial (EDGE, a token) is checked at its first frame instead, for the reason
- * above. Identity is not in the path either way, deliberately: the workspace control socket takes
- * its caller's identity from a path parameter, which is its known impersonation bug
- * (migration-plan.md §9 item 22), and this socket accepts connections from containers running
- * repo-controlled code by design.
+ * <p><b>Nothing is trusted before it is checked.</b> Identity is not in the path, deliberately:
+ * the workspace control socket takes its caller's identity from a path parameter, which is its
+ * known impersonation bug (migration-plan.md §9 item 22), and this socket accepts connections from
+ * containers running repo-controlled code by design.
  *
  * <p>Frames are handled on virtual threads, so a step spraying output cannot occupy an event loop,
  * and an undecodable frame is caught and logged rather than allowed to kill the connection — the
@@ -82,14 +67,17 @@ import org.jboss.logging.Logger;
 @jakarta.annotation.security.RolesAllowed({CiDaemonSocket.SYSTEM_ROLE, CiDaemonSocket.RUN_ROLE})
 public class CiDaemonSocket {
 
-  /** The forward-auth role a daemon on qits-net asserts for itself. */
+  /**
+   * The machine role. It opens the upgrade and admits no launch: see the class javadoc. Its removal
+   * from this socket's {@code @RolesAllowed} is qits-516.
+   */
   static final String SYSTEM_ROLE = "qits:system";
 
   /** The literal, {@code /ci} and all — see the class javadoc; {@code SocketBearerLifetime} reads it. */
   public static final String PATH = "/ci/daemon";
 
   /**
-   * The role a {@code ci-run} token carries through the edge — what an EDGE step's daemon dials with,
+   * The role a {@code ci-run} token carries through the edge — what a step's daemon dials with,
    * bound to its run by the token's subject ({@link CiDaemonRegistry#admitByToken(String, String,
    * WebSocketConnection)}).
    */
@@ -105,10 +93,8 @@ public class CiDaemonSocket {
   private static final UserData.TypedKey<String> DAEMON_ID = UserData.TypedKey.forString("daemonId");
 
   /**
-   * The {@code sub} an EDGE-plane dial's {@code ci-run} token arrived as, stashed at {@link
-   * #onOpen} for the one frame admission is still pending on. Present exactly when {@link
-   * #DAEMON_ID} is absent and the connection is a token dial rather than an unadmitted (and about
-   * to be closed) header one — see {@link #onMessage}.
+   * The {@code sub} a dial arrived as, stashed at {@link #onOpen} for the one frame admission is
+   * still pending on — see {@link #onMessage}.
    */
   private static final UserData.TypedKey<String> RUN_SUBJECT =
       UserData.TypedKey.forString("runSubject");
@@ -117,48 +103,25 @@ public class CiDaemonSocket {
 
   @Inject CiDaemonMessageCodec codec;
 
-  /** The identity the upgrade was admitted as — the forward-auth daemon's, or a ci-run token's. */
+  /** The identity the upgrade was admitted as — a ci-run token's, as the edge forwarded it. */
   @Inject SecurityIdentity identity;
 
   @OnOpen
   @RunOnVirtualThread
   public void onOpen(WebSocketConnection connection) {
-    String runSubject = runSubject();
-    if (runSubject != null) {
-      // EDGE plane: the token opened the upgrade, but it names a RUN, not a launch, and the two
-      // headers that would have named the launch never arrive here — qits-edge strips them. The
-      // daemon names its launch in its first frame instead (Hello.daemonId), so admission waits for
-      // it rather than happening here.
-      connection.userData().put(RUN_SUBJECT, runSubject);
-      return;
-    }
-    String daemonId = connection.handshakeRequest().header(CiDaemonRegistry.HEADER_ID);
-    String secret = connection.handshakeRequest().header(CiDaemonRegistry.HEADER_SECRET);
-    CiDaemonRegistry.Admission admission = registry.admit(daemonId, secret, connection);
-    if (admission != CiDaemonRegistry.Admission.ADMITTED) {
-      // Deliberately the same close code and no detail for all three: a caller that guessed wrong
-      // learns that it was wrong, not which half of the credential it got right.
-      LOG.warnf(
-          "Refused a ci-daemon dial from %s as '%s': %s",
-          connection.handshakeRequest().remoteAddress(), daemonId, admission);
-      close(connection, admission.name());
-      return;
-    }
-    connection.userData().put(DAEMON_ID, daemonId);
+    // The token opened the upgrade, but it names a RUN, not a launch. The daemon names its launch
+    // in its first frame (Hello.daemonId), so admission waits for it rather than happening here.
+    connection.userData().put(RUN_SUBJECT, runSubject());
   }
 
   /**
-   * The {@code sub} a {@code qits:ci-run} caller arrived as — empty when it carries none — or null
-   * for a caller that holds {@code qits:system}, which is judged by the launch pair alone as it
-   * always was. The subject is the validated token's claim when there is one, and the forward-auth
-   * user otherwise: the edge names the token's subject either way.
+   * The {@code sub} the caller arrived as — empty when it carries none, which matches no launch.
+   * The subject is the validated token's claim when there is one, and the forward-auth user
+   * otherwise: the edge names the token's subject either way.
    */
   private String runSubject() {
-    if (identity == null
-        || identity.isAnonymous()
-        || identity.hasRole(SYSTEM_ROLE)
-        || !identity.hasRole(RUN_ROLE)) {
-      return null;
+    if (identity == null || identity.isAnonymous()) {
+      return "";
     }
     return MachineIdentity.claim(identity, "sub")
         .or(
@@ -175,7 +138,7 @@ public class CiDaemonSocket {
     if (daemonId == null) {
       String runSubject = connection.userData().get(RUN_SUBJECT);
       if (runSubject == null) {
-        // Not admitted (the close from @OnOpen may still be in flight) — read nothing from it.
+        // Nothing to admit it as — read nothing from it.
         return;
       }
       admitByFirstFrame(message, runSubject, connection);
@@ -194,10 +157,9 @@ public class CiDaemonSocket {
   }
 
   /**
-   * The EDGE plane's admission: an unadmitted, token-bound connection's first frame is its one
-   * chance to name the launch it is. It must decode, and it must be a {@link Hello} — anything else
-   * is exactly as unidentifiable as a header dial with no id at all, so it is refused the same way,
-   * {@code UNKNOWN_DAEMON}. A decodable {@link Hello} names the launch, which {@link
+   * The admission: an unadmitted connection's first frame is its one chance to name the launch it
+   * is. It must decode, and it must be a {@link Hello} — anything else names no launch, so it is
+   * refused {@code UNKNOWN_DAEMON}. A decodable {@link Hello} names the launch, which {@link
    * CiDaemonRegistry#admitByToken} then checks belongs to this connection's run.
    *
    * <p>Once admitted, this frame IS the daemon's {@code Hello} — it is handed to {@link
@@ -211,7 +173,7 @@ public class CiDaemonSocket {
       decoded = codec.decode(message);
     } catch (RuntimeException e) {
       LOG.warnf(
-          "Refused a token-authenticated ci-daemon dial from %s: its first frame did not decode"
+          "Refused a ci-daemon dial from %s: its first frame did not decode"
               + " as Hello: %s",
           connection.handshakeRequest().remoteAddress(), e.getMessage());
       close(connection, CiDaemonRegistry.Admission.UNKNOWN_DAEMON.name());
@@ -219,7 +181,7 @@ public class CiDaemonSocket {
     }
     if (!(decoded instanceof Hello hello)) {
       LOG.warnf(
-          "Refused a token-authenticated ci-daemon dial from %s: its first frame was %s, not Hello",
+          "Refused a ci-daemon dial from %s: its first frame was %s, not Hello",
           connection.handshakeRequest().remoteAddress(), decoded.getClass().getSimpleName());
       close(connection, CiDaemonRegistry.Admission.UNKNOWN_DAEMON.name());
       return;
@@ -228,7 +190,7 @@ public class CiDaemonSocket {
         registry.admitByToken(hello.daemonId(), runSubject, connection);
     if (admission != CiDaemonRegistry.Admission.ADMITTED) {
       LOG.warnf(
-          "Refused a token-authenticated ci-daemon dial from %s naming launch '%s': %s",
+          "Refused a ci-daemon dial from %s naming launch '%s': %s",
           connection.handshakeRequest().remoteAddress(), hello.daemonId(), admission);
       close(connection, admission.name());
       return;
@@ -253,7 +215,7 @@ public class CiDaemonSocket {
    * <p>Bounded through {@link CiDaemonRegistry#closeBounded} rather than {@code closeAndAwait} for
    * the package's one rule: that convenience is {@code close().await().indefinitely()}, and the peer
    * being refused here is by definition one this host has no reason to trust — an unknown id, a
-   * wrong secret, or something claiming a launch that is already connected. A caller that could hang
+   * token that is not the launch's run's, or something claiming a launch that is already connected. A caller that could hang
    * the refusal could pin a virtual thread per dial simply by never completing the handshake.
    */
   private void close(WebSocketConnection connection, String reason) {

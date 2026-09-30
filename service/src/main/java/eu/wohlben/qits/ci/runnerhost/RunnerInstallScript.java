@@ -84,12 +84,11 @@ public class RunnerInstallScript {
     require(
         URL,
         addresses.ciBase(),
-        "the CI base (QITS_DOMAIN / qits.ci.runner.public-url / qits.ci.runner.internal-url)");
+        "the CI base (QITS_DOMAIN / qits.ci.runner.public-url)");
     require(
         REGISTRY,
         addresses.registryHost(),
-        "the registry host (QITS_DOMAIN / qits.ci.runner.artifacts-url /"
-            + " qits.artifacts.registry-host)");
+        "the registry host (QITS_DOMAIN / qits.ci.runner.artifacts-url)");
     require(VERSION, pins.version(), CiRunnerPins.OVERRIDE_KEY + " / the pinned protocol version");
   }
 

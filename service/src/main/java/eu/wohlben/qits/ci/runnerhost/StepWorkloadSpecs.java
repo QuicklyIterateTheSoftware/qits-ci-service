@@ -2,14 +2,13 @@ package eu.wohlben.qits.ci.runnerhost;
 
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
-import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeMap;
 
 /**
@@ -19,13 +18,18 @@ import java.util.TreeMap;
  * for two transports (the in-process executor asked qits-containers for the container); the runner
  * is the only transport since qits-506, so the spec is the protocol's own.
  *
- * <p><b>Pure</b>: settings, the address plane, the launch, the run's commission and the runner's
- * step memory limit in, a spec out, no I/O. The commission is looked up by the caller (it is the one
- * input that can fail, and the caller records that failure as the step's own), everything configured
- * that is not an address arrives as {@link Settings}, read off {@link StepContainerSettings} at the
- * moment of asking, and every address arrives as a {@link StepAddressPlane} — its internal one for an
- * INTERNAL runner, the edge rendering for an EDGE runner. {@code StepContainerSettingsTest} and
- * {@code RunCommissioningTest} assert the result literally.
+ * <p><b>Pure</b>: settings, the address plane, the launch, the run's token and the runner's step
+ * memory limit in, a spec out, no I/O. The token is commissioned by the caller (it is the one input
+ * that can fail, and the caller records that failure as the step's own), everything configured that
+ * is not an address arrives as {@link Settings}, read off {@link StepContainerSettings} at the
+ * moment of asking, and every address arrives as a {@link StepAddressPlane}, composed from the
+ * platform's public domain. {@code StepContainerSettingsTest} and {@code RunCommissioningTest}
+ * assert the result literally.
+ *
+ * <p><b>What a spec never carries</b> (qits-515): a docker network, an extra host, a qits-net alias,
+ * a commissioned client pair, a {@code QITS_GIT_AUTH_*} variable, or a per-container daemon secret.
+ * A step reaches every service by its public name with {@code $QITS_TOKEN}, and its daemon is
+ * matched to its launch by the launch id it names in its first frame.
  *
  * <p><b>No {@code qits.ci.runner} label is added here, and none may be.</b> That namespace is the
  * runner's own: it stamps {@code qits.ci.runner=<runner id>} and {@code qits.ci.runner.run} on every
@@ -39,24 +43,22 @@ public final class StepWorkloadSpecs {
   /**
    * The deployment facts a spec is composed from that are NOT addresses — every one of them a config
    * value the launcher holds, or a value it derives from them ({@code artifactsCliVersion}), resolved
-   * before it gets here. Every address is the {@link StepAddressPlane}'s, which is what lets one
-   * step be composed for either side of the edge from the same settings.
+   * before it gets here. Every address is the {@link StepAddressPlane}'s.
    */
   public record Settings(
       String artifactsImageRepository,
       boolean mavenCentralMirrorEnabled,
       String artifactsCliPackage,
       String artifactsCliVersion,
-      boolean buildkitEnabled,
       String memoryLimit,
       long pidsLimit,
       String cpus,
       Integer oomScoreAdj) {}
 
   /**
-   * The step container's spec, on {@code plane}. {@code credential} is this run's commissioned
-   * credential — its client on qits-net, its {@code ci-run} token through the edge — or null on a
-   * deployment that commissions nothing. {@code stepMemoryLimit} is the runner row's own cap, which
+   * The step container's spec. {@code token} is this run's {@code ci-run} token, and it is
+   * required: a step with no token can reach nothing, so the caller refuses to launch one rather
+   * than composing it. {@code stepMemoryLimit} is the runner row's own cap, which
    * replaces the platform's {@code qits.ci.memory-limit} as memory AND memory-swap, so a runner's
    * steps still get no swap beyond their cap; null keeps the platform default.
    *
@@ -76,21 +78,16 @@ public final class StepWorkloadSpecs {
       Settings settings,
       StepAddressPlane plane,
       StepContainerSettings.LaunchSpec spec,
-      RunCommissions.Credential credential,
+      IdpCommissioner.CommissionedToken token,
       String stepMemoryLimit) {
-    IdpCommissioner.Commission commission = credential == null ? null : credential.client();
-    IdpCommissioner.CommissionedToken token = credential == null ? null : credential.token();
+    Objects.requireNonNull(token, "a step is never composed without its run's token");
     Map<String, String> env = new LinkedHashMap<>();
     // The contract, as environment. The daemon needs all of it before a socket exists, which is why
     // none of it is a message.
     env.put("QITS_CI_DAEMON_ID", value(spec.daemonId()));
-    // EDGE plane only: the secret is withheld. A ci-run token already proves this run to qits-ci,
-    // so the second factor the INTERNAL plane's header handshake needs buys an EDGE step nothing —
-    // it identifies its launch in its Hello instead (CiDaemonRegistry.admitByToken) — and a secret
-    // this container is never asked to present is a secret not worth handing an arbitrary image.
-    if (token == null) {
-      env.put("QITS_CI_DAEMON_SECRET", value(spec.secret()));
-    }
+    // Its launch id, which the daemon names in its first frame. There is no secret beside it: the
+    // run's token proves the run to qits-ci, and CiDaemonRegistry.admitByToken binds this id to
+    // that token's subject.
     env.put("QITS_CI_DAEMON_URL", value(plane.daemonUrl()));
     env.put("QITS_CI_DAEMON_BINARY_URL", value(plane.daemonBinaryUrl(spec.daemonBinaryUrl())));
     env.put("QITS_CI_REPOSITORY_URL", value(cloneUrl(plane.gitBaseUrl(), spec.repo())));
@@ -120,17 +117,17 @@ public final class StepWorkloadSpecs {
     env.put("QITS_NPM_REGISTRY_URL", value(plane.npmHostedUrl()));
     env.put("QITS_NPM_PROXY_URL", value(plane.npmProxyUrl()));
     env.put("QITS_MAVEN_REGISTRY_URL", value(plane.mavenRegistryUrl()));
-    // Maven Central through qits-platform-mirror, both address planes — see the fields' javadoc.
+    // Maven Central through qits-platform-mirror, under both names a pipeline reads it by.
     // Empty is the deliberate off state, so the ternary writes "" rather than skipping the keys:
     // a pipeline reads "${QITS_MAVEN_CENTRAL_MIRROR_URL:-}" either way and empty deactivates the
     // settings profile at every consumer.
     env.put("QITS_MAVEN_CENTRAL_MIRROR_URL",
-        settings.mavenCentralMirrorEnabled() ? value(plane.mavenCentralMirrorBuildUrl()) : "");
+        settings.mavenCentralMirrorEnabled() ? value(plane.mavenCentralMirrorUrl()) : "");
     env.put("QITS_MAVEN_PROXY_URL",
-        settings.mavenCentralMirrorEnabled() ? value(plane.mavenCentralMirrorStepUrl()) : "");
+        settings.mavenCentralMirrorEnabled() ? value(plane.mavenCentralMirrorUrl()) : "");
     env.put("QITS_DOCS_URL", value(plane.docsUrl()));
     // The store's own root, and the coordinate a composed release prelude downloads the qits CLI at.
-    // The first two are EMPTY-never-absent, so a deployment that has switched the CLI off hands
+    // The package is EMPTY-never-absent, so a deployment that has switched the CLI off hands
     // every step one shape to read.
     //
     // THE VERSION IS A PIN AND IS NEVER EMPTY. It comes from this reactor's own dependency on
@@ -142,39 +139,14 @@ public final class StepWorkloadSpecs {
     env.put("QITS_ARTIFACTS_URL", value(plane.artifactsUrl()));
     env.put("QITS_ARTIFACTS_CLI_PACKAGE", value(settings.artifactsCliPackage()).trim());
     env.put("QITS_ARTIFACTS_CLI_VERSION", settings.artifactsCliVersion());
-    // And where a step asks for its own repository to be released — same network, same reading of
-    // "reachable from where" as the npm pair.
+    // And where a step asks for its own repository to be released.
     env.put("QITS_WORKSPACES_URL", value(plane.workspacesUrl()));
-    // Git never receives the commissioned client secret as an HTTP credential.  Its helper exchanges
-    // that pair for a short-lived, audience-bound bearer when (and only when) Git asks for the
-    // configured qits-githost authority.  The helper is installed by BOOTSTRAP below, outside the
-    // checkout, so neither its configuration nor a token can enter a build context.
-    // The run's own QITS_EVENT_* pair decides which Git refs that credential may push (RunGitRefs).
-    if (commission != null) {
-      env.put("QITS_COMMISSIONED_CLIENT_ID", value(commission.clientId()));
-      env.put("QITS_COMMISSIONED_CLIENT_SECRET", value(commission.secret()));
-      env.put("QITS_GIT_AUTH_TOKEN_URL", tokenUrl(plane.idpUrl()));
-      env.put("QITS_GIT_AUTH_HOST", gitAuthority(plane.gitBaseUrl()));
-      env.put("QITS_GIT_AUTH_AUDIENCE", StepContainerSettings.CONTAINER_GIT_AUDIENCE);
-      env.put("GIT_CONFIG_GLOBAL", "/tmp/qits-gitconfig");
-      // And the same credential in the form a PUBLISHING step needs: the script BOOTSTRAP writes,
-      // named so a recipe can re-mint whenever it likes. $QITS_PUBLISH_TOKEN itself is exported by
-      // that same bootstrap rather than sent from here — it is minted inside the container, where
-      // the short-lived value belongs, and this service never holds one.
-      //
-      // NOT gated on the run's phase. A release-request (QA) run publishes too — the java-service
-      // archetype PUTs its userflows bundle to the docs store from a QA step — so the only honest
-      // gate is the one above: has this run a commission to mint with.
-      env.put("QITS_PUBLISH_TOKEN_COMMAND", StepContainerSettings.PUBLISH_TOKEN_COMMAND);
-    }
-    // THE EDGE PLANE'S CREDENTIAL, and it replaces the whole block above rather than joining it. A
-    // step outside the swarm cannot reach the idp's alias to mint from a pair, and the edge
-    // introspects a qits_tok_ itself — as a bearer, and as the password of git's and docker's Basic
-    // — so this run's ci-run token is everything such a step presents, and nothing that names the
-    // internal idp is sent at all: no pair, no token url, no git auth host, no audience. BOOTSTRAP's
-    // QITS_TOKEN branch turns it into the same four things the pair becomes (git helper, publish
-    // command, maven settings, npmrc); the token itself is the run's and dies with it
-    // (RunCommissions.release), so it is sent here rather than minted there.
+    // THE STEP'S CREDENTIAL, and the only one: this run's ci-run token. The edge introspects a
+    // qits_tok_ itself — as a bearer, and as the password of git's and docker's Basic — so the token
+    // is everything a step presents, and nothing that names the idp is sent at all: no client pair,
+    // no token url, no git auth host, no audience. BOOTSTRAP turns it into a git helper, a publish
+    // command, maven settings and an npmrc; the token itself is the run's and dies with it
+    // (RunCommissions.release).
     //
     // QITS_MAVEN_AUTH_USR/QITS_MAVEN_AUTH_PSW ride beside it for a reason BOOTSTRAP's own
     // -gs/DEPLOY_SETTINGS_FILE cannot reach (qits-441 follow-up, run ef26d331): every repository's
@@ -192,17 +164,13 @@ public final class StepWorkloadSpecs {
     // already asked for — one profile Maven DOES send preemptively for Basic, unlike the header
     // form. $QITS_TOKEN_SUBJECT is a stable, readable username; the password is the token itself,
     // which is exactly what the edge's Basic realm introspects as a qits_tok_ regardless of the
-    // username presented. Never set on the INTERNAL plane: those reads are anonymous through the
-    // swarm-internal registry, and setting a non-empty pair there would turn a working anonymous
-    // read into a credential the internal mirror does not expect and cannot validate.
-    if (token != null) {
-      env.put("QITS_TOKEN", value(token.token()));
-      env.put("QITS_TOKEN_SUBJECT", value(token.subject()));
-      env.put("QITS_MAVEN_AUTH_USR", value(token.subject()));
-      env.put("QITS_MAVEN_AUTH_PSW", value(token.token()));
-      env.put("GIT_CONFIG_GLOBAL", "/tmp/qits-gitconfig");
-      env.put("QITS_PUBLISH_TOKEN_COMMAND", StepContainerSettings.PUBLISH_TOKEN_COMMAND);
-    }
+    // username presented.
+    env.put("QITS_TOKEN", value(token.token()));
+    env.put("QITS_TOKEN_SUBJECT", value(token.subject()));
+    env.put("QITS_MAVEN_AUTH_USR", value(token.subject()));
+    env.put("QITS_MAVEN_AUTH_PSW", value(token.token()));
+    env.put("GIT_CONFIG_GLOBAL", "/tmp/qits-gitconfig");
+    env.put("QITS_PUBLISH_TOKEN_COMMAND", StepContainerSettings.PUBLISH_TOKEN_COMMAND);
     if (spec.docker() || spec.build()) {
       // The two flags are the two generations of the same declaration — `docker: true` mounts the
       // socket and `build: true` does not — and everything in this block is the BUILD-MODE
@@ -219,50 +187,27 @@ public final class StepWorkloadSpecs {
         env.put("DOCKER_BUILDKIT", "1");
         env.put("BUILDX_NO_DEFAULT_ATTESTATIONS", "1");
       }
-      // The platform-builder pair, and the kill switch's whole reach. ON, the step composes a
-      // buildctl push ref from $QITS_BUILD_REGISTRY and $BUILDKIT_HOST arrives from the runner,
-      // which owns the builder and its address — this service deliberately does not spell an
-      // address it does not own (the docker-socket-path lesson). OFF, both keys are sent EMPTY, the
-      // mirror pair's off value, and the empty BUILDKIT_HOST is load-bearing: the runner fills the
-      // key in only when the caller left it absent, so empty is how this service says "do not". A converted recipe then fails loudly at its first buildctl call
-      // rather than silently building through the socket it still holds; an unconverted one reads
-      // neither variable and is untouched.
-      //
-      // ON THE EDGE PLANE THE SAME TWO KEYS, AND NOTHING SPELLED BEHIND THE PLANE'S BACK. The builder
-      // is the runner's own on either plane — it fills BUILDKIT_HOST when the key is absent — and $QITS_BUILD_REGISTRY is the registry's public vhost, the one address
-      // a builder outside the swarm can push to, authenticated by the token document below. The
-      // kill switch is unchanged: off, both keys go empty on either plane.
-      env.put("QITS_BUILD_REGISTRY", settings.buildkitEnabled() ? value(plane.buildRegistryHost()) : "");
-      if (!settings.buildkitEnabled()) {
-        env.put("BUILDKIT_HOST", "");
-      }
-      // And this run's own push credential — the document, the directory the bootstrap writes it
-      // into, and the pair itself for a BuildKit secret mount. Commissioned at the run's first step
-      // and reused by every later one; absent whole on a deployment with no oidc client, where a
-      // step container's environment is exactly what it always was.
-      if (commission != null) {
-        env.put("DOCKER_CONFIG", StepContainerSettings.REGISTRY_AUTH_DIR);
-        env.put("QITS_CI_REGISTRY_AUTH_CONFIG", registryAuthConfig(commission, plane.authHosts()));
-        env.put("QITS_COMMISSIONED_CLIENT_ID", value(commission.clientId()));
-        env.put("QITS_COMMISSIONED_CLIENT_SECRET", value(commission.secret()));
-      } else if (token != null) {
-        // The same document for the edge plane: one login per public registry host, each
-        // `token:<qits_tok_…>` — the Basic form the edge's docker realm introspects. No pair beside
-        // it, for the block above's reason.
-        env.put("DOCKER_CONFIG", StepContainerSettings.REGISTRY_AUTH_DIR);
-        env.put(
-            "QITS_CI_REGISTRY_AUTH_CONFIG",
-            registryAuthConfig(TOKEN_LOGIN, token.token(), withPullHost(plane, spec.image())));
-      }
-    } else if (token != null && plane.imagePullHost(spec.image()) != null) {
-      // THE PULL'S OWN LOGIN, for an EDGE step that is not a build (qits-479). The runner pulls the
+      // The platform builder. The step composes a buildctl push ref from $QITS_BUILD_REGISTRY — the
+      // registry's public name, the one address a builder outside the swarm can push to — and
+      // $BUILDKIT_HOST arrives from the runner, which owns the builder and its address and fills
+      // the key in when it is absent. This service does not spell an address it does not own.
+      env.put("QITS_BUILD_REGISTRY", value(plane.registryHost()));
+      // And this run's login: one entry per public registry host, each `token:<qits_tok_…>` — the
+      // Basic form the edge's docker realm introspects — and the directory BOOTSTRAP writes the
+      // document into.
+      env.put("DOCKER_CONFIG", StepContainerSettings.REGISTRY_AUTH_DIR);
+      env.put(
+          "QITS_CI_REGISTRY_AUTH_CONFIG",
+          registryAuthConfig(TOKEN_LOGIN, token.token(), withPullHost(plane, spec.image())));
+    } else if (plane.imagePullHost(spec.image()) != null) {
+      // THE PULL'S OWN LOGIN, for a step that is not a build (qits-479). The runner pulls the
       // step image with its own docker, from the registry's public vhost, which answers an anonymous
       // /v2 with 401 — so it reads this document for exactly that pull (docker --config) and only
       // ever for it. One entry, the one host the image is pulled from; no DOCKER_CONFIG beside it,
       // so the bootstrap writes no file and nothing in the container logs in: a step that cannot
       // build is handed no docker login, the scope decision above. Nothing new reaches the
       // container either — the document is QITS_TOKEN, already in this environment, in docker's
-      // encoding. An internal step, and an edge step on somebody else's registry, get no key.
+      // encoding. A step whose image is on somebody else's registry gets no key.
       env.put(
           "QITS_CI_REGISTRY_AUTH_CONFIG",
           registryAuthConfig(
@@ -280,8 +225,8 @@ public final class StepWorkloadSpecs {
 
     String memory = stepMemoryLimit == null ? settings.memoryLimit() : stepMemoryLimit;
     return new WorkloadSpec(
-        // The image as THIS plane pulls it: exactly the run's reference on qits-net, and on the edge
-        // plane a platform registry host moved to its public vhost, path, tag and digest kept.
+        // The image as the runner's docker pulls it: a platform registry host moved to its public
+        // vhost, path, tag and digest kept.
         plane.imageReference(spec.image()),
         // The entrypoint and the bootstrap, as two lists rather than a command line. Nothing is
         // concatenated on either side of the wire, so the zero-interpolation property BOOTSTRAP
@@ -291,8 +236,9 @@ public final class StepWorkloadSpecs {
         env,
         // The human hint. It selects nothing — see RUN_LABEL.
         Map.of(StepContainerSettings.RUN_LABEL, value(spec.runId())),
-        plane.network(),
-        plane.extraHosts(),
+        // No docker network and no extra host: a step reaches everything by its public name.
+        null,
+        List.of(),
         // The other declared opt-in, and the reason it is here rather than in the script: the
         // sandbox below takes CAP_SETUID, CAP_SETGID and CAP_CHOWN away, so `su` and `chown`
         // both fail inside the container whatever it tries. Empty is the image's own default.
@@ -314,8 +260,12 @@ public final class StepWorkloadSpecs {
   }
 
   /**
-   * The smart-HTTP url of a repository as a step container clones it — see {@link
-   * StepContainerSettings#cloneUrl}, which is this with that bean's own base.
+   * The smart-HTTP url of a repository, as a step container clones it: {@code
+   * <base>/git/<projectId>/<repoName>} when the run carries the public coordinate, and the
+   * id-addressed {@code <base>/git/<repoId>} when it does not. {@code /git} is the codebase's
+   * second-level segment for the git wire protocol, so it lives here; the base names only which
+   * service hosts it. It is the daemon's {@code $QITS_CI_REPOSITORY_URL} — a value the container
+   * clones from, never a word in a command line.
    */
   static String cloneUrl(String containerGitUrl, CiRepoRef repo) {
     String base = containerGitUrl.replaceAll("/+$", "") + "/git/";
@@ -323,43 +273,31 @@ public final class StepWorkloadSpecs {
   }
 
   /**
-   * The docker {@code config.json} a publishing step logs in with, built from this run's own
-   * commissioned pair.
-   *
-   * <p><b>The scope is the decision that survived the cutover.</b> Only a step in BUILD MODE is
-   * handed this — {@code docker: true} or {@code build: true}, which is the shape the archetypes
-   * publish images from: the credential exists for a push, and a step that cannot build has nothing
-   * to push with, so the narrow scope costs nothing and keeps the secret out of every container
-   * that cannot use it.
-   *
-   * <p><b>One entry per host in {@code hosts} — {@code StepContainerSettings.authHosts}' union — all
-   * carrying the same pair.</b> The docker
-   * client picks a login by registry hostname and buildctl does the same, so a build that pulls
-   * from one host and pushes to another needs both named — which is exactly the shipped shape
-   * rather than an edge case, since {@code $QITS_REGISTRY} and {@code $QITS_BUILD_REGISTRY} are two
-   * network positions of one registry and only the second is where a push goes.
-   *
-   * <p><b>Hand-written JSON, and it stays that way.</b> The document is fixed keys around one base64
-   * value per host, and base64 has no character JSON escapes — so the only values that could need
-   * quoting are the hostnames, deployment facts, escaped here anyway rather than trusted. A Jackson
-   * mapper for a dozen tokens would be one more graph the native-image builder has to be told about,
-   * which is the rule the whole {@code githost} package already follows.
-   *
-   * <p>The base64 is the docker CLI's own encoding of {@code id:secret}, the same bytes {@code
-   * docker login} would store — <b>not</b> encryption, and no better protected than an environment
-   * variable, which is what it travels as.
-   */
-  static String registryAuthConfig(IdpCommissioner.Commission commission, List<String> hosts) {
-    return registryAuthConfig(commission.clientId(), commission.secret(), hosts);
-  }
-
-  /**
+   * The user half of a step's registry login.  /**
    * The user half of an edge step's registry login. Any value would do — the edge reads the
    * password and introspects it — so it names what the password is.
    */
   static final String TOKEN_LOGIN = "token";
 
-  /** {@link #registryAuthConfig(IdpCommissioner.Commission, List)} for any {@code user:secret}. */
+  /**
+   * The docker {@code config.json} a step's registry login is carried in: one entry per host in
+   * {@code hosts}, all carrying the same {@code user:secret}. The docker client picks a login by
+   * registry hostname and buildctl does the same, so a build that pulls from the mirror and pushes
+   * to the registry needs both named.
+   *
+   * <p><b>Only a step in BUILD MODE gets the whole document</b> — {@code docker: true} or {@code
+   * build: true} — since the credential exists for a push, and a step that cannot build has nothing
+   * to push with; any other step gets at most the one entry its own image pull needs.
+   *
+   * <p><b>Hand-written JSON, and it stays that way.</b> The document is fixed keys around one base64
+   * value per host, and base64 has no character JSON escapes — so the only values that could need
+   * quoting are the hostnames, escaped here anyway rather than trusted. A Jackson mapper for a dozen
+   * tokens would be one more graph the native-image builder has to be told about.
+   *
+   * <p>The base64 is the docker CLI's own encoding of {@code user:secret}, the same bytes {@code
+   * docker login} would store — <b>not</b> encryption, and no better protected than an environment
+   * variable, which is what it travels as.
+   */
   static String registryAuthConfig(String user, String secret, List<String> hosts) {
     String auth =
         Base64.getEncoder()
@@ -383,8 +321,8 @@ public final class StepWorkloadSpecs {
 
   /**
    * {@code plane}'s login hosts with the host the step image is pulled from added when they lack it,
-   * so a build step's document always logs in wherever its own image comes from. On the edge plane
-   * the two coincide by construction (an image is only ever moved onto the registry or mirror vhost,
+   * so a build step's document always logs in wherever its own image comes from. The two coincide
+   * by construction (an image is only ever moved onto the registry or mirror vhost,
    * and both are logged into), so this is a guard rather than a change.
    */
   private static List<String> withPullHost(StepAddressPlane plane, String image) {
@@ -395,22 +333,6 @@ public final class StepWorkloadSpecs {
     List<String> hosts = new java.util.ArrayList<>(plane.authHosts());
     hosts.add(pullHost);
     return hosts;
-  }
-
-  private static String tokenUrl(String idpBase) {
-    return value(idpBase).replaceAll("/+$", "") + "/token";
-  }
-
-  private static String gitAuthority(String gitBase) {
-    try {
-      URI uri = URI.create(gitBase);
-      if (uri.getScheme() == null || uri.getRawAuthority() == null || uri.getUserInfo() != null) {
-        throw new IllegalArgumentException("not an absolute git host URL");
-      }
-      return uri.getRawAuthority();
-    } catch (RuntimeException badUrl) {
-      throw new IllegalStateException("qits.ci.container-git-url must be an absolute URL", badUrl);
-    }
   }
 
   private static String value(String text) {

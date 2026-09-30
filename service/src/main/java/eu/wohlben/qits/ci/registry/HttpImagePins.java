@@ -28,18 +28,17 @@ import org.jboss.logging.Logger;
  * <p><b>The address is DERIVED, never configured</b> — {@code IdpCommissioner}'s rule, for its
  * reason: a second key is a second thing to keep in step with the first, and a pin resolved against
  * one store and pulled from another is worse than no pin. It is the origin of {@code
- * qits.artifacts.maven.registry-url}, which is {@code StepContainerSettings.resolvedArtifactsUrl}'s own
- * derivation and is set on every live deployment. That origin and the {@code /v2} registry are one
+ * qits.artifacts.maven.registry-url}, which is set on every live deployment. That origin and the {@code /v2} registry are one
  * service by construction: {@code qits.artifacts.registry-host}'s default is that same authority,
  * and the registry cannot be mounted anywhere else — docker resolves a reference against {@code
  * <host>/v2/} and accepts no path prefix.
  *
- * <p><b>Two network positions, one registry, and each is used for what it is.</b> {@code
- * qits.artifacts.registry-host} is the HOST DAEMON's view of the store — it is what a pull
- * reference must name, so it is what the pinned reference is built with — while what this process
- * dials is the in-network origin above. Resolving through one and pulling through the other is
- * correct and not a mismatch: a digest is content-addressed, so the same digest names the same
- * bytes at whichever address the daemon reaches them.
+ * <p><b>Two names, one registry, and each is used for what it is.</b> {@code
+ * qits.artifacts.registry-host} is the host a pinned reference is built with and recognised by,
+ * while what this process dials is the in-network origin above. A step's runner pulls the pinned
+ * image from neither: {@code StepAddressPlane} moves the reference to the registry's public name.
+ * Resolving through one and pulling through another is correct and not a mismatch: a digest is
+ * content-addressed, so the same digest names the same bytes at whichever address they are read.
  *
  * <p><b>No credential, deliberately.</b> qits-artifacts' {@code PublishGuard} guards the six
  * publish surfaces and lets every read through untouched, so a manifest read needs none — and
@@ -111,20 +110,11 @@ public class HttpImagePins implements CiStepImagePins {
   private final HttpClient client = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
 
   /**
-   * The registry as a PULL reference names it — the host daemon's view, and therefore what a pinned
+   * The registry as a pinned reference names it, and therefore what a pinned
    * reference is built with. Also the test for whether a reference is ours at all.
    */
   @ConfigProperty(name = "qits.artifacts.registry-host")
   String artifactsRegistryHost;
-
-  /**
-   * The same registry as the platform BUILDER resolves it. Read only as a second spelling a
-   * reference may already carry: a recipe that named {@code $QITS_BUILD_REGISTRY}'s host is naming
-   * this store too, and refusing to pin it would leave the one image the estate is most careful
-   * about floating.
-   */
-  @ConfigProperty(name = "qits.ci.buildkit.registry-host")
-  String buildkitRegistryHost;
 
   /** {@code qits.artifacts.url} when a deployment set it — see {@link #registryApiOrigin}. */
   @ConfigProperty(name = "qits.artifacts.url")
@@ -141,7 +131,7 @@ public class HttpImagePins implements CiStepImagePins {
     if (reference.indexOf('@') >= 0) {
       return Pin.alreadyPinned(reference);
     }
-    Ref ref = Ref.parse(reference, artifactsRegistryHost, buildkitRegistryHost);
+    Ref ref = Ref.parse(reference, artifactsRegistryHost);
     if (ref == null) {
       return Pin.foreign(reference);
     }
@@ -192,12 +182,9 @@ public class HttpImagePins implements CiStepImagePins {
    * The origin this process dials the registry at — {@code qits.artifacts.url} when a deployment
    * states one, otherwise the scheme and authority of {@code qits.artifacts.maven.registry-url}.
    *
-   * <p><b>It is {@code StepContainerSettings.resolvedArtifactsUrl}'s ladder, deliberately the same
-   * one.</b> That method decides the {@code $QITS_ARTIFACTS_URL} every step container reads, and
-   * this decides where qits-ci itself asks about the same store; two different answers would mean a
-   * step publishing to one address and its own pin resolved against another. It is derived rather
-   * than injected from that class because that class lives on the far side of the {@code
-   * CiStepRunner} seam and reaches into no adapter.
+   * <p>This is where qits-ci ITSELF asks about the store, from inside the swarm — not an address a
+   * step is told. A step reads the same store at its public name ({@code StepAddressPlane}); a
+   * digest is content-addressed, so the pin resolved here names the same bytes there.
    */
   String registryApiOrigin() {
     String explicit = artifactsUrl == null ? null : artifactsUrl.orElse(null);
@@ -240,19 +227,19 @@ public class HttpImagePins implements CiStepImagePins {
   record Ref(String host, String name, String tag) {
 
     /**
-     * <b>Ours is decided by the registry host and nothing else.</b> A reference that names one of
-     * this platform's two spellings of its own store is one this process can ask about; everything
+     * <b>Ours is decided by the registry host and nothing else.</b> A reference that names {@code
+     * qits.artifacts.registry-host} is one this process can ask about; everything
      * else — a bare official image, another registry, a mirror — is somebody else's store and is
      * {@code FOREIGN}. The narrowness is the safety property, {@code CiStepImage}'s own argument:
      * the only thing claimed here is what the platform published itself.
      */
-    static Ref parse(String reference, String artifactsRegistryHost, String buildkitRegistryHost) {
+    static Ref parse(String reference, String artifactsRegistryHost) {
       int slash = reference.indexOf('/');
       if (slash < 0) {
         return null;
       }
       String host = reference.substring(0, slash);
-      if (!isOurs(host, artifactsRegistryHost) && !isOurs(host, buildkitRegistryHost)) {
+      if (!isOurs(host, artifactsRegistryHost)) {
         return null;
       }
       String rest = reference.substring(slash + 1);

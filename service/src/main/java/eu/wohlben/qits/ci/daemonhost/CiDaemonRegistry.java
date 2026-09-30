@@ -17,12 +17,8 @@ import io.quarkus.websockets.next.CloseReason;
 import io.quarkus.websockets.next.WebSocketConnection;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.SecureRandom;
 import java.time.Duration;
-import java.util.Arrays;
-import java.util.Base64;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,10 +28,10 @@ import java.util.concurrent.TimeoutException;
 import org.jboss.logging.Logger;
 
 /**
- * The in-memory launch table: every step container qits-ci has started but not yet reaped, keyed by
- * the {@code daemonId} it was launched with, holding that launch's secret, the (run, step) it
- * belongs to, its connection once it dials, its lifecycle phase, and the listener its output goes
- * to. It is the in-JVM half of the control plane — {@link CiDaemonSocket} owns the WebSocket
+ * The in-memory launch table: every step container qits-ci has asked a runner for and not yet
+ * reaped, keyed by the {@code daemonId} it was launched with, holding the subject of its run's
+ * {@code ci-run} token, the (run, step) it belongs to, its connection once it dials, its lifecycle
+ * phase, and the listener its output goes to. It is the in-JVM half of the control plane — {@link CiDaemonSocket} owns the WebSocket
  * lifecycle and forwards frames here, exactly as {@code WorkspaceDaemonRegistry} sits behind {@code
  * DaemonControlSocket} in qits-workspaces.
  *
@@ -62,19 +58,20 @@ import org.jboss.logging.Logger;
  * <p>{@code CiDaemonRegistryTimeoutTest} holds the behaviour and greps this package for every one of
  * those conveniences, so a fourth wait added untimed fails a build rather than a run.
  *
- * <p><b>The secret authenticates the container on the INTERNAL plane, and only for one thing.</b> It
- * is minted per launch from {@link SecureRandom}, injected as env, presented on the dial, compared
- * with {@link MessageDigest#isEqual} and zeroed when the launch is reaped. There is no storage
- * beyond this map, which is what makes the restart story free: a qits-ci restart forgets every
- * secret by construction, so a daemon from a previous life dialling in presents one this registry
- * does not know and is closed 1008. What the secret authorizes is exactly "deliver data about this
- * run" — the container turns hostile the moment step code runs in it, so everything arriving over
- * that connection is attacker-influenced data, recorded and never trusted (which is why timestamps
- * are host-stamped and a {@code Hello}'s {@code daemonId} is checked rather than believed). On the
- * EDGE plane the run's {@code ci-run} token already proves exactly that — it is worth one run and
- * nothing else, minted at claim and dead when the run closes — so {@link #admitByToken} checks no
- * secret at all; the launch is still minted one (below), but an EDGE launch's step container is
- * never handed it.
+ * <p><b>A daemon is matched to its launch by the launch id it names, bound to its run's token.</b>
+ * The step's daemon dials through the platform edge with its run's {@code ci-run} token, so the
+ * connection arrives as that token's subject; its first frame, a {@code Hello}, names the launch;
+ * and {@link #admitByToken} admits it only when the named launch was recorded against that subject.
+ * There is no per-container secret and no handshake header: the {@code X-Qits-Ci-Daemon-Id}/{@code
+ * -Secret} pair a daemon on qits-net presented was deleted with that plane (qits-515). The launch
+ * id is not a secret — the token is the credential, worth one run and dead when the run closes.
+ * There is no storage beyond this map, which is what makes the restart story free: a qits-ci
+ * restart forgets every launch by construction, so a daemon from a previous life names one this
+ * registry does not know and is closed 1008. What an admitted connection may do is exactly
+ * "deliver data about this run" — the container turns hostile the moment step code runs in it, so
+ * everything arriving over that connection is attacker-influenced data, recorded and never trusted
+ * (which is why timestamps are host-stamped and a {@code Hello}'s {@code daemonId} is checked
+ * rather than believed).
  *
  * <p>{@code RunnerStepRunner} is what drives this in production, one step at a time.
  */
@@ -82,24 +79,6 @@ import org.jboss.logging.Logger;
 public class CiDaemonRegistry {
 
   private static final Logger LOG = Logger.getLogger(CiDaemonRegistry.class);
-
-  /**
-   * The handshake headers an INTERNAL-plane daemon presents (no {@code QITS_TOKEN}, forward-auth
-   * {@code qits:system}). Identity is a header rather than a path segment on purpose: the workspace
-   * control socket names its caller with a path parameter, so anything on the network can claim to
-   * be any workspace's daemon (migration-plan.md §9 item 22), and this socket accepts connections
-   * from containers running repo-controlled code by design. The two are validated together before
-   * the first frame is read.
-   *
-   * <p>An EDGE-plane daemon (a {@code ci-run} token, {@code qits:ci-run}) sends neither: qits-edge
-   * strips every inbound header with the reserved {@code X-Qits-} prefix, so these would never
-   * arrive, and a token-bound connection does not need the second factor they exist to be — the
-   * token already proves the run, and what is left to say is only <em>which</em> launch of it this
-   * is, named in the daemon's {@code Hello} and admitted by {@link #admitByToken}.
-   */
-  public static final String HEADER_ID = "X-Qits-Ci-Daemon-Id";
-
-  public static final String HEADER_SECRET = "X-Qits-Ci-Daemon-Secret";
 
   /** The close code every rejected dial gets: 1008, "policy violation". */
   public static final int CLOSE_UNAUTHORIZED = 1008;
@@ -123,11 +102,6 @@ public class CiDaemonRegistry {
 
   private final ConcurrentHashMap<String, Launch> launches = new ConcurrentHashMap<>();
 
-  private final SecureRandom random = new SecureRandom();
-
-  /** What a step container is launched with: its identity and the secret that proves it. */
-  public record Credentials(String daemonId, String secret) {}
-
   /**
    * Where a running step's output goes as it arrives — {@link CiStepRelay}, which is both the live
    * surface and the accumulator the persisted tail is read back out of.
@@ -145,10 +119,7 @@ public class CiDaemonRegistry {
   public enum Phase {
     /** Minted and (presumably) started; nothing has dialled. */
     LAUNCHED,
-    /**
-     * A dial was admitted — header-validated on the INTERNAL plane, token-and-{@code
-     * Hello}-validated on the EDGE one.
-     */
+    /** A dial was admitted: its {@code Hello} named this launch and its token is the run's. */
     CONNECTED,
     /** The daemon reported its clone and checkout done. */
     INITIALIZED,
@@ -215,19 +186,15 @@ public class CiDaemonRegistry {
   public enum Admission {
     ADMITTED,
     /**
-     * No launch record with that id — a stale daemon from before a restart, a stranger, or (on the
-     * EDGE plane, through {@link #admitByToken}) a first frame that did not decode as a {@link
-     * Hello} at all, which is exactly as unidentifiable.
+     * No launch record with that id — a stale daemon from before a restart, a stranger, or a first
+     * frame that did not decode as a {@link Hello} at all, which is exactly as unidentifiable.
      */
     UNKNOWN_DAEMON,
-    /** INTERNAL plane only: the id exists and the secret does not match it. */
-    BAD_SECRET,
     /** That launch already has an open connection; a second one is not a reconnect, it is a claim. */
     ALREADY_CONNECTED,
     /**
-     * EDGE plane only: the caller is a {@code qits:ci-run} token, and not this launch's run's — its
-     * subject is not the one recorded at {@link #registerLaunch(String, int, String, StepListener)},
-     * or the launch was recorded with none, an INTERNAL step, which no ci-run token may speak for.
+     * The caller is not this launch's run's token: the subject it arrived as is not the one
+     * recorded at {@link #registerLaunch(String, int, String, StepListener)}.
      */
     WRONG_RUN
   }
@@ -235,28 +202,21 @@ public class CiDaemonRegistry {
   // --- the launch side (called by the launcher / the runner's worker thread) ----------------------
 
   /**
-   * Mint an identity and a secret for one step container and record the launch. Called immediately
-   * before {@code docker run}, so the record exists before anything can dial against it.
+   * Mint an id for one step container and record the launch, bound to the subject of its run's
+   * {@code ci-run} token: the daemon dials through the edge with that token and is admitted only
+   * when the {@code sub} it arrives as is this one. Called before the runner is asked to start the
+   * container, so the record exists before anything can dial against it.
+   *
+   * @return the launch's {@code daemonId}, which the container is told as {@code
+   *     $QITS_CI_DAEMON_ID} and names in its {@code Hello}
    */
-  public Credentials registerLaunch(String runId, int stepIndex, StepListener listener) {
-    return registerLaunch(runId, stepIndex, null, listener);
-  }
-
-  /**
-   * {@link #registerLaunch(String, int, StepListener)}, bound to the run's {@code ci-run} token
-   * subject beside the secret — an EDGE step's, whose daemon dials through the edge with that token
-   * and is admitted only when the {@code sub} it arrives as is this one. Null binds nothing, which is
-   * every INTERNAL step: its daemon asserts the forward-auth pair on qits-net as it always has.
-   */
-  public Credentials registerLaunch(
+  public String registerLaunch(
       String runId, int stepIndex, String tokenSubject, StepListener listener) {
+    Objects.requireNonNull(tokenSubject, "a launch is bound to its run's token subject");
     String daemonId = UUID.randomUUID().toString();
-    byte[] entropy = new byte[32];
-    random.nextBytes(entropy);
-    String secret = Base64.getUrlEncoder().withoutPadding().encodeToString(entropy);
-    launches.put(daemonId, new Launch(daemonId, secret, runId, stepIndex, tokenSubject, listener));
+    launches.put(daemonId, new Launch(daemonId, runId, stepIndex, tokenSubject, listener));
     LOG.debugf("Minted ci-daemon %s for run %s step %d", daemonId, runId, stepIndex);
-    return new Credentials(daemonId, secret);
+    return daemonId;
   }
 
   /**
@@ -358,9 +318,9 @@ public class CiDaemonRegistry {
   }
 
   /**
-   * Forget a launch: close its socket, complete anything still pending so no await can outlive the
-   * record, and zero the secret. Called on every teardown path — the secret's lifetime is the
-   * container's, and after this a dial presenting it is closed 1008 like any stranger's.
+   * Forget a launch: close its socket and complete anything still pending so no await can outlive
+   * the record. Called on every teardown path — after this a dial naming the launch is closed 1008
+   * like any stranger's.
    *
    * <p>The close is <b>bounded</b>, for the reason the whole package is: this runs on the run
    * worker, and the caller's very next statement is the {@code docker rm -f} that removes the
@@ -382,7 +342,6 @@ public class CiDaemonRegistry {
     if (connection != null && connection.isOpen()) {
       closeBounded(connection, null, "reaped ci-daemon " + daemonId);
     }
-    Arrays.fill(launch.secret, (byte) 0);
   }
 
   /**
@@ -445,56 +404,21 @@ public class CiDaemonRegistry {
   // --- the socket side --------------------------------------------------------------------------
 
   /**
-   * INTERNAL plane: validate a dial's two headers against the launch table and, when they hold,
-   * bind the connection to that launch. Everything here happens before a single frame is processed,
-   * and an unadmitted connection is closed 1008 by the caller.
-   *
-   * <p>Atomic in the id, so two simultaneous dials for one launch cannot both be admitted: the
-   * second is {@link Admission#ALREADY_CONNECTED}, which is a re-dial claim rather than a reconnect.
-   * A ci daemon has one container lifetime and one step, so it has nothing to reconnect for; a
-   * second socket on one launch would be a second party wanting to speak for it.
-   */
-  public Admission admit(String daemonId, String secret, WebSocketConnection connection) {
-    if (daemonId == null || secret == null) {
-      return Admission.UNKNOWN_DAEMON;
-    }
-    Launch launch = launches.get(daemonId);
-    if (launch == null) {
-      return Admission.UNKNOWN_DAEMON;
-    }
-    synchronized (launch) {
-      if (!MessageDigest.isEqual(launch.secret, secret.getBytes(StandardCharsets.UTF_8))) {
-        return Admission.BAD_SECRET;
-      }
-      if (launch.connection != null && launch.connection.isOpen()) {
-        return Admission.ALREADY_CONNECTED;
-      }
-      launch.connection = connection;
-      launch.phase = Phase.CONNECTED;
-    }
-    launch.registered.complete(Boolean.TRUE);
-    LOG.debugf(
-        "ci-daemon %s registered for run %s step %d (connection %s)",
-        daemonId, launch.runId, launch.stepIndex, connection.id());
-    return Admission.ADMITTED;
-  }
-
-  /**
-   * EDGE plane: admit a token-bound connection once its {@link Hello} has named the launch it is.
-   * {@code runSubject} is the {@code ci-run} token's {@code sub} the caller arrived as — empty when
-   * it arrived as none. No secret is checked here: a {@code ci-run} token is worth exactly one run,
-   * so what remains to establish is only which of that run's launches this connection is, and a
-   * launch id is not a secret.
+   * Admit a connection once its {@link Hello} has named the launch it is. {@code runSubject} is the
+   * {@code sub} the caller arrived as — its {@code ci-run} token's — and empty when it arrived as
+   * none. No secret is checked: a {@code ci-run} token is worth exactly one run, so what remains to
+   * establish is only which of that run's launches this connection is, and a launch id is not a
+   * secret.
    *
    * <p><b>The subject binds the socket to ITS run.</b> The edge admits the token to {@code
    * /ci/daemon} for any launch id at all, so a caller that merely knew another launch's id could
    * otherwise speak for that launch by naming it — the mismatch is {@link Admission#WRONG_RUN},
-   * logged here with both subjects, before the frame that named it is processed any further. A
-   * launch recorded with no {@code tokenSubject} is an INTERNAL step's, which no {@code ci-run}
-   * token may speak for regardless of subject.
+   * logged here with both subjects, before the frame that named it is processed any further.
    *
-   * <p>Atomic in the id for the identical reason {@link #admit} is: two dials racing to name one
-   * launch cannot both be admitted, and the second is {@link Admission#ALREADY_CONNECTED}.
+   * <p>Atomic in the id, so two dials racing to name one launch cannot both be admitted: the second
+   * is {@link Admission#ALREADY_CONNECTED}, which is a re-dial claim rather than a reconnect. A ci
+   * daemon has one container lifetime and one step, so it has nothing to reconnect for; a second
+   * socket on one launch would be a second party wanting to speak for it.
    */
   public Admission admitByToken(String daemonId, String runSubject, WebSocketConnection connection) {
     if (daemonId == null) {
@@ -505,17 +429,11 @@ public class CiDaemonRegistry {
       return Admission.UNKNOWN_DAEMON;
     }
     synchronized (launch) {
-      if (launch.tokenSubject == null || !launch.tokenSubject.equals(runSubject)) {
+      if (!launch.tokenSubject.equals(runSubject)) {
         LOG.warnf(
-            "ci-daemon %s of run %s step %d was dialled with the ci-run token of subject '%s',"
-                + " and the run's token is %s — refused WRONG_RUN",
-            daemonId,
-            launch.runId,
-            launch.stepIndex,
-            runSubject,
-            launch.tokenSubject == null
-                ? "none (an INTERNAL step)"
-                : "'" + launch.tokenSubject + "'");
+            "ci-daemon %s of run %s step %d was dialled as subject '%s', and the run's ci-run token"
+                + " is '%s' — refused WRONG_RUN",
+            daemonId, launch.runId, launch.stepIndex, runSubject, launch.tokenSubject);
         return Admission.WRONG_RUN;
       }
       if (launch.connection != null && launch.connection.isOpen()) {
@@ -526,7 +444,7 @@ public class CiDaemonRegistry {
     }
     launch.registered.complete(Boolean.TRUE);
     LOG.debugf(
-        "ci-daemon %s registered for run %s step %d (connection %s, token-authenticated)",
+        "ci-daemon %s registered for run %s step %d (connection %s)",
         daemonId, launch.runId, launch.stepIndex, connection.id());
     return Admission.ADMITTED;
   }
@@ -690,22 +608,15 @@ public class CiDaemonRegistry {
     return launch;
   }
 
-  /** One launched step container: the credentials it holds and the transitions it owes the host. */
+  /** One launched step container: what it is bound to and the transitions it owes the host. */
   private static final class Launch {
 
     private final String daemonId;
 
-    /**
-     * Held as bytes rather than a String so {@link MessageDigest#isEqual} compares it without a
-     * conversion at every dial, and so {@link #reap} can actually zero it — a String would leave the
-     * secret in the heap until the collector felt like it.
-     */
-    private final byte[] secret;
-
     private final String runId;
     private final int stepIndex;
 
-    /** The run's ci-run token subject for an EDGE step; null for an INTERNAL one. */
+    /** The subject of the run's ci-run token, which the daemon's connection must arrive as. */
     private final String tokenSubject;
 
     private final StepListener listener;
@@ -730,13 +641,11 @@ public class CiDaemonRegistry {
 
     Launch(
         String daemonId,
-        String secret,
         String runId,
         int stepIndex,
         String tokenSubject,
         StepListener listener) {
       this.daemonId = daemonId;
-      this.secret = secret.getBytes(StandardCharsets.UTF_8);
       this.runId = runId;
       this.stepIndex = stepIndex;
       this.tokenSubject = tokenSubject;
