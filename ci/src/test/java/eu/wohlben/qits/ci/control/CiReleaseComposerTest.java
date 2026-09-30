@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -267,27 +268,21 @@ public class CiReleaseComposerTest {
   }
 
   @Test
-  public void theDockerBuildSecretFilesFallBackToTheRunToken() {
-    // The second instance of the same defect (epic qits-441): the commissioned pair is what a
-    // buildctl `--secret id=…` mount reads for the maven mirror's credential, and on the EDGE
-    // plane a step holds no pair — only $QITS_TOKEN. Both files used to come out empty in that
-    // case (`printf '%s' "${QITS_COMMISSIONED_CLIENT_ID:-}"` with nothing to substitute), which
-    // is an empty Basic credential and a 401 from the mirror rather than an anonymous read. The
-    // pair still wins when both halves are present; only their absence falls back to the token.
+  public void theDockerBuildSecretFilesCarryTheRunToken() {
+    // The two files a buildctl `--secret id=…` mount reads for the maven mirror's credential are
+    // written from the run's token and its subject: a step holds $QITS_TOKEN and no commissioned
+    // pair, and the branch that preferred a pair was deleted with the internal plane (qits-515).
     CiReleaseComposer.Composed composed =
         CiReleaseComposer.compose(
             REPO, slots("archetype: java-service\n"), archetype("java-service", JAVA_SERVICE));
 
     String document = composed.releaseDocument();
+    assertFalse(document.contains("QITS_COMMISSIONED_CLIENT"), document);
     assertTrue(
         document.contains(
             "      (\n"
                 + "        umask 077\n"
-                + "        if [ -n \"${QITS_COMMISSIONED_CLIENT_ID:-}\" ]; then\n"
-                + "          printf '%s' \"$QITS_COMMISSIONED_CLIENT_ID\" > /tmp/qits-client-id\n"
-                + "          printf '%s' \"$QITS_COMMISSIONED_CLIENT_SECRET\" >"
-                + " /tmp/qits-client-secret\n"
-                + "        elif [ -n \"${QITS_TOKEN:-}\" ]; then\n"
+                + "        if [ -n \"${QITS_TOKEN:-}\" ]; then\n"
                 + "          printf '%s' \"${QITS_TOKEN_SUBJECT:-qits-ci-run}\" >"
                 + " /tmp/qits-client-id\n"
                 + "          printf '%s' \"$QITS_TOKEN\" > /tmp/qits-client-secret\n"
@@ -300,10 +295,10 @@ public class CiReleaseComposerTest {
   }
 
   @Test
-  public void theDockerBuildSecretFilesReachARealShellCorrectlyInAllThreeArms() throws Exception {
+  public void theDockerBuildSecretFilesReachARealShellCorrectlyInEveryArm() throws Exception {
     // Same shape as the CLI-download execution test below: the string assertion above proves
-    // what bytes are emitted, this proves a shell reads them the way the comment claims, across
-    // the pair, the token-only fallback, and neither.
+    // what bytes are emitted, this proves a shell reads them the way the comment claims, with a
+    // token and its subject, with a token alone, and with neither.
     CiReleaseComposer.Composed composed =
         CiReleaseComposer.compose(
             REPO, slots("archetype: java-service\n"), archetype("java-service", JAVA_SERVICE));
@@ -314,30 +309,29 @@ public class CiReleaseComposerTest {
       Path scriptFile = work.resolve("run.sh");
       Files.writeString(scriptFile, fragment);
 
-      // The pair present: it wins even though a token is also set.
+      // A commissioned pair in the environment is read by nothing: the token is what is written.
       run(scriptFile, work, Map.of(
           "QITS_COMMISSIONED_CLIENT_ID", "the-client-id",
           "QITS_COMMISSIONED_CLIENT_SECRET", "the-client-secret",
           "QITS_TOKEN", "the-run-token",
           "QITS_TOKEN_SUBJECT", "the-run-subject"));
-      assertEquals("the-client-id", Files.readString(work.resolve("qits-client-id")));
-      assertEquals("the-client-secret", Files.readString(work.resolve("qits-client-secret")));
+      assertEquals("the-run-subject", Files.readString(work.resolve("qits-client-id")));
+      assertEquals("the-run-token", Files.readString(work.resolve("qits-client-secret")));
 
-      // No pair, a token: the fallback.
+      // The token and its subject.
       run(scriptFile, work, Map.of(
           "QITS_TOKEN", "the-run-token",
           "QITS_TOKEN_SUBJECT", "the-run-subject"));
       assertEquals("the-run-subject", Files.readString(work.resolve("qits-client-id")));
       assertEquals("the-run-token", Files.readString(work.resolve("qits-client-secret")));
 
-      // No pair, a token, and no subject — an older qits-ci: still a real id rather than an
-      // empty one.
+      // A token and no subject — an older qits-ci: still a real id rather than an empty one.
       run(scriptFile, work, Map.of("QITS_TOKEN", "the-run-token"));
       assertEquals("qits-ci-run", Files.readString(work.resolve("qits-client-id")));
       assertEquals("the-run-token", Files.readString(work.resolve("qits-client-secret")));
 
-      // Neither: the internal-plane case, unchanged — both files empty rather than the script
-      // failing under -eu on an unset variable.
+      // No token: both files empty rather than the script failing under -eu on an unset
+      // variable.
       run(scriptFile, work, Map.of());
       assertEquals("", Files.readString(work.resolve("qits-client-id")));
       assertEquals("", Files.readString(work.resolve("qits-client-secret")));

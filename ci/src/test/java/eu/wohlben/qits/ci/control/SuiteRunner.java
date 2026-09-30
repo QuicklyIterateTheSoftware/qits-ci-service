@@ -29,7 +29,7 @@ import org.jboss.logging.Logger;
  * step seam. Nothing here decides anything a production runner would not.
  *
  * <p><b>Its row is re-made for every test</b> ({@link #reset}, from {@code CiTestSupport}): one slot
- * — the suite's old {@code qits.ci.concurrent-builds=1} — docker-capable, full id range, INTERNAL,
+ * — the suite's old {@code qits.ci.concurrent-builds=1} — docker-capable, full id range,
  * and connected in {@link FakeRunnerPresence}. A fresh row carries no infra streak and no
  * quarantine, so a test that fails the runner by the infrastructure cannot poison the next one. A test about runner rows that deletes them all simply leaves this one
  * with nothing to reserve for.
@@ -120,7 +120,7 @@ public class SuiteRunner implements CiBacklogListener {
     row.id = id;
     row.name = name;
     row.slots = slots;
-    row.plane = CiRunnerPlane.INTERNAL;
+    row.plane = CiRunnerPlane.EDGE;
     row.clientId = "client-" + name + "-" + id;
     row.capabilities = "{\"docker\":true,\"arch\":\"amd64\"}";
     row.registeredAt = Instant.now();

@@ -407,7 +407,7 @@ public class CiAutoRetryTest extends CiTestSupport {
               runner.id = UUID.randomUUID();
               runner.name = name;
               runner.slots = 2;
-              runner.plane = CiRunnerPlane.INTERNAL;
+              runner.plane = CiRunnerPlane.EDGE;
               runner.clientId = "client-" + name;
               runner.capabilities = "{\"docker\":true,\"arch\":\"amd64\"}";
               runner.registeredAt = Instant.now();

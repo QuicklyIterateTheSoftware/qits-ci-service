@@ -87,14 +87,49 @@ public class CiRunnersTest extends CiTestSupport {
     assertEquals(0, QuarkusTransaction.requiringNew().call(() -> runnerRows.count()));
   }
 
+  /**
+   * A row that still stores the retired {@code INTERNAL} — the column's own default, and what a
+   * runner declared before qits-515 carried — reads as EDGE rather than failing the enum mapping,
+   * which would cost every read of the runner table. No migration rewrites it.
+   */
   @Test
-  public void aRunnerIsCreatedWithOneSlotOnTheInternalPlaneAndUnregistered() {
+  public void aRowStillStoringTheRetiredInternalPlaneReadsAsEdge() {
+    UUID id = UUID.randomUUID();
+    QuarkusTransaction.requiringNew()
+        .run(
+            () ->
+                runnerRows
+                    .getEntityManager()
+                    .createNativeQuery(
+                        "insert into ci_runner (id, name, slots, plane, created_at) values"
+                            + " (?1, 'left-internal', 1, 'INTERNAL', current_timestamp)")
+                    .setParameter(1, id)
+                    .executeUpdate());
+
+    assertEquals(CiRunnerPlane.EDGE, service.get(id).plane);
+    assertEquals(CiRunnerPlane.EDGE, service.views().get(0).plane());
+    // A write of the row stores the one word there is.
+    service.patch(id, 2, null);
+    assertEquals(
+        "EDGE",
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    runnerRows
+                        .getEntityManager()
+                        .createNativeQuery("select plane from ci_runner where id = ?1")
+                        .setParameter(1, id)
+                        .getSingleResult()));
+  }
+
+  @Test
+  public void aRunnerIsCreatedWithOneSlotOnTheEdgePlaneAndUnregistered() {
     CiRunner created = create("fresh");
 
     CiRunner read = service.get(created.id);
     assertEquals("fresh", read.name);
     assertEquals(CiRunners.DEFAULT_SLOTS, read.slots);
-    assertEquals(CiRunnerPlane.INTERNAL, read.plane);
+    assertEquals(CiRunnerPlane.EDGE, read.plane);
     assertEquals("token-fresh", read.registrationTokenId);
     assertEquals("tok-ci-runner-registration-fresh", read.registrationTokenSubject);
     assertFalse(read.registered());
@@ -288,7 +323,7 @@ public class CiRunnersTest extends CiTestSupport {
     assertEquals(runner.id, dto.id());
     assertEquals("mapped", dto.name());
     assertEquals(1, dto.slots());
-    assertEquals(CiRunnerPlane.INTERNAL, dto.plane());
+    assertEquals(CiRunnerPlane.EDGE, dto.plane());
     assertEquals("arm64", dto.capabilities().get("arch").asText());
     assertTrue(dto.capabilities().get("docker").asBoolean());
     assertTrue(dto.registered());
