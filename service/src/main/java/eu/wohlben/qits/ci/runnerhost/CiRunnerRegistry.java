@@ -442,7 +442,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
     List<Session> retiring = settle(session);
     announceConnected(session, hello, pin, current, speaks);
     if (!current) {
-      String image = addresses.runnerImage(pin);
+      String image = addresses.runnerImage(row.plane, pin);
       LOG.infof(
           "Runner %s said hello as %s (capability %d) and the pin is %s — upgrading it to %s; this"
               + " connection drains",

@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.runnerhost;
 
 import eu.wohlben.qits.ci.entity.CiRunner;
+import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.io.IOException;
@@ -36,7 +37,7 @@ import java.util.regex.Pattern;
  * assignment — and in an argument of {@code docker}, so each is held to a charset that is literal
  * in all of them: no quote, backslash, whitespace, {@code $} or brace.
  * A value outside it is refused here rather than rendered into something that parses differently on
- * a root shell. The config-side values are checked by {@link #requireRenderable()} before anything
+ * a root shell. The config-side values are checked by {@link #requireRenderable(CiRunnerPlane)} before anything
  * is minted; the token by {@link #requireCarriable(String)} straight after, while it can still be
  * given back. The script checks the four values again on the host, since there they arrive from an
  * environment rather than from this class.
@@ -93,6 +94,22 @@ public class RunnerInstallScript {
     require(VERSION, pins.version(), CiRunnerPins.OVERRIDE_KEY + " / the pinned protocol version");
   }
 
+  /**
+   * {@link #requireRenderable()} for a runner on {@code plane} that is being created or given a new
+   * token: what its line dials and what it is upgraded from are the plane's addresses, so those are
+   * the ones checked and an INTERNAL refusal names the keys that plane reads.
+   */
+  public void requireRenderable(CiRunnerPlane plane) {
+    if (plane != CiRunnerPlane.INTERNAL) {
+      requireRenderable();
+      return;
+    }
+    require(URL, addresses.ciBase(plane), "the CI base (qits.ci.runner.internal-url)");
+    require(
+        REGISTRY, addresses.registryHost(plane), "the registry host (qits.artifacts.registry-host)");
+    require(VERSION, pins.version(), CiRunnerPins.OVERRIDE_KEY + " / the pinned protocol version");
+  }
+
   /** Refuses a token qits-idp minted that the line could not carry verbatim. */
   public static void requireCarriable(String token) {
     if (token == null || !TOKEN.matcher(token).matches()) {
@@ -106,9 +123,10 @@ public class RunnerInstallScript {
     return generic(addresses.registryHost(), pins.version());
   }
 
-  /** The line for this runner and this token, dialling this deployment's CI base. */
+  /** The line for this runner and this token, dialling the CI base of the runner's plane. */
   public String line(CiRunner runner, String registrationToken) {
-    return line(new Line(addresses.ciBase(), runner.id, registrationToken, runner.slots));
+    return line(
+        new Line(addresses.ciBase(runner.plane), runner.id, registrationToken, runner.slots));
   }
 
   /**

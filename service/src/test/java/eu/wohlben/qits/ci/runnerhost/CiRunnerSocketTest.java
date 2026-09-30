@@ -43,6 +43,7 @@ import eu.wohlben.qits.cirunner.protocol.Upgrade;
 import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.common.http.TestHTTPResource;
+import io.quarkus.test.junit.QuarkusMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.quarkus.test.security.TestSecurity;
@@ -468,6 +469,34 @@ class CiRunnerSocketTest {
       assertNull(runner.next(Ack.class, Duration.ofMillis(500)), "no Ack it cannot read");
       assertTrue(runner.isOpen());
       assertTrue(registry.versions(runnerId).updating());
+    }
+    awaitDisconnected();
+  }
+
+  @Test
+  @TestSecurity(user = "runner", roles = RUNNER_ROLE)
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void theUpgradeNamesTheImageOnTheRegistryOfTheRunnersPlane() throws Exception {
+    QuarkusMock.installMockForType(
+        RunnerAddressesFixture.withDomain("example.org"), RunnerAddresses.class);
+
+    // INTERNAL, as declared: the platform host's own docker pulls it, under the host's spelling.
+    try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
+      runner.send(hello("0.0.1-old", CiRunnerProtocol.CAPABILITY_VERSION));
+      assertEquals(
+          "registry.dev.localhost:8080/qits/qits-ci-runner:" + pins.version(),
+          runner.next(Upgrade.class, SOON).image());
+    }
+    awaitDisconnected();
+
+    // EDGE: the public registry, as ever.
+    QuarkusTransaction.requiringNew()
+        .run(() -> runnerRows.findById(runnerId).plane = CiRunnerPlane.EDGE);
+    try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
+      runner.send(hello("0.0.1-old", CiRunnerProtocol.CAPABILITY_VERSION));
+      assertEquals(
+          "registry.qits.example.org/qits/qits-ci-runner:" + pins.version(),
+          runner.next(Upgrade.class, SOON).image());
     }
     awaitDisconnected();
   }

@@ -155,7 +155,7 @@ it then holds open to pull work.
 (`MachineAuth.require()`, exactly as the cancellation asks; no `project` claim is required, since a
 runner belongs to no project). **The machine caller is the bootstrap's own service client**: on a cold
 start it creates the `localhost` runner, reads the registration token out of the 201's
-`installScript`, and hands it to the deployer — with nobody at a keyboard. Greenlight and a health
+`installScript`, and starts the runner's container with it — with nobody at a keyboard. Greenlight and a health
 check on demand stay `qits:admin` alone, because nothing on that path needs them: the register door
 queues a new runner's first health check itself and a green one lifts the quarantine. `qits:agent`
 writes nothing here, and the register door admits `qits:ci-runner-registration` alone.
@@ -200,7 +200,7 @@ are spared, since a create commissions before it writes). With the qits oidc cli
 shipped posture — nothing can be commissioned, and the create, a rotation and the register door
 answer 503.
 
-**A runner goes through the public edge**, and every address it is told is a public name
+**An `EDGE` runner goes through the public edge**, and every address it is told is a public name
 (`runnerhost/RunnerAddresses`, the one place they are composed). It is a machine a person owns — not
 on the swarm, no qits-net, no internal DNS — so the CI base is `https://ci.qits.<domain>`, `socketUrl`
 `wss://ci.qits.<domain>/ci/runners/socket`, `tokenUrl` `https://idp.qits.<domain>/idp/token`, and the
@@ -220,6 +220,18 @@ says. Each has an override that ships unset — `qits.ci.runner.public-url`, `qi
 `quarkus.oidc-client.qits.auth-server-url` names + `/token`, `qits.ci.runner.artifacts-internal-url` =
 `http://${QITS_ENVIRONMENT:dev}-qits-artifacts:8080`), with a WARN the first time one is composed that
 a runner outside the swarm cannot use them. The steps a runner starts are told the same domain's names only on the EDGE plane — below.
+
+**An `INTERNAL` runner is on qits-net and is told the qits-net addresses**, whatever the domain and
+whatever the three overrides say (`RunnerAddresses.ciBase(plane)` and its siblings, read off the
+runner's row): the CI base is `qits.ci.runner.internal-url`, `socketUrl`
+`ws://<env>-qits-ci:8080/ci/runners/socket`, `tokenUrl` the idp
+`quarkus.oidc-client.qits.auth-server-url` names + `/token`, and the registry its `Upgrade` image is
+pulled from `qits.artifacts.registry-host` — the platform host's own docker's spelling, the one it
+pulls every step image under. No WARN, since nothing fell back: those are the right addresses for a
+runner beside qits-ci. A platform being bootstrapped is why — it states its domain before any edge
+answers under it, so a public name there is a door nothing opens. An `EDGE` row's answers are the
+paragraph above, unchanged. The generic `install.sh` names no runner and keeps the plane-less
+composition.
 
 **Installing is one line** (`runnerhost/RunnerInstallScript`). The create and a rotation answer the
 runner's own read fields flat, as `GET` does, plus `installScript` — whose value is the line to paste:
@@ -261,8 +273,9 @@ The template's shape is qits-ci-runner-daemon's `scripts/test-install-contract.s
 beside this one, and writes the rendering to `service/target/runner-install.fixture.sh`, which is that
 repository's committed fixture.
 
-**A runner's `plane` decides what its STEPS are told** (epic qits-441), never what the runner itself
-is told — the install line and the register door's answer are the edge names above whatever the plane.
+**A runner's `plane` decides what its STEPS are told** (epic qits-441), and what the runner itself is
+told with it: an `INTERNAL` runner is on qits-net and is told the qits-net addresses — its install
+line, the register door's answer and its `Upgrade` image — and an `EDGE` one the edge names above.
 `INTERNAL` is a step on qits-net: every service's wire alias, `qits.ci.network`, the host gateway, and
 the run's commissioned client — the step the retired in-process executor started, byte for byte
 (`runnerhost/StepAddressPlane.internal`, pinned whole by `StepEnvironmentCharacterizationTest`). `EDGE`
@@ -350,14 +363,15 @@ the draining one for what it took before, the successor for everything after. A 
 and its row in the queue carry `runnerVersion` (what its current connection said), `targetVersion`
 (the pin) and `updating` (a draining connection is still open); `connected` is any open connection.
 
-**A deployer-managed runner is never upgraded by qits-ci** (qits-443). The platform host's `localhost`
-runner runs as a swarm service with `QITS_CI_RUNNER_SELF_UPDATE=false` and advertises the capability
-label `qits.ci.runner.self-update=false`; a `Hello` carrying it is taken as it is whatever its
+**A deployer-managed runner is never upgraded by qits-ci** (qits-443). A runner started with
+`QITS_CI_RUNNER_SELF_UPDATE=false` advertises the capability label
+`qits.ci.runner.self-update=false`; a `Hello` carrying it is taken as it is whatever its
 `runnerVersion` — no `Upgrade`, no draining, `Ack` with the row's slots, `Reserve` claims as ever and
 `updating` is never true, while `targetVersion` still shows the pin. **Its version moves when
-qits-deployments redeploys it**: the new container dials as a second connection, and the old one is
+whatever manages it redeploys it**: the new container dials as a second connection, and the old one is
 sent `Retire` like any superseded connection. Only a capability version this host does not speak
-still refuses it, since there is nothing to update it to.
+still refuses it, since there is nothing to update it to. The platform host's `localhost` is not one
+of these: it self-updates like any runner — below.
 
 **`Reserve` is the claim, and the only one** (qits-506 deleted the in-process worker pool and its
 claim loops). `CiRunService.reserveFor` walks the queue in `CiRunOrdering.suggestedOrder` and takes the
@@ -412,11 +426,13 @@ runner listing (`GET /ci/api/runners`, the queue's `runners`) answers it **first
 name, and `DELETE` of it answers **409 `LAST_RUNNER`** (`{"code": "LAST_RUNNER", "message": …}`) while
 no other runner row exists, since with no in-process executor left it is the only thing that
 executes a step. The bootstrap creates it on a cold start (see the `qits:system` paragraph above).
-**Its install values are pasted into qits-configuration, never into a shell**: the operator (or the
-bootstrap) takes `QITS_CI_RUNNER_ID` and `QITS_CI_RUNNER_REGISTRATION_TOKEN` out of the create's (or a
-rotation's) `installScript` and stores them as `env.QITS_CI_RUNNER_ID` and
-`env.QITS_CI_RUNNER_REGISTRATION_TOKEN` of the application `qits-ci-runner`, which qits-deployments
-runs as a swarm service on the platform host; the curl line is for a machine a person owns.
+**The bootstrap starts it as a container, not the deployer and not qits-configuration**: it declares
+the row `plane: INTERNAL`, takes `QITS_CI_RUNNER_ID` and `QITS_CI_RUNNER_REGISTRATION_TOKEN` out of the
+create's (or a rotation's) `installScript` and runs the ordinary `qits-ci-runner` image with them as a
+plain container on the platform host, attached to qits-net — no swarm service, no application
+`qits-ci-runner`, no `env.*` entry. The runner registers through the raw-token door on qits-net and is
+told the qits-net addresses ("An `INTERNAL` runner", above), so it needs no edge to come up, and it
+follows the pin by `Upgrade` like any other runner. The curl line is for a machine a person owns.
 
 #### Readiness counts runners
 
@@ -2057,7 +2073,7 @@ the contract; the diagram illustrates it.
 read is an HTTP call, so the host needs no `git`, and the container lifecycle is two frames on the
 runner socket, so it needs no docker CLI either. Every docker call is the runner's, on the runner's
 host: `docker run` for a `Launch`, `docker rm` for a `Reap`, and its own boot sweep. That holds for
-the platform host too, whose steps are run by the `localhost` runner qits-deployments deploys beside
+the platform host too, whose steps are run by the `localhost` runner the bootstrap starts beside
 qits-ci. `exec` was never in the vocabulary and is not on the wire either, not even to deliver the
 daemon binary. (Until qits-506 an in-process executor asked qits-containers for each container
 instead; it, `CiDaemonStepRunner` and the `qits-containers-client` dependency are deleted.)
@@ -2313,7 +2329,7 @@ a repository's own listing will show.
   orchestrator: every step container is started and removed by the **runner** holding the run, with
   `docker run`/`docker rm` on the runner's own host, on a `Launch`/`Reap` qits-ci sends over the
   runner socket. The platform host's steps are the `localhost` runner's, a `qits-ci-runner` that
-  qits-deployments runs beside qits-ci (see "Runners"). A deployment still mounting
+  the bootstrap starts beside qits-ci (see "Runners"). A deployment still mounting
   `/var/run/docker.sock` into qits-ci is giving it root on the host for no reason left in the code.
   `qits.containers.url`, `qits.containers.client.*`, `qits.ci.containers.owner`,
   `qits.ci.containers.boot-reap-patience` and `qits.ci.containers.launch-patience` are deleted with

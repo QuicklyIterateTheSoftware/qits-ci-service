@@ -248,7 +248,7 @@ public class CiRunnerController {
         request.name(), request.description(), request.slots(), request.stepMemoryLimit());
     CiRunnerPlane plane = request.plane() == null ? defaultPlane() : requireComposable(request.plane());
     requireCommissioning();
-    requireRenderable();
+    requireRenderable(plane);
     UUID id = UUID.randomUUID();
     IdpCommissioner.CommissionedToken token = commissionRegistrationToken(id);
     CiRunner runner;
@@ -304,7 +304,7 @@ public class CiRunnerController {
       responseCode = "503",
       description = "This deployment cannot render an install script")
   public String installScript() {
-    requireRenderable();
+    requireGenericRenderable();
     return installScript.generic();
   }
 
@@ -397,9 +397,9 @@ public class CiRunnerController {
   public CiRunnerCreated rotateRegistrationToken(@PathParam("id") String id) {
     requireMachineAudience();
     UUID runnerId = runnerId(id);
-    runners.requireUnregistered(runnerId);
+    CiRunnerPlane plane = runners.requireUnregistered(runnerId).plane;
     requireCommissioning();
-    requireRenderable();
+    requireRenderable(plane);
     IdpCommissioner.CommissionedToken token = commissionRegistrationToken(runnerId);
     String previous;
     try {
@@ -576,9 +576,9 @@ public class CiRunnerController {
     return new RegisteredRunner(
         client.clientId(),
         client.secret(),
-        addresses.tokenUrl(),
+        addresses.tokenUrl(runner.plane),
         addresses.audience(),
-        addresses.socketUrl());
+        addresses.socketUrl(runner.plane));
   }
 
   private static String capabilities(RegisterRunnerRequest request) {
@@ -630,7 +630,16 @@ public class CiRunnerController {
    * 503 when this deployment's runner addresses or pinned binary version could not be rendered into
    * an install script — checked before anything is minted, so a misconfiguration costs no token.
    */
-  private void requireRenderable() {
+  private void requireRenderable(CiRunnerPlane plane) {
+    try {
+      installScript.requireRenderable(plane);
+    } catch (IllegalStateException unrenderable) {
+      throw new UnavailableException(unrenderable.getMessage());
+    }
+  }
+
+  /** {@link #requireRenderable(CiRunnerPlane)} for the generic script, which names no runner. */
+  private void requireGenericRenderable() {
     try {
       installScript.requireRenderable();
     } catch (IllegalStateException unrenderable) {
