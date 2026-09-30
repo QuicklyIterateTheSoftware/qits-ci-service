@@ -2319,8 +2319,8 @@ public class CiRunService {
    * <p><b>What a runner cannot take is passed over, never settled.</b> A pipeline with a {@code
    * docker: true} or {@code build: true} step needs a host that will run docker for it, and a runner
    * whose capabilities do not say {@code docker: true} is never handed one; a {@code build: true}
-   * pipeline is never handed to a runner that said its id range is narrow ({@link #narrowIdRange},
-   * qits-556), nor any run to a runner in its avoid set ({@link #avoidRunner}); a row that is not an
+   * pipeline is never handed to a runner whose id range cannot map uids/gids 0..65535 ({@link
+   * #tooNarrowToBuild}, qits-556, qits-443), nor any run to a runner in its avoid set ({@link #avoidRunner}); a row that is not an
    * event run, or whose snapshot will not reconstruct, is left for the claim loop, which is the one
    * place that settles such rows — this path only ever takes.
    *
@@ -2366,7 +2366,7 @@ public class CiRunService {
                     return null;
                   }
                   boolean docker = hasDocker(row);
-                  boolean narrowIds = narrowIdRange(row);
+                  boolean narrowIds = tooNarrowToBuild(row);
                   for (CiRun candidate :
                       CiRunOrdering.suggestedOrder(builds(runs.listQueuedOldestFirst()))) {
                     if (!runnable(candidate)) {
@@ -2545,24 +2545,30 @@ public class CiRunService {
   }
 
   /**
-   * The whole 32-bit id space, {@code 0 0 4294967295} — what a host outside any user namespace maps,
-   * and the protocol's {@code Capabilities.FULL_ID_RANGE}.
+   * The smallest id range a runner's builder may have and still be handed a {@code build: true}
+   * pipeline: {@code 65536}, uids/gids {@code 0..65535}, which is every id a layer on this estate
+   * owns since qits-556 A rebuilt the workspace images that owned files at {@code 1001380000}.
    */
-  static final long FULL_ID_RANGE = 4294967295L;
+  static final long MIN_BUILD_ID_RANGE = 65536L;
 
   /**
-   * Whether the runner said its user namespace maps fewer ids than the whole space (qits-556): a
-   * rootless docker or an unprivileged LXC, whose builder cannot unpack a layer owning a file above
-   * its range. Unknown — a runner older than {@code idRange}, or a value that is not a number — is
-   * no, because refusing it would strand every runner released before the field.
+   * Whether the runner said its user namespace cannot map the ordinary 16-bit id space (qits-556,
+   * qits-443): its builder would fail to unpack a layer owning an id it cannot map, so it is never
+   * handed a {@code build: true} pipeline. A rootless docker or an unprivileged LXC maps less than
+   * the whole 32-bit space (the live {@code qits-ci} runner advertises {@code 458752}) and is
+   * <em>not</em> too narrow for that: every layer on this estate stays below {@code 65536}, and with
+   * the in-process executor retired a runner is the only place a build can run, so the old
+   * whole-space rule would leave every image build QUEUED. Unknown — a runner older than {@code
+   * idRange}, or a value that is not a number — is no, because refusing it would strand every
+   * runner released before the field.
    */
-  public static boolean narrowIdRange(CiRunner runner) {
+  public static boolean tooNarrowToBuild(CiRunner runner) {
     JsonNode capabilities = RunnerCapabilities.decode(runner.capabilities);
     if (capabilities == null) {
       return false;
     }
     JsonNode range = capabilities.path("idRange");
-    return range.isIntegralNumber() && range.asLong() < FULL_ID_RANGE;
+    return range.isIntegralNumber() && range.asLong() < MIN_BUILD_ID_RANGE;
   }
 
   /**
