@@ -136,7 +136,15 @@ public class CiPackagedSurfaceIT {
           "QITS_RESOURCE_EVENTSTREAM_URL",
               databaseUrl(EVENTSTREAM_URL_PROPERTY, "eventstream_packaged_it"),
           "QITS_RESOURCE_EVENTSTREAM_USERNAME", EmbeddedPg.USER,
-          "QITS_RESOURCE_EVENTSTREAM_PASSWORD", EmbeddedPg.PASSWORD);
+          "QITS_RESOURCE_EVENTSTREAM_PASSWORD", EmbeddedPg.PASSWORD,
+          // ON, WHICH IS NOT WHAT SHIPS (qits-443). The packaged application boots on the jar's own
+          // defaults — src/test/resources/application.properties never reaches it — and the jar
+          // ships this key false: the platform's executor is a runner. Every class on this profile
+          // and on PackagedWithMockIdp, which extends it, exercises the in-process executor, which
+          // exists until qits-506: with it off the readiness gate is DOWN (no loop, no runner) and
+          // an accepted run waits QUEUED for a Reserve nobody sends. concurrent-builds stays the
+          // shipped 4.
+          "qits.ci.in-process-executor.enabled", "true");
     }
 
     private static synchronized String databaseUrl(String property, String database) {
