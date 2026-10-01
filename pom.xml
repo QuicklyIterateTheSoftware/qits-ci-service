@@ -75,7 +75,7 @@
              into a release request and gated by this repository's own CI like any other content.
              Do NOT hand-edit it to chase a release you just made: a hand-written pin asserts a
              pairing nobody gated, and the next bump overwrites it regardless. -->
-        <qits.ci-daemon-protocol.version>2026.930.164542</qits.ci-daemon-protocol.version>
+        <qits.ci-daemon-protocol.version>2026.1001.41345</qits.ci-daemon-protocol.version>
         <!-- The runner control-socket wire contract (qits-ci-runner-daemon's ci-runner-protocol) and
              the runner binary's version with it (CiRunnerBinary) — this pin's twin for the other
              socket, and a released-calver pin in the same sense once qits-ci-runner-daemon has cut
