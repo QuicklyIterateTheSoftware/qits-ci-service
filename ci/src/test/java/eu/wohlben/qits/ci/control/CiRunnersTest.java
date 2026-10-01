@@ -88,9 +88,11 @@ public class CiRunnersTest extends CiTestSupport {
   }
 
   /**
-   * A row that still stores the retired {@code INTERNAL} — the column's own default, and what a
-   * runner declared before qits-515 carried — reads as EDGE rather than failing the enum mapping,
-   * which would cost every read of the runner table. No migration rewrites it.
+   * A row that still stores the retired {@code INTERNAL} — what a runner declared before qits-515
+   * carried, and what a restored backup older than V28 could still hold — reads as EDGE rather than
+   * failing the enum mapping, which would cost every read of the runner table. V28 normalised every
+   * row that existed at its own boot; this row is inserted after it, by raw SQL, to stand in for one
+   * a later restore brings back.
    */
   @Test
   public void aRowStillStoringTheRetiredInternalPlaneReadsAsEdge() {

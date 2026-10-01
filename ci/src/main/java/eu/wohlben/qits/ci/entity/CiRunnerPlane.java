@@ -9,8 +9,10 @@ package eu.wohlben.qits.ci.entity;
  *
  * <p>{@code INTERNAL} — a runner on qits-net, whose steps were told every service's wire alias and
  * carried a commissioned client — was deleted in qits-515 (epic qits-444). The API refuses the word
- * with a 400, and the column stays as it is: {@code ci_runner.plane}, no migration. A row that still
- * stores the retired word is read as {@link #EDGE} by {@link CiRunnerPlaneConverter}.
+ * with a 400, and {@code V28__runner_plane_normalized.sql} normalised every stored
+ * {@code ci_runner.plane} row to {@code 'EDGE'} and moved the column's own default to match. A row
+ * that still stores the retired word — a restored backup older than that migration — is read as
+ * {@link #EDGE} by {@link CiRunnerPlaneConverter}.
  */
 public enum CiRunnerPlane {
   EDGE

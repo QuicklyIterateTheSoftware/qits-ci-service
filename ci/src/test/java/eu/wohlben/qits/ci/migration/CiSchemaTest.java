@@ -185,11 +185,12 @@ public class CiSchemaTest {
         runner.setString(1, "schema-probe");
         try (ResultSet defaults = runner.executeQuery()) {
           assertTrue(defaults.next());
-          // The COLUMN's own defaults: one slot, and the retired word INTERNAL — V23 is applied
-          // and never edited, so the default stays. No code path relies on it: CiRunners.create
-          // always writes EDGE, and CiRunnerPlaneConverter reads whatever is stored as EDGE.
+          // The COLUMN's own defaults: one slot, and EDGE — V28 moved the plane default off the
+          // retired word INTERNAL (V23's, applied and never edited) now that no row holds it. No
+          // code path relies on either default: CiRunners.create always writes both explicitly,
+          // and CiRunnerPlaneConverter reads whatever is stored as EDGE regardless.
           assertEquals(1, defaults.getInt(1));
-          assertEquals("INTERNAL", defaults.getString(2));
+          assertEquals("EDGE", defaults.getString(2));
         }
       }
       connection.rollback();
