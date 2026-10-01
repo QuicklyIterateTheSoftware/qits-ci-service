@@ -130,9 +130,34 @@ release-request:
               "${QITS_NPM_PROXY_URL#*:}" "$_npmrc_token" >> ~/.npmrc
           fi )
       }
+
+      # A COPY THAT RACES THE FILESYSTEM IS RETRIED, AND NOTHING ELSE IS. pnpm writes a package into
+      # its store and copies it into node_modules seconds later; on the EDGE runner `qits-ci`, whose
+      # docker data root is OpenZFS with block cloning, that copy reaches `zfs_clone_range`, which
+      # refuses blocks still dirty in the open txg and answers EAGAIN — `ERR_PNPM_EAGAIN … copyfile`
+      # (qits-618). A txg syncs within `zfs_txg_timeout` (5s), so 10s between attempts guarantees the
+      # previous attempt's files are clean by the next. Only that one code is retried: a network
+      # failure, a stale lockfile or a 401 fails the same way every time, and retrying it would only
+      # bury the cause under three copies of the log. The real fix is the host's
+      # `zfs_bclone_wait_dirty=1`; this is the belt, for a host that does not have it.
+      pnpm_install() {
+        _attempt=1
+        while :; do
+          _status=0
+          pnpm install --frozen-lockfile > /tmp/pnpm-install.log 2>&1 || _status=$?
+          cat /tmp/pnpm-install.log
+          [ "$_status" = 0 ] && return 0
+          if [ "$_attempt" -ge 3 ] || ! grep -q ERR_PNPM_EAGAIN /tmp/pnpm-install.log; then
+            return "$_status"
+          fi
+          echo "pnpm install hit ERR_PNPM_EAGAIN (attempt $_attempt of 3, ZFS block cloning, qits-618) — retrying in 10s" >&2
+          sleep 10
+          _attempt=$((_attempt + 1))
+        done
+      }
       write_npmrc
 
-      pnpm install --frozen-lockfile
+      pnpm_install
       pnpm lint
       pnpm test
       pnpm build
@@ -169,9 +194,24 @@ release:
               "${QITS_NPM_PROXY_URL#*:}" "$_npmrc_token" >> ~/.npmrc
           fi )
       }
+      pnpm_install() {
+        _attempt=1
+        while :; do
+          _status=0
+          pnpm install --frozen-lockfile > /tmp/pnpm-install.log 2>&1 || _status=$?
+          cat /tmp/pnpm-install.log
+          [ "$_status" = 0 ] && return 0
+          if [ "$_attempt" -ge 3 ] || ! grep -q ERR_PNPM_EAGAIN /tmp/pnpm-install.log; then
+            return "$_status"
+          fi
+          echo "pnpm install hit ERR_PNPM_EAGAIN (attempt $_attempt of 3, ZFS block cloning, qits-618) — retrying in 10s" >&2
+          sleep 10
+          _attempt=$((_attempt + 1))
+        done
+      }
       write_npmrc
 
-      pnpm install --frozen-lockfile
+      pnpm_install
       pnpm build
 
       # THE BUILT PACKAGE, FOUND RATHER THAN SPELLED. Exactly one directory under dist/ carries a
@@ -204,7 +244,7 @@ release:
       plan=$(qits-publish npm plan --package "$package" --version "$QITS_VERSION")
 
       # THE TOKEN IS REWRITTEN IMMEDIATELY BEFORE THE PUBLISH, and this is the whole reason
-      # write_npmrc is a function. `pnpm install --frozen-lockfile` and `pnpm build` sit between
+      # write_npmrc is a function. `pnpm_install` and `pnpm build` sit between
       # the preamble and here, and a mint's TTL (3600s) is the same number as this step's timeout —
       # so on a slow build the token the preamble wrote is expired by the moment `npm publish`
       # sends it, which is the one moment it has to be valid. The `qits-publish` calls around this
