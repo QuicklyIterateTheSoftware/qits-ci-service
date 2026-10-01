@@ -292,8 +292,17 @@ public final class CiReleaseComposer {
         out.append("  - { type: ")
             .append(scalar(artifact.artifact().type().declared()))
             .append(", name: ")
-            .append(scalar(artifact.artifact().name()))
-            .append(" }\n");
+            .append(scalar(artifact.artifact().name()));
+        // Emitted only when it is not the default, so every document composed before the key
+        // existed composes byte-for-byte as it did (the goldens hold that). It has to reach the
+        // composed block at all because the join reads the run's trigger document, not release.yml.
+        if (artifact.artifact().announceIfPublished()) {
+          out.append(", ")
+              .append(CiArtifact.ANNOUNCE_KEY)
+              .append(": ")
+              .append(scalar(artifact.announce().declared()));
+        }
+        out.append(" }\n");
       }
     }
     steps(out, release, true, artifacts);

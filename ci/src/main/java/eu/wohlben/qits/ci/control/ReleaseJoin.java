@@ -11,9 +11,14 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import eu.wohlben.qits.ci.control.CiArtifactPresence.Probe;
+import eu.wohlben.qits.ci.control.CiArtifactPresence.Verdict;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.jboss.logging.Logger;
@@ -98,6 +103,27 @@ import org.jboss.logging.Logger;
  * with no fact row behind it (a run whose own trigger was the release, which is the manual door's
  * shape) resolves null, and null reaches the wire as an absent key.
  *
+ * <h2>{@code announce: if-published}: the one entry this class checks before announcing</h2>
+ *
+ * <p>An owed row whose entry declared {@code announce: if-published} (maven and npm only; see {@link
+ * CiArtifact.Announce}) is announced only once qits-artifacts confirms the artifact exists at the
+ * release version, asked through {@link CiArtifactPresence}. Present: announced as any other row.
+ * Absent (404): settled without an announcement and logged at INFO. Inconclusive (a 5xx, a timeout,
+ * an unreachable store): asked again, up to {@link #PRESENCE_ATTEMPTS} times in the same drive with
+ * a short backoff, and if it never becomes conclusive, settled without an announcement and logged at
+ * ERROR. Either way the row gets {@code announced_at} plus a {@code skip_reason}, so no later drive
+ * checks it again and none announces it later.
+ *
+ * <p><b>Dropping is deliberate, and it is safe because it self-heals — do not "fix" it into an
+ * announcement.</b> qits-maintenance's daily scan ({@code LatestResolver} via {@code
+ * ScanService.recordLatest}) reads maven-metadata.xml and the npm packument itself and moves {@code
+ * mt_latest} to the version the store really holds, so a missed announcement delays a consumer's
+ * bump by at most a day, and the scan never offers a version that does not exist. Announcing on an
+ * inconclusive answer would be the opposite failure: a {@code SoftwareRelease} for a version that
+ * may not exist, which every consumer's bump then tries to resolve. The question is put
+ * <b>outside</b> the locking transaction (see {@link #presenceVerdicts}), because holding row locks
+ * across HTTP retries is how a slow store becomes a stuck join.
+ *
  * <h2>What this class is NOT, and the deploy that looks like it is</h2>
  *
  * <p><b>Nothing here can announce before the run that published.</b> An owed row is written by a
@@ -144,6 +170,23 @@ public class ReleaseJoin {
    * words.
    */
   static final int MAX_PRIORITY_LENGTH = 32;
+
+  /**
+   * How many times one drive asks qits-artifacts about an {@code if-published} entry before it gives
+   * up on a conclusive answer. Small on purpose: a drive runs on a run's driver thread or on the bus
+   * listener's, and a store that stays unreachable for longer is answered by the daily scan anyway
+   * (see the class javadoc).
+   */
+  static final int PRESENCE_ATTEMPTS = 3;
+
+  /** The wait before the second attempt; it doubles before the third. */
+  private static final Duration DEFAULT_PRESENCE_BACKOFF = Duration.ofSeconds(1);
+
+  // Written and read through methods: a field read on an injected CDI client proxy sees the proxy's.
+  private volatile Duration presenceBackoff = DEFAULT_PRESENCE_BACKOFF;
+
+  /** Asked before an {@code if-published} row is announced; see the class javadoc. */
+  @Inject CiArtifactPresence artifactPresence;
 
   @Inject CiReleaseAnnouncementRepository announcements;
   @Inject CiScmReleaseRepository releases;
@@ -253,6 +296,7 @@ public class ReleaseJoin {
       owed.artifactIndex = index;
       owed.finishedAt = run.finishedAt();
       owed.triggerEventId = run.triggerEventId();
+      owed.announce = artifact.announceIfPublished() ? artifact.announce().declared() : null;
       owed.createdAt = now;
       announcements.persist(owed);
     }
@@ -390,6 +434,7 @@ public class ReleaseJoin {
    * already takes.
    */
   private void announceOwed(String repoId, String repoName, String version) {
+    Map<String, Probe> verdicts = presenceVerdicts(repoId, version);
     QuarkusTransaction.requiringNew()
         .run(
             () -> {
@@ -403,6 +448,19 @@ public class ReleaseJoin {
               String priority = releases.priorityOf(repoId, repoName, version).orElse(null);
               Instant now = Instant.now();
               for (CiReleaseAnnouncement row : owed) {
+                if (isIfPublished(row)) {
+                  // A row owed after presenceVerdicts read the table (a second run racing this
+                  // drive) has no verdict yet and is asked here. That is the rare path, and the only
+                  // HTTP this transaction can ever make.
+                  Probe probe =
+                      verdicts.computeIfAbsent(
+                          presenceKey(row),
+                          key -> presenceOf(row.packageType, row.packageName, version));
+                  if (probe.verdict() != Verdict.PRESENT) {
+                    skip(row, probe, now);
+                    continue;
+                  }
+                }
                 for (ReleaseAnnouncer announcer : releaseAnnouncers) {
                   try {
                     announcer.onArtifactPublished(
@@ -424,6 +482,116 @@ public class ReleaseJoin {
                 row.announcedAt = now;
               }
             });
+  }
+
+  /**
+   * The presence answer for every distinct {@code if-published} entry {@code (repository, version)}
+   * owes right now, asked <b>before</b> the locking transaction opens — an unlocked read of the owed
+   * rows, then {@link #presenceOf} per distinct artifact. Empty, and no HTTP at all, when nothing
+   * owed declares {@code if-published}, which is every row of a repository that does not.
+   */
+  private Map<String, Probe> presenceVerdicts(String repoId, String version) {
+    List<CiReleaseAnnouncement> owed =
+        QuarkusTransaction.requiringNew().call(() -> announcements.listOwed(repoId, version));
+    Map<String, Probe> verdicts = new HashMap<>();
+    for (CiReleaseAnnouncement row : owed) {
+      if (isIfPublished(row)) {
+        verdicts.computeIfAbsent(
+            presenceKey(row), key -> presenceOf(row.packageType, row.packageName, version));
+      }
+    }
+    return verdicts;
+  }
+
+  /**
+   * Asks qits-artifacts whether one artifact exists at {@code version}: a conclusive answer is
+   * returned at once, an inconclusive one is asked again, up to {@link #PRESENCE_ATTEMPTS} times
+   * with a doubling backoff. What comes back after the last attempt is the last answer.
+   */
+  private Probe presenceOf(String packageType, String packageName, String version) {
+    CiArtifact.Type type = CiArtifact.Type.of(packageType);
+    Duration backoff = presenceBackoff;
+    Probe probe = Probe.inconclusive("not asked");
+    for (int attempt = 1; attempt <= PRESENCE_ATTEMPTS; attempt++) {
+      try {
+        probe = artifactPresence.probe(type, packageName, version);
+      } catch (RuntimeException e) {
+        // The port's contract is to answer, not to throw; an implementation that throws has said
+        // nothing, which is exactly INCONCLUSIVE.
+        probe = Probe.inconclusive("the presence check threw: " + e);
+      }
+      if (probe.verdict() != Verdict.INCONCLUSIVE) {
+        return probe;
+      }
+      LOG.debugf(
+          "Presence of %s %s at %s inconclusive on attempt %d of %d: %s",
+          packageType, packageName, version, attempt, PRESENCE_ATTEMPTS, probe.detail());
+      if (attempt < PRESENCE_ATTEMPTS) {
+        try {
+          Thread.sleep(backoff.toMillis());
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          return probe;
+        }
+        backoff = backoff.multipliedBy(2);
+      }
+    }
+    return probe;
+  }
+
+  /**
+   * Settles an {@code if-published} row WITHOUT announcing it, marked like an announced row so no
+   * later drive of the join checks it again or announces it.
+   *
+   * <p>This drop is safe and must stay a drop: qits-maintenance's daily scan ({@code LatestResolver}
+   * via {@code ScanService.recordLatest}) reads maven-metadata.xml / the npm packument and moves
+   * {@code mt_latest} to the newest version that really exists, so a missed announcement delays a
+   * bump by at most a day and never offers a version that does not exist. Announcing an
+   * inconclusive one instead would offer exactly that.
+   */
+  private static void skip(CiReleaseAnnouncement row, Probe probe, Instant now) {
+    if (probe.verdict() == Verdict.ABSENT) {
+      LOG.infof(
+          "Not announcing %s %s at version %s (run %s, %s): it declares announce: %s and"
+              + " qits-artifacts does not hold that version (%s)",
+          row.packageType,
+          row.packageName,
+          row.version,
+          row.runId,
+          row.repoId,
+          CiArtifact.Announce.IF_PUBLISHED.declared(),
+          probe.detail());
+      row.skipReason = CiReleaseAnnouncement.SKIPPED_ABSENT;
+    } else {
+      LOG.errorf(
+          "Not announcing %s %s at version %s (run %s, %s): it declares announce: %s and"
+              + " qits-artifacts could not be asked conclusively in %d attempts (last: %s)."
+              + " Dropped rather than announced unverified; qits-maintenance's daily scan picks the"
+              + " version up if it exists",
+          row.packageType,
+          row.packageName,
+          row.version,
+          row.runId,
+          row.repoId,
+          CiArtifact.Announce.IF_PUBLISHED.declared(),
+          PRESENCE_ATTEMPTS,
+          probe.detail());
+      row.skipReason = CiReleaseAnnouncement.SKIPPED_UNVERIFIED;
+    }
+    row.announcedAt = now;
+  }
+
+  private static boolean isIfPublished(CiReleaseAnnouncement row) {
+    return CiArtifact.Announce.IF_PUBLISHED.declared().equals(row.announce);
+  }
+
+  private static String presenceKey(CiReleaseAnnouncement row) {
+    return artifactKey(row.packageType, row.packageName);
+  }
+
+  /** Test seam: the backoff between presence attempts. A method, because this bean is proxied. */
+  void presenceBackoff(Duration backoff) {
+    presenceBackoff = backoff == null ? DEFAULT_PRESENCE_BACKOFF : backoff;
   }
 
   /**

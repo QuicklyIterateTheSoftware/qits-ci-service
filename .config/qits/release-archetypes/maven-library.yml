@@ -27,6 +27,10 @@
 # one document per entry. `artifacts:` must be in the repository's own file, never defaulted here:
 # qits-projects reads it at the tag and an archetype default is invisible to it.
 #
+# A module the reactor does not always deploy may say `announce: if-published` on its entry: qits-ci
+# then announces it only once qits-artifacts holds that GAV's `.pom` at the release version, and
+# otherwise drops the announcement (qits-maintenance's daily scan picks a real version up anyway).
+#
 # ---------------------------------------------------------------------------------------------
 # WHAT THE PLATFORM ADDS, SO THAT THESE SCRIPTS DO NOT
 #

@@ -104,4 +104,26 @@ public class CiReleaseAnnouncement extends PanacheEntityBase {
   /** When the announcement was made, or null while it is still owed. */
   @Column(name = "announced_at")
   public Instant announcedAt;
+
+  /**
+   * The entry's {@code announce:} policy as the trigger document spelled it — {@code if-published}
+   * — or null for {@code always} (V29). On the owed row because the drive that closes the join is
+   * often not the run that owed it, and cannot read its trigger document back.
+   */
+  @Column(name = "announce", length = 16)
+  public String announce;
+
+  /**
+   * Why this row was settled WITHOUT an announcement — {@link #SKIPPED_ABSENT} or {@link
+   * #SKIPPED_UNVERIFIED} — or null when it was announced (or is still owed). A skipped row carries
+   * {@link #announcedAt} too, so no later drive of the join checks it again or announces it (V29).
+   */
+  @Column(name = "skip_reason", length = 16)
+  public String skipReason;
+
+  /** qits-artifacts answered that the artifact does not exist at this version. */
+  public static final String SKIPPED_ABSENT = "ABSENT";
+
+  /** qits-artifacts could not be asked conclusively within the join's attempts. */
+  public static final String SKIPPED_UNVERIFIED = "UNVERIFIED";
 }

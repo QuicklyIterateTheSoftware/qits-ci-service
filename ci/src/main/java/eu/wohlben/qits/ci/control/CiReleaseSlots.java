@@ -57,13 +57,23 @@ public record CiReleaseSlots(
    * every repository derives an SBOM base URL by string-chopping some other variable and writes its
    * own PUT, and after this the path is the only thing a repository still says about it.
    *
-   * @param artifact the {@code {type, name}} declaration, exactly as a trigger file spells it
+   * @param artifact the {@code {type, name[, announce]}} declaration, exactly as a trigger file
+   *     spells it
    * @param sbomPath the repository-relative path to the generated document, {@code ""} when none
    */
   public record SlotArtifact(CiArtifact artifact, String sbomPath) {
 
     public boolean hasSbom() {
       return !sbomPath.isEmpty();
+    }
+
+    /**
+     * The entry's {@code announce:} policy. It rides on the {@link CiArtifact} rather than beside
+     * it, because unlike the sbom path it <b>does</b> reach the composed {@code artifacts:} block
+     * — the join that spends it reads the composed document, not this one.
+     */
+    public CiArtifact.Announce announce() {
+      return artifact.announce();
     }
   }
 

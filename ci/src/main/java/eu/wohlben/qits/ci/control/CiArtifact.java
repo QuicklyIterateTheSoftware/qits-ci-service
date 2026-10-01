@@ -19,11 +19,132 @@ import java.util.List;
  * is derivable from the trigger files alone, without running a single pipeline.
  *
  * <p>The price is honest and worth naming: a declaration can lie. A pipeline that goes green without
- * publishing announces an artifact that is not there. Nothing here checks — post-hoc verification is
- * possible (docker answers {@code HEAD /v2/<repo>/<image>/manifests/<tag>}, npm has no per-version
- * route but lists versions) and is not built.
+ * publishing announces an artifact that is not there. By default nothing here checks.
+ *
+ * <h2>The one observed case: {@code announce: if-published}</h2>
+ *
+ * <p>A {@code maven} or {@code npm} entry may declare {@code announce: if-published}, and for that
+ * entry the join does look before it announces: {@link ReleaseJoin} asks qits-artifacts whether the
+ * artifact exists at the release version (the version's {@code .pom} for maven, {@code
+ * versions[<version>]} in the packument for npm, through {@link CiArtifactPresence}) and announces
+ * only when it does. It is for a pipeline whose publish is conditional — a reactor that deploys
+ * only the modules that changed — where the declaration is a superset of what a given release
+ * really pushed. It is still not an observation of what the step <em>did</em>: it is a question put
+ * to the store afterwards, which is why it stays limited to the two stores that answer it cheaply
+ * and authoritatively, and why {@code always} remains the default and today's behaviour.
+ *
+ * @param type the registry the artifact is published to
+ * @param name the exact coordinate, as that registry names it
+ * @param announce when a green, released run announces this entry — {@link Announce#ALWAYS} unless
+ *     the file says otherwise
  */
-public record CiArtifact(Type type, String name) {
+public record CiArtifact(Type type, String name, Announce announce) {
+
+  /** The key a declaration spells the policy with, in a trigger file and in {@code release.yml}. */
+  public static final String ANNOUNCE_KEY = "announce";
+
+  public CiArtifact {
+    announce = announce == null ? Announce.ALWAYS : announce;
+  }
+
+  /** A declaration with the default policy — announced whenever the join closes. */
+  public CiArtifact(Type type, String name) {
+    this(type, name, Announce.ALWAYS);
+  }
+
+  /** Whether the join must ask the store before announcing this entry. */
+  public boolean announceIfPublished() {
+    return announce == Announce.IF_PUBLISHED;
+  }
+
+  /**
+   * When a declared artifact is announced. <b>The declared spelling is also what the composed
+   * trigger document and the owed row carry</b>, so the vocabulary exists once.
+   */
+  public enum Announce {
+    /** Announced whenever the join closes — the declaration is believed. The default. */
+    ALWAYS("always"),
+    /**
+     * Announced only when qits-artifacts holds the artifact at the release version. {@code maven}
+     * and {@code npm} only — see {@link #allowedFor}.
+     */
+    IF_PUBLISHED("if-published");
+
+    private final String declared;
+
+    Announce(String declared) {
+      this.declared = declared;
+    }
+
+    /** How a file spells it. */
+    public String declared() {
+      return declared;
+    }
+
+    /** The policy this keyword names, or null — the parsers turn null into a parse error. */
+    public static Announce of(String keyword) {
+      for (Announce announce : values()) {
+        if (announce.declared.equals(keyword)) {
+          return announce;
+        }
+      }
+      return null;
+    }
+
+    /**
+     * Whether a type may carry this policy. {@code if-published} needs a store that answers "does
+     * this version exist" authoritatively and cheaply, which the hosted maven and npm repositories
+     * do; a docker tag, a daemon binary and a docs site are not asked, so declaring it there would
+     * be a check that silently never happens.
+     */
+    public boolean allowedFor(Type type) {
+      return this == ALWAYS || type == Type.MAVEN || type == Type.NPM;
+    }
+  }
+
+  /**
+   * The {@code announce:} value of one artifact entry, for both parsers: absent is {@link
+   * Announce#ALWAYS}; an unknown word, a non-string, or {@code if-published} on a type that cannot
+   * carry it is a {@link CiConfigException} naming the file and the entry.
+   */
+  static Announce requireAnnounce(Object value, Type type, String name, String configPath, int index) {
+    if (value == null) {
+      return Announce.ALWAYS;
+    }
+    Announce announce = value instanceof String keyword ? Announce.of(keyword) : null;
+    if (announce == null) {
+      throw new CiConfigException(
+          configPath
+              + ": artifact "
+              + index
+              + " declares "
+              + ANNOUNCE_KEY
+              + " '"
+              + value
+              + "' — it is '"
+              + Announce.ALWAYS.declared()
+              + "' (the default) or '"
+              + Announce.IF_PUBLISHED.declared()
+              + "'");
+    }
+    if (!announce.allowedFor(type)) {
+      throw new CiConfigException(
+          configPath
+              + ": artifact "
+              + index
+              + " ({ type: "
+              + type.declared()
+              + ", name: "
+              + name
+              + " }) declares "
+              + ANNOUNCE_KEY
+              + ": "
+              + announce.declared()
+              + " — only a maven or npm entry can be checked against qits-artifacts before it is"
+              + " announced");
+    }
+    return announce;
+  }
 
   /**
    * The registries a declaration may name. <b>The constant's declared spelling is also its wire

@@ -2162,7 +2162,24 @@ phase.
 - **Interpolation is three values and they are charset-guarded at PARSE time.** An artifact's `type`
   (an enum), its `name`, and its `sbom:` path, held to an allow-list rather than an escape. The
   composer single-quotes them as well; the guard is what makes the quoting a second line of defence
-  rather than the only one.
+  rather than the only one. (`announce:` is not a fourth: it is an enum, it reaches the composed
+  `artifacts:` block and never a script.)
+- **`announce: if-published` is the one artifact declaration that is checked rather than believed
+  (qits-561).** `maven` and `npm` entries only — on `docker`, `daemon` or `docs` it is a parse error
+  naming the entry, in `CiReleaseSlotParser` and in `CiEventTriggerParser` alike, through the one
+  `CiArtifact.requireAnnounce` — and `always` is the default. It rides on `CiArtifact`, so the
+  composer emits it into the composed `artifacts:` block (only when it is not the default, which is
+  why no golden moved), the trigger parser reads it back, a restart reparses it off the snapshot, and
+  `ReleaseJoin.owe` writes it onto the owed row (`ci_release_announcement.announce`, V29). Before
+  announcing such a row the join asks the `CiArtifactPresence` port — `service/…/registry/HttpArtifactPresence`,
+  one `GET` of the version's `.pom` or of the npm packument at the origin `HttpImagePins` already
+  derives (`registry/ArtifactsOrigin`: `qits.artifacts.url`, else the origin of
+  `qits.artifacts.maven.registry-url`; no credential, reads are unguarded) — up to three times on an
+  inconclusive answer, **outside** the locking transaction. Absent is an INFO, still-inconclusive an
+  ERROR, and both settle the row (`announced_at` + `skip_reason`) so no re-drive asks or announces
+  again. **The drop is deliberate and must not be "fixed" into an announcement**: qits-maintenance's
+  daily scan moves `mt_latest` to the version the store really holds, so a missed announcement costs
+  at most a day, while announcing an unverified one offers a version that may not exist.
 - **`GET /ci/api/repositories/{repoId}/release-phase?rev=` is the one endpoint this feature grew, and
   it exists because only the composer can answer.** qits-projects decides whether a released tag is
   publish-gated, and it decided by reading that tag's `release.yml` and asking whether it named an
@@ -2546,6 +2563,14 @@ listings, newest-run reads, finished listing and `distinctRepoIds` carry `purpos
 queue's reads (`listActiveNewestFirst`, `listQueuedOldestFirst`, `countQueued`) keep every run — the
 commission reconciler must not reap a pending check's credential — and their callers filter
 (`CiRunService.builds`). A new repository-scoped read owes the predicate too.
+
+`V29__release_announcement_if_published.sql` is V10's shape twice (qits-561):
+`ci_release_announcement.announce` (the entry's policy, `if-published` or null for `always`) and
+`ci_release_announcement.skip_reason` (`ABSENT`/`UNVERIFIED` for a row settled without an
+announcement, null otherwise), both nullable, no default, no backfill, no constraint, no index. The
+policy is on the owed row for `finished_at`'s reason — the drive that closes the join is often not
+the run that owed it — and a skipped row carries `announced_at` like an announced one, so every
+existing reader of "owed" (`announced_at is null`) is right without learning the new column.
 
 `V27__run_avoid_runners.sql` added `ci_run.avoid_runner_ids text` (nullable, no default, no
 constraint, no index) for "a retry is not handed back to the runner that failed it" (qits-556). That

@@ -33,7 +33,8 @@ import java.util.Set;
  * <p>{@code archetype}, {@code release-request}, {@code release}, {@code artifacts} and {@code
  * userflows} are all of it; anything else is a {@link CiConfigException} naming the file. So is a
  * slot that is not a list, a slot that is an <em>empty</em> list, an {@code artifacts:} entry that
- * is not {@code {type, name[, sbom]}}, and a {@code userflows:} that is neither a boolean nor a
+ * is not {@code {type, name[, sbom][, announce]}} (with {@code announce: if-published} on a {@code
+ * maven} or {@code npm} entry only), and a {@code userflows:} that is neither a boolean nor a
  * name. The reason is sharper here than in a trigger file: this document is compiled into two
  * pipelines that publish, so a key that silently parsed to nothing is a release whose SBOM was
  * never submitted, or a QA gate that ran nothing and went green. Never a silent default.
@@ -92,8 +93,13 @@ public class CiReleaseSlotParser {
           CiConfigSchema.ARTIFACTS_KEY,
           USERFLOWS_KEY);
 
-  /** The whole of one {@code artifacts:} entry here — the trigger file's two keys plus the path. */
-  private static final Set<String> ARTIFACT_KEYS = Set.of("type", "name", SBOM_KEY);
+  /**
+   * The whole of one {@code artifacts:} entry here — the trigger file's keys plus the path. {@code
+   * announce} is {@code always} (the default) or {@code if-published}, the second on {@code maven}
+   * and {@code npm} only; see {@link CiArtifact.Announce}.
+   */
+  private static final Set<String> ARTIFACT_KEYS =
+      Set.of("type", "name", SBOM_KEY, CiArtifact.ANNOUNCE_KEY);
 
   /**
    * What an archetype name may be. It becomes a path segment under {@link #ARCHETYPE_DIR} in a URL
@@ -294,13 +300,17 @@ public class CiReleaseSlotParser {
                 + index
                 + " declares an unknown key '"
                 + key
-                + "' — an artifact is exactly { type, name, sbom }");
+                + "' — an artifact is exactly { type, name[, sbom][, announce] }");
       }
     }
+    CiArtifact.Type type = requireArtifactType(map.get("type"), configPath, index);
+    String name = requireScriptSafe(map.get("name"), configPath, "artifact " + index + " 'name'");
     return new SlotArtifact(
         new CiArtifact(
-            requireArtifactType(map.get("type"), configPath, index),
-            requireScriptSafe(map.get("name"), configPath, "artifact " + index + " 'name'")),
+            type,
+            name,
+            CiArtifact.requireAnnounce(
+                map.get(CiArtifact.ANNOUNCE_KEY), type, name, configPath, index)),
         parseSbomPath(map.get(SBOM_KEY), configPath, index));
   }
 

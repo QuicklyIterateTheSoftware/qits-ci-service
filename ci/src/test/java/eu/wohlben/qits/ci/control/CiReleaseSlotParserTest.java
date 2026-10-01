@@ -273,6 +273,60 @@ public class CiReleaseSlotParserTest {
     }
   }
 
+  // --- announce (qits-561) ----------------------------------------------------------------------
+
+  @Test
+  public void announceDefaultsToAlways() {
+    CiReleaseSlots slots =
+        parser.parse(PATH, "artifacts:\n  - { type: maven, name: \"eu.wohlben.qits:x\" }\n");
+    assertEquals(CiArtifact.Announce.ALWAYS, slots.artifacts().get(0).announce());
+    assertEquals(false, slots.artifacts().get(0).artifact().announceIfPublished());
+  }
+
+  @Test
+  public void announceIfPublishedIsAcceptedOnMavenAndNpm() {
+    CiReleaseSlots slots =
+        parser.parse(
+            PATH,
+            """
+            artifacts:
+              - { type: maven, name: "eu.wohlben.qits:x", announce: if-published }
+              - { type: npm, name: "@qits/x", announce: if-published, sbom: out/sbom.json }
+              - { type: docker, name: qits/x, announce: always }
+            """);
+    assertEquals(CiArtifact.Announce.IF_PUBLISHED, slots.artifacts().get(0).announce());
+    assertEquals(CiArtifact.Announce.IF_PUBLISHED, slots.artifacts().get(1).announce());
+    assertEquals("out/sbom.json", slots.artifacts().get(1).sbomPath());
+    assertEquals(
+        CiArtifact.Announce.ALWAYS,
+        slots.artifacts().get(2).announce(),
+        "spelling the default out is allowed on every type");
+  }
+
+  @Test
+  public void announceIfPublishedIsRefusedOnEveryOtherTypeNamingTheEntry() {
+    for (String type : new String[] {"docker", "daemon", "docs"}) {
+      String message =
+          refused(
+                  "artifacts:\n  - { type: maven, name: \"eu.wohlben.qits:x\" }\n  - { type: "
+                      + type
+                      + ", name: qits-thing, announce: if-published }\n")
+              .getMessage();
+      assertTrue(message.contains("artifact 1"), message);
+      assertTrue(message.contains(type) && message.contains("qits-thing"), message);
+      assertTrue(message.contains("if-published"), message);
+    }
+  }
+
+  @Test
+  public void anUnknownAnnounceValueIsRefused() {
+    assertTrue(
+        refused("artifacts:\n  - { type: maven, name: \"a:b\", announce: sometimes }\n")
+            .getMessage()
+            .contains("sometimes"));
+    refused("artifacts:\n  - { type: maven, name: \"a:b\", announce: true }\n");
+  }
+
   @Test
   public void anSbomPathMustPointInsideTheReleasesOwnCheckout() {
     assertTrue(

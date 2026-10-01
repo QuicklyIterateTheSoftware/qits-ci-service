@@ -571,6 +571,28 @@ public class CiEventTriggerParserTest {
   }
 
   @Test
+  public void announceIsTheOneOptionalArtifactKeyAndIsHeldToTheSameRule() {
+    // A composed release document carries it for an entry release.yml declared if-published, and a
+    // run's stored snapshot is reparsed by this parser, so it must be accepted here too.
+    CiEventTrigger trigger =
+        parser.parse(
+            PATH,
+            "event: SCMRelease\nartifacts:\n  - { type: npm, name: \"@qits/x\", announce:"
+                + " if-published }\n  - { type: docker, name: qits/x }\n");
+    assertEquals(CiArtifact.Announce.IF_PUBLISHED, trigger.artifacts().get(0).announce());
+    assertEquals(CiArtifact.Announce.ALWAYS, trigger.artifacts().get(1).announce());
+    CiConfigException e =
+        assertThrows(
+            CiConfigException.class,
+            () ->
+                parser.parse(
+                    PATH,
+                    "event: SCMRelease\nartifacts:\n  - { type: docker, name: qits/x, announce:"
+                        + " if-published }\n"));
+    assertTrue(e.getMessage().contains("artifact 0"), e.getMessage());
+  }
+
+  @Test
   public void anUnquotedScopedNameIsAYamlErrorAndTheMessageSaysHowToSpellIt() {
     // '@' is a reserved YAML indicator, so this never reaches the artifact rules at all — but the
     // guidance a repository needs is in the name error, which is where it will look.

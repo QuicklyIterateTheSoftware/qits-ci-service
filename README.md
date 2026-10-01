@@ -1461,7 +1461,8 @@ deletes it, deploys, and finalizes `main` afterwards). **That fallback is gone**
 carrying no usable pair records no run at all, so these lines are a belt over a checkout that has
 already happened rather than a second mechanism.
 
-`artifacts:` is a **non-empty list of mappings**, each exactly `{type, name}`:
+`artifacts:` is a **non-empty list of mappings**, each exactly `{type, name}` plus an optional
+`announce`:
 
 - **`type`** is `npm`, `maven`, `docker` or `daemon`, and nothing else. The keyword is also the value
   on the wire. `daemon` names a **platform daemon binary** — `qits-ci-daemon` and its kind:
@@ -1477,6 +1478,10 @@ already happened rather than a second mechanism.
   stands at.
   A Maven name is an unqualified `groupId:artifactId` GAV prefix; the event's `version` supplies
   the third coordinate and the consumer supplies the repository URL.
+- **`announce`** is `always` (the default — today's behaviour) or `if-published`, and the second is
+  allowed on `maven` and `npm` entries only; on any other type it is a parse error naming the entry.
+  See "`announce: if-published`" under the fourth file below — a composed release document carries
+  it for exactly that reason, and a hand-written trigger file may say it too.
 - Everything about it is strict, the way the rest of this file is: an empty list, an unknown type, a
   missing or blank name, an extra key in the mapping, or a wrong shape is a parse error naming the
   file. Omitting the key entirely is how a pipeline says it publishes nothing.
@@ -1636,10 +1641,29 @@ release:                       # optional release steps, same schema
     script: buildctl build ...
 artifacts:                     # as a trigger file's, plus an optional per-entry `sbom:` path
   - { type: docker, name: qits/qits-ci, sbom: out/sbom.json }
+  - { type: maven, name: "eu.wohlben.qits:qits-ci-events", announce: if-published }
 userflows: true                # optional; true, or the site name the bundle publishes under
 ```
 
 An SPA frontend's whole file is `archetype: spa-frontend`.
+
+**`announce: if-published`** (qits-561) is the one artifact entry qits-ci checks rather than
+believes. Allowed on `maven` and `npm` only — `docker`, `daemon` and `docs` refuse it as a parse
+error naming the entry — and `always` is the default. It is for a release whose publish is
+conditional, a reactor that deploys only some modules: before the release join announces such an
+entry it asks qits-artifacts whether the artifact exists at the release version —
+`GET <maven root>/<group path>/<artifactId>/<version>/<artifactId>-<version>.pom` answering 200, or
+`GET <npm root>/<name>` listing `versions[<version>]`. Present: announced as always. Absent (404):
+not announced, one INFO naming the entry and the version. Anything else (5xx, timeout, unreachable):
+asked up to three times within the same join with a short backoff, and if still inconclusive, not
+announced, one ERROR naming the entry and the version. Either way the owed row is settled
+(`announced_at` plus `skip_reason`, V29), so a re-drive neither asks again nor announces later.
+**Dropping is safe because it self-heals**: qits-maintenance's daily scan reads maven-metadata.xml /
+the npm packument and moves `mt_latest` to what really exists, so a missed announcement delays a
+bump by at most a day and never offers a version that does not exist. The store is asked at the
+address qits-ci already reaches it at — `qits.artifacts.url`, else the origin of
+`qits.artifacts.maven.registry-url`, the same derivation the image-digest pin uses — with no
+credential, since qits-artifacts guards only its publish verbs. No new configuration key.
 
 **It is not a trigger file, and it must not become one.** qits-ci compiles it — at evaluation, at the
 revision the release event is about, together with the archetype recipe — into **two ordinary trigger documents** in

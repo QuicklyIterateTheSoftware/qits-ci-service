@@ -187,32 +187,9 @@ public class HttpImagePins implements CiStepImagePins {
    * digest is content-addressed, so the pin resolved here names the same bytes there.
    */
   String registryApiOrigin() {
-    String explicit = artifactsUrl == null ? null : artifactsUrl.orElse(null);
-    if (explicit != null && !explicit.isBlank()) {
-      return trimSlashes(explicit);
-    }
-    String fromMaven = originOf(artifactsMavenRegistryUrl);
-    return fromMaven == null ? "" : fromMaven;
-  }
-
-  private static String trimSlashes(String url) {
-    return url.replaceAll("/+$", "");
-  }
-
-  /** The scheme and authority of a url, or null when it has neither. */
-  private static String originOf(String url) {
-    if (url == null || url.isBlank()) {
-      return null;
-    }
-    try {
-      URI uri = URI.create(url);
-      if (uri.getScheme() == null || uri.getRawAuthority() == null) {
-        return null;
-      }
-      return uri.getScheme() + "://" + uri.getRawAuthority();
-    } catch (RuntimeException badUrl) {
-      return null;
-    }
+    // One derivation for every qits-ci -> qits-artifacts read (ArtifactsOrigin), so the digest
+    // lookup and the release join's presence check can never dial two different stores.
+    return ArtifactsOrigin.of(artifactsUrl, artifactsMavenRegistryUrl);
   }
 
   /**

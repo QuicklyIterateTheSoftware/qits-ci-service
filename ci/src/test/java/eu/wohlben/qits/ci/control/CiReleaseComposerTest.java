@@ -533,6 +533,40 @@ public class CiReleaseComposerTest {
   // --- the properties the goldens are there to hold ------------------------------------------------
 
   @Test
+  public void anIfPublishedEntryReachesTheComposedDocumentAndOnlyThatOne() {
+    // The join reads the run's trigger document, never release.yml, so the policy has to survive
+    // composition; the default is not emitted, which is what keeps every golden byte-identical.
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO,
+            slots(
+                """
+                release:
+                  - image: qits/build-images/maven-base:latest
+                    script: ./mvnw deploy
+                artifacts:
+                  - { type: maven, name: "eu.wohlben.qits:qits-thing", announce: if-published }
+                  - { type: docker, name: qits/qits-thing }
+                """),
+            null);
+
+    assertTrue(
+        composed
+            .releaseDocument()
+            .contains(
+                "  - { type: 'maven', name: 'eu.wohlben.qits:qits-thing', announce: 'if-published' }\n"),
+        composed.releaseDocument());
+    assertTrue(
+        composed.releaseDocument().contains("  - { type: 'docker', name: 'qits/qits-thing' }\n"),
+        composed.releaseDocument());
+    CiEventTrigger release =
+        new CiEventTriggerParser()
+            .parse(CiReleaseSlotParser.CONFIG_PATH, composed.releaseDocument());
+    assertEquals(CiArtifact.Announce.IF_PUBLISHED, release.artifacts().get(0).announce());
+    assertEquals(CiArtifact.Announce.ALWAYS, release.artifacts().get(1).announce());
+  }
+
+  @Test
   public void everyComposedDocumentParsesAsAnOrdinaryTriggerFile() {
     // THE PROPERTY THE WHOLE DESIGN RESTS ON. A composed document is not a new file kind: it is the
     // existing trigger schema, so restart-reparse (which reads config_path + trigger_config off the

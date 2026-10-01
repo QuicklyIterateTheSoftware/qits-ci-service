@@ -128,8 +128,12 @@ public class CiEventTriggerParser {
           CiConfigSchema.ARTIFACTS_KEY,
           CiConfigSchema.CHECKOUT_KEY);
 
-  /** The whole of an artifact declaration. Anything else in that mapping is an error. */
-  private static final Set<String> ARTIFACT_KEYS = Set.of("type", "name");
+  /**
+   * The whole of an artifact declaration. Anything else in that mapping is an error. {@code
+   * announce} is optional and is what a composed release document carries for an entry {@code
+   * release.yml} declared {@code announce: if-published} — see {@link CiArtifact.Announce}.
+   */
+  private static final Set<String> ARTIFACT_KEYS = Set.of("type", "name", CiArtifact.ANNOUNCE_KEY);
 
   /** The whole of a checkout declaration. Anything else in that mapping is an error. */
   private static final Set<String> CHECKOUT_KEYS =
@@ -655,12 +659,15 @@ public class CiEventTriggerParser {
                 + index
                 + " declares an unknown key '"
                 + key
-                + "' — an artifact is exactly { type, name }");
+                + "' — an artifact is exactly { type, name[, announce] }");
       }
     }
+    CiArtifact.Type type = requireArtifactType(map.get("type"), configPath, index);
+    String name = requireArtifactName(map.get("name"), configPath, index);
     return new CiArtifact(
-        requireArtifactType(map.get("type"), configPath, index),
-        requireArtifactName(map.get("name"), configPath, index));
+        type,
+        name,
+        CiArtifact.requireAnnounce(map.get(CiArtifact.ANNOUNCE_KEY), type, name, configPath, index));
   }
 
   private static CiArtifact.Type requireArtifactType(

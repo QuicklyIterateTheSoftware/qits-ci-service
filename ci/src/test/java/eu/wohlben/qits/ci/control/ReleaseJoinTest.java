@@ -12,9 +12,16 @@ import eu.wohlben.qits.ci.entity.CiScmRelease;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -92,6 +99,7 @@ public class ReleaseJoinTest extends CiTestSupport {
   @Inject CiRunService runService;
   @Inject ReleaseJoin join;
   @Inject FakeReleaseAnnouncer releaseAnnouncer;
+  @Inject FakeArtifactPresence artifactPresence;
 
   private String repoId;
 
@@ -100,6 +108,8 @@ public class ReleaseJoinTest extends CiTestSupport {
     repoId = "releaser-" + UUID.randomUUID().toString().substring(0, 8);
     fakeCandidates.set(repoId);
     releaseAnnouncer.reset();
+    artifactPresence.reset();
+    join.presenceBackoff(Duration.ofMillis(1));
   }
 
   // --- the four arrival orders ------------------------------------------------------------------
@@ -509,6 +519,183 @@ public class ReleaseJoinTest extends CiTestSupport {
         repoId, repoId, VERSION, UUID.randomUUID().toString(), Instant.now(), "CATASTROPHIC");
 
     assertEquals("CATASTROPHIC", releaseAnnouncer.published().get(0).priority());
+  }
+
+  // --- announce: if-published (qits-561) --------------------------------------------------------
+
+  private static final String MAVEN_NAME = "eu.wohlben.qits:qits-thing-javalib";
+
+  private static final String IF_PUBLISHED_TRIGGER =
+      """
+      event: SCMRelease
+      artifacts:
+        - { type: maven, name: "eu.wohlben.qits:qits-thing-javalib", announce: if-published }
+        - { type: docker, name: qits/qits-thing }
+      steps:
+        - image: alpine:3
+          script: ./publish-tag.sh
+      """;
+
+  @Test
+  public void anIfPublishedEntryThatIsPresentIsAnnouncedOnce() throws Exception {
+    artifactPresence.answer(CiArtifactPresence.Probe.present("200"));
+
+    ifPublishedRun();
+
+    assertEquals(
+        List.of(MAVEN_NAME, "qits/qits-thing"),
+        publishedNames(),
+        "present: announced as today, beside the always-entry");
+    assertEquals(
+        List.of(new FakeArtifactPresence.Asked(CiArtifact.Type.MAVEN, MAVEN_NAME, VERSION)),
+        artifactPresence.asked(),
+        "asked once, about the if-published entry at the release version — never the docker one");
+    assertTrue(owedFor(repoId, VERSION).isEmpty());
+    assertNull(rowFor(MAVEN_NAME).skipReason);
+  }
+
+  @Test
+  public void anIfPublishedEntryThatIsAbsentIsSkippedAndNeverCheckedAgain() throws Exception {
+    artifactPresence.answer(CiArtifactPresence.Probe.absent("404"));
+
+    ifPublishedRun();
+
+    assertEquals(
+        List.of("qits/qits-thing"),
+        publishedNames(),
+        "absent: no SoftwareRelease for it, and the always-entry is unaffected");
+    CiReleaseAnnouncement skipped = rowFor(MAVEN_NAME);
+    assertEquals(CiReleaseAnnouncement.SKIPPED_ABSENT, skipped.skipReason);
+    assertNotNull(skipped.announcedAt, "settled like an announced row, so nothing owes it");
+    assertTrue(owedFor(repoId, VERSION).isEmpty());
+
+    releaseArrives(repoId, repoId, VERSION);
+    join.sweepOwed();
+
+    assertEquals(1, artifactPresence.asked().size(), "a re-drive does not check it again");
+    assertEquals(List.of("qits/qits-thing"), publishedNames(), "and does not announce it later");
+  }
+
+  @Test
+  public void anIfPublishedEntryTheStoreNeverAnswersIsDroppedWithAnError() throws Exception {
+    artifactPresence.otherwise(CiArtifactPresence.Probe.inconclusive("HTTP 503"));
+    List<LogRecord> errors = new ArrayList<>();
+    Handler capture = errorCapture(errors);
+    Logger log = Logger.getLogger(ReleaseJoin.class.getName());
+    log.addHandler(capture);
+    try {
+      ifPublishedRun();
+    } finally {
+      log.removeHandler(capture);
+    }
+
+    assertEquals(List.of("qits/qits-thing"), publishedNames(), "inconclusive: not announced");
+    assertEquals(
+        ReleaseJoin.PRESENCE_ATTEMPTS, artifactPresence.asked().size(), "asked three times, no more");
+    assertEquals(1, errors.size(), "one ERROR for the dropped entry: " + errors);
+    String message = render(errors.get(0));
+    assertTrue(message.contains(MAVEN_NAME), message);
+    assertTrue(message.contains(VERSION), message);
+    assertEquals(CiReleaseAnnouncement.SKIPPED_UNVERIFIED, rowFor(MAVEN_NAME).skipReason);
+    assertTrue(owedFor(repoId, VERSION).isEmpty(), "and settled, so no re-drive announces it");
+  }
+
+  @Test
+  public void anIfPublishedEntryThatAnswersOnTheSecondAttemptIsAnnounced() throws Exception {
+    artifactPresence.answer(
+        CiArtifactPresence.Probe.inconclusive("HTTP 502"), CiArtifactPresence.Probe.present("200"));
+
+    ifPublishedRun();
+
+    assertEquals(List.of(MAVEN_NAME, "qits/qits-thing"), publishedNames());
+    assertEquals(2, artifactPresence.asked().size());
+  }
+
+  @Test
+  public void anIfPublishedEntryOwedBeforeTheReleaseIsCheckedWhenTheReleaseArrives()
+      throws Exception {
+    fakeConfig.putTriggers(
+        repoId,
+        "main",
+        HEAD,
+        new EventTriggerFile(TAG_TRIGGER_PATH, IF_PUBLISHED_TRIGGER.replace("SCMRelease", "SCMPublishTag")));
+    tagRunWithInstalledTrigger();
+    assertEquals(List.of(), artifactPresence.asked(), "nothing is asked while the join is open");
+
+    artifactPresence.answer(CiArtifactPresence.Probe.absent("404"));
+    releaseArrives(repoId, repoId, VERSION);
+
+    assertEquals(
+        1, artifactPresence.asked().size(), "the policy rode the owed row to the later drive");
+    assertEquals(List.of("qits/qits-thing"), publishedNames());
+  }
+
+  private void ifPublishedRun() throws Exception {
+    deliver(
+        RELEASE_TRIGGER_PATH,
+        IF_PUBLISHED_TRIGGER,
+        ReleaseJoin.RELEASE_EVENT_NAME,
+        releasePayload());
+  }
+
+  private void tagRunWithInstalledTrigger() throws Exception {
+    String eventId = UUID.randomUUID().toString();
+    engine.evaluate(
+        new CiEventTriggerService.Arrival(
+            eventId,
+            CiRunService.TAG_EVENT_NAME,
+            Instant.parse("2026-08-12T09:00:00Z"),
+            "{\"repoId\":\"" + repoId + "\",\"tagName\":\"" + VERSION + "\"}"));
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+  }
+
+  private List<String> publishedNames() {
+    return releaseAnnouncer.published().stream()
+        .map(FakeReleaseAnnouncer.Published::packageName)
+        .toList();
+  }
+
+  private CiReleaseAnnouncement rowFor(String packageName) {
+    forgetLoadedEntities();
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () ->
+                announcements.list("repoId = ?1 and packageName = ?2", repoId, packageName).stream()
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("no row for " + packageName)));
+  }
+
+  private static Handler errorCapture(List<LogRecord> into) {
+    return new Handler() {
+      @Override
+      public void publish(LogRecord record) {
+        if (record.getLevel().intValue() >= Level.SEVERE.intValue()) {
+          synchronized (into) {
+            into.add(record);
+          }
+        }
+      }
+
+      @Override
+      public void flush() {}
+
+      @Override
+      public void close() {}
+    };
+  }
+
+  /** A printf-style record keeps its parameters apart from the format, so render both. */
+  private static String render(LogRecord record) {
+    Object[] parameters = record.getParameters();
+    if (parameters == null || parameters.length == 0) {
+      return record.getMessage();
+    }
+    try {
+      return String.format(record.getMessage(), parameters);
+    } catch (RuntimeException notPrintf) {
+      return record.getMessage() + " " + Arrays.toString(parameters);
+    }
   }
 
   // --- fixtures ---------------------------------------------------------------------------------

@@ -1,0 +1,24 @@
+-- `announce: if-published` (qits-561): a maven or npm entry of release.yml may ask the release join
+-- to check qits-artifacts before it announces, and to drop the announcement when the artifact is not
+-- there at the release version. Two columns on the owed row, V10's shape twice: nullable, no default,
+-- no backfill, part of no constraint and carrying no index.
+--
+--   announce     the entry's policy as the trigger document spelled it — 'if-published' — or null,
+--                which is 'always': every row older than this column, and every entry declaring no
+--                policy. It is on the OWED row, beside finished_at and trigger_event_id, for their
+--                reason: the announcement is often made by whoever closes the join later (an
+--                SCMRelease arriving after the run, the boot sweep), and that drive cannot read the
+--                run's trigger document back.
+--
+--   skip_reason  why a row was SETTLED WITHOUT AN ANNOUNCEMENT — 'ABSENT' (qits-artifacts answered
+--                404 for that version) or 'UNVERIFIED' (it could not be asked conclusively within the
+--                join's attempts) — or null. A skipped row gets announced_at like an announced one,
+--                so no later drive checks it again or announces it; skip_reason is what tells the
+--                two apart when the table is read. Dropping is safe because it self-heals:
+--                qits-maintenance's daily scan reads the store's metadata and moves mt_latest to the
+--                version that really exists, so a missed announcement delays a bump by a day and
+--                never offers a version that does not exist.
+--
+-- MigrationChecksumTest pins the SHA-256 of this file. Nothing earlier in the lineage is touched.
+alter table ci_release_announcement add column announce varchar(16);
+alter table ci_release_announcement add column skip_reason varchar(16);
