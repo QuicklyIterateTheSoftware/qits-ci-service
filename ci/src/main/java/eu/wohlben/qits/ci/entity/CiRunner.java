@@ -69,9 +69,10 @@ public class CiRunner extends PanacheEntityBase implements CausedRow {
   public int slots;
 
   /**
-   * Always {@link CiRunnerPlane#EDGE}. Converted rather than {@code @Enumerated} so that a row still
-   * storing the retired {@code INTERNAL} reads instead of throwing — see {@link
-   * CiRunnerPlaneConverter}.
+   * Always {@link CiRunnerPlane#EDGE}; {@code V28__runner_plane_normalized.sql} normalised every
+   * stored value to it. Converted rather than {@code @Enumerated} so that a row still storing the
+   * retired {@code INTERNAL} — a restored backup older than that migration — reads instead of
+   * throwing — see {@link CiRunnerPlaneConverter}.
    */
   @Convert(converter = CiRunnerPlaneConverter.class)
   @Column(nullable = false, length = 32)
