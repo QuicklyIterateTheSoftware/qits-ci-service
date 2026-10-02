@@ -886,6 +886,35 @@ public class CiReleaseComposerTest {
   }
 
   /** qits-landing after qits-647: an app, a docker image and one consumer pact. */
+  /**
+   * qits-653: the packaged {@code app} recipe, exactly as it ships, with the declaration its header
+   * now names. Its one release step generates {@code .sbom/sbom.json} after the image push, and that
+   * same step — the only one, so also the last — submits it and checks it arrived.
+   */
+  @Test
+  public void theAppArchetypeGeneratesItsImageSbomAndThePostludeSubmitsIt() throws Exception {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            CiRepoRef.of("66666666-7777-8888-9999-000000000000", "qits", "qits-landing-app"),
+            slots(
+                """
+                archetype: app
+                artifacts:
+                  - { type: docker, name: qits/qits-landing, sbom: .sbom/sbom.json }
+                """),
+            packaged("app"));
+
+    String document = composed.releaseDocument();
+    golden("app-release.yml", document);
+    int push = document.indexOf("--output \"type=image,name=$ref,push=true\"");
+    // No `-t pnpm` between the pin and the flags: an -app's lockfile is package-lock.json.
+    int generate =
+        document.indexOf("@cyclonedx/cdxgen@11.2.7 --spec-version 1.6 -o .sbom/sbom.json .");
+    int submit = document.indexOf("if [ -f '.sbom/sbom.json' ]; then");
+    int check = document.indexOf("qits artifacts publish exists sbom 'docker/qits/qits-landing'");
+    assertTrue(push > 0 && generate > push && submit > generate && check > submit, document);
+  }
+
   @Test
   public void anAppWithPactsPublishesThemAndNoContractDocs() {
     CiReleaseComposer.Composed composed =

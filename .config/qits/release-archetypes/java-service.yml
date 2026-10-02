@@ -195,7 +195,8 @@
 #                         not. A run printing `fetched qits-platform-access-cli <v>` twice with two
 #                         different `<v>` would be a qits-ci bug, not a recipe one.
 #   cyclonedx-maven       PINNED in the text: `org.cyclonedx:cyclonedx-maven-plugin:2.9.1`.
-#   cdxgen (npm-library)  PINNED in the text: `@cyclonedx/cdxgen@11.2.7`.
+#   cdxgen (npm-library, app)
+#                         PINNED in the text: `@cyclonedx/cdxgen@11.2.7`.
 #   the musl/zlib tarballs (daemon)
 #                         PINNED BY THIS BUILD'S OWN TREE: the coordinate is read out of the
 #                         repository's `docker/Dockerfile.musl-builder` at the checked-out rev and

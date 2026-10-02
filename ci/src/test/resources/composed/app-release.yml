@@ -1,0 +1,160 @@
+# Composed by qits-ci from .config/qits/release.yml and .config/qits/release-archetypes/app.yml.
+# Generated: this text is never committed. Edit the slot file or the archetype recipe.
+event: SCMRelease
+when:
+  - repository: { exact: 'qits-landing-app' }
+checkout:
+  branch: version
+  sha: commitSha
+artifacts:
+  - { type: 'docker', name: 'qits/qits-landing' }
+steps:
+  - image: 'qits/build-images/node-docker-base:latest'
+    timeout-seconds: 3600
+    build: true
+    script: |
+      set -eu
+      # --- platform prelude ---------------------------------------------------------
+      : "${QITS_VERSION:?the triggering release event carried no version}"
+      git fetch "$QITS_CI_REPOSITORY_URL" "refs/tags/$QITS_VERSION:refs/tags/$QITS_VERSION"
+      git checkout --detach "$QITS_VERSION"
+      if [ -n "${QITS_ARTIFACTS_CLI_PACKAGE:-}" ]; then
+        : "${QITS_ARTIFACTS_CLI_VERSION:?the qits CLI package is configured but no version was injected; the qits-ci that launched this step predates the CLI pin}"
+        mkdir -p /tmp/qits-bin
+        set --
+        if [ -n "${QITS_TOKEN:-}" ]; then
+          set -- --header "Authorization: Bearer $QITS_TOKEN"
+        fi
+        if command -v curl > /dev/null 2>&1; then
+          curl -fsSL --retry 2 --retry-delay 2 "$@" -o /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
+        elif command -v wget > /dev/null 2>&1; then
+          wget -q "$@" -O /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
+        else
+          echo 'qits-ci: the image for this step (qits/build-images/node-docker-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
+          exit 1
+        fi
+        chmod +x /tmp/qits-bin/qits
+        ln -sf /tmp/qits-bin/qits /tmp/qits-bin/qits-publish
+        echo "qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+        PATH="/tmp/qits-bin:$PATH"
+        export PATH
+      fi
+      : "${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only through it}"
+      : "${QITS_BUILD_REGISTRY:?}"
+      (
+        umask 077
+        if [ -n "${QITS_TOKEN:-}" ]; then
+          printf '%s' "${QITS_TOKEN_SUBJECT:-qits-ci-run}" > /tmp/qits-client-id
+          printf '%s' "$QITS_TOKEN" > /tmp/qits-client-secret
+        else
+          printf '' > /tmp/qits-client-id
+          printf '' > /tmp/qits-client-secret
+        fi
+      )
+      # --- the declared step, run as data -------------------------------------------
+      cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
+      # THE COORDINATE, OUT OF THE DECLARATION THAT ANNOUNCES IT — java-service.yml's block verbatim,
+      # and see its header for why this is read rather than derived from $QITS_CI_REPO_NAME: the
+      # repository name is not the application name, and no rule maps one onto the other. One
+      # spelling means the coordinate pushed and the coordinate announced cannot drift.
+      declared=$(sed -n \
+        's/^[[:space:]]*-[[:space:]]*{[[:space:]]*type:[[:space:]]*docker[[:space:]]*,[[:space:]]*name:[[:space:]]*\([^,}[:space:]]*\).*/\1/p' \
+        .config/qits/release.yml)
+      count=$(printf '%s' "$declared" | grep -c . || true)
+      if [ "$count" != 1 ]; then
+        echo "release.yml declares $count docker artifacts and app pushes exactly one." >&2
+        echo "Spell it as one flow line — '- { type: docker, name: qits/x, sbom: .sbom/sbom.json }'" >&2
+        echo "— or declare this repository's own 'release:' steps." >&2
+        exit 1
+      fi
+      case "$declared" in
+        *[!A-Za-z0-9._:/@+-]*)
+          echo "release.yml's docker artifact name is not a coordinate: $declared" >&2
+          exit 1 ;;
+      esac
+      # The first segment is the platform namespace and is re-supplied from the environment, which
+      # is how every hand-written file spelled it: a deployment may re-point the namespace and the
+      # declaration may not have to move.
+      image=${declared#*/}
+      ref="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
+      echo "releasing $ref"
+
+      # --- the @qits CREDENTIAL, ON ITS WAY TO THE BUILDER ------------------------------------------
+      # `npm ci` runs inside the image build now (see the header's Dockerfile contract), and the
+      # builder has none of this container's environment — so the credential has to be handed over
+      # explicitly, and a SECRET is the only form that does not end up in a layer.
+      #
+      # MINTED AT THE CALL SITE, NOT READ FROM $QITS_PUBLISH_TOKEN. qits-ci hands a step both: the
+      # variable, minted when the container started, and $QITS_PUBLISH_TOKEN_COMMAND, which prints a
+      # FRESH raw token — no `Bearer ` prefix — on every call. A mint's TTL and this step's timeout
+      # are the same number (3600s), so the variable can already be expired by the time the builder
+      # dials the registry; the command cannot be.
+      #
+      # IT DEGRADES TO ANONYMOUS, NEVER TO A BROKEN HEADER, and the FILE IS ALWAYS WRITTEN. This
+      # file is read at main and runs against a tag on whatever qits-ci the estate is running, so the
+      # command may be absent entirely and a mint may fail — and `--secret src=` on a path that does
+      # not exist is a refusal, so the empty file is what keeps a commission-less run building at
+      # all. An empty secret means the Dockerfile writes no `_authToken` line, which is the
+      # anonymous read qits-artifacts still accepts.
+      #
+      # /tmp, beside the two files the composer wrote, and NEVER a path in the clone: anything under
+      # the checkout is inside the `--local context=.` the builder uploads.
+      npm_publish_token=""
+      if [ -n "${QITS_PUBLISH_TOKEN_COMMAND:-}" ] \
+        && command -v "$QITS_PUBLISH_TOKEN_COMMAND" >/dev/null 2>&1; then
+        npm_publish_token=$("$QITS_PUBLISH_TOKEN_COMMAND" 2>/dev/null) || npm_publish_token=""
+      fi
+      ( umask 077
+        printf '%s' "$npm_publish_token" > /tmp/qits-npm-token )
+
+      # --- the image --------------------------------------------------------------------------------
+      # `push=true` IS THE PUBLISH: the image goes from the builder straight to the registry and
+      # never enters any local image store. $QITS_BUILD_REGISTRY is the registry as the BUILDER
+      # resolves it; $QITS_REGISTRY stays the host daemon's view and is not dialled here.
+      #
+      # NO --network host, AND NOTHING REPLACES IT. Every `RUN` executes in the builder's own
+      # namespace — the runner's buildkitd — so the two npm addresses below are the RUN's, the
+      # platform's public names, which the builder reaches exactly as the step does.
+      #
+      # THE TWO ORIGINS ARE BUILD ARGS AND THE TOKEN IS A SECRET, and that split is the contract the
+      # header states: an origin is not a credential and the build needs it in an `ARG`; a credential
+      # in a build arg is written into the image history, where anyone who pulls the image reads it.
+      #
+      # The Maven pair java-service passes is DROPPED — there is no Maven in an `-app` — and so is
+      # the .gitmodules walk and the per-webui npm build: an `-app` has no webui submodule and builds
+      # its own tree, inside the Dockerfile.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=docker \
+        --opt build-arg:QITS_NPM_REGISTRY_URL="$QITS_NPM_REGISTRY_URL" \
+        --opt build-arg:QITS_NPM_PROXY_URL="$QITS_NPM_PROXY_URL" \
+        --secret id=qits-npm-token,src=/tmp/qits-npm-token \
+        --output "type=image,name=$ref,push=true"
+
+      # --- the SBOM ---------------------------------------------------------------------------------
+      # GENERATED HERE, SUBMITTED BY THE COMPOSED POSTLUDE: it PUTs `.sbom/sbom.json` for the docker
+      # artifact that declares `sbom: .sbom/sbom.json`, after this script and before the step's exit
+      # code. AFTER the image build on purpose: `.sbom/` is inside the `--local context=.` the
+      # builder uploads, and a document written before it would be a file in the image's context.
+      #
+      # cdxgen at npm-library.yml's pin, through the mirror, `--registry` explicitly for the reason
+      # given there (`npm exec` resolves the tool itself). NO `-t pnpm`, unlike npm-library: an `-app`
+      # commits `package-lock.json`, and cdxgen detects the project type from the lockfile it finds.
+      # It reads the lockfile rather than an installed tree, which is why the step needs no `npm ci`
+      # — the install happens inside the Dockerfile.
+      mkdir -p .sbom
+      npm exec --yes --registry "$QITS_NPM_PROXY_URL" -- \
+        @cyclonedx/cdxgen@11.2.7 --spec-version 1.6 -o .sbom/sbom.json .
+      QITS_SLOT_EOF
+      if command -v bash > /dev/null 2>&1; then
+        bash -eu /tmp/qits-slot.sh
+      else
+        sh -eu /tmp/qits-slot.sh
+      fi
+      # --- platform postlude --------------------------------------------------------
+      : "${QITS_ARTIFACTS_CLI_PACKAGE:?this release submits an SBOM, and the qits CLI is not configured on this deployment}"
+      if [ -f '.sbom/sbom.json' ]; then
+        qits artifacts publish sbom submit --type 'docker' --name 'qits/qits-landing' \
+          --version "$QITS_VERSION" --file '.sbom/sbom.json'
+      fi
+      qits artifacts publish exists sbom 'docker/qits/qits-landing' "$QITS_VERSION" \
+        || { echo '.config/qits/release.yml declares sbom: .sbom/sbom.json for docker qits/qits-landing, and no release step produced it' >&2; exit 1; }

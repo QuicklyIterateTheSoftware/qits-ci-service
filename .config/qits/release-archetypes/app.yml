@@ -20,7 +20,10 @@
 #
 #     archetype: app
 #     artifacts:
-#       - { type: docker, name: qits/<application> }
+#       - { type: docker, name: qits/<application>, sbom: .sbom/sbom.json }
+#
+# `sbom: .sbom/sbom.json` is where the release step below writes the image's CycloneDX document, and
+# declaring it is what makes the composed postlude submit it (and the last step check it arrived).
 #
 # `artifacts:` MUST be in the repository's own file rather than here — qits-projects reads it out of
 # the repository at the tag, so an archetype default is invisible to it. See java-service.yml's
@@ -278,3 +281,18 @@ release:
         --opt build-arg:QITS_NPM_PROXY_URL="$QITS_NPM_PROXY_URL" \
         --secret id=qits-npm-token,src=/tmp/qits-npm-token \
         --output "type=image,name=$ref,push=true"
+
+      # --- the SBOM ---------------------------------------------------------------------------------
+      # GENERATED HERE, SUBMITTED BY THE COMPOSED POSTLUDE: it PUTs `.sbom/sbom.json` for the docker
+      # artifact that declares `sbom: .sbom/sbom.json`, after this script and before the step's exit
+      # code. AFTER the image build on purpose: `.sbom/` is inside the `--local context=.` the
+      # builder uploads, and a document written before it would be a file in the image's context.
+      #
+      # cdxgen at npm-library.yml's pin, through the mirror, `--registry` explicitly for the reason
+      # given there (`npm exec` resolves the tool itself). NO `-t pnpm`, unlike npm-library: an `-app`
+      # commits `package-lock.json`, and cdxgen detects the project type from the lockfile it finds.
+      # It reads the lockfile rather than an installed tree, which is why the step needs no `npm ci`
+      # — the install happens inside the Dockerfile.
+      mkdir -p .sbom
+      npm exec --yes --registry "$QITS_NPM_PROXY_URL" -- \
+        @cyclonedx/cdxgen@11.2.7 --spec-version 1.6 -o .sbom/sbom.json .
