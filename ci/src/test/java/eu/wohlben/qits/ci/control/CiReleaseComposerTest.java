@@ -919,8 +919,14 @@ public class CiReleaseComposerTest {
     assertFalse(document.contains("sbom submit"), document);
   }
 
+  /**
+   * An {@code announce:} entry is self-published: its repository's own release steps publish it,
+   * so the postlude neither uploads it (the CLI's {@code --path .} would find some other module's
+   * GAV and fail the release) nor submits its SBOM. The composed {@code artifacts:} line still
+   * carries the policy, because the join reads it there.
+   */
   @Test
-  public void anAnnounceIfPublishedRepositoryComposesAsBeforePlusThePlatformsPublish() {
+  public void anAnnounceEntryIsSelfPublishedSoThePostludeNeitherPublishesNorSubmitsIt() {
     CiReleaseComposer.Composed composed =
         CiReleaseComposer.compose(
             CiRepoRef.of("77777777-8888-9999-0000-111111111111", "qits", "qits-thing-javalib"),
@@ -935,11 +941,93 @@ public class CiReleaseComposerTest {
             null);
 
     golden("announce-if-published-release.yml", composed.releaseDocument());
+    String document = composed.releaseDocument();
     assertTrue(
-        composed
-            .releaseDocument()
-            .contains("name: 'eu.wohlben.qits:qits-thing', announce: 'if-published' }"),
-        composed.releaseDocument());
+        document.contains("name: 'eu.wohlben.qits:qits-thing', announce: 'if-published' }"),
+        document);
+    assertFalse(document.contains("platform postlude"), document);
+    assertFalse(document.contains("qits artifacts publish"), document);
+  }
+
+  /**
+   * The live shape of qits-projects-service: two self-published {@code announce: if-published}
+   * entries beside an entry the platform publishes, which links one of them. Only the platform's
+   * entry gets a publish line; the link to a self-published sibling waits on nothing.
+   */
+  @Test
+  public void announceEntriesBesideAPlatformPublishedEntryLeaveOnlyThatEntryInThePostlude() {
+    String document =
+        CiReleaseComposer.compose(
+                CiRepoRef.of("77777777-8888-9999-0000-111111111111", "qits", "qits-thing-service"),
+                slots(
+                    """
+                    release:
+                      - image: qits/build-images/maven-base:latest
+                        script: ./mvnw -B -ntp package
+                    artifacts:
+                      - { type: maven, name: "eu.wohlben.qits:qits-thing-golden-masters", announce: if-published }
+                      - { type: npm, name: "@qits/thing-golden-masters", announce: if-published }
+                      - { type: maven, name: "eu.wohlben.qits:qits-thing-api", path: api, link: [qits-thing-golden-masters] }
+                    """),
+                null)
+            .releaseDocument();
+
+    assertTrue(
+        document.contains(
+            "qits artifacts publish maven --name 'eu.wohlben.qits:qits-thing-api' --path 'api'"
+                + " --link 'eu.wohlben.qits:qits-thing-golden-masters' --version \"$QITS_VERSION\"\n"),
+        document);
+    assertFalse(document.contains("--name 'eu.wohlben.qits:qits-thing-golden-masters'"), document);
+    assertFalse(document.contains("--name '@qits/thing-golden-masters'"), document);
+    assertFalse(document.contains("sbom submit"), document);
+    assertTrue(
+        document.contains(
+            "  - { type: 'npm', name: '@qits/thing-golden-masters', announce: 'if-published' }\n"),
+        document);
+  }
+
+  /**
+   * {@code --sbom} is passed only for a declared {@code sbom:}. An {@code always} maven or npm entry
+   * with none is hashed on content alone; a defaulted path would fail the upload on a file the
+   * repository never promised ({@code no such SBOM}). Live shapes: qits-ci-daemon-protocol (a
+   * module path, BOM written by its own step but not declared) and qits-workspace-editor-image (at
+   * {@code .}).
+   */
+  @Test
+  public void aMavenOrNpmEntryWithNoSbomPublishesWithoutTheFlagAndSubmitsNothing() {
+    String document =
+        CiReleaseComposer.compose(
+                CiRepoRef.of("77777777-8888-9999-0000-111111111111", "qits", "qits-thing-service"),
+                slots(
+                    """
+                    release:
+                      - image: qits/build-images/maven-base:latest
+                        script: ./mvnw -B -ntp package
+                    artifacts:
+                      - { type: maven, name: "eu.wohlben.qits:qits-ci-daemon-protocol", path: ci-daemon-protocol }
+                      - { type: maven, name: "eu.wohlben.qits:qits-workspace-editor-image" }
+                      - { type: npm, name: "@qits/thing", path: dist/thing }
+                    """),
+                null)
+            .releaseDocument();
+
+    assertTrue(
+        document.contains(
+            "qits artifacts publish maven --name 'eu.wohlben.qits:qits-ci-daemon-protocol' --path"
+                + " 'ci-daemon-protocol' --version \"$QITS_VERSION\"\n"),
+        document);
+    assertTrue(
+        document.contains(
+            "qits artifacts publish maven --name 'eu.wohlben.qits:qits-workspace-editor-image'"
+                + " --path '.' --version \"$QITS_VERSION\"\n"),
+        document);
+    assertTrue(
+        document.contains(
+            "qits artifacts publish npm --name '@qits/thing' --path 'dist/thing' --version"
+                + " \"$QITS_VERSION\"\n"),
+        document);
+    assertFalse(document.contains("--sbom"), document);
+    assertFalse(document.contains("sbom submit"), document);
   }
 
   @Test

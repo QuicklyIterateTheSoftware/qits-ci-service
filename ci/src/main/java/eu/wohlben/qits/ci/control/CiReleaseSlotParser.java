@@ -398,12 +398,43 @@ public class CiReleaseSlotParser {
               + " — the change decision hashes the SBOM with the content, so an if-changed entry"
               + " must name the CycloneDX document its build writes");
     }
+    boolean selfPublished = map.containsKey(CiArtifact.ANNOUNCE_KEY);
+    if (selfPublished) {
+      requireNoUploadShape(map, type, name, configPath, index);
+    }
     return new SlotArtifact(
         artifact,
         sbomPath,
         parsePath(map.get(PATH_KEY), type, name, configPath, index),
         parseLink(map.get(LINK_KEY), type, name, configPath, index),
-        parseInclude(map.get(INCLUDE_KEY), artifact, configPath, index));
+        parseInclude(map.get(INCLUDE_KEY), artifact, configPath, index),
+        selfPublished);
+  }
+
+  /**
+   * An {@code announce:} entry is published by its repository's own release steps, never by the
+   * platform postlude (see {@link SlotArtifact#uploaded()}), so {@code path:} and {@code link:} —
+   * which only shape the platform's upload — would be inert. Refused rather than ignored. Goes with
+   * {@code announce:} in qits-648.
+   */
+  private static void requireNoUploadShape(
+      Map<?, ?> map, CiArtifact.Type type, String name, String configPath, int index) {
+    for (String key : List.of(PATH_KEY, LINK_KEY)) {
+      if (map.containsKey(key)) {
+        throw new CiConfigException(
+            CiArtifact.entry(configPath, index, type, name)
+                + " declares "
+                + CiArtifact.ANNOUNCE_KEY
+                + " and "
+                + key
+                + " — an announce entry is published by the repository's own release steps, and "
+                + key
+                + " only shapes the platform's publish; drop "
+                + key
+                + ", or replace announce with "
+                + CiArtifact.PUBLISH_KEY);
+      }
+    }
   }
 
   /**

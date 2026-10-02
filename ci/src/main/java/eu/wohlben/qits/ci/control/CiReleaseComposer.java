@@ -504,7 +504,7 @@ public final class CiReleaseComposer {
    * declared and therefore every release the fleet publishes today.
    */
   private static int postludeStep(List<CiStepDecl> steps, List<SlotArtifact> artifacts) {
-    if (steps.isEmpty() || artifacts.stream().noneMatch(SlotArtifact::hasSbom)) {
+    if (steps.isEmpty() || artifacts.stream().noneMatch(SlotArtifact::submitsSbom)) {
       return -1;
     }
     for (int i = steps.size() - 1; i >= 0; i--) {
@@ -683,7 +683,7 @@ public final class CiReleaseComposer {
       }
       for (int i = 0; i < sboms.size(); i++) {
         SlotArtifact artifact = sboms.get(i);
-        if (!artifact.hasSbom()) {
+        if (!artifact.submitsSbom()) {
           continue;
         }
         String submit =
@@ -816,7 +816,14 @@ public final class CiReleaseComposer {
         pending.add(i);
       }
     }
+    // A self-published maven sibling is already decided: the repository's own steps publish it, so
+    // an uploaded entry linking it waits on nothing here.
     Set<String> decided = new HashSet<>();
+    for (SlotArtifact artifact : artifacts) {
+      if (!artifact.uploaded() && artifact.artifact().type() == CiArtifact.Type.MAVEN) {
+        decided.add(CiReleaseSlotParser.artifactId(artifact.artifact().name()));
+      }
+    }
     List<Integer> order = new ArrayList<>();
     while (!pending.isEmpty()) {
       Integer next = null;

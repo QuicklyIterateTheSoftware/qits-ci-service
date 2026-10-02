@@ -46,7 +46,3 @@ steps:
       else
         sh -eu /tmp/qits-slot.sh
       fi
-      # --- platform postlude --------------------------------------------------------
-      : "${QITS_ARTIFACTS_CLI_PACKAGE:?this release publishes or submits an SBOM, and the qits CLI is not configured on this deployment}"
-      qits artifacts publish maven --name 'eu.wohlben.qits:qits-thing' --path '.' --sbom 'target/sbom.json' --version "$QITS_VERSION"
-      qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-thing' --version "$QITS_VERSION" --file 'target/sbom.json'

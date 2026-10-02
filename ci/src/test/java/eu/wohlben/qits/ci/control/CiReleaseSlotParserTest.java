@@ -636,6 +636,45 @@ public class CiReleaseSlotParserTest {
   }
 
   @Test
+  public void anAnnounceEntryIsSelfPublishedAndAPlainEntryIsNot() {
+    CiReleaseSlots slots =
+        parser.parse(
+            PATH,
+            """
+            artifacts:
+              - { type: maven, name: "eu.wohlben.qits:x-golden-masters", announce: if-published }
+              - { type: npm, name: "@qits/x", announce: always }
+              - { type: maven, name: "eu.wohlben.qits:x" }
+            """);
+    assertTrue(slots.artifacts().get(0).selfPublished());
+    assertFalse(slots.artifacts().get(0).uploaded());
+    assertTrue(slots.artifacts().get(1).selfPublished(), "declaring announce: at all is the rule");
+    assertFalse(slots.artifacts().get(1).uploaded());
+    assertFalse(slots.artifacts().get(2).selfPublished());
+    assertTrue(slots.artifacts().get(2).uploaded());
+  }
+
+  @Test
+  public void pathOrLinkOnAnAnnounceEntryIsRefused() {
+    String path =
+        refused(
+                "artifacts:\n  - { type: maven, name: \"a:b\", announce: if-published, path: m }\n")
+            .getMessage();
+    assertTrue(path.startsWith(PATH + ": artifact 0 ({ type: maven, name: a:b })"), path);
+    assertTrue(
+        path.contains(
+            "declares announce and path — an announce entry is published by the repository's own"
+                + " release steps"),
+        path);
+    String link =
+        refused(
+                "artifacts:\n  - { type: maven, name: \"a:c\" }\n  - { type: maven, name: \"a:b\","
+                    + " announce: if-published, link: [c] }\n")
+            .getMessage();
+    assertTrue(link.contains("declares announce and link"), link);
+  }
+
+  @Test
   public void includeIsRefusedOffAnIfChangedMavenOrNpmEntry() {
     String onDocker =
         refused(
