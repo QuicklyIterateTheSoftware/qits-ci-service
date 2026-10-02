@@ -164,13 +164,13 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     // It is armed in every test here so that "the wrapper is never read for a recipe" is asserted
     // against a wrapper that is really there.
     fakeConfig.putTriggers(wrapperId, "main", CiTriggerScope.PLATFORM, WRAPPER_HEAD);
-    engine.platformPipelinesRepository("qits-qits");
+    engine.platformPipelines(true);
     announcer.reset();
   }
 
   @AfterEach
   void disarm() {
-    engine.platformPipelinesRepository("");
+    engine.platformPipelines(false);
   }
 
   private CiEventTriggerService.Arrival releaseRequest() {

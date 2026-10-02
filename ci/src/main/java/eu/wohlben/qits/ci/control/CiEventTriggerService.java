@@ -144,15 +144,15 @@ import org.jboss.logging.Logger;
  *
  * <h2>Platform pipelines</h2>
  *
- * <p>There is a <b>second source of trigger files</b>: {@code .config/qits/ci-platform-event-*.yml}
- * in the one repository {@code qits.ci.platform-pipelines-repository} names, at its {@code main}
- * head. Such a file is parsed and selected exactly like a repository's own — same grammar, same
- * schema, same per-file containment — but the run it records is about the repository the
- * <b>payload</b> names, so one file serves the whole catalogue. See {@link #evaluatePlatform}.
+ * <p>There is a <b>second source of trigger files</b>: the platform pipelines packaged into this
+ * qits-ci ({@link CiPlatformPipelines}). Such a file is parsed and selected exactly like a
+ * repository's own — same grammar, same schema, same per-file containment — but the run it records
+ * is about the repository the <b>payload</b> names, so one file serves the whole catalogue. See
+ * {@link #evaluatePlatform}.
  *
- * <p>It costs <b>one</b> extra listing per arriving event and no extra read per candidate: the head
- * a platform run is recorded at is the one the candidate loop already resolved for that repository.
- * A blank config key means the feature is off and nothing is read at all.
+ * <p>It costs no read at all: the files are in this jar, and the head a platform run is recorded at
+ * is the one the candidate loop already resolved for that repository. {@code
+ * qits.ci.platform-pipelines.enabled=false} turns the feature off.
  */
 @ApplicationScoped
 public class CiEventTriggerService {
@@ -242,42 +242,42 @@ public class CiEventTriggerService {
   @ConfigProperty(name = "qits.ci.trigger-owed-grace")
   Duration owedGrace;
 
+  /** Whether the packaged platform pipelines are evaluated. On unless a deployment says otherwise. */
+  @ConfigProperty(name = "qits.ci.platform-pipelines.enabled", defaultValue = "true")
+  boolean configuredPlatformPipelinesEnabled;
+
   /**
-   * The repository whose {@code ci-platform-event-*.yml} files are platform pipelines — the wrapper
-   * repository by default, because that is the one repository the whole catalogue is described in.
-   *
-   * <p><b>Blank turns the feature off and reads nothing.</b> A deployment that declares no platform
-   * repository must not pay a listing per event for a file it has decided not to have.
+   * The retired key that named the wrapper as the source of platform pipelines. Read only to say,
+   * once at boot, that it is ignored: a deployment extra still setting it must not look effective.
    */
   @ConfigProperty(name = "qits.ci.platform-pipelines-repository")
-  Optional<String> configuredPlatformPipelinesRepository;
+  Optional<String> retiredPlatformPipelinesRepository;
 
-  /**
-   * The repository this instance reads platform pipelines from — the config's value, normalised
-   * once, and whatever a test armed after that.
-   *
-   * <p>{@code Optional} above and a plain string here for one reason: a property spelled as the
-   * empty string reaches this process as <b>absent</b>, not as {@code ""}, so an unwrapped
-   * {@code String} injection point fails the whole deployment on the very value that means "off".
-   */
-  private String platformPipelinesRepository = "";
+  @Inject CiPlatformPipelines platformPipelines;
+
+  /** The config's value, and whatever a test armed after that. */
+  private boolean platformPipelinesEnabled;
 
   @PostConstruct
-  void readPlatformPipelinesRepository() {
-    platformPipelinesRepository = normalise(configuredPlatformPipelinesRepository.orElse(""));
+  void readPlatformPipelinesEnabled() {
+    platformPipelinesEnabled = configuredPlatformPipelinesEnabled;
+    retiredPlatformPipelinesRepository
+        .filter(value -> !value.isBlank())
+        .ifPresent(
+            value ->
+                LOG.warnf(
+                    "qits.ci.platform-pipelines-repository=%s is ignored: platform pipelines are"
+                        + " packaged into qits-ci and no repository is read for them any more",
+                    value));
   }
 
   /**
-   * Arms the platform-pipelines repository for one test. A method rather than a field write, and
+   * Arms or disarms the platform pipelines for one test. A method rather than a field write, and
    * that is load-bearing: this bean is normal-scoped, so a test holds a client proxy and a field
    * write would land on the proxy and change nothing.
    */
-  void platformPipelinesRepository(String repository) {
-    platformPipelinesRepository = normalise(repository);
-  }
-
-  private static String normalise(String repository) {
-    return repository == null ? "" : repository.trim();
+  void platformPipelines(boolean enabled) {
+    platformPipelinesEnabled = enabled;
   }
 
   /**
@@ -1774,17 +1774,6 @@ public class CiEventTriggerService {
     UNKNOWN
   }
 
-  /**
-   * The platform-pipelines repository as a candidate, or null when the feature is off or the
-   * catalogue does not hold it. One caller, {@link #evaluatePlatform}, which says what a null means
-   * in its own terms. <b>It is a source of platform TRIGGER files and of nothing else</b>: no
-   * archetype recipe is read from it (it was, at its newest released tag, until qits-583).
-   */
-  private CiRepoRef platformRepo(List<CiRepoRef> candidates) {
-    String configured = platformPipelinesRepository;
-    return configured.isEmpty() ? null : find(candidates, configured);
-  }
-
   /** A checkout path resolved against the payload; null when the path leads nowhere or to blank. */
   private static String checkoutField(JsonNode payload, String path) {
     JsonNode node = CiEventSelectionEvaluator.resolve(payload, path);
@@ -1796,17 +1785,13 @@ public class CiEventTriggerService {
   }
 
   /**
-   * The platform pass: the files one configured repository declares for the whole catalogue.
+   * The platform pass: the pipelines packaged into this qits-ci ({@link CiPlatformPipelines}),
+   * evaluated for the whole catalogue.
    *
-   * <p><b>The one listing this costs is made here</b>, and only when a platform pass runs at all —
-   * a project-scoped evaluation makes none. For a while it was made at the top of every evaluation
-   * and handed in, because the archetype reads wanted the wrapper resolved; nothing else reads that
-   * repository any more.
-   *
-   * <p>Read at that repository's {@code main} head, parsed by the same parser and selected by the
-   * same grammar as a repository's own trigger — but the run is recorded against, and cloned from,
-   * the repository the <b>payload</b> names. That is the whole of the difference, and it is what
-   * lets one file bump every repository instead of 71 files bumping one dependency each.
+   * <p>Parsed by the same parser and selected by the same grammar as a repository's own trigger —
+   * but the run is recorded against, and cloned from, the repository the <b>payload</b> names. That
+   * is the whole of the difference, and it is what lets one file bump every repository instead of
+   * 71 files bumping one dependency each.
    *
    * <p><b>Three ways it records nothing, and each is one WARN naming the event and the
    * repository.</b> The payload carries no {@code repository}; it names one the catalogue does not
@@ -1825,32 +1810,12 @@ public class CiEventTriggerService {
       Map<String, String> heads,
       List<String> runIds,
       List<String> unreadable) {
-    String configured = platformPipelinesRepository;
-    if (configured.isEmpty()) {
-      // Off, and off means no read at all.
+    if (!platformPipelinesEnabled) {
+      // Off, and off means no evaluation at all.
       return;
     }
-    CiRepoRef platformRepo = platformRepo(candidates);
-    if (platformRepo == null) {
-      // WARN rather than DEBUG, unlike the per-candidate reads: this repository is named in this
-      // deployment's own config, so a missing one is a misconfiguration that silently disables every
-      // platform pipeline, and it can be acted on.
-      LOG.warnf(
-          "The platform-pipelines repository %s is not in the catalogue — no platform pipeline was"
-              + " evaluated for event %s",
-          configured, arrival.eventId());
-      return;
-    }
-    EventTriggerLookup lookup =
-        configSource.readEventTriggers(platformRepo, TRIGGER_BRANCH, CiTriggerScope.PLATFORM);
-    if (lookup.status() != EventTriggerLookup.Status.FOUND) {
-      LOG.warnf(
-          "Could not read %s@%s for platform triggers — no platform pipeline was evaluated for"
-              + " event %s",
-          configured, TRIGGER_BRANCH, arrival.eventId());
-      return;
-    }
-    for (EventTriggerFile file : lookup.files()) {
+    String source = "qits-ci";
+    for (EventTriggerFile file : platformPipelines.files()) {
       CiEventTrigger trigger;
       try {
         trigger = triggerParser.parse(file.path(), file.content());
@@ -1859,7 +1824,7 @@ public class CiEventTriggerService {
         // ones beside it.
         LOG.warnf(
             "%s: %s is not a usable platform event trigger: %s",
-            configured, file.path(), e.getMessage());
+            source, file.path(), e.getMessage());
         continue;
       }
       if (!trigger.eventName().equals(arrival.eventName())) {
@@ -1868,7 +1833,7 @@ public class CiEventTriggerService {
       if (!CiEventSelectionEvaluator.matches(trigger.selection(), payload)) {
         LOG.debugf(
             "%s: %s declares %s but its selection did not match event %s",
-            configured, file.path(), trigger.eventName(), arrival.eventId());
+            source, file.path(), trigger.eventName(), arrival.eventId());
         continue;
       }
       if (trigger.checkout() != null) {
@@ -1879,7 +1844,7 @@ public class CiEventTriggerService {
         LOG.warnf(
             "%s: %s declares 'checkout:', which is not supported in platform pipelines — the run"
                 + " builds the named repository's %s head; no run for event %s",
-            configured, file.path(), TRIGGER_BRANCH, arrival.eventId());
+            source, file.path(), TRIGGER_BRANCH, arrival.eventId());
         continue;
       }
       String named = payloadRepository(payload);
@@ -1891,7 +1856,7 @@ public class CiEventTriggerService {
             arrival.eventId(),
             arrival.eventName(),
             file.path(),
-            configured,
+            source,
             named == null ? "none" : named);
         continue;
       }
@@ -1902,7 +1867,7 @@ public class CiEventTriggerService {
             arrival.eventId(),
             arrival.eventName(),
             file.path(),
-            configured,
+            source,
             target.display(),
             TRIGGER_BRANCH);
         continue;
@@ -1935,7 +1900,7 @@ public class CiEventTriggerService {
         LOG.warnf(
             "%s: %s declares step image %s, whose digest could not be resolved — no run for %s, and"
                 + " event %s (%s) stays owed so a sweep re-evaluates it",
-            configured,
+            source,
             file.path(),
             unpinned.reference(),
             target.display(),

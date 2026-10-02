@@ -114,6 +114,7 @@ public class CiEventCheckoutTest extends CiTestSupport {
   @Inject CiEventTriggerService engine;
   @Inject CiRunService runService;
   @Inject FakeRunAnnouncer announcer;
+  @Inject CiPlatformPipelines platformPipelines;
 
   private final CountDownLatch release = new CountDownLatch(1);
 
@@ -240,13 +241,10 @@ public class CiEventCheckoutTest extends CiTestSupport {
       fakeCandidates.setRefs(
           CiRepoRef.of(platformId, "qits", "qits-qits"), CiRepoRef.of(targetId, "qits", "target"));
       fakeConfig.putTriggers(targetId, "main", HEAD);
-      fakeConfig.putTriggers(
-          platformId,
-          "main",
-          CiTriggerScope.PLATFORM,
-          HEAD,
-          new EventTriggerFile(".config/qits/ci-platform-event-build.yml", CHECKOUT_TRIGGER));
-      engine.platformPipelinesRepository("qits-qits");
+      platformPipelines.override(
+          List.of(
+              new EventTriggerFile(".config/qits/platform-pipelines/build.yml", CHECKOUT_TRIGGER)));
+      engine.platformPipelines(true);
 
       deliver(
           arrival(
@@ -256,7 +254,8 @@ public class CiEventCheckoutTest extends CiTestSupport {
       assertEquals(List.of(), runService.runsFor(targetId));
       assertEquals(List.of(), runService.runsFor(platformId));
     } finally {
-      engine.platformPipelinesRepository("");
+      engine.platformPipelines(false);
+      platformPipelines.override(null);
     }
   }
 

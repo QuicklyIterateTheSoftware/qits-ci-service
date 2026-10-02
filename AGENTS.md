@@ -256,9 +256,10 @@ Three rules for that scope:
   which force-pushed `maintenance/<payload.repository>`) were deleted on 2026-09-02/03, so that
   event is in `PUSH_NOTHING` too. Copies of them under a service's `src/main/webui` or in the
   bootstrap's `.qits-bootstrap-src` are stale working trees, not recipes.
-- **The bump scope is the payload's `branch`**, because that is the one ref the wrapper's
-  `ci-platform-event-maintenance-bump.yml` pushes. If that pipeline starts to push another ref,
-  change `RunGitRefs` with it.
+- **The bump scope is the payload's `branch`**, because that is the one ref
+  `.config/qits/platform-pipelines/maintenance-bump.yml` pushes. `ScreenshotBaselines` gets the
+  payload's `branch` only under `maintenance/baselines/`, the one ref `screenshot-baselines.yml`
+  pushes. If a platform pipeline starts to push another ref, change `RunGitRefs` with it.
 - **A 400 on a scoped commission means qits-idp refused the list.** A qits-idp without the contract
   ignores `gitRefs` and answers 201, so a 400 never means "older idp". `IdpCommissioner` asks again
   at once with `gitRefs: []` and logs an ERROR naming the run and the idp's reason. It fails closed:
@@ -1933,12 +1934,12 @@ names"), and what follows is what biting it feels like.
 A second source of trigger files, and the whole of what is new about it is *which repository the run
 is about*.
 
-- **One repository, one prefix.** `qits.ci.platform-pipelines-repository` (default `qits-qits`) names
-  it; its `.config/qits/ci-platform-event-*.yml` files are read at `main` through the same two
-  content routes `HttpGitConfigSource` already uses, and parsed by the same
-  `CiEventTriggerParser`. `CiTriggerScope` is the one type that knows which prefix belongs to which
-  kind, and the two prefixes are disjoint — `ci-platform-event-` does not start with `ci-event-` — so
-  one listing of `.config/qits/` sorts them and nothing needs a second read to decide.
+- **Packaged, like the archetypes.** `.config/qits/platform-pipelines/*.yml` in this repository,
+  built into the jar as `platform-pipelines/<name>.yml` and read once by `CiPlatformPipelines`
+  (boot fails when one is missing; the native image names them in
+  `quarkus.native.resources.includes`). Parsed by the same `CiEventTriggerParser`. Until 2026-10-02
+  they were the wrapper's `ci-platform-event-*.yml`, listed at its `main` per event;
+  `qits.ci.platform-pipelines-repository` is retired and only logged as ignored.
 - **The payload names the repository, and it must be in the catalogue.** The run is recorded against,
   and its steps clone, the repository `payload.repository` names, resolved against the same candidate
   list the evaluation already has (name first, storage id second — the pre-cutover arm). No field, no
@@ -1947,12 +1948,12 @@ is about*.
   engine states.
 - **The head comes from the candidate pass, not from a second read.** `evaluate` keeps the head each
   candidate answered with and the platform pass looks the target's up in it. So a platform pipeline
-  costs **one** extra listing per arriving event and nothing per candidate — and a target the
+  costs no read at all — and a target the
   evaluation could not read has no head, which is exactly the case that must not become a run.
 - **Two files are two runs, deliberately.** A repository carrying both a local and a platform trigger
   for one event gets two rows: the dedupe is `(trigger_event_id, repo_id, config_path)` and the paths
   differ. That is also how a run says which kind it was — `config_path` already travels to the API,
-  and the prefix is the answer. Nothing was added to the schema for this.
+  and `.config/qits/platform-pipelines/` is the answer. Nothing was added to the schema for this.
 - **Blank is off and reads nothing.** The key is injected as `Optional<String>`, because a property
   spelled as the empty string arrives as *absent* and a bare `String` injection point fails the whole
   deployment on the one value that means "off". The suites turn it off in their
@@ -2014,8 +2015,8 @@ phase.
   `.config/qits/release-archetypes/<name>.yml` in the repository the run is for, through
   `CiConfigSource.readFile` at the revision its `release.yml` was read at; otherwise the classpath
   resource `release-archetypes/<name>.yml`, which `ci/pom.xml` packages into this jar from this
-  repository's own `.config/qits/release-archetypes/`. `qits.ci.platform-pipelines-repository` is a
-  source of platform TRIGGER files and nothing else; `evaluatePlatform` makes its one listing itself.
+  repository's own `.config/qits/release-archetypes/`. Platform pipelines are packaged the same way
+  (`CiPlatformPipelines`), so no repository is read for either.
   Until qits-583 the recipe was read from that repository at its newest released tag, which made a
   recipe fix ship only with a wrapper release — the last step of a ticket — and meant no CI run ever
   executed a changed recipe before it shipped.

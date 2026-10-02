@@ -15,15 +15,18 @@ import java.util.regex.Pattern;
  * states them as {@code gitRefs}, and qits-idp stamps them into every token of that client as
  * {@code git_refs} (contract C6 in the superproject's {@code principal-bound-git-refs-plan.md}).
  *
- * <p>Four answers:
+ * <p>Five answers:
  *
  * <ul>
  *   <li><b>{@code MaintenanceBump}</b>: the one branch the payload names in {@code branch}. For a
  *       group bump that is {@code maintenance/<group>}; for a targeted bump it is the source branch
  *       the caller asked to bump. It is the only ref the bump pipeline
- *       ({@code .config/qits/ci-platform-event-maintenance-bump.yml} in the wrapper) pushes. A
- *       payload with no usable branch gives an empty list: the pipeline refuses such a payload
- *       before it pushes anything.
+ *       ({@code .config/qits/platform-pipelines/maintenance-bump.yml}, packaged into qits-ci)
+ *       pushes. A payload with no usable branch gives an empty list: the pipeline refuses such a
+ *       payload before it pushes anything.
+ *   <li><b>{@code ScreenshotBaselines}</b>: the payload's {@code branch} too, and only when it is
+ *       under {@code maintenance/baselines/} — the one ref {@code screenshot-baselines.yml}
+ *       pushes. Anything else gives an empty list.
  *   <li><b>{@code ReleaseRequestChanged} and {@code SCMRelease}</b>: an empty list, "may push
  *       nothing". Inventory of 2026-09-12: 46 and 31 recipes across the estate, and none of them
  *       pushes — they only fetch release tags.
@@ -44,6 +47,12 @@ public final class RunGitRefs {
 
   /** The event qits-platform-maintenance sends to apply a bump. */
   public static final String MAINTENANCE_BUMP = "MaintenanceBump";
+
+  /** The event qits-maintenance sends to render a release request's screenshot baselines. */
+  public static final String SCREENSHOT_BASELINES = "ScreenshotBaselines";
+
+  /** The only branches a {@link #SCREENSHOT_BASELINES} run may push. */
+  static final String BASELINES_PREFIX = "maintenance/baselines/";
 
   /** The payload field that names the branch the bump pipeline pushes. */
   static final String BRANCH_FIELD = "branch";
@@ -95,6 +104,13 @@ public final class RunGitRefs {
     if (MAINTENANCE_BUMP.equals(eventName)) {
       String branch = branchOf(payload, json);
       return Optional.of(branch == null ? List.of() : List.of(HEADS + branch));
+    }
+    if (SCREENSHOT_BASELINES.equals(eventName)) {
+      String branch = branchOf(payload, json);
+      return Optional.of(
+          branch == null || !branch.startsWith(BASELINES_PREFIX)
+              ? List.of()
+              : List.of(HEADS + branch));
     }
     if (eventName != null && PUSH_NOTHING.contains(eventName)) {
       return Optional.of(List.of());

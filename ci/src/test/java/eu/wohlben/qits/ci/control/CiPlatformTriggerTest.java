@@ -2,7 +2,6 @@ package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.control.CiConfigSource.EventTriggerFile;
 import eu.wohlben.qits.ci.entity.CiRun;
@@ -18,8 +17,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Platform pipelines: one repository's {@code .config/qits/ci-platform-event-*.yml} evaluated for
- * every arriving event, with the run recorded against the repository the <b>payload</b> names.
+ * Platform pipelines: the pipelines packaged into qits-ci ({@link CiPlatformPipelines}) evaluated
+ * for every arriving event, with the run recorded against the repository the <b>payload</b> names.
  *
  * <p>Everything below the bus is real here too — the same parser, the same selection grammar, the
  * same run service and the same unique constraint — so what these cases are about is only the two
@@ -29,7 +28,7 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 public class CiPlatformTriggerTest extends CiTestSupport {
 
-  private static final String PLATFORM_PATH = ".config/qits/ci-platform-event-maintenance-bump.yml";
+  private static final String PLATFORM_PATH = ".config/qits/platform-pipelines/maintenance-bump.yml";
 
   private static final String LOCAL_PATH = ".config/qits/ci-event-bump.yml";
 
@@ -48,6 +47,7 @@ public class CiPlatformTriggerTest extends CiTestSupport {
   @Inject CiEventTriggerService engine;
   @Inject CiRunService runService;
   @Inject FakeRunAnnouncer announcer;
+  @Inject CiPlatformPipelines platformPipelines;
 
   private String platformId;
   private String targetId;
@@ -62,13 +62,14 @@ public class CiPlatformTriggerTest extends CiTestSupport {
     // The head the target repository's main is on for this evaluation — what a platform run is
     // recorded at, and what its step containers check out.
     fakeConfig.putTriggers(targetId, "main", TARGET_HEAD);
-    engine.platformPipelinesRepository("qits-qits");
+    engine.platformPipelines(true);
     announcer.reset();
   }
 
   @AfterEach
   void disarm() {
-    engine.platformPipelinesRepository("");
+    engine.platformPipelines(false);
+    platformPipelines.override(null);
   }
 
   private CiEventTriggerService.Arrival arrival(String payload) {
@@ -80,12 +81,7 @@ public class CiPlatformTriggerTest extends CiTestSupport {
   }
 
   private void seedPlatformTrigger(String content) {
-    fakeConfig.putTriggers(
-        platformId,
-        "main",
-        CiTriggerScope.PLATFORM,
-        PLATFORM_HEAD,
-        new EventTriggerFile(PLATFORM_PATH, content));
+    platformPipelines.override(List.of(new EventTriggerFile(PLATFORM_PATH, content)));
   }
 
   private void deliver(CiEventTriggerService.Arrival arrival) throws Exception {
@@ -224,31 +220,39 @@ public class CiPlatformTriggerTest extends CiTestSupport {
         "the wrapper's own ci-event-*.yml is a repository trigger like anybody else's");
   }
 
-  // --- off means no read ---
+  // --- no repository is read for a platform pipeline ---
 
   @Test
-  public void aBlankPlatformRepositoryReadsNothingAtAll() throws Exception {
-    engine.platformPipelinesRepository("");
+  public void offRecordsNothing() throws Exception {
+    engine.platformPipelines(false);
+    seedPlatformTrigger(TRIGGER);
+
+    deliver(arrival(payloadNaming("qits-target")));
+
+    assertEquals(List.of(), runService.runsFor(targetId));
+  }
+
+  @Test
+  public void noRepositoryIsListedForPlatformPipelines() throws Exception {
+    // The wrapper used to be listed once per event for its ci-platform-event-*.yml. The pipelines
+    // are packaged now, so even a catalogue holding the wrapper costs no platform listing.
     seedPlatformTrigger(TRIGGER);
 
     deliver(arrival(payloadNaming("qits-target")));
 
     assertFalse(
         fakeConfig.triggerReads().stream().anyMatch(read -> read.endsWith("#PLATFORM")),
-        "off must cost no listing: " + fakeConfig.triggerReads());
-    assertEquals(List.of(), runService.runsFor(targetId));
+        "no platform listing: " + fakeConfig.triggerReads());
+    assertEquals(1, runService.runsFor(targetId).size());
   }
 
   @Test
-  public void anArmedPlatformRepositoryIsReadOnceForItsOwnScope() throws Exception {
-    seedPlatformTrigger(TRIGGER);
-
-    deliver(arrival(payloadNaming("qits-target")));
-
+  public void thePackagedPipelinesAreTheDefaultSet() {
+    platformPipelines.override(null);
     assertEquals(
-        1,
-        fakeConfig.triggerReads().stream().filter(read -> read.endsWith("#PLATFORM")).count(),
-        "one platform listing per arriving event, whatever the catalogue's size");
-    assertTrue(fakeConfig.triggerReads().contains(platformId + "@main#PLATFORM"));
+        List.of(
+            ".config/qits/platform-pipelines/maintenance-bump.yml",
+            ".config/qits/platform-pipelines/screenshot-baselines.yml"),
+        platformPipelines.files().stream().map(EventTriggerFile::path).toList());
   }
 }

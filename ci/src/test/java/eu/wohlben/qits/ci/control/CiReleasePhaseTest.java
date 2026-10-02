@@ -67,12 +67,12 @@ public class CiReleasePhaseTest extends CiTestSupport {
     // The wrapper is armed and listable, so that "this door reads no recipe from it" is asserted
     // against a wrapper that is really there.
     fakeConfig.putTriggers(wrapperId, "main", CiTriggerScope.PLATFORM, WRAPPER_HEAD);
-    engine.platformPipelinesRepository("qits-qits");
+    engine.platformPipelines(true);
   }
 
   @AfterEach
   void disarm() {
-    engine.platformPipelinesRepository("");
+    engine.platformPipelines(false);
   }
 
   private void seedSlots(String content) {

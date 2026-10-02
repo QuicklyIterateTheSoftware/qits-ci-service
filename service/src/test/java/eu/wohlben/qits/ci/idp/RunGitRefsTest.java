@@ -40,6 +40,20 @@ public class RunGitRefsTest {
   }
 
   @Test
+  public void aBaselinesRunMayPushOnlyItsMaintenanceBaselinesBranch() {
+    String payload =
+        "{\"repository\":\"qits-landing-app\",\"branch\":\"maintenance/baselines/abc\","
+            + "\"baseRef\":\"release/abc\"}";
+    assertEquals(
+        Optional.of(List.of("refs/heads/maintenance/baselines/abc")),
+        of("ScreenshotBaselines", payload));
+    assertEquals(
+        MAY_PUSH_NOTHING,
+        of("ScreenshotBaselines", payload.replace("maintenance/baselines/abc", "main")));
+    assertEquals(MAY_PUSH_NOTHING, of("ScreenshotBaselines", "{}"));
+  }
+
+  @Test
   public void aTargetedBumpMayPushTheOneSourceBranchItWasAskedToBump() {
     assertEquals(
         Optional.of(List.of("refs/heads/ticket/some-ticket")),

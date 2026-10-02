@@ -1,0 +1,100 @@
+# Render a release request's screenshot tests and commit the reference images they
+# write: qits-maintenance's BASELINES mode starts this with a `ScreenshotBaselines` event.
+#
+# A PLATFORM pipeline, packaged into qits-ci like `maintenance-bump.yml` beside it, and run
+# against the repository the payload names. Payload:
+#
+#   repository  the repository's public name
+#   branch      `maintenance/baselines/<request>`, qits-maintenance's own branch; it joins
+#               it to the request when this run moved it
+#   baseRef     `release/<request>`, the request's fold: the tree its gate renders
+#   workItem    optional; the commit subject's scope (else the newest one the fold names)
+#
+# It runs on node-browser-base, the image the `app` QA step compares in, so the references
+# are rendered exactly as the gate renders them. Only `__screenshots__/` files and the
+# renderer record (`testing/browser/renderer.txt`) are committed - the lockfile swap below
+# and anything else the run touches stay out. Missing references are written like changed
+# ones, so a repository's first baselines come from here too. No change, no commit.
+#
+# The push is plain, never forced. After the first join the fold contains the branch, so a
+# later run on the new fold is a fast-forward of it. A rejected push means the fold dropped
+# the branch (it was removed from the request): the step fails and says so.
+event: ScreenshotBaselines
+steps:
+  - image: qits/build-images/node-browser-base:latest
+    timeout-seconds: 1800
+    script: |
+      set -eu
+
+      branch=$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -er '.branch')
+      base=$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -er '.baseRef')
+      item=$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r '.workItem // ""')
+      for ref in "$branch" "$base"; do
+        case "$ref" in
+          ''|-*|*..*|*[!0-9A-Za-z._/-]*) echo "refusing an implausible ref: $ref" >&2; exit 1 ;;
+        esac
+      done
+      case "$branch" in maintenance/baselines/*) ;; *) echo "refusing a baselines branch outside maintenance/baselines/: $branch" >&2; exit 1 ;; esac
+      case "$base" in release/*) ;; *) echo "refusing a base that is not a release request's fold: $base" >&2; exit 1 ;; esac
+
+      git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$base"
+      git checkout -q --detach FETCH_HEAD
+
+      if ! jq -e '.scripts["test:browser"]' package.json >/dev/null 2>&1; then
+        echo "this repository has no test:browser script - there are no screenshot tests to render" >&2
+        exit 1
+      fi
+
+      # The scope of the commit subject: the caller's work item, else the newest one the
+      # fold's own commits name.
+      case "$item" in
+        '') item=$(git log -n 200 --format=%s 2>/dev/null \
+                     | sed -nE 's/^[A-Za-z][A-Za-z0-9_\/.-]*\(([A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18})\)!?: .*/\1/p' \
+                     | head -n 1) ;;
+        *[!0-9A-Za-z-]*) echo "refusing an implausible work item: $item" >&2; exit 1 ;;
+      esac
+
+      # npm and the renderer run unattended as any user; both need a writable HOME.
+      [ -n "${HOME:-}" ] && [ -w "$HOME" ] || export HOME=/tmp
+
+      # The same install the `app` QA step runs, lockfile-origin swap included.
+      if [ -f package-lock.json ]; then
+        npm_hosted_origin=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).origin')
+        npm_proxy_origin=$(node -p 'new URL(process.env.QITS_NPM_PROXY_URL).origin')
+        npm_hosted_path=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).pathname')
+        sed -i -E \
+          -e "s#(\"resolved\": \")https?://[^/\"]+#\1$npm_proxy_origin#" \
+          -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
+          package-lock.json
+      fi
+      env npm_config_registry="$QITS_NPM_PROXY_URL" \
+          "npm_config_@qits:registry=$QITS_NPM_REGISTRY_URL" \
+          npm ci --no-audit --no-fund
+
+      # Writes every reference that is missing or differs. A spec that fails for any
+      # other reason fails the run, and nothing is committed.
+      UPDATE_SNAPSHOT=all npm run test:browser
+
+      # The reference images, and the renderer record the compare step checks them against.
+      git add -A -- ':(glob)**/__screenshots__/**' ':(glob)**/testing/browser/renderer.txt'
+      # --ignore-submodules=none for maintenance-bump.yml's reason: a repository whose
+      # .gitmodules says `ignore = all` hides staged gitlinks otherwise. Only the paths
+      # above are staged, so it changes nothing here, and it keeps every guard alike.
+      if git diff --cached --quiet --ignore-submodules=none; then
+        echo "unchanged: every screenshot matches its reference"
+        exit 0
+      fi
+      git diff --cached --stat --ignore-submodules=none
+      subject="update screenshot baselines"
+      if [ -n "$item" ]; then
+        subject="chore($item): $subject"
+      else
+        subject="chore: $subject"
+      fi
+      git -c user.name="qits maintenance" -c user.email="maintenance@qits.local" \
+          commit -q -m "$subject"
+      if ! git push "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
+        echo "push to $branch was rejected - the fold no longer contains it; remove the branch or join it again" >&2
+        exit 1
+      fi
+      echo "pushed $(git rev-parse HEAD) to $branch"
