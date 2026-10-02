@@ -66,3 +66,9 @@ steps:
       # --- platform postlude --------------------------------------------------------
       : "${QITS_ARTIFACTS_CLI_PACKAGE:?this release publishes or submits an SBOM, and the qits CLI is not configured on this deployment}"
       qits artifacts publish contract --kind 'pacts' --ecosystem 'maven' --name 'eu.wohlben.qits:qits-landing-pacts-qits-projects' --application 'qits-landing' --provider 'qits-projects' --from 'pacts/' --version "$QITS_VERSION"
+      if [ -f '.sbom/sbom.json' ]; then
+        qits artifacts publish sbom submit --type 'docker' --name 'qits/qits-landing' \
+          --version "$QITS_VERSION" --file '.sbom/sbom.json'
+      fi
+      qits artifacts publish exists sbom 'docker/qits/qits-landing' "$QITS_VERSION" \
+        || { echo '.config/qits/release.yml declares sbom: .sbom/sbom.json for docker qits/qits-landing, and no release step produced it' >&2; exit 1; }

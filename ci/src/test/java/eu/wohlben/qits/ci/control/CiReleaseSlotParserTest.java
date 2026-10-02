@@ -69,7 +69,8 @@ public class CiReleaseSlotParserTest {
                 script: buildctl build
             artifacts:
               - { type: docker, name: qits/qits-ci, sbom: out/sbom.json }
-              - { type: daemon, name: qits-ci-daemon }
+              - { type: daemon, name: qits-ci-daemon, sbom: out/daemon-sbom.json }
+              - { type: docs, name: "@apidocs/qits-ci" }
             userflows: qits-ci
             """);
 
@@ -80,15 +81,18 @@ public class CiReleaseSlotParserTest {
     // — and it is why `gating:` is refused in a slot file too (ticket 9441bc6e), asserted below.
     assertTrue(slots.release().steps().get(0).build());
 
-    assertEquals(2, slots.artifacts().size());
+    assertEquals(3, slots.artifacts().size());
     SlotArtifact image = slots.artifacts().get(0);
     assertEquals(CiArtifact.Type.DOCKER, image.artifact().type());
     assertEquals("qits/qits-ci", image.artifact().name());
     assertEquals("out/sbom.json", image.sbomPath());
     assertTrue(image.hasSbom());
-    // The one with no document declares none, rather than declaring an empty path.
-    assertEquals("", slots.artifacts().get(1).sbomPath());
-    assertEquals(false, slots.artifacts().get(1).hasSbom());
+    assertEquals("out/daemon-sbom.json", slots.artifacts().get(1).sbomPath());
+    assertTrue(slots.artifacts().get(1).hasSbom());
+    // docs is the one type sbom: is not required on, and the one with no document declares none,
+    // rather than declaring an empty path (qits-664).
+    assertEquals("", slots.artifacts().get(2).sbomPath());
+    assertEquals(false, slots.artifacts().get(2).hasSbom());
 
     assertEquals("qits-ci", slots.userflows().site());
     assertEquals(false, slots.userflows().derived());
@@ -270,7 +274,7 @@ public class CiReleaseSlotParserTest {
               PATH,
               "release:\n  - {image: a, script: b}\nartifacts:\n  - { type: npm, name: \""
                   + real
-                  + "\" }\n");
+                  + "\", sbom: sbom.json }\n");
       assertEquals(real, slots.artifacts().get(0).artifact().name());
     }
   }
@@ -282,7 +286,8 @@ public class CiReleaseSlotParserTest {
     for (String value : new String[] {"if-published", "always"}) {
       String message =
           refused(
-                  "artifacts:\n  - { type: maven, name: \"eu.wohlben.qits:x\" }\n  - { type: npm,"
+                  "artifacts:\n  - { type: maven, name: \"eu.wohlben.qits:x\", sbom: s.json }\n  -"
+                      + " { type: npm,"
                       + " name: \"@qits/x\", sbom: s.json, announce: "
                       + value
                       + " }\n")
@@ -302,9 +307,9 @@ public class CiReleaseSlotParserTest {
             PATH,
             """
             artifacts:
-              - { type: maven, name: "eu.wohlben.qits:x-golden-masters" }
-              - { type: npm, name: "@qits/x" }
-              - { type: docker, name: qits/x }
+              - { type: maven, name: "eu.wohlben.qits:x-golden-masters", sbom: target/sbom.json }
+              - { type: npm, name: "@qits/x", sbom: sbom.json }
+              - { type: docker, name: qits/x, sbom: out/sbom.json }
             """);
     assertTrue(slots.artifacts().get(0).uploaded());
     assertTrue(slots.artifacts().get(1).uploaded());
@@ -355,10 +360,10 @@ public class CiReleaseSlotParserTest {
             """
             artifacts:
               - { type: maven, name: "eu.wohlben.qits:qits-blobstore", path: blobstore, sbom: blobstore/target/sbom.json }
-              - { type: maven, name: "eu.wohlben.qits:qits-registries-common", path: common, link: [qits-blobstore] }
-              - { type: maven, name: "eu.wohlben.qits:qits-registries-npm", link: [qits-blobstore, qits-registries-common] }
-              - { type: npm, name: "@qits/ui-components", path: dist/qits-spa-ui-components }
-              - { type: docker, name: qits/qits-ci }
+              - { type: maven, name: "eu.wohlben.qits:qits-registries-common", path: common, link: [qits-blobstore], sbom: common/target/sbom.json }
+              - { type: maven, name: "eu.wohlben.qits:qits-registries-npm", link: [qits-blobstore, qits-registries-common], sbom: target/sbom.json }
+              - { type: npm, name: "@qits/ui-components", path: dist/qits-spa-ui-components, sbom: sbom.json }
+              - { type: docker, name: qits/qits-ci, sbom: out/sbom.json }
             """);
 
     SlotArtifact blobstore = slots.artifacts().get(0);
@@ -380,16 +385,21 @@ public class CiReleaseSlotParserTest {
   @Test
   public void aPathMustPointInsideTheReleasesOwnCheckout() {
     String message =
-        refused("artifacts:\n  - { type: maven, name: \"a:b\", path: ../sibling }\n").getMessage();
+        refused(
+                "artifacts:\n  - { type: maven, name: \"a:b\", sbom: s.json, path: ../sibling }\n")
+            .getMessage();
     assertTrue(message.contains("path") && message.contains("downwards"), message);
-    refused("artifacts:\n  - { type: npm, name: \"@qits/x\", path: /dist }\n");
+    refused("artifacts:\n  - { type: npm, name: \"@qits/x\", sbom: s.json, path: /dist }\n");
   }
 
   @Test
   public void aPathOnADockerOrDaemonEntryIsRefusedNamingTheEntry() {
     for (String type : new String[] {"docker", "daemon"}) {
       String message =
-          refused("artifacts:\n  - { type: " + type + ", name: qits-thing, path: out }\n")
+          refused(
+                  "artifacts:\n  - { type: "
+                      + type
+                      + ", name: qits-thing, sbom: out/sbom.json, path: out }\n")
               .getMessage();
       assertTrue(message.startsWith(PATH + ": artifact 0 ({ type: " + type), message);
       assertTrue(message.contains("qits-thing"), message);
@@ -446,8 +456,8 @@ public class CiReleaseSlotParserTest {
         refused(
                 """
                 artifacts:
-                  - { type: maven, name: "eu.wohlben.qits:qits-blobstore" }
-                  - { type: npm, name: "@qits/x", link: [qits-blobstore] }
+                  - { type: maven, name: "eu.wohlben.qits:qits-blobstore", sbom: target/sbom.json }
+                  - { type: npm, name: "@qits/x", sbom: sbom.json, link: [qits-blobstore] }
                 """)
             .getMessage();
     assertTrue(message.contains("artifact 1") && message.contains("@qits/x"), message);
@@ -460,7 +470,7 @@ public class CiReleaseSlotParserTest {
         refused(
                 """
                 artifacts:
-                  - { type: maven, name: "eu.wohlben.qits:qits-registries-common", link: [qits-blobstor] }
+                  - { type: maven, name: "eu.wohlben.qits:qits-registries-common", sbom: target/sbom.json, link: [qits-blobstor] }
                 """)
             .getMessage();
     assertTrue(message.contains("eu.wohlben.qits:qits-registries-common"), message);
@@ -476,9 +486,9 @@ public class CiReleaseSlotParserTest {
         refused(
                 """
                 artifacts:
-                  - { type: npm, name: "@qits/qits-blobstore" }
-                  - { type: docker, name: qits/qits-blobstore }
-                  - { type: maven, name: "eu.wohlben.qits:qits-registries-common", link: [qits-blobstore] }
+                  - { type: npm, name: "@qits/qits-blobstore", sbom: sbom.json }
+                  - { type: docker, name: qits/qits-blobstore, sbom: out/sbom.json }
+                  - { type: maven, name: "eu.wohlben.qits:qits-registries-common", sbom: target/sbom.json, link: [qits-blobstore] }
                 """)
             .getMessage();
     assertTrue(message.contains("artifact 2"), message);
@@ -490,8 +500,8 @@ public class CiReleaseSlotParserTest {
   public void anEntryLinkingItselfIsRefused() {
     String message =
         refused(
-                "artifacts:\n  - { type: maven, name: \"eu.wohlben.qits:qits-blobstore\", link:"
-                    + " [qits-blobstore] }\n")
+                "artifacts:\n  - { type: maven, name: \"eu.wohlben.qits:qits-blobstore\", sbom:"
+                    + " target/sbom.json, link: [qits-blobstore] }\n")
             .getMessage();
     assertTrue(message.contains("eu.wohlben.qits:qits-blobstore"), message);
     assertTrue(message.endsWith("links itself"), message);
@@ -503,9 +513,9 @@ public class CiReleaseSlotParserTest {
         refused(
                 """
                 artifacts:
-                  - { type: maven, name: "g:a", link: [b] }
-                  - { type: maven, name: "g:b", link: [c] }
-                  - { type: maven, name: "g:c", link: [a] }
+                  - { type: maven, name: "g:a", sbom: a/sbom.json, link: [b] }
+                  - { type: maven, name: "g:b", sbom: b/sbom.json, link: [c] }
+                  - { type: maven, name: "g:c", sbom: c/sbom.json, link: [a] }
                 """)
             .getMessage();
     assertTrue(message.contains("forms a cycle (a → b → c → a)"), message);
@@ -514,9 +524,9 @@ public class CiReleaseSlotParserTest {
         refused(
                 """
                 artifacts:
-                  - { type: maven, name: "g:root" }
-                  - { type: maven, name: "g:a", link: [root, b] }
-                  - { type: maven, name: "g:b", link: [a] }
+                  - { type: maven, name: "g:root", sbom: root/sbom.json }
+                  - { type: maven, name: "g:a", sbom: a/sbom.json, link: [root, b] }
+                  - { type: maven, name: "g:b", sbom: b/sbom.json, link: [a] }
                 """)
             .getMessage();
     assertTrue(two.contains("artifact 1") && two.contains("(a → b → a)"), two);
@@ -524,12 +534,12 @@ public class CiReleaseSlotParserTest {
 
   @Test
   public void aLinkIsANonEmptyListOfDistinctNames() {
-    refused("artifacts:\n  - { type: maven, name: \"g:a\", link: [] }\n");
-    refused("artifacts:\n  - { type: maven, name: \"g:a\", link: b }\n");
+    refused("artifacts:\n  - { type: maven, name: \"g:a\", sbom: a/sbom.json, link: [] }\n");
+    refused("artifacts:\n  - { type: maven, name: \"g:a\", sbom: a/sbom.json, link: b }\n");
     assertTrue(
         refused(
-                "artifacts:\n  - { type: maven, name: \"g:b\" }\n  - { type: maven, name:"
-                    + " \"g:a\", link: [b, b] }\n")
+                "artifacts:\n  - { type: maven, name: \"g:b\", sbom: b/sbom.json }\n  - { type:"
+                    + " maven, name: \"g:a\", sbom: a/sbom.json, link: [b, b] }\n")
             .getMessage()
             .contains("twice"));
   }
@@ -543,7 +553,7 @@ public class CiReleaseSlotParserTest {
             artifacts:
               - { type: maven, name: "g:a", sbom: target/sbom.json, publish: if-changed, include: ["eu/wohlben/**", "*.properties"] }
               - { type: npm, name: "@qits/x", path: dist/x, sbom: sbom.json, publish: if-changed }
-              - { type: maven, name: "g:b", publish: always }
+              - { type: maven, name: "g:b", sbom: b/sbom.json, publish: always }
             """);
     assertEquals(CiArtifact.Publish.IF_CHANGED, slots.artifacts().get(0).artifact().publish());
     assertEquals(List.of("eu/wohlben/**", "*.properties"), slots.artifacts().get(0).include());
@@ -602,15 +612,68 @@ public class CiReleaseSlotParserTest {
         message);
   }
 
+  // --- qits-664: sbom: is mandatory on every type but docs ---------------------------------------
+
+  @Test
+  public void aMavenNpmDockerOrDaemonEntryWithNoSbomIsRefused() {
+    for (String type : new String[] {"maven", "npm", "docker", "daemon"}) {
+      String name = type.equals("maven") ? "eu.wohlben.qits:x" : "qits/x";
+      String message =
+          refused(
+                  "artifacts:\n  - { type: "
+                      + type
+                      + ", name: \""
+                      + name
+                      + "\" }\n  - { type: "
+                      + type
+                      + ", name: \""
+                      + name
+                      + "2\" }\n")
+              .getMessage();
+      assertTrue(message.startsWith(PATH), message);
+      assertTrue(
+          message.contains("artifact 0 (" + type + " " + name + ") declares no sbom:"), message);
+      assertTrue(
+          message.contains("every software artifact needs one; contracts go under contracts:"),
+          message);
+    }
+  }
+
+  @Test
+  public void aDocsEntryWithNoSbomIsAccepted() {
+    // docs is the one type sbom: is not required on — it names no CycloneDX document, it names an
+    // OpenAPI file (@apidocs) or nothing at all.
+    CiReleaseSlots slots =
+        parser.parse(PATH, "artifacts:\n  - { type: docs, name: \"@qits/ui-components\" }\n");
+    assertEquals(1, slots.artifacts().size());
+    assertFalse(slots.artifacts().get(0).hasSbom());
+  }
+
+  @Test
+  public void aContractsEntryTakesNoSbomAndIsNotHitByTheArtifactsRule() {
+    // contracts: is parsed by CiContracts, a path that never reaches parseArtifact, so the
+    // mandatory-sbom rule above has nothing to say about it.
+    CiReleaseSlots slots =
+        parser.parse(
+            PATH,
+            "contracts:\n  application: qits-projects\n  golden-masters: { from:"
+                + " golden-masters/, packages: [maven, npm] }\n");
+    assertNotNull(slots.contracts());
+    assertTrue(slots.artifacts().isEmpty());
+  }
+
   @Test
   public void includeIsRefusedOffAnIfChangedMavenOrNpmEntry() {
     String onDocker =
         refused(
-                "artifacts:\n  - { type: docker, name: qits/x, include: [\"a/**\"] }\n")
+                "artifacts:\n  - { type: docker, name: qits/x, sbom: out/sbom.json, include:"
+                    + " [\"a/**\"] }\n")
             .getMessage();
     assertTrue(onDocker.contains("declares include — only a maven or npm entry is hashed"), onDocker);
     String onAlways =
-        refused("artifacts:\n  - { type: npm, name: \"@qits/x\", include: [\"dist/**\"] }\n")
+        refused(
+                "artifacts:\n  - { type: npm, name: \"@qits/x\", sbom: sbom.json, include:"
+                    + " [\"dist/**\"] }\n")
             .getMessage();
     assertTrue(onAlways.contains("@qits/x"), onAlways);
     assertTrue(
@@ -658,7 +721,9 @@ public class CiReleaseSlotParserTest {
                     + " 'contracts'"));
     String bogus = refused("artifacts:\n  - { type: maven, name: \"a:b\", bogus: 1 }\n").getMessage();
     assertTrue(
-        bogus.endsWith("{ type, name[, sbom][, publish][, path][, link][, include] }"),
+        bogus.endsWith(
+            "{ type, name, sbom[, publish][, path][, link][, include] } ({ type, name } for a"
+                + " docs entry, which needs no sbom)"),
         "no retired-key hint on a key that never existed: " + bogus);
   }
 }

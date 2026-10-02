@@ -36,8 +36,9 @@ import java.util.Set;
  * <p>{@code archetype}, {@code release-request}, {@code release}, {@code artifacts}, {@code
  * userflows} and {@code contracts} are all of it; anything else is a {@link CiConfigException}
  * naming the file. So is a slot that is not a list, a slot that is an <em>empty</em> list, an {@code
- * artifacts:} entry that is not {@code {type, name[, sbom][, publish][, path][, link][,
- * include]}} (with {@code publish:} on a {@code maven} or {@code npm} entry only, {@code path:}
+ * artifacts:} entry that is not {@code {type, name, sbom[, publish][, path][, link][,
+ * include]}} — {@code sbom:} is required on every type but {@code docs}, which is exactly {@code
+ * {type, name}} — (with {@code publish:} on a {@code maven} or {@code npm} entry only, {@code path:}
  * likewise or on an {@code @apidocs} docs entry, {@code link:} on {@code maven} only, and {@code
  * include:} only beside {@code publish: if-changed}; {@code announce:}, which qits-648 deleted, is
  * an unknown key like any other), a {@code contracts:} that
@@ -363,8 +364,8 @@ public class CiReleaseSlotParser {
                 + index
                 + " declares an unknown key '"
                 + key
-                + "' — an artifact is exactly { type, name[, sbom][, publish][, path][, link]"
-                + "[, include] }"
+                + "' — an artifact is exactly { type, name, sbom[, publish][, path][, link]"
+                + "[, include] } ({ type, name } for a docs entry, which needs no sbom)"
                 + CiArtifact.retiredKeyHint(key));
       }
     }
@@ -388,6 +389,21 @@ public class CiReleaseSlotParser {
               + SBOM_KEY
               + " — the change decision hashes the SBOM with the content, so an if-changed entry"
               + " must name the CycloneDX document its build writes");
+    }
+    if (type != CiArtifact.Type.DOCS && sbomPath.isEmpty()) {
+      throw new CiConfigException(
+          configPath
+              + ": artifact "
+              + index
+              + " ("
+              + type.declared()
+              + " "
+              + name
+              + ") declares no "
+              + SBOM_KEY
+              + ": — every software artifact needs one; contracts go under "
+              + CONTRACTS_KEY
+              + ":");
     }
     return new SlotArtifact(
         artifact,

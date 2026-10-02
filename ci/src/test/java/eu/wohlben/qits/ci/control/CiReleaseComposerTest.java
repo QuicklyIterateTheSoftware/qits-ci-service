@@ -547,7 +547,7 @@ public class CiReleaseComposerTest {
                     script: ./mvnw -B -ntp package
                 artifacts:
                   - { type: maven, name: "eu.wohlben.qits:qits-thing", sbom: target/sbom.json, publish: if-changed }
-                  - { type: docker, name: qits/qits-thing }
+                  - { type: docker, name: qits/qits-thing, sbom: out/sbom.json }
                 """),
             null);
 
@@ -677,7 +677,8 @@ public class CiReleaseComposerTest {
                     REPO,
                     slots(
                         "release-request:\n  - {image: alpine:3, script: echo qa}\n"
-                            + "artifacts:\n  - { type: docker, name: qits/qits-ci }\n"),
+                            + "artifacts:\n  - { type: docker, name: qits/qits-ci, sbom:"
+                            + " out/sbom.json }\n"),
                     null));
 
     assertTrue(refused.getMessage().contains("no pipeline behind it"), refused.getMessage());
@@ -791,12 +792,12 @@ public class CiReleaseComposerTest {
         slots(
             """
             artifacts:
-              - { type: maven, name: "g:d", link: [b] }
-              - { type: npm, name: "@qits/n" }
-              - { type: maven, name: "g:c" }
-              - { type: maven, name: "g:b", link: [c] }
-              - { type: docker, name: qits/x }
-              - { type: maven, name: "g:a" }
+              - { type: maven, name: "g:d", link: [b], sbom: d/sbom.json }
+              - { type: npm, name: "@qits/n", sbom: n/sbom.json }
+              - { type: maven, name: "g:c", sbom: c/sbom.json }
+              - { type: maven, name: "g:b", link: [c], sbom: b/sbom.json }
+              - { type: docker, name: qits/x, sbom: out/sbom.json }
+              - { type: maven, name: "g:a", sbom: a/sbom.json }
             """);
     // c is the first entry free to go; b waits on it; d waits on b; npm, c and a keep their places.
     assertEquals(List.of(1, 2, 3, 0, 5), CiReleaseComposer.publishOrder(slots.artifacts()));
@@ -929,7 +930,7 @@ public class CiReleaseComposerTest {
                 """
                 archetype: app
                 artifacts:
-                  - { type: docker, name: qits/qits-landing }
+                  - { type: docker, name: qits/qits-landing, sbom: .sbom/sbom.json }
                 contracts:
                   application: qits-landing
                   pacts:
@@ -962,18 +963,18 @@ public class CiReleaseComposerTest {
                 + " --provider 'qits-projects' --from 'pacts/' --version \"$QITS_VERSION\"\n"),
         document);
     assertFalse(document.contains("contract-docs"), "no golden masters, no contract docs");
-    assertFalse(document.contains("sbom submit"), document);
+    assertTrue(document.contains("sbom submit"), document);
   }
 
   /**
-   * {@code --sbom} is passed only for a declared {@code sbom:}. An {@code always} maven or npm entry
-   * with none is hashed on content alone; a defaulted path would fail the upload on a file the
-   * repository never promised ({@code no such SBOM}). Live shapes: qits-ci-daemon-protocol (a
-   * module path, BOM written by its own step but not declared) and qits-workspace-editor-image (at
-   * {@code .}).
+   * qits-664: {@code sbom:} is now mandatory on every non-{@code docs} entry, so the shape this test
+   * used to cover — a maven or npm entry publishing with no SBOM at all — can no longer be parsed out
+   * of a {@code release.yml}. The refusal itself is {@code CiReleaseSlotParserTest}'s to hold; what is
+   * left provable here is that a maven or npm entry that DOES declare {@code sbom:} carries the flag
+   * and submits it, which is the ordinary path every entry takes now.
    */
   @Test
-  public void aMavenOrNpmEntryWithNoSbomPublishesWithoutTheFlagAndSubmitsNothing() {
+  public void aMavenOrNpmEntryWithAnSbomPublishesWithTheFlagAndSubmitsIt() {
     String document =
         CiReleaseComposer.compose(
                 CiRepoRef.of("77777777-8888-9999-0000-111111111111", "qits", "qits-thing-service"),
@@ -983,9 +984,9 @@ public class CiReleaseComposerTest {
                       - image: qits/build-images/maven-base:latest
                         script: ./mvnw -B -ntp package
                     artifacts:
-                      - { type: maven, name: "eu.wohlben.qits:qits-ci-daemon-protocol", path: ci-daemon-protocol }
-                      - { type: maven, name: "eu.wohlben.qits:qits-workspace-editor-image" }
-                      - { type: npm, name: "@qits/thing", path: dist/thing }
+                      - { type: maven, name: "eu.wohlben.qits:qits-ci-daemon-protocol", path: ci-daemon-protocol, sbom: ci-daemon-protocol/target/sbom.json }
+                      - { type: maven, name: "eu.wohlben.qits:qits-workspace-editor-image", sbom: target/sbom.json }
+                      - { type: npm, name: "@qits/thing", path: dist/thing, sbom: dist/thing/sbom.json }
                     """),
                 null)
             .releaseDocument();
@@ -993,20 +994,20 @@ public class CiReleaseComposerTest {
     assertTrue(
         document.contains(
             "qits artifacts publish maven --name 'eu.wohlben.qits:qits-ci-daemon-protocol' --path"
-                + " 'ci-daemon-protocol' --version \"$QITS_VERSION\"\n"),
+                + " 'ci-daemon-protocol' --sbom 'ci-daemon-protocol/target/sbom.json' --version"
+                + " \"$QITS_VERSION\"\n"),
         document);
     assertTrue(
         document.contains(
             "qits artifacts publish maven --name 'eu.wohlben.qits:qits-workspace-editor-image'"
-                + " --path '.' --version \"$QITS_VERSION\"\n"),
+                + " --path '.' --sbom 'target/sbom.json' --version \"$QITS_VERSION\"\n"),
         document);
     assertTrue(
         document.contains(
-            "qits artifacts publish npm --name '@qits/thing' --path 'dist/thing' --version"
-                + " \"$QITS_VERSION\"\n"),
+            "qits artifacts publish npm --name '@qits/thing' --path 'dist/thing' --sbom"
+                + " 'dist/thing/sbom.json' --version \"$QITS_VERSION\"\n"),
         document);
-    assertFalse(document.contains("--sbom"), document);
-    assertFalse(document.contains("sbom submit"), document);
+    assertTrue(document.contains("sbom submit"), document);
   }
 
   /**
@@ -1117,7 +1118,7 @@ public class CiReleaseComposerTest {
                     script: ./mvnw -B -ntp package
                 artifacts:
                   - { type: docker, name: qits/qits-thing, sbom: out/sbom.json }
-                  - { type: maven, name: "g:a", path: core }
+                  - { type: maven, name: "g:a", path: core, sbom: core/target/sbom.json }
                 """),
             null);
 
@@ -1160,7 +1161,7 @@ public class CiReleaseComposerTest {
                           - image: alpine:3
                             script: echo build
                         artifacts:
-                          - { type: maven, name: "eu.wohlben.qits:qits-x-golden-masters" }
+                          - { type: maven, name: "eu.wohlben.qits:qits-x-golden-masters", sbom: target/sbom.json }
                         contracts:
                           application: qits-x
                           golden-masters: { from: gm/, packages: [maven] }
