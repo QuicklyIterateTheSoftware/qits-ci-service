@@ -890,7 +890,6 @@ public class CiReleaseComposerTest {
     assertEquals(CiArtifact.Section.CONTRACTS, release.artifacts().get(3).section());
   }
 
-  /** qits-landing after qits-647: an app, a docker image and one consumer pact. */
   /**
    * qits-653: the packaged {@code app} recipe, exactly as it ships, with the declaration its header
    * now names. Its one release step generates {@code .sbom/sbom.json} after the image push, and that
@@ -920,6 +919,7 @@ public class CiReleaseComposerTest {
     assertTrue(push > 0 && generate > push && submit > generate && check > submit, document);
   }
 
+  /** qits-landing after qits-647: an app, a docker image and one consumer pact. */
   @Test
   public void anAppWithPactsPublishesThemAndNoContractDocs() {
     CiReleaseComposer.Composed composed =
