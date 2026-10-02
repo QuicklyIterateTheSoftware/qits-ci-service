@@ -151,9 +151,26 @@ import java.util.Set;
  * maven or npm entry in {@code link:} dependency order, then one {@code contract} per contract
  * package, then {@code contract-docs} when golden masters are declared, then one {@code docs submit
  * --openapi} per {@code @apidocs} entry naming its file. Each call fails the step on a non-zero
- * exit. The SBOM submits keep their own step ({@link #postludeStep}); where the two land on one step
- * the publishes come first, so a submitted SBOM always describes something that was uploaded, and an
- * {@code if-changed} entry's submit runs only when its publish answered {@code published}.
+ * exit.
+ *
+ * <h2>The SBOM postlude (qits-621)</h2>
+ *
+ * <p><b>Every release step submits every declared SBOM it holds, and the last step checks that each
+ * one arrived.</b> The composer cannot see which step writes a document: an image or daemon SBOM
+ * ({@code .sbom/sbom.json}, {@code out/sbom.json}) comes out of a {@code build: true} step, a jar's
+ * ({@code <module>/target/sbom.json}) out of the last step, which runs maven — so no single step
+ * reaches both. Each step's postlude therefore carries one {@code qits artifacts publish sbom
+ * submit}, guarded by {@code [ -f <path> ]}, per entry declaring {@code sbom:}; a re-submit is
+ * idempotent (first write wins). The LAST step then asks {@code qits artifacts publish exists sbom}
+ * for every such entry and fails, naming the entry and its declared path, when no step produced it —
+ * which is what keeps the file guard from turning a missing SBOM into a silent green.
+ *
+ * <p>The postlude runs only after the declared script exited 0 (the wrapper is {@code set -eu}), as
+ * it always has. On the last step the publishes come first, so a submitted SBOM always describes
+ * something that was uploaded. An {@code if-changed} entry is the exception to "every step": its
+ * submit and its presence check sit on the publishing step alone and run only when its publish
+ * answered {@code published <v>} — {@code unchanged since <v>} published nothing at this version,
+ * so there is nothing to submit and nothing to find.
  */
 public final class CiReleaseComposer {
 
@@ -228,8 +245,7 @@ public final class CiReleaseComposer {
    * @param archetype the recipe {@code slots} names, already parsed, or null when it names none
    * @throws CiConfigException when the composition cannot be made — a script colliding with the
    *     heredoc delimiter, {@code artifacts:} or {@code contracts:} declared with no release steps to
-   *     publish them, or an {@code if-changed} entry whose SBOM is submitted from another step than
-   *     the one that publishes it
+   *     publish them
    */
   public static Composed compose(CiRepoRef repo, CiReleaseSlots slots, CiReleaseSlots archetype) {
     String selector = selector(repo);
@@ -408,12 +424,8 @@ public final class CiReleaseComposer {
    */
   private static void steps(StringBuilder out, Slot slot, boolean releasePhase, Postlude postlude) {
     List<CiStepDecl> declared = slot.pipeline().steps();
-    List<SlotArtifact> artifacts = postlude == null ? List.of() : postlude.artifacts();
-    int postludeAt = releasePhase ? postludeStep(declared, artifacts) : -1;
-    int publishAt = releasePhase && postlude.publishes() ? publishStep(declared) : -1;
-    if (publishAt >= 0) {
-      requireIfChangedSbomsWherePublished(postlude, postludeAt, publishAt);
-    }
+    int last = releasePhase ? publishStep(declared) : -1;
+    int publishAt = releasePhase && postlude.publishes() ? last : -1;
     out.append("steps:\n");
     for (int i = 0; i < declared.size(); i++) {
       CiStepDecl step = declared.get(i);
@@ -437,74 +449,23 @@ public final class CiReleaseComposer {
               step,
               releasePhase,
               i == publishAt ? postlude : null,
-              i == postludeAt ? artifacts : List.of(),
+              releasePhase ? postlude : null,
+              i == last,
               slot.sourcePath()),
           "      ");
     }
   }
 
   /**
-   * Which release step carries the publish block: the <b>last</b> one. Kept as one well-named method
-   * because qits-621's per-step SBOM work reuses the placement rule established here.
+   * Which release step carries the publish block and the SBOM presence checks: the <b>last</b> one.
    *
    * <p>Last, and not the last building step, because every repository with its own slot builds its
    * maven module in its last step — a {@code maven-base} step after any image build — and the CLI
-   * needs that step's {@code target/} to upload from.
+   * needs that step's {@code target/} to upload from. The presence checks go there for a different
+   * reason: it is the one point at which every step that could have produced a declared SBOM has
+   * already run.
    */
   static int publishStep(List<CiStepDecl> steps) {
-    return steps.size() - 1;
-  }
-
-  /**
-   * An {@code if-changed} entry's SBOM must be submitted from the step that publishes it: the hash
-   * covers the SBOM, so the CLI reads the document in the publishing step, and the submit is
-   * guarded on that step's answer.
-   */
-  private static void requireIfChangedSbomsWherePublished(
-      Postlude postlude, int sbomAt, int publishAt) {
-    List<SlotArtifact> artifacts = postlude.artifacts();
-    for (int i = 0; i < artifacts.size(); i++) {
-      SlotArtifact artifact = artifacts.get(i);
-      if (artifact.artifact().publishIfChanged() && artifact.hasSbom() && sbomAt != publishAt) {
-        throw new CiConfigException(
-            postlude.artifactsPath()
-                + ": artifact "
-                + i
-                + " is "
-                + CiArtifact.PUBLISH_KEY
-                + ": "
-                + CiArtifact.Publish.IF_CHANGED.declared()
-                + " and its sbom is submitted from step "
-                + sbomAt
-                + ", but the platform publishes from the last step "
-                + publishAt
-                + " — the hash needs the SBOM in the step that publishes");
-      }
-    }
-  }
-
-  /**
-   * Which release step carries the SBOM submissions: the <b>last one that builds</b> — the flags a
-   * publishing step declares are {@code build:} or {@code docker:} — and, failing that, the last step
-   * of the pipeline.
-   *
-   * <p>The document is produced by the build, so submitting it from the step that produced it is
-   * what keeps the file path in that step's own working directory. Last rather than first, because a
-   * pipeline that builds twice (a toolchain image, then the artifact) writes the document in the
-   * second one.
-   *
-   * <p>Answers -1 when there is nothing to submit, which is every release with no {@code sbom:} path
-   * declared and therefore every release the fleet publishes today.
-   */
-  private static int postludeStep(List<CiStepDecl> steps, List<SlotArtifact> artifacts) {
-    if (steps.isEmpty() || artifacts.stream().noneMatch(SlotArtifact::hasSbom)) {
-      return -1;
-    }
-    for (int i = steps.size() - 1; i >= 0; i--) {
-      if (steps.get(i).build() || steps.get(i).docker()) {
-        return i;
-      }
-    }
     return steps.size() - 1;
   }
 
@@ -512,13 +473,15 @@ public final class CiReleaseComposer {
    * One composed step script: prelude, the declared script as data, postlude.
    *
    * @param publish what this step publishes, or null when it is not the publishing step
-   * @param sboms the artifacts whose SBOMs this step submits, empty when it submits none
+   * @param release the release phase's declarations, or null outside the release phase
+   * @param last whether this is the release slot's last step, which carries the presence checks
    */
   private static String script(
       CiStepDecl step,
       boolean releasePhase,
       Postlude publish,
-      List<SlotArtifact> sboms,
+      Postlude release,
+      boolean last,
       String sourcePath) {
     StringBuilder out = new StringBuilder();
     // The daemon runs a step with `<shell> -c` and no -e — bash where the image has it, sh where it
@@ -661,7 +624,13 @@ public final class CiReleaseComposer {
     out.append("else\n");
     out.append("  sh -eu ").append(SLOT_SCRIPT).append('\n');
     out.append("fi\n");
-    if (publish != null || !sboms.isEmpty()) {
+    List<SlotArtifact> artifacts = release == null ? List.of() : release.artifacts();
+    // An if-changed entry's SBOM is the publishing step's alone (see sbomSubmit), so an earlier
+    // step carrying nothing else gets no postlude at all.
+    boolean sboms =
+        artifacts.stream()
+            .anyMatch(a -> a.hasSbom() && (last || !a.artifact().publishIfChanged()));
+    if (publish != null || sboms) {
       out.append("# --- platform postlude --------------------------------------------------------\n");
       // The SBOM-only wording is kept where nothing is published, so every document composed
       // before the publishing postlude existed stays byte-identical (the goldens hold that).
@@ -674,32 +643,117 @@ public final class CiReleaseComposer {
       if (publish != null) {
         publishBlock(out, publish);
       }
-      for (int i = 0; i < sboms.size(); i++) {
-        SlotArtifact artifact = sboms.get(i);
-        if (!artifact.hasSbom()) {
-          continue;
-        }
-        String submit =
-            "qits artifacts publish sbom submit --type "
-                + quote(artifact.artifact().type().declared())
-                + " --name "
-                + quote(artifact.artifact().name())
-                + " --version \"$QITS_VERSION\" --file "
-                + quote(artifact.sbomPath());
-        if (publish != null && artifact.artifact().publishIfChanged()) {
-          // `unchanged since <v>` published nothing at $QITS_VERSION, so an SBOM PUT there would
-          // describe a version that does not exist. Only `published <v>` is followed by a submit.
-          out.append("case \"$")
-              .append(publishedVariable(i))
-              .append("\" in published\\ *) ")
-              .append(submit)
-              .append(" ;; esac\n");
-        } else {
-          out.append(submit).append('\n');
+      for (int i = 0; i < artifacts.size(); i++) {
+        sbomSubmit(out, artifacts.get(i), i, publish != null);
+      }
+      if (last) {
+        for (int i = 0; i < artifacts.size(); i++) {
+          sbomPresence(out, artifacts.get(i), i, publish != null, release.artifactsPath());
         }
       }
     }
     return out.toString();
+  }
+
+  /**
+   * One entry's SBOM submit on one step: <b>every release step carries it</b>, guarded on the
+   * declared file being there, because the composer cannot see which step writes it — an image or
+   * daemon SBOM comes out of a {@code build: true} step, a jar's out of the last step that runs maven
+   * — and no single step reaches both. A re-submit is idempotent (qits-artifacts answers {@code
+   * alreadyPublished}, first write wins), so a file two steps both hold costs a second PUT and
+   * nothing else.
+   *
+   * <p>An {@code if-changed} entry is the exception: it is submitted only on the publishing step,
+   * and only after its publish answered {@code published <v>}. An {@code unchanged since <v>}
+   * published nothing at {@code $QITS_VERSION}, so an SBOM PUT there would describe a version that
+   * does not exist — and an earlier step cannot know the answer yet. The publish itself already read
+   * the file ({@code --sbom}, the hash covers it), so that step holding it is not a guess.
+   */
+  private static void sbomSubmit(
+      StringBuilder out, SlotArtifact artifact, int index, boolean publishing) {
+    if (!artifact.hasSbom()) {
+      return;
+    }
+    String type = quote(artifact.artifact().type().declared());
+    String name = quote(artifact.artifact().name());
+    String file = quote(artifact.sbomPath());
+    if (artifact.artifact().publishIfChanged()) {
+      if (publishing) {
+        out.append("case \"$")
+            .append(publishedVariable(index))
+            .append("\" in published\\ *) qits artifacts publish sbom submit --type ")
+            .append(type)
+            .append(" --name ")
+            .append(name)
+            .append(" --version \"$QITS_VERSION\" --file ")
+            .append(file)
+            .append(" ;; esac\n");
+      }
+      return;
+    }
+    out.append("if [ -f ").append(file).append(" ]; then\n");
+    out.append("  qits artifacts publish sbom submit --type ")
+        .append(type)
+        .append(" --name ")
+        .append(name)
+        .append(" \\\n");
+    out.append("    --version \"$QITS_VERSION\" --file ").append(file).append('\n');
+    out.append("fi\n");
+  }
+
+  /**
+   * One entry's presence check, on the <b>last</b> release step only: after every step that could
+   * have produced the declared SBOM has run and submitted it, the store must hold it at {@code
+   * $QITS_VERSION}, or the step fails naming the entry and the path. This is what turns the per-step
+   * {@code [ -f … ]} guard from "silently nothing" into "nothing, loudly, before the release goes
+   * green".
+   *
+   * <p>{@code qits artifacts publish exists sbom <packageType>/<packageName> <version>} is the CLI's
+   * one existence question for an SBOM; exit 1 is absent and exit 2 is "could not ask", and both
+   * fail the step — a release whose SBOM nobody can confirm is not one to call green.
+   *
+   * <p>An {@code if-changed} entry is checked only when its publish answered {@code published <v>}:
+   * {@code unchanged since <v>} published nothing at this version, so there is nothing to find.
+   */
+  private static void sbomPresence(
+      StringBuilder out,
+      SlotArtifact artifact,
+      int index,
+      boolean publishing,
+      String artifactsPath) {
+    if (!artifact.hasSbom()) {
+      return;
+    }
+    String type = artifact.artifact().type().declared();
+    String name = artifact.artifact().name();
+    String check =
+        "qits artifacts publish exists sbom "
+            + quote(type + "/" + name)
+            + " \"$QITS_VERSION\" \\\n"
+            + "  || { echo "
+            + shellQuote(
+                artifactsPath
+                    + " declares sbom: "
+                    + artifact.sbomPath()
+                    + " for "
+                    + type
+                    + " "
+                    + name
+                    + ", and no release step produced it")
+            + " >&2; exit 1; }\n";
+    if (artifact.artifact().publishIfChanged()) {
+      if (!publishing) {
+        return;
+      }
+      out.append("case \"$")
+          .append(publishedVariable(index))
+          .append("\" in published\\ *)\n");
+      block(out, check, "  ");
+      out.append("  ;;\n");
+      out.append("esac\n");
+      return;
+    }
+    out.append(check);
   }
 
   /** The shell variable an {@code if-changed} entry's publish answer is kept in. */

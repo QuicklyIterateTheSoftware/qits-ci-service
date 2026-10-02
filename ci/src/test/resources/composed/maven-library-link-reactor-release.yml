@@ -88,5 +88,20 @@ steps:
       qits_published_0=$(qits artifacts publish maven --name 'eu.wohlben.qits:qits-registries-npm' --path 'npm' --sbom 'npm/target/sbom.json' --link 'eu.wohlben.qits:qits-blobstore' --link 'eu.wohlben.qits:qits-registries-common' --if-changed --version "$QITS_VERSION")
       echo "$qits_published_0"
       case "$qits_published_0" in published\ *) qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-registries-npm' --version "$QITS_VERSION" --file 'npm/target/sbom.json' ;; esac
-      qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-blobstore' --version "$QITS_VERSION" --file 'blobstore/target/sbom.json'
-      qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-registries-common' --version "$QITS_VERSION" --file 'common/target/sbom.json'
+      if [ -f 'blobstore/target/sbom.json' ]; then
+        qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-blobstore' \
+          --version "$QITS_VERSION" --file 'blobstore/target/sbom.json'
+      fi
+      if [ -f 'common/target/sbom.json' ]; then
+        qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-registries-common' \
+          --version "$QITS_VERSION" --file 'common/target/sbom.json'
+      fi
+      case "$qits_published_0" in published\ *)
+        qits artifacts publish exists sbom 'maven/eu.wohlben.qits:qits-registries-npm' "$QITS_VERSION" \
+          || { echo '.config/qits/release.yml declares sbom: npm/target/sbom.json for maven eu.wohlben.qits:qits-registries-npm, and no release step produced it' >&2; exit 1; }
+        ;;
+      esac
+      qits artifacts publish exists sbom 'maven/eu.wohlben.qits:qits-blobstore' "$QITS_VERSION" \
+        || { echo '.config/qits/release.yml declares sbom: blobstore/target/sbom.json for maven eu.wohlben.qits:qits-blobstore, and no release step produced it' >&2; exit 1; }
+      qits artifacts publish exists sbom 'maven/eu.wohlben.qits:qits-registries-common' "$QITS_VERSION" \
+        || { echo '.config/qits/release.yml declares sbom: common/target/sbom.json for maven eu.wohlben.qits:qits-registries-common, and no release step produced it' >&2; exit 1; }

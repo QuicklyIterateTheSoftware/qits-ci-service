@@ -61,4 +61,9 @@ steps:
       fi
       # --- platform postlude --------------------------------------------------------
       : "${QITS_ARTIFACTS_CLI_PACKAGE:?this release submits an SBOM, and the qits CLI is not configured on this deployment}"
-      qits artifacts publish sbom submit --type 'docker' --name 'qits/build-images/ci-base' --version "$QITS_VERSION" --file 'out/sbom.json'
+      if [ -f 'out/sbom.json' ]; then
+        qits artifacts publish sbom submit --type 'docker' --name 'qits/build-images/ci-base' \
+          --version "$QITS_VERSION" --file 'out/sbom.json'
+      fi
+      qits artifacts publish exists sbom 'docker/qits/build-images/ci-base' "$QITS_VERSION" \
+        || { echo '.config/qits/release.yml declares sbom: out/sbom.json for docker qits/build-images/ci-base, and no release step produced it' >&2; exit 1; }

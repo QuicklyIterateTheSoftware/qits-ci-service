@@ -73,4 +73,9 @@ steps:
       qits artifacts publish contract --kind 'golden-masters' --ecosystem 'npm' --name '@qits/projects-golden-masters' --application 'qits-projects' --from 'golden-masters/' --version "$QITS_VERSION"
       qits artifacts publish contract-docs --application 'qits-projects' --from 'golden-masters/' --package 'maven=eu.wohlben.qits:qits-projects-golden-masters' --package 'npm=@qits/projects-golden-masters' --version "$QITS_VERSION" --meta git.commit.hash="$QITS_CI_SHA" --meta git.repository.name="$QITS_CI_REPO_NAME"
       qits artifacts publish docs submit --site '@apidocs/qits-projects' --openapi 'docs/openapi.yml' --version "$QITS_VERSION" --meta git.commit.hash="$QITS_CI_SHA" --meta git.repository.name="$QITS_CI_REPO_NAME"
-      qits artifacts publish sbom submit --type 'docker' --name 'qits/qits-projects' --version "$QITS_VERSION" --file '.sbom/sbom.json'
+      if [ -f '.sbom/sbom.json' ]; then
+        qits artifacts publish sbom submit --type 'docker' --name 'qits/qits-projects' \
+          --version "$QITS_VERSION" --file '.sbom/sbom.json'
+      fi
+      qits artifacts publish exists sbom 'docker/qits/qits-projects' "$QITS_VERSION" \
+        || { echo '.config/qits/release.yml declares sbom: .sbom/sbom.json for docker qits/qits-projects, and no release step produced it' >&2; exit 1; }

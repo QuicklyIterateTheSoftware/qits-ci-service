@@ -55,9 +55,9 @@
 # LAST step — the only one here — it then PUBLISHES: one `qits artifacts publish maven` per declared
 # entry, in `link:` order so a linked sibling is decided first, each uploading the module's jar and
 # flattened pom with the run's own credential and its content hash. Then one `qits artifacts publish
-# sbom submit` per entry carrying `sbom:` (an `if-changed` entry's only when it was published). So
-# this script BUILDS and nothing else: nothing below deploys, holds a bearer, parses a version,
-# fetches a tag or PUTs a document.
+# sbom submit` per entry carrying `sbom:` (an `if-changed` entry's only when it was published), and a
+# check that each one arrived. So this script BUILDS and nothing else: nothing below deploys, holds a
+# bearer, parses a version, fetches a tag or PUTs a document.
 #
 # ---------------------------------------------------------------------------------------------
 # THE REPLAY GUARD THIS RECIPE ONCE GAVE UP IS THE CLI'S NOW

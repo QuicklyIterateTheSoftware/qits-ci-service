@@ -699,7 +699,7 @@ public class CiReleaseComposerTest {
   }
 
   @Test
-  public void theSbomPostludeGoesOnTheLastBuildingStep() {
+  public void everyReleaseStepSubmitsTheSbomsItHoldsAndOnlyTheLastChecksThem() {
     CiReleaseComposer.Composed composed =
         CiReleaseComposer.compose(
             REPO,
@@ -716,13 +716,24 @@ public class CiReleaseComposerTest {
                 """),
             null);
 
-    // The document is produced by the build, so it is submitted from the step that produced it —
-    // and BEFORE that step's exit code, which is what makes "SBOM before green" structural.
+    // The composer cannot see which step writes the document, so every step submits it when it is
+    // there — and each submit sits AFTER that step's own script, before its exit code, which is what
+    // makes "SBOM before green" structural. The presence check is the last step's alone.
     String document = composed.releaseDocument();
     int build = document.indexOf("buildctl build --opt target=binary");
-    int submit = document.indexOf("qits artifacts publish sbom submit");
+    int firstSubmit = document.indexOf("qits artifacts publish sbom submit");
     int docs = document.indexOf("npm run docs");
-    assertTrue(build > 0 && submit > build && docs > submit, document);
+    int secondSubmit = document.indexOf("qits artifacts publish sbom submit", docs);
+    int check = document.indexOf("qits artifacts publish exists sbom 'docker/qits/qits-ci'");
+    assertTrue(
+        build > 0
+            && firstSubmit > build
+            && docs > firstSubmit
+            && secondSubmit > docs
+            && check > secondSubmit,
+        document);
+    assertEquals(2, occurrences(document, "if [ -f 'out/sbom.json' ]; then"), document);
+    assertEquals(1, occurrences(document, "publish exists sbom"), document);
   }
 
   // --- the publishing postlude (qits-620) ---------------------------------------------------------
@@ -964,34 +975,97 @@ public class CiReleaseComposerTest {
     assertFalse(document.contains("sbom submit"), document);
   }
 
+  /**
+   * qits-621 (a): the shape that broke one-submit-step — an image step writing {@code
+   * .sbom/sbom.json}, then a maven-base step writing {@code core/target/sbom.json}. Both steps carry
+   * the guarded submit for both entries; only the last carries the presence checks.
+   */
   @Test
-  public void anIfChangedSbomSubmittedFromAnEarlierStepIsACompositionError() {
-    CiConfigException refused =
-        assertThrows(
-            CiConfigException.class,
-            () ->
-                CiReleaseComposer.compose(
-                    REPO,
-                    slots(
-                        """
-                        release:
-                          - image: qits/build-images/ci-base:latest
-                            build: true
-                            script: buildctl build --opt target=image
-                          - image: qits/build-images/maven-base:latest
-                            script: ./mvnw -B -ntp package
-                        artifacts:
-                          - { type: docker, name: qits/qits-thing, sbom: out/sbom.json }
-                          - { type: maven, name: "g:a", sbom: target/sbom.json, publish: if-changed }
-                        """),
-                    null));
+  public void aTwoStepOverrideSubmitsBothSbomsOnBothStepsAndChecksThemOnTheLast() {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO,
+            slots(
+                """
+                release:
+                  - image: qits/build-images/ci-base:latest
+                    build: true
+                    script: |
+                      buildctl build --opt target=image
+                      buildctl build --opt target=sbom --output type=local,dest=.sbom
+                  - image: qits/build-images/maven-base:latest
+                    script: ./mvnw -B -ntp package
+                artifacts:
+                  - { type: docker, name: qits/qits-thing, sbom: .sbom/sbom.json }
+                  - { type: maven, name: "eu.wohlben.qits:qits-thing-client", path: core, sbom: core/target/sbom.json }
+                """),
+            null);
 
-    assertEquals(
-        CiReleaseSlotParser.CONFIG_PATH
-            + ": artifact 1 is publish: if-changed and its sbom is submitted from step 0, but the"
-            + " platform publishes from the last step 1 — the hash needs the SBOM in the step that"
-            + " publishes",
-        refused.getMessage());
+    String document = composed.releaseDocument();
+    golden("two-step-override-sboms-release.yml", document);
+    int maven = document.indexOf("./mvnw -B -ntp package");
+    String image = document.substring(0, maven);
+    String last = document.substring(maven);
+    for (String step : List.of(image, last)) {
+      assertEquals(1, occurrences(step, "if [ -f '.sbom/sbom.json' ]; then"), step);
+      assertEquals(1, occurrences(step, "if [ -f 'core/target/sbom.json' ]; then"), step);
+    }
+    assertFalse(image.contains("publish exists sbom"), image);
+    assertTrue(
+        last.contains(
+            "qits artifacts publish exists sbom 'docker/qits/qits-thing' \"$QITS_VERSION\" \\\n"),
+        last);
+    assertTrue(
+        last.contains(
+            "|| { echo '.config/qits/release.yml declares sbom: core/target/sbom.json for maven"
+                + " eu.wohlben.qits:qits-thing-client, and no release step produced it' >&2;"
+                + " exit 1; }"),
+        last);
+    // The publishes still come first on the last step, so a submitted SBOM describes an upload.
+    assertTrue(
+        last.indexOf("qits artifacts publish maven") < last.indexOf("publish sbom submit"), last);
+  }
+
+  /**
+   * An {@code if-changed} entry used to be a composition error when its SBOM would have been
+   * submitted from an earlier step than the publish. Every step submits now, so it composes — and
+   * the entry's submit and presence check are the publishing step's alone, behind its answer.
+   */
+  @Test
+  public void anIfChangedSbomIsTheLastStepsAloneInATwoStepRelease() {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO,
+            slots(
+                """
+                release:
+                  - image: qits/build-images/ci-base:latest
+                    build: true
+                    script: buildctl build --opt target=image
+                  - image: qits/build-images/maven-base:latest
+                    script: ./mvnw -B -ntp package
+                artifacts:
+                  - { type: docker, name: qits/qits-thing, sbom: out/sbom.json }
+                  - { type: maven, name: "g:a", sbom: target/sbom.json, publish: if-changed }
+                """),
+            null);
+
+    String document = composed.releaseDocument();
+    int maven = document.indexOf("./mvnw -B -ntp package");
+    String image = document.substring(0, maven);
+    String last = document.substring(maven);
+    assertFalse(image.contains("target/sbom.json"), image);
+    assertTrue(
+        last.contains(
+            "case \"$qits_published_1\" in published\\ *) qits artifacts publish sbom submit"
+                + " --type 'maven' --name 'g:a' --version \"$QITS_VERSION\" --file"
+                + " 'target/sbom.json' ;; esac\n"),
+        last);
+    assertTrue(
+        last.contains(
+            "case \"$qits_published_1\" in published\\ *)\n"
+                + "        qits artifacts publish exists sbom 'maven/g:a' \"$QITS_VERSION\""),
+        last);
   }
 
   @Test
@@ -1104,24 +1178,113 @@ public class CiReleaseComposerTest {
       stub.toFile().setExecutable(true);
       Path script = work.resolve("postlude.sh");
       Files.writeString(script, postlude);
+      // The step built both documents; the always entry's submit is guarded on the file.
+      Files.createDirectories(work.resolve("target"));
+      Files.writeString(work.resolve("target/sbom.json"), "{}");
+      Files.writeString(work.resolve("sbom.json"), "{}");
 
       int unchanged = runPostlude(script, work, bin, "unchanged since 2026.1001.1");
       String argv = Files.readString(work.resolve("argv.txt"));
       assertEquals(0, unchanged, argv);
       assertFalse(argv.contains("sbom submit --type maven"), argv);
       assertTrue(argv.contains("sbom submit --type npm"), "an always entry submits regardless");
+      // Nothing was published at this version, so there is nothing for the check to find.
+      assertFalse(argv.contains("exists sbom maven/g:a"), argv);
+      assertTrue(argv.contains("exists sbom npm/@qits/b 2026.1002.1"), argv);
 
       Files.delete(work.resolve("argv.txt"));
       int published = runPostlude(script, work, bin, "published 2026.1002.1");
       argv = Files.readString(work.resolve("argv.txt"));
       assertEquals(0, published, argv);
       assertTrue(argv.contains("sbom submit --type maven --name g:a"), argv);
+      assertTrue(argv.contains("exists sbom maven/g:a 2026.1002.1"), argv);
 
       Files.delete(work.resolve("argv.txt"));
       int refusedExit = runPostlude(script, work, bin, "refuse");
       argv = Files.readString(work.resolve("argv.txt"));
       assertTrue(refusedExit != 0, "a refused publish must fail the step");
       assertFalse(argv.contains("sbom submit"), "nothing after the refusal runs: " + argv);
+    } finally {
+      try (var stream = Files.walk(work)) {
+        stream.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+      }
+    }
+  }
+
+  /**
+   * qits-621 (b), as behaviour: a single release step whose script did not write the declared
+   * document submits nothing (the file guard) and then fails at the presence check, naming the
+   * entry and its path. With the document present, the same step submits it and goes green.
+   */
+  @Test
+  public void aSingleStepReleaseFailsNamingAnSbomNoStepProduced() throws Exception {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO,
+            slots(
+                """
+                release:
+                  - image: alpine:3
+                    build: true
+                    script: echo built
+                artifacts:
+                  - { type: docker, name: qits/qits-thing, sbom: .sbom/sbom.json }
+                """),
+            null);
+    String postlude = extractPostlude(composed.releaseDocument());
+
+    Path work = Files.createTempDirectory("sbom-presence");
+    try {
+      Path bin = work.resolve("bin");
+      Files.createDirectories(bin);
+      Path stub = bin.resolve("qits");
+      // The stub store holds an SBOM exactly when one was submitted in this run.
+      Files.writeString(
+          stub,
+          "#!/bin/sh\n"
+              + "printf '%s\\n' \"$*\" >> \""
+              + work.resolve("argv.txt")
+              + "\"\n"
+              + "case \"$*\" in\n"
+              + "  'artifacts publish exists'*) grep -q 'sbom submit' \""
+              + work.resolve("argv.txt")
+              + "\" ;;\n"
+              + "esac\n");
+      stub.toFile().setExecutable(true);
+      Path script = work.resolve("postlude.sh");
+      Files.writeString(script, postlude);
+
+      ProcessBuilder pb =
+          new ProcessBuilder("/bin/sh", "-eu", script.toString())
+              .directory(work.toFile())
+              .redirectErrorStream(true);
+      pb.environment().clear();
+      pb.environment().put("PATH", bin + ":" + System.getenv("PATH"));
+      pb.environment().put("QITS_ARTIFACTS_CLI_PACKAGE", "qits");
+      pb.environment().put("QITS_VERSION", "2026.1002.1");
+      Process absent = pb.start();
+      String output = new String(absent.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+      assertTrue(absent.waitFor() != 0, output);
+      assertTrue(
+          output.contains(
+              ".config/qits/release.yml declares sbom: .sbom/sbom.json for docker qits/qits-thing,"
+                  + " and no release step produced it"),
+          output);
+      assertFalse(Files.readString(work.resolve("argv.txt")).contains("sbom submit"));
+
+      Files.delete(work.resolve("argv.txt"));
+      Files.createDirectories(work.resolve(".sbom"));
+      Files.writeString(work.resolve(".sbom/sbom.json"), "{}");
+      Process present = pb.start();
+      output = new String(present.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+      assertEquals(0, present.waitFor(), output);
+      String argv = Files.readString(work.resolve("argv.txt"));
+      assertTrue(
+          argv.contains(
+              "artifacts publish sbom submit --type docker --name qits/qits-thing --version"
+                  + " 2026.1002.1 --file .sbom/sbom.json"),
+          argv);
+      assertTrue(argv.contains("artifacts publish exists sbom docker/qits/qits-thing 2026.1002.1"));
     } finally {
       try (var stream = Files.walk(work)) {
         stream.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());

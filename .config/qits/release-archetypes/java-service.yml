@@ -148,8 +148,8 @@
 # tag fetch and `git checkout --detach`, and `qits-publish` on `$PATH`; on a `build:` step the
 # `$BUILDKIT_HOST`/`$QITS_BUILD_REGISTRY` guards; on a `build:`/`docker:` step the run's credential
 # written to /tmp/qits-client-id|secret under `umask 077` in a subshell — the run's token subject
-# and token. The SBOM is SUBMITTED by the composed postlude on the last building step, per declared
-# artifact carrying `sbom:`. So none of that appears below — a copy here would be a second
+# and token. The SBOM is SUBMITTED by the composed postlude — on every release step whose tree holds
+# it, per declared artifact carrying `sbom:`, and checked for on the last. So none of that appears below — a copy here would be a second
 # implementation of a platform guarantee.
 #
 # WHAT THE SCRIPTS THEREFORE STILL DO: they GENERATE the SBOM at the declared path. Generating is

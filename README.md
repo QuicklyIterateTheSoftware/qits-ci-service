@@ -1786,8 +1786,13 @@ and it is wrong the moment that image changes underneath the declaration.
   the cause when a runner did not fill the builder's address in
 - `build:`/`docker:` — the run's token and its subject written to `/tmp/qits-client-*` under `umask 077`, in a
   subshell so the umask bounds those two files and nothing after them
-- release phase, on the last building step — one `qits artifacts publish sbom submit` per declared artifact
-  carrying an `sbom:` path
+- release phase, on EVERY step — one `qits artifacts publish sbom submit` per declared artifact
+  carrying an `sbom:` path, guarded by `[ -f <path> ]` (the composer cannot see which step writes
+  which document; a re-submit is idempotent). An `if-changed` entry's submit is the last step's
+  alone, after its publish answered `published`
+- release phase, on the last step — one `qits artifacts publish exists sbom <type>/<name>
+  "$QITS_VERSION"` per such entry (an `if-changed` one only when it was published), failing the step
+  with a message naming the entry and its declared path when no step produced it (qits-621)
 
 **Composition-time interpolation is only ever an artifact's `type`, `name` and `sbom:` path.**
 Everything else reaches a script as environment. Those three are held at parse time to

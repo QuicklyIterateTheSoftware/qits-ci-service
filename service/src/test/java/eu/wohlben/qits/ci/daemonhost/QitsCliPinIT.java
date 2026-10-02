@@ -182,6 +182,13 @@ public class QitsCliPinIT {
           put.body(),
           "the document the step wrote is the document that was published");
 
+      // 4b. AND THE LAST STEP ASKED FOR IT BACK. The presence check is the pinned binary's own
+      // `exists sbom`, so this is also the proof that the pinned CLI carries that command.
+      assertEquals(
+          List.of("/artifacts/sboms/" + SBOM_TYPE + "/" + SBOM_NAME + "/-/" + RELEASE_VERSION),
+          store.heads(),
+          "the presence check asked for the coordinate that was submitted");
+
       // 5. AND IT WAS THE PINNED BINARY THAT DID IT. The prelude asked for exactly the coordinate
       // the pom names, and what it ran is the byte-identical copy of what the real store served.
       assertEquals(
@@ -392,9 +399,9 @@ public class QitsCliPinIT {
    * only where the SBOM lands, because the platform's sbom store is immutable and a test must not
    * write into it at a coordinate nobody released.
    *
-   * <p>The whole surface is a PUT and a GET, which is what {@code Publisher.sbomSubmit} really
-   * asks: one PUT of the document, 201 with {@code sizeBytes} and {@code digest}, and no probe
-   * before it. A 200 arm would put the CLI on its digest-comparison path — that is the store's
+   * <p>The whole surface is a PUT, a HEAD and a GET: {@code Publisher.sbomSubmit} asks one PUT of
+   * the document, 201 with {@code sizeBytes} and {@code digest}, and no probe before it; the last
+   * step's presence check is one HEAD after it. A 200 arm would put the CLI on its digest-comparison path — that is the store's
    * already-published rule and this test is about neither.
    */
   private static final class StubStore implements AutoCloseable {
@@ -402,6 +409,7 @@ public class QitsCliPinIT {
     private final HttpServer server;
     private final List<Recorded> puts = new ArrayList<>();
     private final List<String> gets = new ArrayList<>();
+    private final List<String> heads = new ArrayList<>();
 
     record Recorded(String path, String contentType, byte[] body) {
       @Override
@@ -431,8 +439,23 @@ public class QitsCliPinIT {
 
     private void sbom(HttpExchange exchange) throws IOException {
       byte[] body = exchange.getRequestBody().readAllBytes();
+      if ("HEAD".equals(exchange.getRequestMethod())) {
+        // The last release step's presence check (qits-621): `qits artifacts publish exists sbom`
+        // is a HEAD on the same coordinate, 200 when the document is there and 404 when it is not.
+        // The stub answers from what it was really sent, so a check that passes is one the PUT
+        // above it earned.
+        String path = exchange.getRequestURI().getPath();
+        boolean present;
+        synchronized (puts) {
+          heads.add(path);
+          present = puts.stream().anyMatch(put -> put.path().equals(path));
+        }
+        exchange.sendResponseHeaders(present ? 200 : 404, -1);
+        exchange.close();
+        return;
+      }
       if (!"PUT".equals(exchange.getRequestMethod())) {
-        // Deliberately a 405 rather than a 404: the CLI makes no probe today, and a stub that
+        // Deliberately a 405 rather than a 404: the CLI makes no other probe, and a stub that
         // answered a hypothetical one with "absent" would be inventing a contract.
         exchange.sendResponseHeaders(405, -1);
         exchange.close();
@@ -462,6 +485,12 @@ public class QitsCliPinIT {
     List<Recorded> puts() {
       synchronized (puts) {
         return List.copyOf(puts);
+      }
+    }
+
+    List<String> heads() {
+      synchronized (puts) {
+        return List.copyOf(heads);
       }
     }
 

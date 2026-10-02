@@ -141,4 +141,9 @@ steps:
       # --- platform postlude --------------------------------------------------------
       : "${QITS_ARTIFACTS_CLI_PACKAGE:?this release publishes or submits an SBOM, and the qits CLI is not configured on this deployment}"
       qits artifacts publish npm --name '@qits/ui-components' --path 'dist/qits-spa-ui-components' --sbom 'sbom.json' --version "$QITS_VERSION"
-      qits artifacts publish sbom submit --type 'npm' --name '@qits/ui-components' --version "$QITS_VERSION" --file 'sbom.json'
+      if [ -f 'sbom.json' ]; then
+        qits artifacts publish sbom submit --type 'npm' --name '@qits/ui-components' \
+          --version "$QITS_VERSION" --file 'sbom.json'
+      fi
+      qits artifacts publish exists sbom 'npm/@qits/ui-components' "$QITS_VERSION" \
+        || { echo '.config/qits/release.yml declares sbom: sbom.json for npm @qits/ui-components, and no release step produced it' >&2; exit 1; }
