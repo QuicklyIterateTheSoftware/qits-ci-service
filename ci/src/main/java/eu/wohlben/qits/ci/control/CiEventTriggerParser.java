@@ -133,10 +133,11 @@ public class CiEventTriggerParser {
    * announce} is optional and is what a composed release document carries for an entry {@code
    * release.yml} declared {@code announce: if-published} — see {@link CiArtifact.Announce}.
    *
-   * <p>{@code publish} is recognised so that it is refused by name — "arrives in a later qits-ci" —
-   * rather than as an unknown key: the composed document is where release B of qits-640 carries an
-   * entry's {@code publish: if-changed} to the join, and {@link CiArtifact#requirePublish} is the one
-   * place that switches it on.
+   * <p>{@code publish} is the same arrangement for {@code publish: if-changed} (qits-620): the join
+   * reads the run's composed trigger document, never {@code release.yml}, so the policy has to
+   * survive the round trip. The composer writes it for a declared {@code if-changed} entry and for
+   * every contract package it expands; {@link CiArtifact#requirePublish} is the one rule both
+   * parsers apply.
    */
   private static final Set<String> ARTIFACT_KEYS =
       Set.of("type", "name", CiArtifact.ANNOUNCE_KEY, CiArtifact.PUBLISH_KEY);
@@ -665,11 +666,18 @@ public class CiEventTriggerParser {
                 + index
                 + " declares an unknown key '"
                 + key
-                + "' — an artifact is exactly { type, name[, announce] }");
+                + "' — an artifact is exactly { type, name[, announce | publish] }");
       }
     }
     CiArtifact.Type type = requireArtifactType(map.get("type"), configPath, index);
     String name = requireArtifactName(map.get("name"), configPath, index);
+    CiArtifact.requireOnePolicy(
+        map.containsKey(CiArtifact.ANNOUNCE_KEY),
+        map.containsKey(CiArtifact.PUBLISH_KEY),
+        type,
+        name,
+        configPath,
+        index);
     return new CiArtifact(
         type,
         name,

@@ -2,7 +2,12 @@ package eu.wohlben.qits.ci.control;
 
 import eu.wohlben.qits.ci.control.CiPipeline.CiStepDecl;
 import eu.wohlben.qits.ci.control.CiReleaseSlots.SlotArtifact;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Compiles a repository's {@link CiReleaseSlots} plus an archetype recipe into the <b>two ordinary
@@ -127,13 +132,28 @@ import java.util.List;
  *
  * <h2>What reaches a script, and what does not</h2>
  *
- * <p><b>Environment, in every case but two.</b> A step reads {@code $QITS_VERSION} (seeded by
- * {@code CiRunService} from the triggering event — the three inconsistent {@code jq} grammars in the
- * fleet die with it), {@code $QITS_CI_REPO_NAME}, {@code $QITS_ARTIFACTS_URL}, {@code
- * $QITS_ARTIFACTS_CLI_PACKAGE}, the registry variables and the run's credential files. The two exceptions
- * are an artifact's {@code type}/{@code name} and its {@code sbom:} path, which are interpolated into
- * the postlude — held to {@link CiReleaseSlotParser#SCRIPT_SAFE} at parse time and single-quoted
- * here, so the value cannot be anything but a word.
+ * <p><b>Environment, in every case but the declarations.</b> A step reads {@code $QITS_VERSION}
+ * (seeded by {@code CiRunService} from the triggering event — the three inconsistent {@code jq}
+ * grammars in the fleet die with it), {@code $QITS_CI_REPO_NAME}, {@code $QITS_ARTIFACTS_URL}, {@code
+ * $QITS_ARTIFACTS_CLI_PACKAGE}, the registry variables and the run's credential files. The exceptions
+ * are what {@code release.yml} declares about its artifacts and contracts — an artifact's {@code
+ * type}/{@code name}, its {@code sbom:}, {@code path:}, {@code link:} and {@code include:}, and a
+ * contract tree's application, provider and {@code from:} — which are interpolated into the
+ * postlude: held to {@link CiReleaseSlotParser#SCRIPT_SAFE} (or {@link
+ * CiReleaseSlotParser#INCLUDE_SAFE} for a glob) at parse time and single-quoted here, so the value
+ * cannot be anything but a word.
+ *
+ * <h2>The publishing postlude (qits-620)</h2>
+ *
+ * <p><b>The platform uploads every maven and npm artifact, packs every contract and publishes every
+ * {@code @apidocs} document; a recipe only builds.</b> On the LAST step of the release slot, after the
+ * declared script, the postlude calls the qits CLI: one {@code qits artifacts publish maven|npm} per
+ * maven or npm entry in {@code link:} dependency order, then one {@code contract} per contract
+ * package, then {@code contract-docs} when golden masters are declared, then one {@code docs submit
+ * --openapi} per {@code @apidocs} entry naming its file. Each call fails the step on a non-zero
+ * exit. The SBOM submits keep their own step ({@link #postludeStep}); where the two land on one step
+ * the publishes come first, so a submitted SBOM always describes something that was uploaded, and an
+ * {@code if-changed} entry's submit runs only when its publish answered {@code published}.
  */
 public final class CiReleaseComposer {
 
@@ -207,7 +227,9 @@ public final class CiReleaseComposer {
    * @param slots the repository's own {@code .config/qits/release.yml}
    * @param archetype the recipe {@code slots} names, already parsed, or null when it names none
    * @throws CiConfigException when the composition cannot be made — a script colliding with the
-   *     heredoc delimiter, or {@code artifacts:} declared with no release steps to publish them
+   *     heredoc delimiter, {@code artifacts:} or {@code contracts:} declared with no release steps to
+   *     publish them, or an {@code if-changed} entry whose SBOM is submitted from another step than
+   *     the one that publishes it
    */
   public static Composed compose(CiRepoRef repo, CiReleaseSlots slots, CiReleaseSlots archetype) {
     String selector = selector(repo);
@@ -215,10 +237,11 @@ public final class CiReleaseComposer {
     // the file the steps came from travels with them so an error names the document a person edits.
     Slot qa = choose(slots, archetype, true);
     Slot release = choose(slots, archetype, false);
-    List<SlotArtifact> artifacts =
-        !slots.artifacts().isEmpty()
-            ? slots.artifacts()
-            : archetype == null ? List.of() : archetype.artifacts();
+    boolean ownArtifacts = !slots.artifacts().isEmpty() || archetype == null;
+    List<SlotArtifact> artifacts = ownArtifacts ? slots.artifacts() : archetype.artifacts();
+    String artifactsPath = ownArtifacts ? slots.configPath() : archetype.configPath();
+    // Contracts are a repository's own facts: an archetype recipe cannot declare them.
+    CiContracts contracts = slots.contracts();
     if (release == null && !artifacts.isEmpty()) {
       throw new CiConfigException(
           slots.configPath()
@@ -227,9 +250,58 @@ public final class CiReleaseComposer {
               + " artifact(s) but neither it nor its archetype declares any 'release' step — a"
               + " declaration with no pipeline behind it announces a release nothing published");
     }
+    if (release == null && contracts != null) {
+      throw new CiConfigException(
+          slots.configPath()
+              + ": declares contracts but neither it nor its archetype declares any 'release' step —"
+              + " the platform publishes contract packages from the release slot's last step, so"
+              + " with no release slot nothing would ever publish them");
+    }
+    Postlude postlude = new Postlude(artifacts, artifactsPath, contracts);
     return new Composed(
         qa == null ? null : qaDocument(slots, archetype, selector, qa),
-        release == null ? null : releaseDocument(slots, archetype, selector, release, artifacts));
+        release == null ? null : releaseDocument(slots, archetype, selector, release, postlude));
+  }
+
+  /**
+   * What the release phase's postlude spends: the declared artifacts, the file they came from (for
+   * error messages), and the contracts.
+   */
+  private record Postlude(
+      List<SlotArtifact> artifacts, String artifactsPath, CiContracts contracts) {
+
+    /** Whether anything is published by the platform, which is what places the publish block. */
+    boolean publishes() {
+      return contracts != null
+          || artifacts.stream().anyMatch(a -> a.uploaded() || a.publishesApidocs());
+    }
+
+    /**
+     * Every entry the composed {@code artifacts:} block carries, and so every row the join owes:
+     * the declared artifacts, then each contract package as an ordinary {@code if-changed} entry.
+     */
+    List<CiArtifact> announced() {
+      List<CiArtifact> announced = new ArrayList<>();
+      artifacts.forEach(artifact -> announced.add(artifact.artifact()));
+      if (contracts != null) {
+        Set<String> declared = new HashSet<>();
+        artifacts.forEach(a -> declared.add(a.artifact().type() + " " + a.artifact().name()));
+        for (CiContracts.Package contract : contracts.packages()) {
+          if (declared.contains(contract.ecosystem().type() + " " + contract.name())) {
+            throw new CiConfigException(
+                artifactsPath
+                    + ": declares the "
+                    + contract.ecosystem().declared()
+                    + " artifact '"
+                    + contract.name()
+                    + "', which is the coordinate its contracts: section already publishes —"
+                    + " drop the artifacts: entry, the platform packs and publishes it");
+          }
+          announced.add(contract.artifact());
+        }
+      }
+      return announced;
+    }
   }
 
   /** One chosen slot: the steps, and the document they were declared in. */
@@ -265,7 +337,7 @@ public final class CiReleaseComposer {
     out.append("checkout:\n");
     out.append("  branch: ").append(RELEASE_REQUEST_BRANCH_PATH).append('\n');
     out.append("  sha: ").append(RELEASE_REQUEST_SHA_PATH).append('\n');
-    steps(out, qa, false, List.of());
+    steps(out, qa, false, null);
     return out.toString();
   }
 
@@ -274,7 +346,7 @@ public final class CiReleaseComposer {
       CiReleaseSlots archetype,
       String selector,
       Slot release,
-      List<SlotArtifact> artifacts) {
+      Postlude postlude) {
     StringBuilder out = new StringBuilder();
     header(out, slots, archetype);
     out.append("event: ").append(RELEASE_EVENT).append('\n');
@@ -286,26 +358,35 @@ public final class CiReleaseComposer {
     // by a composed document any more, and what it really did was dispatch a release run at main's
     // head with its checkout stripped.
     out.append("  sha: ").append(RELEASE_SHA_PATH).append('\n');
-    if (!artifacts.isEmpty()) {
+    List<CiArtifact> announced = postlude.announced();
+    if (!announced.isEmpty()) {
       out.append("artifacts:\n");
-      for (SlotArtifact artifact : artifacts) {
+      for (CiArtifact artifact : announced) {
         out.append("  - { type: ")
-            .append(scalar(artifact.artifact().type().declared()))
+            .append(scalar(artifact.type().declared()))
             .append(", name: ")
-            .append(scalar(artifact.artifact().name()));
-        // Emitted only when it is not the default, so every document composed before the key
-        // existed composes byte-for-byte as it did (the goldens hold that). It has to reach the
-        // composed block at all because the join reads the run's trigger document, not release.yml.
-        if (artifact.artifact().announceIfPublished()) {
+            .append(scalar(artifact.name()));
+        // Both policies are emitted only when they are not the default, so every document composed
+        // before the keys existed composes byte-for-byte as it did (the goldens hold that). They
+        // have to reach the composed block at all because the join reads the run's trigger
+        // document, not release.yml. path:, link:, include: and sbom: do not: they reach only the
+        // postlude.
+        if (artifact.announceIfPublished()) {
           out.append(", ")
               .append(CiArtifact.ANNOUNCE_KEY)
               .append(": ")
               .append(scalar(artifact.announce().declared()));
         }
+        if (artifact.publishIfChanged()) {
+          out.append(", ")
+              .append(CiArtifact.PUBLISH_KEY)
+              .append(": ")
+              .append(scalar(artifact.publish().declared()));
+        }
         out.append(" }\n");
       }
     }
-    steps(out, release, true, artifacts);
+    steps(out, release, true, postlude);
     return out.toString();
   }
 
@@ -332,10 +413,14 @@ public final class CiReleaseComposer {
    * error at both scopes now (ticket 9441bc6e), so emitting it would compose a document this
    * service's own parser refuses.
    */
-  private static void steps(
-      StringBuilder out, Slot slot, boolean releasePhase, List<SlotArtifact> artifacts) {
+  private static void steps(StringBuilder out, Slot slot, boolean releasePhase, Postlude postlude) {
     List<CiStepDecl> declared = slot.pipeline().steps();
+    List<SlotArtifact> artifacts = postlude == null ? List.of() : postlude.artifacts();
     int postludeAt = releasePhase ? postludeStep(declared, artifacts) : -1;
+    int publishAt = releasePhase && postlude.publishes() ? publishStep(declared) : -1;
+    if (publishAt >= 0) {
+      requireIfChangedSbomsWherePublished(postlude, postludeAt, publishAt);
+    }
     out.append("steps:\n");
     for (int i = 0; i < declared.size(); i++) {
       CiStepDecl step = declared.get(i);
@@ -355,8 +440,53 @@ public final class CiReleaseComposer {
       out.append("    script: |\n");
       block(
           out,
-          script(step, releasePhase, i == postludeAt ? artifacts : List.of(), slot.sourcePath()),
+          script(
+              step,
+              releasePhase,
+              i == publishAt ? postlude : null,
+              i == postludeAt ? artifacts : List.of(),
+              slot.sourcePath()),
           "      ");
+    }
+  }
+
+  /**
+   * Which release step carries the publish block: the <b>last</b> one. Kept as one well-named method
+   * because qits-621's per-step SBOM work reuses the placement rule established here.
+   *
+   * <p>Last, and not the last building step, because every repository with its own slot builds its
+   * maven module in its last step — a {@code maven-base} step after any image build — and the CLI
+   * needs that step's {@code target/} to upload from.
+   */
+  static int publishStep(List<CiStepDecl> steps) {
+    return steps.size() - 1;
+  }
+
+  /**
+   * An {@code if-changed} entry's SBOM must be submitted from the step that publishes it: the hash
+   * covers the SBOM, so the CLI reads the document in the publishing step, and the submit is
+   * guarded on that step's answer.
+   */
+  private static void requireIfChangedSbomsWherePublished(
+      Postlude postlude, int sbomAt, int publishAt) {
+    List<SlotArtifact> artifacts = postlude.artifacts();
+    for (int i = 0; i < artifacts.size(); i++) {
+      SlotArtifact artifact = artifacts.get(i);
+      if (artifact.artifact().publishIfChanged() && artifact.hasSbom() && sbomAt != publishAt) {
+        throw new CiConfigException(
+            postlude.artifactsPath()
+                + ": artifact "
+                + i
+                + " is "
+                + CiArtifact.PUBLISH_KEY
+                + ": "
+                + CiArtifact.Publish.IF_CHANGED.declared()
+                + " and its sbom is submitted from step "
+                + sbomAt
+                + ", but the platform publishes from the last step "
+                + publishAt
+                + " — the hash needs the SBOM in the step that publishes");
+      }
     }
   }
 
@@ -385,9 +515,18 @@ public final class CiReleaseComposer {
     return steps.size() - 1;
   }
 
-  /** One composed step script: prelude, the declared script as data, postlude. */
+  /**
+   * One composed step script: prelude, the declared script as data, postlude.
+   *
+   * @param publish what this step publishes, or null when it is not the publishing step
+   * @param sboms the artifacts whose SBOMs this step submits, empty when it submits none
+   */
   private static String script(
-      CiStepDecl step, boolean releasePhase, List<SlotArtifact> postlude, String sourcePath) {
+      CiStepDecl step,
+      boolean releasePhase,
+      Postlude publish,
+      List<SlotArtifact> sboms,
+      String sourcePath) {
     StringBuilder out = new StringBuilder();
     // The daemon runs a step with `<shell> -c` and no -e — bash where the image has it, sh where it
     // does not — so this line is what makes an early failure a failure. -u is load-bearing too: an
@@ -529,25 +668,176 @@ public final class CiReleaseComposer {
     out.append("else\n");
     out.append("  sh -eu ").append(SLOT_SCRIPT).append('\n');
     out.append("fi\n");
-    if (!postlude.isEmpty()) {
+    if (publish != null || !sboms.isEmpty()) {
       out.append("# --- platform postlude --------------------------------------------------------\n");
+      // The SBOM-only wording is kept where nothing is published, so every document composed
+      // before the publishing postlude existed stays byte-identical (the goldens hold that).
       out.append(
-          ": \"${QITS_ARTIFACTS_CLI_PACKAGE:?this release submits an SBOM, and the qits CLI is not"
-              + " configured on this deployment}\"\n");
-      for (SlotArtifact artifact : postlude) {
+          publish != null
+              ? ": \"${QITS_ARTIFACTS_CLI_PACKAGE:?this release publishes or submits an SBOM, and the"
+                  + " qits CLI is not configured on this deployment}\"\n"
+              : ": \"${QITS_ARTIFACTS_CLI_PACKAGE:?this release submits an SBOM, and the qits CLI is"
+                  + " not configured on this deployment}\"\n");
+      if (publish != null) {
+        publishBlock(out, publish);
+      }
+      for (int i = 0; i < sboms.size(); i++) {
+        SlotArtifact artifact = sboms.get(i);
         if (!artifact.hasSbom()) {
           continue;
         }
-        out.append("qits artifacts publish sbom submit --type ")
-            .append(quote(artifact.artifact().type().declared()))
-            .append(" --name ")
-            .append(quote(artifact.artifact().name()))
-            .append(" --version \"$QITS_VERSION\" --file ")
-            .append(quote(artifact.sbomPath()))
-            .append('\n');
+        String submit =
+            "qits artifacts publish sbom submit --type "
+                + quote(artifact.artifact().type().declared())
+                + " --name "
+                + quote(artifact.artifact().name())
+                + " --version \"$QITS_VERSION\" --file "
+                + quote(artifact.sbomPath());
+        if (publish != null && artifact.artifact().publishIfChanged()) {
+          // `unchanged since <v>` published nothing at $QITS_VERSION, so an SBOM PUT there would
+          // describe a version that does not exist. Only `published <v>` is followed by a submit.
+          out.append("case \"$")
+              .append(publishedVariable(i))
+              .append("\" in published\\ *) ")
+              .append(submit)
+              .append(" ;; esac\n");
+        } else {
+          out.append(submit).append('\n');
+        }
       }
     }
     return out.toString();
+  }
+
+  /** The shell variable an {@code if-changed} entry's publish answer is kept in. */
+  private static String publishedVariable(int index) {
+    return "qits_published_" + index;
+  }
+
+  /**
+   * The publish calls, in the order the class javadoc states. An {@code if-changed} entry's answer
+   * is captured — {@code var=$(…)} on its own line still fails the step under {@code set -e} on a
+   * non-zero exit — echoed, and read by its SBOM submit; every other call simply runs.
+   */
+  private static void publishBlock(StringBuilder out, Postlude postlude) {
+    List<SlotArtifact> artifacts = postlude.artifacts();
+    Map<String, String> mavenByArtifactId = new HashMap<>();
+    for (SlotArtifact artifact : artifacts) {
+      if (artifact.artifact().type() == CiArtifact.Type.MAVEN) {
+        mavenByArtifactId.put(
+            CiReleaseSlotParser.artifactId(artifact.artifact().name()), artifact.artifact().name());
+      }
+    }
+    for (int i : publishOrder(artifacts)) {
+      SlotArtifact artifact = artifacts.get(i);
+      StringBuilder call = new StringBuilder("qits artifacts publish ");
+      call.append(artifact.artifact().type().declared())
+          .append(" --name ")
+          .append(quote(artifact.artifact().name()))
+          .append(" --path ")
+          .append(quote(artifact.path()));
+      if (artifact.hasSbom()) {
+        call.append(" --sbom ").append(quote(artifact.sbomPath()));
+      }
+      for (String glob : artifact.include()) {
+        call.append(" --include ").append(quote(glob));
+      }
+      for (String link : artifact.link()) {
+        call.append(" --link ").append(quote(mavenByArtifactId.get(link)));
+      }
+      if (artifact.artifact().publishIfChanged()) {
+        call.append(" --if-changed");
+      }
+      call.append(" --version \"$QITS_VERSION\"");
+      if (artifact.artifact().publishIfChanged()) {
+        out.append(publishedVariable(i)).append("=$(").append(call).append(")\n");
+        out.append("echo \"$").append(publishedVariable(i)).append("\"\n");
+      } else {
+        out.append(call).append('\n');
+      }
+    }
+    CiContracts contracts = postlude.contracts();
+    if (contracts != null) {
+      for (CiContracts.Package contract : contracts.packages()) {
+        out.append("qits artifacts publish contract --kind ")
+            .append(quote(contract.kind().declared()))
+            .append(" --ecosystem ")
+            .append(quote(contract.ecosystem().declared()))
+            .append(" --name ")
+            .append(quote(contract.name()))
+            .append(" --application ")
+            .append(quote(contracts.application()));
+        if (!contract.provider().isEmpty()) {
+          out.append(" --provider ").append(quote(contract.provider()));
+        }
+        out.append(" --from ")
+            .append(quote(contract.from()))
+            .append(" --version \"$QITS_VERSION\"\n");
+      }
+      if (contracts.goldenMasters() != null) {
+        out.append("qits artifacts publish contract-docs --application ")
+            .append(quote(contracts.application()))
+            .append(" --from ")
+            .append(quote(contracts.goldenMasters().from()));
+        for (CiContracts.Package contract : contracts.goldenMasterPackages()) {
+          out.append(" --package ")
+              .append(quote(contract.ecosystem().declared() + "=" + contract.name()));
+        }
+        out.append(" --version \"$QITS_VERSION\"").append(META).append('\n');
+      }
+    }
+    for (SlotArtifact artifact : artifacts) {
+      if (artifact.publishesApidocs()) {
+        out.append("qits artifacts publish docs submit --site ")
+            .append(quote(artifact.artifact().name()))
+            .append(" --openapi ")
+            .append(quote(artifact.path()))
+            .append(" --version \"$QITS_VERSION\"")
+            .append(META)
+            .append('\n');
+      }
+    }
+  }
+
+  /** The provenance a docs bundle is published with, read from the step's own environment. */
+  private static final String META =
+      " --meta git.commit.hash=\"$QITS_CI_SHA\" --meta git.repository.name=\"$QITS_CI_REPO_NAME\"";
+
+  /**
+   * The indices of the maven and npm entries in publish order: <b>a linked sibling before every
+   * entry linking it</b>, and declared order wherever {@code link:} says nothing. Each round takes
+   * the earliest-declared entry whose links are all decided, so the order is stable. The parser has
+   * already refused a cycle and a link to anything but another maven entry of the same file.
+   */
+  static List<Integer> publishOrder(List<SlotArtifact> artifacts) {
+    List<Integer> pending = new ArrayList<>();
+    for (int i = 0; i < artifacts.size(); i++) {
+      if (artifacts.get(i).uploaded()) {
+        pending.add(i);
+      }
+    }
+    Set<String> decided = new HashSet<>();
+    List<Integer> order = new ArrayList<>();
+    while (!pending.isEmpty()) {
+      Integer next = null;
+      for (Integer candidate : pending) {
+        if (decided.containsAll(artifacts.get(candidate).link())) {
+          next = candidate;
+          break;
+        }
+      }
+      if (next == null) {
+        throw new IllegalStateException(
+            "link: forms a cycle the parser should have refused: " + pending);
+      }
+      pending.remove(next);
+      order.add(next);
+      SlotArtifact chosen = artifacts.get(next);
+      if (chosen.artifact().type() == CiArtifact.Type.MAVEN) {
+        decided.add(CiReleaseSlotParser.artifactId(chosen.artifact().name()));
+      }
+    }
+    return order;
   }
 
   /**

@@ -848,29 +848,70 @@ public class CiEventTriggerParserTest {
   }
 
   @Test
-  public void publishIsRecognisedAndRefusedUntilALaterQitsCi() {
-    // qits-640 release A: the composed document will carry publish: if-changed to the join once
-    // release B composes it. Until then the key is a known word refused as early, naming the entry —
-    // never an unknown key, and never accepted into a gate nothing applies.
-    for (String value : new String[] {"if-changed", "always"}) {
-      CiConfigException refused =
-          assertThrows(
-              CiConfigException.class,
-              () ->
-                  parser.parse(
-                      PATH,
-                      "event: SCMRelease\nartifacts:\n  - { type: maven, name: \"a:b\", publish: "
-                          + value
-                          + " }\nsteps: []\n"));
-      assertTrue(refused.getMessage().contains("artifact 0"), refused.getMessage());
-      assertTrue(refused.getMessage().contains("a:b"), refused.getMessage());
-      assertTrue(
-          refused.getMessage().contains("arrives in a later qits-ci"), refused.getMessage());
-    }
+  public void publishIfChangedSurvivesTheComposedDocumentWithNoSbomBesideIt() {
+    // qits-640 release B: the composer writes publish: 'if-changed' for a declared entry and for
+    // every contract package, and the join reads it back from here. A trigger document carries no
+    // sbom:, so the rule that an if-changed entry needs one is release.yml's, not this parser's.
     CiEventTrigger trigger =
         parser.parse(
             PATH,
-            "event: SCMRelease\nartifacts:\n  - { type: maven, name: \"a:b\" }\nsteps: []\n");
-    assertEquals(CiArtifact.Publish.ALWAYS, trigger.artifacts().get(0).publish());
+            """
+            event: SCMRelease
+            artifacts:
+              - { type: 'maven', name: 'eu.wohlben.qits:qits-projects-golden-masters', publish: 'if-changed' }
+              - { type: npm, name: "@qits/projects-golden-masters", publish: always }
+              - { type: maven, name: "a:b" }
+            steps: []
+            """);
+    assertEquals(CiArtifact.Publish.IF_CHANGED, trigger.artifacts().get(0).publish());
+    assertTrue(trigger.artifacts().get(0).publishIfChanged());
+    assertEquals(CiArtifact.Publish.ALWAYS, trigger.artifacts().get(1).publish());
+    assertEquals(CiArtifact.Publish.ALWAYS, trigger.artifacts().get(2).publish());
+  }
+
+  @Test
+  public void publishIsRefusedOnATypeThePlatformDoesNotUploadAndOnAnUnknownValue() {
+    for (String type : new String[] {"docker", "daemon", "docs"}) {
+      for (String value : new String[] {"if-changed", "always"}) {
+        CiConfigException refused =
+            assertThrows(
+                CiConfigException.class,
+                () ->
+                    parser.parse(
+                        PATH,
+                        "event: SCMRelease\nartifacts:\n  - { type: "
+                            + type
+                            + ", name: qits/x, publish: "
+                            + value
+                            + " }\nsteps: []\n"));
+        assertTrue(
+            refused.getMessage().contains("artifact 0 ({ type: " + type + ", name: qits/x })"),
+            refused.getMessage());
+        assertTrue(
+            refused.getMessage().contains("only a maven or npm entry is published by the platform"),
+            refused.getMessage());
+      }
+    }
+    CiConfigException unknown =
+        assertThrows(
+            CiConfigException.class,
+            () ->
+                parser.parse(
+                    PATH,
+                    "event: SCMRelease\nartifacts:\n  - { type: maven, name: \"a:b\", publish:"
+                        + " sometimes }\nsteps: []\n"));
+    assertTrue(
+        unknown.getMessage().contains("publish 'sometimes' — it is 'always' (the default) or"
+            + " 'if-changed'"),
+        unknown.getMessage());
+    CiConfigException both =
+        assertThrows(
+            CiConfigException.class,
+            () ->
+                parser.parse(
+                    PATH,
+                    "event: SCMRelease\nartifacts:\n  - { type: maven, name: \"a:b\", announce:"
+                        + " if-published, publish: if-changed }\nsteps: []\n"));
+    assertTrue(both.getMessage().contains("declares both announce and publish"), both.getMessage());
   }
 }

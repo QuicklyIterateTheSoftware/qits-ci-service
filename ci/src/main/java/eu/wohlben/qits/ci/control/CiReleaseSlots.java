@@ -34,6 +34,8 @@ import java.util.List;
  * @param release the release steps, or null when this document declares none
  * @param artifacts what a green release run publishes, empty when the document declares none
  * @param userflows the userflow declaration, or null when the document declares none
+ * @param contracts the {@code contracts:} declaration, or null when the document declares none —
+ *     always null on an archetype recipe, which may not declare one
  */
 public record CiReleaseSlots(
     String configPath,
@@ -41,7 +43,8 @@ public record CiReleaseSlots(
     CiPipeline releaseRequest,
     CiPipeline release,
     List<SlotArtifact> artifacts,
-    Userflows userflows) {
+    Userflows userflows,
+    CiContracts contracts) {
 
   public CiReleaseSlots {
     artifacts = List.copyOf(artifacts);
@@ -57,32 +60,48 @@ public record CiReleaseSlots(
    * every repository derives an SBOM base URL by string-chopping some other variable and writes its
    * own PUT, and after this the path is the only thing a repository still says about it.
    *
-   * <p><b>{@code path} and {@code link} are the sbom path's kind</b> (qits-620): facts the platform
-   * postlude spends and the composed {@code artifacts:} block never carries. This qits-ci parses and
-   * validates both — {@code link:} against the whole file, see {@code CiReleaseSlotParser} — and
-   * composes nothing differently because of them; release B of qits-640 is what turns them into
-   * {@code qits artifacts publish maven|npm --path … --link …}.
+   * <p><b>{@code path}, {@code link} and {@code include} are the sbom path's kind</b> (qits-620):
+   * facts the platform postlude spends — {@code qits artifacts publish maven|npm --path … --link …
+   * --include …}, or {@code docs submit --openapi …} for an {@code @apidocs} entry's path — and the
+   * composed {@code artifacts:} block never carries.
    *
    * @param artifact the {@code {type, name[, announce]}} declaration, exactly as a trigger file
    *     spells it
    * @param sbomPath the repository-relative path to the generated document, {@code ""} when none
    * @param path the module or package directory a {@code maven} or {@code npm} entry is uploaded
-   *     from, {@code "."} when the file names none; {@code ""} on every other type
+   *     from, {@code "."} when the file names none; the OpenAPI file of an {@code @apidocs} docs
+   *     entry, or {@code ""} when it names none; {@code ""} on every other type
    * @param link the artifactIds of the other {@code maven} entries of the same file this entry
    *     keeps as pom dependencies rather than bundling, empty when none
+   * @param include the globs narrowing an {@code if-changed} entry's hash, empty when none
    */
-  public record SlotArtifact(CiArtifact artifact, String sbomPath, String path, List<String> link) {
+  public record SlotArtifact(
+      CiArtifact artifact, String sbomPath, String path, List<String> link, List<String> include) {
 
     /** The directory a {@code maven} or {@code npm} entry names when it says nothing. */
     public static final String DEFAULT_PATH = ".";
 
+    /** The docs scope whose entries may name an OpenAPI file the platform publishes. */
+    public static final String APIDOCS_SCOPE = "@apidocs/";
+
     public SlotArtifact {
       link = List.copyOf(link);
+      include = List.copyOf(include);
     }
 
     /** An entry declaring only what a trigger file can, plus its sbom path. */
     public SlotArtifact(CiArtifact artifact, String sbomPath) {
-      this(artifact, sbomPath, defaultPath(artifact.type()), List.of());
+      this(artifact, sbomPath, defaultPath(artifact.type()), List.of(), List.of());
+    }
+
+    /** Whether the platform uploads this entry itself: every {@code maven} and {@code npm} one. */
+    public boolean uploaded() {
+      return artifact.type() == CiArtifact.Type.MAVEN || artifact.type() == CiArtifact.Type.NPM;
+    }
+
+    /** Whether this is an {@code @apidocs} docs entry naming the OpenAPI file the platform publishes. */
+    public boolean publishesApidocs() {
+      return artifact.type() == CiArtifact.Type.DOCS && !path.isEmpty();
     }
 
     /** {@link #DEFAULT_PATH} for the two types the platform uploads, {@code ""} for the rest. */

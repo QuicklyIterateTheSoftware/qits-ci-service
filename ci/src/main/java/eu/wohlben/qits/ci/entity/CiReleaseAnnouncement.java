@@ -114,8 +114,8 @@ public class CiReleaseAnnouncement extends PanacheEntityBase {
   public String announce;
 
   /**
-   * Why this row was settled WITHOUT an announcement — {@link #SKIPPED_ABSENT} or {@link
-   * #SKIPPED_UNVERIFIED} — or null when it was announced (or is still owed). A skipped row carries
+   * Why this row was settled WITHOUT an announcement — {@link #SKIPPED_ABSENT}, {@link
+   * #SKIPPED_UNVERIFIED} or {@link #SKIPPED_UNCHANGED} (qits-620) — or null when it was announced (or is still owed). A skipped row carries
    * {@link #announcedAt} too, so no later drive of the join checks it again or announces it (V29).
    */
   @Column(name = "skip_reason", length = 16)
@@ -126,6 +126,12 @@ public class CiReleaseAnnouncement extends PanacheEntityBase {
 
   /** qits-artifacts could not be asked conclusively within the join's attempts. */
   public static final String SKIPPED_UNVERIFIED = "UNVERIFIED";
+
+  /**
+   * An {@code if-changed} row settled because its content equals the newest published version's
+   * (qits-620); {@link #unchangedSince} names that version.
+   */
+  public static final String SKIPPED_UNCHANGED = "UNCHANGED";
 
   /**
    * The entry's {@code publish:} policy as the trigger document spelled it — {@code if-changed} —

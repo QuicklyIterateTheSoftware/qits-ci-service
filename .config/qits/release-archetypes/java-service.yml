@@ -65,11 +65,27 @@
 #     archetype: java-service
 #     artifacts:
 #       - { type: docker, name: qits/qits-platform-idp, sbom: .sbom/sbom.json }
+#       - { type: docs, name: "@apidocs/qits-idp", path: docs/openapi.yml }   # optional
 #     userflows: true            # or `userflows: <site>` when the bundle's site is not the repo name
 #
 # and nothing else. `artifacts:` and `userflows:` MUST be in the repository's own file rather than
 # here: qits-projects reads both out of the repository at the tag, so an archetype default is
 # invisible to it — a bundle nobody is told about, or a release announcing nothing.
+#
+# THE API DOCS ARE THE PLATFORM'S TO PUBLISH. An `@apidocs/<application>` docs entry naming its
+# OpenAPI document in `path:` (`.yml`, `.yaml` or `.json`, relative to the repository root) is
+# published by the composed postlude on every release — one `qits artifacts publish docs submit
+# --openapi <path>` after the release step's script — so a service needs no `release:` override to
+# publish them. Without `path:` the entry stays declared-only, published by whatever step of the
+# repository's own does it.
+#
+# CONTRACTS ARE DECLARED TOO, never scripted. A provider's golden masters and a consumer's pacts are
+# a `contracts:` section of the same file; the platform packs and publishes each declared package,
+# `if-changed`, from the release step:
+#
+#     contracts:
+#       application: qits-projects
+#       golden-masters: { from: golden-masters/, packages: [maven, npm] }
 #
 # ---------------------------------------------------------------------------------------------
 # THE ONE THING THIS RECIPE READS OUT OF A REPOSITORY, AND WHY IT IS THE DECLARATION
@@ -123,7 +139,7 @@
 #   ABSENT MEANS THE REPOSITORY'S POM DECIDES which ITs run, which is the shape qits-artifacts,
 #   qits-docs, qits-githost and qits-stt already use and document as the better one — a class added
 #   without touching a list is then never silently skipped. The list has to live in a file rather
-#   than in `release.yml`: that document's top-level vocabulary is five keys and refuses a sixth.
+#   than in `release.yml`: that document's top-level vocabulary is six keys and refuses a seventh.
 #
 # ---------------------------------------------------------------------------------------------
 # WHAT THE PLATFORM ADDS AROUND THESE SCRIPTS, SO THAT THEY DO NOT

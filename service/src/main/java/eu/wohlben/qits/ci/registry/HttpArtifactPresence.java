@@ -33,6 +33,13 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * <p>Anything else — a 5xx, any other status, a timeout, a refused connection, a packument that is
  * not JSON — is {@link Verdict#INCONCLUSIVE}. One attempt per call; the retry is the join's.
  *
+ * <p><b>{@link #newest}</b> (qits-620) asks qits-artifacts' content-hash door, {@code GET
+ * <origin>/artifacts/content-hashes/<maven|npm>/<name>/-/newest}, which answers the newest version
+ * by version order (never a dist-tag) as {@code {"version": …}}, and 404 when no version of the name
+ * exists. The name goes into the path <b>as declared</b>, its {@code :} and scope {@code /} literal,
+ * because that is how the store's route grammar matches a coordinate and how the qits CLI sends it;
+ * it is held to the declaration charset first, so nothing else can reach the path.
+ *
  * <p><b>The address is the one qits-ci already reaches the store at, never a new key</b> — {@link
  * HttpImagePins}' rule and {@link ArtifactsOrigin}'s derivation: {@code qits.artifacts.url} when a
  * deployment sets it, otherwise the origin of {@code qits.artifacts.maven.registry-url}. The maven
@@ -64,6 +71,12 @@ public class HttpArtifactPresence implements CiArtifactPresence {
   /** qits-artifacts' hosted npm repository under its root, the one {@code @qits/*} publishes to. */
   static final String NPM_PATH = "/artifacts/npm/npm";
 
+  /** qits-artifacts' content-hash door under its root (qits-620). */
+  static final String CONTENT_HASHES_PATH = "/artifacts/content-hashes";
+
+  /** What a declared coordinate may be — the slot parser's {@code SCRIPT_SAFE}, no {@code ..}. */
+  private static final String COORDINATE = "[A-Za-z0-9._:/@+-]+";
+
   private final HttpClient client = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
 
   private final ObjectMapper json = new ObjectMapper();
@@ -84,6 +97,51 @@ public class HttpArtifactPresence implements CiArtifactPresence {
       case NPM -> npm(name, version);
       default -> Probe.inconclusive("qits-artifacts is not asked about a " + type.declared() + " artifact");
     };
+  }
+
+  @Override
+  public Probe newest(CiArtifact.Type type, String name) {
+    if (type != CiArtifact.Type.MAVEN && type != CiArtifact.Type.NPM) {
+      return Probe.inconclusive(
+          "qits-artifacts keeps no newest version for a "
+              + (type == null ? "null" : type.declared())
+              + " artifact");
+    }
+    if (name == null || !name.matches(COORDINATE) || name.contains("..")) {
+      return Probe.inconclusive("'" + name + "' is not a coordinate the store can be asked about");
+    }
+    String origin = origin();
+    if (origin.isBlank()) {
+      return unconfigured();
+    }
+    String url = origin + CONTENT_HASHES_PATH + "/" + type.declared() + "/" + name + "/-/newest";
+    try {
+      HttpResponse<String> response =
+          client.send(
+              HttpRequest.newBuilder(URI.create(url))
+                  .timeout(REQUEST_TIMEOUT)
+                  .header("Accept", "application/json")
+                  .GET()
+                  .build(),
+              HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() == 404) {
+        return Probe.absent("GET " + url + " answered 404");
+      }
+      if (response.statusCode() != 200) {
+        return Probe.inconclusive("GET " + url + " answered HTTP " + response.statusCode());
+      }
+      JsonNode version = json.readTree(response.body()).path("version");
+      if (!version.isTextual() || version.asText().isBlank()) {
+        return Probe.inconclusive("GET " + url + " answered 200 with no 'version'");
+      }
+      return Probe.newest(
+          version.asText(), "GET " + url + " answered version " + version.asText());
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      return Probe.inconclusive("GET " + url + " was not asked: interrupted");
+    } catch (Exception e) {
+      return Probe.inconclusive("GET " + url + " could not be asked: " + e);
+    }
   }
 
   private Probe maven(String coordinate, String version) {

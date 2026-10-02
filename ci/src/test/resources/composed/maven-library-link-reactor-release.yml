@@ -1,0 +1,92 @@
+# Composed by qits-ci from .config/qits/release.yml and .config/qits/release-archetypes/maven-library.yml.
+# Generated: this text is never committed. Edit the slot file or the archetype recipe.
+event: SCMRelease
+when:
+  - repository: { exact: 'qits-registries-javalib' }
+checkout:
+  branch: version
+  sha: commitSha
+artifacts:
+  - { type: 'maven', name: 'eu.wohlben.qits:qits-registries-npm', publish: 'if-changed' }
+  - { type: 'maven', name: 'eu.wohlben.qits:qits-blobstore' }
+  - { type: 'maven', name: 'eu.wohlben.qits:qits-registries-common' }
+steps:
+  - image: 'qits/build-images/maven-base:latest'
+    timeout-seconds: 1800
+    script: |
+      set -eu
+      # --- platform prelude ---------------------------------------------------------
+      : "${QITS_VERSION:?the triggering release event carried no version}"
+      git fetch "$QITS_CI_REPOSITORY_URL" "refs/tags/$QITS_VERSION:refs/tags/$QITS_VERSION"
+      git checkout --detach "$QITS_VERSION"
+      if [ -n "${QITS_ARTIFACTS_CLI_PACKAGE:-}" ]; then
+        : "${QITS_ARTIFACTS_CLI_VERSION:?the qits CLI package is configured but no version was injected; the qits-ci that launched this step predates the CLI pin}"
+        mkdir -p /tmp/qits-bin
+        set --
+        if [ -n "${QITS_TOKEN:-}" ]; then
+          set -- --header "Authorization: Bearer $QITS_TOKEN"
+        fi
+        if command -v curl > /dev/null 2>&1; then
+          curl -fsSL --retry 2 --retry-delay 2 "$@" -o /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
+        elif command -v wget > /dev/null 2>&1; then
+          wget -q "$@" -O /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
+        else
+          echo 'qits-ci: the image for this step (qits/build-images/maven-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
+          exit 1
+        fi
+        chmod +x /tmp/qits-bin/qits
+        ln -sf /tmp/qits-bin/qits /tmp/qits-bin/qits-publish
+        echo "qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+        PATH="/tmp/qits-bin:$PATH"
+        export PATH
+      fi
+      # --- the declared step, run as data -------------------------------------------
+      cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
+      export QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL"
+      export QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}"
+
+      # THIS SCRIPT IS READ AT MAIN AND RUNS AGAINST THE TAG, which may predate a file it names. The
+      # settings file arrived on 2026-08-11 and a bootstrap replaying an older tag measured the
+      # miss. Guard on presence: a tree old enough to lack the mirror also predates the dependency
+      # that needed it.
+      settings=""
+      if [ -f .qits-maven-settings.xml ]; then
+        settings="-s .qits-maven-settings.xml"
+      fi
+
+      # BUILD EVERY MODULE, AND THE SBOM WITH IT. `package` leaves each module's `target/*.jar`,
+      # which is what the platform's publish uploads and bundles from; nothing is deployed here. The
+      # postlude's `qits artifacts publish maven` reads the jars after this script ends.
+      # `-DskipTests`: the fold that gated this release already ran them.
+      #
+      # THE SBOM IS THE ARTIFACT'S RESOLVED DEPENDENCY TREE. `makeBom` runs at the reactor root with
+      # no `-pl`, so every module writes its own `<module>/target/sbom.json` — which is why a
+      # reactor needs no module list in this file and a single-module repository lands on plain
+      # `target/sbom.json`. It runs IN THE SAME INVOCATION as `package`, and that is load-bearing
+      # now that nothing is deployed first: a reactor sibling at the release version exists only in
+      # this reactor, and a second maven invocation would look for it in the registry, where it is
+      # not (yet, or at all — an unchanged module is never uploaded).
+      #
+      # Plugins are resolved through the repositories mvnw already resolves through, so the same
+      # `$settings` mirror and repository property serve both goals. There is no second channel and
+      # no address spelled here.
+      ./mvnw -B -ntp $settings -DskipTests \
+        package \
+        org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeBom \
+        -DoutputFormat=json -DoutputName=sbom -DschemaVersion=1.6 \
+        -Dqits.maven.repository.url="$QITS_MAVEN_REGISTRY_URL"
+      QITS_SLOT_EOF
+      if command -v bash > /dev/null 2>&1; then
+        bash -eu /tmp/qits-slot.sh
+      else
+        sh -eu /tmp/qits-slot.sh
+      fi
+      # --- platform postlude --------------------------------------------------------
+      : "${QITS_ARTIFACTS_CLI_PACKAGE:?this release publishes or submits an SBOM, and the qits CLI is not configured on this deployment}"
+      qits artifacts publish maven --name 'eu.wohlben.qits:qits-blobstore' --path 'blobstore' --sbom 'blobstore/target/sbom.json' --version "$QITS_VERSION"
+      qits artifacts publish maven --name 'eu.wohlben.qits:qits-registries-common' --path 'common' --sbom 'common/target/sbom.json' --link 'eu.wohlben.qits:qits-blobstore' --version "$QITS_VERSION"
+      qits_published_0=$(qits artifacts publish maven --name 'eu.wohlben.qits:qits-registries-npm' --path 'npm' --sbom 'npm/target/sbom.json' --link 'eu.wohlben.qits:qits-blobstore' --link 'eu.wohlben.qits:qits-registries-common' --if-changed --version "$QITS_VERSION")
+      echo "$qits_published_0"
+      case "$qits_published_0" in published\ *) qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-registries-npm' --version "$QITS_VERSION" --file 'npm/target/sbom.json' ;; esac
+      qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-blobstore' --version "$QITS_VERSION" --file 'blobstore/target/sbom.json'
+      qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-registries-common' --version "$QITS_VERSION" --file 'common/target/sbom.json'

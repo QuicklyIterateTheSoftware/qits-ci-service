@@ -15,6 +15,10 @@ import java.util.List;
  * <p>Answers are a queue, one per question, so "a 5xx and then a 200" is two entries; an empty
  * queue answers {@link #fallback}, {@code PRESENT} unless a test says otherwise. Every question is
  * recorded, which is how "asked three times" and "never asked" are asserted.
+ *
+ * <p>{@link #newest} has a queue and a record of its own — {@link #answerNewest}, {@link
+ * #askedNewest} — so a test about the second question never shifts the first one's counts. Its
+ * fallback is {@code ABSENT}: a store that holds no version of the name.
  */
 @ApplicationScoped
 public class FakeArtifactPresence implements CiArtifactPresence {
@@ -26,10 +30,43 @@ public class FakeArtifactPresence implements CiArtifactPresence {
   private final List<Asked> asked = new ArrayList<>();
   private Probe fallback = Probe.present("staged by " + FakeArtifactPresence.class.getSimpleName());
 
+  private final Deque<Probe> newestAnswers = new ArrayDeque<>();
+  private final List<Asked> askedNewest = new ArrayList<>();
+  private Probe newestFallback = noVersion();
+
   public synchronized void reset() {
     answers.clear();
     asked.clear();
     fallback = Probe.present("staged by " + FakeArtifactPresence.class.getSimpleName());
+    newestAnswers.clear();
+    askedNewest.clear();
+    newestFallback = noVersion();
+  }
+
+  private static Probe noVersion() {
+    return Probe.absent("no version staged by " + FakeArtifactPresence.class.getSimpleName());
+  }
+
+  /** The next {@link #newest} answers, in order. */
+  public synchronized void answerNewest(Probe... probes) {
+    newestAnswers.addAll(List.of(probes));
+  }
+
+  /** What every {@link #newest} question answers once its scripted queue is spent. */
+  public synchronized void otherwiseNewest(Probe probe) {
+    newestFallback = probe;
+  }
+
+  /** Every {@link #newest} question, its version null. */
+  public synchronized List<Asked> askedNewest() {
+    return List.copyOf(askedNewest);
+  }
+
+  @Override
+  public synchronized Probe newest(CiArtifact.Type type, String name) {
+    askedNewest.add(new Asked(type, name, null));
+    Probe next = newestAnswers.pollFirst();
+    return next == null ? newestFallback : next;
   }
 
   /** The next answers, in order. */

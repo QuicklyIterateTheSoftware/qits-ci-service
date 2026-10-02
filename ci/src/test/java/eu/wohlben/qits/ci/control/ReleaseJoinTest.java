@@ -711,6 +711,144 @@ public class ReleaseJoinTest extends CiTestSupport {
     assertEquals("unchanged", ReleaseJoin.decisionOf(row), "a recorded decision wins");
   }
 
+  // --- publish: if-changed (qits-620) -----------------------------------------------------------
+
+  private static final String IF_CHANGED_TRIGGER =
+      """
+      event: SCMRelease
+      artifacts:
+        - { type: 'maven', name: 'eu.wohlben.qits:qits-thing-javalib', publish: 'if-changed' }
+        - { type: 'docker', name: 'qits/qits-thing' }
+      steps:
+        - image: alpine:3
+          script: ./publish-tag.sh
+      """;
+
+  private void ifChangedRun() throws Exception {
+    deliver(
+        RELEASE_TRIGGER_PATH, IF_CHANGED_TRIGGER, ReleaseJoin.RELEASE_EVENT_NAME, releasePayload());
+  }
+
+  @Test
+  public void anIfChangedEntryPublishedAtTheReleaseVersionIsAnnouncedOnce() throws Exception {
+    artifactPresence.answer(CiArtifactPresence.Probe.present("200"));
+
+    ifChangedRun();
+
+    assertEquals(List.of(MAVEN_NAME, "qits/qits-thing"), publishedNames());
+    CiReleaseAnnouncement row = rowFor(MAVEN_NAME);
+    assertEquals("if-changed", row.publish, "the policy rode the composed document onto the row");
+    assertEquals(CiReleaseAnnouncement.DECISION_PUBLISHED, row.decision);
+    assertNull(row.skipReason);
+    assertNull(row.unchangedSince);
+    assertEquals(
+        List.of(new FakeArtifactPresence.Asked(CiArtifact.Type.MAVEN, MAVEN_NAME, VERSION)),
+        artifactPresence.asked());
+    assertTrue(artifactPresence.askedNewest().isEmpty(), "present needs no second question");
+  }
+
+  @Test
+  public void anIfChangedEntryAbsentWithAnOlderVersionIsUnchangedAndNotAnnounced()
+      throws Exception {
+    artifactPresence.answer(CiArtifactPresence.Probe.absent("404"));
+    artifactPresence.answerNewest(CiArtifactPresence.Probe.newest("2026.811.90000", "200"));
+    List<LogRecord> infos = new ArrayList<>();
+    Handler capture = levelCapture(infos, Level.INFO);
+    Logger log = Logger.getLogger(ReleaseJoin.class.getName());
+    log.addHandler(capture);
+    try {
+      ifChangedRun();
+    } finally {
+      log.removeHandler(capture);
+    }
+
+    assertEquals(
+        List.of("qits/qits-thing"), publishedNames(), "no SoftwareRelease for an unchanged entry");
+    CiReleaseAnnouncement row = rowFor(MAVEN_NAME);
+    assertEquals(CiReleaseAnnouncement.DECISION_UNCHANGED, row.decision);
+    assertEquals("2026.811.90000", row.unchangedSince);
+    assertEquals(CiReleaseAnnouncement.SKIPPED_UNCHANGED, row.skipReason);
+    assertNotNull(row.announcedAt, "settled, so no later drive decides it again");
+    assertEquals(
+        List.of(new FakeArtifactPresence.Asked(CiArtifact.Type.MAVEN, MAVEN_NAME, null)),
+        artifactPresence.askedNewest());
+    assertTrue(
+        infos.stream()
+            .map(ReleaseJoinTest::render)
+            .anyMatch(
+                line ->
+                    line.contains(MAVEN_NAME)
+                        && line.contains("unchanged since 2026.811.90000 — not announcing")),
+        "an INFO line names the entry and the version it is unchanged since");
+
+    ReleaseJoin.ReleasedArtifact read =
+        join.releasedArtifacts(repoId, VERSION).stream()
+            .filter(artifact -> artifact.name().equals(MAVEN_NAME))
+            .findFirst()
+            .orElseThrow();
+    assertEquals("if-changed", read.publish());
+    assertEquals("unchanged", read.decision());
+    assertEquals("2026.811.90000", read.unchangedSince());
+
+    releaseArrives(repoId, repoId, VERSION);
+    join.sweepOwed();
+    assertEquals(1, artifactPresence.asked().size(), "a re-drive asks nothing again");
+    assertEquals(List.of("qits/qits-thing"), publishedNames());
+  }
+
+  @Test
+  public void anIfChangedEntryWithNoVersionAtAllIsAbsent() throws Exception {
+    artifactPresence.answer(CiArtifactPresence.Probe.absent("404"));
+    artifactPresence.answerNewest(CiArtifactPresence.Probe.absent("newest answered 404"));
+
+    ifChangedRun();
+
+    assertEquals(List.of("qits/qits-thing"), publishedNames());
+    CiReleaseAnnouncement row = rowFor(MAVEN_NAME);
+    assertEquals(CiReleaseAnnouncement.DECISION_ABSENT, row.decision);
+    assertEquals(CiReleaseAnnouncement.SKIPPED_ABSENT, row.skipReason);
+    assertNull(row.unchangedSince);
+  }
+
+  @Test
+  public void anIfChangedEntryTheStoreNeverAnswersIsUnverified() throws Exception {
+    artifactPresence.otherwise(CiArtifactPresence.Probe.inconclusive("HTTP 503"));
+
+    ifChangedRun();
+
+    assertEquals(List.of("qits/qits-thing"), publishedNames());
+    assertEquals(CiReleaseAnnouncement.DECISION_UNVERIFIED, rowFor(MAVEN_NAME).decision);
+    assertEquals(ReleaseJoin.PRESENCE_ATTEMPTS, artifactPresence.asked().size());
+    assertTrue(artifactPresence.askedNewest().isEmpty(), "an inconclusive first answer stops there");
+  }
+
+  @Test
+  public void anIfChangedEntryWhoseNewestNeverAnswersIsUnverified() throws Exception {
+    artifactPresence.answer(CiArtifactPresence.Probe.absent("404"));
+    artifactPresence.otherwiseNewest(CiArtifactPresence.Probe.inconclusive("HTTP 502"));
+
+    ifChangedRun();
+
+    assertEquals(List.of("qits/qits-thing"), publishedNames());
+    CiReleaseAnnouncement row = rowFor(MAVEN_NAME);
+    assertEquals(CiReleaseAnnouncement.DECISION_UNVERIFIED, row.decision);
+    assertEquals(CiReleaseAnnouncement.SKIPPED_UNVERIFIED, row.skipReason);
+    assertEquals(
+        ReleaseJoin.PRESENCE_ATTEMPTS,
+        artifactPresence.askedNewest().size(),
+        "the second question gets the same three attempts");
+  }
+
+  @Test
+  public void anIfPublishedRowNeverAsksTheNewestQuestion() throws Exception {
+    artifactPresence.answer(CiArtifactPresence.Probe.absent("404"));
+
+    ifPublishedRun();
+
+    assertEquals(CiReleaseAnnouncement.DECISION_ABSENT, rowFor(MAVEN_NAME).decision);
+    assertTrue(artifactPresence.askedNewest().isEmpty(), "announce: if-published keeps its rule");
+  }
+
   private void ifPublishedRun() throws Exception {
     deliver(
         RELEASE_TRIGGER_PATH,
@@ -745,6 +883,25 @@ public class ReleaseJoinTest extends CiTestSupport {
                 announcements.list("repoId = ?1 and packageName = ?2", repoId, packageName).stream()
                     .findFirst()
                     .orElseThrow(() -> new AssertionError("no row for " + packageName)));
+  }
+
+  private static Handler levelCapture(List<LogRecord> into, Level level) {
+    return new Handler() {
+      @Override
+      public void publish(LogRecord record) {
+        if (record.getLevel().intValue() >= level.intValue()) {
+          synchronized (into) {
+            into.add(record);
+          }
+        }
+      }
+
+      @Override
+      public void flush() {}
+
+      @Override
+      public void close() {}
+    };
   }
 
   private static Handler errorCapture(List<LogRecord> into) {

@@ -23,6 +23,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 
 /**
@@ -131,12 +132,20 @@ import org.jboss.logging.Logger;
  * <p>Every settled row also says <b>what was decided</b> about its artifact at the release version,
  * in {@code decision}: {@code PUBLISHED} for a row that was announced — believed for an {@code
  * always} row, confirmed by the store for an {@code if-published} one — and {@code ABSENT} or {@code
- * UNVERIFIED} beside the matching {@code skip_reason} for one that was not. {@code UNCHANGED} with
- * {@code unchanged_since} is {@code publish: if-changed}'s answer and arrives with release B of
- * qits-640, which accepts that key and asks the store for the newest version; until then no row can
- * be {@code if-changed}. Nothing about which rows are announced changed with it: {@code
- * SoftwareRelease} goes out for exactly the rows that are {@code PUBLISHED}, which is the set it
- * always went out for. {@link #releasedArtifacts} is the read, for {@code GET
+ * UNVERIFIED} beside the matching {@code skip_reason} for one that was not. {@code SoftwareRelease}
+ * goes out for exactly the rows that are {@code PUBLISHED}.
+ *
+ * <h2>{@code publish: if-changed}: the store says which way the platform's publish went</h2>
+ *
+ * <p>An {@code if-changed} row (a declared entry, or a contract package the composer expanded) was
+ * uploaded by the release step only if its content changed, and nothing tells qits-ci which way
+ * that went but the store. So it is asked like an {@code if-published} row, outside the lock and
+ * with the same retries: PRESENT at the release version is {@code PUBLISHED} and announced; ABSENT
+ * is followed by a second question, {@link CiArtifactPresence#newest} — a newest version {@code v}
+ * makes the row {@code UNCHANGED} with {@code unchanged_since = v} and skip reason {@code UNCHANGED},
+ * logged at INFO and not announced, and a 404 there is {@code ABSENT}. Inconclusive answers to
+ * either question are {@code UNVERIFIED}, as for {@code if-published}. A gap in an artifact's
+ * versions therefore always means "unchanged", and qits-maintenance is offered no bump for it. {@link #releasedArtifacts} is the read, for {@code GET
  * /ci/api/repositories/{repoId}/releases/{version}/artifacts}.
  *
  * <h2>What this class is NOT, and the deploy that looks like it is</h2>
@@ -450,7 +459,8 @@ public class ReleaseJoin {
    * already takes.
    */
   private void announceOwed(String repoId, String repoName, String version) {
-    Map<String, Probe> verdicts = presenceVerdicts(repoId, version);
+    Map<String, Probe> newest = new HashMap<>();
+    Map<String, Probe> verdicts = presenceVerdicts(repoId, version, newest);
     QuarkusTransaction.requiringNew()
         .run(
             () -> {
@@ -464,7 +474,7 @@ public class ReleaseJoin {
               String priority = releases.priorityOf(repoId, repoName, version).orElse(null);
               Instant now = Instant.now();
               for (CiReleaseAnnouncement row : owed) {
-                if (isIfPublished(row)) {
+                if (isProbed(row)) {
                   // A row owed after presenceVerdicts read the table (a second run racing this
                   // drive) has no verdict yet and is asked here. That is the rare path, and the only
                   // HTTP this transaction can ever make.
@@ -472,13 +482,24 @@ public class ReleaseJoin {
                       verdicts.computeIfAbsent(
                           presenceKey(row),
                           key -> presenceOf(row.packageType, row.packageName, version));
+                  if (probe.verdict() == Verdict.ABSENT && isIfChanged(row)) {
+                    Probe since =
+                        newest.computeIfAbsent(
+                            presenceKey(row), key -> newestOf(row.packageType, row.packageName));
+                    if (since.verdict() == Verdict.PRESENT) {
+                      unchanged(row, since, now);
+                    } else {
+                      skip(row, since, now);
+                    }
+                    continue;
+                  }
                   if (probe.verdict() != Verdict.PRESENT) {
                     skip(row, probe, now);
                     continue;
                   }
                 }
-                // Believed for an always-row, confirmed above for an if-published one: either way
-                // this row is announced, and that is what PUBLISHED records.
+                // Believed for an always-row, confirmed above for an if-published or if-changed
+                // one: either way this row is announced, and that is what PUBLISHED records.
                 row.decision = CiReleaseAnnouncement.DECISION_PUBLISHED;
                 for (ReleaseAnnouncer announcer : releaseAnnouncers) {
                   try {
@@ -504,19 +525,26 @@ public class ReleaseJoin {
   }
 
   /**
-   * The presence answer for every distinct {@code if-published} entry {@code (repository, version)}
-   * owes right now, asked <b>before</b> the locking transaction opens — an unlocked read of the owed
-   * rows, then {@link #presenceOf} per distinct artifact. Empty, and no HTTP at all, when nothing
-   * owed declares {@code if-published}, which is every row of a repository that does not.
+   * The presence answer for every distinct {@code if-published} or {@code if-changed} entry {@code
+   * (repository, version)} owes right now, asked <b>before</b> the locking transaction opens — an
+   * unlocked read of the owed rows, then {@link #presenceOf} per distinct artifact, and for an
+   * {@code if-changed} one found ABSENT, {@link #newestOf} into {@code newest}. Empty, and no HTTP
+   * at all, when nothing owed declares either, which is every row of a repository that does not.
    */
-  private Map<String, Probe> presenceVerdicts(String repoId, String version) {
+  private Map<String, Probe> presenceVerdicts(
+      String repoId, String version, Map<String, Probe> newest) {
     List<CiReleaseAnnouncement> owed =
         QuarkusTransaction.requiringNew().call(() -> announcements.listOwed(repoId, version));
     Map<String, Probe> verdicts = new HashMap<>();
     for (CiReleaseAnnouncement row : owed) {
-      if (isIfPublished(row)) {
-        verdicts.computeIfAbsent(
-            presenceKey(row), key -> presenceOf(row.packageType, row.packageName, version));
+      if (isProbed(row)) {
+        Probe probe =
+            verdicts.computeIfAbsent(
+                presenceKey(row), key -> presenceOf(row.packageType, row.packageName, version));
+        if (probe.verdict() == Verdict.ABSENT && isIfChanged(row)) {
+          newest.computeIfAbsent(
+              presenceKey(row), key -> newestOf(row.packageType, row.packageName));
+        }
       }
     }
     return verdicts;
@@ -529,11 +557,26 @@ public class ReleaseJoin {
    */
   private Probe presenceOf(String packageType, String packageName, String version) {
     CiArtifact.Type type = CiArtifact.Type.of(packageType);
+    return asked(
+        packageType + " " + packageName + " at " + version,
+        () -> artifactPresence.probe(type, packageName, version));
+  }
+
+  /** {@link #presenceOf}'s second question, the newest version, with the same retries. */
+  private Probe newestOf(String packageType, String packageName) {
+    CiArtifact.Type type = CiArtifact.Type.of(packageType);
+    return asked(
+        "the newest " + packageType + " " + packageName,
+        () -> artifactPresence.newest(type, packageName));
+  }
+
+  /** One question put to the store up to {@link #PRESENCE_ATTEMPTS} times; see {@link #presenceOf}. */
+  private Probe asked(String what, Supplier<Probe> question) {
     Duration backoff = presenceBackoff;
     Probe probe = Probe.inconclusive("not asked");
     for (int attempt = 1; attempt <= PRESENCE_ATTEMPTS; attempt++) {
       try {
-        probe = artifactPresence.probe(type, packageName, version);
+        probe = question.get();
       } catch (RuntimeException e) {
         // The port's contract is to answer, not to throw; an implementation that throws has said
         // nothing, which is exactly INCONCLUSIVE.
@@ -543,8 +586,8 @@ public class ReleaseJoin {
         return probe;
       }
       LOG.debugf(
-          "Presence of %s %s at %s inconclusive on attempt %d of %d: %s",
-          packageType, packageName, version, attempt, PRESENCE_ATTEMPTS, probe.detail());
+          "Presence of %s inconclusive on attempt %d of %d: %s",
+          what, attempt, PRESENCE_ATTEMPTS, probe.detail());
       if (attempt < PRESENCE_ATTEMPTS) {
         try {
           Thread.sleep(backoff.toMillis());
@@ -571,20 +614,20 @@ public class ReleaseJoin {
   private static void skip(CiReleaseAnnouncement row, Probe probe, Instant now) {
     if (probe.verdict() == Verdict.ABSENT) {
       LOG.infof(
-          "Not announcing %s %s at version %s (run %s, %s): it declares announce: %s and"
+          "Not announcing %s %s at version %s (run %s, %s): it declares %s and"
               + " qits-artifacts does not hold that version (%s)",
           row.packageType,
           row.packageName,
           row.version,
           row.runId,
           row.repoId,
-          CiArtifact.Announce.IF_PUBLISHED.declared(),
+          policyOf(row),
           probe.detail());
       row.skipReason = CiReleaseAnnouncement.SKIPPED_ABSENT;
       row.decision = CiReleaseAnnouncement.DECISION_ABSENT;
     } else {
       LOG.errorf(
-          "Not announcing %s %s at version %s (run %s, %s): it declares announce: %s and"
+          "Not announcing %s %s at version %s (run %s, %s): it declares %s and"
               + " qits-artifacts could not be asked conclusively in %d attempts (last: %s)."
               + " Dropped rather than announced unverified; qits-maintenance's daily scan picks the"
               + " version up if it exists",
@@ -593,7 +636,7 @@ public class ReleaseJoin {
           row.version,
           row.runId,
           row.repoId,
-          CiArtifact.Announce.IF_PUBLISHED.declared(),
+          policyOf(row),
           PRESENCE_ATTEMPTS,
           probe.detail());
       row.skipReason = CiReleaseAnnouncement.SKIPPED_UNVERIFIED;
@@ -602,8 +645,46 @@ public class ReleaseJoin {
     row.announcedAt = now;
   }
 
+  /**
+   * Settles an {@code if-changed} row the release step did not upload because its content equals
+   * the newest published version's: recorded, logged at INFO, and not announced — there is no new
+   * version for any consumer to take.
+   */
+  private static void unchanged(CiReleaseAnnouncement row, Probe newest, Instant now) {
+    LOG.infof(
+        "Not announcing %s %s at version %s (run %s, %s): it declares %s and is unchanged since %s"
+            + " — not announcing",
+        row.packageType,
+        row.packageName,
+        row.version,
+        row.runId,
+        row.repoId,
+        policyOf(row),
+        newest.version());
+    row.skipReason = CiReleaseAnnouncement.SKIPPED_UNCHANGED;
+    row.decision = CiReleaseAnnouncement.DECISION_UNCHANGED;
+    row.unchangedSince = newest.version();
+    row.announcedAt = now;
+  }
+
+  /** The policy a probed row declares, as a file spells it, for a log line. */
+  private static String policyOf(CiReleaseAnnouncement row) {
+    return isIfChanged(row)
+        ? CiArtifact.PUBLISH_KEY + ": " + CiArtifact.Publish.IF_CHANGED.declared()
+        : CiArtifact.ANNOUNCE_KEY + ": " + CiArtifact.Announce.IF_PUBLISHED.declared();
+  }
+
+  /** Whether the join asks the store before deciding this row. */
+  private static boolean isProbed(CiReleaseAnnouncement row) {
+    return isIfPublished(row) || isIfChanged(row);
+  }
+
   private static boolean isIfPublished(CiReleaseAnnouncement row) {
     return CiArtifact.Announce.IF_PUBLISHED.declared().equals(row.announce);
+  }
+
+  private static boolean isIfChanged(CiReleaseAnnouncement row) {
+    return CiArtifact.Publish.IF_CHANGED.declared().equals(row.publish);
   }
 
   private static String presenceKey(CiReleaseAnnouncement row) {

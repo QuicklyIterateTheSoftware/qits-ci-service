@@ -1,0 +1,144 @@
+# Composed by qits-ci from .config/qits/release.yml and .config/qits/release-archetypes/npm-library.yml.
+# Generated: this text is never committed. Edit the slot file or the archetype recipe.
+event: SCMRelease
+when:
+  - repository: { exact: 'qits-ui-components-jslib' }
+checkout:
+  branch: version
+  sha: commitSha
+artifacts:
+  - { type: 'npm', name: '@qits/ui-components' }
+  - { type: 'docs', name: '@qits/ui-components' }
+steps:
+  - image: 'qits/build-images/node-base:latest'
+    timeout-seconds: 1800
+    script: |
+      set -eu
+      # --- platform prelude ---------------------------------------------------------
+      : "${QITS_VERSION:?the triggering release event carried no version}"
+      git fetch "$QITS_CI_REPOSITORY_URL" "refs/tags/$QITS_VERSION:refs/tags/$QITS_VERSION"
+      git checkout --detach "$QITS_VERSION"
+      if [ -n "${QITS_ARTIFACTS_CLI_PACKAGE:-}" ]; then
+        : "${QITS_ARTIFACTS_CLI_VERSION:?the qits CLI package is configured but no version was injected; the qits-ci that launched this step predates the CLI pin}"
+        mkdir -p /tmp/qits-bin
+        set --
+        if [ -n "${QITS_TOKEN:-}" ]; then
+          set -- --header "Authorization: Bearer $QITS_TOKEN"
+        fi
+        if command -v curl > /dev/null 2>&1; then
+          curl -fsSL --retry 2 --retry-delay 2 "$@" -o /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
+        elif command -v wget > /dev/null 2>&1; then
+          wget -q "$@" -O /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
+        else
+          echo 'qits-ci: the image for this step (qits/build-images/node-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
+          exit 1
+        fi
+        chmod +x /tmp/qits-bin/qits
+        ln -sf /tmp/qits-bin/qits /tmp/qits-bin/qits-publish
+        echo "qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+        PATH="/tmp/qits-bin:$PATH"
+        export PATH
+      fi
+      # --- the declared step, run as data -------------------------------------------
+      cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
+      # Byte-identical to the QA step's preamble; read the rationale there.
+      mint_publish_token() {
+        [ -n "${QITS_PUBLISH_TOKEN_COMMAND:-}" ] || return 0
+        command -v "$QITS_PUBLISH_TOKEN_COMMAND" >/dev/null 2>&1 || return 0
+        _minted=$("$QITS_PUBLISH_TOKEN_COMMAND" 2>/dev/null) || return 0
+        printf '%s' "$_minted"
+      }
+      write_npmrc() {
+        _npmrc_token=$(mint_publish_token)
+        ( umask 077
+          printf 'registry=%s\n@qits:registry=%s\n' \
+            "${QITS_NPM_PROXY_URL}" "${QITS_NPM_REGISTRY_URL}" > ~/.npmrc
+          if [ -n "$_npmrc_token" ]; then
+            printf '%s:_authToken=%s\n%s:_authToken=%s\n' \
+              "${QITS_NPM_REGISTRY_URL#*:}" "$_npmrc_token" \
+              "${QITS_NPM_PROXY_URL#*:}" "$_npmrc_token" >> ~/.npmrc
+          fi )
+      }
+      pnpm_install() {
+        _attempt=1
+        while :; do
+          _status=0
+          pnpm install --frozen-lockfile > /tmp/pnpm-install.log 2>&1 || _status=$?
+          cat /tmp/pnpm-install.log
+          [ "$_status" = 0 ] && return 0
+          if [ "$_attempt" -ge 3 ] || ! grep -q ERR_PNPM_EAGAIN /tmp/pnpm-install.log; then
+            return "$_status"
+          fi
+          echo "pnpm install hit ERR_PNPM_EAGAIN (attempt $_attempt of 3, ZFS block cloning, qits-618) — retrying in 10s" >&2
+          sleep 10
+          _attempt=$((_attempt + 1))
+        done
+      }
+      write_npmrc
+
+      pnpm_install
+      pnpm build
+
+      # THE BUILT PACKAGE, FOUND RATHER THAN SPELLED — for the version check and the workbench's
+      # site name. What is PUBLISHED is the entry's declared `path:`, which names this same
+      # directory. Exactly one directory under dist/ carries a manifest; more than one means this
+      # repository publishes more than one package and wants its own `release:` steps.
+      manifests=$(find dist -mindepth 2 -maxdepth 2 -name package.json | sort)
+      count=$(printf '%s' "$manifests" | grep -c . || true)
+      if [ "$count" != 1 ]; then
+        echo "expected exactly one dist/*/package.json after the build, found $count" >&2
+        exit 1
+      fi
+      dist=${manifests%/package.json}
+      package=$(node -p "require('./$dist/package.json').name")
+      built=$(node -p "require('./$dist/package.json').version")
+
+      # THE ONE ASSERTION WORTH MAKING. The release commit carries the stamped version in its
+      # manifest and the tag is the coordinate everything else names — two sources for one number.
+      # If they disagreed, the tarball published under the tag would carry a different version
+      # inside it, and the SoftwareRelease qits-ci announces would name one nobody published.
+      if [ "$built" != "$QITS_VERSION" ]; then
+        echo "the release is $QITS_VERSION and the built manifest says $built" >&2
+        exit 1
+      fi
+      echo "releasing $package@$QITS_VERSION from $dist"
+
+      # THE SBOM, GENERATED HERE AND SUBMITTED BY THE COMPOSED POSTLUDE. Declare
+      # `sbom: sbom.json` on the npm artifact; the platform's publish hashes it with the package when
+      # the entry is `if-changed`.
+      #
+      # cdxgen, NOT @cyclonedx/cyclonedx-npm: these repositories' lockfile is `pnpm-lock.yaml` and
+      # cyclonedx-npm reads `package-lock.json` only — there is no flag that changes that. It comes
+      # through the mirror like every other package; `--registry` explicitly, because `npm exec`
+      # resolves the tool itself and the `@qits:` line in ~/.npmrc covers only that scope.
+      npm exec --yes --registry "$QITS_NPM_PROXY_URL" -- \
+        @cyclonedx/cdxgen@11.2.7 -t pnpm --spec-version 1.6 -o sbom.json .
+
+      # THE WORKBENCH, AS THE SECOND DECLARED ARTIFACT — same tree, same version, same run. Built
+      # here rather than reused from the fold because no state crosses runs, let alone steps: this
+      # container cloned the tag itself and has to produce everything it publishes.
+      #
+      # `-C storybook-static .` names every entry `./index.html`; the alternative would nest the
+      # whole site one directory deep and every URL would carry the directory.
+      #
+      # The site is the PACKAGE name, which is what the `docs` declaration spells. Idempotency,
+      # including the "occupied and the bytes cannot be compared" WARN the docs store forces, is
+      # qits-publish's — there is no `case "$status"` block here because there is no status here.
+      if node -e "process.exit((require('./package.json').scripts||{})['build-storybook']?0:1)"; then
+        pnpm build-storybook
+        tar -czf /tmp/storybook.tgz -C storybook-static .
+        qits-publish docs submit \
+          --site "$package" --version "$QITS_VERSION" --archive /tmp/storybook.tgz \
+          --meta git.commit.hash="$QITS_CI_SHA" \
+          --meta git.repository.name="$QITS_CI_REPO_NAME"
+      fi
+      QITS_SLOT_EOF
+      if command -v bash > /dev/null 2>&1; then
+        bash -eu /tmp/qits-slot.sh
+      else
+        sh -eu /tmp/qits-slot.sh
+      fi
+      # --- platform postlude --------------------------------------------------------
+      : "${QITS_ARTIFACTS_CLI_PACKAGE:?this release publishes or submits an SBOM, and the qits CLI is not configured on this deployment}"
+      qits artifacts publish npm --name '@qits/ui-components' --path 'dist/qits-spa-ui-components' --sbom 'sbom.json' --version "$QITS_VERSION"
+      qits artifacts publish sbom submit --type 'npm' --name '@qits/ui-components' --version "$QITS_VERSION" --file 'sbom.json'

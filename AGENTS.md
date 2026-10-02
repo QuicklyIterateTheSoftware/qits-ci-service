@@ -2579,9 +2579,17 @@ existing reader of "owed" (`announced_at is null`) is right without learning the
 a skipped one names its skip reason. A row settled before V30 has `announced_at` and no `decision`,
 and `ReleaseJoin.decisionOf` reads it from `skip_reason`. The read is
 `GET /ci/api/repositories/{repoId}/releases/{version}/artifacts` — newest run first, one entry per
-`(type, name)`, an empty list rather than a 404. `UNCHANGED` has no writer until release B of
-qits-640 accepts `publish: if-changed` (which `CiArtifact.requirePublish` refuses until then, with
-`include:`, a docs `path:` and `contracts:`, all "… arrives in a later qits-ci").
+`(type, name)`, an empty list rather than a 404.
+
+Release B of qits-640 gave `UNCHANGED` its writer. A `publish: if-changed` row (a declared maven or
+npm entry, or a contract package `CiReleaseComposer` expanded from `contracts:`) is probed like an
+`if-published` one; ABSENT at the release version is followed by `CiArtifactPresence.newest`
+(`GET /artifacts/content-hashes/<type>/<name>/-/newest`), and a newest version `v` settles the row
+`UNCHANGED`, `unchanged_since = v`, `skip_reason = 'UNCHANGED'`, not announced; a 404 there is
+`ABSENT`. The same release composes the publishing postlude: one `qits artifacts publish
+maven|npm` per entry in `link:` order, `contract`, `contract-docs` and `docs submit --openapi`, all
+on the release slot's last step (`CiReleaseComposer.publishStep`). The pinned
+`qits.platform-access-cli-binary.version` must name a CLI that has those commands.
 
 `V27__run_avoid_runners.sql` added `ci_run.avoid_runner_ids text` (nullable, no default, no
 constraint, no index) for "a retry is not handed back to the runner that failed it" (qits-556). That

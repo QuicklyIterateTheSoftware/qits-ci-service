@@ -13,6 +13,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -721,6 +722,416 @@ public class CiReleaseComposerTest {
     int submit = document.indexOf("qits artifacts publish sbom submit");
     int docs = document.indexOf("npm run docs");
     assertTrue(build > 0 && submit > build && docs > submit, document);
+  }
+
+  // --- the publishing postlude (qits-620) ---------------------------------------------------------
+
+  /** A packaged archetype recipe, exactly as qits-ci ships it. */
+  private CiReleaseSlots packaged(String name) throws IOException {
+    String resource = CiReleaseArchetypes.PACKAGED_DIR + name + CiEventTriggerParser.CONFIG_SUFFIX;
+    try (InputStream in = getClass().getClassLoader().getResourceAsStream(resource)) {
+      assertNotNull(in, resource);
+      return archetype(name, new String(in.readAllBytes(), StandardCharsets.UTF_8));
+    }
+  }
+
+  /**
+   * qits-registries-javalib's shape, declared OUT of dependency order on purpose: the entry that
+   * links both siblings comes first. The postlude decides each linked sibling before anything
+   * linking it, keeps declared order otherwise, and resolves each artifactId to its full GAV.
+   */
+  @Test
+  public void aLinkedReactorOnMavenLibraryPublishesInLinkOrder() throws Exception {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            CiRepoRef.of("33333333-4444-5555-6666-777777777777", "qits", "qits-registries-javalib"),
+            slots(
+                """
+                archetype: maven-library
+                artifacts:
+                  - { type: maven, name: "eu.wohlben.qits:qits-registries-npm", path: npm, sbom: npm/target/sbom.json, link: [qits-blobstore, qits-registries-common], publish: if-changed }
+                  - { type: maven, name: "eu.wohlben.qits:qits-blobstore", path: blobstore, sbom: blobstore/target/sbom.json }
+                  - { type: maven, name: "eu.wohlben.qits:qits-registries-common", path: common, sbom: common/target/sbom.json, link: [qits-blobstore] }
+                """),
+            packaged("maven-library"));
+
+    golden("maven-library-link-reactor-release.yml", composed.releaseDocument());
+
+    String document = composed.releaseDocument();
+    int blobstore = document.indexOf("publish maven --name 'eu.wohlben.qits:qits-blobstore'");
+    int common = document.indexOf("publish maven --name 'eu.wohlben.qits:qits-registries-common'");
+    int npm = document.indexOf("publish maven --name 'eu.wohlben.qits:qits-registries-npm'");
+    assertTrue(blobstore > 0 && common > blobstore && npm > common, document);
+    assertTrue(
+        document.contains(
+            "--link 'eu.wohlben.qits:qits-blobstore' --link 'eu.wohlben.qits:qits-registries-common'"
+                + " --if-changed --version \"$QITS_VERSION\")"),
+        document);
+    // The archetype only builds now: no deploy, no bearer of its own, no pom probe.
+    assertFalse(document.contains("deploy -DskipTests"), document);
+    assertFalse(document.contains("altDeploymentRepository"), document);
+    assertFalse(document.contains("qits-recipe-deploy-settings"), document);
+  }
+
+  @Test
+  public void theTopologicalOrderIsStableToDeclaredOrder() {
+    CiReleaseSlots slots =
+        slots(
+            """
+            artifacts:
+              - { type: maven, name: "g:d", link: [b] }
+              - { type: npm, name: "@qits/n" }
+              - { type: maven, name: "g:c" }
+              - { type: maven, name: "g:b", link: [c] }
+              - { type: docker, name: qits/x }
+              - { type: maven, name: "g:a" }
+            """);
+    // c is the first entry free to go; b waits on it; d waits on b; npm, c and a keep their places.
+    assertEquals(List.of(1, 2, 3, 0, 5), CiReleaseComposer.publishOrder(slots.artifacts()));
+  }
+
+  @Test
+  public void anNpmLibraryPublishesTheBuiltPackageDirectory() throws Exception {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            CiRepoRef.of("44444444-5555-6666-7777-888888888888", "qits", "qits-ui-components-jslib"),
+            slots(
+                """
+                archetype: npm-library
+                artifacts:
+                  - { type: npm, name: "@qits/ui-components", path: dist/qits-spa-ui-components, sbom: sbom.json }
+                  - { type: docs, name: "@qits/ui-components" }
+                """),
+            packaged("npm-library"));
+
+    golden("npm-library-release.yml", composed.releaseDocument());
+
+    String document = composed.releaseDocument();
+    assertTrue(
+        document.contains(
+            "qits artifacts publish npm --name '@qits/ui-components' --path"
+                + " 'dist/qits-spa-ui-components' --sbom 'sbom.json' --version \"$QITS_VERSION\"\n"),
+        document);
+    assertFalse(document.contains("npm plan"), document);
+    assertFalse(document.contains("npm publish \""), document);
+    assertFalse(document.contains("--tag main"), document);
+    // The workbench docs entry has no path: it stays the recipe's own storybook publish.
+    assertFalse(document.contains("--openapi"), document);
+  }
+
+  /** qits-projects after qits-645: no release: override, contracts and @apidocs from the platform. */
+  @Test
+  public void aJavaServiceWithContractsAndApidocsPublishesThemAfterTheBuild() {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            CiRepoRef.of("55555555-6666-7777-8888-999999999999", "qits", "qits-projects-service"),
+            slots(
+                """
+                archetype: java-service
+                artifacts:
+                  - { type: docker, name: qits/qits-projects, sbom: .sbom/sbom.json }
+                  - { type: docs, name: "@apidocs/qits-projects", path: docs/openapi.yml }
+                contracts:
+                  application: qits-projects
+                  golden-masters: { from: golden-masters/, packages: [maven, npm] }
+                userflows: qits-projects
+                """),
+            archetype("java-service", JAVA_SERVICE));
+
+    golden("java-service-contracts-release.yml", composed.releaseDocument());
+
+    String document = composed.releaseDocument();
+    assertTrue(
+        document.contains(
+            "  - { type: 'maven', name: 'eu.wohlben.qits:qits-projects-golden-masters', publish:"
+                + " 'if-changed' }\n"
+                + "  - { type: 'npm', name: '@qits/projects-golden-masters', publish: 'if-changed'"
+                + " }\n"),
+        document);
+    int maven = document.indexOf("publish contract --kind 'golden-masters' --ecosystem 'maven'");
+    int npm = document.indexOf("publish contract --kind 'golden-masters' --ecosystem 'npm'");
+    int docs = document.indexOf("publish contract-docs --application 'qits-projects'");
+    int apidocs = document.indexOf("publish docs submit --site '@apidocs/qits-projects' --openapi");
+    int sbom = document.indexOf("publish sbom submit --type 'docker'");
+    int built = document.indexOf("bash -eu /tmp/qits-slot.sh");
+    assertTrue(
+        built > 0 && maven > built && npm > maven && docs > npm && apidocs > docs && sbom > apidocs,
+        document);
+    assertTrue(
+        document.contains(
+            "--package 'maven=eu.wohlben.qits:qits-projects-golden-masters' --package"
+                + " 'npm=@qits/projects-golden-masters'"),
+        document);
+
+    // The expansion is an ordinary trigger document the join reads back: one if-changed row per
+    // contract package, and the @apidocs entry an ordinary always row.
+    CiEventTrigger release =
+        new CiEventTriggerParser().parse(CiReleaseSlotParser.CONFIG_PATH, document);
+    assertEquals(4, release.artifacts().size());
+    assertEquals(CiArtifact.Publish.ALWAYS, release.artifacts().get(1).publish());
+    assertEquals(CiArtifact.Publish.IF_CHANGED, release.artifacts().get(2).publish());
+    assertEquals(CiArtifact.Publish.IF_CHANGED, release.artifacts().get(3).publish());
+  }
+
+  /** qits-landing after qits-647: an app, a docker image and one consumer pact. */
+  @Test
+  public void anAppWithPactsPublishesThemAndNoContractDocs() {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            CiRepoRef.of("66666666-7777-8888-9999-000000000000", "qits", "qits-landing-app"),
+            slots(
+                """
+                archetype: app
+                artifacts:
+                  - { type: docker, name: qits/qits-landing }
+                contracts:
+                  application: qits-landing
+                  pacts:
+                    qits-projects: { from: pacts/, packages: [maven] }
+                """),
+            archetype(
+                "app",
+                """
+                release-request:
+                  - image: qits/build-images/ci-base:latest
+                    build: true
+                    script: buildctl build --frontend dockerfile.v0 --local context=.
+                release:
+                  - image: qits/build-images/ci-base:latest
+                    build: true
+                    timeout-seconds: 1800
+                    script: |
+                      npm ci && npm run test:pacts
+                      buildctl build --frontend dockerfile.v0 --local context=. \\
+                        --output "type=image,name=$QITS_BUILD_REGISTRY/qits/qits-landing:$QITS_VERSION,push=true"
+                """));
+
+    golden("app-pacts-release.yml", composed.releaseDocument());
+
+    String document = composed.releaseDocument();
+    assertTrue(
+        document.contains(
+            "qits artifacts publish contract --kind 'pacts' --ecosystem 'maven' --name"
+                + " 'eu.wohlben.qits:qits-landing-pacts-qits-projects' --application 'qits-landing'"
+                + " --provider 'qits-projects' --from 'pacts/' --version \"$QITS_VERSION\"\n"),
+        document);
+    assertFalse(document.contains("contract-docs"), "no golden masters, no contract docs");
+    assertFalse(document.contains("sbom submit"), document);
+  }
+
+  @Test
+  public void anAnnounceIfPublishedRepositoryComposesAsBeforePlusThePlatformsPublish() {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            CiRepoRef.of("77777777-8888-9999-0000-111111111111", "qits", "qits-thing-javalib"),
+            slots(
+                """
+                release:
+                  - image: qits/build-images/maven-base:latest
+                    script: ./mvnw -B -ntp package
+                artifacts:
+                  - { type: maven, name: "eu.wohlben.qits:qits-thing", sbom: target/sbom.json, announce: if-published }
+                """),
+            null);
+
+    golden("announce-if-published-release.yml", composed.releaseDocument());
+    assertTrue(
+        composed
+            .releaseDocument()
+            .contains("name: 'eu.wohlben.qits:qits-thing', announce: 'if-published' }"),
+        composed.releaseDocument());
+  }
+
+  @Test
+  public void anIfChangedSbomSubmittedFromAnEarlierStepIsACompositionError() {
+    CiConfigException refused =
+        assertThrows(
+            CiConfigException.class,
+            () ->
+                CiReleaseComposer.compose(
+                    REPO,
+                    slots(
+                        """
+                        release:
+                          - image: qits/build-images/ci-base:latest
+                            build: true
+                            script: buildctl build --opt target=image
+                          - image: qits/build-images/maven-base:latest
+                            script: ./mvnw -B -ntp package
+                        artifacts:
+                          - { type: docker, name: qits/qits-thing, sbom: out/sbom.json }
+                          - { type: maven, name: "g:a", sbom: target/sbom.json, publish: if-changed }
+                        """),
+                    null));
+
+    assertEquals(
+        CiReleaseSlotParser.CONFIG_PATH
+            + ": artifact 1 is publish: if-changed and its sbom is submitted from step 0, but the"
+            + " platform publishes from the last step 1 — the hash needs the SBOM in the step that"
+            + " publishes",
+        refused.getMessage());
+  }
+
+  @Test
+  public void thePublishBlockGoesOnTheLastStepAndTheSbomsKeepTheirs() {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO,
+            slots(
+                """
+                release:
+                  - image: qits/build-images/ci-base:latest
+                    build: true
+                    script: buildctl build --opt target=image
+                  - image: qits/build-images/maven-base:latest
+                    script: ./mvnw -B -ntp package
+                artifacts:
+                  - { type: docker, name: qits/qits-thing, sbom: out/sbom.json }
+                  - { type: maven, name: "g:a", path: core }
+                """),
+            null);
+
+    String document = composed.releaseDocument();
+    int image = document.indexOf("buildctl build --opt target=image");
+    int submit = document.indexOf("publish sbom submit --type 'docker'");
+    int maven = document.indexOf("./mvnw -B -ntp package");
+    int publish = document.indexOf("qits artifacts publish maven --name 'g:a' --path 'core'");
+    assertTrue(image > 0 && submit > image && maven > submit && publish > maven, document);
+    assertEquals(2, occurrences(document, "# --- platform postlude"), document);
+  }
+
+  @Test
+  public void contractsWithNoReleasePipelineAreRefused() {
+    CiConfigException refused =
+        assertThrows(
+            CiConfigException.class,
+            () ->
+                CiReleaseComposer.compose(
+                    REPO,
+                    slots(
+                        "release-request:\n  - {image: alpine:3, script: echo qa}\n"
+                            + "contracts:\n  application: qits-x\n  golden-masters: { from: gm/,"
+                            + " packages: [maven] }\n"),
+                    null));
+    assertTrue(refused.getMessage().contains("declares contracts but"), refused.getMessage());
+  }
+
+  @Test
+  public void anArtifactRestatingAContractCoordinateIsRefused() {
+    CiConfigException refused =
+        assertThrows(
+            CiConfigException.class,
+            () ->
+                CiReleaseComposer.compose(
+                    REPO,
+                    slots(
+                        """
+                        release:
+                          - image: alpine:3
+                            script: echo build
+                        artifacts:
+                          - { type: maven, name: "eu.wohlben.qits:qits-x-golden-masters" }
+                        contracts:
+                          application: qits-x
+                          golden-masters: { from: gm/, packages: [maven] }
+                        """),
+                    null));
+    assertTrue(
+        refused.getMessage().contains("'eu.wohlben.qits:qits-x-golden-masters'"),
+        refused.getMessage());
+  }
+
+  /**
+   * The postlude as behaviour, not text: run under {@code sh -eu} with a stub {@code qits} that
+   * records its argv and answers as the store would. An {@code unchanged since} answer must submit
+   * no SBOM; a {@code published} one must; a refusal must fail the step before anything after it.
+   */
+  @Test
+  public void anIfChangedSbomIsSubmittedOnlyAfterPublishedAndARefusalFailsTheStep()
+      throws Exception {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO,
+            slots(
+                """
+                release:
+                  - image: alpine:3
+                    script: echo built
+                artifacts:
+                  - { type: maven, name: "g:a", sbom: target/sbom.json, publish: if-changed }
+                  - { type: npm, name: "@qits/b", path: dist/b, sbom: sbom.json }
+                """),
+            null);
+    String postlude = extractPostlude(composed.releaseDocument());
+
+    Path work = Files.createTempDirectory("publish-postlude");
+    try {
+      Path bin = work.resolve("bin");
+      Files.createDirectories(bin);
+      Path stub = bin.resolve("qits");
+      Files.writeString(
+          stub,
+          "#!/bin/sh\n"
+              + "printf '%s\\n' \"$*\" >> \""
+              + work.resolve("argv.txt")
+              + "\"\n"
+              + "case \"$*\" in\n"
+              + "  *'--if-changed'*) [ \"$ANSWER\" = refuse ] && exit 1; echo \"$ANSWER\" ;;\n"
+              + "  'artifacts publish npm'*) echo 'published 2026.1002.1' ;;\n"
+              + "esac\n");
+      stub.toFile().setExecutable(true);
+      Path script = work.resolve("postlude.sh");
+      Files.writeString(script, postlude);
+
+      int unchanged = runPostlude(script, work, bin, "unchanged since 2026.1001.1");
+      String argv = Files.readString(work.resolve("argv.txt"));
+      assertEquals(0, unchanged, argv);
+      assertFalse(argv.contains("sbom submit --type maven"), argv);
+      assertTrue(argv.contains("sbom submit --type npm"), "an always entry submits regardless");
+
+      Files.delete(work.resolve("argv.txt"));
+      int published = runPostlude(script, work, bin, "published 2026.1002.1");
+      argv = Files.readString(work.resolve("argv.txt"));
+      assertEquals(0, published, argv);
+      assertTrue(argv.contains("sbom submit --type maven --name g:a"), argv);
+
+      Files.delete(work.resolve("argv.txt"));
+      int refusedExit = runPostlude(script, work, bin, "refuse");
+      argv = Files.readString(work.resolve("argv.txt"));
+      assertTrue(refusedExit != 0, "a refused publish must fail the step");
+      assertFalse(argv.contains("sbom submit"), "nothing after the refusal runs: " + argv);
+    } finally {
+      try (var stream = Files.walk(work)) {
+        stream.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+      }
+    }
+  }
+
+  private static int runPostlude(Path script, Path work, Path bin, String answer)
+      throws Exception {
+    ProcessBuilder pb =
+        new ProcessBuilder("/bin/sh", "-eu", script.toString())
+            .directory(work.toFile())
+            .redirectErrorStream(true);
+    pb.environment().clear();
+    pb.environment().put("PATH", bin + ":" + System.getenv("PATH"));
+    pb.environment().put("QITS_ARTIFACTS_CLI_PACKAGE", "qits");
+    pb.environment().put("QITS_VERSION", "2026.1002.1");
+    pb.environment().put("ANSWER", answer);
+    Process p = pb.start();
+    p.getInputStream().readAllBytes();
+    return p.waitFor();
+  }
+
+  /** The step's postlude, from its header to the end of the script, as a plain shell script. */
+  private static String extractPostlude(String document) {
+    int begin = document.indexOf("      # --- platform postlude");
+    assertTrue(begin >= 0, document);
+    StringBuilder out = new StringBuilder();
+    for (String line : document.substring(begin).split("\n", -1)) {
+      out.append(line.length() >= 6 ? line.substring(6) : line).append('\n');
+    }
+    return out.toString();
   }
 
   // --- goldens -------------------------------------------------------------------------------------

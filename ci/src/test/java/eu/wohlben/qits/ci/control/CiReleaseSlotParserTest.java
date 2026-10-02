@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -362,9 +363,7 @@ public class CiReleaseSlotParserTest {
     assertTrue(refused("userflows: \"qits ci\"\n").getMessage().contains("composable"));
   }
 
-  // --- path and link, and what release A of qits-640 refuses ------------------------------------
-
-  private static final String LATER = "arrives in a later qits-ci";
+  // --- the qits-620 vocabulary: path, link, publish, include, contracts -------------------------
 
   @Test
   public void pathAndLinkAreAcceptedOnMavenAndNpmAndDefaultSensibly() {
@@ -417,13 +416,46 @@ public class CiReleaseSlotParserTest {
   }
 
   @Test
-  public void aDocsPathArrivesInALaterQitsCi() {
-    String message =
-        refused(
-                "artifacts:\n  - { type: docs, name: \"@apidocs/qits-ci\", path: docs/openapi.yml }\n")
+  public void anApidocsEntryNamesItsOpenApiFile() {
+    CiReleaseSlots slots =
+        parser.parse(
+            PATH,
+            """
+            artifacts:
+              - { type: docs, name: "@apidocs/qits-projects", path: docs/openapi.yml }
+              - { type: docs, name: "@apidocs/qits-ci", path: api/openapi.json }
+              - { type: docs, name: "@apidocs/qits-x", path: openapi.yaml }
+              - { type: docs, name: "@qits/ui-components" }
+            """);
+    assertEquals("docs/openapi.yml", slots.artifacts().get(0).path());
+    assertTrue(slots.artifacts().get(0).publishesApidocs());
+    assertEquals("api/openapi.json", slots.artifacts().get(1).path());
+    assertEquals("openapi.yaml", slots.artifacts().get(2).path());
+    assertEquals("", slots.artifacts().get(3).path(), "a docs entry naming no path is declared-only");
+    assertFalse(slots.artifacts().get(3).publishesApidocs());
+  }
+
+  @Test
+  public void aDocsPathOutsideApidocsOrNotAnOpenApiDocumentIsRefused() {
+    String outside =
+        refused("artifacts:\n  - { type: docs, name: \"@qits/ui\", path: docs/openapi.yml }\n")
             .getMessage();
-    assertTrue(message.contains("@apidocs/qits-ci"), message);
-    assertTrue(message.contains(LATER), message);
+    assertTrue(outside.startsWith(PATH + ": artifact 0 ({ type: docs, name: @qits/ui })"), outside);
+    assertTrue(
+        outside.contains(
+            "only a maven or npm entry, or an @apidocs docs entry naming its OpenAPI file"),
+        outside);
+    String notOpenApi =
+        refused("artifacts:\n  - { type: docs, name: \"@apidocs/x\", path: docs/site.tgz }\n")
+            .getMessage();
+    assertTrue(
+        notOpenApi.contains(
+            "@apidocs path 'docs/site.tgz' is not an OpenAPI document (.yml, .yaml or .json)"),
+        notOpenApi);
+    assertTrue(
+        refused("artifacts:\n  - { type: docs, name: \"@apidocs/x\", path: ../openapi.yml }\n")
+            .getMessage()
+            .contains("downwards"));
   }
 
   @Test
@@ -521,40 +553,146 @@ public class CiReleaseSlotParserTest {
   }
 
   @Test
-  public void publishArrivesInALaterQitsCiWhateverItSays() {
-    for (String value : new String[] {"if-changed", "always", "sometimes"}) {
-      String message =
-          refused(
-                  "artifacts:\n  - { type: maven, name: \"a:b\", sbom: s.json, publish: "
-                      + value
-                      + " }\n")
-              .getMessage();
-      assertTrue(message.startsWith(PATH + ": artifact 0 ({ type: maven, name: a:b })"), message);
-      assertTrue(message.contains(LATER), message);
+  public void publishIfChangedIsAcceptedOnMavenAndNpmWithAnSbom() {
+    CiReleaseSlots slots =
+        parser.parse(
+            PATH,
+            """
+            artifacts:
+              - { type: maven, name: "g:a", sbom: target/sbom.json, publish: if-changed, include: ["eu/wohlben/**", "*.properties"] }
+              - { type: npm, name: "@qits/x", path: dist/x, sbom: sbom.json, publish: if-changed }
+              - { type: maven, name: "g:b", publish: always }
+            """);
+    assertEquals(CiArtifact.Publish.IF_CHANGED, slots.artifacts().get(0).artifact().publish());
+    assertEquals(List.of("eu/wohlben/**", "*.properties"), slots.artifacts().get(0).include());
+    assertEquals(CiArtifact.Publish.IF_CHANGED, slots.artifacts().get(1).artifact().publish());
+    assertTrue(slots.artifacts().get(1).include().isEmpty());
+    assertEquals(CiArtifact.Publish.ALWAYS, slots.artifacts().get(2).artifact().publish());
+  }
+
+  @Test
+  public void publishIsRefusedOnEveryOtherTypeEvenSpelledAlways() {
+    for (String type : new String[] {"docker", "daemon", "docs"}) {
+      for (String value : new String[] {"if-changed", "always"}) {
+        String message =
+            refused(
+                    "artifacts:\n  - { type: "
+                        + type
+                        + ", name: qits/x, sbom: s.json, publish: "
+                        + value
+                        + " }\n")
+                .getMessage();
+        assertTrue(
+            message.startsWith(PATH + ": artifact 0 ({ type: " + type + ", name: qits/x })"),
+            message);
+        assertTrue(
+            message.contains(
+                "declares publish: "
+                    + value
+                    + " — only a maven or npm entry is published by the platform; a docker,"
+                    + " daemon or docs entry is published by its own step"),
+            message);
+      }
     }
   }
 
   @Test
-  public void includeArrivesInALaterQitsCi() {
+  public void anUnknownPublishValueIsRefused() {
     String message =
-        refused("artifacts:\n  - { type: npm, name: \"@qits/x\", include: [\"dist/**\"] }\n")
+        refused("artifacts:\n  - { type: maven, name: \"a:b\", sbom: s.json, publish: sometimes }\n")
             .getMessage();
-    assertTrue(message.contains("@qits/x") && message.contains("include"), message);
-    assertTrue(message.contains(LATER), message);
+    assertTrue(message.startsWith(PATH + ": artifact 0 ({ type: maven, name: a:b })"), message);
+    assertTrue(
+        message.contains("declares publish 'sometimes' — it is 'always' (the default) or 'if-changed'"),
+        message);
   }
 
   @Test
-  public void contractsArriveInALaterQitsCiInAFileAndInARecipe() {
+  public void ifChangedWithoutAnSbomIsRefused() {
+    String message =
+        refused("artifacts:\n  - { type: npm, name: \"@qits/x\", publish: if-changed }\n")
+            .getMessage();
+    assertTrue(message.contains("@qits/x"), message);
+    assertTrue(
+        message.contains(
+            "declares publish: if-changed and no sbom — the change decision hashes the SBOM with"
+                + " the content"),
+        message);
+  }
+
+  @Test
+  public void announceAndPublishOnOneEntryAreRefused() {
+    String message =
+        refused(
+                "artifacts:\n  - { type: maven, name: \"a:b\", sbom: s.json, announce:"
+                    + " if-published, publish: if-changed }\n")
+            .getMessage();
+    assertTrue(message.startsWith(PATH + ": artifact 0 ({ type: maven, name: a:b })"), message);
+    assertTrue(
+        message.contains(
+            "declares both announce and publish — publish: if-changed already announces only what"
+                + " was published; drop announce"),
+        message);
+  }
+
+  @Test
+  public void includeIsRefusedOffAnIfChangedMavenOrNpmEntry() {
+    String onDocker =
+        refused(
+                "artifacts:\n  - { type: docker, name: qits/x, include: [\"a/**\"] }\n")
+            .getMessage();
+    assertTrue(onDocker.contains("declares include — only a maven or npm entry is hashed"), onDocker);
+    String onAlways =
+        refused("artifacts:\n  - { type: npm, name: \"@qits/x\", include: [\"dist/**\"] }\n")
+            .getMessage();
+    assertTrue(onAlways.contains("@qits/x"), onAlways);
+    assertTrue(
+        onAlways.contains(
+            "declares include, which only narrows the if-changed hash; it means nothing on a"
+                + " publish: always entry"),
+        onAlways);
+    refused(
+        "artifacts:\n  - { type: npm, name: \"@qits/x\", sbom: s.json, publish: if-changed,"
+            + " include: [] }\n");
+    assertTrue(
+        refused(
+                "artifacts:\n  - { type: npm, name: \"@qits/x\", sbom: s.json, publish:"
+                    + " if-changed, include: [\"{a,b}/**\"] }\n")
+            .getMessage()
+            .contains("not composable"));
+  }
+
+  @Test
+  public void contractsAreParsedInAFileAndRefusedInARecipe() {
     String declaration =
         "contracts:\n  application: qits-projects\n  golden-masters: { from: golden-masters/,"
-            + " packages: [maven] }\n";
-    String message = refused(declaration).getMessage();
-    assertTrue(message.startsWith(PATH) && message.contains("contracts"), message);
-    assertTrue(message.contains(LATER), message);
+            + " packages: [maven, npm] }\n";
+    CiContracts contracts = parser.parse(PATH, declaration).contracts();
+    assertEquals("qits-projects", contracts.application());
+    assertEquals("golden-masters/", contracts.goldenMasters().from());
+    assertNull(parser.parse(PATH, "archetype: java-service\n").contracts());
     CiConfigException recipe =
         assertThrows(
             CiConfigException.class,
             () -> parser.parseArchetype(".config/qits/release-archetypes/x.yml", declaration));
-    assertTrue(recipe.getMessage().contains(LATER), recipe.getMessage());
+    assertTrue(
+        recipe.getMessage().startsWith(".config/qits/release-archetypes/x.yml: an archetype recipe"
+            + " may not declare 'contracts'"),
+        recipe.getMessage());
+  }
+
+  @Test
+  public void theVocabularyMessagesNameEveryKey() {
+    assertTrue(
+        refused("artefacts: []\n")
+            .getMessage()
+            .contains(
+                "'archetype', 'release-request', 'release', 'artifacts', 'userflows' and"
+                    + " 'contracts'"));
+    assertTrue(
+        refused("artifacts:\n  - { type: maven, name: \"a:b\", bogus: 1 }\n")
+            .getMessage()
+            .contains(
+                "{ type, name[, sbom][, announce | publish][, path][, link][, include] }"));
   }
 }

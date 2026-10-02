@@ -339,7 +339,9 @@ public class PackagedReleaseArchetypesTest {
         }
       }
     }
-    assertTrue(fetches >= 2, "only " + fetches + " curl/wget commands were found to check");
+    // One since qits-620: maven-library's pom probe went with its deploy, and the CLI owns that
+    // check now. What remains is java-service's userflow PUT.
+    assertTrue(fetches >= 1, "only " + fetches + " curl/wget commands were found to check");
     assertTrue(npmrcs >= 2, "only " + npmrcs + " ~/.npmrc writers were found to check");
     assertTrue(mavenBuilds >= 5, "only " + mavenBuilds + " maven builds were found to check");
     assertTrue(npmBuilds >= 1, "only " + npmBuilds + " npm builds were found to check");

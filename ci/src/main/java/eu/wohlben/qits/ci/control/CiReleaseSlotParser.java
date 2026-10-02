@@ -33,13 +33,14 @@ import java.util.Set;
  *
  * <h2>Strict about the whole vocabulary, and for the trigger file's own reason</h2>
  *
- * <p>{@code archetype}, {@code release-request}, {@code release}, {@code artifacts} and {@code
- * userflows} are all of it; anything else is a {@link CiConfigException} naming the file. So is a
- * slot that is not a list, a slot that is an <em>empty</em> list, an {@code artifacts:} entry that
- * is not {@code {type, name[, sbom][, announce][, path][, link]}} (with {@code announce:
- * if-published} on a {@code maven} or {@code npm} entry only, {@code path:} likewise, and {@code
- * link:} on {@code maven} only), and a {@code userflows:} that is neither a boolean nor a
- * name. The reason is sharper here than in a trigger file: this document is compiled into two
+ * <p>{@code archetype}, {@code release-request}, {@code release}, {@code artifacts}, {@code
+ * userflows} and {@code contracts} are all of it; anything else is a {@link CiConfigException}
+ * naming the file. So is a slot that is not a list, a slot that is an <em>empty</em> list, an {@code
+ * artifacts:} entry that is not {@code {type, name[, sbom][, announce | publish][, path][, link][,
+ * include]}} (with {@code announce:} and {@code publish:} on a {@code maven} or {@code npm} entry
+ * only, {@code path:} likewise or on an {@code @apidocs} docs entry, {@code link:} on {@code maven}
+ * only, and {@code include:} only beside {@code publish: if-changed}), a {@code contracts:} that
+ * {@link CiContracts} refuses, and a {@code userflows:} that is neither a boolean nor a name. The reason is sharper here than in a trigger file: this document is compiled into two
  * pipelines that publish, so a key that silently parsed to nothing is a release whose SBOM was
  * never submitted, or a QA gate that ran nothing and went green. Never a silent default.
  *
@@ -49,24 +50,25 @@ import java.util.Set;
  *
  * <h2>The interpolation charset, and why it is a parse error rather than an escape</h2>
  *
- * <p>Three values from this file reach a composed <em>shell script</em>: an artifact's {@code type}
- * (an enum, so it cannot be anything else), its {@code name}, and its {@code sbom} path. Everything
- * else a step needs arrives as environment, which is the design and not an accident. So the two
- * free-text ones are held to {@link #SCRIPT_SAFE} — an allow-list, not a deny-list, because a
+ * <p>The declarations in this file reach a composed <em>shell script</em>: an artifact's {@code type}
+ * (an enum, so it cannot be anything else), its {@code name}, {@code sbom}, {@code path}, {@code
+ * link} and {@code include}, and a contract tree's application, provider and {@code from}.
+ * Everything else a step needs arrives as environment, which is the design and not an accident. So
+ * every free-text one is held to {@link #SCRIPT_SAFE} (a glob to {@link #INCLUDE_SAFE}) — an allow-list, not a deny-list, because a
  * deny-list is a claim about every shell that will ever read the composed text. It admits every
  * coordinate the estate publishes ({@code @qits/ui-components}, {@code qits/qits-stt}, {@code
  * eu.wohlben.qits:qits-eventstream}, {@code out/sbom.json}) and refuses quotes, whitespace, {@code
  * $} and backticks by construction. The composer single-quotes them anyway; belt and braces, since
  * one of the two is what would have to be got right forever.
  *
- * <h2>Recognised before it is accepted: the qits-620 vocabulary</h2>
+ * <h2>The qits-620 vocabulary: what the platform publishes, declared rather than scripted</h2>
  *
- * <p>{@code publish:}, {@code include:}, a docs entry's {@code path:} and the top-level {@code
- * contracts:} are known words here and each is refused naming the entry, "… arrives in a later
- * qits-ci" — never as an unknown key, so an adopter who wrote one ahead of the platform learns that
- * it is early rather than that it is misspelt. {@code path:} and {@code link:} on a {@code maven} or
- * {@code npm} entry are accepted and fully validated, and compose nothing yet. That split is release
- * A of qits-640; release B accepts the rest and composes the publishing postlude that spends them.
+ * <p>{@code publish:}, {@code path:}, {@code link:}, {@code include:} and the top-level {@code
+ * contracts:} are facts the composed publishing postlude spends ({@link CiReleaseComposer}): one
+ * {@code qits artifacts publish maven|npm} per maven or npm entry, one {@code contract} call per
+ * contract package, and one {@code docs submit --openapi} per {@code @apidocs} entry naming its
+ * file. Only {@code publish:} reaches the composed {@code artifacts:} block; the rest is spent on
+ * the postlude's command lines.
  *
  * <h2>An archetype recipe is this document minus one key</h2>
  *
@@ -103,11 +105,11 @@ public class CiReleaseSlotParser {
   /** The sibling maven entries an entry keeps as pom dependencies rather than bundling (qits-620). */
   static final String LINK_KEY = "link";
 
-  /** Globs narrowing an {@code if-changed} hash (qits-620; refused until release B of qits-640). */
+  /** Globs narrowing an {@code if-changed} hash (qits-620). */
   static final String INCLUDE_KEY = "include";
 
-  /** The contracts declaration (qits-620; refused until release B of qits-640). */
-  static final String CONTRACTS_KEY = "contracts";
+  /** The contracts declaration (qits-620) — see {@link CiContracts}. */
+  static final String CONTRACTS_KEY = CiContracts.KEY;
 
   /** The whole top-level vocabulary of a repository's slot file. */
   private static final Set<String> TOP_LEVEL_KEYS =
@@ -122,9 +124,8 @@ public class CiReleaseSlotParser {
   /**
    * The whole of one {@code artifacts:} entry here — the trigger file's keys plus the path. {@code
    * announce} is {@code always} (the default) or {@code if-published}, the second on {@code maven}
-   * and {@code npm} only; see {@link CiArtifact.Announce}. {@code path} and {@code link} are
-   * accepted on the entries the class javadoc names; {@code publish} and {@code include} are known
-   * and refused until release B of qits-640.
+   * and {@code npm} only; see {@link CiArtifact.Announce}. {@code publish}, {@code path}, {@code
+   * link} and {@code include} are accepted on the entries the class javadoc names.
    */
   private static final Set<String> ARTIFACT_KEYS =
       Set.of(
@@ -151,6 +152,20 @@ public class CiReleaseSlotParser {
    * is a second line of defence rather than the only one.
    */
   static final String SCRIPT_SAFE = "[A-Za-z0-9._:/@+-]+";
+
+  /**
+   * What an {@code include:} glob may contain: {@link #SCRIPT_SAFE} plus {@code *} and {@code ?},
+   * which a glob needs. No braces, no commas, no whitespace — and the composer single-quotes it, so
+   * the shell never expands it.
+   */
+  static final String INCLUDE_SAFE = "[A-Za-z0-9._:/@+*?-]+";
+
+  /** The file endings an {@code @apidocs} entry's OpenAPI document may have. */
+  private static final List<String> OPENAPI_SUFFIXES = List.of(".yml", ".yaml", ".json");
+
+  /** The whole top-level vocabulary as a message fragment. */
+  private static final String TOP_LEVEL_VOCABULARY =
+      "'archetype', 'release-request', 'release', 'artifacts', 'userflows' and 'contracts'";
 
   /** Parses a repository's own {@code .config/qits/release.yml}. */
   public CiReleaseSlots parse(String configPath, String content) {
@@ -182,8 +197,8 @@ public class CiReleaseSlotParser {
     if (root == null) {
       throw new CiConfigException(
           configPath
-              + " is empty — a release slot file declares at least one of 'archetype',"
-              + " 'release-request', 'release', 'artifacts' or 'userflows'");
+              + " is empty — a release slot file declares at least one of "
+              + TOP_LEVEL_VOCABULARY.replace(" and ", " or "));
     }
     rejectUnknownTopLevelKeys(root, configPath, archetypeAllowed);
     return new CiReleaseSlots(
@@ -192,7 +207,10 @@ public class CiReleaseSlotParser {
         slot(root, RELEASE_REQUEST_KEY, configPath),
         slot(root, RELEASE_KEY, configPath),
         parseArtifacts(root.get(CiConfigSchema.ARTIFACTS_KEY), configPath),
-        parseUserflows(root.get(USERFLOWS_KEY), configPath));
+        parseUserflows(root.get(USERFLOWS_KEY), configPath),
+        root.containsKey(CONTRACTS_KEY)
+            ? CiContracts.parse(root.get(CONTRACTS_KEY), configPath)
+            : null);
   }
 
   private static void rejectUnknownTopLevelKeys(
@@ -203,14 +221,16 @@ public class CiReleaseSlotParser {
             configPath
                 + ": unknown top-level key '"
                 + key
-                + "' — a release slot file declares only 'archetype', 'release-request', 'release',"
-                + " 'artifacts' and 'userflows'");
+                + "' — a release slot file declares only "
+                + TOP_LEVEL_VOCABULARY);
       }
-      if (CONTRACTS_KEY.equals(name)) {
-        // Release B of qits-640 parses it (CiContracts), and refuses it in an archetype recipe for
-        // its own reason: contracts are a repository's facts, like artifacts:.
+      if (CONTRACTS_KEY.equals(name) && !archetypeAllowed) {
         throw new CiConfigException(
-            configPath + ": '" + CONTRACTS_KEY + "' " + CiArtifact.ARRIVES_LATER);
+            configPath
+                + ": an archetype recipe may not declare '"
+                + CONTRACTS_KEY
+                + "' — contracts are a repository's own facts, declared in its release.yml, and a"
+                + " recipe default would publish packages for an application it has never heard of");
       }
       if (ARCHETYPE_KEY.equals(name) && !archetypeAllowed) {
         throw new CiConfigException(
@@ -344,32 +364,103 @@ public class CiReleaseSlotParser {
                 + index
                 + " declares an unknown key '"
                 + key
-                + "' — an artifact is exactly { type, name[, sbom][, announce][, path][, link] }");
+                + "' — an artifact is exactly { type, name[, sbom][, announce | publish][, path]"
+                + "[, link][, include] }");
       }
     }
     CiArtifact.Type type = requireArtifactType(map.get("type"), configPath, index);
     String name = requireScriptSafe(map.get("name"), configPath, "artifact " + index + " 'name'");
-    if (map.containsKey(INCLUDE_KEY)) {
-      throw new CiConfigException(
-          CiArtifact.entry(configPath, index, type, name)
-              + " declares "
-              + INCLUDE_KEY
-              + " — "
-              + INCLUDE_KEY
-              + ": "
-              + CiArtifact.ARRIVES_LATER);
-    }
-    return new SlotArtifact(
+    CiArtifact.requireOnePolicy(
+        map.containsKey(CiArtifact.ANNOUNCE_KEY),
+        map.containsKey(CiArtifact.PUBLISH_KEY),
+        type,
+        name,
+        configPath,
+        index);
+    CiArtifact artifact =
         new CiArtifact(
             type,
             name,
             CiArtifact.requireAnnounce(
                 map.get(CiArtifact.ANNOUNCE_KEY), type, name, configPath, index),
             CiArtifact.requirePublish(
-                map.get(CiArtifact.PUBLISH_KEY), type, name, configPath, index)),
-        parseSbomPath(map.get(SBOM_KEY), configPath, index),
+                map.get(CiArtifact.PUBLISH_KEY), type, name, configPath, index));
+    String sbomPath = parseSbomPath(map.get(SBOM_KEY), configPath, index);
+    if (artifact.publishIfChanged() && sbomPath.isEmpty()) {
+      throw new CiConfigException(
+          CiArtifact.entry(configPath, index, type, name)
+              + " declares "
+              + CiArtifact.PUBLISH_KEY
+              + ": "
+              + CiArtifact.Publish.IF_CHANGED.declared()
+              + " and no "
+              + SBOM_KEY
+              + " — the change decision hashes the SBOM with the content, so an if-changed entry"
+              + " must name the CycloneDX document its build writes");
+    }
+    return new SlotArtifact(
+        artifact,
+        sbomPath,
         parsePath(map.get(PATH_KEY), type, name, configPath, index),
-        parseLink(map.get(LINK_KEY), type, name, configPath, index));
+        parseLink(map.get(LINK_KEY), type, name, configPath, index),
+        parseInclude(map.get(INCLUDE_KEY), artifact, configPath, index));
+  }
+
+  /**
+   * {@code include:} — a non-empty list of globs narrowing an {@code if-changed} entry's hash, never
+   * what is uploaded. On any other type, or beside {@code publish: always}, it would narrow a hash
+   * nothing computes, so it is refused rather than ignored.
+   */
+  private static List<String> parseInclude(
+      Object raw, CiArtifact artifact, String configPath, int index) {
+    if (raw == null) {
+      return List.of();
+    }
+    String entry = CiArtifact.entry(configPath, index, artifact.type(), artifact.name());
+    if (artifact.type() != CiArtifact.Type.MAVEN && artifact.type() != CiArtifact.Type.NPM) {
+      throw new CiConfigException(
+          entry + " declares " + INCLUDE_KEY + " — only a maven or npm entry is hashed");
+    }
+    if (!artifact.publishIfChanged()) {
+      throw new CiConfigException(
+          entry
+              + " declares "
+              + INCLUDE_KEY
+              + ", which only narrows the "
+              + CiArtifact.Publish.IF_CHANGED.declared()
+              + " hash; it means nothing on a "
+              + CiArtifact.PUBLISH_KEY
+              + ": "
+              + CiArtifact.Publish.ALWAYS.declared()
+              + " entry");
+    }
+    if (!(raw instanceof List<?> list) || list.isEmpty()) {
+      throw new CiConfigException(
+          entry
+              + " declares "
+              + INCLUDE_KEY
+              + " as "
+              + CiConfigSchema.typeOf(raw)
+              + " — it is a non-empty list of globs, e.g. "
+              + INCLUDE_KEY
+              + ": [\"eu/wohlben/**\"]");
+    }
+    Set<String> globs = new LinkedHashSet<>();
+    for (Object element : list) {
+      if (!(element instanceof String glob) || !glob.matches(INCLUDE_SAFE)) {
+        throw new CiConfigException(
+            entry
+                + " declares "
+                + INCLUDE_KEY
+                + " glob '"
+                + element
+                + "', which is not composable — a glob is held to "
+                + INCLUDE_SAFE
+                + " (no braces, no commas, no whitespace, no quotes)");
+      }
+      globs.add(glob);
+    }
+    return List.copyOf(globs);
   }
 
   /**
@@ -377,24 +468,28 @@ public class CiReleaseSlotParser {
    * {@code "."} when absent. Relative and downward, {@code sbom:}'s rule: it is a {@code --path}
    * argument in the release step's own checkout.
    *
-   * <p>A {@code docs} entry in the {@code @apidocs/} scope will name its OpenAPI file here; that is
-   * release B's, so on a docs entry the key is refused as early rather than as wrong. On {@code
-   * docker} and {@code daemon} it is wrong, and always will be.
+   * <p>A {@code docs} entry in the {@code @apidocs/} scope names its OpenAPI file here ({@code .yml},
+   * {@code .yaml} or {@code .json}), and the platform publishes that file as the site — one {@code
+   * docs submit --openapi} in the postlude. Any other docs entry, and every {@code docker} and {@code
+   * daemon} one, has nothing the platform uploads, so the key is refused there.
    */
   private static String parsePath(
       Object raw, CiArtifact.Type type, String name, String configPath, int index) {
     if (raw == null) {
       return SlotArtifact.defaultPath(type);
     }
-    if (type == CiArtifact.Type.DOCS) {
-      throw new CiConfigException(
-          CiArtifact.entry(configPath, index, type, name)
-              + " declares "
-              + PATH_KEY
-              + " — a docs entry's "
-              + PATH_KEY
-              + ": "
-              + CiArtifact.ARRIVES_LATER);
+    if (type == CiArtifact.Type.DOCS && name.startsWith(SlotArtifact.APIDOCS_SCOPE)) {
+      String path = requireDownwardPath(raw, configPath, index, PATH_KEY);
+      if (OPENAPI_SUFFIXES.stream().noneMatch(path::endsWith)) {
+        throw new CiConfigException(
+            CiArtifact.entry(configPath, index, type, name)
+                + " @apidocs "
+                + PATH_KEY
+                + " '"
+                + path
+                + "' is not an OpenAPI document (.yml, .yaml or .json)");
+      }
+      return path;
     }
     if (type != CiArtifact.Type.MAVEN && type != CiArtifact.Type.NPM) {
       throw new CiConfigException(
@@ -575,16 +670,23 @@ public class CiReleaseSlotParser {
 
   /** A composable path inside the release's own checkout: relative, no {@code ..} segment. */
   private static String requireDownwardPath(Object raw, String configPath, int index, String key) {
-    String path = requireScriptSafe(raw, configPath, "artifact " + index + " '" + key + "'");
+    return requireDownward(raw, configPath, "artifact " + index + " '" + key + "'");
+  }
+
+  /**
+   * The same rule for any value that becomes a path argument in the release step — an artifact's
+   * {@code sbom:} or {@code path:}, a contract tree's {@code from:}. {@code what} names it in the
+   * message.
+   */
+  static String requireDownward(Object raw, String configPath, String what) {
+    String path = requireScriptSafe(raw, configPath, what);
     if (path.startsWith("/") || path.equals("..") || path.startsWith("../") || path.contains("/../")
         || path.endsWith("/..")) {
       throw new CiConfigException(
           configPath
-              + ": artifact "
-              + index
-              + " declares "
-              + key
-              + " '"
+              + ": "
+              + what
+              + " is '"
               + path
               + "' — it is a path inside the release's own checkout, so it is relative and points"
               + " downwards");

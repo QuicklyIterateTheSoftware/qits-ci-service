@@ -162,6 +162,58 @@ public class HttpArtifactPresenceTest {
     assertEquals(List.of(), uris);
   }
 
+  // --- newest (qits-620) -------------------------------------------------------------------------
+
+  @Test
+  public void theNewestIsAskedAtTheContentHashDoorWithTheNameAsDeclared() {
+    body =
+        "{\"ecosystem\":\"maven\",\"name\":\"eu.wohlben.qits:qits-thing\",\"version\":\"2026.1001.1\","
+            + "\"contentHash\":null}";
+
+    Probe maven = presence().newest(CiArtifact.Type.MAVEN, "eu.wohlben.qits:qits-thing");
+    Probe npm = presence().newest(CiArtifact.Type.NPM, "@qits/projects-golden-masters");
+
+    assertEquals(Verdict.PRESENT, maven.verdict(), maven.detail());
+    assertEquals("2026.1001.1", maven.version());
+    assertEquals(Verdict.PRESENT, npm.verdict(), npm.detail());
+    // The coordinate as declared — the store's NAME grammar and the qits CLI's own spelling — so
+    // the `:` and the scope's `/` stay literal.
+    assertEquals(
+        List.of(
+            "/artifacts/content-hashes/maven/eu.wohlben.qits:qits-thing/-/newest",
+            "/artifacts/content-hashes/npm/@qits/projects-golden-masters/-/newest"),
+        uris);
+  }
+
+  @Test
+  public void aNewestFourOhFourIsAbsentAndAnythingElseIsInconclusive() {
+    status = 404;
+    assertEquals(
+        Verdict.ABSENT, presence().newest(CiArtifact.Type.MAVEN, "a.b:c").verdict());
+    status = 503;
+    Probe failed = presence().newest(CiArtifact.Type.MAVEN, "a.b:c");
+    assertEquals(Verdict.INCONCLUSIVE, failed.verdict());
+    assertTrue(failed.detail().contains("503"), failed.detail());
+    status = 200;
+    body = "{\"version\":null}";
+    assertEquals(
+        Verdict.INCONCLUSIVE, presence().newest(CiArtifact.Type.NPM, "@qits/x").verdict());
+    body = "not json";
+    assertEquals(
+        Verdict.INCONCLUSIVE, presence().newest(CiArtifact.Type.NPM, "@qits/x").verdict());
+  }
+
+  @Test
+  public void aNewestOfAnotherTypeOrAHostileNameIsInconclusiveWithoutASocket() {
+    assertEquals(
+        Verdict.INCONCLUSIVE, presence().newest(CiArtifact.Type.DOCKER, "qits/x").verdict());
+    assertEquals(
+        Verdict.INCONCLUSIVE, presence().newest(CiArtifact.Type.MAVEN, "a:../../b").verdict());
+    assertEquals(
+        Verdict.INCONCLUSIVE, presence().newest(CiArtifact.Type.NPM, "@qits/x?y=1").verdict());
+    assertEquals(List.of(), uris);
+  }
+
   private HttpArtifactPresence presence() {
     HttpArtifactPresence presence = new HttpArtifactPresence();
     presence.artifactsUrl = Optional.empty();
