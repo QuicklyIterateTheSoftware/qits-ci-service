@@ -36,10 +36,11 @@ import java.util.Set;
  * <p>{@code archetype}, {@code release-request}, {@code release}, {@code artifacts}, {@code
  * userflows} and {@code contracts} are all of it; anything else is a {@link CiConfigException}
  * naming the file. So is a slot that is not a list, a slot that is an <em>empty</em> list, an {@code
- * artifacts:} entry that is not {@code {type, name[, sbom][, announce | publish][, path][, link][,
- * include]}} (with {@code announce:} and {@code publish:} on a {@code maven} or {@code npm} entry
- * only, {@code path:} likewise or on an {@code @apidocs} docs entry, {@code link:} on {@code maven}
- * only, and {@code include:} only beside {@code publish: if-changed}), a {@code contracts:} that
+ * artifacts:} entry that is not {@code {type, name[, sbom][, publish][, path][, link][,
+ * include]}} (with {@code publish:} on a {@code maven} or {@code npm} entry only, {@code path:}
+ * likewise or on an {@code @apidocs} docs entry, {@code link:} on {@code maven} only, and {@code
+ * include:} only beside {@code publish: if-changed}; {@code announce:}, which qits-648 deleted, is
+ * an unknown key like any other), a {@code contracts:} that
  * {@link CiContracts} refuses, and a {@code userflows:} that is neither a boolean nor a name. The reason is sharper here than in a trigger file: this document is compiled into two
  * pipelines that publish, so a key that silently parsed to nothing is a release whose SBOM was
  * never submitted, or a QA gate that ran nothing and went green. Never a silent default.
@@ -123,16 +124,14 @@ public class CiReleaseSlotParser {
 
   /**
    * The whole of one {@code artifacts:} entry here — the trigger file's keys plus the path. {@code
-   * announce} is {@code always} (the default) or {@code if-published}, the second on {@code maven}
-   * and {@code npm} only; see {@link CiArtifact.Announce}. {@code publish}, {@code path}, {@code
-   * link} and {@code include} are accepted on the entries the class javadoc names.
+   * publish}, {@code path}, {@code link} and {@code include} are accepted on the entries the class
+   * javadoc names.
    */
   private static final Set<String> ARTIFACT_KEYS =
       Set.of(
           "type",
           "name",
           SBOM_KEY,
-          CiArtifact.ANNOUNCE_KEY,
           CiArtifact.PUBLISH_KEY,
           PATH_KEY,
           LINK_KEY,
@@ -364,25 +363,17 @@ public class CiReleaseSlotParser {
                 + index
                 + " declares an unknown key '"
                 + key
-                + "' — an artifact is exactly { type, name[, sbom][, announce | publish][, path]"
-                + "[, link][, include] }");
+                + "' — an artifact is exactly { type, name[, sbom][, publish][, path][, link]"
+                + "[, include] }"
+                + CiArtifact.retiredKeyHint(key));
       }
     }
     CiArtifact.Type type = requireArtifactType(map.get("type"), configPath, index);
     String name = requireScriptSafe(map.get("name"), configPath, "artifact " + index + " 'name'");
-    CiArtifact.requireOnePolicy(
-        map.containsKey(CiArtifact.ANNOUNCE_KEY),
-        map.containsKey(CiArtifact.PUBLISH_KEY),
-        type,
-        name,
-        configPath,
-        index);
     CiArtifact artifact =
         new CiArtifact(
             type,
             name,
-            CiArtifact.requireAnnounce(
-                map.get(CiArtifact.ANNOUNCE_KEY), type, name, configPath, index),
             CiArtifact.requirePublish(
                 map.get(CiArtifact.PUBLISH_KEY), type, name, configPath, index));
     String sbomPath = parseSbomPath(map.get(SBOM_KEY), configPath, index);
@@ -398,43 +389,12 @@ public class CiReleaseSlotParser {
               + " — the change decision hashes the SBOM with the content, so an if-changed entry"
               + " must name the CycloneDX document its build writes");
     }
-    boolean selfPublished = map.containsKey(CiArtifact.ANNOUNCE_KEY);
-    if (selfPublished) {
-      requireNoUploadShape(map, type, name, configPath, index);
-    }
     return new SlotArtifact(
         artifact,
         sbomPath,
         parsePath(map.get(PATH_KEY), type, name, configPath, index),
         parseLink(map.get(LINK_KEY), type, name, configPath, index),
-        parseInclude(map.get(INCLUDE_KEY), artifact, configPath, index),
-        selfPublished);
-  }
-
-  /**
-   * An {@code announce:} entry is published by its repository's own release steps, never by the
-   * platform postlude (see {@link SlotArtifact#uploaded()}), so {@code path:} and {@code link:} —
-   * which only shape the platform's upload — would be inert. Refused rather than ignored. Goes with
-   * {@code announce:} in qits-648.
-   */
-  private static void requireNoUploadShape(
-      Map<?, ?> map, CiArtifact.Type type, String name, String configPath, int index) {
-    for (String key : List.of(PATH_KEY, LINK_KEY)) {
-      if (map.containsKey(key)) {
-        throw new CiConfigException(
-            CiArtifact.entry(configPath, index, type, name)
-                + " declares "
-                + CiArtifact.ANNOUNCE_KEY
-                + " and "
-                + key
-                + " — an announce entry is published by the repository's own release steps, and "
-                + key
-                + " only shapes the platform's publish; drop "
-                + key
-                + ", or replace announce with "
-                + CiArtifact.PUBLISH_KEY);
-      }
-    }
+        parseInclude(map.get(INCLUDE_KEY), artifact, configPath, index));
   }
 
   /**

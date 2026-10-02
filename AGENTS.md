@@ -2162,24 +2162,33 @@ phase.
 - **Interpolation is three values and they are charset-guarded at PARSE time.** An artifact's `type`
   (an enum), its `name`, and its `sbom:` path, held to an allow-list rather than an escape. The
   composer single-quotes them as well; the guard is what makes the quoting a second line of defence
-  rather than the only one. (`announce:` is not a fourth: it is an enum, it reaches the composed
-  `artifacts:` block and never a script.)
-- **`announce: if-published` is the one artifact declaration that is checked rather than believed
-  (qits-561).** `maven` and `npm` entries only — on `docker`, `daemon` or `docs` it is a parse error
-  naming the entry, in `CiReleaseSlotParser` and in `CiEventTriggerParser` alike, through the one
-  `CiArtifact.requireAnnounce` — and `always` is the default. It rides on `CiArtifact`, so the
-  composer emits it into the composed `artifacts:` block (only when it is not the default, which is
-  why no golden moved), the trigger parser reads it back, a restart reparses it off the snapshot, and
-  `ReleaseJoin.owe` writes it onto the owed row (`ci_release_announcement.announce`, V29). Before
-  announcing such a row the join asks the `CiArtifactPresence` port — `service/…/registry/HttpArtifactPresence`,
-  one `GET` of the version's `.pom` or of the npm packument at the origin `HttpImagePins` already
-  derives (`registry/ArtifactsOrigin`: `qits.artifacts.url`, else the origin of
+  rather than the only one. (`publish:` is not a fourth: it is an enum, it reaches the composed
+  `artifacts:` block and never a script except as the decision the postlude makes.)
+- **`publish: if-changed` is the one artifact declaration that is checked rather than believed
+  (qits-620).** `maven` and `npm` entries only — on `docker`, `daemon` or `docs` the key is a parse
+  error naming the entry, in `CiReleaseSlotParser` and in `CiEventTriggerParser` alike, through the
+  one `CiArtifact.requirePublish` — and `always` is the default. It rides on `CiArtifact`, so the
+  composer emits it into the composed `artifacts:` block (only when it is not the default), the
+  trigger parser reads it back, a restart reparses it off the snapshot, and `ReleaseJoin.owe` writes
+  it onto the owed row (`ci_release_announcement.publish`, V30). Before announcing such a row the
+  join asks the `CiArtifactPresence` port — `service/…/registry/HttpArtifactPresence`, one `GET` of
+  the version's `.pom` or of the npm packument at the origin `HttpImagePins` already derives
+  (`registry/ArtifactsOrigin`: `qits.artifacts.url`, else the origin of
   `qits.artifacts.maven.registry-url`; no credential, reads are unguarded) — up to three times on an
-  inconclusive answer, **outside** the locking transaction. Absent is an INFO, still-inconclusive an
-  ERROR, and both settle the row (`announced_at` + `skip_reason`) so no re-drive asks or announces
-  again. **The drop is deliberate and must not be "fixed" into an announcement**: qits-maintenance's
-  daily scan moves `mt_latest` to the version the store really holds, so a missed announcement costs
-  at most a day, while announcing an unverified one offers a version that may not exist.
+  inconclusive answer, **outside** the locking transaction. Absent is followed by the newest-version
+  question (below, under V30), an unchanged row is an INFO, still-inconclusive an ERROR, and every
+  outcome settles the row (`announced_at` + `skip_reason`) so no re-drive asks or announces again.
+  **The drop is deliberate and must not be "fixed" into an announcement**: qits-maintenance's daily
+  scan moves `mt_latest` to the version the store really holds, so a missed announcement costs at
+  most a day, while announcing an unverified one offers a version that may not exist.
+  <br>**`announce: if-published` (qits-561) was this bullet until qits-648 deleted it.** It was the
+  first checked declaration, for a repository whose own steps published conditionally; release B of
+  qits-640 kept such entries self-published (no upload, no SBOM submit, `path:`/`link:` refused)
+  while the three adopters moved to `contracts:`, and qits-648 removed the key, that transitional
+  path and `isIfPublished` together. `announce:` is now an unknown key in both parsers, refused with
+  a message naming `publish:` as its replacement (`CiArtifact.retiredKeyHint`). V29's `announce`
+  column stays, unwritten — an applied migration is never edited — and the join reads it only so a
+  row owed before the deletion folds into `isIfChanged` and keeps its store check.
 - **`GET /ci/api/repositories/{repoId}/release-phase?rev=` is the one endpoint this feature grew, and
   it exists because only the composer can answer.** qits-projects decides whether a released tag is
   publish-gated, and it decided by reading that tag's `release.yml` and asking whether it named an
@@ -2571,6 +2580,10 @@ announcement, null otherwise), both nullable, no default, no backfill, no constr
 policy is on the owed row for `finished_at`'s reason — the drive that closes the join is often not
 the run that owed it — and a skipped row carries `announced_at` like an announced one, so every
 existing reader of "owed" (`announced_at is null`) is right without learning the new column.
+**qits-648 retired the `announce` half**: nothing writes it since `announce:` was deleted, and it
+stays in the schema rather than being edited out of V29. A row owed before the deletion with
+`if-published` is decided as an `if-changed` one (`ReleaseJoin.isIfChanged`), and every row written
+before reads through the artifacts door as it did (`publish` null reads `always`).
 
 `V30__release_announcement_decision.sql` is that shape three more times (qits-640, release A):
 `publish` (`if-changed`, null for `always`), `decision` (`PUBLISHED`/`UNCHANGED`/`ABSENT`/
@@ -2582,8 +2595,8 @@ and `ReleaseJoin.decisionOf` reads it from `skip_reason`. The read is
 `(type, name)`, an empty list rather than a 404.
 
 Release B of qits-640 gave `UNCHANGED` its writer. A `publish: if-changed` row (a declared maven or
-npm entry, or a contract package `CiReleaseComposer` expanded from `contracts:`) is probed like an
-`if-published` one; ABSENT at the release version is followed by `CiArtifactPresence.newest`
+npm entry, or a contract package `CiReleaseComposer` expanded from `contracts:`) is probed at the
+release version; ABSENT there is followed by `CiArtifactPresence.newest`
 (`GET /artifacts/content-hashes/<type>/<name>/-/newest`), and a newest version `v` settles the row
 `UNCHANGED`, `unchanged_since = v`, `skip_reason = 'UNCHANGED'`, not announced; a 404 there is
 `ABSENT`. The same release composes the publishing postlude: one `qits artifacts publish

@@ -366,17 +366,10 @@ public final class CiReleaseComposer {
             .append(scalar(artifact.type().declared()))
             .append(", name: ")
             .append(scalar(artifact.name()));
-        // Both policies are emitted only when they are not the default, so every document composed
-        // before the keys existed composes byte-for-byte as it did (the goldens hold that). They
-        // have to reach the composed block at all because the join reads the run's trigger
-        // document, not release.yml. path:, link:, include: and sbom: do not: they reach only the
-        // postlude.
-        if (artifact.announceIfPublished()) {
-          out.append(", ")
-              .append(CiArtifact.ANNOUNCE_KEY)
-              .append(": ")
-              .append(scalar(artifact.announce().declared()));
-        }
+        // The policy is emitted only when it is not the default, so every document composed
+        // before the key existed composes byte-for-byte as it did (the goldens hold that). It has
+        // to reach the composed block at all because the join reads the run's trigger document,
+        // not release.yml. path:, link:, include: and sbom: do not: they reach only the postlude.
         if (artifact.publishIfChanged()) {
           out.append(", ")
               .append(CiArtifact.PUBLISH_KEY)
@@ -504,7 +497,7 @@ public final class CiReleaseComposer {
    * declared and therefore every release the fleet publishes today.
    */
   private static int postludeStep(List<CiStepDecl> steps, List<SlotArtifact> artifacts) {
-    if (steps.isEmpty() || artifacts.stream().noneMatch(SlotArtifact::submitsSbom)) {
+    if (steps.isEmpty() || artifacts.stream().noneMatch(SlotArtifact::hasSbom)) {
       return -1;
     }
     for (int i = steps.size() - 1; i >= 0; i--) {
@@ -683,7 +676,7 @@ public final class CiReleaseComposer {
       }
       for (int i = 0; i < sboms.size(); i++) {
         SlotArtifact artifact = sboms.get(i);
-        if (!artifact.submitsSbom()) {
+        if (!artifact.hasSbom()) {
           continue;
         }
         String submit =
@@ -816,14 +809,7 @@ public final class CiReleaseComposer {
         pending.add(i);
       }
     }
-    // A self-published maven sibling is already decided: the repository's own steps publish it, so
-    // an uploaded entry linking it waits on nothing here.
     Set<String> decided = new HashSet<>();
-    for (SlotArtifact artifact : artifacts) {
-      if (!artifact.uploaded() && artifact.artifact().type() == CiArtifact.Type.MAVEN) {
-        decided.add(CiReleaseSlotParser.artifactId(artifact.artifact().name()));
-      }
-    }
     List<Integer> order = new ArrayList<>();
     while (!pending.isEmpty()) {
       Integer next = null;

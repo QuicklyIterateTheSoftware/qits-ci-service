@@ -65,7 +65,7 @@ public record CiReleaseSlots(
    * --include …}, or {@code docs submit --openapi …} for an {@code @apidocs} entry's path — and the
    * composed {@code artifacts:} block never carries.
    *
-   * @param artifact the {@code {type, name[, announce]}} declaration, exactly as a trigger file
+   * @param artifact the {@code {type, name[, publish]}} declaration, exactly as a trigger file
    *     spells it
    * @param sbomPath the repository-relative path to the generated document, {@code ""} when none
    * @param path the module or package directory a {@code maven} or {@code npm} entry is uploaded
@@ -74,16 +74,13 @@ public record CiReleaseSlots(
    * @param link the artifactIds of the other {@code maven} entries of the same file this entry
    *     keeps as pom dependencies rather than bundling, empty when none
    * @param include the globs narrowing an {@code if-changed} entry's hash, empty when none
-   * @param selfPublished whether the entry declares {@code announce:}, which makes it the
-   *     repository's own to publish — see {@link #uploaded()}
    */
   public record SlotArtifact(
       CiArtifact artifact,
       String sbomPath,
       String path,
       List<String> link,
-      List<String> include,
-      boolean selfPublished) {
+      List<String> include) {
 
     /** The directory a {@code maven} or {@code npm} entry names when it says nothing. */
     public static final String DEFAULT_PATH = ".";
@@ -98,28 +95,12 @@ public record CiReleaseSlots(
 
     /** An entry declaring only what a trigger file can, plus its sbom path. */
     public SlotArtifact(CiArtifact artifact, String sbomPath) {
-      this(artifact, sbomPath, defaultPath(artifact.type()), List.of(), List.of(), false);
+      this(artifact, sbomPath, defaultPath(artifact.type()), List.of(), List.of());
     }
 
-    /**
-     * Whether the platform uploads this entry itself: every {@code maven} and {@code npm} one that
-     * does not declare {@code announce:}.
-     *
-     * <p><b>An {@code announce:} entry is self-published</b> (qits-620): it predates the platform
-     * postlude, and its repository's own release steps publish it — conditionally, which is what
-     * {@code if-published} exists for. The postlude neither uploads it nor submits an SBOM for it
-     * (a submit at a version the repository chose not to publish would describe nothing), and the
-     * join treats it exactly as before. qits-648 deletes {@code announce:}, and this component with
-     * it.
-     */
+    /** Whether the platform uploads this entry itself: every {@code maven} and {@code npm} one. */
     public boolean uploaded() {
-      return !selfPublished
-          && (artifact.type() == CiArtifact.Type.MAVEN || artifact.type() == CiArtifact.Type.NPM);
-    }
-
-    /** Whether the platform postlude submits this entry's SBOM: declared, and not self-published. */
-    public boolean submitsSbom() {
-      return hasSbom() && !selfPublished;
+      return artifact.type() == CiArtifact.Type.MAVEN || artifact.type() == CiArtifact.Type.NPM;
     }
 
     /** Whether this is an {@code @apidocs} docs entry naming the OpenAPI file the platform publishes. */
@@ -134,15 +115,6 @@ public record CiReleaseSlots(
 
     public boolean hasSbom() {
       return !sbomPath.isEmpty();
-    }
-
-    /**
-     * The entry's {@code announce:} policy. It rides on the {@link CiArtifact} rather than beside
-     * it, because unlike the sbom path it <b>does</b> reach the composed {@code artifacts:} block
-     * — the join that spends it reads the composed document, not this one.
-     */
-    public CiArtifact.Announce announce() {
-      return artifact.announce();
     }
   }
 

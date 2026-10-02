@@ -18,7 +18,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 /**
  * The sole production {@link CiArtifactPresence}: one {@code GET} against qits-artifacts' hosted
  * maven or npm repository, asking whether a declared artifact exists at a release version. It is
- * what {@code ReleaseJoin} asks before announcing an {@code announce: if-published} entry.
+ * what {@code ReleaseJoin} asks before announcing a {@code publish: if-changed} entry.
  *
  * <ul>
  *   <li><b>maven</b> — {@code GET <maven root>/<group path>/<artifactId>/<version>/<artifactId>-<version>.pom}:

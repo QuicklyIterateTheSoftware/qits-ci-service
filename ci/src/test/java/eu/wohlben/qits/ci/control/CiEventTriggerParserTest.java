@@ -571,25 +571,27 @@ public class CiEventTriggerParserTest {
   }
 
   @Test
-  public void announceIsTheOneOptionalArtifactKeyAndIsHeldToTheSameRule() {
-    // A composed release document carries it for an entry release.yml declared if-published, and a
-    // run's stored snapshot is reparsed by this parser, so it must be accepted here too.
-    CiEventTrigger trigger =
-        parser.parse(
-            PATH,
-            "event: SCMRelease\nartifacts:\n  - { type: npm, name: \"@qits/x\", announce:"
-                + " if-published }\n  - { type: docker, name: qits/x }\n");
-    assertEquals(CiArtifact.Announce.IF_PUBLISHED, trigger.artifacts().get(0).announce());
-    assertEquals(CiArtifact.Announce.ALWAYS, trigger.artifacts().get(1).announce());
-    CiConfigException e =
-        assertThrows(
-            CiConfigException.class,
-            () ->
-                parser.parse(
-                    PATH,
-                    "event: SCMRelease\nartifacts:\n  - { type: docker, name: qits/x, announce:"
-                        + " if-published }\n"));
-    assertTrue(e.getMessage().contains("artifact 0"), e.getMessage());
+  public void announceIsAnUnknownArtifactKeyNow() {
+    // qits-648 deleted it: a composed document no longer carries it, and a hand-written one that
+    // still does is told what replaced it rather than having it ignored.
+    for (String value : new String[] {"if-published", "always"}) {
+      CiConfigException e =
+          assertThrows(
+              CiConfigException.class,
+              () ->
+                  parser.parse(
+                      PATH,
+                      "event: SCMRelease\nartifacts:\n  - { type: docker, name: qits/x }\n  - {"
+                          + " type: npm, name: \"@qits/x\", announce: "
+                          + value
+                          + " }\n"));
+      assertTrue(
+          e.getMessage().contains("artifact 1 declares an unknown key 'announce'"), e.getMessage());
+      assertTrue(
+          e.getMessage()
+              .contains("announce: was deleted (qits-648); publish: if-changed replaced it"),
+          e.getMessage());
+    }
   }
 
   @Test
@@ -904,14 +906,5 @@ public class CiEventTriggerParserTest {
         unknown.getMessage().contains("publish 'sometimes' — it is 'always' (the default) or"
             + " 'if-changed'"),
         unknown.getMessage());
-    CiConfigException both =
-        assertThrows(
-            CiConfigException.class,
-            () ->
-                parser.parse(
-                    PATH,
-                    "event: SCMRelease\nartifacts:\n  - { type: maven, name: \"a:b\", announce:"
-                        + " if-published, publish: if-changed }\nsteps: []\n"));
-    assertTrue(both.getMessage().contains("declares both announce and publish"), both.getMessage());
   }
 }

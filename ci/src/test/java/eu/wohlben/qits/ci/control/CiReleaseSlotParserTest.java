@@ -275,58 +275,40 @@ public class CiReleaseSlotParserTest {
     }
   }
 
-  // --- announce (qits-561) ----------------------------------------------------------------------
+  // --- announce: is deleted (qits-648) ----------------------------------------------------------
 
   @Test
-  public void announceDefaultsToAlways() {
-    CiReleaseSlots slots =
-        parser.parse(PATH, "artifacts:\n  - { type: maven, name: \"eu.wohlben.qits:x\" }\n");
-    assertEquals(CiArtifact.Announce.ALWAYS, slots.artifacts().get(0).announce());
-    assertEquals(false, slots.artifacts().get(0).artifact().announceIfPublished());
+  public void announceIsAnUnknownKeyNamingTheEntryAndWhatReplacedIt() {
+    for (String value : new String[] {"if-published", "always"}) {
+      String message =
+          refused(
+                  "artifacts:\n  - { type: maven, name: \"eu.wohlben.qits:x\" }\n  - { type: npm,"
+                      + " name: \"@qits/x\", sbom: s.json, announce: "
+                      + value
+                      + " }\n")
+              .getMessage();
+      assertTrue(
+          message.startsWith(PATH + ": artifact 1 declares an unknown key 'announce'"), message);
+      assertTrue(
+          message.contains("announce: was deleted (qits-648); publish: if-changed replaced it"),
+          message);
+    }
   }
 
   @Test
-  public void announceIfPublishedIsAcceptedOnMavenAndNpm() {
+  public void everyMavenAndNpmEntryIsUploadedNow() {
     CiReleaseSlots slots =
         parser.parse(
             PATH,
             """
             artifacts:
-              - { type: maven, name: "eu.wohlben.qits:x", announce: if-published }
-              - { type: npm, name: "@qits/x", announce: if-published, sbom: out/sbom.json }
-              - { type: docker, name: qits/x, announce: always }
+              - { type: maven, name: "eu.wohlben.qits:x-golden-masters" }
+              - { type: npm, name: "@qits/x" }
+              - { type: docker, name: qits/x }
             """);
-    assertEquals(CiArtifact.Announce.IF_PUBLISHED, slots.artifacts().get(0).announce());
-    assertEquals(CiArtifact.Announce.IF_PUBLISHED, slots.artifacts().get(1).announce());
-    assertEquals("out/sbom.json", slots.artifacts().get(1).sbomPath());
-    assertEquals(
-        CiArtifact.Announce.ALWAYS,
-        slots.artifacts().get(2).announce(),
-        "spelling the default out is allowed on every type");
-  }
-
-  @Test
-  public void announceIfPublishedIsRefusedOnEveryOtherTypeNamingTheEntry() {
-    for (String type : new String[] {"docker", "daemon", "docs"}) {
-      String message =
-          refused(
-                  "artifacts:\n  - { type: maven, name: \"eu.wohlben.qits:x\" }\n  - { type: "
-                      + type
-                      + ", name: qits-thing, announce: if-published }\n")
-              .getMessage();
-      assertTrue(message.contains("artifact 1"), message);
-      assertTrue(message.contains(type) && message.contains("qits-thing"), message);
-      assertTrue(message.contains("if-published"), message);
-    }
-  }
-
-  @Test
-  public void anUnknownAnnounceValueIsRefused() {
-    assertTrue(
-        refused("artifacts:\n  - { type: maven, name: \"a:b\", announce: sometimes }\n")
-            .getMessage()
-            .contains("sometimes"));
-    refused("artifacts:\n  - { type: maven, name: \"a:b\", announce: true }\n");
+    assertTrue(slots.artifacts().get(0).uploaded());
+    assertTrue(slots.artifacts().get(1).uploaded());
+    assertFalse(slots.artifacts().get(2).uploaded());
   }
 
   @Test
@@ -621,60 +603,6 @@ public class CiReleaseSlotParserTest {
   }
 
   @Test
-  public void announceAndPublishOnOneEntryAreRefused() {
-    String message =
-        refused(
-                "artifacts:\n  - { type: maven, name: \"a:b\", sbom: s.json, announce:"
-                    + " if-published, publish: if-changed }\n")
-            .getMessage();
-    assertTrue(message.startsWith(PATH + ": artifact 0 ({ type: maven, name: a:b })"), message);
-    assertTrue(
-        message.contains(
-            "declares both announce and publish — publish: if-changed already announces only what"
-                + " was published; drop announce"),
-        message);
-  }
-
-  @Test
-  public void anAnnounceEntryIsSelfPublishedAndAPlainEntryIsNot() {
-    CiReleaseSlots slots =
-        parser.parse(
-            PATH,
-            """
-            artifacts:
-              - { type: maven, name: "eu.wohlben.qits:x-golden-masters", announce: if-published }
-              - { type: npm, name: "@qits/x", announce: always }
-              - { type: maven, name: "eu.wohlben.qits:x" }
-            """);
-    assertTrue(slots.artifacts().get(0).selfPublished());
-    assertFalse(slots.artifacts().get(0).uploaded());
-    assertTrue(slots.artifacts().get(1).selfPublished(), "declaring announce: at all is the rule");
-    assertFalse(slots.artifacts().get(1).uploaded());
-    assertFalse(slots.artifacts().get(2).selfPublished());
-    assertTrue(slots.artifacts().get(2).uploaded());
-  }
-
-  @Test
-  public void pathOrLinkOnAnAnnounceEntryIsRefused() {
-    String path =
-        refused(
-                "artifacts:\n  - { type: maven, name: \"a:b\", announce: if-published, path: m }\n")
-            .getMessage();
-    assertTrue(path.startsWith(PATH + ": artifact 0 ({ type: maven, name: a:b })"), path);
-    assertTrue(
-        path.contains(
-            "declares announce and path — an announce entry is published by the repository's own"
-                + " release steps"),
-        path);
-    String link =
-        refused(
-                "artifacts:\n  - { type: maven, name: \"a:c\" }\n  - { type: maven, name: \"a:b\","
-                    + " announce: if-published, link: [c] }\n")
-            .getMessage();
-    assertTrue(link.contains("declares announce and link"), link);
-  }
-
-  @Test
   public void includeIsRefusedOffAnIfChangedMavenOrNpmEntry() {
     String onDocker =
         refused(
@@ -728,10 +656,9 @@ public class CiReleaseSlotParserTest {
             .contains(
                 "'archetype', 'release-request', 'release', 'artifacts', 'userflows' and"
                     + " 'contracts'"));
+    String bogus = refused("artifacts:\n  - { type: maven, name: \"a:b\", bogus: 1 }\n").getMessage();
     assertTrue(
-        refused("artifacts:\n  - { type: maven, name: \"a:b\", bogus: 1 }\n")
-            .getMessage()
-            .contains(
-                "{ type, name[, sbom][, announce | publish][, path][, link][, include] }"));
+        bogus.endsWith("{ type, name[, sbom][, publish][, path][, link][, include] }"),
+        "no retired-key hint on a key that never existed: " + bogus);
   }
 }

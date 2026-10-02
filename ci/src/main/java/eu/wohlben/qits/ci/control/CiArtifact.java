@@ -21,62 +21,45 @@ import java.util.List;
  * <p>The price is honest and worth naming: a declaration can lie. A pipeline that goes green without
  * publishing announces an artifact that is not there. By default nothing here checks.
  *
- * <h2>The one observed case: {@code announce: if-published}</h2>
- *
- * <p>A {@code maven} or {@code npm} entry may declare {@code announce: if-published}, and for that
- * entry the join does look before it announces: {@link ReleaseJoin} asks qits-artifacts whether the
- * artifact exists at the release version (the version's {@code .pom} for maven, {@code
- * versions[<version>]} in the packument for npm, through {@link CiArtifactPresence}) and announces
- * only when it does. It is for a pipeline whose publish is conditional — a reactor that deploys
- * only the modules that changed — where the declaration is a superset of what a given release
- * really pushed. It is still not an observation of what the step <em>did</em>: it is a question put
- * to the store afterwards, which is why it stays limited to the two stores that answer it cheaply
- * and authoritatively, and why {@code always} remains the default and today's behaviour.
- *
  * <h2>{@code publish: if-changed} (qits-620): the platform uploads, and the join records which way it went</h2>
  *
- * <p>{@code publish: if-changed} is the content-gated successor of {@code announce:}. A {@code
- * maven} or {@code npm} entry is uploaded by the platform itself — one {@code qits artifacts publish
- * maven|npm} call the composed postlude makes per entry ({@link CiReleaseComposer}) — and with
- * {@code if-changed} only when its content differs from the newest published version. The join then
- * asks the store which way that went ({@link ReleaseJoin}): present at the release version is {@code
- * published}, absent with a newest version is {@code unchanged since <v>}, and only {@code
- * published} is announced. It rides on this record for {@code announce}'s reason: it has to survive
- * the round trip through the composed trigger document the join reads.
+ * <p>A {@code maven} or {@code npm} entry is uploaded by the platform itself — one {@code qits
+ * artifacts publish maven|npm} call the composed postlude makes per entry ({@link
+ * CiReleaseComposer}) — and with {@code if-changed} only when its content differs from the newest
+ * published version. That is the one declaration the join checks rather than believes: it asks the
+ * store which way the publish went ({@link ReleaseJoin}, through {@link CiArtifactPresence}) —
+ * present at the release version is {@code published}, absent with a newest version is {@code
+ * unchanged since <v>} — and only {@code published} is announced. It rides on this record because
+ * it has to survive the round trip through the composed trigger document the join reads.
+ *
+ * <p>History: {@code announce: if-published} (qits-561) was the first checked declaration, for a
+ * repository whose own steps published conditionally. {@code publish: if-changed} replaced it, and
+ * qits-648 deleted the key; it is an unknown key in both parsers now (see {@link
+ * #retiredKeyHint}).
  *
  * @param type the registry the artifact is published to
  * @param name the exact coordinate, as that registry names it
- * @param announce when a green, released run announces this entry — {@link Announce#ALWAYS} unless
- *     the file says otherwise
  * @param publish when the platform publishes this entry — {@link Publish#ALWAYS} unless the file
  *     says otherwise
  */
-public record CiArtifact(Type type, String name, Announce announce, Publish publish) {
-
-  /** The key a declaration spells the policy with, in a trigger file and in {@code release.yml}. */
-  public static final String ANNOUNCE_KEY = "announce";
+public record CiArtifact(Type type, String name, Publish publish) {
 
   /** The key a declaration spells its publish policy with (qits-620). */
   public static final String PUBLISH_KEY = "publish";
 
+  /**
+   * The key qits-648 deleted. Spelled here only so an unknown-key error can say what replaced it;
+   * no parser accepts it.
+   */
+  static final String RETIRED_ANNOUNCE_KEY = "announce";
+
   public CiArtifact {
-    announce = announce == null ? Announce.ALWAYS : announce;
     publish = publish == null ? Publish.ALWAYS : publish;
   }
 
-  /** A declaration with the default policy — announced whenever the join closes. */
+  /** A declaration with the default policy — published and announced at every release. */
   public CiArtifact(Type type, String name) {
-    this(type, name, Announce.ALWAYS, Publish.ALWAYS);
-  }
-
-  /** A declaration with an announce policy and the default publish policy. */
-  public CiArtifact(Type type, String name, Announce announce) {
-    this(type, name, announce, Publish.ALWAYS);
-  }
-
-  /** Whether the join must ask the store before announcing this entry. */
-  public boolean announceIfPublished() {
-    return announce == Announce.IF_PUBLISHED;
+    this(type, name, Publish.ALWAYS);
   }
 
   /** Whether the platform publishes this entry only when its content changed. */
@@ -86,8 +69,8 @@ public record CiArtifact(Type type, String name, Announce announce, Publish publ
 
   /**
    * When the platform publishes a declared {@code maven} or {@code npm} entry. <b>The declared
-   * spelling is also what the composed trigger document and the owed row carry</b>, {@link
-   * Announce}'s arrangement.
+   * spelling is also what the composed trigger document and the owed row carry</b>, so the
+   * vocabulary exists once.
    */
   public enum Publish {
     /** Published at every release version — the default. */
@@ -126,9 +109,9 @@ public record CiArtifact(Type type, String name, Announce announce, Publish publ
    * entry</b>, {@code always} included: the platform uploads only maven and npm, so on any other type
    * the word would describe a publish nothing here performs. An unknown value is a parse error too.
    *
-   * <p>What {@code if-changed} additionally needs from a {@code release.yml} entry — an {@code sbom:},
-   * and no {@code announce:} beside it — is the slot parser's, because a composed trigger document
-   * carries neither key's partner: a contract package is {@code if-changed} with no SBOM at all.
+   * <p>What {@code if-changed} additionally needs from a {@code release.yml} entry — an {@code
+   * sbom:} — is the slot parser's, because a composed trigger document carries no SBOM path: a
+   * contract package is {@code if-changed} with no SBOM at all.
    */
   static Publish requirePublish(
       Object value, Type type, String name, String configPath, int index) {
@@ -163,31 +146,19 @@ public record CiArtifact(Type type, String name, Announce announce, Publish publ
   }
 
   /**
-   * {@code announce:} and {@code publish:} on one entry, refused in both parsers: {@code publish:
-   * if-changed} already announces only what was published, so the pair is two policies for one
-   * decision.
+   * What an unknown-key error appends for {@code key}: for the deleted {@code announce:} (qits-648),
+   * that {@code publish:} replaced it; for any other key, nothing.
    */
-  static void requireOnePolicy(
-      boolean declaresAnnounce,
-      boolean declaresPublish,
-      Type type,
-      String name,
-      String configPath,
-      int index) {
-    if (declaresAnnounce && declaresPublish) {
-      throw new CiConfigException(
-          entry(configPath, index, type, name)
-              + " declares both "
-              + ANNOUNCE_KEY
-              + " and "
-              + PUBLISH_KEY
-              + " — "
-              + PUBLISH_KEY
-              + ": "
-              + Publish.IF_CHANGED.declared()
-              + " already announces only what was published; drop "
-              + ANNOUNCE_KEY);
-    }
+  static String retiredKeyHint(Object key) {
+    return RETIRED_ANNOUNCE_KEY.equals(key)
+        ? " — "
+            + RETIRED_ANNOUNCE_KEY
+            + ": was deleted (qits-648); "
+            + PUBLISH_KEY
+            + ": "
+            + Publish.IF_CHANGED.declared()
+            + " replaced it"
+        : "";
   }
 
   /**
@@ -203,95 +174,6 @@ public record CiArtifact(Type type, String name, Announce announce, Publish publ
         + ", name: "
         + name
         + " })";
-  }
-
-  /**
-   * When a declared artifact is announced. <b>The declared spelling is also what the composed
-   * trigger document and the owed row carry</b>, so the vocabulary exists once.
-   */
-  public enum Announce {
-    /** Announced whenever the join closes — the declaration is believed. The default. */
-    ALWAYS("always"),
-    /**
-     * Announced only when qits-artifacts holds the artifact at the release version. {@code maven}
-     * and {@code npm} only — see {@link #allowedFor}.
-     */
-    IF_PUBLISHED("if-published");
-
-    private final String declared;
-
-    Announce(String declared) {
-      this.declared = declared;
-    }
-
-    /** How a file spells it. */
-    public String declared() {
-      return declared;
-    }
-
-    /** The policy this keyword names, or null — the parsers turn null into a parse error. */
-    public static Announce of(String keyword) {
-      for (Announce announce : values()) {
-        if (announce.declared.equals(keyword)) {
-          return announce;
-        }
-      }
-      return null;
-    }
-
-    /**
-     * Whether a type may carry this policy. {@code if-published} needs a store that answers "does
-     * this version exist" authoritatively and cheaply, which the hosted maven and npm repositories
-     * do; a docker tag, a daemon binary and a docs site are not asked, so declaring it there would
-     * be a check that silently never happens.
-     */
-    public boolean allowedFor(Type type) {
-      return this == ALWAYS || type == Type.MAVEN || type == Type.NPM;
-    }
-  }
-
-  /**
-   * The {@code announce:} value of one artifact entry, for both parsers: absent is {@link
-   * Announce#ALWAYS}; an unknown word, a non-string, or {@code if-published} on a type that cannot
-   * carry it is a {@link CiConfigException} naming the file and the entry.
-   */
-  static Announce requireAnnounce(Object value, Type type, String name, String configPath, int index) {
-    if (value == null) {
-      return Announce.ALWAYS;
-    }
-    Announce announce = value instanceof String keyword ? Announce.of(keyword) : null;
-    if (announce == null) {
-      throw new CiConfigException(
-          configPath
-              + ": artifact "
-              + index
-              + " declares "
-              + ANNOUNCE_KEY
-              + " '"
-              + value
-              + "' — it is '"
-              + Announce.ALWAYS.declared()
-              + "' (the default) or '"
-              + Announce.IF_PUBLISHED.declared()
-              + "'");
-    }
-    if (!announce.allowedFor(type)) {
-      throw new CiConfigException(
-          configPath
-              + ": artifact "
-              + index
-              + " ({ type: "
-              + type.declared()
-              + ", name: "
-              + name
-              + " }) declares "
-              + ANNOUNCE_KEY
-              + ": "
-              + announce.declared()
-              + " — only a maven or npm entry can be checked against qits-artifacts before it is"
-              + " announced");
-    }
-    return announce;
   }
 
   /**

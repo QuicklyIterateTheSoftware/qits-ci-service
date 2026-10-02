@@ -129,18 +129,17 @@ public class CiEventTriggerParser {
           CiConfigSchema.CHECKOUT_KEY);
 
   /**
-   * The whole of an artifact declaration. Anything else in that mapping is an error. {@code
-   * announce} is optional and is what a composed release document carries for an entry {@code
-   * release.yml} declared {@code announce: if-published} — see {@link CiArtifact.Announce}.
+   * The whole of an artifact declaration. Anything else in that mapping is an error — {@code
+   * announce} included, since qits-648 deleted it.
    *
-   * <p>{@code publish} is the same arrangement for {@code publish: if-changed} (qits-620): the join
-   * reads the run's composed trigger document, never {@code release.yml}, so the policy has to
-   * survive the round trip. The composer writes it for a declared {@code if-changed} entry and for
+   * <p>{@code publish} is optional and is what a composed release document carries for {@code
+   * publish: if-changed} (qits-620): the join reads the run's composed trigger document, never
+   * {@code release.yml}, so the policy has to survive the round trip. The composer writes it for a declared {@code if-changed} entry and for
    * every contract package it expands; {@link CiArtifact#requirePublish} is the one rule both
    * parsers apply.
    */
   private static final Set<String> ARTIFACT_KEYS =
-      Set.of("type", "name", CiArtifact.ANNOUNCE_KEY, CiArtifact.PUBLISH_KEY);
+      Set.of("type", "name", CiArtifact.PUBLISH_KEY);
 
   /** The whole of a checkout declaration. Anything else in that mapping is an error. */
   private static final Set<String> CHECKOUT_KEYS =
@@ -666,22 +665,15 @@ public class CiEventTriggerParser {
                 + index
                 + " declares an unknown key '"
                 + key
-                + "' — an artifact is exactly { type, name[, announce | publish] }");
+                + "' — an artifact is exactly { type, name[, publish] }"
+                + CiArtifact.retiredKeyHint(key));
       }
     }
     CiArtifact.Type type = requireArtifactType(map.get("type"), configPath, index);
     String name = requireArtifactName(map.get("name"), configPath, index);
-    CiArtifact.requireOnePolicy(
-        map.containsKey(CiArtifact.ANNOUNCE_KEY),
-        map.containsKey(CiArtifact.PUBLISH_KEY),
-        type,
-        name,
-        configPath,
-        index);
     return new CiArtifact(
         type,
         name,
-        CiArtifact.requireAnnounce(map.get(CiArtifact.ANNOUNCE_KEY), type, name, configPath, index),
         CiArtifact.requirePublish(map.get(CiArtifact.PUBLISH_KEY), type, name, configPath, index));
   }
 

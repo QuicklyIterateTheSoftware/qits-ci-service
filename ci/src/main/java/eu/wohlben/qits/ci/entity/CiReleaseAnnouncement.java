@@ -106,12 +106,17 @@ public class CiReleaseAnnouncement extends PanacheEntityBase {
   public Instant announcedAt;
 
   /**
-   * The entry's {@code announce:} policy as the trigger document spelled it — {@code if-published}
-   * — or null for {@code always} (V29). On the owed row because the drive that closes the join is
-   * often not the run that owed it, and cannot read its trigger document back.
+   * The retired {@code announce:} policy (V29): {@link #LEGACY_IF_PUBLISHED} on a row owed before
+   * qits-648 deleted the key, null otherwise. <b>Nothing writes it any more</b>; the column stays
+   * because an applied migration is never edited, and the join reads it only so a row owed before
+   * the deletion keeps its store check — such a row is decided exactly as a {@link #publish} {@code
+   * if-changed} one is.
    */
   @Column(name = "announce", length = 16)
   public String announce;
+
+  /** The one value {@link #announce} ever held. */
+  public static final String LEGACY_IF_PUBLISHED = "if-published";
 
   /**
    * Why this row was settled WITHOUT an announcement — {@link #SKIPPED_ABSENT}, {@link
@@ -135,7 +140,8 @@ public class CiReleaseAnnouncement extends PanacheEntityBase {
 
   /**
    * The entry's {@code publish:} policy as the trigger document spelled it — {@code if-changed} —
-   * or null for {@code always} (V30), carried for {@link #announce}'s reason.
+   * or null for {@code always} (V30). On the owed row because the drive that closes the join is
+   * often not the run that owed it, and cannot read its trigger document back.
    */
   @Column(name = "publish", length = 16)
   public String publish;
