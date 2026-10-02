@@ -50,7 +50,15 @@ navigation-entries: services.details.CI:5, daemons.details.CI:5, libs.details.CI
 # qits_ci too, and one database cannot be two stores with two Flyway lineages, so it is named. The
 # name carries this repository, because every consumer of that jar declares a resource called
 # `eventstream` and they must not collide on one postgres.
-resources: postgresql:db, postgresql:eventstream:qits_ci_eventstream
+#
+# idp:client ASKS QITS-DEPLOYMENTS TO PROVISION THIS APPLICATION'S OWN QITS-IDP SERVICE CLIENT — id
+# `dev-qits-ci` (derived from env + application), roles `qits:system`, fixed in qits-idp code. The
+# deployer stores the secret the way it stores a database password, and injects
+# QITS_RESOURCE_IDP_URL, QITS_RESOURCE_IDP_CLIENT_ID and QITS_RESOURCE_IDP_CLIENT_SECRET, which the
+# `qits` oidc client reads before its old fallback keys.
+#
+# Ticket qits-162, epic qits-540 contract C3.
+resources: postgresql:db, postgresql:eventstream:qits_ci_eventstream, idp:client
 
 # STOP-FIRST: one CI process at a time. A start-first successor swept while the predecessor was
 # still claiming queued rows, and left a RUNNING run no worker owned (2026-08-23).
