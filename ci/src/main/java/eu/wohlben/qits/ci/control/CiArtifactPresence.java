@@ -2,7 +2,7 @@ package eu.wohlben.qits.ci.control;
 
 /**
  * Whether qits-artifacts holds one artifact at one version — the question {@link ReleaseJoin} asks
- * before it announces an {@code announce: if-published} entry, and the only place qits-ci observes
+ * before it announces a {@code publish: if-changed} entry, and the only place qits-ci observes
  * rather than believes what a release pipeline published (see {@link CiArtifact}).
  *
  * <p>The port is here and the client is not, for the rule every port in {@code ci/control} follows:
@@ -19,7 +19,7 @@ public interface CiArtifactPresence {
    * Asks once.
    *
    * @param type {@link CiArtifact.Type#MAVEN} or {@link CiArtifact.Type#NPM} — the only two types
-   *     that may declare {@code if-published}; any other is answered {@link Verdict#INCONCLUSIVE}
+   *     that may declare {@code if-changed}; any other is answered {@link Verdict#INCONCLUSIVE}
    * @param name the declared coordinate — {@code group:artifact} for maven, the package name for npm
    * @param version the release version
    */

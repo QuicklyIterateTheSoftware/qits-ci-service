@@ -521,46 +521,15 @@ public class ReleaseJoinTest extends CiTestSupport {
     assertEquals("CATASTROPHIC", releaseAnnouncer.published().get(0).priority());
   }
 
-  // --- announce: if-published (qits-561) --------------------------------------------------------
+  // --- the store check: publish: if-changed (qits-620; announce: if-published until qits-648)
 
   private static final String MAVEN_NAME = "eu.wohlben.qits:qits-thing-javalib";
 
-  private static final String IF_PUBLISHED_TRIGGER =
-      """
-      event: SCMRelease
-      artifacts:
-        - { type: maven, name: "eu.wohlben.qits:qits-thing-javalib", announce: if-published }
-        - { type: docker, name: qits/qits-thing }
-      steps:
-        - image: alpine:3
-          script: ./publish-tag.sh
-      """;
-
   @Test
-  public void anIfPublishedEntryThatIsPresentIsAnnouncedOnce() throws Exception {
-    artifactPresence.answer(CiArtifactPresence.Probe.present("200"));
-
-    ifPublishedRun();
-
-    assertEquals(
-        List.of(MAVEN_NAME, "qits/qits-thing"),
-        publishedNames(),
-        "present: announced as today, beside the always-entry");
-    assertEquals(
-        List.of(new FakeArtifactPresence.Asked(CiArtifact.Type.MAVEN, MAVEN_NAME, VERSION)),
-        artifactPresence.asked(),
-        "asked once, about the if-published entry at the release version — never the docker one");
-    assertTrue(owedFor(repoId, VERSION).isEmpty());
-    assertNull(rowFor(MAVEN_NAME).skipReason);
-    assertEquals(CiReleaseAnnouncement.DECISION_PUBLISHED, rowFor(MAVEN_NAME).decision);
-    assertEquals(CiReleaseAnnouncement.DECISION_PUBLISHED, rowFor("qits/qits-thing").decision);
-  }
-
-  @Test
-  public void anIfPublishedEntryThatIsAbsentIsSkippedAndNeverCheckedAgain() throws Exception {
+  public void anIfChangedEntryThatIsAbsentIsSkippedAndNeverCheckedAgain() throws Exception {
     artifactPresence.answer(CiArtifactPresence.Probe.absent("404"));
 
-    ifPublishedRun();
+    ifChangedRun();
 
     assertEquals(
         List.of("qits/qits-thing"),
@@ -581,14 +550,14 @@ public class ReleaseJoinTest extends CiTestSupport {
   }
 
   @Test
-  public void anIfPublishedEntryTheStoreNeverAnswersIsDroppedWithAnError() throws Exception {
+  public void anIfChangedEntryTheStoreNeverAnswersIsDroppedWithAnError() throws Exception {
     artifactPresence.otherwise(CiArtifactPresence.Probe.inconclusive("HTTP 503"));
     List<LogRecord> errors = new ArrayList<>();
     Handler capture = errorCapture(errors);
     Logger log = Logger.getLogger(ReleaseJoin.class.getName());
     log.addHandler(capture);
     try {
-      ifPublishedRun();
+      ifChangedRun();
     } finally {
       log.removeHandler(capture);
     }
@@ -600,30 +569,31 @@ public class ReleaseJoinTest extends CiTestSupport {
     String message = render(errors.get(0));
     assertTrue(message.contains(MAVEN_NAME), message);
     assertTrue(message.contains(VERSION), message);
+    assertTrue(message.contains("publish: if-changed"), message);
     assertEquals(CiReleaseAnnouncement.SKIPPED_UNVERIFIED, rowFor(MAVEN_NAME).skipReason);
-    assertEquals(CiReleaseAnnouncement.DECISION_UNVERIFIED, rowFor(MAVEN_NAME).decision);
     assertTrue(owedFor(repoId, VERSION).isEmpty(), "and settled, so no re-drive announces it");
   }
 
   @Test
-  public void anIfPublishedEntryThatAnswersOnTheSecondAttemptIsAnnounced() throws Exception {
+  public void anIfChangedEntryThatAnswersOnTheSecondAttemptIsAnnounced() throws Exception {
     artifactPresence.answer(
         CiArtifactPresence.Probe.inconclusive("HTTP 502"), CiArtifactPresence.Probe.present("200"));
 
-    ifPublishedRun();
+    ifChangedRun();
 
     assertEquals(List.of(MAVEN_NAME, "qits/qits-thing"), publishedNames());
     assertEquals(2, artifactPresence.asked().size());
   }
 
   @Test
-  public void anIfPublishedEntryOwedBeforeTheReleaseIsCheckedWhenTheReleaseArrives()
+  public void anIfChangedEntryOwedBeforeTheReleaseIsCheckedWhenTheReleaseArrives()
       throws Exception {
     fakeConfig.putTriggers(
         repoId,
         "main",
         HEAD,
-        new EventTriggerFile(TAG_TRIGGER_PATH, IF_PUBLISHED_TRIGGER.replace("SCMRelease", "SCMPublishTag")));
+        new EventTriggerFile(
+            TAG_TRIGGER_PATH, IF_CHANGED_TRIGGER.replace("SCMRelease", "SCMPublishTag")));
     tagRunWithInstalledTrigger();
     assertEquals(List.of(), artifactPresence.asked(), "nothing is asked while the join is open");
 
@@ -666,7 +636,7 @@ public class ReleaseJoinTest extends CiTestSupport {
   @Test
   public void theReadKeepsTheNewestRunsWordPerArtifact() throws Exception {
     artifactPresence.answer(CiArtifactPresence.Probe.absent("404"));
-    ifPublishedRun();
+    ifChangedRun();
     String older = rowFor(MAVEN_NAME).runId;
     // A second green release run of the same version — a retry, say — owes its rows again.
     QuarkusTransaction.requiringNew()
@@ -839,22 +809,45 @@ public class ReleaseJoinTest extends CiTestSupport {
         "the second question gets the same three attempts");
   }
 
+  /**
+   * A row owed before qits-648 under the deleted {@code announce: if-published} (V29's column, no
+   * {@code publish}) folds into the if-changed decision rather than keeping a path of its own: it
+   * keeps its store check, and absent with a newest version reads unchanged.
+   */
   @Test
-  public void anIfPublishedRowNeverAsksTheNewestQuestion() throws Exception {
+  public void aRowOwedUnderTheDeletedAnnounceKeyIsDecidedAsIfChanged() {
     artifactPresence.answer(CiArtifactPresence.Probe.absent("404"));
+    artifactPresence.answerNewest(CiArtifactPresence.Probe.newest("2026.811.90000", "200"));
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              CiReleaseAnnouncement legacy = new CiReleaseAnnouncement();
+              legacy.id = UUID.randomUUID().toString();
+              legacy.runId = "run-before-qits-648";
+              legacy.repoId = repoId;
+              legacy.repoName = repoId;
+              legacy.version = VERSION;
+              legacy.packageType = "maven";
+              legacy.packageName = MAVEN_NAME;
+              legacy.artifactIndex = 0;
+              legacy.finishedAt = Instant.now();
+              legacy.createdAt = Instant.now();
+              legacy.announce = CiReleaseAnnouncement.LEGACY_IF_PUBLISHED;
+              announcements.persist(legacy);
+            });
 
-    ifPublishedRun();
+    releaseArrives(repoId, repoId, VERSION);
 
-    assertEquals(CiReleaseAnnouncement.DECISION_ABSENT, rowFor(MAVEN_NAME).decision);
-    assertTrue(artifactPresence.askedNewest().isEmpty(), "announce: if-published keeps its rule");
-  }
-
-  private void ifPublishedRun() throws Exception {
-    deliver(
-        RELEASE_TRIGGER_PATH,
-        IF_PUBLISHED_TRIGGER,
-        ReleaseJoin.RELEASE_EVENT_NAME,
-        releasePayload());
+    assertEquals(List.of(), publishedNames(), "not announced: the store did not hold the version");
+    assertEquals(
+        List.of(new FakeArtifactPresence.Asked(CiArtifact.Type.MAVEN, MAVEN_NAME, VERSION)),
+        artifactPresence.asked());
+    CiReleaseAnnouncement row = rowFor(MAVEN_NAME);
+    assertEquals(CiReleaseAnnouncement.DECISION_UNCHANGED, row.decision);
+    assertEquals("2026.811.90000", row.unchangedSince);
+    ReleaseJoin.ReleasedArtifact read = join.releasedArtifacts(repoId, VERSION).get(0);
+    assertEquals("unchanged", read.decision(), "and it reads through the door like any other");
+    assertEquals("always", read.publish(), "it never stated a publish policy");
   }
 
   private void tagRunWithInstalledTrigger() throws Exception {
