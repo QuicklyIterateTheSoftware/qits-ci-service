@@ -8,7 +8,7 @@ checkout:
   sha: commitSha
 artifacts:
   - { type: 'docker', name: 'qits/qits-landing' }
-  - { type: 'maven', name: 'eu.wohlben.qits:qits-landing-pacts-qits-projects', publish: 'if-changed' }
+  - { type: 'maven', name: 'eu.wohlben.qits:qits-landing-pacts-qits-projects', publish: 'if-changed', section: 'contracts' }
 steps:
   - image: 'qits/build-images/ci-base:latest'
     timeout-seconds: 1800

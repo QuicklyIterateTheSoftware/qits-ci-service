@@ -238,7 +238,7 @@ public class CiEventTriggerCausationTest {
 
     String eventId = UUID.randomUUID().toString();
     dispatcher.dispatch(scmReleaseFrame(eventId, released));
-    awaitRuns(repoId, 1);
+    String runId = String.valueOf(awaitRuns(repoId, 1).get(0).get("id"));
 
     // One green run: its own BuildSuccessful — unchanged, every green run still announces itself —
     // and then one SoftwareRelease per declaration, which is the fan-out under test. The three
@@ -257,12 +257,16 @@ public class CiEventTriggerCausationTest {
     // repository by; projectId is simply ABSENT, because the stub git host's listing answers ids
     // alone and NON_NULL inclusion writes no key for what qits-ci does not know. That absence is the
     // shipped behaviour on an id-addressed platform and is asserted here rather than assumed.
+    // runId and section (qits-666) are the owed row's own facts: the run that published, and
+    // `artifacts` because a hand-written trigger file's entries are artifacts: entries.
     assertEquals(
         "{\"packageName\":\"@qits/ui-components\",\"packageType\":\"npm\",\"repoId\":\""
             + repoId
             + "\",\"repository\":\""
             + repoId
-            + "\",\"version\":\"1.4.0\"}",
+            + "\",\"runId\":\""
+            + runId
+            + "\",\"section\":\"artifacts\",\"version\":\"1.4.0\"}",
         npm.get("payload").asText());
 
     JsonNode image = json.readTree(puts.get(1).body());
@@ -273,7 +277,9 @@ public class CiEventTriggerCausationTest {
             + repoId
             + "\",\"repository\":\""
             + repoId
-            + "\",\"version\":\"1.4.0\"}",
+            + "\",\"runId\":\""
+            + runId
+            + "\",\"section\":\"artifacts\",\"version\":\"1.4.0\"}",
         image.get("payload").asText());
 
     // Every event is its own occurrence: the PUT path is the idempotency key, and two artifacts that

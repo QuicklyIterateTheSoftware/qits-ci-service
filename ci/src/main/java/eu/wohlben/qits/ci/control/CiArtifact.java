@@ -39,13 +39,27 @@ import java.util.List;
  *
  * @param type the registry the artifact is published to
  * @param name the exact coordinate, as that registry names it
+ * <h2>{@code section} (qits-666): which part of {@code release.yml} declared it</h2>
+ *
+ * <p>The composer folds a {@code contracts:} package into the composed {@code artifacts:} block as an
+ * ordinary {@code if-changed} entry, so without a marker the join could not tell it from an entry the
+ * repository declared. {@link Section#CONTRACTS} is that marker: the composer writes {@code section:
+ * contracts} on such an entry (and nothing on any other, so every other composed document is
+ * byte-identical), the trigger parser reads it back, the owed row keeps it, and it leaves on {@code
+ * SoftwareRelease.section}.
+ *
  * @param publish when the platform publishes this entry — {@link Publish#ALWAYS} unless the file
  *     says otherwise
+ * @param section which section declared it — {@link Section#ARTIFACTS} unless it is a contract
+ *     package
  */
-public record CiArtifact(Type type, String name, Publish publish) {
+public record CiArtifact(Type type, String name, Publish publish, Section section) {
 
   /** The key a declaration spells its publish policy with (qits-620). */
   public static final String PUBLISH_KEY = "publish";
+
+  /** The key a composed document marks a contract package with (qits-666). */
+  public static final String SECTION_KEY = "section";
 
   /**
    * The key qits-648 deleted. Spelled here only so an unknown-key error can say what replaced it;
@@ -55,6 +69,12 @@ public record CiArtifact(Type type, String name, Publish publish) {
 
   public CiArtifact {
     publish = publish == null ? Publish.ALWAYS : publish;
+    section = section == null ? Section.ARTIFACTS : section;
+  }
+
+  /** A declaration from {@code artifacts:} with the given policy. */
+  public CiArtifact(Type type, String name, Publish publish) {
+    this(type, name, publish, Section.ARTIFACTS);
   }
 
   /** A declaration with the default policy — published and announced at every release. */
@@ -101,6 +121,63 @@ public record CiArtifact(Type type, String name, Publish publish) {
       }
       return null;
     }
+  }
+
+  /**
+   * Which section of {@code release.yml} an entry came from. <b>The declared spelling is the wire
+   * value</b> of {@code SoftwareRelease.section} and what the owed row carries.
+   */
+  public enum Section {
+    /** An {@code artifacts:} entry — the default, and never written into a composed document. */
+    ARTIFACTS("artifacts"),
+    /** A contract package the platform packs and publishes from {@code contracts:}. */
+    CONTRACTS("contracts");
+
+    private final String declared;
+
+    Section(String declared) {
+      this.declared = declared;
+    }
+
+    /** How a file and the wire spell it. */
+    public String declared() {
+      return declared;
+    }
+
+    /** The section this keyword names, or null — the trigger parser turns null into an error. */
+    public static Section of(String keyword) {
+      for (Section section : values()) {
+        if (section.declared.equals(keyword)) {
+          return section;
+        }
+      }
+      return null;
+    }
+  }
+
+  /**
+   * The {@code section:} value of one composed-document entry. Absent is {@link Section#ARTIFACTS};
+   * an unknown value is a parse error naming the entry.
+   */
+  static Section requireSection(Object value, Type type, String name, String configPath, int index) {
+    if (value == null) {
+      return Section.ARTIFACTS;
+    }
+    Section section = value instanceof String keyword ? Section.of(keyword) : null;
+    if (section == null) {
+      throw new CiConfigException(
+          entry(configPath, index, type, name)
+              + " declares "
+              + SECTION_KEY
+              + " '"
+              + value
+              + "' — it is '"
+              + Section.ARTIFACTS.declared()
+              + "' (the default) or '"
+              + Section.CONTRACTS.declared()
+              + "'");
+    }
+    return section;
   }
 
   /**

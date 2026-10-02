@@ -872,6 +872,35 @@ public class CiEventTriggerParserTest {
   }
 
   @Test
+  public void sectionSurvivesTheComposedDocumentAndDefaultsToArtifacts() {
+    // qits-666: the composer marks every contract package `section: 'contracts'`; an entry with no
+    // mark is an artifacts: entry, and an unknown value is refused naming the entry.
+    CiEventTrigger trigger =
+        parser.parse(
+            PATH,
+            """
+            event: SCMRelease
+            artifacts:
+              - { type: docker, name: qits/x }
+              - { type: 'maven', name: 'eu.wohlben.qits:x-pacts-y', publish: 'if-changed', section: 'contracts' }
+            steps: []
+            """);
+    assertEquals(CiArtifact.Section.ARTIFACTS, trigger.artifacts().get(0).section());
+    assertEquals(CiArtifact.Section.CONTRACTS, trigger.artifacts().get(1).section());
+
+    CiConfigException unknown =
+        assertThrows(
+            CiConfigException.class,
+            () ->
+                parser.parse(
+                    PATH,
+                    "event: SCMRelease\nartifacts:\n  - { type: docker, name: qits/x, section:"
+                        + " userflows }\nsteps: []\n"));
+    assertTrue(
+        unknown.getMessage().contains("declares section 'userflows'"), unknown.getMessage());
+  }
+
+  @Test
   public void publishIsRefusedOnATypeThePlatformDoesNotUploadAndOnAnUnknownValue() {
     for (String type : new String[] {"docker", "daemon", "docs"}) {
       for (String value : new String[] {"if-changed", "always"}) {

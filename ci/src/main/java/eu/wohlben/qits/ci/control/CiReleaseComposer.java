@@ -392,6 +392,14 @@ public final class CiReleaseComposer {
               .append(": ")
               .append(scalar(artifact.publish().declared()));
         }
+        // A contract package is marked so the join can say which section declared it (qits-666);
+        // an artifacts: entry carries nothing, which keeps every other document byte-identical.
+        if (artifact.section() == CiArtifact.Section.CONTRACTS) {
+          out.append(", ")
+              .append(CiArtifact.SECTION_KEY)
+              .append(": ")
+              .append(scalar(artifact.section().declared()));
+        }
         out.append(" }\n");
       }
     }

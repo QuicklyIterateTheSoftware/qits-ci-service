@@ -1,0 +1,12 @@
+-- SoftwareRelease gains section (epic qits-621, task qits-666): which part of release.yml declared
+-- the announced package — 'artifacts' for an artifacts: entry, 'contracts' for a contract package
+-- the platform packed from contracts:. The composer marks a contract package in the composed
+-- trigger document, the join copies the mark onto the owed row here, and the announcement reads it
+-- back — because the drive that closes the join is often not the run that owed it (V10's reason).
+--
+-- V10's shape again: nullable, no default, no backfill, part of no constraint and carrying no
+-- index. Null is every row owed before this column, and such a row announces with no section.
+-- The event's other new field, runId, needs no column: run_id has been on the row since V3.
+--
+-- MigrationChecksumTest pins the SHA-256 of this file. Nothing earlier in the lineage is touched.
+alter table ci_release_announcement add column section varchar(16);

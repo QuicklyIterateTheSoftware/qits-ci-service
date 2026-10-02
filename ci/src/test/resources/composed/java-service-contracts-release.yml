@@ -9,8 +9,8 @@ checkout:
 artifacts:
   - { type: 'docker', name: 'qits/qits-projects' }
   - { type: 'docs', name: '@apidocs/qits-projects' }
-  - { type: 'maven', name: 'eu.wohlben.qits:qits-projects-golden-masters', publish: 'if-changed' }
-  - { type: 'npm', name: '@qits/projects-golden-masters', publish: 'if-changed' }
+  - { type: 'maven', name: 'eu.wohlben.qits:qits-projects-golden-masters', publish: 'if-changed', section: 'contracts' }
+  - { type: 'npm', name: '@qits/projects-golden-masters', publish: 'if-changed', section: 'contracts' }
 steps:
   - image: 'qits/build-images/ci-base:latest'
     timeout-seconds: 3600

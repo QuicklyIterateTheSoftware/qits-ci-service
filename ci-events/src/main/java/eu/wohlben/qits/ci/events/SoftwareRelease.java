@@ -86,6 +86,17 @@ import java.util.UUID;
  * NON_NULL} inclusion then leaves the key out of the payload entirely rather than writing a null, so
  * "the release stated no priority" is spelled by the key not being there and a consumer must never
  * read absence as a value.
+ *
+ * <p><b>{@code section} and {@code runId} are additive a third time (qits-666)</b>, appended after
+ * {@code priority} on the same terms. {@code section} says which part of the repository's {@code
+ * release.yml} declared the package: {@value #SECTION_ARTIFACTS} for an {@code artifacts:} entry,
+ * {@value #SECTION_CONTRACTS} for a contract package the platform packed from {@code contracts:} — so
+ * a consumer can tell the deployable or library a repository ships from the contract tree it
+ * publishes beside it without matching on a coordinate's spelling. {@code runId} is the release
+ * run's id in qits-ci, so a consumer can ask qits-ci about the run that published the package (its
+ * steps, its artifacts' publish decisions) without a search. Both <b>nullable</b>: an announcement
+ * owed before the fields existed carries no section, and a hand-built event carries neither — and
+ * absent is, as ever, a missing key rather than a null.
  */
 public record SoftwareRelease(
     UUID eventId,
@@ -97,8 +108,16 @@ public record SoftwareRelease(
     String packageType,
     String packageName,
     Instant occurredAt,
-    String priority)
+    String priority,
+    String section,
+    String runId)
     implements QitsEvent {
+
+  /** {@code section} for a package an {@code artifacts:} entry of {@code release.yml} declared. */
+  public static final String SECTION_ARTIFACTS = "artifacts";
+
+  /** {@code section} for a contract package the platform packed from {@code contracts:}. */
+  public static final String SECTION_CONTRACTS = "contracts";
 
   public SoftwareRelease {
     if (eventId == null) {
@@ -116,7 +135,9 @@ public record SoftwareRelease(
       String packageType,
       String packageName,
       Instant occurredAt,
-      String priority) {
+      String priority,
+      String section,
+      String runId) {
     this(
         null,
         repository,
@@ -127,7 +148,64 @@ public record SoftwareRelease(
         packageType,
         packageName,
         occurredAt,
-        priority);
+        priority,
+        section,
+        runId);
+  }
+
+  /**
+   * The canonical shape before {@code section} and {@code runId} — kept, delegating, so that adding
+   * two components at the end makes no existing construction site fail to compile.
+   */
+  public SoftwareRelease(
+      UUID eventId,
+      String repository,
+      String projectId,
+      String repoId,
+      String repoName,
+      String version,
+      String packageType,
+      String packageName,
+      Instant occurredAt,
+      String priority) {
+    this(
+        eventId,
+        repository,
+        projectId,
+        repoId,
+        repoName,
+        version,
+        packageType,
+        packageName,
+        occurredAt,
+        priority,
+        null,
+        null);
+  }
+
+  /** The publisher's constructor before {@code section} and {@code runId}; both are absent. */
+  public SoftwareRelease(
+      String repository,
+      String projectId,
+      String repoId,
+      String repoName,
+      String version,
+      String packageType,
+      String packageName,
+      Instant occurredAt,
+      String priority) {
+    this(
+        repository,
+        projectId,
+        repoId,
+        repoName,
+        version,
+        packageType,
+        packageName,
+        occurredAt,
+        priority,
+        null,
+        null);
   }
 
   /**

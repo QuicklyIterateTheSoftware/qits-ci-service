@@ -26,7 +26,8 @@ public class FakeReleaseAnnouncer implements ReleaseAnnouncer {
       String packageName,
       Instant finishedAt,
       String triggerEventId,
-      String priority) {}
+      String priority,
+      String section) {}
 
   private final List<Published> published = Collections.synchronizedList(new ArrayList<>());
 
@@ -49,7 +50,8 @@ public class FakeReleaseAnnouncer implements ReleaseAnnouncer {
       String packageName,
       Instant finishedAt,
       String triggerEventId,
-      String priority) {
+      String priority,
+      String section) {
     published.add(
         new Published(
             runId,
@@ -61,6 +63,7 @@ public class FakeReleaseAnnouncer implements ReleaseAnnouncer {
             packageName,
             finishedAt,
             triggerEventId,
-            priority));
+            priority,
+            section));
   }
 }

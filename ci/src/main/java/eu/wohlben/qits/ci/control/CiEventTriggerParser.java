@@ -137,9 +137,14 @@ public class CiEventTriggerParser {
    * {@code release.yml}, so the policy has to survive the round trip. The composer writes it for a declared {@code if-changed} entry and for
    * every contract package it expands; {@link CiArtifact#requirePublish} is the one rule both
    * parsers apply.
+   *
+   * <p>{@code section} is optional for the same round-trip reason (qits-666): the composer writes
+   * {@code section: contracts} on every contract package it expands, so the owed row and {@code
+   * SoftwareRelease.section} can say which part of {@code release.yml} declared it. Absent is {@code
+   * artifacts}.
    */
   private static final Set<String> ARTIFACT_KEYS =
-      Set.of("type", "name", CiArtifact.PUBLISH_KEY);
+      Set.of("type", "name", CiArtifact.PUBLISH_KEY, CiArtifact.SECTION_KEY);
 
   /** The whole of a checkout declaration. Anything else in that mapping is an error. */
   private static final Set<String> CHECKOUT_KEYS =
@@ -665,7 +670,7 @@ public class CiEventTriggerParser {
                 + index
                 + " declares an unknown key '"
                 + key
-                + "' — an artifact is exactly { type, name[, publish] }"
+                + "' — an artifact is exactly { type, name[, publish][, section] }"
                 + CiArtifact.retiredKeyHint(key));
       }
     }
@@ -674,7 +679,8 @@ public class CiEventTriggerParser {
     return new CiArtifact(
         type,
         name,
-        CiArtifact.requirePublish(map.get(CiArtifact.PUBLISH_KEY), type, name, configPath, index));
+        CiArtifact.requirePublish(map.get(CiArtifact.PUBLISH_KEY), type, name, configPath, index),
+        CiArtifact.requireSection(map.get(CiArtifact.SECTION_KEY), type, name, configPath, index));
   }
 
   private static CiArtifact.Type requireArtifactType(

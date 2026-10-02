@@ -929,6 +929,44 @@ public class ReleaseJoinTest extends CiTestSupport {
     }
   }
 
+  // --- section and runId (qits-666) ---------------------------------------------------------------
+
+  /**
+   * A composed release document as the composer writes it when {@code contracts:} is declared: the
+   * repository's own entry, then the contract package marked {@code section: 'contracts'}.
+   */
+  private static final String CONTRACTS_TRIGGER =
+      """
+      event: SCMRelease
+      artifacts:
+        - { type: 'docker', name: 'qits/qits-thing' }
+        - { type: 'maven', name: 'eu.wohlben.qits:qits-thing-pacts-qits-projects', publish: 'if-changed', section: 'contracts' }
+      steps:
+        - image: alpine:3
+          script: ./publish-tag.sh
+      """;
+
+  @Test
+  public void anAnnouncementCarriesItsSectionAndTheRunThatPublishedIt() throws Exception {
+    artifactPresence.answer(CiArtifactPresence.Probe.present("200"));
+
+    deliver(
+        RELEASE_TRIGGER_PATH, CONTRACTS_TRIGGER, ReleaseJoin.RELEASE_EVENT_NAME, releasePayload());
+
+    String runId = releaseRunRow().id;
+    List<FakeReleaseAnnouncer.Published> published = releaseAnnouncer.published();
+    assertEquals(2, published.size(), String.valueOf(published));
+    FakeReleaseAnnouncer.Published image = published.get(0);
+    assertEquals("qits/qits-thing", image.packageName());
+    assertEquals("artifacts", image.section(), "an artifacts: entry says so");
+    assertEquals(runId, image.runId());
+    FakeReleaseAnnouncer.Published contract = published.get(1);
+    assertEquals("eu.wohlben.qits:qits-thing-pacts-qits-projects", contract.packageName());
+    assertEquals("contracts", contract.section(), "the composer's mark rode the owed row");
+    assertEquals(runId, contract.runId());
+    assertEquals("contracts", rowFor(contract.packageName()).section);
+  }
+
   // --- fixtures ---------------------------------------------------------------------------------
 
   /** A green run of the tag-triggered release recipe, and the id of the tag event that caused it. */

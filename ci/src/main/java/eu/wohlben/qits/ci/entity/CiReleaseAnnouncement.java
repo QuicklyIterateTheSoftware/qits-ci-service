@@ -159,6 +159,15 @@ public class CiReleaseAnnouncement extends PanacheEntityBase {
   @Column(name = "unchanged_since", length = 128)
   public String unchangedSince;
 
+  /**
+   * Which section of {@code release.yml} declared the artifact — {@code artifacts} or {@code
+   * contracts} — as the composed trigger document marked it (V31, qits-666). On the owed row for
+   * {@link #publish}'s reason; it leaves on {@code SoftwareRelease.section}. Null on a row owed
+   * before the column existed, which then announces with no section at all.
+   */
+  @Column(name = "section", length = 16)
+  public String section;
+
   /** Published at the release version — believed for an {@code always} row, confirmed otherwise. */
   public static final String DECISION_PUBLISHED = "PUBLISHED";
 

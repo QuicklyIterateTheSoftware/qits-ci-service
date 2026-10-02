@@ -38,6 +38,11 @@ import java.time.Instant;
  * CanonicalJson}'s {@code NON_NULL} inclusion leaves the key out rather than writing a null, the
  * same spelling {@code projectId} and {@code repoName} already use.
  *
+ * <p><b>{@code section} and {@code runId} (qits-666) are the owed row's own facts.</b> {@code runId}
+ * is the run the port has always named for traceability and now also names on the wire; {@code
+ * section} is {@code artifacts} or {@code contracts}, which the composer marked on the composed
+ * trigger document and the join copied onto the owed row. Null in either is a missing key.
+ *
  * <p><b>qits-ci publishes this name and subscribes to nothing under it.</b> The wire name is the
  * simple class name, and qits-workspaces is simultaneously renaming <em>its</em> release event
  * {@code SoftwareRelease → SCMRelease} — the two halves of one cutover, after which this is the only
@@ -60,7 +65,8 @@ public class SoftwareReleaseAnnouncer implements ReleaseAnnouncer {
       String packageName,
       Instant finishedAt,
       String triggerEventId,
-      String priority) {
+      String priority,
+      String section) {
     bus.publish(
         new SoftwareRelease(
             repoId,
@@ -71,7 +77,9 @@ public class SoftwareReleaseAnnouncer implements ReleaseAnnouncer {
             packageType,
             packageName,
             finishedAt,
-            priority),
+            priority,
+            section,
+            runId),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 }

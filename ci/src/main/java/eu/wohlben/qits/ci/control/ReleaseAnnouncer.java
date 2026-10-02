@@ -38,9 +38,10 @@ public interface ReleaseAnnouncer {
   /**
    * A release pipeline went green and this artifact is published.
    *
-   * @param runId the run that published it. <b>Not on the wire</b> — the event names the artifact,
-   *     and a consumer installing a package has no business with a CI run id — but an announcement
-   *     that goes wrong has to be traceable to the run it came from.
+   * @param runId the run that published it, and <b>on the wire</b> since qits-666 as {@code
+   *     SoftwareRelease.runId}: a consumer that wants to know how the package was published — the
+   *     run's steps, its artifacts' publish decisions — asks qits-ci by this id rather than
+   *     searching. It also keeps an announcement that goes wrong traceable to its run.
    * @param repoId the repository whose pipeline published it — this repo, not the upstream that
    *     triggered it
    * @param projectId the project that repository belongs to, as qits-projects names it, so a consumer
@@ -70,6 +71,10 @@ public interface ReleaseAnnouncer {
    *     trigger WAS the release (the manual door, a hand-supplied event, which rides no bus and
    *     leaves no row), a release announced before the field existed, and a replay. Absent is a
    *     supported value and reaches the wire as a missing key.
+   * @param section which section of {@code release.yml} declared it — {@code artifacts} or {@code
+   *     contracts} ({@link CiArtifact.Section#declared()}), read off the owed row (qits-666).
+   *     <b>Null</b> on a row owed before the column existed; absent reaches the wire as a missing
+   *     key.
    */
   void onArtifactPublished(
       String runId,
@@ -81,5 +86,6 @@ public interface ReleaseAnnouncer {
       String packageName,
       Instant finishedAt,
       String triggerEventId,
-      String priority);
+      String priority,
+      String section);
 }

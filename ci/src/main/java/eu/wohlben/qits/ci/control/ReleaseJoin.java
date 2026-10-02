@@ -321,6 +321,7 @@ public class ReleaseJoin {
       owed.finishedAt = run.finishedAt();
       owed.triggerEventId = run.triggerEventId();
       owed.publish = artifact.publishIfChanged() ? artifact.publish().declared() : null;
+      owed.section = artifact.section().declared();
       owed.createdAt = now;
       announcements.persist(owed);
     }
@@ -512,7 +513,8 @@ public class ReleaseJoin {
                         row.packageName,
                         row.finishedAt,
                         row.triggerEventId,
-                        priority);
+                        priority,
+                        row.section);
                   } catch (RuntimeException e) {
                     LOG.warnf(
                         e, "Announcing artifact %s of run %s failed", row.packageName, row.runId);

@@ -2604,6 +2604,15 @@ maven|npm` per entry in `link:` order, `contract`, `contract-docs` and `docs sub
 on the release slot's last step (`CiReleaseComposer.publishStep`). The pinned
 `qits.platform-access-cli-binary.version` must name a CLI that has those commands.
 
+`V31__release_announcement_section.sql` is V10's shape once more (qits-666):
+`ci_release_announcement.section`, nullable, no default, no backfill, no constraint, no index.
+`SoftwareRelease` gained `section` (`artifacts` | `contracts`) and `runId`, both appended after
+`priority` with delegating constructors and NON_NULL absence. The composer marks each contract package
+it expands `section: 'contracts'` in the composed `artifacts:` block (nothing on any other entry, so no
+other golden moved), `CiEventTriggerParser` reads it back into `CiArtifact.section`, `ReleaseJoin.owe`
+copies it onto the owed row, and the announcement reads it off the row; `runId` needs no column, the
+row has carried `run_id` since V3. A row owed before V31 announces with no section.
+
 `V27__run_avoid_runners.sql` added `ci_run.avoid_runner_ids text` (nullable, no default, no
 constraint, no index) for "a retry is not handed back to the runner that failed it" (qits-556). That
 behaviour was removed (qits-443, the owner's ruling of 2026-09-30: never specified; with a single

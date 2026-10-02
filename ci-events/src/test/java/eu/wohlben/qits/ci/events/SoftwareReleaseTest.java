@@ -161,6 +161,95 @@ class SoftwareReleaseTest {
         CanonicalJson.payload(unaddressed));
   }
 
+  /**
+   * qits-666: {@code section} and {@code runId}, appended after {@code priority}. Set, they are two
+   * more keys in the canonical order; unset — every construction that predates them — they are
+   * absent rather than null, and the payload is byte-identical to what it was.
+   */
+  @Test
+  void theSectionAndTheRunIdAreKeysWhenSetAndAbsentWhenNot() {
+    SoftwareRelease contract =
+        new SoftwareRelease(
+            "repo-1",
+            "p-1",
+            "repo-1",
+            "qits-landing-app",
+            "2026.1002.1",
+            "maven",
+            "eu.wohlben.qits:qits-landing-pacts-qits-projects",
+            PUBLISHED,
+            null,
+            SoftwareRelease.SECTION_CONTRACTS,
+            "7c0e2f4a-1b2c-4d5e-8f90-123456789abc");
+
+    assertEquals(
+        "{\"packageName\":\"eu.wohlben.qits:qits-landing-pacts-qits-projects\","
+            + "\"packageType\":\"maven\",\"projectId\":\"p-1\",\"repoId\":\"repo-1\","
+            + "\"repoName\":\"qits-landing-app\",\"repository\":\"repo-1\","
+            + "\"runId\":\"7c0e2f4a-1b2c-4d5e-8f90-123456789abc\",\"section\":\"contracts\","
+            + "\"version\":\"2026.1002.1\"}",
+        CanonicalJson.payload(contract));
+
+    // Every older constructor still compiles and still means "neither": no key, not a null.
+    String before =
+        "{\"packageName\":\"@qits/ui-components\",\"packageType\":\"npm\","
+            + "\"projectId\":\"p-1\",\"repoId\":\"qits-spa-ui-components\","
+            + "\"repoName\":\"qits-spa-ui-components\","
+            + "\"repository\":\"qits-spa-ui-components\",\"version\":\"1.4.0\"}";
+    assertEquals(before, CanonicalJson.payload(anEvent()));
+    SoftwareRelease withPriority =
+        new SoftwareRelease(
+            "qits-spa-ui-components",
+            "p-1",
+            "qits-spa-ui-components",
+            "qits-spa-ui-components",
+            "1.4.0",
+            "npm",
+            "@qits/ui-components",
+            PUBLISHED,
+            null);
+    assertEquals(before, CanonicalJson.payload(withPriority));
+    SoftwareRelease oldCanonical =
+        new SoftwareRelease(
+            null,
+            "qits-spa-ui-components",
+            "p-1",
+            "qits-spa-ui-components",
+            "qits-spa-ui-components",
+            "1.4.0",
+            "npm",
+            "@qits/ui-components",
+            PUBLISHED,
+            null);
+    assertEquals(before, CanonicalJson.payload(oldCanonical));
+    assertEquals(null, oldCanonical.section());
+    assertEquals(null, oldCanonical.runId());
+  }
+
+  @Test
+  void anArtifactsEntryRoundTripsItsSectionAndRunId() {
+    SoftwareRelease published =
+        new SoftwareRelease(
+            "repo-1",
+            "p-1",
+            "repo-1",
+            "qits-ci-service",
+            "2026.1002.1",
+            "docker",
+            "qits/qits-ci",
+            PUBLISHED,
+            "HIGH",
+            SoftwareRelease.SECTION_ARTIFACTS,
+            "run-1");
+
+    SoftwareRelease received =
+        CanonicalJson.payloadTo(CanonicalJson.payload(published), SoftwareRelease.class);
+
+    assertEquals("artifacts", received.section());
+    assertEquals("run-1", received.runId());
+    assertEquals("HIGH", received.priority());
+  }
+
   @Test
   void theIdentityAndTheTimestampTravelInTheEnvelopeAndNeverInThePayload() {
     // occurredAt is an ordinary record component here rather than an override of a differently named

@@ -137,6 +137,9 @@ public class MigrationChecksumTest {
     PINS.put(
         "V30__release_announcement_decision.sql",
         "bf4c37d4249f284b8eee7805795c11b52e1ab7be5915b56a17de284f0b7d9e83");
+    PINS.put(
+        "V31__release_announcement_section.sql",
+        "dcc6988df149c23dd50cd41ec8bfc3c8ce8bafe095c7d3b7198f26672e1d5741");
   }
 
   @Test

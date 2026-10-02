@@ -856,9 +856,9 @@ public class CiReleaseComposerTest {
     assertTrue(
         document.contains(
             "  - { type: 'maven', name: 'eu.wohlben.qits:qits-projects-golden-masters', publish:"
-                + " 'if-changed' }\n"
-                + "  - { type: 'npm', name: '@qits/projects-golden-masters', publish: 'if-changed'"
-                + " }\n"),
+                + " 'if-changed', section: 'contracts' }\n"
+                + "  - { type: 'npm', name: '@qits/projects-golden-masters', publish: 'if-changed',"
+                + " section: 'contracts' }\n"),
         document);
     int maven = document.indexOf("publish contract --kind 'golden-masters' --ecosystem 'maven'");
     int npm = document.indexOf("publish contract --kind 'golden-masters' --ecosystem 'npm'");
@@ -883,6 +883,11 @@ public class CiReleaseComposerTest {
     assertEquals(CiArtifact.Publish.ALWAYS, release.artifacts().get(1).publish());
     assertEquals(CiArtifact.Publish.IF_CHANGED, release.artifacts().get(2).publish());
     assertEquals(CiArtifact.Publish.IF_CHANGED, release.artifacts().get(3).publish());
+    // qits-666: the contract packages are marked, so the join can say which section declared them.
+    assertEquals(CiArtifact.Section.ARTIFACTS, release.artifacts().get(0).section());
+    assertEquals(CiArtifact.Section.ARTIFACTS, release.artifacts().get(1).section());
+    assertEquals(CiArtifact.Section.CONTRACTS, release.artifacts().get(2).section());
+    assertEquals(CiArtifact.Section.CONTRACTS, release.artifacts().get(3).section());
   }
 
   /** qits-landing after qits-647: an app, a docker image and one consumer pact. */

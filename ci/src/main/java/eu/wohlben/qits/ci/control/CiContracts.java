@@ -145,7 +145,8 @@ public record CiContracts(String application, Source goldenMasters, Map<String, 
 
     /** The package as an ordinary artifact declaration — always {@code if-changed}. */
     public CiArtifact artifact() {
-      return new CiArtifact(ecosystem.type(), name, CiArtifact.Publish.IF_CHANGED);
+      return new CiArtifact(
+          ecosystem.type(), name, CiArtifact.Publish.IF_CHANGED, CiArtifact.Section.CONTRACTS);
     }
   }
 
