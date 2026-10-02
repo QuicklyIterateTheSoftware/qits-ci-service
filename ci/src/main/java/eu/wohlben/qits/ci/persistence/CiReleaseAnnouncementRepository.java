@@ -57,6 +57,21 @@ public class CiReleaseAnnouncementRepository
         .getResultList();
   }
 
+  /**
+   * Every row any run recorded for one release, <b>newest run first</b> and in declared order within
+   * a run — the read {@code GET /ci/api/repositories/{repoId}/releases/{version}/artifacts} makes.
+   * {@code repo} is matched against both spellings of the repository, the storage id and the public
+   * name, as {@code release-phase} takes it. Not deduplicated: a retried or re-triggered release run
+   * owes its rows again, and which of them speaks for an artifact is the caller's rule.
+   */
+  public List<CiReleaseAnnouncement> listForRelease(String repo, String version) {
+    return list(
+        "(repoId = ?1 or repoName = ?1) and version = ?2"
+            + " order by createdAt desc, runId, artifactIndex, id",
+        repo,
+        version);
+  }
+
   /** What one run owes or has already announced — the read a test and an operator make. */
   public List<CiReleaseAnnouncement> listForRun(String runId) {
     return list("runId = ?1 order by artifactIndex, id", runId);

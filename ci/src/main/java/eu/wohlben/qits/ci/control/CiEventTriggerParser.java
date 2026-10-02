@@ -132,8 +132,14 @@ public class CiEventTriggerParser {
    * The whole of an artifact declaration. Anything else in that mapping is an error. {@code
    * announce} is optional and is what a composed release document carries for an entry {@code
    * release.yml} declared {@code announce: if-published} — see {@link CiArtifact.Announce}.
+   *
+   * <p>{@code publish} is recognised so that it is refused by name — "arrives in a later qits-ci" —
+   * rather than as an unknown key: the composed document is where release B of qits-640 carries an
+   * entry's {@code publish: if-changed} to the join, and {@link CiArtifact#requirePublish} is the one
+   * place that switches it on.
    */
-  private static final Set<String> ARTIFACT_KEYS = Set.of("type", "name", CiArtifact.ANNOUNCE_KEY);
+  private static final Set<String> ARTIFACT_KEYS =
+      Set.of("type", "name", CiArtifact.ANNOUNCE_KEY, CiArtifact.PUBLISH_KEY);
 
   /** The whole of a checkout declaration. Anything else in that mapping is an error. */
   private static final Set<String> CHECKOUT_KEYS =
@@ -667,7 +673,8 @@ public class CiEventTriggerParser {
     return new CiArtifact(
         type,
         name,
-        CiArtifact.requireAnnounce(map.get(CiArtifact.ANNOUNCE_KEY), type, name, configPath, index));
+        CiArtifact.requireAnnounce(map.get(CiArtifact.ANNOUNCE_KEY), type, name, configPath, index),
+        CiArtifact.requirePublish(map.get(CiArtifact.PUBLISH_KEY), type, name, configPath, index));
   }
 
   private static CiArtifact.Type requireArtifactType(

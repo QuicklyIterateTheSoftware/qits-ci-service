@@ -126,4 +126,36 @@ public class CiReleaseAnnouncement extends PanacheEntityBase {
 
   /** qits-artifacts could not be asked conclusively within the join's attempts. */
   public static final String SKIPPED_UNVERIFIED = "UNVERIFIED";
+
+  /**
+   * The entry's {@code publish:} policy as the trigger document spelled it — {@code if-changed} —
+   * or null for {@code always} (V30), carried for {@link #announce}'s reason.
+   */
+  @Column(name = "publish", length = 16)
+  public String publish;
+
+  /**
+   * What was decided about this artifact at the release version (V30): {@link #DECISION_PUBLISHED},
+   * {@link #DECISION_UNCHANGED}, {@link #DECISION_ABSENT} or {@link #DECISION_UNVERIFIED}. Null while
+   * the row is owed — and on a row settled before the column existed, which {@link #skipReason}
+   * then speaks for.
+   */
+  @Column(name = "decision", length = 16)
+  public String decision;
+
+  /** The newest stored version when {@link #decision} is {@link #DECISION_UNCHANGED}, else null. */
+  @Column(name = "unchanged_since", length = 128)
+  public String unchangedSince;
+
+  /** Published at the release version — believed for an {@code always} row, confirmed otherwise. */
+  public static final String DECISION_PUBLISHED = "PUBLISHED";
+
+  /** Not published, because the content equals {@link #unchangedSince}'s (an if-changed row). */
+  public static final String DECISION_UNCHANGED = "UNCHANGED";
+
+  /** The store holds no such version, and nothing older either. */
+  public static final String DECISION_ABSENT = "ABSENT";
+
+  /** The store could not be asked conclusively within the join's attempts. */
+  public static final String DECISION_UNVERIFIED = "UNVERIFIED";
 }

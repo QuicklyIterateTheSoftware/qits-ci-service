@@ -154,6 +154,12 @@ class AgentReadAccessTest {
         .get("/ci/api/repositories/agent-read-no-such-repo/release-phase?rev=refs/tags/2026.9.1")
         .then()
         .statusCode(503);
+    // The release decision record (qits-640): a version nothing owed is an empty 200.
+    given()
+        .when()
+        .get("/ci/api/repositories/agent-read-no-such-repo/releases/2026.9.1/artifacts")
+        .then()
+        .statusCode(200);
   }
 
   @Test

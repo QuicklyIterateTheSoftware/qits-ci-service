@@ -3,6 +3,7 @@ package eu.wohlben.qits.ci.api;
 import eu.wohlben.qits.ci.control.CiEventTriggerService;
 import eu.wohlben.qits.ci.control.CiRunService;
 import eu.wohlben.qits.ci.control.CiRunners;
+import eu.wohlben.qits.ci.control.ReleaseJoin;
 import eu.wohlben.qits.ci.dto.CiRunDto;
 import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.UnavailableException;
@@ -53,7 +54,8 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * <p><b>One read here is scoped to a repository after all</b>, and it is the exception that says
  * what the resource is: {@link #releasePhase} asks whether a given rev of a given repository
  * composes a release pipeline. It sits here rather than beside the runs because it is not about a
- * run — it is about the repository at a rev, which is the only subject this resource has.
+ * run — it is about the repository at a rev, which is the only subject this resource has. {@link
+ * #releaseArtifacts} is its sibling about the repository at a released version (qits-640).
  *
  * <p>It had a companion, {@code POST /ci/api/repositories/{repoId}/release-composition}, which
  * reported what a candidate {@code release.yml} would compose beside the two hand-written trigger
@@ -78,6 +80,8 @@ public class CiRepositoryController {
   @Inject CiRunners runners;
 
   @Inject CiEventTriggerService triggers;
+
+  @Inject ReleaseJoin releaseJoin;
 
   public record ListRepositoryIdsResponse(List<String> repositoryIds) {}
 
@@ -247,5 +251,49 @@ public class CiRepositoryController {
         rev,
         phase.verdict() == CiEventTriggerService.Verdict.DECLARED,
         phase.detail());
+  }
+
+  /**
+   * The decision record of one release: every artifact a green release run owed for it, and what
+   * became of each. {@code repository} and {@code version} come back verbatim as the caller sent
+   * them, {@link ReleasePhaseResponse}'s rule.
+   */
+  public record ReleaseArtifactsResponse(
+      String repository, String version, List<ReleaseJoin.ReleasedArtifact> artifacts) {}
+
+  /**
+   * What qits-ci recorded about each artifact of one release (qits-640): its publish policy and what
+   * was decided at that version — {@code pending} while the release join is open, then {@code
+   * published}, {@code unchanged} (with {@code unchangedSince}), {@code absent} or {@code
+   * unverified}.
+   *
+   * <p>It is the record the release join keeps, not a declaration: qits-projects' release view lists
+   * every entry {@code release.yml} declares at the tag, and that over-reports an entry the platform
+   * decided not to publish at that version. One row per artifact, newest run first. A row settled
+   * before the decision was recorded reads from its {@code skip_reason}: none is {@code published}.
+   *
+   * <p><b>200 with an empty list is an answer, never a 404</b>: it means no green release run owed
+   * anything for that version — not released yet, released by a pipeline that declares no artifacts,
+   * or a version nobody built. A read, so it calls no machine guard, and it carries the class's
+   * three roles.
+   *
+   * @param repoId the repository, by public name or by storage id
+   * @param version the release version; blank is a 400
+   */
+  @GET
+  @Path("/{repoId}/releases/{version}/artifacts")
+  @Operation(summary = "What was decided about each artifact of one release")
+  @APIResponse(
+      responseCode = "200",
+      description = "The decision record, one entry per artifact; empty when nothing was owed",
+      content = @Content(schema = @Schema(implementation = ReleaseArtifactsResponse.class)))
+  @APIResponse(responseCode = "400", description = "Blank version")
+  public ReleaseArtifactsResponse releaseArtifacts(
+      @PathParam("repoId") String repoId, @PathParam("version") String version) {
+    if (version == null || version.isBlank()) {
+      throw new BadRequestException("A version is required");
+    }
+    return new ReleaseArtifactsResponse(
+        repoId, version, releaseJoin.releasedArtifacts(repoId, version.trim()));
   }
 }

@@ -35,26 +35,135 @@ import java.util.List;
  *
  * @param type the registry the artifact is published to
  * @param name the exact coordinate, as that registry names it
+ * <h2>{@code publish:} (qits-620), and why it is here before it is accepted</h2>
+ *
+ * <p>{@code publish: if-changed} is the content-gated successor of {@code announce:}: the platform
+ * itself uploads the entry, only when its content differs from the newest published version, and
+ * the join records which way that went. It rides on this record for {@code announce}'s reason — it
+ * has to survive the round trip through the composed trigger document the join reads. <b>This
+ * qits-ci recognises the key and refuses it</b> ({@link #requirePublish}): release A of qits-640
+ * ships the decision record and its read door first, and release B, which composes the publishing
+ * postlude, is what accepts it. Every entry is therefore {@link Publish#ALWAYS} until then.
+ *
+ * @param type the registry the artifact is published to
+ * @param name the exact coordinate, as that registry names it
  * @param announce when a green, released run announces this entry — {@link Announce#ALWAYS} unless
  *     the file says otherwise
+ * @param publish when the platform publishes this entry — {@link Publish#ALWAYS}, the only value
+ *     this qits-ci parses
  */
-public record CiArtifact(Type type, String name, Announce announce) {
+public record CiArtifact(Type type, String name, Announce announce, Publish publish) {
 
   /** The key a declaration spells the policy with, in a trigger file and in {@code release.yml}. */
   public static final String ANNOUNCE_KEY = "announce";
 
+  /** The key a declaration spells its publish policy with (qits-620; refused until release B). */
+  public static final String PUBLISH_KEY = "publish";
+
+  /**
+   * The sentence every key this qits-ci recognises but does not yet act on ends with. One spelling,
+   * so a person reading any of the refusals can grep for all of them.
+   */
+  static final String ARRIVES_LATER = "arrives in a later qits-ci";
+
   public CiArtifact {
     announce = announce == null ? Announce.ALWAYS : announce;
+    publish = publish == null ? Publish.ALWAYS : publish;
   }
 
   /** A declaration with the default policy — announced whenever the join closes. */
   public CiArtifact(Type type, String name) {
-    this(type, name, Announce.ALWAYS);
+    this(type, name, Announce.ALWAYS, Publish.ALWAYS);
+  }
+
+  /** A declaration with an announce policy and the default publish policy. */
+  public CiArtifact(Type type, String name, Announce announce) {
+    this(type, name, announce, Publish.ALWAYS);
   }
 
   /** Whether the join must ask the store before announcing this entry. */
   public boolean announceIfPublished() {
     return announce == Announce.IF_PUBLISHED;
+  }
+
+  /** Whether the platform publishes this entry only when its content changed. */
+  public boolean publishIfChanged() {
+    return publish == Publish.IF_CHANGED;
+  }
+
+  /**
+   * When the platform publishes a declared {@code maven} or {@code npm} entry. <b>The declared
+   * spelling is also what the composed trigger document and the owed row carry</b>, {@link
+   * Announce}'s arrangement.
+   */
+  public enum Publish {
+    /** Published at every release version — the default, and what every entry is today. */
+    ALWAYS("always"),
+    /**
+     * Published only when the content differs from the newest published version; otherwise the join
+     * records {@code unchanged since <v>} and announces nothing.
+     */
+    IF_CHANGED("if-changed");
+
+    private final String declared;
+
+    Publish(String declared) {
+      this.declared = declared;
+    }
+
+    /** How a file spells it. */
+    public String declared() {
+      return declared;
+    }
+
+    /** The policy this keyword names, or null — the parsers turn null into a parse error. */
+    public static Publish of(String keyword) {
+      for (Publish publish : values()) {
+        if (publish.declared.equals(keyword)) {
+          return publish;
+        }
+      }
+      return null;
+    }
+  }
+
+  /**
+   * The {@code publish:} value of one artifact entry, for both parsers. Absent is {@link
+   * Publish#ALWAYS}; <b>present is refused, whatever it says</b>, because this qits-ci composes no
+   * publishing postlude yet and an accepted {@code if-changed} would be a gate nothing applies.
+   * Release B of qits-640 replaces the refusal with the real rule (the value, the type, the {@code
+   * sbom:} it needs, and the clash with {@code announce:}) — this method is the one place it lands.
+   */
+  static Publish requirePublish(
+      Object value, Type type, String name, String configPath, int index) {
+    if (value == null) {
+      return Publish.ALWAYS;
+    }
+    throw new CiConfigException(
+        entry(configPath, index, type, name)
+            + " declares "
+            + PUBLISH_KEY
+            + ": "
+            + value
+            + " — "
+            + PUBLISH_KEY
+            + ": "
+            + ARRIVES_LATER);
+  }
+
+  /**
+   * How a parse error names one entry: the file, the index and the entry itself, {@code
+   * <file>: artifact <i> ({ type: maven, name: a:b })}.
+   */
+  static String entry(String configPath, int index, Type type, String name) {
+    return configPath
+        + ": artifact "
+        + index
+        + " ({ type: "
+        + type.declared()
+        + ", name: "
+        + name
+        + " })";
   }
 
   /**

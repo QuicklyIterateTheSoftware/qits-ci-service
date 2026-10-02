@@ -552,6 +552,8 @@ public class ReleaseJoinTest extends CiTestSupport {
         "asked once, about the if-published entry at the release version — never the docker one");
     assertTrue(owedFor(repoId, VERSION).isEmpty());
     assertNull(rowFor(MAVEN_NAME).skipReason);
+    assertEquals(CiReleaseAnnouncement.DECISION_PUBLISHED, rowFor(MAVEN_NAME).decision);
+    assertEquals(CiReleaseAnnouncement.DECISION_PUBLISHED, rowFor("qits/qits-thing").decision);
   }
 
   @Test
@@ -566,6 +568,8 @@ public class ReleaseJoinTest extends CiTestSupport {
         "absent: no SoftwareRelease for it, and the always-entry is unaffected");
     CiReleaseAnnouncement skipped = rowFor(MAVEN_NAME);
     assertEquals(CiReleaseAnnouncement.SKIPPED_ABSENT, skipped.skipReason);
+    assertEquals(CiReleaseAnnouncement.DECISION_ABSENT, skipped.decision);
+    assertNull(skipped.unchangedSince);
     assertNotNull(skipped.announcedAt, "settled like an announced row, so nothing owes it");
     assertTrue(owedFor(repoId, VERSION).isEmpty());
 
@@ -597,6 +601,7 @@ public class ReleaseJoinTest extends CiTestSupport {
     assertTrue(message.contains(MAVEN_NAME), message);
     assertTrue(message.contains(VERSION), message);
     assertEquals(CiReleaseAnnouncement.SKIPPED_UNVERIFIED, rowFor(MAVEN_NAME).skipReason);
+    assertEquals(CiReleaseAnnouncement.DECISION_UNVERIFIED, rowFor(MAVEN_NAME).decision);
     assertTrue(owedFor(repoId, VERSION).isEmpty(), "and settled, so no re-drive announces it");
   }
 
@@ -628,6 +633,82 @@ public class ReleaseJoinTest extends CiTestSupport {
     assertEquals(
         1, artifactPresence.asked().size(), "the policy rode the owed row to the later drive");
     assertEquals(List.of("qits/qits-thing"), publishedNames());
+  }
+
+  // --- the decision record (qits-640, V30) -------------------------------------------------------
+
+  @Test
+  public void anAlwaysRowIsRecordedPublishedWhenAnnouncedAndPendingWhileOwed() throws Exception {
+    tagRun();
+    CiReleaseAnnouncement owed = rowFor("qits/qits-thing");
+    assertNull(owed.decision, "nothing is decided while the join is open");
+    assertNull(owed.publish, "an always-entry states no publish policy on the row");
+    assertEquals(
+        List.of(
+            new ReleaseJoin.ReleasedArtifact(
+                "docker", "qits/qits-thing", "always", "pending", null, owed.runId, null)),
+        join.releasedArtifacts(repoId, VERSION));
+
+    releaseArrives(repoId, repoId, VERSION);
+
+    CiReleaseAnnouncement settled = rowFor("qits/qits-thing");
+    assertEquals(CiReleaseAnnouncement.DECISION_PUBLISHED, settled.decision);
+    assertNull(settled.skipReason);
+    assertEquals(1, releaseAnnouncer.published().size(), "SoftwareRelease exactly as before");
+    ReleaseJoin.ReleasedArtifact read = join.releasedArtifacts(repoId, VERSION).get(0);
+    assertEquals("published", read.decision());
+    assertEquals(settled.announcedAt, read.decidedAt());
+    assertEquals(
+        read, join.releasedArtifacts(repoId, VERSION).get(0), "and the read is stable");
+    assertTrue(join.releasedArtifacts(repoId, "2026.1.1").isEmpty(), "another version owes nothing");
+  }
+
+  @Test
+  public void theReadKeepsTheNewestRunsWordPerArtifact() throws Exception {
+    artifactPresence.answer(CiArtifactPresence.Probe.absent("404"));
+    ifPublishedRun();
+    String older = rowFor(MAVEN_NAME).runId;
+    // A second green release run of the same version — a retry, say — owes its rows again.
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              CiReleaseAnnouncement newer = new CiReleaseAnnouncement();
+              newer.id = UUID.randomUUID().toString();
+              newer.runId = "newer-" + older;
+              newer.repoId = repoId;
+              newer.repoName = repoId;
+              newer.version = VERSION;
+              newer.packageType = "maven";
+              newer.packageName = MAVEN_NAME;
+              newer.artifactIndex = 0;
+              newer.finishedAt = Instant.now();
+              newer.createdAt = Instant.now().plusSeconds(60);
+              announcements.persist(newer);
+            });
+
+    List<ReleaseJoin.ReleasedArtifact> read = join.releasedArtifacts(repoId, VERSION);
+
+    assertEquals(
+        List.of(MAVEN_NAME, "qits/qits-thing"),
+        read.stream().map(ReleaseJoin.ReleasedArtifact::name).toList(),
+        "one entry per artifact");
+    assertEquals("newer-" + older, read.get(0).runId());
+    assertEquals("pending", read.get(0).decision(), "the newest run's word, not the older absent");
+    assertEquals("published", read.get(1).decision());
+  }
+
+  @Test
+  public void aRowSettledBeforeV30ReadsFromItsSkipReason() {
+    CiReleaseAnnouncement row = new CiReleaseAnnouncement();
+    assertEquals("pending", ReleaseJoin.decisionOf(row));
+    row.announcedAt = Instant.now();
+    assertEquals("published", ReleaseJoin.decisionOf(row));
+    row.skipReason = CiReleaseAnnouncement.SKIPPED_ABSENT;
+    assertEquals("absent", ReleaseJoin.decisionOf(row));
+    row.skipReason = CiReleaseAnnouncement.SKIPPED_UNVERIFIED;
+    assertEquals("unverified", ReleaseJoin.decisionOf(row));
+    row.decision = CiReleaseAnnouncement.DECISION_UNCHANGED;
+    assertEquals("unchanged", ReleaseJoin.decisionOf(row), "a recorded decision wins");
   }
 
   private void ifPublishedRun() throws Exception {

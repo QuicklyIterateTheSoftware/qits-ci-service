@@ -499,6 +499,17 @@ components:
           type: string
         socketUrl:
           type: string
+    ReleaseArtifactsResponse:
+      type: object
+      properties:
+        repository:
+          type: string
+        version:
+          type: string
+        artifacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReleasedArtifact"
     ReleasePhaseResponse:
       type: object
       properties:
@@ -510,6 +521,23 @@ components:
           type: boolean
         detail:
           type: string
+    ReleasedArtifact:
+      type: object
+      properties:
+        type:
+          type: string
+        name:
+          type: string
+        publish:
+          type: string
+        decision:
+          type: string
+        unchangedSince:
+          type: string
+        runId:
+          type: string
+        decidedAt:
+          $ref: "#/components/schemas/Instant"
     RepositorySummaryDto:
       type: object
       properties:
@@ -756,6 +784,41 @@ paths:
         "503":
           description: "Not answered — the repository is in no catalogue here, or\
             \ the slot file or its archetype could not be read. Retry."
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Repository Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:system
+        - qits:agent
+  /ci/api/repositories/{repoId}/releases/{version}/artifacts:
+    get:
+      summary: What was decided about each artifact of one release
+      parameters:
+      - name: repoId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: "The decision record, one entry per artifact; empty when nothing\
+            \ was owed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseArtifactsResponse"
+        "400":
+          description: Blank version
         "401":
           description: Not Authorized
         "403":
@@ -1371,4 +1434,4 @@ paths:
         - qits:agent
 info:
   title: qits-ci API
-  version: 2026.929.121335
+  version: 2026.1002.11054

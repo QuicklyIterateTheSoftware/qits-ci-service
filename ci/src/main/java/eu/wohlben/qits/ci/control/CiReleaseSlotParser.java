@@ -4,6 +4,9 @@ import eu.wohlben.qits.ci.control.CiReleaseSlots.SlotArtifact;
 import eu.wohlben.qits.ci.control.CiReleaseSlots.Userflows;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -33,8 +36,9 @@ import java.util.Set;
  * <p>{@code archetype}, {@code release-request}, {@code release}, {@code artifacts} and {@code
  * userflows} are all of it; anything else is a {@link CiConfigException} naming the file. So is a
  * slot that is not a list, a slot that is an <em>empty</em> list, an {@code artifacts:} entry that
- * is not {@code {type, name[, sbom][, announce]}} (with {@code announce: if-published} on a {@code
- * maven} or {@code npm} entry only), and a {@code userflows:} that is neither a boolean nor a
+ * is not {@code {type, name[, sbom][, announce][, path][, link]}} (with {@code announce:
+ * if-published} on a {@code maven} or {@code npm} entry only, {@code path:} likewise, and {@code
+ * link:} on {@code maven} only), and a {@code userflows:} that is neither a boolean nor a
  * name. The reason is sharper here than in a trigger file: this document is compiled into two
  * pipelines that publish, so a key that silently parsed to nothing is a release whose SBOM was
  * never submitted, or a QA gate that ran nothing and went green. Never a silent default.
@@ -54,6 +58,15 @@ import java.util.Set;
  * eu.wohlben.qits:qits-eventstream}, {@code out/sbom.json}) and refuses quotes, whitespace, {@code
  * $} and backticks by construction. The composer single-quotes them anyway; belt and braces, since
  * one of the two is what would have to be got right forever.
+ *
+ * <h2>Recognised before it is accepted: the qits-620 vocabulary</h2>
+ *
+ * <p>{@code publish:}, {@code include:}, a docs entry's {@code path:} and the top-level {@code
+ * contracts:} are known words here and each is refused naming the entry, "… arrives in a later
+ * qits-ci" — never as an unknown key, so an adopter who wrote one ahead of the platform learns that
+ * it is early rather than that it is misspelt. {@code path:} and {@code link:} on a {@code maven} or
+ * {@code npm} entry are accepted and fully validated, and compose nothing yet. That split is release
+ * A of qits-640; release B accepts the rest and composes the publishing postlude that spends them.
  *
  * <h2>An archetype recipe is this document minus one key</h2>
  *
@@ -84,6 +97,18 @@ public class CiReleaseSlotParser {
 
   static final String SBOM_KEY = "sbom";
 
+  /** The module or package directory a maven or npm entry is uploaded from (qits-620). */
+  static final String PATH_KEY = "path";
+
+  /** The sibling maven entries an entry keeps as pom dependencies rather than bundling (qits-620). */
+  static final String LINK_KEY = "link";
+
+  /** Globs narrowing an {@code if-changed} hash (qits-620; refused until release B of qits-640). */
+  static final String INCLUDE_KEY = "include";
+
+  /** The contracts declaration (qits-620; refused until release B of qits-640). */
+  static final String CONTRACTS_KEY = "contracts";
+
   /** The whole top-level vocabulary of a repository's slot file. */
   private static final Set<String> TOP_LEVEL_KEYS =
       Set.of(
@@ -91,15 +116,26 @@ public class CiReleaseSlotParser {
           RELEASE_REQUEST_KEY,
           RELEASE_KEY,
           CiConfigSchema.ARTIFACTS_KEY,
-          USERFLOWS_KEY);
+          USERFLOWS_KEY,
+          CONTRACTS_KEY);
 
   /**
    * The whole of one {@code artifacts:} entry here — the trigger file's keys plus the path. {@code
    * announce} is {@code always} (the default) or {@code if-published}, the second on {@code maven}
-   * and {@code npm} only; see {@link CiArtifact.Announce}.
+   * and {@code npm} only; see {@link CiArtifact.Announce}. {@code path} and {@code link} are
+   * accepted on the entries the class javadoc names; {@code publish} and {@code include} are known
+   * and refused until release B of qits-640.
    */
   private static final Set<String> ARTIFACT_KEYS =
-      Set.of("type", "name", SBOM_KEY, CiArtifact.ANNOUNCE_KEY);
+      Set.of(
+          "type",
+          "name",
+          SBOM_KEY,
+          CiArtifact.ANNOUNCE_KEY,
+          CiArtifact.PUBLISH_KEY,
+          PATH_KEY,
+          LINK_KEY,
+          INCLUDE_KEY);
 
   /**
    * What an archetype name may be. It becomes a path segment under {@link #ARCHETYPE_DIR} in a URL
@@ -169,6 +205,12 @@ public class CiReleaseSlotParser {
                 + key
                 + "' — a release slot file declares only 'archetype', 'release-request', 'release',"
                 + " 'artifacts' and 'userflows'");
+      }
+      if (CONTRACTS_KEY.equals(name)) {
+        // Release B of qits-640 parses it (CiContracts), and refuses it in an archetype recipe for
+        // its own reason: contracts are a repository's facts, like artifacts:.
+        throw new CiConfigException(
+            configPath + ": '" + CONTRACTS_KEY + "' " + CiArtifact.ARRIVES_LATER);
       }
       if (ARCHETYPE_KEY.equals(name) && !archetypeAllowed) {
         throw new CiConfigException(
@@ -280,6 +322,8 @@ public class CiReleaseSlotParser {
     for (int i = 0; i < list.size(); i++) {
       artifacts.add(parseArtifact(list.get(i), configPath, i));
     }
+    // Last, because a link names ANOTHER entry: whether it resolves is a fact about the whole list.
+    requireLinksResolve(artifacts, configPath);
     return List.copyOf(artifacts);
   }
 
@@ -300,18 +344,203 @@ public class CiReleaseSlotParser {
                 + index
                 + " declares an unknown key '"
                 + key
-                + "' — an artifact is exactly { type, name[, sbom][, announce] }");
+                + "' — an artifact is exactly { type, name[, sbom][, announce][, path][, link] }");
       }
     }
     CiArtifact.Type type = requireArtifactType(map.get("type"), configPath, index);
     String name = requireScriptSafe(map.get("name"), configPath, "artifact " + index + " 'name'");
+    if (map.containsKey(INCLUDE_KEY)) {
+      throw new CiConfigException(
+          CiArtifact.entry(configPath, index, type, name)
+              + " declares "
+              + INCLUDE_KEY
+              + " — "
+              + INCLUDE_KEY
+              + ": "
+              + CiArtifact.ARRIVES_LATER);
+    }
     return new SlotArtifact(
         new CiArtifact(
             type,
             name,
             CiArtifact.requireAnnounce(
-                map.get(CiArtifact.ANNOUNCE_KEY), type, name, configPath, index)),
-        parseSbomPath(map.get(SBOM_KEY), configPath, index));
+                map.get(CiArtifact.ANNOUNCE_KEY), type, name, configPath, index),
+            CiArtifact.requirePublish(
+                map.get(CiArtifact.PUBLISH_KEY), type, name, configPath, index)),
+        parseSbomPath(map.get(SBOM_KEY), configPath, index),
+        parsePath(map.get(PATH_KEY), type, name, configPath, index),
+        parseLink(map.get(LINK_KEY), type, name, configPath, index));
+  }
+
+  /**
+   * {@code path:} — the directory a {@code maven} module or an {@code npm} package is uploaded from,
+   * {@code "."} when absent. Relative and downward, {@code sbom:}'s rule: it is a {@code --path}
+   * argument in the release step's own checkout.
+   *
+   * <p>A {@code docs} entry in the {@code @apidocs/} scope will name its OpenAPI file here; that is
+   * release B's, so on a docs entry the key is refused as early rather than as wrong. On {@code
+   * docker} and {@code daemon} it is wrong, and always will be.
+   */
+  private static String parsePath(
+      Object raw, CiArtifact.Type type, String name, String configPath, int index) {
+    if (raw == null) {
+      return SlotArtifact.defaultPath(type);
+    }
+    if (type == CiArtifact.Type.DOCS) {
+      throw new CiConfigException(
+          CiArtifact.entry(configPath, index, type, name)
+              + " declares "
+              + PATH_KEY
+              + " — a docs entry's "
+              + PATH_KEY
+              + ": "
+              + CiArtifact.ARRIVES_LATER);
+    }
+    if (type != CiArtifact.Type.MAVEN && type != CiArtifact.Type.NPM) {
+      throw new CiConfigException(
+          CiArtifact.entry(configPath, index, type, name)
+              + " declares "
+              + PATH_KEY
+              + " — only a maven or npm entry, or an @apidocs docs entry naming its OpenAPI file,"
+              + " has something the platform uploads");
+    }
+    return requireDownwardPath(raw, configPath, index, PATH_KEY);
+  }
+
+  /**
+   * {@code link:} — a non-empty list of artifactIds, {@code maven} entries only. Each name's shape is
+   * checked here; whether it names a sibling, and whether the links form a cycle, is {@link
+   * #requireLinksResolve}'s, once every entry has parsed.
+   */
+  private static List<String> parseLink(
+      Object raw, CiArtifact.Type type, String name, String configPath, int index) {
+    if (raw == null) {
+      return List.of();
+    }
+    if (type != CiArtifact.Type.MAVEN) {
+      throw new CiConfigException(
+          CiArtifact.entry(configPath, index, type, name)
+              + " declares "
+              + LINK_KEY
+              + " — only a maven entry bundles its reactor siblings");
+    }
+    if (!(raw instanceof List<?> list) || list.isEmpty()) {
+      throw new CiConfigException(
+          CiArtifact.entry(configPath, index, type, name)
+              + " declares "
+              + LINK_KEY
+              + " as "
+              + CiConfigSchema.typeOf(raw)
+              + " — it is a non-empty list of the artifactIds of sibling maven entries, e.g. "
+              + LINK_KEY
+              + ": [qits-blobstore]");
+    }
+    Set<String> links = new LinkedHashSet<>();
+    for (Object element : list) {
+      String link =
+          requireScriptSafe(element, configPath, "artifact " + index + " '" + LINK_KEY + "' entry");
+      if (!links.add(link)) {
+        throw new CiConfigException(
+            CiArtifact.entry(configPath, index, type, name) + " links '" + link + "' twice");
+      }
+    }
+    return List.copyOf(links);
+  }
+
+  /**
+   * Every {@code link:} names <b>another maven entry of this file</b> by its artifactId, and the
+   * links form no cycle. The postlude decides a linked sibling before the entries linking it, so a
+   * target that is not published here would be a pom dependency on nothing, and a cycle would be an
+   * order that does not exist.
+   */
+  private static void requireLinksResolve(List<SlotArtifact> artifacts, String configPath) {
+    Map<String, Integer> byArtifactId = new HashMap<>();
+    Set<String> ambiguous = new HashSet<>();
+    for (int i = 0; i < artifacts.size(); i++) {
+      CiArtifact artifact = artifacts.get(i).artifact();
+      if (artifact.type() == CiArtifact.Type.MAVEN
+          && byArtifactId.putIfAbsent(artifactId(artifact.name()), i) != null) {
+        ambiguous.add(artifactId(artifact.name()));
+      }
+    }
+    for (int i = 0; i < artifacts.size(); i++) {
+      CiArtifact artifact = artifacts.get(i).artifact();
+      for (String link : artifacts.get(i).link()) {
+        String entry = CiArtifact.entry(configPath, i, artifact.type(), artifact.name());
+        if (link.equals(artifactId(artifact.name()))) {
+          throw new CiConfigException(entry + " links itself");
+        }
+        if (!byArtifactId.containsKey(link)) {
+          throw new CiConfigException(
+              entry
+                  + " links '"
+                  + link
+                  + "', which is not a maven entry of this release.yml — a linked sibling must"
+                  + " itself be published here");
+        }
+        if (ambiguous.contains(link)) {
+          throw new CiConfigException(
+              entry
+                  + " links '"
+                  + link
+                  + "', which is the artifactId of more than one maven entry of this release.yml —"
+                  + " a link has to name exactly one sibling");
+        }
+      }
+    }
+    int[] state = new int[artifacts.size()];
+    for (int i = 0; i < artifacts.size(); i++) {
+      List<Integer> cycle = findCycle(i, artifacts, byArtifactId, state, new ArrayList<>());
+      if (cycle != null) {
+        int start = cycle.getFirst();
+        CiArtifact first = artifacts.get(start).artifact();
+        List<String> names =
+            cycle.stream().map(at -> artifactId(artifacts.get(at).artifact().name())).toList();
+        throw new CiConfigException(
+            CiArtifact.entry(configPath, start, first.type(), first.name())
+                + " "
+                + LINK_KEY
+                + ": forms a cycle ("
+                + String.join(" → ", names)
+                + ")");
+      }
+    }
+  }
+
+  /**
+   * Depth-first over the link graph: {@code state} is 0 unvisited, 1 on the current path, 2 done.
+   * Answers the cycle as entry indices, first entry repeated at the end, or null.
+   */
+  private static List<Integer> findCycle(
+      int at,
+      List<SlotArtifact> artifacts,
+      Map<String, Integer> byArtifactId,
+      int[] state,
+      List<Integer> path) {
+    if (state[at] == 2) {
+      return null;
+    }
+    if (state[at] == 1) {
+      List<Integer> cycle = new ArrayList<>(path.subList(path.indexOf(at), path.size()));
+      cycle.add(at);
+      return cycle;
+    }
+    state[at] = 1;
+    path.add(at);
+    for (String link : artifacts.get(at).link()) {
+      List<Integer> cycle = findCycle(byArtifactId.get(link), artifacts, byArtifactId, state, path);
+      if (cycle != null) {
+        return cycle;
+      }
+    }
+    path.removeLast();
+    state[at] = 2;
+    return null;
+  }
+
+  /** The artifactId of a maven coordinate {@code group:artifactId} — what a {@code link:} names. */
+  static String artifactId(String mavenName) {
+    return mavenName.substring(mavenName.lastIndexOf(':') + 1);
   }
 
   private static CiArtifact.Type requireArtifactType(Object value, String configPath, int index) {
@@ -341,14 +570,21 @@ public class CiReleaseSlotParser {
     if (raw == null) {
       return "";
     }
-    String path = requireScriptSafe(raw, configPath, "artifact " + index + " '" + SBOM_KEY + "'");
+    return requireDownwardPath(raw, configPath, index, SBOM_KEY);
+  }
+
+  /** A composable path inside the release's own checkout: relative, no {@code ..} segment. */
+  private static String requireDownwardPath(Object raw, String configPath, int index, String key) {
+    String path = requireScriptSafe(raw, configPath, "artifact " + index + " '" + key + "'");
     if (path.startsWith("/") || path.equals("..") || path.startsWith("../") || path.contains("/../")
         || path.endsWith("/..")) {
       throw new CiConfigException(
           configPath
               + ": artifact "
               + index
-              + " declares sbom '"
+              + " declares "
+              + key
+              + " '"
               + path
               + "' — it is a path inside the release's own checkout, so it is relative and points"
               + " downwards");

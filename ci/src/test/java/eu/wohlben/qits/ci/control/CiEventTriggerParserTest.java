@@ -846,4 +846,31 @@ public class CiEventTriggerParserTest {
     assertTrue(refused.getMessage().contains("every step"), refused.getMessage());
     assertTrue(refused.getMessage().contains("9441bc6e"), refused.getMessage());
   }
+
+  @Test
+  public void publishIsRecognisedAndRefusedUntilALaterQitsCi() {
+    // qits-640 release A: the composed document will carry publish: if-changed to the join once
+    // release B composes it. Until then the key is a known word refused as early, naming the entry —
+    // never an unknown key, and never accepted into a gate nothing applies.
+    for (String value : new String[] {"if-changed", "always"}) {
+      CiConfigException refused =
+          assertThrows(
+              CiConfigException.class,
+              () ->
+                  parser.parse(
+                      PATH,
+                      "event: SCMRelease\nartifacts:\n  - { type: maven, name: \"a:b\", publish: "
+                          + value
+                          + " }\nsteps: []\n"));
+      assertTrue(refused.getMessage().contains("artifact 0"), refused.getMessage());
+      assertTrue(refused.getMessage().contains("a:b"), refused.getMessage());
+      assertTrue(
+          refused.getMessage().contains("arrives in a later qits-ci"), refused.getMessage());
+    }
+    CiEventTrigger trigger =
+        parser.parse(
+            PATH,
+            "event: SCMRelease\nartifacts:\n  - { type: maven, name: \"a:b\" }\nsteps: []\n");
+    assertEquals(CiArtifact.Publish.ALWAYS, trigger.artifacts().get(0).publish());
+  }
 }

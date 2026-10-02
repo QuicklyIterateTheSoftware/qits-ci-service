@@ -15,9 +15,11 @@ import eu.wohlben.qits.ci.control.CiArtifactPresence.Probe;
 import eu.wohlben.qits.ci.control.CiArtifactPresence.Verdict;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -123,6 +125,19 @@ import org.jboss.logging.Logger;
  * may not exist, which every consumer's bump then tries to resolve. The question is put
  * <b>outside</b> the locking transaction (see {@link #presenceVerdicts}), because holding row locks
  * across HTTP retries is how a slow store becomes a stuck join.
+ *
+ * <h2>The decision record (qits-640, V30)</h2>
+ *
+ * <p>Every settled row also says <b>what was decided</b> about its artifact at the release version,
+ * in {@code decision}: {@code PUBLISHED} for a row that was announced — believed for an {@code
+ * always} row, confirmed by the store for an {@code if-published} one — and {@code ABSENT} or {@code
+ * UNVERIFIED} beside the matching {@code skip_reason} for one that was not. {@code UNCHANGED} with
+ * {@code unchanged_since} is {@code publish: if-changed}'s answer and arrives with release B of
+ * qits-640, which accepts that key and asks the store for the newest version; until then no row can
+ * be {@code if-changed}. Nothing about which rows are announced changed with it: {@code
+ * SoftwareRelease} goes out for exactly the rows that are {@code PUBLISHED}, which is the set it
+ * always went out for. {@link #releasedArtifacts} is the read, for {@code GET
+ * /ci/api/repositories/{repoId}/releases/{version}/artifacts}.
  *
  * <h2>What this class is NOT, and the deploy that looks like it is</h2>
  *
@@ -297,6 +312,7 @@ public class ReleaseJoin {
       owed.finishedAt = run.finishedAt();
       owed.triggerEventId = run.triggerEventId();
       owed.announce = artifact.announceIfPublished() ? artifact.announce().declared() : null;
+      owed.publish = artifact.publishIfChanged() ? artifact.publish().declared() : null;
       owed.createdAt = now;
       announcements.persist(owed);
     }
@@ -461,6 +477,9 @@ public class ReleaseJoin {
                     continue;
                   }
                 }
+                // Believed for an always-row, confirmed above for an if-published one: either way
+                // this row is announced, and that is what PUBLISHED records.
+                row.decision = CiReleaseAnnouncement.DECISION_PUBLISHED;
                 for (ReleaseAnnouncer announcer : releaseAnnouncers) {
                   try {
                     announcer.onArtifactPublished(
@@ -562,6 +581,7 @@ public class ReleaseJoin {
           CiArtifact.Announce.IF_PUBLISHED.declared(),
           probe.detail());
       row.skipReason = CiReleaseAnnouncement.SKIPPED_ABSENT;
+      row.decision = CiReleaseAnnouncement.DECISION_ABSENT;
     } else {
       LOG.errorf(
           "Not announcing %s %s at version %s (run %s, %s): it declares announce: %s and"
@@ -577,6 +597,7 @@ public class ReleaseJoin {
           PRESENCE_ATTEMPTS,
           probe.detail());
       row.skipReason = CiReleaseAnnouncement.SKIPPED_UNVERIFIED;
+      row.decision = CiReleaseAnnouncement.DECISION_UNVERIFIED;
     }
     row.announcedAt = now;
   }
@@ -587,6 +608,78 @@ public class ReleaseJoin {
 
   private static String presenceKey(CiReleaseAnnouncement row) {
     return artifactKey(row.packageType, row.packageName);
+  }
+
+  /**
+   * One artifact of one release, as the decision record states it — the body element of {@code GET
+   * /ci/api/repositories/{repoId}/releases/{version}/artifacts}. Every string is the wire spelling.
+   *
+   * @param type the declared type, {@code maven}, {@code npm}, {@code docker}, {@code daemon} or
+   *     {@code docs}
+   * @param name the declared coordinate
+   * @param publish {@code always} or {@code if-changed}
+   * @param decision {@code pending} while owed, then {@code published}, {@code unchanged}, {@code
+   *     absent} or {@code unverified}
+   * @param unchangedSince the newest stored version when {@code unchanged}, else null
+   * @param runId the run that owed the row
+   * @param decidedAt when the row was settled, null while {@code pending}
+   */
+  public record ReleasedArtifact(
+      String type,
+      String name,
+      String publish,
+      String decision,
+      String unchangedSince,
+      String runId,
+      Instant decidedAt) {}
+
+  /** The wire word for a row still owed. */
+  static final String PENDING = "pending";
+
+  /**
+   * What qits-ci recorded about each artifact of one release: the rows every green release run of
+   * {@code (repo, version)} owed, <b>newest run first, one per (type, name)</b> — a re-run of the
+   * release pipeline owes its rows again, and the newest run's word is the current one. {@code repo}
+   * is the public name or the storage id. Empty when no green release run owed anything for that
+   * version, which is an answer and not an error.
+   */
+  public List<ReleasedArtifact> releasedArtifacts(String repo, String version) {
+    List<CiReleaseAnnouncement> rows =
+        QuarkusTransaction.requiringNew().call(() -> announcements.listForRelease(repo, version));
+    Set<String> seen = new HashSet<>();
+    List<ReleasedArtifact> released = new ArrayList<>();
+    for (CiReleaseAnnouncement row : rows) {
+      if (!seen.add(artifactKey(row.packageType, row.packageName))) {
+        continue;
+      }
+      released.add(
+          new ReleasedArtifact(
+              row.packageType,
+              row.packageName,
+              row.publish == null ? CiArtifact.Publish.ALWAYS.declared() : row.publish,
+              decisionOf(row),
+              row.unchangedSince,
+              row.runId,
+              row.announcedAt));
+    }
+    return List.copyOf(released);
+  }
+
+  /**
+   * The wire word for a row's decision. A row settled <b>before V30</b> has {@code announced_at} and
+   * no {@code decision}; its {@code skip_reason} then says it all — none was announced, so {@code
+   * published}, and {@code ABSENT}/{@code UNVERIFIED} name themselves.
+   */
+  static String decisionOf(CiReleaseAnnouncement row) {
+    if (row.announcedAt == null) {
+      return PENDING;
+    }
+    String decision = row.decision;
+    if (decision == null) {
+      decision =
+          row.skipReason == null ? CiReleaseAnnouncement.DECISION_PUBLISHED : row.skipReason;
+    }
+    return decision.toLowerCase(Locale.ROOT);
   }
 
   /** Test seam: the backoff between presence attempts. A method, because this bean is proxied. */

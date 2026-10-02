@@ -369,6 +369,42 @@ public class CiSchemaTest {
     }
   }
 
+  @Test
+  public void theReleaseDecisionColumnsAreNullableAndTakeBothArms() throws SQLException {
+    // V30 (qits-640). Three nullable columns on the owed row: an owed row has no decision yet, an
+    // `always` row states no publish policy, and every row settled before V30 carries none of them.
+    // Written and rolled back rather than described, so the lineage is proven to accept a decided
+    // if-changed row and a row that states nothing.
+    assertEquals("character varying", columnType("ci_release_announcement", "publish"));
+    assertEquals("character varying", columnType("ci_release_announcement", "decision"));
+    assertEquals("character varying", columnType("ci_release_announcement", "unchanged_since"));
+    try (Connection connection = ci.getConnection()) {
+      connection.setAutoCommit(false);
+      try (PreparedStatement row =
+          connection.prepareStatement(
+              "insert into ci_release_announcement (id, run_id, repo_id, version, package_type,"
+                  + " package_name, artifact_index, finished_at, created_at, publish, decision,"
+                  + " unchanged_since) values (?, ?, 'schema-probe',"
+                  + " '2026.1002.1', 'maven', 'eu.wohlben.qits:probe', 0, current_timestamp,"
+                  + " current_timestamp, ?, ?, ?)")) {
+        // The id doubles as the run id: (run_id, package_type, package_name) is unique (V3).
+        row.setString(1, "decision-probe-unchanged");
+        row.setString(2, "decision-probe-unchanged");
+        row.setString(3, "if-changed");
+        row.setString(4, "UNCHANGED");
+        row.setString(5, "2026.1001.162201");
+        row.executeUpdate();
+        row.setString(1, "decision-probe-silent");
+        row.setString(2, "decision-probe-silent");
+        row.setString(3, null);
+        row.setString(4, null);
+        row.setString(5, null);
+        row.executeUpdate();
+      }
+      connection.rollback();
+    }
+  }
+
   private List<String> constraints(String table, char type) throws SQLException {
     List<String> names = new ArrayList<>();
     try (Connection connection = ci.getConnection();

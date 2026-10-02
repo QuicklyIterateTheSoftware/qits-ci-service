@@ -2572,6 +2572,17 @@ policy is on the owed row for `finished_at`'s reason — the drive that closes t
 the run that owed it — and a skipped row carries `announced_at` like an announced one, so every
 existing reader of "owed" (`announced_at is null`) is right without learning the new column.
 
+`V30__release_announcement_decision.sql` is that shape three more times (qits-640, release A):
+`publish` (`if-changed`, null for `always`), `decision` (`PUBLISHED`/`UNCHANGED`/`ABSENT`/
+`UNVERIFIED`, null while owed) and `unchanged_since`. The join writes `decision` beside
+`skip_reason` and changes nothing about which rows it announces: an announced row is `PUBLISHED`,
+a skipped one names its skip reason. A row settled before V30 has `announced_at` and no `decision`,
+and `ReleaseJoin.decisionOf` reads it from `skip_reason`. The read is
+`GET /ci/api/repositories/{repoId}/releases/{version}/artifacts` — newest run first, one entry per
+`(type, name)`, an empty list rather than a 404. `UNCHANGED` has no writer until release B of
+qits-640 accepts `publish: if-changed` (which `CiArtifact.requirePublish` refuses until then, with
+`include:`, a docs `path:` and `contracts:`, all "… arrives in a later qits-ci").
+
 `V27__run_avoid_runners.sql` added `ci_run.avoid_runner_ids text` (nullable, no default, no
 constraint, no index) for "a retry is not handed back to the runner that failed it" (qits-556). That
 behaviour was removed (qits-443, the owner's ruling of 2026-09-30: never specified; with a single

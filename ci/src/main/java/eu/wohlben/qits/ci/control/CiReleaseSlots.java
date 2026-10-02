@@ -57,11 +57,38 @@ public record CiReleaseSlots(
    * every repository derives an SBOM base URL by string-chopping some other variable and writes its
    * own PUT, and after this the path is the only thing a repository still says about it.
    *
+   * <p><b>{@code path} and {@code link} are the sbom path's kind</b> (qits-620): facts the platform
+   * postlude spends and the composed {@code artifacts:} block never carries. This qits-ci parses and
+   * validates both — {@code link:} against the whole file, see {@code CiReleaseSlotParser} — and
+   * composes nothing differently because of them; release B of qits-640 is what turns them into
+   * {@code qits artifacts publish maven|npm --path … --link …}.
+   *
    * @param artifact the {@code {type, name[, announce]}} declaration, exactly as a trigger file
    *     spells it
    * @param sbomPath the repository-relative path to the generated document, {@code ""} when none
+   * @param path the module or package directory a {@code maven} or {@code npm} entry is uploaded
+   *     from, {@code "."} when the file names none; {@code ""} on every other type
+   * @param link the artifactIds of the other {@code maven} entries of the same file this entry
+   *     keeps as pom dependencies rather than bundling, empty when none
    */
-  public record SlotArtifact(CiArtifact artifact, String sbomPath) {
+  public record SlotArtifact(CiArtifact artifact, String sbomPath, String path, List<String> link) {
+
+    /** The directory a {@code maven} or {@code npm} entry names when it says nothing. */
+    public static final String DEFAULT_PATH = ".";
+
+    public SlotArtifact {
+      link = List.copyOf(link);
+    }
+
+    /** An entry declaring only what a trigger file can, plus its sbom path. */
+    public SlotArtifact(CiArtifact artifact, String sbomPath) {
+      this(artifact, sbomPath, defaultPath(artifact.type()), List.of());
+    }
+
+    /** {@link #DEFAULT_PATH} for the two types the platform uploads, {@code ""} for the rest. */
+    public static String defaultPath(CiArtifact.Type type) {
+      return type == CiArtifact.Type.MAVEN || type == CiArtifact.Type.NPM ? DEFAULT_PATH : "";
+    }
 
     public boolean hasSbom() {
       return !sbomPath.isEmpty();

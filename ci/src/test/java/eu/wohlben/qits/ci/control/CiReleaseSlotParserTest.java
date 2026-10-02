@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.control.CiReleaseSlots.SlotArtifact;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -359,5 +360,201 @@ public class CiReleaseSlotParserTest {
   @Test
   public void aUserflowsSiteOutsideTheComposableCharsetIsRefused() {
     assertTrue(refused("userflows: \"qits ci\"\n").getMessage().contains("composable"));
+  }
+
+  // --- path and link, and what release A of qits-640 refuses ------------------------------------
+
+  private static final String LATER = "arrives in a later qits-ci";
+
+  @Test
+  public void pathAndLinkAreAcceptedOnMavenAndNpmAndDefaultSensibly() {
+    CiReleaseSlots slots =
+        parser.parse(
+            PATH,
+            """
+            artifacts:
+              - { type: maven, name: "eu.wohlben.qits:qits-blobstore", path: blobstore, sbom: blobstore/target/sbom.json }
+              - { type: maven, name: "eu.wohlben.qits:qits-registries-common", path: common, link: [qits-blobstore] }
+              - { type: maven, name: "eu.wohlben.qits:qits-registries-npm", link: [qits-blobstore, qits-registries-common] }
+              - { type: npm, name: "@qits/ui-components", path: dist/qits-spa-ui-components }
+              - { type: docker, name: qits/qits-ci }
+            """);
+
+    SlotArtifact blobstore = slots.artifacts().get(0);
+    assertEquals("blobstore", blobstore.path());
+    assertTrue(blobstore.link().isEmpty());
+    assertEquals(List.of("qits-blobstore"), slots.artifacts().get(1).link());
+    assertEquals(
+        List.of("qits-blobstore", "qits-registries-common"),
+        slots.artifacts().get(2).link(),
+        "declared order is kept");
+    assertEquals(".", slots.artifacts().get(2).path(), "a maven entry naming no path is the root");
+    assertEquals("dist/qits-spa-ui-components", slots.artifacts().get(3).path());
+    assertEquals("", slots.artifacts().get(4).path(), "a docker entry has nothing to upload from");
+    for (SlotArtifact artifact : slots.artifacts()) {
+      assertEquals(CiArtifact.Publish.ALWAYS, artifact.artifact().publish());
+    }
+  }
+
+  @Test
+  public void aPathMustPointInsideTheReleasesOwnCheckout() {
+    String message =
+        refused("artifacts:\n  - { type: maven, name: \"a:b\", path: ../sibling }\n").getMessage();
+    assertTrue(message.contains("path") && message.contains("downwards"), message);
+    refused("artifacts:\n  - { type: npm, name: \"@qits/x\", path: /dist }\n");
+  }
+
+  @Test
+  public void aPathOnADockerOrDaemonEntryIsRefusedNamingTheEntry() {
+    for (String type : new String[] {"docker", "daemon"}) {
+      String message =
+          refused("artifacts:\n  - { type: " + type + ", name: qits-thing, path: out }\n")
+              .getMessage();
+      assertTrue(message.startsWith(PATH + ": artifact 0 ({ type: " + type), message);
+      assertTrue(message.contains("qits-thing"), message);
+      assertTrue(message.contains("only a maven or npm entry"), message);
+    }
+  }
+
+  @Test
+  public void aDocsPathArrivesInALaterQitsCi() {
+    String message =
+        refused(
+                "artifacts:\n  - { type: docs, name: \"@apidocs/qits-ci\", path: docs/openapi.yml }\n")
+            .getMessage();
+    assertTrue(message.contains("@apidocs/qits-ci"), message);
+    assertTrue(message.contains(LATER), message);
+  }
+
+  @Test
+  public void aLinkOnANonMavenEntryIsRefused() {
+    String message =
+        refused(
+                """
+                artifacts:
+                  - { type: maven, name: "eu.wohlben.qits:qits-blobstore" }
+                  - { type: npm, name: "@qits/x", link: [qits-blobstore] }
+                """)
+            .getMessage();
+    assertTrue(message.contains("artifact 1") && message.contains("@qits/x"), message);
+    assertTrue(message.contains("only a maven entry bundles"), message);
+  }
+
+  @Test
+  public void aLinkToAnUnknownArtifactIdIsRefusedNamingBoth() {
+    String message =
+        refused(
+                """
+                artifacts:
+                  - { type: maven, name: "eu.wohlben.qits:qits-registries-common", link: [qits-blobstor] }
+                """)
+            .getMessage();
+    assertTrue(message.contains("eu.wohlben.qits:qits-registries-common"), message);
+    assertTrue(message.contains("'qits-blobstor'"), message);
+    assertTrue(message.contains("not a maven entry of this release.yml"), message);
+  }
+
+  @Test
+  public void aLinkToANonMavenEntryIsRefused() {
+    // The npm package and the docker image end in the very word linked; only a MAVEN entry's
+    // artifactId is a link target.
+    String message =
+        refused(
+                """
+                artifacts:
+                  - { type: npm, name: "@qits/qits-blobstore" }
+                  - { type: docker, name: qits/qits-blobstore }
+                  - { type: maven, name: "eu.wohlben.qits:qits-registries-common", link: [qits-blobstore] }
+                """)
+            .getMessage();
+    assertTrue(message.contains("artifact 2"), message);
+    assertTrue(message.contains("'qits-blobstore'"), message);
+    assertTrue(message.contains("not a maven entry"), message);
+  }
+
+  @Test
+  public void anEntryLinkingItselfIsRefused() {
+    String message =
+        refused(
+                "artifacts:\n  - { type: maven, name: \"eu.wohlben.qits:qits-blobstore\", link:"
+                    + " [qits-blobstore] }\n")
+            .getMessage();
+    assertTrue(message.contains("eu.wohlben.qits:qits-blobstore"), message);
+    assertTrue(message.endsWith("links itself"), message);
+  }
+
+  @Test
+  public void aLinkCycleIsRefusedNamingIt() {
+    String message =
+        refused(
+                """
+                artifacts:
+                  - { type: maven, name: "g:a", link: [b] }
+                  - { type: maven, name: "g:b", link: [c] }
+                  - { type: maven, name: "g:c", link: [a] }
+                """)
+            .getMessage();
+    assertTrue(message.contains("forms a cycle (a → b → c → a)"), message);
+
+    String two =
+        refused(
+                """
+                artifacts:
+                  - { type: maven, name: "g:root" }
+                  - { type: maven, name: "g:a", link: [root, b] }
+                  - { type: maven, name: "g:b", link: [a] }
+                """)
+            .getMessage();
+    assertTrue(two.contains("artifact 1") && two.contains("(a → b → a)"), two);
+  }
+
+  @Test
+  public void aLinkIsANonEmptyListOfDistinctNames() {
+    refused("artifacts:\n  - { type: maven, name: \"g:a\", link: [] }\n");
+    refused("artifacts:\n  - { type: maven, name: \"g:a\", link: b }\n");
+    assertTrue(
+        refused(
+                "artifacts:\n  - { type: maven, name: \"g:b\" }\n  - { type: maven, name:"
+                    + " \"g:a\", link: [b, b] }\n")
+            .getMessage()
+            .contains("twice"));
+  }
+
+  @Test
+  public void publishArrivesInALaterQitsCiWhateverItSays() {
+    for (String value : new String[] {"if-changed", "always", "sometimes"}) {
+      String message =
+          refused(
+                  "artifacts:\n  - { type: maven, name: \"a:b\", sbom: s.json, publish: "
+                      + value
+                      + " }\n")
+              .getMessage();
+      assertTrue(message.startsWith(PATH + ": artifact 0 ({ type: maven, name: a:b })"), message);
+      assertTrue(message.contains(LATER), message);
+    }
+  }
+
+  @Test
+  public void includeArrivesInALaterQitsCi() {
+    String message =
+        refused("artifacts:\n  - { type: npm, name: \"@qits/x\", include: [\"dist/**\"] }\n")
+            .getMessage();
+    assertTrue(message.contains("@qits/x") && message.contains("include"), message);
+    assertTrue(message.contains(LATER), message);
+  }
+
+  @Test
+  public void contractsArriveInALaterQitsCiInAFileAndInARecipe() {
+    String declaration =
+        "contracts:\n  application: qits-projects\n  golden-masters: { from: golden-masters/,"
+            + " packages: [maven] }\n";
+    String message = refused(declaration).getMessage();
+    assertTrue(message.startsWith(PATH) && message.contains("contracts"), message);
+    assertTrue(message.contains(LATER), message);
+    CiConfigException recipe =
+        assertThrows(
+            CiConfigException.class,
+            () -> parser.parseArchetype(".config/qits/release-archetypes/x.yml", declaration));
+    assertTrue(recipe.getMessage().contains(LATER), recipe.getMessage());
   }
 }
