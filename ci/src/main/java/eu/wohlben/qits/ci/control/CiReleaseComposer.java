@@ -273,7 +273,7 @@ public final class CiReleaseComposer {
               + " the platform publishes contract packages from the release slot's last step, so"
               + " with no release slot nothing would ever publish them");
     }
-    Postlude postlude = new Postlude(artifacts, artifactsPath, contracts);
+    Postlude postlude = new Postlude(artifacts, artifactsPath, contracts, selector);
     return new Composed(
         qa == null ? null : qaDocument(slots, archetype, selector, qa),
         release == null ? null : releaseDocument(slots, archetype, selector, release, postlude));
@@ -281,10 +281,16 @@ public final class CiReleaseComposer {
 
   /**
    * What the release phase's postlude spends: the declared artifacts, the file they came from (for
-   * error messages), and the contracts.
+   * error messages), the contracts, and the repository's name, which names its pact packages.
    */
   private record Postlude(
-      List<SlotArtifact> artifacts, String artifactsPath, CiContracts contracts) {
+      List<SlotArtifact> artifacts, String artifactsPath, CiContracts contracts, String repository) {
+
+    /** The contract packages, pact packages named by this repository. */
+    List<CiContracts.Package> contractPackages() {
+      return contracts == null ? List.of() : contracts.packages(repository);
+    }
+
 
     /** Whether anything is published by the platform, which is what places the publish block. */
     boolean publishes() {
@@ -302,7 +308,7 @@ public final class CiReleaseComposer {
       if (contracts != null) {
         Set<String> declared = new HashSet<>();
         artifacts.forEach(a -> declared.add(a.artifact().type() + " " + a.artifact().name()));
-        for (CiContracts.Package contract : contracts.packages()) {
+        for (CiContracts.Package contract : contractPackages()) {
           if (declared.contains(contract.ecosystem().type() + " " + contract.name())) {
             throw new CiConfigException(
                 artifactsPath
@@ -813,7 +819,7 @@ public final class CiReleaseComposer {
     }
     CiContracts contracts = postlude.contracts();
     if (contracts != null) {
-      for (CiContracts.Package contract : contracts.packages()) {
+      for (CiContracts.Package contract : postlude.contractPackages()) {
         out.append("qits artifacts publish contract --kind ")
             .append(quote(contract.kind().declared()))
             .append(" --ecosystem ")

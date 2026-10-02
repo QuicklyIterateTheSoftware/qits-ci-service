@@ -12,9 +12,10 @@ import org.junit.jupiter.api.Test;
 
 /**
  * {@link CiContracts}: the {@code contracts:} grammar, and <b>the coordinate rule pinned against the
- * four coordinates the estate already publishes</b>. Those four are consumed by name today (pom
- * dependencies, a package.json, a pact loader's classpath), so a rule change that moves one of them
- * must be a red test here, never a quiet new artifact nobody depends on.
+ * coordinates the estate consumes</b> (pom dependencies, a package.json, a pact loader's
+ * classpath), so a rule change that moves one of them must be a red test here, never a quiet new
+ * artifact nobody depends on. Golden masters are named by application, pacts by the two
+ * repositories.
  */
 public class CiContractsTest {
 
@@ -30,10 +31,10 @@ public class CiContractsTest {
     return assertThrows(CiConfigException.class, () -> parser.parse(PATH, yaml));
   }
 
-  // --- the four live coordinates, exactly ---------------------------------------------------------
+  // --- the live coordinates, exactly --------------------------------------------------------------
 
   @Test
-  public void theFourLiveCoordinatesAreDerivedExactly() {
+  public void theLiveCoordinatesAreDerivedExactly() {
     CiContracts projects =
         contracts(
             """
@@ -43,7 +44,7 @@ public class CiContractsTest {
             """);
     assertEquals(
         List.of("eu.wohlben.qits:qits-projects-golden-masters", "@qits/projects-golden-masters"),
-        projects.packages().stream().map(Package::name).toList());
+        projects.packages("qits-projects-service").stream().map(Package::name).toList());
 
     CiContracts workspaces =
         contracts(
@@ -51,11 +52,11 @@ public class CiContractsTest {
             contracts:
               application: qits-workspaces
               pacts:
-                qits-projects: { from: pacts/, packages: [maven] }
+                qits-projects-service: { packages: [maven] }
             """);
     assertEquals(
-        List.of("eu.wohlben.qits:qits-workspaces-pacts-qits-projects"),
-        workspaces.packages().stream().map(Package::name).toList());
+        List.of("eu.wohlben.qits:qits-workspaces-service-pacts-qits-projects-service"),
+        workspaces.packages("qits-workspaces-service").stream().map(Package::name).toList());
 
     CiContracts landing =
         contracts(
@@ -63,18 +64,22 @@ public class CiContractsTest {
             contracts:
               application: qits-landing
               pacts:
-                qits-projects: { from: pacts/, packages: [maven] }
+                qits-projects-service: { packages: [maven] }
+                qits-githost-service: { packages: [maven] }
             """);
     assertEquals(
-        List.of("eu.wohlben.qits:qits-landing-pacts-qits-projects"),
-        landing.packages().stream().map(Package::name).toList());
+        List.of(
+            "eu.wohlben.qits:qits-landing-app-pacts-qits-projects-service",
+            "eu.wohlben.qits:qits-landing-app-pacts-qits-githost-service"),
+        landing.packages("qits-landing-app").stream().map(Package::name).toList());
   }
 
   @Test
   public void theNpmRuleDropsOneQitsPrefixFromTheConsumerAndNoneFromTheProvider() {
     assertEquals(
-        "@qits/workspaces-pacts-qits-projects",
-        CiContracts.coordinate(Kind.PACTS, "qits-workspaces", "qits-projects", Ecosystem.NPM));
+        "@qits/landing-app-pacts-qits-projects-service",
+        CiContracts.coordinate(
+            Kind.PACTS, "qits-landing-app", "qits-projects-service", Ecosystem.NPM));
     assertEquals(
         "@qits/qits-x-golden-masters",
         CiContracts.coordinate(Kind.GOLDEN_MASTERS, "qits-qits-x", "", Ecosystem.NPM),
@@ -94,20 +99,20 @@ public class CiContractsTest {
               application: qits-x
               golden-masters: { from: gm/, packages: [npm, maven] }
               pacts:
-                qits-b: { from: pacts/b/, packages: [maven] }
-                qits-a: { from: pacts/a/, packages: [npm, maven] }
+                qits-b-service: { packages: [maven] }
+                qits-a-frontend: { packages: [npm, maven] }
             """);
-    List<Package> packages = both.packages();
+    List<Package> packages = both.packages("qits-x-service");
     assertEquals(
         List.of(
             "@qits/x-golden-masters",
             "eu.wohlben.qits:qits-x-golden-masters",
-            "eu.wohlben.qits:qits-x-pacts-qits-b",
-            "@qits/x-pacts-qits-a",
-            "eu.wohlben.qits:qits-x-pacts-qits-a"),
+            "eu.wohlben.qits:qits-x-service-pacts-qits-b-service",
+            "@qits/x-service-pacts-qits-a-frontend",
+            "eu.wohlben.qits:qits-x-service-pacts-qits-a-frontend"),
         packages.stream().map(Package::name).toList());
-    assertEquals("qits-b", packages.get(2).provider());
-    assertEquals("pacts/b/", packages.get(2).from());
+    assertEquals("qits-b-service", packages.get(2).provider());
+    assertEquals("pacts/", packages.get(2).from(), "every pact package packs from the flat pacts/");
     assertEquals("", packages.get(0).provider());
     assertEquals(2, both.goldenMasterPackages().size());
     for (Package contract : packages) {
@@ -156,7 +161,7 @@ public class CiContractsTest {
             .contains("unknown key 'dir'"));
     assertTrue(
         refused(
-                "contracts:\n  application: qits-x\n  pacts:\n    qits-p: { from: p/, packages:"
+                "contracts:\n  application: qits-x\n  pacts:\n    qits-p-service: { packages:"
                     + " [maven], to: y }\n")
             .getMessage()
             .contains("unknown key 'to'"));
@@ -166,12 +171,12 @@ public class CiContractsTest {
   public void packagesAreANonEmptyDistinctSubsetOfTheClosedList() {
     String cargo =
         refused(
-                "contracts:\n  application: qits-x\n  pacts:\n    qits-projects: { from: p/,"
-                    + " packages: [maven, cargo] }\n")
+                "contracts:\n  application: qits-x\n  pacts:\n    qits-projects-service:"
+                    + " { packages: [maven, cargo] }\n")
             .getMessage();
     assertTrue(
         cargo.contains(
-            "contracts.pacts.qits-projects.packages names 'cargo' — this qits-ci packages maven and"
+            "contracts.pacts.qits-projects-service.packages names 'cargo' — this qits-ci packages maven and"
                 + " npm"),
         cargo);
     assertTrue(
@@ -196,7 +201,7 @@ public class CiContractsTest {
           "contracts:\n  application: qits-x\n  golden-masters: { from: gm/, packages: [maven],"
               + " publish: if-changed }\n",
           "contracts:\n  application: qits-x\n  pacts:\n    publish: if-changed\n",
-          "contracts:\n  application: qits-x\n  pacts:\n    qits-p: { from: p/, packages: [maven],"
+          "contracts:\n  application: qits-x\n  pacts:\n    qits-p-service: { packages: [maven],"
               + " publish: always }\n"
         }) {
       String message = refused(yaml).getMessage();
@@ -220,6 +225,22 @@ public class CiContractsTest {
                     + " [maven] }\n")
             .getMessage()
             .contains("provider 'Projects'"));
+  }
+
+  @Test
+  public void aPactProviderIsARepositoryNameAndFromIsGone() {
+    String application =
+        refused("contracts:\n  application: qits-x\n  pacts:\n    qits-projects: { packages: [maven] }\n")
+            .getMessage();
+    assertTrue(application.contains("provider 'qits-projects'"), application);
+    assertTrue(application.contains("REPOSITORY name"), application);
+    String from =
+        refused(
+                "contracts:\n  application: qits-x\n  pacts:\n    qits-projects-service: { from:"
+                    + " pacts/, packages: [maven] }\n")
+            .getMessage();
+    assertTrue(from.contains("declares 'from'"), from);
+    assertTrue(from.contains("<consumer repository>_<provider repository>.json"), from);
   }
 
   @Test
