@@ -13,7 +13,7 @@
 # is. This recipe is therefore a COMPOSITION of the two that already exist, and every half below
 # names the file it came from so that a fix lands in both:
 #
-#     release-request:   spa-frontend.yml's one step, UNCHANGED.
+#     release-request:   spa-frontend.yml's one step, on node-browser-base and with test:browser.
 #     release:           java-service.yml's release step, IMAGE HALF ONLY.
 #
 # A migrating repository's `.config/qits/release.yml` is therefore:
@@ -124,14 +124,19 @@
 # Declaring a slot replaces it ENTIRELY; there is no per-step merging. Override when the repository
 # publishes more than one image or something other than an image, when the image build needs a
 # build-arg, a target or a context this recipe does not pass, or when QA needs a step this does not
-# have (a second target, a browser-mode test run, a bundle-size assertion).
+# have (a second target, a bundle-size assertion).
 
 release-request:
 
-  # --- phase one (QA): spa-frontend.yml's step, unchanged ---------------------------------------
+  # --- phase one (QA): spa-frontend.yml's step, plus test:browser ----------------------------
   # NO `docker:` AND NO `build:`. Nothing here needs a builder, a socket or a credential — the image
   # is phase two's business — so this step keeps the ordinary sandbox a publishing step gives up.
-  - image: qits/build-images/node-base:latest
+  #
+  # node-browser-base, NOT node-base: it is Node 24 plus the platform's one screenshot renderer
+  # (Playwright's Chromium and a pinned font stack, described in /etc/qits-renderer-provenance). The
+  # workspace image is built FROM the same image, so a reference screenshot an agent makes there
+  # matches here. See `test:browser` below.
+  - image: qits/build-images/node-browser-base:latest
     timeout-seconds: 1800
     script: |
       # THE LOCKFILE is the one file this step edits, and npm leaves no alternative. npm pins a full
@@ -180,10 +185,15 @@ release-request:
       # ADDING the script is what turns the check on — no pipeline edit.
       npm run --if-present lint
 
-      # The jsdom target. This image has no browser and CI is not the place to download one. A
-      # component that genuinely needs a layout engine gets a `.browser.spec.ts` and its own target,
-      # run locally until a build image ships a browser.
+      # The jsdom target.
       npm run --if-present test
+
+      # Browser screenshot tests, by the same opt-in: a repository turns them on by having the
+      # script. They run in real Chromium from this image and compare against the committed
+      # reference screenshots. THIS STEP ONLY COMPARES: `CI=true` makes a missing reference a
+      # failure instead of a new file, and nothing here writes one. Regenerating references is a
+      # separate job (run in this same image with UPDATE_SNAPSHOT=all), never part of the gate.
+      CI=true npm run --if-present test:browser
 
       # The same `npm run build` the Dockerfile runs, on the same tree — which is the point of the
       # step rather than a duplication of it. This one is the GATE on the fold and exports nothing;
