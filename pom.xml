@@ -75,7 +75,7 @@
              into a release request and gated by this repository's own CI like any other content.
              Do NOT hand-edit it to chase a release you just made: a hand-written pin asserts a
              pairing nobody gated, and the next bump overwrites it regardless. -->
-        <qits.ci-daemon-protocol.version>2026.1001.41345</qits.ci-daemon-protocol.version>
+        <qits.ci-daemon-protocol.version>2026.1002.70414</qits.ci-daemon-protocol.version>
         <!-- The runner control-socket wire contract (qits-ci-runner-daemon's ci-runner-protocol) and
              the runner binary's version with it (CiRunnerBinary) — this pin's twin for the other
              socket, and a released-calver pin in the same sense once qits-ci-runner-daemon has cut
@@ -83,8 +83,8 @@
              side of its socket landed in one epic, and the first release of the protocol jar
              replaces this line through the ordinary bump. Do not ship a release request of this
              repository with the snapshot still in it. -->
-        <qits.ci-runner-protocol.version>2026.930.170042</qits.ci-runner-protocol.version>
-        <qits.eventstream.version>2026.929.142419</qits.eventstream.version>
+        <qits.ci-runner-protocol.version>2026.1002.72416</qits.ci-runner-protocol.version>
+        <qits.eventstream.version>2026.1002.63443</qits.eventstream.version>
         <!-- qits-githost's event vocabulary: the SCM records a push announces. qits-ci consumes
              SCMPublishCommit and nothing else, but the jar is the whole vocabulary — it is a data
              module with one dependency (qits-eventstream) and no container.
@@ -95,7 +95,7 @@
              release. What kept the snapshot working until then was the bootstrap seed-publishing it
              into the registry, which is not a release and does not survive one being re-seeded. -->
         <qits.githost-events.version>2026.910.103045</qits.githost-events.version>
-        <qits.auth-core.version>2026.929.140626</qits.auth-core.version>
+        <qits.auth-core.version>2026.1002.70617</qits.auth-core.version>
         <!-- The platform's datasource resilience, released out of libs/qits-integrations-quarkus
              together with the two above, which is why the strings match: qits-db-core carries
              PatientPgDriver — the pool opens its connections through it, and a request is HELD
@@ -103,21 +103,21 @@
              assertion that this service configured it. They move together, because the rule names
              the driver as a STRING: a driver that moved without the rule would pass a build it
              should fail. -->
-        <qits.db-core.version>2026.929.140626</qits.db-core.version>
-        <qits.arch-rules.version>2026.929.140626</qits.arch-rules.version>
+        <qits.db-core.version>2026.1002.70617</qits.db-core.version>
+        <qits.arch-rules.version>2026.1002.70617</qits.arch-rules.version>
         <!-- The user-story framework (test scope): TokenValidationBootstrapIT is written as a
              @UserStory, so a run of that IT also regenerates service/target/userstories/ — the
              story's documentation, network diagram included — OBSERVED rather than narrated, since
              this version is the one that dropped Interactions.happened. It carries its OWN version
              rather than riding the three above, because it is released out of libs/qits-userflows
              and not out of the qits-integrations-quarkus reactor. -->
-        <qits.userflows.version>2026.922.190204</qits.userflows.version>
+        <qits.userflows.version>2026.1002.72731</qits.userflows.version>
         <!-- The recording service mocks the same IT boots against (the generic MockService plus
              idp.MockIdp), released out of libs/qits-integrations-quarkus like qits-auth-core,
              qits-db-core and qits-arch-rules above — so the same-string policy applies the day this
              repo consumes a newer reactor, and until then it names the release the mock idp
              actually shipped in. -->
-        <qits.service-mock.version>2026.929.140626</qits.service-mock.version>
+        <qits.service-mock.version>2026.1002.70617</qits.service-mock.version>
         <!-- THE qits CLI PIN, AND IT IS NOT AN ORDINARY LIBRARY VERSION. This artifact's version IS
              the daemons-store coordinate of the `qits` binary, and StepContainerSettings carries that
              string into every step container as $QITS_ARTIFACTS_CLI_VERSION — so THIS LINE DECIDES
@@ -134,7 +134,7 @@
              qits-platform-maintenance moves it like any internal pin, on a maintenance/* branch, and
              THIS repository's own release request is what gates the move. Do not hand-edit it to
              chase a release. -->
-        <qits.platform-access-cli-binary.version>2026.1002.50250</qits.platform-access-cli-binary.version>
+        <qits.platform-access-cli-binary.version>2026.1002.74422</qits.platform-access-cli-binary.version>
         <qits.maven.repository.url>http://registry.dev.localhost:8080/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
