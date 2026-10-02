@@ -285,7 +285,7 @@ release-request:
       # paths are identical on every address, so replacing the ORIGIN and keeping the path is all it
       # takes, and the integrity hashes are what make that safe.
       #
-      # THE BYTE PLANE IS TWO SERVICES, WHICH IS WHY THE SWAP READS THE PATH. qits-platform-mirror
+      # THE BYTE PLANE IS TWO SERVICES, WHICH IS WHY THE SWAP READS THE PATH. qits-mirror
       # holds the npmjs pull-through cache; qits-artifacts hosts the @qits scope. No single origin
       # serves both, so an entry under the hosted registry's own pathname is a @qits tarball and
       # gets the hosted origin; everything else gets the proxy's.

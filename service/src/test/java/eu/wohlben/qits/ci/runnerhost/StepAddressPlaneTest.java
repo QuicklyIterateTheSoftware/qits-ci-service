@@ -84,7 +84,7 @@ class StepAddressPlaneTest {
         List.of("dev-qits-artifacts:8080", "registry.dev.localhost:8080", "localhost:8081"),
         spellings.registrySpellings());
     assertEquals(
-        List.of("mirror.dev.localhost:8080", "localhost:8082", "dev-qits-platform-mirror:8080"),
+        List.of("mirror.dev.localhost:8080", "localhost:8082", "dev-qits-mirror:8080"),
         spellings.mirrorSpellings());
   }
 }

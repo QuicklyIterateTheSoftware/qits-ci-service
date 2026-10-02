@@ -66,13 +66,13 @@ public record StepAddressPlane(
   /** qits-artifacts' hosted npm repository, the one {@code @qits/*} is published to. */
   static final String NPM_HOSTED_PATH = "/artifacts/npm/npm/";
 
-  /** qits-platform-mirror's npm pull-through cache. */
+  /** qits-mirror's npm pull-through cache. */
   static final String NPM_PROXY_PATH = "/npm/npmjs/";
 
   /** qits-artifacts' hosted Maven repository. */
   static final String MAVEN_REGISTRY_PATH = "/artifacts/maven/maven";
 
-  /** qits-platform-mirror's Maven Central pull-through. */
+  /** qits-mirror's Maven Central pull-through. */
   static final String MAVEN_CENTRAL_MIRROR_PATH = "/mirror/maven/central";
 
   /** qits-artifacts' docs repository, the {@code docs} namespace segment included. */
@@ -98,13 +98,13 @@ public record StepAddressPlane(
    * <p><b>Ours is decided by the host and nothing else</b>, {@code HttpImagePins}' rule. A host is
    * the registry's when it is {@code qits.artifacts.registry-host}, one of {@code
    * qits.ci.runner.registry-mirrors.registry-hosts}, or qits-artifacts' alias in this environment;
-   * it is qits-platform-mirror's when it is one of {@code
+   * it is qits-mirror's when it is one of {@code
    * qits.ci.runner.registry-mirrors.mirror-hosts} or the mirror's alias in this environment.
    * Anything else — {@code alpine:3}, {@code docker.io/…}, {@code ghcr.io/…} — is somebody else's
    * store and is pulled as named.
    *
    * @param registrySpellings every host that names qits-artifacts' registry, lower case
-   * @param mirrorSpellings every host that names qits-platform-mirror, lower case
+   * @param mirrorSpellings every host that names qits-mirror, lower case
    * @param registryTarget the host a registry image is pulled from; null keeps the reference as is
    * @param mirrorTarget the host a mirror image is pulled from; null keeps the reference as is
    */
@@ -200,7 +200,7 @@ public record StepAddressPlane(
   /**
    * The addresses of a step, from the public origin of each service that answers one. qits-artifacts
    * answers the registry, the hosted npm and maven roots, the docs store and the daemon binary;
-   * qits-platform-mirror the npm and the maven pull-through roots; qits-githost the clone url;
+   * qits-mirror the npm and the maven pull-through roots; qits-githost the clone url;
    * qits-workspaces its own root; qits-ci the daemon socket.
    *
    * @param spellings the hosts that name the platform's two image stores, which an image reference

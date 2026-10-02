@@ -253,7 +253,7 @@ class RunnerQuarantineSocketTest {
       // And the two stores' qits-net aliases in this environment, which a committed file may name.
       String environment = config.getOptionalValue("QITS_ENVIRONMENT", String.class).orElse("dev");
       expected.put(environment + "-qits-artifacts:8080", "registry.qits.example.org");
-      expected.put(environment + "-qits-platform-mirror:8080", "mirror.qits.example.org");
+      expected.put(environment + "-qits-mirror:8080", "mirror.qits.example.org");
       // The bare upstreams, through the public mirror's namespaces.
       expected.put("quay.io", "mirror.qits.example.org/quay");
       expected.put("registry.access.redhat.com", "mirror.qits.example.org/redhat");
