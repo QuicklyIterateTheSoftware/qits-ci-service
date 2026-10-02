@@ -396,7 +396,7 @@ public class StepContainerSettings {
 
   /**
    * The environment label qits-deployments injects into every container ({@code QITS_ENVIRONMENT}).
-   * Read for one thing: the qits-net aliases of qits-artifacts and qits-platform-mirror in this
+   * Read for one thing: the qits-net aliases of qits-artifacts and qits-mirror in this
    * environment, which are two more spellings an image reference may carry. No alias is ever
    * handed to a step.
    */
@@ -566,7 +566,7 @@ public class StepContainerSettings {
     registry.add(environment + "-qits-artifacts:8080");
     List<String> mirror =
         new ArrayList<>(mirrorSpellings == null ? List.of() : mirrorSpellings.orElse(List.of()));
-    mirror.add(environment + "-qits-platform-mirror:8080");
+    mirror.add(environment + "-qits-mirror:8080");
     return StepAddressPlane.ImageRegistries.of(registry, mirror);
   }
 

@@ -117,7 +117,7 @@ public final class StepWorkloadSpecs {
     env.put("QITS_NPM_REGISTRY_URL", value(plane.npmHostedUrl()));
     env.put("QITS_NPM_PROXY_URL", value(plane.npmProxyUrl()));
     env.put("QITS_MAVEN_REGISTRY_URL", value(plane.mavenRegistryUrl()));
-    // Maven Central through qits-platform-mirror, under both names a pipeline reads it by.
+    // Maven Central through qits-mirror, under both names a pipeline reads it by.
     // Empty is the deliberate off state, so the ternary writes "" rather than skipping the keys:
     // a pipeline reads "${QITS_MAVEN_CENTRAL_MIRROR_URL:-}" either way and empty deactivates the
     // settings profile at every consumer.

@@ -110,7 +110,7 @@ class StepImageTest {
 
     assertEquals(
         "mirror.qits.example.org/library/alpine:3",
-        plane.imageReference("dev-qits-platform-mirror:8080/library/alpine:3"));
+        plane.imageReference("dev-qits-mirror:8080/library/alpine:3"));
     assertEquals(
         "registry.qits.example.org/qits/x:1", plane.imageReference("localhost:8081/qits/x:1"));
     assertEquals(

@@ -91,7 +91,7 @@ public class RunnerAddresses {
    */
   static final String RUNNER_IMAGE_REPOSITORY = "qits/" + CiRunnerPins.RUNNER_NAME;
 
-  /** qits-platform-mirror's host label: the pull-through caches, {@code /v2} and {@code /mirror}. */
+  /** qits-mirror's host label: the pull-through caches, {@code /v2} and {@code /mirror}. */
   static final String MIRROR_HOST = "mirror";
 
   /** qits-githost's host label; smart HTTP answers a bearer under {@code /git/<project>/<repo>}. */
