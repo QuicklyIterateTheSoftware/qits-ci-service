@@ -920,7 +920,10 @@ public class CiReleaseComposerTest {
     assertTrue(push > 0 && generate > push && submit > generate && check > submit, document);
   }
 
-  /** qits-landing after qits-647: an app, a docker image and one consumer pact. */
+  /**
+   * qits-landing-app: an app, a docker image and two consumer pacts, keyed by the providers'
+   * repository names and packed from the one flat {@code pacts/}.
+   */
   @Test
   public void anAppWithPactsPublishesThemAndNoContractDocs() {
     CiReleaseComposer.Composed composed =
@@ -934,7 +937,8 @@ public class CiReleaseComposerTest {
                 contracts:
                   application: qits-landing
                   pacts:
-                    qits-projects: { from: pacts/, packages: [maven] }
+                    qits-projects-service: { packages: [maven] }
+                    qits-githost-service: { packages: [maven] }
                 """),
             archetype(
                 "app",
@@ -959,8 +963,16 @@ public class CiReleaseComposerTest {
     assertTrue(
         document.contains(
             "qits artifacts publish contract --kind 'pacts' --ecosystem 'maven' --name"
-                + " 'eu.wohlben.qits:qits-landing-pacts-qits-projects' --application 'qits-landing'"
-                + " --provider 'qits-projects' --from 'pacts/' --version \"$QITS_VERSION\"\n"),
+                + " 'eu.wohlben.qits:qits-landing-app-pacts-qits-projects-service' --application"
+                + " 'qits-landing' --provider 'qits-projects-service' --from 'pacts/' --version"
+                + " \"$QITS_VERSION\"\n"),
+        document);
+    assertTrue(
+        document.contains(
+            "qits artifacts publish contract --kind 'pacts' --ecosystem 'maven' --name"
+                + " 'eu.wohlben.qits:qits-landing-app-pacts-qits-githost-service' --application"
+                + " 'qits-landing' --provider 'qits-githost-service' --from 'pacts/' --version"
+                + " \"$QITS_VERSION\"\n"),
         document);
     assertFalse(document.contains("contract-docs"), "no golden masters, no contract docs");
     assertTrue(document.contains("sbom submit"), document);

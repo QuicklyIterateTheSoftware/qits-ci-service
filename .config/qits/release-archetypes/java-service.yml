@@ -86,6 +86,12 @@
 #     contracts:
 #       application: qits-projects
 #       golden-masters: { from: golden-masters/, packages: [maven, npm] }
+#       pacts:
+#         qits-githost-service: { packages: [maven] }
+#
+# A pact is keyed by the provider's REPOSITORY name and is the file
+# `pacts/<this repository>_<provider repository>.json`; every pact sits flat in `pacts/`, and each
+# provider's package holds only its own file.
 #
 # ---------------------------------------------------------------------------------------------
 # THE ONE THING THIS RECIPE READS OUT OF A REPOSITORY, AND WHY IT IS THE DECLARATION

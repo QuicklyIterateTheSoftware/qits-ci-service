@@ -15,11 +15,20 @@ import java.util.Set;
  *
  * <pre>{@code
  * contracts:
- *   application: qits-projects
+ *   application: qits-landing
  *   golden-masters: { from: golden-masters/, packages: [maven, npm] }
  *   pacts:
- *     qits-projects: { from: pacts/, packages: [maven] }
+ *     qits-projects-service: { packages: [maven] }
  * }</pre>
+ *
+ * <h2>Pacts are keyed by the provider's repository name, and picked by file name</h2>
+ *
+ * <p>A consumer keeps every pact flat in {@value #PACTS_DIRECTORY}, one file per provider, named
+ * {@code <consumer repository>_<provider repository>.json}. An entry under {@code pacts:} names the
+ * provider's repository, and its package holds exactly the files {@code pacts/*_<key>.json} — the
+ * CLI picks them by name — so a change to one provider's pact never publishes, and so never bumps,
+ * another provider's package. A repository name, never an application name, because one
+ * component can have a frontend and a service and the application name does not say which.
  *
  * <h2>The coordinate rule lives here and nowhere else</h2>
  *
@@ -29,14 +38,15 @@ import java.util.Set;
  * <pre>
  * golden-masters  maven  eu.wohlben.qits:&lt;app&gt;-golden-masters
  * golden-masters  npm    &#64;qits/&lt;short(app)&gt;-golden-masters
- * pacts(provider) maven  eu.wohlben.qits:&lt;app&gt;-pacts-&lt;provider&gt;
- * pacts(provider) npm    &#64;qits/&lt;short(app)&gt;-pacts-&lt;provider&gt;
+ * pacts(provider) maven  eu.wohlben.qits:&lt;consumer repo&gt;-pacts-&lt;provider repo&gt;
+ * pacts(provider) npm    &#64;qits/&lt;short(consumer repo)&gt;-pacts-&lt;provider repo&gt;
  * </pre>
  *
- * <p>{@code short(app)} drops ONE leading {@code qits-}, and only on the consumer's side: the
- * provider keeps its full name because it is the provider's application name. {@code
- * CiContractsTest} pins the four coordinates the estate already publishes, so a change here that
- * moves one of them is a red test rather than a new artifact nobody consumes.
+ * <p>Golden masters keep the provider's APPLICATION name ({@code application:}); a pact package is
+ * named by the two REPOSITORY names, the consumer's being the repository the release runs for.
+ * {@code short(x)} drops ONE leading {@code qits-}, and only on the consumer's side. {@code
+ * CiContractsTest} pins the coordinates, so a change here that moves one of them is a red test
+ * rather than a new artifact nobody consumes.
  *
  * <p><b>Every contract package is {@code if-changed} by definition</b>, which is why {@code
  * publish:} is refused anywhere inside the section rather than offered: there is no second policy
@@ -45,7 +55,7 @@ import java.util.Set;
  * @param application the application whose contracts these are — the consumer for pacts, the
  *     provider for golden masters
  * @param goldenMasters the golden-masters tree, or null when none is declared
- * @param pacts the pact trees by provider application, in declared order, empty when none
+ * @param pacts the pact packages by provider repository, in declared order, empty when none
  */
 public record CiContracts(String application, Source goldenMasters, Map<String, Source> pacts) {
 
@@ -63,8 +73,18 @@ public record CiContracts(String application, Source goldenMasters, Map<String, 
   private static final String FROM_KEY = "from";
   private static final String PACKAGES_KEY = "packages";
 
-  /** What an application name, the section's own or a pact's provider, may be. */
+  /** What an application name, the section's own, may be. */
   static final String APPLICATION = "[a-z][a-z0-9-]*";
+
+  /**
+   * What a pact's provider key may be: a repository name, which ends in its role (the wrapper's
+   * AGENTS.md lists the roles).
+   */
+  static final String PROVIDER_REPOSITORY =
+      "[a-z][a-z0-9-]*-(service|frontend|app|daemon|oci|cli|javalib|jslib)";
+
+  /** The one directory every pact sits in, flat. */
+  static final String PACTS_DIRECTORY = "pacts/";
 
   public CiContracts {
     pacts = Collections.unmodifiableMap(new LinkedHashMap<>(pacts));
@@ -73,7 +93,8 @@ public record CiContracts(String application, Source goldenMasters, Map<String, 
   /**
    * One declared tree.
    *
-   * @param from the repository-relative directory the tree is packed from
+   * @param from the repository-relative directory the tree is packed from; for pacts always
+   *     {@value #PACTS_DIRECTORY}, from which the CLI picks the provider's files by name
    * @param packages the ecosystems to produce, in declared order, never empty
    */
   public record Source(String from, List<Ecosystem> packages) {
@@ -136,7 +157,7 @@ public record CiContracts(String application, Source goldenMasters, Map<String, 
    * One package the platform produces: one (kind, provider, ecosystem).
    *
    * @param kind golden masters or pacts
-   * @param provider the provider a pact is with, {@code ""} for golden masters
+   * @param provider the provider repository a pact is with, {@code ""} for golden masters
    * @param ecosystem the package's ecosystem
    * @param name the derived coordinate
    * @param from the tree it is packed from
@@ -154,8 +175,28 @@ public record CiContracts(String application, Source goldenMasters, Map<String, 
    * Every package this declaration produces: golden masters first, then each provider's pacts in
    * declared order, each in its declared ecosystem order. That is the order the postlude publishes
    * them in and the order they are appended to the composed {@code artifacts:} block.
+   *
+   * @param repository the consumer's repository name — the repository this release is for — which
+   *     names its pact packages
    */
-  public List<Package> packages() {
+  public List<Package> packages(String repository) {
+    List<Package> packages = new ArrayList<>(goldenMasterPackages());
+    for (Map.Entry<String, Source> pact : pacts.entrySet()) {
+      for (Ecosystem ecosystem : pact.getValue().packages()) {
+        packages.add(
+            new Package(
+                Kind.PACTS,
+                pact.getKey(),
+                ecosystem,
+                coordinate(Kind.PACTS, repository, pact.getKey(), ecosystem),
+                pact.getValue().from()));
+      }
+    }
+    return List.copyOf(packages);
+  }
+
+  /** The golden-masters packages alone — what {@code contract-docs} lists. */
+  public List<Package> goldenMasterPackages() {
     List<Package> packages = new ArrayList<>();
     if (goldenMasters != null) {
       for (Ecosystem ecosystem : goldenMasters.packages()) {
@@ -168,35 +209,20 @@ public record CiContracts(String application, Source goldenMasters, Map<String, 
                 goldenMasters.from()));
       }
     }
-    for (Map.Entry<String, Source> pact : pacts.entrySet()) {
-      for (Ecosystem ecosystem : pact.getValue().packages()) {
-        packages.add(
-            new Package(
-                Kind.PACTS,
-                pact.getKey(),
-                ecosystem,
-                coordinate(Kind.PACTS, application, pact.getKey(), ecosystem),
-                pact.getValue().from()));
-      }
-    }
     return List.copyOf(packages);
-  }
-
-  /** The golden-masters packages alone — what {@code contract-docs} lists. */
-  public List<Package> goldenMasterPackages() {
-    return packages().stream().filter(p -> p.kind() == Kind.GOLDEN_MASTERS).toList();
   }
 
   /**
    * THE coordinate rule. See the class javadoc; {@code CiContractsTest} pins its live outputs.
    *
-   * @param provider the pact's provider, ignored for golden masters
+   * @param owner the application for golden masters, the consumer repository for pacts
+   * @param provider the pact's provider repository, ignored for golden masters
    */
-  static String coordinate(Kind kind, String application, String provider, Ecosystem ecosystem) {
+  static String coordinate(Kind kind, String owner, String provider, Ecosystem ecosystem) {
     String suffix = kind == Kind.GOLDEN_MASTERS ? "-golden-masters" : "-pacts-" + provider;
     return switch (ecosystem) {
-      case MAVEN -> GROUP + ":" + application + suffix;
-      case NPM -> NPM_SCOPE + shortName(application) + suffix;
+      case MAVEN -> GROUP + ":" + owner + suffix;
+      case NPM -> NPM_SCOPE + shortName(owner) + suffix;
     };
   }
 
@@ -259,26 +285,60 @@ public record CiContracts(String application, Source goldenMasters, Map<String, 
             configPath
                 + ": "
                 + pactsWhere
-                + " must be a non-empty mapping keyed by provider application, e.g. qits-projects:"
-                + " { from: pacts/, packages: [maven] }, got: "
+                + " must be a non-empty mapping keyed by provider repository, e.g."
+                + " qits-projects-service: { packages: [maven] }, got: "
                 + CiConfigSchema.typeOf(rawPacts));
       }
       refusePublish(byProvider, configPath, pactsWhere);
       for (Map.Entry<?, ?> pact : byProvider.entrySet()) {
-        if (!(pact.getKey() instanceof String provider) || !provider.matches(APPLICATION)) {
+        if (!(pact.getKey() instanceof String provider) || !provider.matches(PROVIDER_REPOSITORY)) {
           throw new CiConfigException(
               configPath
                   + ": "
                   + pactsWhere
                   + " names provider '"
                   + pact.getKey()
-                  + "' — a provider is an application name, "
-                  + APPLICATION);
+                  + "' — a provider is the provider's REPOSITORY name, ending in its role (e.g."
+                  + " qits-projects-service), and its pacts are the files "
+                  + PACTS_DIRECTORY
+                  + "*_<provider>.json; an application name is no longer accepted");
         }
-        pacts.put(provider, source(pact.getValue(), configPath, pactsWhere + "." + provider));
+        pacts.put(provider, pactSource(pact.getValue(), configPath, pactsWhere + "." + provider));
       }
     }
     return new CiContracts(application, goldenMasters, pacts);
+  }
+
+  /**
+   * One pact entry: {@code { packages }} and nothing else. The tree is always {@value
+   * #PACTS_DIRECTORY}; {@code from:} is refused with the migration it needs.
+   */
+  private static Source pactSource(Object raw, String configPath, String where) {
+    if (!(raw instanceof Map<?, ?> map)) {
+      throw new CiConfigException(
+          configPath
+              + ": "
+              + where
+              + " must be a mapping of { packages }, got: "
+              + CiConfigSchema.typeOf(raw));
+    }
+    refusePublish(map, configPath, where);
+    if (map.containsKey(FROM_KEY)) {
+      throw new CiConfigException(
+          configPath
+              + ": "
+              + where
+              + " declares '"
+              + FROM_KEY
+              + "' — pacts are no longer packed from a directory of their own: keep every pact flat"
+              + " in "
+              + PACTS_DIRECTORY
+              + " named <consumer repository>_<provider repository>.json, and drop '"
+              + FROM_KEY
+              + "'");
+    }
+    requireKeys(map, Set.of(PACKAGES_KEY), configPath, where, "'packages'");
+    return new Source(PACTS_DIRECTORY, packages(map.get(PACKAGES_KEY), configPath, where));
   }
 
   private static Source source(Object raw, String configPath, String where) {
@@ -295,7 +355,10 @@ public record CiContracts(String application, Source goldenMasters, Map<String, 
     String from =
         CiReleaseSlotParser.requireDownward(
             map.get(FROM_KEY), configPath, where + "." + FROM_KEY);
-    Object rawPackages = map.get(PACKAGES_KEY);
+    return new Source(from, packages(map.get(PACKAGES_KEY), configPath, where));
+  }
+
+  private static List<Ecosystem> packages(Object rawPackages, String configPath, String where) {
     if (!(rawPackages instanceof List<?> list) || list.isEmpty()) {
       throw new CiConfigException(
           configPath
@@ -325,7 +388,7 @@ public record CiContracts(String application, Source goldenMasters, Map<String, 
             configPath + ": " + where + "." + PACKAGES_KEY + " names '" + element + "' twice");
       }
     }
-    return new Source(from, List.copyOf(packages));
+    return List.copyOf(packages);
   }
 
   private static void refusePublish(Map<?, ?> map, String configPath, String where) {
