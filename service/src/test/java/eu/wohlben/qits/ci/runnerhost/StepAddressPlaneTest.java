@@ -27,14 +27,6 @@ class StepAddressPlaneTest {
     assertEquals(
         "https://githost.qits.example.org/git/qits/qits-ci-service",
         StepWorkloadSpecs.cloneUrl(plane.gitBaseUrl(), CiRepoRef.of("r", "qits", "qits-ci-service")));
-    assertEquals("registry.qits.example.org", plane.registryHost());
-    assertEquals("https://registry.qits.example.org/artifacts/npm/npm/", plane.npmHostedUrl());
-    assertEquals("https://mirror.qits.example.org/npm/npmjs/", plane.npmProxyUrl());
-    assertEquals("https://registry.qits.example.org/artifacts/maven/maven", plane.mavenRegistryUrl());
-    assertEquals(
-        "https://mirror.qits.example.org/mirror/maven/central", plane.mavenCentralMirrorUrl());
-    assertEquals("https://registry.qits.example.org/artifacts/docs/docs", plane.docsUrl());
-    assertEquals("https://registry.qits.example.org", plane.artifactsUrl());
     assertEquals("https://workspaces.qits.example.org", plane.workspacesUrl());
     assertEquals(
         List.of("registry.qits.example.org", "mirror.qits.example.org"), plane.authHosts());

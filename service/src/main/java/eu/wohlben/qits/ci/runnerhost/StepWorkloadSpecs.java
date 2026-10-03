@@ -47,7 +47,6 @@ public final class StepWorkloadSpecs {
    */
   public record Settings(
       String artifactsImageRepository,
-      boolean mavenCentralMirrorEnabled,
       String artifactsCliPackage,
       String artifactsCliVersion,
       String memoryLimit,
@@ -112,32 +111,19 @@ public final class StepWorkloadSpecs {
     // caches, each under a constant path (StepAddressPlane's) — so a recipe spells those itself
     // from this one value. Never empty: a qits-ci with no public domain launches no step at all.
     //
-    // The URL variables below are the same addresses composed here, and survive this release only
-    // for the recipes still read at a repository's main that name them; they go once none does.
+    // And it is the ONLY one. The URL variables a step used to be handed beside it — the registry
+    // host, the npm, maven, docs and artifacts urls, the build registry — were these same addresses
+    // composed here, and every recipe now spells them from the domain itself; sending them would be
+    // a second answer for a step to read instead.
     env.put("QITS_DOMAIN", value(plane.domain()));
-    // Also for the script: where a published image goes. Every container gets them, because "which
-    // registry" must never be a literal in a repository's pipeline. Together with $QITS_CI_SHA above
-    // they are the whole of the tag convention qits-cd pulls by,
-    // <registry>/<repository>/<application>:<sha>.
-    env.put("QITS_REGISTRY", value(plane.registryHost()));
+    // Also for the script: the namespace a published image goes under. Every container gets it,
+    // because a deployment may re-point the namespace and the declaration may not have to move.
+    // With the registry `registry.qits.$QITS_DOMAIN` and $QITS_VERSION it is the whole of the tag
+    // convention qits-cd pulls by, <registry>/<repository>/<application>:<version>.
     env.put("QITS_IMAGE_REPOSITORY", value(settings.artifactsImageRepository()));
-    // And where npm packages come from and go to. Unlike the two above, these are dialled by this
-    // container, on this network — a publish here is an ordinary HTTP step needing no socket.
-    env.put("QITS_NPM_REGISTRY_URL", value(plane.npmHostedUrl()));
-    env.put("QITS_NPM_PROXY_URL", value(plane.npmProxyUrl()));
-    env.put("QITS_MAVEN_REGISTRY_URL", value(plane.mavenRegistryUrl()));
-    // Maven Central through qits-mirror, under both names a pipeline reads it by.
-    // Empty is the deliberate off state, so the ternary writes "" rather than skipping the keys:
-    // a pipeline reads "${QITS_MAVEN_CENTRAL_MIRROR_URL:-}" either way and empty deactivates the
-    // settings profile at every consumer.
-    env.put("QITS_MAVEN_CENTRAL_MIRROR_URL",
-        settings.mavenCentralMirrorEnabled() ? value(plane.mavenCentralMirrorUrl()) : "");
-    env.put("QITS_MAVEN_PROXY_URL",
-        settings.mavenCentralMirrorEnabled() ? value(plane.mavenCentralMirrorUrl()) : "");
-    env.put("QITS_DOCS_URL", value(plane.docsUrl()));
-    // The store's own root, and the coordinate a composed release prelude downloads the qits CLI at.
-    // The package is EMPTY-never-absent, so a deployment that has switched the CLI off hands
-    // every step one shape to read.
+    // The coordinate a composed release prelude downloads the qits CLI at, from the registry's
+    // public name. The package is EMPTY-never-absent, so a deployment that has switched the CLI off
+    // hands every step one shape to read.
     //
     // THE VERSION IS A PIN AND IS NEVER EMPTY. It comes from this reactor's own dependency on
     // qits-platform-access-cli-binary, so which CLI every composed release step on the platform runs
@@ -145,7 +131,6 @@ public final class StepWorkloadSpecs {
     // moment the step started. The constant cannot be blank (PlatformAccessCliBinary refuses that at
     // class-init), so the prelude's `:?` guard on it can only ever fire against a qits-ci that
     // predates the pin.
-    env.put("QITS_ARTIFACTS_URL", value(plane.artifactsUrl()));
     env.put("QITS_ARTIFACTS_CLI_PACKAGE", value(settings.artifactsCliPackage()).trim());
     env.put("QITS_ARTIFACTS_CLI_VERSION", settings.artifactsCliVersion());
     // And where a step asks for its own repository to be released.
@@ -196,11 +181,11 @@ public final class StepWorkloadSpecs {
         env.put("DOCKER_BUILDKIT", "1");
         env.put("BUILDX_NO_DEFAULT_ATTESTATIONS", "1");
       }
-      // The platform builder. The step composes a buildctl push ref from $QITS_BUILD_REGISTRY — the
-      // registry's public name, the one address a builder outside the swarm can push to — and
+      // The platform builder. The step composes a buildctl push ref under `registry.qits.$QITS_DOMAIN`
+      // — the registry's public name, the one address a builder outside the swarm can push to — and
       // $BUILDKIT_HOST arrives from the runner, which owns the builder and its address and fills
       // the key in when it is absent. This service does not spell an address it does not own.
-      env.put("QITS_BUILD_REGISTRY", value(plane.registryHost()));
+      //
       // And this run's login: one entry per public registry host, each `token:<qits_tok_…>` — the
       // Basic form the edge's docker realm introspects — and the directory BOOTSTRAP writes the
       // document into.

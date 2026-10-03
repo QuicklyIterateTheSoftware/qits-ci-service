@@ -491,9 +491,9 @@ public class CiRunService {
 
   /**
    * qits-platform-artifacts' coordinates, for resolving a step image a recipe named without a
-   * registry — see {@link CiStepImage} for the rule and for what it is worth. The same two keys the
-   * publish scripts compose as {@code $QITS_REGISTRY} and {@code $QITS_IMAGE_REPOSITORY}, read here
-   * so a recipe keeps naming no deployment fact of its own. RECEIVER-NAMED, like every other reader
+   * registry — see {@link CiStepImage} for the rule and for what it is worth. The registry the
+   * publish scripts compose as {@code registry.qits.$QITS_DOMAIN} and the namespace they read as
+   * {@code $QITS_IMAGE_REPOSITORY}, read here so a recipe keeps naming no deployment fact of its own. RECEIVER-NAMED, like every other reader
    * of this pair.
    */
   @ConfigProperty(name = "qits.artifacts.registry-host")

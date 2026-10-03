@@ -43,16 +43,6 @@ public record StepAddressPlane(
     String daemonBinaryOrigin,
     /** The git host's base; {@code $QITS_CI_REPOSITORY_URL} is this plus {@code /git/…}. */
     String gitBaseUrl,
-    /** {@code $QITS_REGISTRY} and {@code $QITS_BUILD_REGISTRY}: a host and port, no scheme. */
-    String registryHost,
-    String npmHostedUrl,
-    String npmProxyUrl,
-    String mavenRegistryUrl,
-    /** {@code $QITS_MAVEN_CENTRAL_MIRROR_URL} and {@code $QITS_MAVEN_PROXY_URL}, mirror on. */
-    String mavenCentralMirrorUrl,
-    String docsUrl,
-    /** {@code $QITS_ARTIFACTS_URL}: the store's origin, no path. */
-    String artifactsUrl,
     String workspacesUrl,
     /** Every host the run's docker {@code config.json} carries a login for. */
     List<String> authHosts,
@@ -67,21 +57,6 @@ public record StepAddressPlane(
    * qits-ci-daemon/<version>} — the route {@code CiDaemonPinIT} downloads the pin from.
    */
   static final String DAEMON_BINARY_PATH = "/artifacts/daemons/";
-
-  /** qits-artifacts' hosted npm repository, the one {@code @qits/*} is published to. */
-  static final String NPM_HOSTED_PATH = "/artifacts/npm/npm/";
-
-  /** qits-mirror's npm pull-through cache. */
-  static final String NPM_PROXY_PATH = "/npm/npmjs/";
-
-  /** qits-artifacts' hosted Maven repository. */
-  static final String MAVEN_REGISTRY_PATH = "/artifacts/maven/maven";
-
-  /** qits-mirror's Maven Central pull-through. */
-  static final String MAVEN_CENTRAL_MIRROR_PATH = "/mirror/maven/central";
-
-  /** qits-artifacts' docs repository, the {@code docs} namespace segment included. */
-  static final String DOCS_PATH = "/artifacts/docs/docs";
 
   public StepAddressPlane {
     authHosts = List.copyOf(authHosts);
@@ -205,9 +180,10 @@ public record StepAddressPlane(
 
   /**
    * The addresses of a step, from the public origin of each service that answers one. qits-artifacts
-   * answers the registry, the hosted npm and maven roots, the docs store and the daemon binary;
-   * qits-mirror the npm and the maven pull-through roots; qits-githost the clone url;
-   * qits-workspaces its own root; qits-ci the daemon socket.
+   * answers the daemon binary and, with qits-mirror, the registry logins and image pulls;
+   * qits-githost the clone url; qits-workspaces its own root; qits-ci the daemon socket. The npm,
+   * maven and docs roots are not here: a step spells those itself under {@code $QITS_DOMAIN}
+   * (qits-731), and no URL variable carries them.
    *
    * @param spellings the hosts that name the platform's two image stores, which an image reference
    *     is recognised by; this plane pulls them from the public registry and mirror hosts
@@ -215,7 +191,6 @@ public record StepAddressPlane(
   public static StepAddressPlane of(EdgeOrigins origins, ImageRegistries spellings) {
     Objects.requireNonNull(origins, "origins");
     String artifacts = strip(origins.artifacts());
-    String mirrorOrigin = strip(origins.mirror());
     String registry = hostOf(origins.artifacts());
     List<String> authHosts = new ArrayList<>();
     authHosts.add(registry);
@@ -228,13 +203,6 @@ public record StepAddressPlane(
         socketOrigin(origins.ci()) + DAEMON_SOCKET_PATH,
         artifacts,
         strip(origins.githost()),
-        registry,
-        artifacts + NPM_HOSTED_PATH,
-        mirrorOrigin + NPM_PROXY_PATH,
-        artifacts + MAVEN_REGISTRY_PATH,
-        mirrorOrigin + MAVEN_CENTRAL_MIRROR_PATH,
-        artifacts + DOCS_PATH,
-        artifacts,
         strip(origins.workspaces()),
         authHosts,
         spellings.pulledFrom(registry, mirror));

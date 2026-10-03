@@ -27,9 +27,10 @@ package eu.wohlben.qits.ci.control;
  * <p><b>Why centrally rather than in the recipes.</b> Twenty repositories spell this image, and
  * writing the registry host into each would put one deployment fact in twenty files and break the
  * property that a recipe is registry-independent — the same property the publish scripts keep by
- * composing {@code $QITS_REGISTRY} rather than naming a host. The cost is that a mistake here breaks
- * every repository's builds at once, which is the same blast radius the publishing pipeline already
- * carries and the reason this rule is kept small enough to read in one sitting.
+ * composing {@code registry.qits.$QITS_DOMAIN} rather than naming a domain. The cost is that a
+ * mistake here breaks every repository's builds at once, which is the same blast radius the
+ * publishing pipeline already carries and the reason this rule is kept small enough to read in one
+ * sitting.
  *
  * <p>Pulling from that registry is a proven path rather than a hope: qits-platform-deployments runs
  * every deployed container from {@code <registry>/<repository>/<application>:<sha>} through this

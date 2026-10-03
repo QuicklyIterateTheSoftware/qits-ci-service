@@ -150,22 +150,13 @@ public class StepContainerSettingsTest {
     env.put("QITS_CI", "true");
     // The bare domain every address below is composed from, and the one a recipe derives its own
     // registry and mirror addresses from (qits-731).
+    // It is the ONLY address input: no URL variable rides beside it.
     env.put("QITS_DOMAIN", "example.org");
-    env.put("QITS_REGISTRY", "registry.qits.example.org");
     env.put("QITS_IMAGE_REPOSITORY", "qits");
-    env.put("QITS_NPM_REGISTRY_URL", "https://registry.qits.example.org/artifacts/npm/npm/");
-    env.put("QITS_NPM_PROXY_URL", "https://mirror.qits.example.org/npm/npmjs/");
-    env.put("QITS_MAVEN_REGISTRY_URL", "https://registry.qits.example.org/artifacts/maven/maven");
-    // The mirror under both names a pipeline reads it by, on /mirror/maven, the mirror's own route.
-    env.put(
-        "QITS_MAVEN_CENTRAL_MIRROR_URL", "https://mirror.qits.example.org/mirror/maven/central");
-    env.put("QITS_MAVEN_PROXY_URL", "https://mirror.qits.example.org/mirror/maven/central");
-    env.put("QITS_DOCS_URL", "https://registry.qits.example.org/artifacts/docs/docs");
-    // The store's root, and the coordinate a composed release prelude downloads the qits CLI at. The
-    // version is qits-ci's own pinned dependency's constant rather than a literal, because a literal
-    // here would be a second place the pin is written down and the pin moving would be a red suite
-    // rather than a moved pin.
-    env.put("QITS_ARTIFACTS_URL", "https://registry.qits.example.org");
+    // The coordinate a composed release prelude downloads the qits CLI at. The version is qits-ci's
+    // own pinned dependency's constant rather than a literal, because a literal here would be a
+    // second place the pin is written down and the pin moving would be a red suite rather than a
+    // moved pin.
     env.put("QITS_ARTIFACTS_CLI_PACKAGE", "qits-platform-access-cli");
     env.put("QITS_ARTIFACTS_CLI_VERSION", PlatformAccessCliBinary.VERSION);
     env.put("QITS_WORKSPACES_URL", "https://workspaces.qits.example.org");
@@ -252,8 +243,7 @@ public class StepContainerSettingsTest {
     // And the sandbox does not relax for a publish step: capDropAll and noNewPrivileges cost a
     // socket client nothing and keeping them unconditional is what keeps them meaning something for
     // the steps that never opt in. The diff is the socket plus the build environment (the two
-    // mode flags, $QITS_BUILD_REGISTRY and the registry login), which is a build MODE rather than
-    // a privilege —
+    // mode flags and the registry login), which is a build MODE rather than a privilege —
     // asserted as an exact residue rather than as spot checks, the same claim the old argv test
     // made by deleting list elements and comparing the rest.
     assertNotEquals(plain, withDocker);
@@ -267,7 +257,6 @@ public class StepContainerSettingsTest {
     Map<String, String> env = new LinkedHashMap<>(original.env());
     env.remove("DOCKER_BUILDKIT");
     env.remove("BUILDX_NO_DEFAULT_ATTESTATIONS");
-    env.remove("QITS_BUILD_REGISTRY");
     env.remove("DOCKER_CONFIG");
     env.remove("QITS_CI_REGISTRY_AUTH_CONFIG");
     return withEnv(original, env);
@@ -343,9 +332,10 @@ public class StepContainerSettingsTest {
   }
 
   @Test
-  public void aDockerStepCarriesTheBuildRegistryAndNoBuilderAddress() {
+  public void aDockerStepCarriesNoRegistryVariableAndNoBuilderAddress() {
     Map<String, String> env = compose(publishing()).env();
-    assertEquals("registry.qits.example.org", env.get("QITS_BUILD_REGISTRY"));
+    // The registry is `registry.qits.$QITS_DOMAIN`, code a recipe spells (qits-731).
+    assertFalse(env.containsKey("QITS_BUILD_REGISTRY"));
     // No BUILDKIT_HOST: the address is the runner's own to fill — an address spelled here too would
     // be the two-copies drift the docker-socket-path deletion already paid for once.
     assertFalse(env.containsKey("BUILDKIT_HOST"));
@@ -353,13 +343,12 @@ public class StepContainerSettingsTest {
 
   @Test
   public void aBuildStepGetsTheBuildEnvironmentAndNeverTheSocket() {
-    // The end state: build: true is docker: true minus the root-equivalence. Same registry
-    // variable, same login — and no socket, no mode flags (they steer a docker CLI a buildctl step
+    // The end state: build: true is docker: true minus the root-equivalence. Same login — and no
+    // socket, no mode flags (they steer a docker CLI a buildctl step
     // never runs).
     WorkloadSpec request = compose(buildStep());
     assertFalse(request.hostDockerSocket());
     Map<String, String> env = request.env();
-    assertEquals("registry.qits.example.org", env.get("QITS_BUILD_REGISTRY"));
     assertEquals("/tmp/qits-ci-registry-auth", env.get("DOCKER_CONFIG"));
     assertFalse(env.containsKey("BUILDKIT_HOST"), "the address stays the runner's to fill");
     assertFalse(env.containsKey("DOCKER_BUILDKIT"));
@@ -415,15 +404,14 @@ public class StepContainerSettingsTest {
   }
 
   @Test
-  public void everyStepIsToldWhereAPublishedImageGoes() {
-    // Injected unconditionally, opted in or not: "which registry" must never be a literal in a
-    // repository's pipeline. With $QITS_CI_SHA these two are the whole tag convention
-    // <registry>/<repository>/<application>:<sha>, and the registry is its public name.
+  public void everyStepIsToldTheNamespaceAPublishedImageGoesUnder() {
+    // Injected unconditionally, opted in or not: a deployment may re-point the namespace, so it is
+    // never a literal in a repository's pipeline. The registry beside it is code under the domain,
+    // `registry.qits.$QITS_DOMAIN` (qits-731), and is no variable at all.
     for (LaunchSpec each : List.of(spec, publishing())) {
       Map<String, String> env = compose(each).env();
-      assertEquals("registry.qits.example.org", env.get("QITS_REGISTRY"));
       assertEquals("qits", env.get("QITS_IMAGE_REPOSITORY"));
-      assertEquals("cafebabe", env.get("QITS_CI_SHA"));
+      assertFalse(env.containsKey("QITS_REGISTRY"));
     }
   }
 
@@ -437,81 +425,15 @@ public class StepContainerSettingsTest {
   }
 
   @Test
-  public void everyStepIsToldWhereNpmPackagesComeFromAndGoTo() {
-    // Also unconditional, and for the same reason. These two are dialled by the step container
-    // itself, so a publish to them is an ordinary HTTP step that never declares `docker: true`.
-    for (LaunchSpec each : List.of(spec, publishing())) {
-      Map<String, String> env = compose(each).env();
-      assertEquals(
-          "https://registry.qits.example.org/artifacts/npm/npm/", env.get("QITS_NPM_REGISTRY_URL"));
-      assertEquals("https://mirror.qits.example.org/npm/npmjs/", env.get("QITS_NPM_PROXY_URL"));
-    }
-  }
-
-  @Test
-  public void everyStepIsToldWhereMavenPackagesComeFromAndGoTo() {
-    for (LaunchSpec each : List.of(spec, publishing())) {
-      assertEquals(
-          "https://registry.qits.example.org/artifacts/maven/maven",
-          compose(each).env().get("QITS_MAVEN_REGISTRY_URL"));
-    }
-  }
-
-  @Test
-  public void bothMavenCentralKeysNameTheMirrorOnItsOwnRoute() {
-    // /mirror is the mirror's own route; /artifacts routes to the hosted registry. A step's own
-    // maven and a build it starts reach the same public name, so the two keys carry one value.
-    for (LaunchSpec each : List.of(spec, publishing())) {
-      Map<String, String> env = compose(each).env();
-      assertEquals(
-          "https://mirror.qits.example.org/mirror/maven/central",
-          env.get("QITS_MAVEN_CENTRAL_MIRROR_URL"));
-      assertEquals(
-          "https://mirror.qits.example.org/mirror/maven/central", env.get("QITS_MAVEN_PROXY_URL"));
-    }
-  }
-
-  @Test
-  public void aDeploymentThatCannotReachTheMirrorInjectsTheCentralPairEMPTY() {
-    // Empty, never absent, is the off state: every .qits-maven-settings.xml activates its
-    // central-proxy profile only on a non-empty value, so an empty pair means every build resolves
-    // Maven Central directly — the arm a bootstrap is on while the mirror is not started yet. The
-    // keys must still be PRESENT, because a pipeline reads "${QITS_MAVEN_CENTRAL_MIRROR_URL:-}"
-    // under `set -u` and one shape for a step to read is the estate's rule for optional values.
-    StepContainerSettings launcher = launcher();
-    launcher.mavenCentralMirrorEnabled = false;
-    for (LaunchSpec each : List.of(spec, publishing())) {
-      Map<String, String> env = compose(launcher, each).env();
-      assertEquals("", env.get("QITS_MAVEN_CENTRAL_MIRROR_URL"));
-      assertEquals("", env.get("QITS_MAVEN_PROXY_URL"));
-    }
-  }
-
-  @Test
-  public void everyStepIsToldWhereItsDocumentationGoes() {
-    // Including the `docs` namespace segment: there is one docs repository and a pipeline that got
-    // to name one could publish into a namespace nothing serves.
-    for (LaunchSpec each : List.of(spec, publishing())) {
-      assertEquals(
-          "https://registry.qits.example.org/artifacts/docs/docs",
-          compose(each).env().get("QITS_DOCS_URL"));
-    }
-  }
-
-  @Test
-  public void everyStepIsToldTheArtifactStoresRootAndItsCliPackage() {
-    // THE ROOT ENDS THREE STRING-CHOPPING DERIVATIONS. Every pipeline that publishes an SBOM, a
-    // daemon binary or a docs bundle today takes one of the package roots and cuts the path off with
-    // its own sed expression; there is one origin, and one variable says so: the store's public
-    // name, which is never empty — it is composed from the domain rather than read from a key.
-    // AND THE CLI'S VERSION TRAVELS TOO, which is the half that used to be missing. It is qits-ci's
+  public void everyStepIsToldItsCliPackageAndThePinnedVersion() {
+    // The store the CLI comes from is no variable: the composed prelude downloads it from
+    // `registry.qits.$QITS_DOMAIN` (qits-731). The CLI'S VERSION travels, and it is qits-ci's
     // pinned dependency's constant, so which qits CLI a composed release step runs is a pom line
     // this repository's release request gated — not whatever was latest in the store at the moment
     // the step started, which is what broke every composed release on the platform at once on
     // 2026-09-13.
     for (LaunchSpec each : List.of(spec, publishing())) {
       Map<String, String> env = compose(each).env();
-      assertEquals("https://registry.qits.example.org", env.get("QITS_ARTIFACTS_URL"));
       assertEquals("qits-platform-access-cli", env.get("QITS_ARTIFACTS_CLI_PACKAGE"));
       assertEquals(PlatformAccessCliBinary.VERSION, env.get("QITS_ARTIFACTS_CLI_VERSION"));
     }
@@ -663,7 +585,6 @@ public class StepContainerSettingsTest {
     Map<String, String> expected = contractEnv();
     expected.put("DOCKER_BUILDKIT", "1");
     expected.put("BUILDX_NO_DEFAULT_ATTESTATIONS", "1");
-    expected.put("QITS_BUILD_REGISTRY", "registry.qits.example.org");
     expected.put("DOCKER_CONFIG", "/tmp/qits-ci-registry-auth");
     assertEquals(expected, publishingEnv);
     assertTrue(document.contains("\"registry.qits.example.org\""), document);

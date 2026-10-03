@@ -43,7 +43,6 @@ public final class StepFixtures {
         Optional.of(List.of("registry.dev.localhost:8080", "localhost:8081"));
     launcher.mirrorSpellings = Optional.of(List.of("mirror.dev.localhost:8080", "localhost:8082"));
     launcher.environment = "dev";
-    launcher.mavenCentralMirrorEnabled = true;
     launcher.artifactsCliPackage = "qits";
     launcher.artifactsCliVersionOverride = Optional.empty();
     return launcher;

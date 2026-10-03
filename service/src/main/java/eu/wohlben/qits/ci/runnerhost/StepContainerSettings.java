@@ -403,18 +403,6 @@ public class StepContainerSettings {
   String environment;
 
   /**
-   * Whether a step is told the Maven Central pull-through at all. <b>Off is injected as EMPTY,
-   * never as absence</b>: every {@code .qits-maven-settings.xml} activates its central-proxy profile
-   * only on a non-empty {@code QITS_MAVEN_CENTRAL_URL} (measured on Maven 3.9: an empty environment
-   * value does not activate a property-presence profile), so an empty value means that build
-   * resolves Maven Central directly — the bootstrap lever for a platform whose mirror is not up yet.
-   * On, both {@code $QITS_MAVEN_CENTRAL_MIRROR_URL} and {@code $QITS_MAVEN_PROXY_URL} are the
-   * mirror's public name plus {@code /mirror/maven/central}.
-   */
-  @ConfigProperty(name = "qits.mirror.maven-central.enabled")
-  boolean mavenCentralMirrorEnabled;
-
-  /**
    * The daemon package a release-phase step downloads the qits CLI from — {@code qits}, which also
    * answers to the name {@code qits-publish}. <b>The package, and only the package.</b>
    *
@@ -542,7 +530,6 @@ public class StepContainerSettings {
   public StepWorkloadSpecs.Settings workloadSettings() {
     return new StepWorkloadSpecs.Settings(
         artifactsImageRepository,
-        mavenCentralMirrorEnabled,
         artifactsCliPackage,
         artifactsCliVersion(),
         memoryLimit,

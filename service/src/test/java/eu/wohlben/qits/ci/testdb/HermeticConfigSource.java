@@ -30,11 +30,12 @@ import org.eclipse.microprofile.config.spi.ConfigSource;
  * TokenValidationBootstrapIT}, the one place the real JWKS path is exercised, launches the packaged
  * artifact, which does not see this test-classpath source.
  *
- * <p><b>{@code qits.artifacts.url} is blanked because every step container names it by
- * accident.</b> {@code StepWorkloadSpecs} sends {@code QITS_ARTIFACTS_URL} — the registry's public
- * name — and the environment source maps it onto this key, which the service ships unset and {@code
- * HttpImagePins} reads. It is the only key in the step environment that maps onto a config key this
- * service reads.
+ * <p><b>{@code qits.artifacts.url} is blanked because an ambient environment can name it by
+ * accident.</b> The environment source maps a variable spelled {@code QITS_ARTIFACTS_URL} onto this
+ * key, which the service ships unset and {@code HttpImagePins} reads. A step container used to be
+ * handed exactly that variable; since qits-731 no step is told any URL variable, but a step launched
+ * by an older qits-ci, or any other container that carries one, still would be — and the suite must
+ * not read where it runs.
  *
  * <p><b>{@code qits.ci.domain} is the suite's own, {@link #DOMAIN}.</b> Every address a runner or a
  * step is told is composed from the platform's public domain and there is nothing to fall back to

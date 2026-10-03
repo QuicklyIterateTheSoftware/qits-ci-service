@@ -53,15 +53,7 @@ class StepEnvironmentTest {
         "CI=true",
         "QITS_CI=true",
         "QITS_DOMAIN=example.org",
-        "QITS_REGISTRY=registry.qits.example.org",
         "QITS_IMAGE_REPOSITORY=qits",
-        "QITS_NPM_REGISTRY_URL=https://registry.qits.example.org/artifacts/npm/npm/",
-        "QITS_NPM_PROXY_URL=https://mirror.qits.example.org/npm/npmjs/",
-        "QITS_MAVEN_REGISTRY_URL=https://registry.qits.example.org/artifacts/maven/maven",
-        "QITS_MAVEN_CENTRAL_MIRROR_URL=https://mirror.qits.example.org/mirror/maven/central",
-        "QITS_MAVEN_PROXY_URL=https://mirror.qits.example.org/mirror/maven/central",
-        "QITS_DOCS_URL=https://registry.qits.example.org/artifacts/docs/docs",
-        "QITS_ARTIFACTS_URL=https://registry.qits.example.org",
         "QITS_ARTIFACTS_CLI_PACKAGE=qits",
         "QITS_ARTIFACTS_CLI_VERSION=" + PlatformAccessCliBinary.VERSION,
         "QITS_WORKSPACES_URL=https://workspaces.qits.example.org",
@@ -96,7 +88,6 @@ class StepEnvironmentTest {
         List.of(
             "DOCKER_BUILDKIT=1",
             "BUILDX_NO_DEFAULT_ATTESTATIONS=1",
-            "QITS_BUILD_REGISTRY=registry.qits.example.org",
             "DOCKER_CONFIG=/tmp/qits-ci-registry-auth",
             "QITS_CI_REGISTRY_AUTH_CONFIG={\"auths\":{"
                 + "\"registry.qits.example.org\":{\"auth\":\"" + AUTH + "\"},"
@@ -115,7 +106,6 @@ class StepEnvironmentTest {
 
     List<String> build =
         List.of(
-            "QITS_BUILD_REGISTRY=registry.qits.example.org",
             "DOCKER_CONFIG=/tmp/qits-ci-registry-auth",
             "QITS_CI_REGISTRY_AUTH_CONFIG={\"auths\":{"
                 + "\"registry.qits.example.org\":{\"auth\":\"" + AUTH + "\"},"
@@ -138,18 +128,35 @@ class StepEnvironmentTest {
                 + "\"registry.qits.example.org\":{\"auth\":\"" + AUTH + "\"}}}");
     assertEquals(concat(common(), pull, events()), StepFixtures.entries(spec.env()));
     assertFalse(spec.env().containsKey("DOCKER_CONFIG"));
-    assertFalse(spec.env().containsKey("QITS_BUILD_REGISTRY"));
   }
 
+  /**
+   * qits-731: the platform's public domain is the ONE address input a step is told. Every host a
+   * recipe reaches is code under it — {@code registry.qits.<d>}, {@code mirror.qits.<d>} — so the
+   * URL variables that used to carry the same addresses composed here are gone, from every shape of
+   * step, and none may come back as a second answer for a recipe to read instead.
+   */
   @Test
-  void theMirrorSwitchOffSendsBothMavenCentralKeysEmptyNeverAbsent() {
-    StepContainerSettings off = StepFixtures.shippedLauncher();
-    off.mavenCentralMirrorEnabled = false;
+  void theDomainIsTheOnlyAddressInputAndNoUrlVariableRemains() {
+    for (boolean[] shape : new boolean[][] {{false, false}, {true, false}, {false, true}}) {
+      Map<String, String> env = compose(StepFixtures.shippedLauncher(), shape[0], shape[1]).env();
+      String what = "docker=" + shape[0] + " build=" + shape[1];
 
-    Map<String, String> env = compose(off, false, false).env();
-
-    assertEquals("", env.get("QITS_MAVEN_CENTRAL_MIRROR_URL"));
-    assertEquals("", env.get("QITS_MAVEN_PROXY_URL"));
+      assertEquals("example.org", env.get("QITS_DOMAIN"), what);
+      for (String gone :
+          List.of(
+              "QITS_NPM_REGISTRY_URL",
+              "QITS_NPM_PROXY_URL",
+              "QITS_MAVEN_REGISTRY_URL",
+              "QITS_MAVEN_CENTRAL_MIRROR_URL",
+              "QITS_MAVEN_PROXY_URL",
+              "QITS_ARTIFACTS_URL",
+              "QITS_DOCS_URL",
+              "QITS_REGISTRY",
+              "QITS_BUILD_REGISTRY")) {
+        assertFalse(env.containsKey(gone), what + " still carries " + gone);
+      }
+    }
   }
 
   /**
