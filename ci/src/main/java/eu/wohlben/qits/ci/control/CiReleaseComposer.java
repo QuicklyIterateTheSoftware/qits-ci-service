@@ -600,7 +600,13 @@ public final class CiReleaseComposer {
       out.append(
           ": \"${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only"
               + " through it}\"\n");
-      out.append(": \"${QITS_BUILD_REGISTRY:?}\"\n");
+      // And where it pushes. The registry is code, `registry.qits.$QITS_DOMAIN` (qits-731), so the
+      // domain is what a build has to be told; the qits-ci composing this text is the one that
+      // launches the step and always sends it. $QITS_BUILD_REGISTRY is still sent beside it for
+      // the recipes read at a repository's main that name it, and is no longer what is demanded.
+      out.append(
+          ": \"${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no registry to push"
+              + " to}\"\n");
     }
     if (step.build() || step.docker()) {
       // The run's credential as two FILES, for a buildctl `--secret id=…,src=…` that writes no

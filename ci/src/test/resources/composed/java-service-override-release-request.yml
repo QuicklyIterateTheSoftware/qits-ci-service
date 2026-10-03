@@ -13,7 +13,7 @@ steps:
       set -eu
       # --- platform prelude ---------------------------------------------------------
       : "${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only through it}"
-      : "${QITS_BUILD_REGISTRY:?}"
+      : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no registry to push to}"
       (
         umask 077
         if [ -n "${QITS_TOKEN:-}" ]; then

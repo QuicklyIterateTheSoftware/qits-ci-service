@@ -1782,8 +1782,9 @@ and it is wrong the moment that image changes underneath the declaration.
   runner does: `curl` where the image has it, `wget -O` where it does not, and a refusal **naming the
   image** where neither exists rather than an obscure `not found`. Only the fetch is at issue; the
   CLI is a static binary, so the postlude's `qits artifacts publish …` works whichever arm ran.
-- `build: true` — `${BUILDKIT_HOST:?}` and `${QITS_BUILD_REGISTRY:?}`, which fail the step naming
-  the cause when a runner did not fill the builder's address in
+- `build: true` — `${BUILDKIT_HOST:?}` and `${QITS_DOMAIN:?}`, which fail the step naming
+  the cause when a runner did not fill the builder's address in, or the step was told no domain to
+  derive `registry.qits.$QITS_DOMAIN` from (qits-731)
 - `build:`/`docker:` — the run's token and its subject written to `/tmp/qits-client-*` under `umask 077`, in a
   subshell so the umask bounds those two files and nothing after them
 - release phase, on EVERY step — one `qits artifacts publish sbom submit` per declared artifact
