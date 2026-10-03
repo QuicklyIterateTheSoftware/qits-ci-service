@@ -97,8 +97,11 @@ import org.jboss.logging.Logger;
  *
  * <p><b>A run whose session drops waits a grace for the runner to come back</b> (qits-545). A socket
  * that merely blinked — the edge restarting, a NAT timing out — used to fail every run the runner
- * held on the spot, while their containers were still running and their daemons still talking to
- * this host on their own sockets. Now such a run is <em>orphaned</em> for {@code
+ * held on the spot, while their containers were still running. Their daemons are NOT necessarily
+ * still talking to this host meanwhile: each daemon's own socket crosses the same edge, so an edge
+ * restart drops it at the same instant, and it has a reconnect grace of its own ({@code
+ * qits.ci.daemon.reconnect-grace-seconds}, {@code CiDaemonRegistry}, qits-748) inside which the
+ * daemon re-dials. Now such a run is <em>orphaned</em> for {@code
  * qits.ci.runner.reconnect-grace-seconds}: nothing is failed, and the runner's next connection in the
  * same version claims it in its {@code Hello} ({@code heldRuns}) and is answered with it in its
  * {@code Ack} ({@code adoptedRuns}), after which the run is that connection's exactly as if it had

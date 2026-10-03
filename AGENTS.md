@@ -2616,6 +2616,12 @@ other golden moved), `CiEventTriggerParser` reads it back into `CiArtifact.secti
 copies it onto the owed row, and the announcement reads it off the row; `runId` needs no column, the
 row has carried `run_id` since V3. A row owed before V31 announces with no section.
 
+`V32__runner_connection_loss_window.sql` is V24's shape (qits-748): `ci_runner.connection_loss_window_start`,
+nullable, no default, no backfill, no constraint, no index. It is when the runner's last *counted*
+`CONNECTION_LOST` was recorded; `CiRunners.recordInfraFailure` counts a further connection loss only
+outside `qits.ci.runner.quarantine.loss-window` of it, so one edge redeploy ending every held run at
+once is one failure rather than one per run. Cleared with the streak (`recordStarted`, `reinstate`).
+
 `V27__run_avoid_runners.sql` added `ci_run.avoid_runner_ids text` (nullable, no default, no
 constraint, no index) for "a retry is not handed back to the runner that failed it" (qits-556). That
 behaviour was removed (qits-443, the owner's ruling of 2026-09-30: never specified; with a single
