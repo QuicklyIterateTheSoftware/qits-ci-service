@@ -498,12 +498,14 @@ is how a runner's page links it. Green records `PASSED` and reinstates a quarant
 and quarantines the runner (`health check failed: <outcome>`) or keeps it so; a cancelled one settles
 nothing. A check's own steps never count toward a streak. One is queued at registration, by the admin
 door, and on a **backing-off schedule** for each quarantined, **connected** runner with none pending
-(qits-748): `qits.ci.runner.healthcheck.schedule` (`PT15M,PT30M,PT60M,PT90M,PT120M,PT180M`) is a list
-of offsets from the quarantine — the runner's slots — and after the last, one more every hour (+240 m,
-+300 m, …). A check is due at the first slot after the newest check accepted since that quarantine, so a
-runner not connected at its slot gets one check at the first sweep after it returns and then waits for
-its next slot, not a backlog; a red check leaves `quarantinedAt` alone, so the schedule carries on, and a new
-quarantine starts it over at +15 m. It replaced `qits.ci.runner.healthcheck.interval` (a flat hour). One still `QUEUED` after
+(qits-748): `qits.ci.runner.healthcheck.schedule` (`PT1M,PT15M,PT30M,PT60M,PT90M,PT120M,PT180M`) is a list
+of offsets from the quarantine — the runner's slots, starting at +1 m because most quarantines are a
+momentary blip and that reinstates the runner almost every time — and after the last, one more every
+hour (+240 m, +300 m, …). A check is due at the first slot after the newest check accepted since that
+quarantine, so a runner not connected at its slot gets one check at the first sweep after it returns and
+then waits for its next slot, not a backlog; a red check leaves `quarantinedAt` alone, so the schedule
+carries on, and a new quarantine starts it over at +1 m. It replaced `qits.ci.runner.healthcheck.interval`
+(a flat hour). One still `QUEUED` after
 `qits.ci.runner.healthcheck.queue-timeout` (30 min) is settled `FAILED`, `runner not connected`.
 
 **A connected runner is told**: `Quarantined{reason, since}` when it is taken out and right after its

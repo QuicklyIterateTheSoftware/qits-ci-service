@@ -59,16 +59,18 @@ import org.jboss.logging.Logger;
  *
  * <p><b>The schedule backs off, and it is counted from the quarantine</b> (qits-748, the owner's
  * request). {@code qits.ci.runner.healthcheck.schedule} is a list of offsets from {@link
- * CiRunner#quarantinedAt} — shipped {@code PT15M,PT30M,PT60M,PT90M,PT120M,PT180M} — and after its
- * last, one more every {@link #AFTER_SCHEDULE} ({@code +240m}, {@code +300m}, …). Those are the
- * runner's <em>slots</em>; a check is due at the first slot after the newest check of the runner
- * accepted since its quarantine — whoever queued it and whatever became of it — or at the first
- * slot when there is none ({@link #nextSlot}). So a runner checked on time is checked exactly at
- * every slot, and one that was not connected at its slot gets one check on the first sweep after it
- * comes back and then waits for the next slot after that — never a backlog of the slots it missed.
+ * CiRunner#quarantinedAt} — shipped {@code PT1M,PT15M,PT30M,PT60M,PT90M,PT120M,PT180M}, starting at
+ * {@code +1m} because most quarantines are a momentary blip and that reinstates the runner almost
+ * every time — and after its last, one more every {@link #AFTER_SCHEDULE} ({@code +240m}, {@code
+ * +300m}, …). Those are the runner's <em>slots</em>; a check is due at the first slot after the
+ * newest check of the runner accepted since its quarantine — whoever queued it and whatever became
+ * of it — or at the first slot when there is none ({@link #nextSlot}). So a runner checked on time
+ * is checked exactly at every slot, and one that was not connected at its slot gets one check on the
+ * first sweep after it comes back and then waits for the next slot after that — never a backlog of
+ * the slots it missed.
  * A red check of a runner already quarantined leaves {@code quarantinedAt} as it was, so the
  * schedule carries on; a passing check reinstates, and the next quarantine is a new {@code
- * quarantinedAt}, so it starts again at {@code +15m}. A health check's own steps
+ * quarantinedAt}, so it starts again at {@code +1m}. A health check's own steps
  * never count toward the streak — a quarantine is about builds the runner failed, and a check is
  * about the runner already.
  *

@@ -523,7 +523,7 @@ public class CiRunnerHealthTest extends CiTestSupport {
 
   /**
    * qits-748, the owner's request: the checks of a quarantined runner back off from its quarantine —
-   * +15, +30, then +60, +90, +120, then +180 and hourly after the schedule — exactly at each slot
+   * +1, +15, +30, then +60, +90, +120, then +180 and hourly after the schedule — exactly at each slot
    * and not a minute before, and a new quarantine starts the schedule over.
    */
   @Test
@@ -534,9 +534,9 @@ public class CiRunnerHealthTest extends CiTestSupport {
     // Read back rather than taken off the returned entity: the column keeps microseconds.
     Instant quarantinedAt = row(runner.id).quarantinedAt;
 
-    for (long minutes : List.of(15L, 30L, 60L, 90L, 120L, 180L, 240L, 300L)) {
+    for (long minutes : List.of(1L, 15L, 30L, 60L, 90L, 120L, 180L, 240L, 300L)) {
       Instant slot = quarantinedAt.plus(Duration.ofMinutes(minutes));
-      health.sweep(slot.minusSeconds(60));
+      health.sweep(slot.minusSeconds(30));
       assertNull(pendingOrNull(runner.id), "not before the +" + minutes + "m slot");
       health.sweep(slot);
       settleAt(pendingCheck(runner.id), slot);
@@ -554,13 +554,13 @@ public class CiRunnerHealthTest extends CiTestSupport {
     runners.quarantine(runner.id, "again");
     Instant again = row(runner.id).quarantinedAt;
     assertTrue(again.isAfter(quarantinedAt));
+    health.sweep(again);
+    assertNull(pendingOrNull(runner.id), "the schedule starts over at +1m, not where it stopped");
+    health.sweep(again.plus(Duration.ofMinutes(1)));
+    settleAt(pendingCheck(runner.id), again.plus(Duration.ofMinutes(1)));
     health.sweep(again.plus(Duration.ofMinutes(14)));
-    assertNull(pendingOrNull(runner.id), "the schedule starts over at +15m, not where it stopped");
-    health.sweep(again.plus(Duration.ofMinutes(15)));
-    settleAt(pendingCheck(runner.id), again.plus(Duration.ofMinutes(15)));
-    health.sweep(again.plus(Duration.ofMinutes(29)));
     assertNull(pendingOrNull(runner.id));
-    health.sweep(again.plus(Duration.ofMinutes(30)));
+    health.sweep(again.plus(Duration.ofMinutes(15)));
     assertNotNull(pendingOrNull(runner.id));
   }
 
@@ -578,7 +578,7 @@ public class CiRunnerHealthTest extends CiTestSupport {
     health.sweep(back);
     settleAt(pendingCheck(runner.id), back);
 
-    // The slots it missed (+15, +30, +60, +90) are not owed: the next is the first after +100m.
+    // The slots it missed (+1, +15, +30, +60, +90) are not owed: the next is the first after +100m.
     health.sweep(back.plus(Duration.ofMinutes(1)));
     health.sweep(back.plus(Duration.ofMinutes(19)));
     assertNull(pendingOrNull(runner.id), "no backlog of missed slots");
