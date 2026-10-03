@@ -134,8 +134,9 @@ import java.util.Set;
  *
  * <p><b>Environment, in every case but the declarations.</b> A step reads {@code $QITS_VERSION}
  * (seeded by {@code CiRunService} from the triggering event — the three inconsistent {@code jq}
- * grammars in the fleet die with it), {@code $QITS_CI_REPO_NAME}, {@code $QITS_ARTIFACTS_URL}, {@code
- * $QITS_ARTIFACTS_CLI_PACKAGE}, the registry variables and the run's credential files. The exceptions
+ * grammars in the fleet die with it), {@code $QITS_CI_REPO_NAME}, {@code $QITS_DOMAIN} (the one
+ * address input: every platform host is code under it, qits-731), {@code
+ * $QITS_ARTIFACTS_CLI_PACKAGE} and the run's credential files. The exceptions
  * are what {@code release.yml} declares about its artifacts and contracts — an artifact's {@code
  * type}/{@code name}, its {@code sbom:}, {@code path:}, {@code link:} and {@code include:}, and a
  * contract tree's application, provider and {@code from:} — which are interpolated into the
@@ -226,6 +227,27 @@ public final class CiReleaseComposer {
    * old name.
    */
   static final String CLI_DIR = "/tmp/qits-bin";
+
+  /**
+   * Where a release-phase prelude downloads the qits CLI from: the daemons store of qits-artifacts'
+   * public name, {@code registry.qits.$QITS_DOMAIN} (qits-731). The host is code under the domain,
+   * never a variable a step is handed, so nothing in a step's environment can move the download.
+   * Public for one reader: {@code QitsCliPinIT} substitutes its stub store for exactly this text in
+   * the composed script it runs, which is a seam no step can reach.
+   */
+  public static final String CLI_DOWNLOAD_BASE =
+      "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/";
+
+  /**
+   * Where every composed step's prelude writes the lockfile origin check before running it — see
+   * {@link #lockfileOriginCheck()}. A file rather than inline text so a recipe that materialises a
+   * submodule after the prelude has run (java-service's webui) can run the same check again over the
+   * tree it now has.
+   */
+  public static final String LOCKFILE_CHECK = "/tmp/qits-lockfile-origins.sh";
+
+  /** The quoted heredoc delimiter the check is written through. Platform text, never a script's. */
+  static final String LOCKFILE_CHECK_DELIMITER = "QITS_LOCKFILE_EOF";
 
   private CiReleaseComposer() {}
 
@@ -504,6 +526,13 @@ public final class CiReleaseComposer {
     // publish.
     out.append("set -eu\n");
     out.append("# --- platform prelude ---------------------------------------------------------\n");
+    // THE ONE ADDRESS INPUT (qits-731). Every platform address a step reaches is code under the
+    // bare public domain — `registry.qits.<d>`, `mirror.qits.<d>` — so the domain is demanded of
+    // every step, before anything here or in the declared script spends it. The qits-ci composing
+    // this text is the one that launches the step and always sends it; unset means a step launched
+    // by something else, and it must stop here naming the cause rather than dial `registry.qits.`.
+    out.append(
+        ": \"${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no platform address}\"\n");
     if (releasePhase) {
       // THE TAG IS THE TREE. Every composed release run is now anchored at the tag's own commit —
       // the document declares `checkout: { branch: version, sha: commitSha }` with no `optional:`,
@@ -516,6 +545,24 @@ public final class CiReleaseComposer {
       out.append(
           "git fetch \"$QITS_CI_REPOSITORY_URL\" \"refs/tags/$QITS_VERSION:refs/tags/$QITS_VERSION\"\n");
       out.append("git checkout --detach \"$QITS_VERSION\"\n");
+    }
+    // THE LOCKFILES, checked before the declared script can install from one (qits-731). npm
+    // fetches every tarball by the `resolved` URL its lockfile pins and never asks the configured
+    // registry, so a lockfile is an address list. The platform used to REWRITE those addresses in
+    // every recipe, a sed per pipeline, because they were generated on a host that named internal
+    // services; it rewrites nothing now. A lockfile is committed resolving against the two public
+    // registries, and this is what holds that: one naming anything else fails the step here, naming
+    // the file and the entries, rather than `npm ci` dying on a connection refused three minutes in.
+    // After the release checkout, so it reads the tree the step really builds.
+    out.append("cat > ")
+        .append(LOCKFILE_CHECK)
+        .append(" <<'")
+        .append(LOCKFILE_CHECK_DELIMITER)
+        .append("'\n");
+    out.append(lockfileOriginCheck());
+    out.append(LOCKFILE_CHECK_DELIMITER).append('\n');
+    out.append("sh ").append(LOCKFILE_CHECK).append('\n');
+    if (releasePhase) {
       // The qits CLI (qits, which also answers to qits-publish), fetched AT THE VERSION qits-ci
       // PINS and put on PATH for the whole release phase.
       //
@@ -558,8 +605,10 @@ public final class CiReleaseComposer {
       out.append("  if [ -n \"${QITS_TOKEN:-}\" ]; then\n");
       out.append("    set -- --header \"Authorization: Bearer $QITS_TOKEN\"\n");
       out.append("  fi\n");
+      // The store is qits-artifacts' public name, code under the domain (qits-731): no URL
+      // variable is read, so nothing in a step's environment decides where its CLI comes from.
       String cliUrl =
-          " \"$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
+          " \"" + CLI_DOWNLOAD_BASE + "$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
       out.append("  if command -v curl > /dev/null 2>&1; then\n");
       out.append("    curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o ")
           .append(CLI_DIR)
@@ -600,13 +649,8 @@ public final class CiReleaseComposer {
       out.append(
           ": \"${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only"
               + " through it}\"\n");
-      // And where it pushes. The registry is code, `registry.qits.$QITS_DOMAIN` (qits-731), so the
-      // domain is what a build has to be told; the qits-ci composing this text is the one that
-      // launches the step and always sends it. $QITS_BUILD_REGISTRY is still sent beside it for
-      // the recipes read at a repository's main that name it, and is no longer what is demanded.
-      out.append(
-          ": \"${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no registry to push"
-              + " to}\"\n");
+      // Where it pushes needs no line of its own: the registry is `registry.qits.$QITS_DOMAIN`
+      // (qits-731), and the domain is demanded at the top of every step's prelude.
     }
     if (step.build() || step.docker()) {
       // The run's credential as two FILES, for a buildctl `--secret id=…,src=…` that writes no
@@ -911,6 +955,63 @@ public final class CiReleaseComposer {
    * The declared script, ready to sit inside a quoted heredoc: verbatim, newline-terminated, and
    * refused outright when it carries the delimiter.
    */
+  /**
+   * <b>The lockfile origin check</b> (qits-731): a POSIX {@code sh} script that fails, naming the
+   * file and up to five entries, when any {@code package-lock.json} under the working directory pins
+   * a {@code resolved} URL outside {@code https://registry.qits.$QITS_DOMAIN/} and {@code
+   * https://mirror.qits.$QITS_DOMAIN/}.
+   *
+   * <p><b>{@code find}, not {@code git ls-files}</b>, because a submodule's files are not tracked by
+   * the repository that holds the gitlink: a lockfile under {@code service/src/main/webui} is in the
+   * tree once the submodule is materialised and in no index the parent can list. {@code
+   * node_modules} is skipped — an installed package's own lockfile is that package's business.
+   *
+   * <p><b>Only a value carrying {@code ://} is an address.</b> npm also writes {@code resolved} for a
+   * workspace or {@code file:} link, as a relative path; that names no host and is left alone. A
+   * {@code git+https://} or {@code git+ssh://} entry is an address outside both registries and is
+   * refused like any other.
+   *
+   * <p><b>grep, sed and awk, nothing else</b> — the tools every step image has, docker:28-dind's
+   * busybox included, which is the floor the class javadoc sets for the prelude. No {@code node}:
+   * an image that installs nothing has none, and must still be able to run this and pass. {@code
+   * grep -o} rather than a line-anchored read, so a lockfile written on one line is read the same.
+   * The prefixes are compared with awk's {@code index}, never a regex, so the dots in a domain
+   * match only dots.
+   *
+   * <p>Package-private for {@code CiReleaseComposerTest}, which runs it under {@code sh} against a
+   * good lockfile and a bad one.
+   */
+  static String lockfileOriginCheck() {
+    return """
+        # qits-ci: every npm lockfile here resolves from the platform's two registries (qits-731).
+        set -eu
+        : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so no lockfile origin can be checked}"
+        registry="https://registry.qits.$QITS_DOMAIN/"
+        mirror="https://mirror.qits.$QITS_DOMAIN/"
+        find . -name package-lock.json ! -path '*/node_modules/*' | {
+          refused=0
+          while IFS= read -r lock; do
+            foreign=$(grep -o '"resolved": *"[^"]*"' "$lock" \\
+              | sed -e 's/^"resolved": *"//' -e 's/"$//' \\
+              | awk -v r="$registry" -v m="$mirror" \\
+                'index($0, "://") && index($0, r) != 1 && index($0, m) != 1')
+            if [ -n "$foreign" ]; then
+              count=$(printf '%s\\n' "$foreign" | wc -l | tr -d ' ')
+              echo "qits-ci: $lock resolves $count package(s) outside $registry and $mirror:" >&2
+              printf '%s\\n' "$foreign" | head -n 5 | sed 's/^/  /' >&2
+              refused=1
+            fi
+          done
+          if [ "$refused" -ne 0 ]; then
+            echo "qits-ci: no lockfile is rewritten on this platform. Regenerate it against the" \\
+              "public registries (npm_config_registry=${mirror}npm/npmjs/," \\
+              "npm_config_@qits:registry=${registry}artifacts/npm/npm/) and commit it." >&2
+            exit 1
+          fi
+        }
+        """;
+  }
+
   private static String slotScript(String script, String sourcePath) {
     if (script.contains(HEREDOC_DELIMITER)) {
       throw new CiConfigException(

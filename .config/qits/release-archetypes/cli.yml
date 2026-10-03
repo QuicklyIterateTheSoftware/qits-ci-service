@@ -63,6 +63,6 @@ release-request:
     timeout-seconds: 1800
     script: |
       # Maven Central through the platform mirror's public name — code under the platform's public
-      # domain (qits-731). `wohlben.eu` covers a qits-ci too old to inject $QITS_DOMAIN.
-      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.${QITS_DOMAIN:-wohlben.eu}/mirror/maven/central"
+      # domain (qits-731), which the composed prelude has already demanded.
+      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.${QITS_DOMAIN:?this step was told no QITS_DOMAIN}/mirror/maven/central"
       ./mvnw -B -ntp -s .qits-maven-settings.xml verify

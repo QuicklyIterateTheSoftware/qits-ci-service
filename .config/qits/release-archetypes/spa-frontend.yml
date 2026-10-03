@@ -45,44 +45,20 @@ release-request:
   - image: qits/build-images/node-base:latest
     timeout-seconds: 1800
     script: |
-      # THE LOCKFILE is the one file this step edits, and npm leaves no alternative. npm pins a full
-      # resolved URL per package, and this lockfile is generated on the deployment host, so every
-      # entry names an address that does not exist in this container. `npm ci` fetches tarballs by
-      # that URL and never asks the configured registry for them, so the environment below does not
-      # reach them: without this swap the install dies on connection refused. The paths are
-      # identical on every address, so replacing the ORIGIN and keeping the path is all it takes,
-      # and the integrity hashes are what make that safe.
+      # THE LOCKFILE IS INSTALLED AS COMMITTED (qits-731). npm fetches every tarball by the full
+      # `resolved` URL its lockfile pins and never asks the configured registry for it, so the
+      # lockfile is an address list — and it is committed resolving against the platform's two
+      # public registries, which a step reaches by the same names a developer does. Nothing here
+      # rewrites it. The composed prelude has already refused a lockfile naming any other origin,
+      # naming the file and the entries, before this script started.
       #
-      # THE BYTE PLANE IS TWO SERVICES, WHICH IS WHY THE SWAP READS THE PATH. qits-mirror
-      # holds the npmjs pull-through cache; qits-artifacts hosts the @qits scope. No single origin
-      # serves both, so an entry under the hosted registry's own pathname is a @qits tarball and
-      # gets the hosted origin; every other entry gets the proxy's. Flattening all of them to one
-      # origin sends every @qits tarball to the mirror, which has never held one: 404, on every run.
-      #
-      # THE ORDER OF THE TWO EXPRESSIONS IS THE WHOLE TRICK. sed applies -e in sequence per line, so
-      # the broad proxy swap runs FIRST and the narrow path-anchored one corrects the @qits entries
-      # after it. The other order lets the broad expression undo the narrow one.
-      #
-      # npm's own knob, `--replace-registry-host=always`, cannot do it against a registry mounted
-      # under a path and could not have told two registries apart either; @npmcli/arborist glues
-      # rather than resolves, so every tarball 404s. Measured on npm 10.9.4.
-      #
-      # `qits-publish npm rewrite-lockfile-origin` is exactly this block, and it is NOT usable here:
-      # CiReleaseComposer installs the CLI in RELEASE-phase preludes only, and this is a QA step, so
-      # calling it would be `command not found`. The inline form stays until that changes.
-      # THE ADDRESSES ARE CODE (qits-731): the platform's public domain is the one input, and the
-      # hosts and paths are constants under it. `wohlben.eu` covers a qits-ci too old to inject
-      # $QITS_DOMAIN.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      # THE ADDRESSES ARE CODE: the platform's public domain is the one input, and the hosts and
+      # paths are constants under it — registry.qits.<domain> hosts the @qits scope, mirror.qits.<domain>
+      # the npmjs pull-through cache. The prelude demands the domain; the `:?` says so again here.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       npm_hosted_origin="https://registry.qits.$qits_domain"
       npm_proxy_origin="https://mirror.qits.$qits_domain"
       npm_hosted_path=/artifacts/npm/npm/
-      if [ -f package-lock.json ]; then
-        sed -i -E \
-          -e "s#(\"resolved\": \")https?://[^/\"]+#\1$npm_proxy_origin#" \
-          -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
-          package-lock.json
-      fi
 
       # ENVIRONMENT, not a file. These repositories COMMIT an .npmrc naming the edge vhosts (right
       # for a developer on the deployment host), and npm ranks a project .npmrc ABOVE ~/.npmrc — so

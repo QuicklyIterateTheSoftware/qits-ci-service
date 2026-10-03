@@ -91,10 +91,10 @@ release-request:
       # from inside a step container, and the derived non-localhost address then needs the exact-id
       # mirror in .qits-maven-settings.xml to get past Maven's HTTP blocker. Both addresses are
       # code under the platform's public domain (qits-731): the hosted registry on registry.qits,
-      # Maven Central through the mirror's public name. `wohlben.eu` covers a qits-ci too old to
-      # inject $QITS_DOMAIN. Exported because .qits-maven-settings.xml reads both as
+      # Maven Central through the mirror's public name; the composed prelude has already demanded
+      # the domain. Exported because .qits-maven-settings.xml reads both as
       # ${env.QITS_MAVEN_REPOSITORY_URL} and ${env.QITS_MAVEN_CENTRAL_URL}.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
       export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
       ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
@@ -105,7 +105,7 @@ release:
   - image: qits/build-images/maven-base:latest
     timeout-seconds: 1800
     script: |
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
       export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
 

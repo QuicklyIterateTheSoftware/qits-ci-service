@@ -211,10 +211,23 @@ public class QitsCliPinIT {
       Path checkout = Files.createDirectories(work.resolve("checkout"));
       run(checkout, "git", "init", "-q");
 
-      Path scriptFile = work.resolve("step.sh");
-      Files.writeString(scriptFile, script, StandardCharsets.UTF_8);
+      // THE ONE EDIT, and it is to the text rather than the environment (qits-731). The prelude
+      // downloads from `https://registry.qits.$QITS_DOMAIN/artifacts/daemons/`, a host that is code
+      // and that no variable a step is handed can move — which is the property. So the stub store
+      // is put in place of exactly that text, on both the curl and the wget arm, and nowhere else:
+      // a seam that exists only in this test's copy of the script.
+      String download = CiReleaseComposer.CLI_DOWNLOAD_BASE;
+      assertEquals(
+          2,
+          script.split(java.util.regex.Pattern.quote(download), -1).length - 1,
+          "the composed prelude downloads from the registry's public name on both arms:\n"
+              + script);
+      String stubbed = script.replace(download, store.base() + "/artifacts/daemons/");
 
-      Result result = runStep(scriptFile, checkout, work, origin, store.base());
+      Path scriptFile = work.resolve("step.sh");
+      Files.writeString(scriptFile, stubbed, StandardCharsets.UTF_8);
+
+      Result result = runStep(scriptFile, checkout, work, origin);
 
       assertEquals(
           0,
@@ -441,20 +454,20 @@ public class QitsCliPinIT {
    * <p>{@code GIT_CONFIG_GLOBAL} points at a scratch file for the same reason: the running user's
    * own git configuration is not part of what a step container has.
    */
-  private static Result runStep(Path script, Path checkout, Path work, Path origin, String storeBase)
+  private static Result runStep(Path script, Path checkout, Path work, Path origin)
       throws Exception {
     ProcessBuilder builder =
         new ProcessBuilder("bash", script.toAbsolutePath().toString()).directory(checkout.toFile());
     Map<String, String> env = HermeticEnvironment.of(builder);
-    env.put("QITS_ARTIFACTS_URL", storeBase);
     env.put("QITS_ARTIFACTS_CLI_PACKAGE", PlatformAccessCliBinary.DAEMON_NAME);
     env.put("QITS_ARTIFACTS_CLI_VERSION", PlatformAccessCliBinary.VERSION);
     env.put("QITS_VERSION", RELEASE_VERSION);
     env.put("QITS_CI_REPOSITORY_URL", origin.toAbsolutePath().toString());
     env.put("GIT_CONFIG_GLOBAL", work.resolve("gitconfig").toAbsolutePath().toString());
     env.put("HOME", work.toAbsolutePath().toString());
-    // What a step is told today beside the URL variables, pointed at nothing: the stand-in derives
-    // no host from it, and nothing else in the composed text may either.
+    // The one address input a step is told, pointed at nothing: the CLI download was moved onto the
+    // stub in the text, the lockfile check finds no lockfile in the scratch checkout, and nothing
+    // else in the composed text may dial a host derived from it.
     env.put("QITS_DOMAIN", UNRESOLVABLE_DOMAIN);
     // Where the stand-in CLI records the calls it was asked to make.
     env.put("QITS_PIN_IT_RECORD", work.resolve("cli-record").toAbsolutePath().toString());

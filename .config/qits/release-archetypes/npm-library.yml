@@ -93,10 +93,10 @@ release-request:
 
       # THE TWO NPM ROOTS ARE CODE (qits-731): the hosted @qits scope and the npmjs cache are
       # constant paths under registry.qits.<domain> and mirror.qits.<domain>, and the platform's
-      # public domain is the one input. `wohlben.eu` covers a qits-ci too old to inject
-      # $QITS_DOMAIN — never a registry-less .npmrc, which would resolve the @qits scope against
-      # npmjs.org, where these packages do not exist and never will.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      # public domain is the one input, demanded by the composed prelude and again by the `:?`
+      # — never a registry-less .npmrc, which would resolve the @qits scope against npmjs.org,
+      # where these packages do not exist and never will.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       npm_hosted_url="https://registry.qits.$qits_domain/artifacts/npm/npm/"
       npm_proxy_url="https://mirror.qits.$qits_domain/npm/npmjs/"
       #
@@ -182,7 +182,7 @@ release:
     timeout-seconds: 1800
     script: |
       # Byte-identical to the QA step's preamble; read the rationale there.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       npm_hosted_url="https://registry.qits.$qits_domain/artifacts/npm/npm/"
       npm_proxy_url="https://mirror.qits.$qits_domain/npm/npmjs/"
       mint_publish_token() {

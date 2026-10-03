@@ -26,10 +26,9 @@ release:
         's/^[[:space:]]*-[[:space:]]*{[[:space:]]*type:[[:space:]]*docker[[:space:]]*,[[:space:]]*name:[[:space:]]*\([^,}[:space:]]*\).*/\1/p' \
         .config/qits/release.yml)
       image=${declared#*/}
-      # The addresses are code under the platform's public domain (qits-731); `wohlben.eu` covers a
-      # qits-ci too old to inject $QITS_DOMAIN — which is the one that runs this file for the release
-      # that teaches qits-ci to inject it.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      # The addresses are code under the platform's public domain (qits-731), which every qits-ci
+      # that runs this file injects; the `:?` stops a step that was not told it.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       ref="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
       echo "releasing $ref"
 
@@ -46,18 +45,18 @@ release:
           fi
         done
       fi
+
+      # The submodules' lockfiles, checked now that they exist: the composed prelude ran before any
+      # gitlink was materialised. Installed as committed — nothing is rewritten (qits-731). Guarded
+      # on the file because a qits-ci older than the check composes none.
+      if [ -f /tmp/qits-lockfile-origins.sh ]; then sh /tmp/qits-lockfile-origins.sh; fi
+
       npm_hosted_origin="https://registry.qits.$qits_domain"
       npm_proxy_origin="https://mirror.qits.$qits_domain"
       npm_hosted_path=/artifacts/npm/npm/
       for dir in $webui_dirs; do
         (
           cd "$dir"
-          if [ -f package-lock.json ]; then
-            sed -i -E \
-              -e "s#(\"resolved\": \")https?://[^/\"]+#\1$npm_proxy_origin#" \
-              -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
-              package-lock.json
-          fi
           env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
               "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
               npm ci --no-audit --no-fund

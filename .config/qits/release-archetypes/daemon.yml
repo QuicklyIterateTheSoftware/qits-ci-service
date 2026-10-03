@@ -86,7 +86,8 @@
 # ---------------------------------------------------------------------------------------------
 # WHAT THE PLATFORM ADDS, SO THAT THIS SCRIPT DOES NOT
 #
-# `set -eu`; the `$BUILDKIT_HOST`/`$QITS_BUILD_REGISTRY` guards and /tmp/qits-client-id|secret on a
+# `set -eu`, the `$QITS_DOMAIN` guard and the lockfile origin check on every step (qits-731); the
+# `$BUILDKIT_HOST` guard and /tmp/qits-client-id|secret on a
 # `build:` step — the run's token subject and token; the `$QITS_VERSION` guard, the tag fetch,
 # `git checkout --detach` and `qits-publish` on `$PATH` on a release step; and
 # `qits-publish sbom submit` afterwards for every declared artifact carrying `sbom:`. So nothing
@@ -119,8 +120,8 @@ release-request:
       #
       # THE ADDRESSES ARE CODE (qits-731): the registry is registry.qits.<domain>, the hosted maven
       # repository and the mirror's Central constant paths under it and mirror.qits.<domain>.
-      # `wohlben.eu` covers a qits-ci too old to inject $QITS_DOMAIN.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      # The composed prelude has already demanded the domain; the `:?` says so again here.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       builder="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25"
 
       # The toolchain image, when this repository owns it. See the header, both for why it is a
@@ -211,7 +212,7 @@ release:
       # the same registry produce the same `jdk-25-<hash>` in both phases, so `BUILDER_IMAGE` is
       # the same string and the native compile below is a cache hit on the fold that gated this
       # release rather than a second one. See the header.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       builder="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25"
 
       if [ -f docker/Dockerfile.musl-builder ]; then

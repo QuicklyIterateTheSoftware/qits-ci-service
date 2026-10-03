@@ -152,7 +152,8 @@
 #
 # CiReleaseComposer wraps every step: `set -eu`; on the release phase the `$QITS_VERSION` guard, the
 # tag fetch and `git checkout --detach`, and `qits-publish` on `$PATH`; on a `build:` step the
-# `$BUILDKIT_HOST`/`$QITS_BUILD_REGISTRY` guards; on a `build:`/`docker:` step the run's credential
+# `$BUILDKIT_HOST` guard; on every step the `$QITS_DOMAIN` guard and the lockfile origin check
+# (`/tmp/qits-lockfile-origins.sh`, qits-731); on a `build:`/`docker:` step the run's credential
 # written to /tmp/qits-client-id|secret under `umask 077` in a subshell — the run's token subject
 # and token. The SBOM is SUBMITTED by the composed postlude — on every release step whose tree holds
 # it, per declared artifact carrying `sbom:`, and checked for on the last. So none of that appears below — a copy here would be a second
@@ -162,9 +163,8 @@
 # the build's business; submitting is the platform's.
 #
 # qits-publish IS NOT ON $PATH DURING QA. The composer downloads it in release-phase preludes only,
-# so the QA step's lockfile rewrite and its docs PUT are the fleet's own inline shell rather than
-# `qits-publish npm rewrite-lockfile-origin` / `qits-publish docs submit`. That is a deliberate cost
-# and it is the only duplication in this file.
+# so the QA step's docs PUT is the fleet's own inline shell rather than `qits-publish docs submit`.
+# That is a deliberate cost and it is the only duplication in this file.
 #
 # THE PUBLISH CREDENTIAL, WHICH EVERY STEP OF EVERY PHASE GETS. A step container whose run carries a
 # commission is handed two names: `$QITS_PUBLISH_TOKEN`, a qits-platform-audience bearer for the
@@ -278,42 +278,29 @@ release-request:
         done
       fi
 
-      # THE LOCKFILE is the one file this step edits, and npm leaves no alternative. npm pins a full
-      # resolved URL per package and these lockfiles are generated on the deployment host, so every
-      # entry names an address that does not exist in this container; `npm ci` fetches by that URL
-      # and never asks the configured registry, so the environment below does not reach it. The
-      # paths are identical on every address, so replacing the ORIGIN and keeping the path is all it
-      # takes, and the integrity hashes are what make that safe.
-      #
-      # THE BYTE PLANE IS TWO SERVICES, WHICH IS WHY THE SWAP READS THE PATH. qits-mirror
-      # holds the npmjs pull-through cache; qits-artifacts hosts the @qits scope. No single origin
-      # serves both, so an entry under the hosted registry's own pathname is a @qits tarball and
-      # gets the hosted origin; everything else gets the proxy's.
-      #
-      # THE ORDER OF THE TWO EXPRESSIONS IS THE WHOLE TRICK. sed applies -e in sequence per line, so
-      # the broad proxy swap runs FIRST and the narrow path-anchored one corrects the @qits entries
-      # after it. The other order lets the broad expression undo the narrow one.
-      #
-      # `qits-publish npm rewrite-lockfile-origin` is exactly this, and it is NOT usable here: the
-      # composer installs the CLI in release-phase preludes only, so a QA step calling it would get
-      # `command not found`. Keep this block matched with the release step's below.
-      # THE ADDRESSES ARE CODE (qits-731): the platform's public domain is the one input, and the
-      # hosts and paths below are constants — registry.qits.<domain> serves the hosted @qits scope,
-      # mirror.qits.<domain> the npmjs cache. `wohlben.eu` covers a qits-ci too old to inject
-      # $QITS_DOMAIN, which is what runs this file while the qits-ci that does is being released.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      # THE SUBMODULES' LOCKFILES, checked now that they exist (qits-731). The composed prelude
+      # checked the tree before this script ran, when every gitlink was still an empty directory,
+      # so a webui's lockfile was not there to read; the same check runs again over the tree as it
+      # stands. Guarded on the file: a qits-ci older than the check composes none, and this line
+      # then checks nothing rather than failing a step that predates it.
+      if [ -f /tmp/qits-lockfile-origins.sh ]; then sh /tmp/qits-lockfile-origins.sh; fi
+
+      # THE LOCKFILE IS INSTALLED AS COMMITTED (qits-731). npm fetches every tarball by the full
+      # `resolved` URL its lockfile pins and never asks the configured registry for it, so a
+      # lockfile is an address list — and every one is committed resolving against the platform's
+      # two public registries, which a step reaches by the same names a developer does. Nothing
+      # here rewrites it; the check above has refused one naming any other origin.
+      # THE ADDRESSES ARE CODE: the platform's public domain is the one input, and the hosts and
+      # paths below are constants — registry.qits.<domain> serves the hosted @qits scope,
+      # mirror.qits.<domain> the npmjs cache. The composed prelude has already demanded the
+      # domain; the `:?` says so again here.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       npm_hosted_origin="https://registry.qits.$qits_domain"
       npm_proxy_origin="https://mirror.qits.$qits_domain"
       npm_hosted_path=/artifacts/npm/npm/
       for dir in $webui_dirs; do
         (
           cd "$dir"
-          if [ -f package-lock.json ]; then
-            sed -i -E \
-              -e "s#(\"resolved\": \")https?://[^/\"]+#\1$npm_proxy_origin#" \
-              -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
-              package-lock.json
-          fi
           # ENVIRONMENT, not a file. Every frontend repository COMMITS an .npmrc naming the edge
           # vhosts (right for a developer on the deployment host), and npm ranks a project .npmrc
           # ABOVE ~/.npmrc — so a `cat > ~/.npmrc` preamble would be written and silently ignored.
@@ -369,8 +356,8 @@ release-request:
       # The platform registry: the poms' default names a host-published address unreachable from a
       # step container, and the exact-id mirror in .qits-maven-settings.xml is what passes Maven's
       # HTTP blocker. Central rides the mirror. Both are code under the platform's public domain
-      # (qits-731); `wohlben.eu` covers a qits-ci too old to inject $QITS_DOMAIN.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      # (qits-731), which the composed prelude has already demanded.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
       export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
 
@@ -491,9 +478,9 @@ release:
       image=${declared#*/}
       # THE ADDRESSES ARE CODE (qits-731): the platform's public domain is the one input, and every
       # host and path below is a constant under it — registry.qits.<domain> is the image registry
-      # and the hosted @qits scope, mirror.qits.<domain> the npmjs cache. `wohlben.eu` covers a
-      # qits-ci too old to inject $QITS_DOMAIN.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      # and the hosted @qits scope, mirror.qits.<domain> the npmjs cache. The composed prelude has
+      # already demanded the domain; the `:?` says so again here.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       ref="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
       echo "releasing $ref"
 
@@ -514,18 +501,15 @@ release:
         done
       fi
 
+      # The submodules' lockfiles, checked now that they exist — see the QA step.
+      if [ -f /tmp/qits-lockfile-origins.sh ]; then sh /tmp/qits-lockfile-origins.sh; fi
+
       npm_hosted_origin="https://registry.qits.$qits_domain"
       npm_proxy_origin="https://mirror.qits.$qits_domain"
       npm_hosted_path=/artifacts/npm/npm/
       for dir in $webui_dirs; do
         (
           cd "$dir"
-          if [ -f package-lock.json ]; then
-            sed -i -E \
-              -e "s#(\"resolved\": \")https?://[^/\"]+#\1$npm_proxy_origin#" \
-              -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
-              package-lock.json
-          fi
           env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
               "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
               npm ci --no-audit --no-fund

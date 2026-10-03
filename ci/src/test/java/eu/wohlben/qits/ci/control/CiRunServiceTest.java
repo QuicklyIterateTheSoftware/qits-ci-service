@@ -295,8 +295,8 @@ public class CiRunServiceTest extends CiTestSupport {
           - image: alpine:3
             docker: true
             script: |
-              docker build -t "$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/app:$QITS_CI_SHA" .
-              docker push "$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/app:$QITS_CI_SHA"
+              docker build -t "registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/app:$QITS_CI_SHA" .
+              docker push "registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/app:$QITS_CI_SHA"
         """);
     run("main");
 

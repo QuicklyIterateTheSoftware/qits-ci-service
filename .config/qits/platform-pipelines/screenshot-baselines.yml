@@ -12,8 +12,8 @@
 #
 # It runs on node-browser-base, the image the `app` QA step compares in, so the references
 # are rendered exactly as the gate renders them. Only `__screenshots__/` files and the
-# renderer record (`testing/browser/renderer.txt`) are committed - the lockfile swap below
-# and anything else the run touches stay out. Missing references are written like changed
+# renderer record (`testing/browser/renderer.txt`) are committed - anything else the run
+# touches stays out. Missing references are written like changed
 # ones, so a repository's first baselines come from here too. No change, no commit.
 #
 # The push is plain, never forced. After the first join the fold contains the branch, so a
@@ -57,20 +57,17 @@ steps:
       # npm and the renderer run unattended as any user; both need a writable HOME.
       [ -n "${HOME:-}" ] && [ -w "$HOME" ] || export HOME=/tmp
 
-      # The same install the `app` QA step runs, lockfile-origin swap included.
-      # THE ADDRESSES ARE CODE (qits-731): the platform's public domain is the one input, and the
-      # hosts and paths are constants under it. `wohlben.eu` covers a qits-ci too old to inject
-      # $QITS_DOMAIN.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      # The same install the `app` QA step runs: the lockfile as committed, resolving against the
+      # platform's two public registries, and nothing rewritten (qits-731). A platform pipeline
+      # is not composed, so no prelude has checked the lockfile's origins here; an entry naming
+      # any other host fails `npm ci` itself.
+      # THE ADDRESSES ARE CODE: the platform's public domain is the one input, and the hosts and
+      # paths are constants under it. A step is always told the domain; the `:?` stops one that
+      # is not, here, rather than at a host named `registry.qits.`.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       npm_hosted_origin="https://registry.qits.$qits_domain"
       npm_proxy_origin="https://mirror.qits.$qits_domain"
       npm_hosted_path=/artifacts/npm/npm/
-      if [ -f package-lock.json ]; then
-        sed -i -E \
-          -e "s#(\"resolved\": \")https?://[^/\"]+#\1$npm_proxy_origin#" \
-          -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
-          package-lock.json
-      fi
       env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
           "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
           npm ci --no-audit --no-fund

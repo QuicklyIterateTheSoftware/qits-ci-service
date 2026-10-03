@@ -81,7 +81,7 @@ public class CiReleaseComposerTest {
           script: |
             buildctl build --frontend dockerfile.v0 \\
               --local context=. --local dockerfile=docker \\
-              --output "type=image,name=$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/qits-ci:$QITS_VERSION,push=true"
+              --output "type=image,name=registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/qits-ci:$QITS_VERSION,push=true"
             buildctl build --frontend dockerfile.v0 --opt target=sbom \\
               --local context=. --local dockerfile=docker --output type=local,dest=out
       """;
@@ -178,8 +178,8 @@ public class CiReleaseComposerTest {
                     docker: true
                     timeout-seconds: 3600
                     script: |
-                      docker build -t "$QITS_BUILD_REGISTRY/qits/build-images/ci-base:$QITS_VERSION" ci-base
-                      docker push "$QITS_BUILD_REGISTRY/qits/build-images/ci-base:$QITS_VERSION"
+                      docker build -t "registry.qits.$QITS_DOMAIN/qits/build-images/ci-base:$QITS_VERSION" ci-base
+                      docker push "registry.qits.$QITS_DOMAIN/qits/build-images/ci-base:$QITS_VERSION"
                 artifacts:
                   - { type: docker, name: qits/build-images/ci-base, sbom: out/sbom.json }
                 """),
@@ -230,8 +230,187 @@ public class CiReleaseComposerTest {
             .releaseDocument()
             .contains(
                 "curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o /tmp/qits-bin/qits"
-                    + " \"$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n"),
+                    + " \"https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n"),
         composed.releaseDocument());
+  }
+
+  @Test
+  public void everyComposedStepChecksItsLockfilesBeforeItsDeclaredScript() {
+    // qits-731: no recipe rewrites a lockfile any more, so the check that a committed one resolves
+    // from the platform's own registries is the platform's, and it has to be in EVERY step — a
+    // step that installs from a lockfile is any step, and the composer cannot tell which. Both
+    // phases, a multi-step override, an archetype's slots and a build step alike, each step read
+    // back through the ordinary parser the way a run reads its document.
+    List<String> documents = new java.util.ArrayList<>();
+    CiReleaseComposer.Composed archetyped =
+        CiReleaseComposer.compose(
+            REPO, slots("archetype: java-service\n"), archetype("java-service", JAVA_SERVICE));
+    documents.add(archetyped.releaseRequestDocument());
+    documents.add(archetyped.releaseDocument());
+    CiReleaseComposer.Composed bespoke =
+        CiReleaseComposer.compose(
+            REPO,
+            slots(
+                """
+                release-request:
+                  - image: qits/build-images/node-base:latest
+                    script: npm ci
+                  - image: docker:28-dind
+                    build: true
+                    script: buildctl build --frontend dockerfile.v0
+                release:
+                  - image: qits/build-images/ci-base:latest
+                    docker: true
+                    script: echo one
+                  - image: qits/build-images/maven-base:latest
+                    script: echo two
+                artifacts:
+                  - { type: docker, name: qits/thing, sbom: out/sbom.json }
+                """),
+            null);
+    documents.add(bespoke.releaseRequestDocument());
+    documents.add(bespoke.releaseDocument());
+
+    int steps = 0;
+    for (String document : documents) {
+      for (CiPipeline.CiStepDecl step :
+          new CiEventTriggerParser()
+              .parse(CiReleaseSlotParser.CONFIG_PATH, document)
+              .pipeline()
+              .steps()) {
+        String script = step.script();
+        steps++;
+        int domain = script.indexOf(": \"${QITS_DOMAIN:?");
+        int written = script.indexOf("cat > " + CiReleaseComposer.LOCKFILE_CHECK + " <<'");
+        int run = script.indexOf("\nsh " + CiReleaseComposer.LOCKFILE_CHECK + "\n");
+        int declared = script.indexOf("# --- the declared step");
+        assertTrue(domain >= 0 && domain < written, "the domain is demanded first:\n" + script);
+        assertTrue(written >= 0 && written < run, "the check is written, then run:\n" + script);
+        assertTrue(run < declared, "the check runs before the declared script:\n" + script);
+        assertEquals(1, occurrences(script, "\nsh " + CiReleaseComposer.LOCKFILE_CHECK + "\n"));
+        assertTrue(script.contains(CiReleaseComposer.lockfileOriginCheck()), script);
+        // On a release step the check reads the TAG's tree, so it sits after the checkout.
+        int checkout = script.indexOf("git checkout --detach \"$QITS_VERSION\"");
+        assertTrue(checkout < run, "the check reads the checked-out tree:\n" + script);
+      }
+    }
+    assertEquals(6, steps, "every step of every document was looked at");
+  }
+
+  /** A lockfile entry, the shape npm writes it in. */
+  private static String lockEntry(String name, String resolved) {
+    return "    \"node_modules/" + name + "\": {\n"
+        + "      \"version\": \"1.0.0\",\n"
+        + "      \"resolved\": \"" + resolved + "\",\n"
+        + "      \"integrity\": \"sha512-x\"\n"
+        + "    }";
+  }
+
+  private static String lockfile(String... entries) {
+    return "{\n  \"name\": \"x\",\n  \"lockfileVersion\": 3,\n  \"packages\": {\n"
+        + "    \"\": { \"name\": \"x\" },\n"
+        + String.join(",\n", entries)
+        + "\n  }\n}\n";
+  }
+
+  /** Runs the prelude's lockfile check under {@code sh} in {@code tree}, with only a domain set. */
+  private static Map.Entry<Integer, String> runLockfileCheck(Path tree) throws Exception {
+    Path check = tree.resolveSibling(tree.getFileName() + "-check.sh");
+    Files.writeString(check, CiReleaseComposer.lockfileOriginCheck(), StandardCharsets.UTF_8);
+    ProcessBuilder builder =
+        new ProcessBuilder("sh", check.toString()).directory(tree.toFile()).redirectErrorStream(true);
+    builder.environment().clear();
+    builder.environment().put("PATH", System.getenv("PATH"));
+    builder.environment().put("QITS_DOMAIN", "example.org");
+    Process process = builder.start();
+    String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    process.waitFor();
+    return Map.entry(process.exitValue(), output);
+  }
+
+  @Test
+  public void theLockfileCheckPassesATreeResolvedFromThePlatformsRegistries(
+      @org.junit.jupiter.api.io.TempDir Path work) throws Exception {
+    Path tree = Files.createDirectories(work.resolve("tree"));
+    Files.writeString(
+        tree.resolve("package-lock.json"),
+        lockfile(
+            lockEntry("left-pad", "https://mirror.qits.example.org/npm/npmjs/left-pad/-/left-pad-1.0.0.tgz"),
+            lockEntry(
+                "@qits/ui",
+                "https://registry.qits.example.org/artifacts/npm/npm/@qits/ui/-/ui-1.0.0.tgz"),
+            // A workspace link: a path, no address — not the check's business.
+            lockEntry("local", "packages/local")));
+    // A submodule's lockfile, the webui shape, is read too — and is good here.
+    Path webui = Files.createDirectories(tree.resolve("service/src/main/webui"));
+    Files.writeString(
+        webui.resolve("package-lock.json"),
+        lockfile(lockEntry("rxjs", "https://mirror.qits.example.org/npm/npmjs/rxjs/-/rxjs-7.0.0.tgz")));
+    // An installed package's own lockfile is that package's business, whatever it names.
+    Path installed = Files.createDirectories(tree.resolve("node_modules/some-dep"));
+    Files.writeString(
+        installed.resolve("package-lock.json"),
+        lockfile(lockEntry("y", "https://registry.npmjs.org/y/-/y-1.0.0.tgz")));
+
+    Map.Entry<Integer, String> result = runLockfileCheck(tree);
+
+    assertEquals(0, result.getKey(), result.getValue());
+    assertEquals("", result.getValue(), "a clean tree says nothing");
+  }
+
+  @Test
+  public void theLockfileCheckRefusesAnInternalOriginNamingTheFileAndTheEntries(
+      @org.junit.jupiter.api.io.TempDir Path work) throws Exception {
+    Path tree = Files.createDirectories(work.resolve("tree"));
+    Files.writeString(
+        tree.resolve("package-lock.json"),
+        lockfile(lockEntry("left-pad", "https://mirror.qits.example.org/npm/npmjs/left-pad/-/left-pad-1.0.0.tgz")));
+    Path webui = Files.createDirectories(tree.resolve("service/src/main/webui"));
+    List<String> entries = new java.util.ArrayList<>();
+    for (int i = 0; i < 7; i++) {
+      entries.add(
+          lockEntry(
+              "@qits/p" + i,
+              "http://dev-qits-artifacts:8080/artifacts/npm/npm/@qits/p" + i + "/-/p" + i + "-1.tgz"));
+    }
+    // A host that merely CONTAINS the platform's name is not it: the prefix is compared exactly.
+    entries.add(
+        lockEntry("evil", "https://registry.qits.example.org.evil.test/artifacts/npm/npm/e.tgz"));
+    Files.writeString(webui.resolve("package-lock.json"), lockfile(entries.toArray(String[]::new)));
+
+    Map.Entry<Integer, String> result = runLockfileCheck(tree);
+
+    String output = result.getValue();
+    assertEquals(1, result.getKey(), output);
+    assertTrue(
+        output.contains(
+            "qits-ci: ./service/src/main/webui/package-lock.json resolves 8 package(s) outside"
+                + " https://registry.qits.example.org/ and https://mirror.qits.example.org/:"),
+        output);
+    assertTrue(
+        output.contains("  http://dev-qits-artifacts:8080/artifacts/npm/npm/@qits/p0/-/p0-1.tgz\n"),
+        output);
+    assertTrue(output.contains("@qits/p4/"), "up to five entries are named:\n" + output);
+    assertFalse(output.contains("@qits/p5/"), "and no more than five:\n" + output);
+    assertFalse(output.contains("./package-lock.json"), "the clean file is not named:\n" + output);
+    assertTrue(output.contains("no lockfile is rewritten on this platform"), output);
+  }
+
+  @Test
+  public void theLockfileCheckRefusesAStepWithNoDomain(@org.junit.jupiter.api.io.TempDir Path work)
+      throws Exception {
+    Path check = work.resolve("check.sh");
+    Files.writeString(check, CiReleaseComposer.lockfileOriginCheck(), StandardCharsets.UTF_8);
+    ProcessBuilder builder =
+        new ProcessBuilder("sh", check.toString()).directory(work.toFile()).redirectErrorStream(true);
+    builder.environment().clear();
+    builder.environment().put("PATH", System.getenv("PATH"));
+    Process process = builder.start();
+    String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    process.waitFor();
+
+    assertTrue(process.exitValue() != 0, output);
+    assertTrue(output.contains("this step was told no QITS_DOMAIN"), output);
   }
 
   @Test
@@ -256,12 +435,12 @@ public class CiReleaseComposerTest {
     assertTrue(
         document.contains(
             "curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o /tmp/qits-bin/qits"
-                + " \"$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n"),
+                + " \"https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n"),
         document);
     assertTrue(
         document.contains(
             "wget -q \"$@\" -O /tmp/qits-bin/qits"
-                + " \"$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n"),
+                + " \"https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n"),
         document);
     // The `set --` block sits ONCE, before both arms, rather than once per arm — a second copy
     // would be a second place for the two to drift.
@@ -460,6 +639,7 @@ public class CiReleaseComposerTest {
       withToken.environment().put("QITS_TOKEN", "the-run-token");
       withToken.environment().put("QITS_ARTIFACTS_CLI_PACKAGE", "");
       withToken.environment().put("QITS_VERSION", "2026.929.1");
+      withToken.environment().put("QITS_DOMAIN", "example.invalid");
       withToken.environment().put("QITS_CI_REPOSITORY_URL", "http://githost.invalid/x");
       Process p1 = withToken.start();
       String out1 = new String(p1.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
@@ -480,6 +660,7 @@ public class CiReleaseComposerTest {
       noToken.environment().put("PATH", bin + ":" + System.getenv("PATH"));
       noToken.environment().put("QITS_ARTIFACTS_CLI_PACKAGE", "");
       noToken.environment().put("QITS_VERSION", "2026.929.1");
+      noToken.environment().put("QITS_DOMAIN", "example.invalid");
       noToken.environment().put("QITS_CI_REPOSITORY_URL", "http://githost.invalid/x");
       Process p2 = noToken.start();
       String out2 = new String(p2.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
@@ -528,7 +709,7 @@ public class CiReleaseComposerTest {
         .replace(
             "if [ -n \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]; then",
             "QITS_ARTIFACTS_CLI_PACKAGE=qits\nQITS_ARTIFACTS_CLI_VERSION=1\n"
-                + "QITS_ARTIFACTS_URL=http://artifacts.invalid\nif true; then");
+                + "if true; then");
   }
 
   // --- the properties the goldens are there to hold ------------------------------------------------
@@ -954,7 +1135,7 @@ public class CiReleaseComposerTest {
                     script: |
                       npm ci && npm run test:pacts
                       buildctl build --frontend dockerfile.v0 --local context=. \\
-                        --output "type=image,name=$QITS_BUILD_REGISTRY/qits/qits-landing:$QITS_VERSION,push=true"
+                        --output "type=image,name=registry.qits.$QITS_DOMAIN/qits/qits-landing:$QITS_VERSION,push=true"
                 """));
 
     golden("app-pacts-release.yml", composed.releaseDocument());

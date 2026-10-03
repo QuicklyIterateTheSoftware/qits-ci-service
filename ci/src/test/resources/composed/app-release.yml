@@ -15,9 +15,39 @@ steps:
     script: |
       set -eu
       # --- platform prelude ---------------------------------------------------------
+      : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no platform address}"
       : "${QITS_VERSION:?the triggering release event carried no version}"
       git fetch "$QITS_CI_REPOSITORY_URL" "refs/tags/$QITS_VERSION:refs/tags/$QITS_VERSION"
       git checkout --detach "$QITS_VERSION"
+      cat > /tmp/qits-lockfile-origins.sh <<'QITS_LOCKFILE_EOF'
+      # qits-ci: every npm lockfile here resolves from the platform's two registries (qits-731).
+      set -eu
+      : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so no lockfile origin can be checked}"
+      registry="https://registry.qits.$QITS_DOMAIN/"
+      mirror="https://mirror.qits.$QITS_DOMAIN/"
+      find . -name package-lock.json ! -path '*/node_modules/*' | {
+        refused=0
+        while IFS= read -r lock; do
+          foreign=$(grep -o '"resolved": *"[^"]*"' "$lock" \
+            | sed -e 's/^"resolved": *"//' -e 's/"$//' \
+            | awk -v r="$registry" -v m="$mirror" \
+              'index($0, "://") && index($0, r) != 1 && index($0, m) != 1')
+          if [ -n "$foreign" ]; then
+            count=$(printf '%s\n' "$foreign" | wc -l | tr -d ' ')
+            echo "qits-ci: $lock resolves $count package(s) outside $registry and $mirror:" >&2
+            printf '%s\n' "$foreign" | head -n 5 | sed 's/^/  /' >&2
+            refused=1
+          fi
+        done
+        if [ "$refused" -ne 0 ]; then
+          echo "qits-ci: no lockfile is rewritten on this platform. Regenerate it against the" \
+            "public registries (npm_config_registry=${mirror}npm/npmjs/," \
+            "npm_config_@qits:registry=${registry}artifacts/npm/npm/) and commit it." >&2
+          exit 1
+        fi
+      }
+      QITS_LOCKFILE_EOF
+      sh /tmp/qits-lockfile-origins.sh
       if [ -n "${QITS_ARTIFACTS_CLI_PACKAGE:-}" ]; then
         : "${QITS_ARTIFACTS_CLI_VERSION:?the qits CLI package is configured but no version was injected; the qits-ci that launched this step predates the CLI pin}"
         mkdir -p /tmp/qits-bin
@@ -26,9 +56,9 @@ steps:
           set -- --header "Authorization: Bearer $QITS_TOKEN"
         fi
         if command -v curl > /dev/null 2>&1; then
-          curl -fsSL --retry 2 --retry-delay 2 "$@" -o /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
+          curl -fsSL --retry 2 --retry-delay 2 "$@" -o /tmp/qits-bin/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
         elif command -v wget > /dev/null 2>&1; then
-          wget -q "$@" -O /tmp/qits-bin/qits "$QITS_ARTIFACTS_URL/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
+          wget -q "$@" -O /tmp/qits-bin/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
         else
           echo 'qits-ci: the image for this step (qits/build-images/node-docker-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
           exit 1
@@ -40,7 +70,6 @@ steps:
         export PATH
       fi
       : "${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only through it}"
-      : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no registry to push to}"
       (
         umask 077
         if [ -n "${QITS_TOKEN:-}" ]; then
@@ -76,9 +105,9 @@ steps:
       # is how every hand-written file spelled it: a deployment may re-point the namespace and the
       # declaration may not have to move.
       image=${declared#*/}
-      # The addresses are code under the platform's public domain (qits-731); `wohlben.eu` covers a
-      # qits-ci too old to inject $QITS_DOMAIN.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      # The addresses are code under the platform's public domain (qits-731), which the composed
+      # prelude has already demanded; the `:?` says so again here.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       ref="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
       echo "releasing $ref"
 
