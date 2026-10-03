@@ -48,6 +48,12 @@ import org.jboss.logging.Logger;
  * proves the run, and what remains is only naming <em>which</em> launch of it this is, which is
  * not a secret.
  *
+ * <p><b>A daemon may dial more than once.</b> The socket crosses the platform edge, and an edge
+ * redeploy drops it under a running step; the daemon then re-dials with the same token and names the
+ * same launch, and once the dropped connection has closed that dial is admitted as the launch's
+ * again rather than refused (qits-748). While the first is still open, a second is {@code
+ * ALREADY_CONNECTED} as ever.
+ *
  * <p><b>The address is a cross-repo contract.</b> {@code StepAddressPlane} composes {@code
  * wss://ci.qits.<domain>/ci/daemon} as {@code $QITS_CI_DAEMON_URL} for every step container, and
  * qits-ci-daemon dials exactly that string verbatim. Move this path and that composition moves
@@ -196,6 +202,11 @@ public class CiDaemonSocket {
     }
   }
 
+  /**
+   * A close is handed to the registry, which does <em>not</em> end the step on it: the launch waits
+   * its reconnect grace for the daemon to dial again — a new connection, admitted here by its {@code
+   * Hello} exactly as the first was (qits-748). See {@link CiDaemonRegistry#onClose}.
+   */
   @OnClose
   public void onClose(WebSocketConnection connection) {
     String daemonId = connection.userData().get(DAEMON_ID);

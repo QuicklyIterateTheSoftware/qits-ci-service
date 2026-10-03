@@ -198,6 +198,25 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
         .firstResultOptional();
   }
 
+  /**
+   * When the newest health check of the runner accepted after {@code since} was accepted — whatever
+   * became of it — or empty when there is none. What the health-check schedule counts from: the
+   * next check of a quarantined runner is due at the first of its slots after this ({@code
+   * CiRunnerHealth}).
+   */
+  public Optional<Instant> newestHealthCheckSince(UUID runnerId, Instant since) {
+    return Optional.ofNullable(
+        getEntityManager()
+            .createQuery(
+                "select max(r.createdAt) from CiRun r where r.targetRunnerId = ?1"
+                    + " and r.purpose = ?2 and r.createdAt > ?3",
+                Instant.class)
+            .setParameter(1, runnerId)
+            .setParameter(2, CiRunPurpose.HEALTHCHECK)
+            .setParameter(3, since)
+            .getSingleResult());
+  }
+
   /** Every health check still {@code QUEUED} that was accepted before {@code cutoff}. */
   public List<CiRun> listHealthChecksQueuedBefore(Instant cutoff) {
     return list(
@@ -330,6 +349,27 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
     return list(
         "repoId = ?1 and releaseRequestId = ?2 and status in (?3, ?4) order by createdAt, id",
         repoId,
+        releaseRequestId,
+        CiRunStatus.QUEUED,
+        CiRunStatus.RUNNING);
+  }
+
+  /**
+   * Every unfinished release-request gating build one repository has for some request OTHER than
+   * {@code releaseRequestId} — what a newer gating build of that repository supersedes (qits-552),
+   * oldest first.
+   *
+   * <p>{@link CiRunPhase#RELEASE_REQUEST} only, so a publish run and a run that is no part of a
+   * release never appear, and the request id must be set and differ — the same request's own runs
+   * are the per-branch collapse's and the cancellation door's, never this one's.
+   */
+  public List<CiRun> listUnfinishedReleaseBuildsOfOtherRequests(
+      String repoId, String releaseRequestId) {
+    return list(
+        "repoId = ?1 and phase = ?2 and releaseRequestId is not null and releaseRequestId <> ?3"
+            + " and status in (?4, ?5) order by createdAt, id",
+        repoId,
+        CiRunPhase.RELEASE_REQUEST,
         releaseRequestId,
         CiRunStatus.QUEUED,
         CiRunStatus.RUNNING);

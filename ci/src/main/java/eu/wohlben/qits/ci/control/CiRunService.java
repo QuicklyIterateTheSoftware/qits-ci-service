@@ -417,6 +417,16 @@ public class CiRunService {
   public static final String RELEASE_REQUEST_CANCELLED = "RELEASE_REQUEST_CANCELLED";
 
   /**
+   * What a release request's gating build records when a newer gating build of the same repository,
+   * for a <em>different</em> request, is accepted: one repository builds one release request at a
+   * time, and the newest one wins (qits-552). {@code supersededByRunId} names the run that took its
+   * place. Distinct from {@link #DEDUPED}, which is the same request's own newer fold, and from
+   * {@link #RELEASE_REQUEST_CANCELLED}, because the request this run served did not go away — it was
+   * outranked, and a re-fold or a retry asks for its build again.
+   */
+  public static final String SUPERSEDED_BY_RELEASE_REQUEST = "SUPERSEDED_BY_RELEASE_REQUEST";
+
+  /**
    * What a row this engine cannot execute records when a boot sweep hands it back: a {@code
    * POST_RECEIVE} run left {@code QUEUED} by a deployment that predates the 2026-09-05 retirement of
    * per-push CI. Its own reason rather than {@link #USER_CANCELLED}, because nobody cancelled it —
@@ -2138,8 +2148,14 @@ public class CiRunService {
    * <p>Built fresh inside {@link #insertEventRun} on every attempt, which it has to be: {@link
    * DbRetry#inNewTx} re-runs the whole body, and a list surviving a rolled-back attempt would
    * announce a cancellation the database never took.
+   *
+   * <p><b>{@code stillRunning} is the half the transaction could not settle</b>: other release
+   * requests' gating builds of the same repository that were already {@code RUNNING} — see {@link
+   * #supersedeOtherRequests}. A running build has a runner to reach, which is not a database
+   * statement, so their ids travel out and {@link #cancelSupersededRunning} stops them after the
+   * commit.
    */
-  private record Accepted(CiRun run, List<CiRun> superseded) {}
+  private record Accepted(CiRun run, List<CiRun> superseded, List<String> stillRunning) {}
 
   private CiRun acceptEventRun(EventRun request) {
     String configPath = request.trigger().configPath();
@@ -2201,6 +2217,10 @@ public class CiRunService {
    * occurredAt} is the row's own column either way: {@code createdAt} for a run that is queued,
    * {@code finishedAt} — the winner's acceptance instant, which is what {@link #dedupe} stamps — for
    * one that is settled.
+   *
+   * <p>Last, the superseded builds that were already {@code RUNNING} are stopped — after the
+   * announcements, because {@link #cancel} announces their own terminal rows when it writes them.
+   * The retry path ends here too, so a re-fire supersedes exactly as an event arrival does.
    */
   private void announceAccepted(Accepted accepted) {
     CiRun run = accepted.run();
@@ -2212,6 +2232,7 @@ public class CiRunService {
     for (CiRun loser : accepted.superseded()) {
       announceStatus(loser, loser.status, CiRunStatus.QUEUED, loser.finishedAt);
     }
+    cancelSupersededRunning(run, accepted.stillRunning());
   }
 
   /**
@@ -2240,6 +2261,7 @@ public class CiRunService {
       return null;
     }
     List<CiRun> superseded = new ArrayList<>();
+    List<String> stillRunning = new ArrayList<>();
     CiRun run = newRun(request.repo(), request.branch(), request.sha());
     run.triggerType = CiTriggerType.EVENT;
     run.configPath = configPath;
@@ -2279,8 +2301,84 @@ public class CiRunService {
     runs.flush();
     supersedeByVersion(run, request, superseded);
     supersedeByCheckoutBranch(run, request, superseded);
+    supersedeOtherRequests(run, superseded, stillRunning);
     runs.flush();
-    return new Accepted(run, superseded);
+    return new Accepted(run, superseded, stillRunning);
+  }
+
+  /**
+   * <b>One repository builds one release request at a time, and the newest accepted gating build
+   * wins</b> (qits-552). Every other request's unfinished {@link CiRunPhase#RELEASE_REQUEST} run of
+   * the same repository is superseded by {@code accepted}: a {@code QUEUED} one settled here, in the
+   * accepting transaction, the way {@link #dedupe} settles one; a {@code RUNNING} one handed back in
+   * {@code stillRunning} for {@link #cancelSupersededRunning} to stop after the commit.
+   *
+   * <p><b>Unlike the two collapses beside it, this one reaches running builds</b>, and the trade they
+   * refuse is the right one here. Those collapse a burst of the <em>same</em> question, where the
+   * running answer is still worth having; two requests' gating builds of one repository are two
+   * different folds competing for one runner and one verdict slot, and the older one's answer is
+   * about a fold qits-projects is no longer going to release ahead of the newer.
+   *
+   * <p><b>Keyed on the phase, never on a branch name.</b> {@link #phaseOf} is the one rule for what a
+   * gating build is, so a {@code release/} prefix is not read anywhere. And four things are left
+   * alone on purpose: {@link CiRunPhase#RELEASE} runs (a publish already won its request's gate and
+   * must finish), runs with no phase, other repositories, and the <em>same</em> request's other runs
+   * — those belong to the per-branch collapse and to {@link #cancelReleaseRequestRuns}.
+   *
+   * <p>Called for both ways a gating build enters the queue: {@link #insertEventRun} and {@link
+   * #insertRetry}, so a retry of an older request's build is as new as a fresh fold and wins the
+   * same way.
+   */
+  private void supersedeOtherRequests(
+      CiRun accepted, List<CiRun> superseded, List<String> stillRunning) {
+    if (accepted.phase != CiRunPhase.RELEASE_REQUEST
+        || accepted.releaseRequestId == null
+        || accepted.status != CiRunStatus.QUEUED) {
+      return;
+    }
+    for (CiRun other :
+        runs.listUnfinishedReleaseBuildsOfOtherRequests(
+            accepted.repoId, accepted.releaseRequestId)) {
+      LOG.infof(
+          "Run %s for release request %s in %s supersedes %s %s of release request %s — one"
+              + " release build per repository",
+          accepted.id,
+          accepted.releaseRequestId,
+          accepted.repoId,
+          other.status,
+          other.id,
+          other.releaseRequestId);
+      if (other.status == CiRunStatus.QUEUED) {
+        supersede(other, accepted, SUPERSEDED_BY_RELEASE_REQUEST);
+        superseded.add(other);
+      } else {
+        stillRunning.add(other.id);
+      }
+    }
+  }
+
+  /**
+   * Stops the {@code RUNNING} builds {@link #supersedeOtherRequests} could not settle in the
+   * accepting transaction, through {@link #cancel} — so a build a runner holds is reached through it,
+   * and every terminal row is announced by the arm that writes it.
+   *
+   * <p><b>Best effort, and never a reason to undo the accept.</b> The winner has committed; a loser
+   * that finished in between is a 409 the outcome asked for already holds, so it is skipped
+   * silently, and anything else is a WARN rather than a throw, which would hand the event back for a
+   * redelivery the dedupe then refuses.
+   */
+  private void cancelSupersededRunning(CiRun winner, List<String> stillRunning) {
+    for (String loserId : stillRunning) {
+      try {
+        cancel(loserId, SUPERSEDED_BY_RELEASE_REQUEST, winner.id);
+      } catch (ConflictException | NotFoundException raced) {
+        LOG.debugf(
+            "CI run %s was already over when run %s superseded it", loserId, winner.id);
+      } catch (RuntimeException e) {
+        LOG.warnf(
+            e, "CI run %s is superseded by run %s and could not be stopped", loserId, winner.id);
+      }
+    }
   }
 
   /**
@@ -2393,7 +2491,7 @@ public class CiRunService {
   }
 
   /**
-   * Marks one queued run superseded by another. The idiom all three supersedes write, spelled once.
+   * Marks one queued run superseded by another. The idiom every supersede writes, spelled once.
    *
    * <p><b>{@code CANCELLED}, not {@code FAILED}.</b> The row used to settle red, and the word was
    * wrong in the only place a word matters — a reader's. A superseded run answered no question and
@@ -2425,9 +2523,18 @@ public class CiRunService {
    * for that reason.
    */
   private static void dedupe(CiRun loser, CiRun winner) {
+    supersede(loser, winner, DEDUPED);
+  }
+
+  /**
+   * {@link #dedupe}'s columns with the reason as a parameter — {@link
+   * #SUPERSEDED_BY_RELEASE_REQUEST} for {@link #supersedeOtherRequests}, which settles a queued run
+   * exactly as the collapses do and differs only in why.
+   */
+  private static void supersede(CiRun loser, CiRun winner, String reason) {
     loser.status = CiRunStatus.CANCELLED;
     loser.finishedAt = winner.createdAt;
-    loser.cancellationReason = DEDUPED;
+    loser.cancellationReason = reason;
     loser.supersededByRunId = winner.id;
   }
 
@@ -2842,6 +2949,15 @@ public class CiRunService {
   }
 
   public void cancel(String runId, String requestedReason) {
+    cancel(runId, requestedReason, null);
+  }
+
+  /**
+   * {@link #cancel(String, String)}, recording which run took this one's place — null for every
+   * cancellation somebody asked for, the winner's id for {@link #cancelSupersededRunning}'s. Written
+   * by all three arms, so a superseded run links to its successor whichever arm settled it.
+   */
+  private void cancel(String runId, String requestedReason, String supersededBy) {
     String reason = cancellationReason(requestedReason);
     CiRun run = requireRun(runId);
     if (run.status != CiRunStatus.RUNNING && run.status != CiRunStatus.QUEUED) {
@@ -2866,7 +2982,7 @@ public class CiRunService {
               current.status = CiRunStatus.CANCELLED;
               current.finishedAt = Instant.now();
               current.cancellationReason = reason;
-              current.supersededByRunId = null;
+              current.supersededByRunId = supersededBy;
               runs.flush();
               return current;
             },
@@ -2899,7 +3015,7 @@ public class CiRunService {
                 current.status = CiRunStatus.CANCELLED;
                 current.finishedAt = Instant.now();
                 current.cancellationReason = reason;
-                current.supersededByRunId = null;
+                current.supersededByRunId = supersededBy;
                 runs.flush();
                 return current;
               },
@@ -2918,7 +3034,7 @@ public class CiRunService {
           CiRun current = runs.findById(runId);
           if (current != null) {
             current.cancellationReason = reason;
-            current.supersededByRunId = null;
+            current.supersededByRunId = supersededBy;
             runs.flush();
           }
         },
@@ -3059,22 +3175,24 @@ public class CiRunService {
                     .parseSnapshot(
                         source.configPath, pipeline.document(), "The run being retried for " + runId)
                     .pipeline()));
-    CiRun retry =
+    Accepted accepted =
         DbRetry.inNewTx(
             "run retry accept",
             () -> insertRetry(source.id, expected, pipeline, pins, autoRetryReason),
             retryDeadline());
-    if (retry == null) {
+    if (accepted == null) {
       throw new NotFoundException("No such CI run: " + runId);
     }
+    CiRun retry = accepted.run();
     LOG.infof(
         "CI run %s retried as %s — same %s at %s%s", runId, retry.id, retry.configPath,
         retry.commitSha, autoRetryReason == null ? "" : " (automatically: " + autoRetryReason + ")");
     // After the insert's transaction and before the wake, the accept path's arrangement exactly: a
     // retry is a new row entering the active listing, and the only thing that separates it from an
     // event-triggered arrival is which method wrote it. `previousStatus` is null for that reason —
-    // this run has no earlier state, whatever the run it re-fires ended as.
-    announceStatus(retry, CiRunStatus.QUEUED, null, retry.createdAt);
+    // this run has no earlier state, whatever the run it re-fires ended as. announceAccepted is
+    // that announcement, and it also settles what the retry superseded — see supersedeOtherRequests.
+    announceAccepted(accepted);
     announceQueued(retry.id);
     return retry;
   }
@@ -3420,7 +3538,7 @@ public class CiRunService {
    * @param pipeline the trigger document and its archetype provenance, handed in by {@link
    *     #retriedPipeline} and computed outside this transaction because it reads the git host
    */
-  private CiRun insertRetry(
+  private Accepted insertRetry(
       String sourceRunId,
       String expectedStepDurations,
       RetriedPipeline pipeline,
@@ -3483,7 +3601,14 @@ public class CiRunService {
     archetypeOnto(retry, pipeline.archetype());
     runs.persist(retry);
     runs.flush();
-    return retry;
+    // A retry of a gating build is as new as a fresh fold, so it supersedes the other requests'
+    // builds of this repository exactly as an event arrival would. Fresh lists per attempt, for
+    // insertEventRun's reason.
+    List<CiRun> superseded = new ArrayList<>();
+    List<String> stillRunning = new ArrayList<>();
+    supersedeOtherRequests(retry, superseded, stillRunning);
+    runs.flush();
+    return new Accepted(retry, superseded, stillRunning);
   }
 
   /**

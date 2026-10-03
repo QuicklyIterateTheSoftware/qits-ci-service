@@ -15,6 +15,7 @@ import eu.wohlben.qits.cidaemon.protocol.StepFinished;
 import eu.wohlben.qits.cidaemon.protocol.Stream;
 import io.quarkus.websockets.next.CloseReason;
 import io.quarkus.websockets.next.WebSocketConnection;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Duration;
@@ -23,8 +24,12 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
@@ -73,6 +78,20 @@ import org.jboss.logging.Logger;
  * (which is why timestamps are host-stamped and a {@code Hello}'s {@code daemonId} is checked
  * rather than believed).
  *
+ * <p><b>A dropped socket is a gap, not an ending</b> (qits-748). The daemon's socket goes through the
+ * platform edge like the runner's, so an edge redeploy drops every step's socket at the same instant
+ * while the containers keep running. {@link #onClose} therefore unbinds the connection and completes
+ * nothing: the launch waits {@code qits.ci.daemon.reconnect-grace-seconds} for its daemon to dial
+ * again and name it in a fresh {@code Hello}, which {@link #admitByToken} admits like the first
+ * (same token subject, no live connection). The re-admission is answered an {@code Ack}, then the
+ * {@link RunStep} again if one was sent — a daemon ignores a second one — then a {@link Cancel}
+ * that could not be delivered while nothing was bound. A replayed {@link StepChunk} whose {@code seq}
+ * the host already has is dropped. Only a grace that runs out with nobody back completes the awaits
+ * {@code CONNECTION_LOST}, exactly as a close used to at once; a {@link #reap} during it completes
+ * them at once, and the grace never extends a deadline — the awaits keep theirs throughout. A
+ * daemon that does not re-dial (one older than the re-dial) costs its step the grace and no more.
+ * {@code 0} restores the old behaviour.
+ *
  * <p>{@code RunnerStepRunner} is what drives this in production, one step at a time.
  */
 @ApplicationScoped
@@ -101,6 +120,44 @@ public class CiDaemonRegistry {
   @Inject CiDaemonMessageCodec codec;
 
   private final ConcurrentHashMap<String, Launch> launches = new ConcurrentHashMap<>();
+
+  /**
+   * Ends the graces nobody came back inside. One thread: an expiry is a handful of future
+   * completions, never a wait.
+   */
+  private final ScheduledExecutorService graces =
+      Executors.newSingleThreadScheduledExecutor(
+          r -> {
+            Thread t = new Thread(r, "ci-daemon-grace");
+            t.setDaemon(true);
+            return t;
+          });
+
+  /** How long a launch whose socket dropped waits for its daemon to dial again. 0 is no grace. */
+  @ConfigProperty(name = "qits.ci.daemon.reconnect-grace-seconds")
+  long reconnectGraceSeconds;
+
+  /** Set by a suite only; otherwise {@link #reconnectGraceSeconds}. */
+  private volatile Duration reconnectGrace;
+
+  /**
+   * Package-private for one reason: a suite proving a grace runs out cannot wait a minute. A method
+   * rather than a field write because this bean is normal-scoped — {@code
+   * CiRunnerRegistry.reconnectGrace}'s reason. {@code null} puts the configured value back.
+   */
+  void reconnectGrace(Duration grace) {
+    this.reconnectGrace = grace;
+  }
+
+  Duration reconnectGrace() {
+    Duration set = reconnectGrace;
+    return set != null ? set : Duration.ofSeconds(reconnectGraceSeconds);
+  }
+
+  @PreDestroy
+  void stopGraces() {
+    graces.shutdownNow();
+  }
 
   /**
    * Where a running step's output goes as it arrives — {@link CiStepRelay}, which is both the live
@@ -289,9 +346,13 @@ public class CiDaemonRegistry {
   public String sendRunStep(String daemonId, String script, int timeoutSeconds) {
     Launch launch = require(daemonId);
     String correlationId = UUID.randomUUID().toString();
+    RunStep runStep = new RunStep(correlationId, script, timeoutSeconds);
     launch.correlationId = correlationId;
+    // Recorded BEFORE the send reads the connection: a re-admission that binds a socket after this
+    // send found none is guaranteed to see it and deliver it (see #resume).
+    launch.runStep = runStep;
     launch.phase = Phase.RUNNING;
-    send(launch, new RunStep(correlationId, script, timeoutSeconds));
+    send(launch, runStep);
     return correlationId;
   }
 
@@ -307,14 +368,19 @@ public class CiDaemonRegistry {
   /**
    * Ask the daemon to kill its child. It answers with {@link StepFinished}, so the in-flight {@link
    * #awaitFinished} completes normally instead of timing out on a socket the host then has to reap.
-   * A no-op when nothing is connected — the caller reaps either way.
+   * When nothing is connected — the daemon's socket is inside its reconnect grace — the {@code
+   * Cancel} is kept and delivered on the re-admission; a launch nobody comes back for is reaped by
+   * the caller either way.
    */
   public void cancel(String daemonId) {
     Launch launch = launches.get(daemonId);
     if (launch == null || launch.correlationId == null) {
       return;
     }
-    send(launch, new Cancel(launch.correlationId));
+    launch.cancelPending = true;
+    if (send(launch, new Cancel(launch.correlationId))) {
+      launch.cancelPending = false;
+    }
   }
 
   /**
@@ -333,11 +399,11 @@ public class CiDaemonRegistry {
       return;
     }
     launch.phase = Phase.DONE;
+    synchronized (launch) {
+      cancelExpiry(launch);
+    }
     launch.registered.complete(Boolean.FALSE);
-    launch.helloReceived.complete(-1);
-    launch.ackConfirmed.complete(Boolean.FALSE);
-    launch.initialized.complete(Initialization.of(Initialization.Status.CONNECTION_LOST));
-    launch.finished.complete(Completion.of(Completion.Status.CONNECTION_LOST));
+    completeLost(launch);
     WebSocketConnection connection = launch.connection;
     if (connection != null && connection.isOpen()) {
       closeBounded(connection, null, "reaped ci-daemon " + daemonId);
@@ -396,6 +462,16 @@ public class CiDaemonRegistry {
     return launch == null || launch.capabilityVersion < 0 ? null : launch.capabilityVersion;
   }
 
+  /**
+   * Observational: whether the launch has a live connection bound right now — false inside its
+   * reconnect grace, and for a launch that is unknown or reaped.
+   */
+  public boolean connected(String daemonId) {
+    Launch launch = launches.get(daemonId);
+    WebSocketConnection connection = launch == null ? null : launch.connection;
+    return connection != null && connection.isOpen();
+  }
+
   /** Observational: how many launches are on the books. Zero after a clean run. */
   public int size() {
     return launches.size();
@@ -415,10 +491,12 @@ public class CiDaemonRegistry {
    * otherwise speak for that launch by naming it — the mismatch is {@link Admission#WRONG_RUN},
    * logged here with both subjects, before the frame that named it is processed any further.
    *
-   * <p>Atomic in the id, so two dials racing to name one launch cannot both be admitted: the second
-   * is {@link Admission#ALREADY_CONNECTED}, which is a re-dial claim rather than a reconnect. A ci
-   * daemon has one container lifetime and one step, so it has nothing to reconnect for; a second
-   * socket on one launch would be a second party wanting to speak for it.
+   * <p>Atomic in the id, so two dials racing to name one launch cannot both be admitted: while a
+   * connection is bound and open the second is {@link Admission#ALREADY_CONNECTED} — a second party
+   * wanting to speak for it. Once the bound one has closed, a dial naming the launch is its daemon
+   * <b>coming back</b> (qits-748): it is admitted the same way, the reconnect grace {@link #onClose}
+   * started is cancelled, and the phase is left where it was — a re-admission is not a fresh
+   * connection, and what it is owed is sent at its {@code Hello} ({@link #resume}).
    */
   public Admission admitByToken(String daemonId, String runSubject, WebSocketConnection connection) {
     if (daemonId == null) {
@@ -439,8 +517,17 @@ public class CiDaemonRegistry {
       if (launch.connection != null && launch.connection.isOpen()) {
         return Admission.ALREADY_CONNECTED;
       }
+      if (launch.admissions > 0) {
+        LOG.infof(
+            "ci-daemon %s of run %s step %d came back (connection %s, phase %s)",
+            daemonId, launch.runId, launch.stepIndex, connection.id(), launch.phase);
+      }
+      cancelExpiry(launch);
+      launch.admissions++;
       launch.connection = connection;
-      launch.phase = Phase.CONNECTED;
+      if (launch.phase == Phase.LAUNCHED) {
+        launch.phase = Phase.CONNECTED;
+      }
     }
     launch.registered.complete(Boolean.TRUE);
     LOG.debugf(
@@ -479,6 +566,7 @@ public class CiDaemonRegistry {
               daemonId, hello.capabilityVersion(), CiDaemonProtocol.CAPABILITY_VERSION);
         }
         send(launch, new Ack(CiDaemonProtocol.CAPABILITY_VERSION));
+        resume(launch);
       }
       case AckReceived ignored -> {
         // Proves host→daemon delivery. Real runs never await this (see #awaitAckConfirmed); it is
@@ -490,7 +578,13 @@ public class CiDaemonRegistry {
         /* liveness only — the open socket is the signal */
       }
       case Initialized ignored -> {
-        launch.phase = Phase.INITIALIZED;
+        // A daemon that re-dials resends an Initialized it could not deliver; one arriving after
+        // the step was sent must not move the phase back.
+        synchronized (launch) {
+          if (launch.phase == Phase.LAUNCHED || launch.phase == Phase.CONNECTED) {
+            launch.phase = Phase.INITIALIZED;
+          }
+        }
         launch.initialized.complete(Initialization.ok());
       }
       case InitFailed failed -> {
@@ -511,28 +605,102 @@ public class CiDaemonRegistry {
   }
 
   /**
-   * A connection went away. Whatever the worker thread is parked on completes as {@code
-   * CONNECTION_LOST} immediately rather than burning its remaining deadline — a lost socket is a
-   * distinguishable outcome, not a slow one. The launch record itself survives: the caller still has
-   * to reap the container, and may still want a {@code docker logs} tail off it.
+   * A connection went away. The connection is unbound and <b>nothing is completed yet</b>: the
+   * launch waits {@link #reconnectGrace()} for its daemon to dial again (qits-748), and only a grace
+   * that runs out with nobody back completes whatever the worker is parked on as {@code
+   * CONNECTION_LOST} — still well inside its deadline, so a lost socket stays a distinguishable
+   * outcome rather than a slow one. A zero grace, and a launch already done, complete at once, as
+   * every close used to. The launch record itself survives either way: the caller still has to reap
+   * the container.
    */
   public void onClose(String daemonId, WebSocketConnection connection) {
     Launch launch = launches.get(daemonId);
     if (launch == null) {
       return;
     }
+    Duration grace = reconnectGrace();
+    boolean now;
     synchronized (launch) {
       WebSocketConnection bound = launch.connection;
       if (bound == null || !bound.id().equals(connection.id())) {
         return;
       }
       launch.connection = null;
+      now = grace.isZero() || grace.isNegative() || launch.phase == Phase.DONE;
+      if (!now) {
+        cancelExpiry(launch);
+        Object token = new Object();
+        launch.expiryToken = token;
+        launch.expiry =
+            graces.schedule(
+                () -> expire(launch, token), grace.toMillis(), TimeUnit.MILLISECONDS);
+      }
     }
+    if (now) {
+      completeLost(launch);
+      LOG.debugf("ci-daemon %s disconnected (connection %s)", daemonId, connection.id());
+      return;
+    }
+    LOG.infof(
+        "ci-daemon %s of run %s step %d disconnected in phase %s; waiting %ss for it to come back",
+        daemonId, launch.runId, launch.stepIndex, launch.phase, grace.toSeconds());
+  }
+
+  /** The grace ran out: unless the daemon came back (or the launch was reaped) first, it is lost. */
+  private void expire(Launch launch, Object token) {
+    synchronized (launch) {
+      if (launch.expiryToken != token || launch.connection != null) {
+        return;
+      }
+      launch.expiry = null;
+      launch.expiryToken = null;
+    }
+    if (launches.get(launch.daemonId) == launch) {
+      LOG.warnf(
+          "ci-daemon %s of run %s step %d did not come back within %ss; its step is lost",
+          launch.daemonId, launch.runId, launch.stepIndex, reconnectGrace().toSeconds());
+    }
+    completeLost(launch);
+  }
+
+  /** Called holding the launch's lock: a pending expiry, if any, will not fire. */
+  private static void cancelExpiry(Launch launch) {
+    ScheduledFuture<?> pending = launch.expiry;
+    launch.expiry = null;
+    launch.expiryToken = null;
+    if (pending != null) {
+      pending.cancel(false);
+    }
+  }
+
+  /** Whatever the worker is parked on, completed as lost. A completed future is left as it is. */
+  private static void completeLost(Launch launch) {
     launch.helloReceived.complete(-1);
     launch.ackConfirmed.complete(Boolean.FALSE);
     launch.initialized.complete(Initialization.of(Initialization.Status.CONNECTION_LOST));
     launch.finished.complete(Completion.of(Completion.Status.CONNECTION_LOST));
-    LOG.debugf("ci-daemon %s disconnected (connection %s)", daemonId, connection.id());
+  }
+
+  /**
+   * What a daemon that came back is owed, sent right after its {@code Ack}: the {@link RunStep}
+   * again when one was sent and the step has not ended — the frame may have died with the old socket,
+   * and a daemon that already has it ignores a second — and then a {@link Cancel} that found no
+   * socket to go out on. A first {@code Hello} is owed neither, so this is a no-op there.
+   */
+  private void resume(Launch launch) {
+    if (launch.phase == Phase.DONE) {
+      return;
+    }
+    RunStep runStep = launch.runStep;
+    if (runStep != null) {
+      LOG.infof("Resending the step to ci-daemon %s after its reconnect", launch.daemonId);
+      send(launch, runStep);
+    }
+    if (launch.cancelPending && launch.correlationId != null) {
+      if (send(launch, new Cancel(launch.correlationId))) {
+        launch.cancelPending = false;
+      }
+    }
   }
 
   // --- internals --------------------------------------------------------------------------------
@@ -559,16 +727,26 @@ public class CiDaemonRegistry {
   /**
    * Hand one chunk to the step's listener, asserting the per-correlation sequence on the way past. A
    * gap is logged and the chunk still delivered: {@code seq} exists so the host can tell "the step
-   * printed nothing" from "we lost frames", not so it can drop output.
+   * printed nothing" from "we lost frames", not so it can drop output. A chunk at or below the
+   * highest {@code seq} already relayed is a <b>duplicate</b> — a daemon that re-dialled replays the
+   * chunks it could not confirm (qits-748) — and is dropped, so a reconnect never prints a line twice.
    */
   private void relay(Launch launch, StepChunk chunk) {
-    long expected = launch.lastSeq + 1;
-    if (chunk.seq() != expected && launch.lastSeq >= 0) {
-      LOG.warnf(
-          "ci-daemon %s chunk seq %d, expected %d — output may be missing",
-          launch.daemonId, chunk.seq(), expected);
+    synchronized (launch.seqLock) {
+      if (launch.lastSeq >= 0 && chunk.seq() <= launch.lastSeq) {
+        LOG.debugf(
+            "ci-daemon %s chunk seq %d already relayed (have up to %d) — dropped as a replay",
+            launch.daemonId, chunk.seq(), launch.lastSeq);
+        return;
+      }
+      long expected = launch.lastSeq + 1;
+      if (chunk.seq() != expected && launch.lastSeq >= 0) {
+        LOG.warnf(
+            "ci-daemon %s chunk seq %d, expected %d — output may be missing",
+            launch.daemonId, chunk.seq(), expected);
+      }
+      launch.lastSeq = chunk.seq();
     }
-    launch.lastSeq = Math.max(launch.lastSeq, chunk.seq());
     if (launch.listener == null) {
       return;
     }
@@ -585,18 +763,26 @@ public class CiDaemonRegistry {
    * a container running repo-controlled code. The same rule that forbids an untimed {@code get()}
    * here forbids that: a peer that stops draining its side must cost this send its deadline and no
    * more, never the run worker forever.
+   *
+   * <p>Answers whether the frame went out. With no live socket it is not sent here; the two frames
+   * a reconnect must still deliver — the {@link RunStep} and a {@link Cancel} — are recorded on the
+   * launch by their callers and sent again by {@link #resume}.
    */
-  private void send(Launch launch, CiDaemonMessage message) {
+  private boolean send(Launch launch, CiDaemonMessage message) {
     WebSocketConnection connection = launch.connection;
     if (connection == null || !connection.isOpen()) {
-      LOG.debugf("No live socket for ci-daemon %s — dropped %s", launch.daemonId, message.getClass());
-      return;
+      LOG.debugf(
+          "No live socket for ci-daemon %s — %s kept for its reconnect, if it is owed one",
+          launch.daemonId, message.getClass().getSimpleName());
+      return false;
     }
     try {
       connection.sendText(codec.encode(message)).await().atMost(SEND_TIMEOUT);
+      return true;
     } catch (RuntimeException e) {
       LOG.warnf("Could not send %s to ci-daemon %s: %s", message.getClass().getSimpleName(),
           launch.daemonId, e.getMessage());
+      return false;
     }
   }
 
@@ -624,7 +810,24 @@ public class CiDaemonRegistry {
     private volatile WebSocketConnection connection;
     private volatile Phase phase = Phase.LAUNCHED;
     private volatile String correlationId;
-    private volatile long lastSeq = -1;
+    /** Guards {@link #lastSeq}: a re-dial can briefly overlap the old socket's last frames. */
+    private final Object seqLock = new Object();
+    private long lastSeq = -1;
+
+    /** How many connections have been admitted for this launch; above one is a reconnect. */
+    private int admissions;
+
+    /** The step, once sent — what a daemon that comes back is sent again ({@link #resume}). */
+    private volatile RunStep runStep;
+
+    /** A {@link Cancel} that found no live socket, owed to the daemon when it comes back. */
+    private volatile boolean cancelPending;
+
+    /** The reconnect grace's end, while the launch has no connection; guarded by the launch. */
+    private ScheduledFuture<?> expiry;
+
+    /** Which scheduled expiry is the live one — a cancelled one that fires anyway is ignored. */
+    private Object expiryToken;
     /** -1 until a {@link Hello} arrives — see {@link #capabilityVersionOf(String)}. */
     private volatile int capabilityVersion = -1;
 

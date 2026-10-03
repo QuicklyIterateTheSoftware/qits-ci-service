@@ -34,7 +34,7 @@
          and the mandatory -Dqits.variant=oauth|forwardauth|local auth profiles. -->
     <groupId>eu.wohlben.qits</groupId>
     <artifactId>qits-ci</artifactId>
-    <version>2026.1003.44520</version>
+    <version>2026.1003.102443</version>
     <packaging>pom</packaging>
     <name>qits-ci</name>
 
@@ -75,7 +75,7 @@
              into a release request and gated by this repository's own CI like any other content.
              Do NOT hand-edit it to chase a release you just made: a hand-written pin asserts a
              pairing nobody gated, and the next bump overwrites it regardless. -->
-        <qits.ci-daemon-protocol.version>2026.1002.102242</qits.ci-daemon-protocol.version>
+        <qits.ci-daemon-protocol.version>2026.1003.84955</qits.ci-daemon-protocol.version>
         <!-- The runner control-socket wire contract (qits-ci-runner-daemon's ci-runner-protocol) and
              the runner binary's version with it (CiRunnerBinary) — this pin's twin for the other
              socket, and a released-calver pin in the same sense once qits-ci-runner-daemon has cut
@@ -83,8 +83,8 @@
              side of its socket landed in one epic, and the first release of the protocol jar
              replaces this line through the ordinary bump. Do not ship a release request of this
              repository with the snapshot still in it. -->
-        <qits.ci-runner-protocol.version>2026.1002.102406</qits.ci-runner-protocol.version>
-        <qits.eventstream.version>2026.1002.104319</qits.eventstream.version>
+        <qits.ci-runner-protocol.version>2026.1003.50846</qits.ci-runner-protocol.version>
+        <qits.eventstream.version>2026.1003.44717</qits.eventstream.version>
         <!-- qits-githost's event vocabulary: the SCM records a push announces. qits-ci consumes
              SCMPublishCommit and nothing else, but the jar is the whole vocabulary — it is a data
              module with one dependency (qits-eventstream) and no container.
@@ -134,7 +134,7 @@
              qits-platform-maintenance moves it like any internal pin, on a maintenance/* branch, and
              THIS repository's own release request is what gates the move. Do not hand-edit it to
              chase a release. -->
-        <qits.platform-access-cli-binary.version>2026.1002.181430</qits.platform-access-cli-binary.version>
+        <qits.platform-access-cli-binary.version>2026.1003.52914</qits.platform-access-cli-binary.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

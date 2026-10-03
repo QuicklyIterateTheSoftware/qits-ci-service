@@ -18,6 +18,7 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.LockModeType;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -531,8 +532,10 @@ public class CiRunners {
    *
    * @param runner the row as it now is, or null for a runner deleted meanwhile
    * @param quarantined whether THIS write took the runner out of service
+   * @param collapsed whether this was a connection loss inside the window of a counted one, and so
+   *     counted nothing (qits-748)
    */
-  public record StepRecorded(CiRunner runner, boolean quarantined) {}
+  public record StepRecorded(CiRunner runner, boolean quarantined, boolean collapsed) {}
 
   /**
    * Counts one runner-caused step failure toward a quarantine, under the row's lock so two runs of
@@ -541,16 +544,51 @@ public class CiRunners {
    * run whose recipe names an unpublished image (a LAUNCH_FAILED on every attempt, and the recipe's
    * fault) from taking a healthy machine out. A runner already quarantined keeps counting and is not
    * quarantined again.
+   *
+   * <p>This form counts every call: it is the per-step rule every infra outcome but a connection
+   * loss is judged by. See the other for {@code CONNECTION_LOST}.
    */
   public StepRecorded recordInfraFailure(
       UUID id, String runId, String outcome, int failures, int minRuns) {
+    return recordInfraFailure(id, runId, outcome, false, Duration.ZERO, failures, minRuns);
+  }
+
+  /**
+   * {@link #recordInfraFailure(UUID, String, String, int, int)}, with <b>one disconnect counted as
+   * one failure</b> (qits-748). When {@code connectionLost}, a failure recorded within {@code
+   * lossWindow} of the runner's previous <em>counted</em> connection loss ({@link
+   * CiRunner#connectionLossWindowStart}) is the same disconnect seen from another held run: it adds
+   * neither a failure nor its run to the streak, and is answered {@code collapsed}. A counted one
+   * opens the window; a collapsed one does not move it, so a storm counts once per window. An edge
+   * redeploy drops a runner holding six runs with six losses in the same 20 ms, which used to
+   * quarantine a healthy machine on its own. A zero window collapses nothing.
+   */
+  public StepRecorded recordInfraFailure(
+      UUID id,
+      String runId,
+      String outcome,
+      boolean connectionLost,
+      Duration lossWindow,
+      int failures,
+      int minRuns) {
     StepRecorded recorded =
         QuarkusTransaction.requiringNew()
             .call(
                 () -> {
                   CiRunner runner = runners.findById(id, LockModeType.PESSIMISTIC_WRITE);
                   if (runner == null) {
-                    return new StepRecorded(null, false);
+                    return new StepRecorded(null, false, false);
+                  }
+                  Instant now = Instant.now();
+                  if (connectionLost) {
+                    Instant windowStart = runner.connectionLossWindowStart;
+                    if (windowStart != null
+                        && lossWindow != null
+                        && lossWindow.isPositive()
+                        && !now.isAfter(windowStart.plus(lossWindow))) {
+                      return new StepRecorded(runner, false, true);
+                    }
+                    runner.connectionLossWindowStart = now;
                   }
                   runner.infraFailures++;
                   List<String> streak = InfraFailureRuns.decode(runner.infraFailureRuns);
@@ -559,9 +597,9 @@ public class CiRunners {
                   if (runner.quarantined()
                       || runner.infraFailures < Math.max(1, failures)
                       || distinct < Math.max(1, minRuns)) {
-                    return new StepRecorded(runner, false);
+                    return new StepRecorded(runner, false, false);
                   }
-                  runner.quarantinedAt = Instant.now();
+                  runner.quarantinedAt = now;
                   runner.quarantineReason =
                       runner.infraFailures
                           + " consecutive runner failures ("
@@ -569,7 +607,7 @@ public class CiRunners {
                           + " on run "
                           + runId
                           + ")";
-                  return new StepRecorded(runner, true);
+                  return new StepRecorded(runner, true, false);
                 });
     if (recorded.quarantined()) {
       announceQuarantined(recorded.runner());
@@ -586,9 +624,13 @@ public class CiRunners {
         .run(
             () -> {
               CiRunner runner = runners.findById(id, LockModeType.PESSIMISTIC_WRITE);
-              if (runner != null && (runner.infraFailures != 0 || runner.infraFailureRuns != null)) {
+              if (runner != null
+                  && (runner.infraFailures != 0
+                      || runner.infraFailureRuns != null
+                      || runner.connectionLossWindowStart != null)) {
                 runner.infraFailures = 0;
                 runner.infraFailureRuns = null;
+                runner.connectionLossWindowStart = null;
               }
             });
   }
@@ -644,6 +686,7 @@ public class CiRunners {
                   runner.quarantineReason = null;
                   runner.infraFailures = 0;
                   runner.infraFailureRuns = null;
+                  runner.connectionLossWindowStart = null;
                   return new Lifted(runner, lifted, Instant.now());
                 });
     CiRunner runner = done.runner();

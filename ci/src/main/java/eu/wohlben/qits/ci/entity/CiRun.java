@@ -122,8 +122,12 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
    * was written before this column existed, with no warning and no error — that arm is the live
    * traffic, not the exception.
    *
-   * <p>Part of no constraint and read by nothing in the queue: no ordering rule, no priority, no
-   * dedupe key and no supersede rule touches it. What reads it is the announcement (it rides {@code
+   * <p>Part of no constraint and read by nothing in the queue's ordering: no ordering rule, no
+   * priority and no dedupe key touches it. One supersede rule does — a {@link
+   * CiRunPhase#RELEASE_REQUEST} run accepted for a repository supersedes the other requests'
+   * unfinished runs of that phase there ({@code CiRunService.supersedeOtherRequests}), and keying
+   * that on this column rather than on a {@code release/} branch is the point. What else reads it
+   * is the announcement (it rides {@code
    * BuildSuccessful}/{@code BuildFailed}/{@code BuildStatusChanged} as a plain string) and {@code
    * POST /ci/api/runs/rerun}, which addresses a run by {@code (repoId, releaseRequestId, phase)}
    * because that triple is the only identity qits-projects holds.
@@ -250,8 +254,11 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   public String cancellationReason;
 
   /**
-   * The newer run that superseded this queued run, or null for every non-deduplication outcome.
-   * A plain id rather than a JPA relation: runs are the aggregate and clients use this as a link.
+   * The newer run that superseded this one, or null for every outcome that is not a supersede. Set
+   * on a queued run a collapse settled ({@code DEDUPED}) and on a queued <em>or running</em>
+   * release-request build another request's newer build took the place of ({@code
+   * SUPERSEDED_BY_RELEASE_REQUEST}). A plain id rather than a JPA relation: runs are the aggregate
+   * and clients use this as a link.
    */
   @Column(name = "superseded_by_run_id", length = 255)
   public String supersededByRunId;

@@ -132,6 +132,16 @@ public class CiRunner extends PanacheEntityBase implements CausedRow {
   @Column(name = "infra_failure_runs", columnDefinition = "text")
   public String infraFailureRuns;
 
+  /**
+   * When the runner's last <em>counted</em> {@code CONNECTION_LOST} was recorded — the start of the
+   * window ({@code qits.ci.runner.quarantine.loss-window}) inside which further connection losses
+   * are the same disconnect and are not counted again (qits-748). Null while the streak holds no
+   * counted loss; cleared wherever the streak resets. See {@code
+   * V32__runner_connection_loss_window.sql}.
+   */
+  @Column(name = "connection_loss_window_start")
+  public Instant connectionLossWindowStart;
+
   /** When this runner's newest health check settled; null until one has. */
   @Column(name = "last_healthcheck_at")
   public Instant lastHealthcheckAt;

@@ -23,7 +23,8 @@ package eu.wohlben.qits.ci.entity;
  * about the run.</b> That is the line the vocabulary draws, and it is why a run superseded by a
  * newer one settles {@code CANCELLED} rather than {@code FAILED}: nobody is waiting for its answer
  * any more, and it never produced one. Which cancellation it was is {@code ci_run.cancellation_reason}
- * — {@code USER_CANCELLED}, {@code RELEASE_REQUEST_CANCELLED} or {@code DEDUPED} — so the status
+ * — {@code USER_CANCELLED}, {@code RELEASE_REQUEST_CANCELLED}, {@code DEDUPED} or {@code
+ * SUPERSEDED_BY_RELEASE_REQUEST}, among others — so the status
  * says "no verdict" and the reason says why, instead of a red row saying something untrue about a
  * commit that was never built.
  */

@@ -33,7 +33,12 @@ import org.jboss.logging.Logger;
  * could not map an id a layer owns — {@link #INFRA_SIGNATURES}) takes
  * it out once the streak is {@code qits.ci.runner.quarantine.failures} long and spans {@code
  * qits.ci.runner.quarantine.min-runs} distinct runs. A step that started resets the streak, whatever
- * the build then did. A quarantined runner's <em>effective</em> slots are 0 — {@link
+ * the build then did. <b>One disconnect is one failure</b> (qits-748): a runner's socket and its
+ * steps' daemon sockets all cross the platform edge, so one edge redeploy ends every run the runner
+ * holds {@code CONNECTION_LOST} at once — so a connection loss within {@code
+ * qits.ci.runner.quarantine.loss-window} of the runner's previous counted one counts nothing ({@link
+ * CiRunners#recordInfraFailure(UUID, String, String, boolean, Duration, int, int)}), while every
+ * other infra outcome still counts per step. A quarantined runner's <em>effective</em> slots are 0 — {@link
  * #effectiveSlots} is what its {@code Ack} carries, every ordinary {@code Reserve} is answered {@code
  * Nothing} ({@code CiRunService.reserveFor}) and the queue's forecast counts none of it — while its
  * row's {@code slots} stays its operator's number, which is what it gets back. A runner that has just
@@ -48,9 +53,24 @@ import org.jboss.logging.Logger;
  * PASSED} and reinstates a quarantined runner; red records {@code FAILED} with the step's outcome and
  * the head of its output, and quarantines the runner ({@code health check failed: <outcome>}) or
  * keeps it so. One is queued when a runner registers, when an operator asks ({@link
- * #requestHealthCheck}), and by {@link #sweep} every {@code qits.ci.runner.healthcheck.interval} for
- * each quarantined, connected runner with none pending; one its runner has not taken within {@code
- * qits.ci.runner.healthcheck.queue-timeout} is settled {@code FAILED}. A health check's own steps
+ * #requestHealthCheck}), and by {@link #sweep} for each quarantined, connected runner with none
+ * pending once it is <b>due</b>; one its runner has not taken within {@code
+ * qits.ci.runner.healthcheck.queue-timeout} is settled {@code FAILED}.
+ *
+ * <p><b>The schedule backs off, and it is counted from the quarantine</b> (qits-748, the owner's
+ * request). {@code qits.ci.runner.healthcheck.schedule} is a list of offsets from {@link
+ * CiRunner#quarantinedAt} — shipped {@code PT1M,PT15M,PT30M,PT60M,PT90M,PT120M,PT180M}, starting at
+ * {@code +1m} because most quarantines are a momentary blip and that reinstates the runner almost
+ * every time — and after its last, one more every {@link #AFTER_SCHEDULE} ({@code +240m}, {@code
+ * +300m}, …). Those are the runner's <em>slots</em>; a check is due at the first slot after the
+ * newest check of the runner accepted since its quarantine — whoever queued it and whatever became
+ * of it — or at the first slot when there is none ({@link #nextSlot}). So a runner checked on time
+ * is checked exactly at every slot, and one that was not connected at its slot gets one check on the
+ * first sweep after it comes back and then waits for the next slot after that — never a backlog of
+ * the slots it missed.
+ * A red check of a runner already quarantined leaves {@code quarantinedAt} as it was, so the
+ * schedule carries on; a passing check reinstates, and the next quarantine is a new {@code
+ * quarantinedAt}, so it starts again at {@code +1m}. A health check's own steps
  * never count toward the streak — a quarantine is about builds the runner failed, and a check is
  * about the runner already.
  *
@@ -102,6 +122,12 @@ public class CiRunnerHealth {
    */
   static final int SIGNATURE_TAIL_LINES = 40;
 
+  /**
+   * The gap between checks once {@code qits.ci.runner.healthcheck.schedule}'s offsets are spent: one
+   * every hour, from its last, for as long as the runner stays out.
+   */
+  static final Duration AFTER_SCHEDULE = Duration.ofHours(1);
+
   /** {@code RunnerReinstated.by} when a person pressed greenlight. */
   public static final String BY_ADMIN = "admin";
 
@@ -147,8 +173,16 @@ public class CiRunnerHealth {
   @ConfigProperty(name = "qits.ci.runner.healthcheck.queue-timeout")
   Duration queueTimeout;
 
-  @ConfigProperty(name = "qits.ci.runner.healthcheck.interval")
-  Duration interval;
+  /**
+   * One disconnect, one failure: how long after a counted {@code CONNECTION_LOST} further ones on the
+   * same runner are the same disconnect (qits-748).
+   */
+  @ConfigProperty(name = "qits.ci.runner.quarantine.loss-window")
+  Duration lossWindow;
+
+  /** The health-check schedule's offsets from a runner's quarantine — see the class javadoc. */
+  @ConfigProperty(name = "qits.ci.runner.healthcheck.schedule")
+  List<Duration> schedule;
 
   // --- what a runner's steps say about it ---------------------------------------------------------
 
@@ -172,9 +206,21 @@ public class CiRunnerHealth {
       }
       CiRunners.StepRecorded recorded =
           runners.recordInfraFailure(
-              run.runnerId, run.id, infraWord(result), quarantineFailures, quarantineMinRuns);
+              run.runnerId,
+              run.id,
+              infraWord(result),
+              result.outcome() == StepOutcome.CONNECTION_LOST,
+              lossWindow,
+              quarantineFailures,
+              quarantineMinRuns);
       CiRunner runner = recorded.runner();
-      if (recorded.quarantined()) {
+      if (recorded.collapsed() && runner != null) {
+        LOG.infof(
+            "Runner %s: step of run %s ended %s — the same disconnect as the one counted at %s,"
+                + " not counted again; %d runner failure(s) in a row",
+            runner.name, run.id, infraWord(result), runner.connectionLossWindowStart,
+            runner.infraFailures);
+      } else if (recorded.quarantined()) {
         LOG.warnf(
             "Runner %s (%s) is quarantined: %s — it takes no work until a health check passes or an"
                 + " operator greenlights it",
@@ -282,7 +328,7 @@ public class CiRunnerHealth {
    * The register door's follow-up: a newly registered runner is quarantined awaiting its first
    * health check, and this queues it. Best effort — the door has already answered the runner its
    * client, and a check that could not be queued now is queued by {@link #sweep} once the runner is
-   * connected and the interval has passed.
+   * connected and its first slot has come.
    */
   public void onRegistered(UUID runnerId) {
     try {
@@ -426,8 +472,7 @@ public class CiRunnerHealth {
    * way, so this is what a test drives. First, every health check still QUEUED after {@code
    * qits.ci.runner.healthcheck.queue-timeout} is settled {@code FAILED} ({@value #NOT_CONNECTED},
    * or that it was not taken in time if the runner is connected). Then every quarantined, connected
-   * runner with no check pending whose quarantine — or newest check, whichever is later — is at
-   * least {@code qits.ci.runner.healthcheck.interval} old gets one.
+   * runner with no check pending that is {@link #due} gets one.
    */
   void sweep(Instant now) {
     try {
@@ -445,7 +490,7 @@ public class CiRunnerHealth {
       return;
     }
     for (CiRunner runner : quarantined) {
-      if (!due(runner, now) || !presence.connected(runner.id)) {
+      if (!presence.connected(runner.id) || !due(runner, now)) {
         continue;
       }
       try {
@@ -460,13 +505,44 @@ public class CiRunnerHealth {
     }
   }
 
-  /** Whether a quarantined runner's last word — its quarantine or its newest check — is stale. */
+  /** Whether a quarantined runner's next check has come — see {@link #nextSlot}. */
   private boolean due(CiRunner runner, Instant now) {
     Instant since = runner.quarantinedAt;
-    if (runner.lastHealthcheckAt != null && (since == null || runner.lastHealthcheckAt.isAfter(since))) {
-      since = runner.lastHealthcheckAt;
+    if (since == null) {
+      return false;
     }
-    return since == null || !since.plus(interval).isAfter(now);
+    Instant newest =
+        QuarkusTransaction.requiringNew()
+            .call(() -> runs.newestHealthCheckSince(runner.id, since).orElse(null));
+    return !nextSlot(since, newest).isAfter(now);
+  }
+
+  /**
+   * When a runner quarantined at {@code since} is next due a check: its first slot ({@code since}
+   * plus an {@link #offset}) after {@code newest}, the newest check accepted since the quarantine —
+   * or its first slot of all when there is none.
+   */
+  Instant nextSlot(Instant since, Instant newest) {
+    long k = 0;
+    if (newest != null) {
+      while (!since.plus(offset(k)).isAfter(newest)) {
+        k++;
+      }
+    }
+    return since.plus(offset(k));
+  }
+
+  /**
+   * The k-th slot's offset from the quarantine: the schedule's k-th entry, and after its last one
+   * more {@link #AFTER_SCHEDULE} per slot. An empty schedule is a slot every {@link #AFTER_SCHEDULE}.
+   */
+  Duration offset(long k) {
+    List<Duration> offsets = schedule == null ? List.of() : schedule;
+    if (k < offsets.size()) {
+      return offsets.get((int) k);
+    }
+    Duration last = offsets.isEmpty() ? Duration.ZERO : offsets.get(offsets.size() - 1);
+    return last.plus(AFTER_SCHEDULE.multipliedBy(k - offsets.size() + 1));
   }
 
   private void expireQueued(Instant now) {
