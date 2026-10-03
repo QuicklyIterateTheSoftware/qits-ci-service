@@ -181,6 +181,47 @@ public class CiDaemonRegistryReconnectTest {
     registry.reap(daemonId);
   }
 
+  /**
+   * The daemon's half of the contract (qits-748 part A): on a new socket it says only {@code Hello}
+   * until it is answered an {@code Ack}, then re-sends an {@code Initialized} it had sent but got no
+   * step for. So every re-Hello is answered, and a duplicate {@code Initialized} never moves the
+   * phase back nor disturbs the settled future.
+   */
+  @Test
+  public void everyReHelloIsAckedAndADuplicateInitializedChangesNothing() {
+    CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
+    String daemonId = registry.registerLaunch("run-dup-init", 0, SUBJECT, null);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    assertEquals(CiDaemonRegistry.Phase.INITIALIZED, registry.phaseOf(daemonId));
+    first.drop(registry, daemonId);
+
+    // Back before the worker sent the step: Ack, nothing else owed, and the replayed Initialized
+    // leaves the launch exactly where it was.
+    FakeConnection second = admit(registry, daemonId, "c2");
+    assertEquals(1, second.sent().size(), "the Ack and nothing else: " + second.sent());
+    assertInstanceOf(Ack.class, second.sent().get(0));
+    registry.onMessage(daemonId, second.connection, new Initialized());
+    assertEquals(CiDaemonRegistry.Phase.INITIALIZED, registry.phaseOf(daemonId));
+    assertEquals(
+        CiDaemonRegistry.Initialization.Status.INITIALIZED,
+        registry.awaitInitialized(daemonId, SOON).status());
+
+    // A second drop and re-Hello is answered too.
+    String correlationId = registry.sendRunStep(daemonId, "make", 600);
+    second.drop(registry, daemonId);
+    FakeConnection third = admit(registry, daemonId, "c3");
+    assertInstanceOf(Ack.class, third.sent().get(0));
+    registry.onMessage(daemonId, third.connection, new Initialized());
+    assertEquals(CiDaemonRegistry.Phase.RUNNING, registry.phaseOf(daemonId));
+
+    // After the terminal frame a late duplicate is ignored as well.
+    registry.onMessage(daemonId, third.connection, new StepFinished(correlationId, 0, false));
+    registry.onMessage(daemonId, third.connection, new Initialized());
+    assertEquals(CiDaemonRegistry.Phase.DONE, registry.phaseOf(daemonId));
+    registry.reap(daemonId);
+  }
+
   @Test
   public void aFirstHelloIsOwedNothingButItsAck() {
     CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
