@@ -186,6 +186,88 @@ public class CiRunnerHealthTest extends CiTestSupport {
         row(runner.id).quarantineReason);
   }
 
+  /**
+   * qits-748: one edge redeploy ends every run a runner holds CONNECTION_LOST in the same instant.
+   * That is one disconnect, and it is one failure — six held runs used to be six, and quarantined a
+   * healthy 6-slot runner from a single blip.
+   */
+  @Test
+  public void sixConnectionLossesOnSixRunsInsideTheWindowAreOneFailure() throws Exception {
+    CiRunner runner = runner("six-slots", 6);
+    fakeRunner.answer(spec -> failed(StepOutcome.CONNECTION_LOST, "[the connection was lost]"));
+
+    String first = reserveAndRun(runner, "blip-0");
+    for (int i = 1; i < 6; i++) {
+      reserveAndRun(runner, "blip-" + i);
+    }
+
+    CiRunner counted = row(runner.id);
+    assertEquals(1, counted.infraFailures, "one disconnect, one failure");
+    assertEquals(List.of(first), InfraFailureRuns.decode(counted.infraFailureRuns));
+    assertFalse(counted.quarantined());
+    assertNotNull(counted.connectionLossWindowStart);
+    assertEquals(List.of(), events.of(runner.id.toString()), "nothing quarantined, nothing said");
+
+    // Any other runner-caused outcome still counts per step inside the window.
+    fakeRunner.answer(spec -> failed(StepOutcome.NEVER_STARTED, "never dialled back"));
+    reserveAndRun(runner, "blip-never");
+    assertEquals(2, row(runner.id).infraFailures);
+
+    // And a step that started resets the window with the streak.
+    fakeRunner.answer(spec -> new StepResult(0, false, StepOutcome.OK, "ok\n"));
+    reserveAndRun(runner, "blip-ok");
+    assertNull(row(runner.id).connectionLossWindowStart);
+  }
+
+  @Test
+  public void threeConnectionLossesSpacedBeyondTheWindowQuarantineAsBefore() throws Exception {
+    CiRunner runner = runner("flapping", 1);
+    fakeRunner.answer(spec -> failed(StepOutcome.CONNECTION_LOST, "[the connection was lost]"));
+
+    String third = null;
+    for (int i = 0; i < 3; i++) {
+      third = reserveAndRun(runner, "flap-" + i);
+      // The counted loss is three minutes old by the next one: outside the shipped two-minute window.
+      QuarkusTransaction.requiringNew()
+          .run(
+              () -> {
+                CiRunner row = runnerRows.findById(runner.id);
+                if (row.connectionLossWindowStart != null) {
+                  row.connectionLossWindowStart =
+                      row.connectionLossWindowStart.minus(Duration.ofMinutes(3));
+                }
+              });
+    }
+
+    CiRunner quarantined = row(runner.id);
+    assertEquals(3, quarantined.infraFailures);
+    assertTrue(quarantined.quarantined());
+    assertEquals(
+        "3 consecutive runner failures (CONNECTION_LOST on run " + third + ")",
+        quarantined.quarantineReason);
+  }
+
+  @Test
+  public void aGreenlightClearsTheConnectionLossWindowWithTheStreak() {
+    CiRunner runner = runner("window-reset", 1);
+    runners.recordInfraFailure(runner.id, "r1", "CONNECTION_LOST", true, Duration.ofMinutes(2), 3, 2);
+    assertNotNull(row(runner.id).connectionLossWindowStart);
+    // Inside the window: collapsed.
+    assertTrue(
+        runners
+            .recordInfraFailure(runner.id, "r2", "CONNECTION_LOST", true, Duration.ofMinutes(2), 3, 2)
+            .collapsed());
+
+    health.greenlight(runner.id);
+
+    assertNull(row(runner.id).connectionLossWindowStart);
+    assertFalse(
+        runners
+            .recordInfraFailure(runner.id, "r3", "CONNECTION_LOST", true, Duration.ofMinutes(2), 3, 2)
+            .collapsed(),
+        "a new streak counts its first loss");
+  }
+
   @Test
   public void threeFailuresOverTwoRunsQuarantineAndAQuarantinedRunnerTakesNoWork()
       throws Exception {
@@ -419,17 +501,89 @@ public class CiRunnerHealthTest extends CiTestSupport {
     // Queued a minute before the sweep, so the sweep's own queue-timeout does not settle it first.
     QuarkusTransaction.requiringNew()
         .run(() -> runs.findById(alreadyQueued.id).createdAt = sweptAt.minus(Duration.ofMinutes(1)));
-    // "recent" had a check an hour before the sweep, less a minute: not due yet.
+    // "recent" was checked after its +60m slot (a settled check, so none is pending): its next slot
+    // is +90m, which the sweep at +61m has not reached.
+    CiRun recentCheck = health.requestHealthCheck(recent.id);
     QuarkusTransaction.requiringNew()
-        .run(() -> runnerRows.findById(recent.id).lastHealthcheckAt = now.plus(Duration.ofMinutes(2)));
+        .run(
+            () -> {
+              CiRun check = runs.findById(recentCheck.id);
+              check.status = CiRunStatus.FAILED;
+              check.createdAt = now.plus(Duration.ofMinutes(60)).plusSeconds(30);
+            });
 
     health.sweep(sweptAt);
 
     assertEquals(CiRunPurpose.HEALTHCHECK, pendingCheck(due.id).purpose);
     assertNull(pendingOrNull(disconnected.id), "not connected: nothing could take it");
     assertNull(pendingOrNull(inService.id), "in service: nothing to prove");
-    assertNull(pendingOrNull(recent.id), "checked within the interval");
+    assertNull(pendingOrNull(recent.id), "checked since its last slot");
     assertEquals(alreadyQueued.id, pendingCheck(pending.id).id, "one pending check is enough");
+  }
+
+  /**
+   * qits-748, the owner's request: the checks of a quarantined runner back off from its quarantine —
+   * +15, +30, then +60, +90, +120, then +180 and hourly after the schedule — exactly at each slot
+   * and not a minute before, and a new quarantine starts the schedule over.
+   */
+  @Test
+  public void theSweepQueuesChecksExactlyAtTheBackingOffSlotsAndRestartsOnANewQuarantine() {
+    CiRunner runner = runner("backing-off", 1);
+    presence.connect(runner.id);
+    runners.quarantine(runner.id, "for the test");
+    // Read back rather than taken off the returned entity: the column keeps microseconds.
+    Instant quarantinedAt = row(runner.id).quarantinedAt;
+
+    for (long minutes : List.of(15L, 30L, 60L, 90L, 120L, 180L, 240L, 300L)) {
+      Instant slot = quarantinedAt.plus(Duration.ofMinutes(minutes));
+      health.sweep(slot.minusSeconds(60));
+      assertNull(pendingOrNull(runner.id), "not before the +" + minutes + "m slot");
+      health.sweep(slot);
+      settleAt(pendingCheck(runner.id), slot);
+    }
+
+    // The checks above were dated at simulated slots in the future; the next quarantine is real
+    // time, so put them back in the quarantine they belonged to before starting a new one.
+    QuarkusTransaction.requiringNew()
+        .run(
+            () ->
+                runs.update(
+                    "createdAt = ?1 where targetRunnerId = ?2", quarantinedAt, runner.id));
+    // A passing check (here an operator) reinstates; the next quarantine is a new schedule.
+    health.greenlight(runner.id);
+    runners.quarantine(runner.id, "again");
+    Instant again = row(runner.id).quarantinedAt;
+    assertTrue(again.isAfter(quarantinedAt));
+    health.sweep(again.plus(Duration.ofMinutes(14)));
+    assertNull(pendingOrNull(runner.id), "the schedule starts over at +15m, not where it stopped");
+    health.sweep(again.plus(Duration.ofMinutes(15)));
+    settleAt(pendingCheck(runner.id), again.plus(Duration.ofMinutes(15)));
+    health.sweep(again.plus(Duration.ofMinutes(29)));
+    assertNull(pendingOrNull(runner.id));
+    health.sweep(again.plus(Duration.ofMinutes(30)));
+    assertNotNull(pendingOrNull(runner.id));
+  }
+
+  @Test
+  public void aRunnerAwayAtItsSlotsGetsOneCheckWhenItComesBackAndNotABacklog() {
+    CiRunner runner = runner("came-back", 1);
+    runners.quarantine(runner.id, "for the test");
+    Instant quarantinedAt = row(runner.id).quarantinedAt;
+
+    Instant back = quarantinedAt.plus(Duration.ofMinutes(100));
+    health.sweep(back);
+    assertNull(pendingOrNull(runner.id), "not connected: nothing could take it");
+
+    presence.connect(runner.id);
+    health.sweep(back);
+    settleAt(pendingCheck(runner.id), back);
+
+    // The slots it missed (+15, +30, +60, +90) are not owed: the next is the first after +100m.
+    health.sweep(back.plus(Duration.ofMinutes(1)));
+    health.sweep(back.plus(Duration.ofMinutes(19)));
+    assertNull(pendingOrNull(runner.id), "no backlog of missed slots");
+    health.sweep(quarantinedAt.plus(Duration.ofMinutes(120)));
+    assertNotNull(pendingOrNull(runner.id), "the +120m slot");
   }
 
   @Test
@@ -453,6 +607,21 @@ public class CiRunnerHealthTest extends CiTestSupport {
   }
 
   // --- staging ------------------------------------------------------------------------------------
+
+  /**
+   * A red check, settled as if the sweep that queued it ran at {@code at}: accepted then, so the
+   * schedule counts its next slot from there, and no longer pending. The runner stays quarantined.
+   */
+  private void settleAt(CiRun check, Instant at) {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              CiRun row = runs.findById(check.id);
+              row.status = CiRunStatus.FAILED;
+              row.createdAt = at;
+              row.finishedAt = at;
+            });
+  }
 
   private static StepResult failed(StepOutcome outcome, String output) {
     return new StepResult(-1, false, outcome, output);

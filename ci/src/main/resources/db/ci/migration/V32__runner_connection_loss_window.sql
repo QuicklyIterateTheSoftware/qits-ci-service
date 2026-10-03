@@ -1,0 +1,19 @@
+-- One disconnect is one runner failure (qits-748). An edge redeploy drops a runner's socket and every
+-- step daemon's socket at the same instant, so a runner holding N runs used to record N CONNECTION_LOST
+-- failures from one blip — and a 6-slot runner crossed the quarantine threshold (3 failures over at
+-- least 2 runs) from that alone. CiRunners.recordInfraFailure now counts a CONNECTION_LOST failure only
+-- when it falls outside qits.ci.runner.quarantine.loss-window of the runner's previous COUNTED one;
+-- the losses inside the window are the same disconnect and add neither a failure nor a run to the
+-- streak. Every other infra outcome still counts per step.
+--
+--   connection_loss_window_start   when the runner's last counted CONNECTION_LOST was recorded, i.e.
+--                                  the start of the window that collapses the ones after it. A
+--                                  collapsed loss does not move it, so a storm counts once per
+--                                  window rather than never. Cleared wherever the streak resets: a
+--                                  step that started (recordStarted) and a reinstatement.
+--
+-- V24's shape: nullable, no default, no backfill, part of no constraint and carrying no index. Null
+-- is every runner whose streak holds no counted connection loss, which is every row before this one.
+--
+-- MigrationChecksumTest pins the SHA-256 of this file. Nothing earlier in the lineage is touched.
+alter table ci_runner add column connection_loss_window_start timestamp(6) with time zone;

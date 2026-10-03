@@ -198,6 +198,25 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
         .firstResultOptional();
   }
 
+  /**
+   * When the newest health check of the runner accepted after {@code since} was accepted — whatever
+   * became of it — or empty when there is none. What the health-check schedule counts from: the
+   * next check of a quarantined runner is due at the first of its slots after this ({@code
+   * CiRunnerHealth}).
+   */
+  public Optional<Instant> newestHealthCheckSince(UUID runnerId, Instant since) {
+    return Optional.ofNullable(
+        getEntityManager()
+            .createQuery(
+                "select max(r.createdAt) from CiRun r where r.targetRunnerId = ?1"
+                    + " and r.purpose = ?2 and r.createdAt > ?3",
+                Instant.class)
+            .setParameter(1, runnerId)
+            .setParameter(2, CiRunPurpose.HEALTHCHECK)
+            .setParameter(3, since)
+            .getSingleResult());
+  }
+
   /** Every health check still {@code QUEUED} that was accepted before {@code cutoff}. */
   public List<CiRun> listHealthChecksQueuedBefore(Instant cutoff) {
     return list(
