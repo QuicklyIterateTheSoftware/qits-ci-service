@@ -1340,6 +1340,8 @@ an ordinary `ci-event-*.yml`, which is the generic grammar and not a special cas
 - **A burst of re-folds collapses to the newest** with nothing added: the backing branch is stable
   per request, so the existing per-branch collapse (`checkout:`'s) supersedes the queued older folds
   as `DEDUPED`. A fold already `RUNNING` keeps running.
+- **Across requests, the newest gating build of a repository wins**: another request's queued or
+  running QA run of the same repository is cancelled as `SUPERSEDED_BY_RELEASE_REQUEST` (qits-552).
 - **The verdict returns keyed on the fold**: `BuildSuccessful`/`BuildFailed` with `commitSha` =
   the `mergedSha` this run received, which is what qits-projects matches on together with `repoId`.
 - **This one phase replaces `ci-event-build.yml` and `ci-event-userflows.yml`.** The two existed
@@ -2219,6 +2221,14 @@ A queued run is also cancelled automatically when a newer one supersedes it — 
 release request, or a newer tag of the same push: it records `DEDUPED` and the newer run's id, which
 the run detail links to. Runs of triggers *without* `checkout:` are excluded, because distinct events
 sharing `main` by convention are independent pipelines rather than duplicates.
+
+**One repository builds one release request at a time** (qits-552). When a release request's QA run
+(phase `RELEASE_REQUEST`) is accepted for a repository — by its event or by a retry — every other
+request's unfinished QA run of that repository is superseded: a queued one is settled `CANCELLED` at
+once, a running one is stopped on its runner, and both record `SUPERSEDED_BY_RELEASE_REQUEST` and the
+newer run's id. The newest wins. Publish runs (`RELEASE`), runs that are no part of a release, other
+repositories and the same request's own runs are untouched, and a superseded run publishes no
+`BuildSuccessful`/`BuildFailed`.
 
 **Two more reasons exist and no live path produces the rows they settle.** A `QUEUED` row no engine
 can execute — a `POST_RECEIVE` leftover from a deployment that predates the 2026-09-05 retirement, or

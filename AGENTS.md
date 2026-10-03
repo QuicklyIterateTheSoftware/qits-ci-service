@@ -529,7 +529,7 @@ reservation's own transaction, rather than left queued — a row nothing will ev
 run sits in `GET /ci/api/runs/active` forever, which is exactly the phantom the retirement is about.
 One INFO line says which and why, and the row says it too: `cancellation_reason` is
 `TRIGGER_RETIRED` (`TRIGGER_UNREADABLE` for the unreadable snapshot), its own value beside
-`USER_CANCELLED`/`DEDUPED`/`RELEASE_REQUEST_CANCELLED`/`TRIGGER_UNREADABLE`,
+`USER_CANCELLED`/`DEDUPED`/`RELEASE_REQUEST_CANCELLED`/`SUPERSEDED_BY_RELEASE_REQUEST`/`TRIGGER_UNREADABLE`,
 because nobody cancelled it — the engine that would have run it is gone, and somebody reading the row
 a year from now should find that out from the row rather than from a changelog.
 
@@ -1773,6 +1773,17 @@ names"), and what follows is what biting it feels like.
 
   **The re-fold burst needs nothing new.** The backing branch is stable per request, so
   `supersedeByCheckoutBranch` already collapses the queued older folds to the newest tip.
+
+  **Across requests there is a fourth supersede, and it is the one that reaches RUNNING builds**
+  (qits-552). `supersedeOtherRequests` runs in both accept paths — `insertEventRun` and
+  `insertRetry` — for a `RELEASE_REQUEST`-phase run, and supersedes every other request's unfinished
+  run of that phase in the same repository: queued ones in the accepting transaction (`supersede`,
+  `dedupe`'s columns with reason `SUPERSEDED_BY_RELEASE_REQUEST`), running ones after the commit
+  through `cancel(runId, reason, supersededBy)` (`Accepted.stillRunning`, `cancelSupersededRunning`;
+  a 409 from a run that finished in between is skipped). Keyed on `phase`, never on a `release/`
+  branch; `RELEASE`, null-phase, other repositories and the same request's runs are never touched.
+  It reaches running builds where the collapses do not because two requests' folds are different
+  questions competing for one runner, not one question asked twice. `CiReleaseBuildSupersedeTest`.
 
 - **Cancelling and retrying a release request's CI are the two operations that column bought, and
   neither of them touched the dedupe.** `POST /ci/api/runs/cancellations` takes

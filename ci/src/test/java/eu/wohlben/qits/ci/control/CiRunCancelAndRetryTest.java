@@ -101,7 +101,10 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     String sibling = "consumer-" + UUID.randomUUID();
 
     String withdrawn = accept(repo, "rr-a");
-    String otherRequest = accept(repo, "rr-b");
+    // The sibling request's PUBLISH run rather than its QA run: a second request's gating build of
+    // the same repository would supersede the first's (qits-552, CiReleaseBuildSupersedeTest), and
+    // this case is about the door, not about that rule.
+    String otherRequest = service.onEventTrigger(publishRun(repo, "rr-b"));
     String otherRepo = accept(sibling, "rr-a");
 
     List<String> stopped = service.cancelReleaseRequestRuns(repo, "rr-a");
@@ -404,6 +407,36 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
 
   private String accept(String repoId, String requestId, String eventId) {
     return service.onEventTrigger(eventRun(repoId, requestId, eventId));
+  }
+
+  /** One matched {@code SCMRelease} naming {@code requestId}: that request's publish phase. */
+  private CiRunService.EventRun publishRun(String repoId, String requestId) {
+    String released = "c".repeat(40);
+    String trigger =
+        """
+        event: SCMRelease
+        checkout:
+          branch: version
+          sha: commitSha
+        steps:
+          - image: alpine:3
+            script: ./publish.sh
+        """;
+    return new CiRunService.EventRun(
+        CiRepoRef.of(repoId, "qits", "qits-ci-service"),
+        "2026.903.90706",
+        released,
+        triggerParser.parse(".config/qits/ci-event-release.yml", trigger),
+        UUID.randomUUID().toString(),
+        ReleaseJoin.RELEASE_EVENT_NAME,
+        Instant.parse("2026-09-03T10:07:06Z"),
+        "{\"repository\":\"qits-ci-service\",\"version\":\"2026.903.90706\",\"commitSha\":\""
+            + released
+            + "\",\"releaseRequestId\":\""
+            + requestId
+            + "\"}",
+        trigger,
+        null);
   }
 
   /**

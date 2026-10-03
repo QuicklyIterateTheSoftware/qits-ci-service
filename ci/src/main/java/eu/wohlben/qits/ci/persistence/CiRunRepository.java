@@ -355,6 +355,27 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   }
 
   /**
+   * Every unfinished release-request gating build one repository has for some request OTHER than
+   * {@code releaseRequestId} — what a newer gating build of that repository supersedes (qits-552),
+   * oldest first.
+   *
+   * <p>{@link CiRunPhase#RELEASE_REQUEST} only, so a publish run and a run that is no part of a
+   * release never appear, and the request id must be set and differ — the same request's own runs
+   * are the per-branch collapse's and the cancellation door's, never this one's.
+   */
+  public List<CiRun> listUnfinishedReleaseBuildsOfOtherRequests(
+      String repoId, String releaseRequestId) {
+    return list(
+        "repoId = ?1 and phase = ?2 and releaseRequestId is not null and releaseRequestId <> ?3"
+            + " and status in (?4, ?5) order by createdAt, id",
+        repoId,
+        CiRunPhase.RELEASE_REQUEST,
+        releaseRequestId,
+        CiRunStatus.QUEUED,
+        CiRunStatus.RUNNING);
+  }
+
+  /**
    * Every repository this instance has ever recorded a run for — half of what {@code KnownCiRepos}
    * offers the trigger engine as candidates, and the whole of what {@code GET /ci/api/repositories}
    * answers.
