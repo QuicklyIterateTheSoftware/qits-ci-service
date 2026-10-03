@@ -2122,7 +2122,8 @@ phase.
   broke all of them, with nothing changed in any consumer's tree and no line anybody could revert.
   Four things follow. The pin has to **resolve** for this reactor to build, so a version that does
   not exist is a red build rather than a broken release later. `QitsCliPinIT` proves the coordinate
-  is really in the store and that the binary at it publishes an SBOM through the composed text.
+  is really in the store, that the binary at it carries the commands and options the composed
+  postlude calls, and that the composed text makes exactly those calls.
   qits-platform-maintenance moves the line like any internal pin and **this repository's own release
   request gates the move** — never hand-edit it to chase a release. And a release step's image no
   longer needs `jq` for the CLI's sake: the listing read, its best-effort bearer and the jq that
@@ -2137,7 +2138,8 @@ phase.
   broke all of them, with nothing changed in any consumer's tree and no line anybody could revert.
   Four things follow. The pin has to **resolve** for this reactor to build, so a version that does
   not exist is a red build rather than a broken release later. `QitsCliPinIT` proves the coordinate
-  is really in the store and that the binary at it publishes an SBOM through the composed text.
+  is really in the store, that the binary at it carries the commands and options the composed
+  postlude calls, and that the composed text makes exactly those calls.
   qits-platform-maintenance moves the line like any internal pin and **this repository's own release
   request gates the move** — never hand-edit it to chase a release. And a release step's image no
   longer needs `jq` for the CLI's sake: the listing read, its best-effort bearer and the jq that
@@ -3000,9 +3002,13 @@ contract, tested where it lives.
   (`eu.wohlben.qits:qits-platform-access-cli-binary`; the root pom's property, `StepContainerSettings`
   injecting `PlatformAccessCliBinary.VERSION` as `$QITS_ARTIFACTS_CLI_VERSION`), and this is what
   makes the pin mean something: it downloads that exact coordinate from the REAL artifacts store,
-  composes a real release-phase step through `CiReleaseComposer`, runs the composed text under
-  `bash` against a scratch git origin and a stub store in its own process, and asserts the SBOM PUT
-  the pinned binary made. A missing coordinate is a **failure naming it**, never a skip; the one
+  asks that binary, offline, for the usage of `artifacts publish sbom submit` and
+  `artifacts publish exists` and asserts every option the postlude passes, then composes a real
+  release-phase step through `CiReleaseComposer` and runs it under `bash` against a scratch git
+  origin and a stub store serving a recording stand-in for the CLI, asserting the calls it made.
+  It no longer makes the pinned binary publish (qits-731): a CLI from qits-731 on derives every
+  address from `$QITS_DOMAIN` and reads no URL variable, so a live publish could only reach the
+  real, immutable sbom store. A missing coordinate is a **failure naming it**, never a skip; the one
   `assumeTrue` covers an artifacts origin configured to nothing and is defensive rather than a
   supported mode. **Not a `@QuarkusIntegrationTest`**: nothing in the assertion needs the
   application, and a second `@TestProfile` would be a second launched qits-ci for no assertion a
@@ -3011,20 +3017,24 @@ contract, tested where it lives.
   `.config/qits/release.yml`'s `release-request:` slot, needs no docker, and needs qits-artifacts reachable through
   `$QITS_MAVEN_REPOSITORY_URL` — which that recipe's verify step already exports. A class not named
   there never runs at all, silently, so the two move together.
-  <br>The store is stubbed for the PUT and real for the GET, and the split is the point: "the pinned
-  version exists" is the assertion, while writing an SBOM into the platform's own immutable sbom
-  store at a coordinate nobody released would be permanent litter a re-run then asserted against.
-  The child process's environment is stripped of every ambient `QITS_` variable before the five a
-  step really gets are set, for `WorkspaceDaemonPinIT`'s measured reason: a pin test whose result
-  depends on where it runs proves nothing about the pin.
+  <br>The pinned binary's GET from the real store is the only contact with the platform, and it is
+  a read: "the pinned version exists" is the assertion, while writing an SBOM into the platform's own
+  immutable sbom store at a coordinate nobody released would be permanent litter. The child
+  processes' environment is stripped of every ambient `QITS_` variable before the ones a step really
+  gets are set — `QITS_DOMAIN` to an unresolvable `.invalid` domain — for `WorkspaceDaemonPinIT`'s
+  measured reason: a pin test whose result depends on where it runs proves nothing about the pin.
 - **`daemonhost/QitsCliPinIT` is the qits CLI pin's gate, and it is a plain failsafe `*IT`.** The
   `qits` CLI every composed release step on the platform runs is a pinned dependency now
   (`eu.wohlben.qits:qits-platform-access-cli-binary`; the root pom's property, `StepContainerSettings`
   injecting `PlatformAccessCliBinary.VERSION` as `$QITS_ARTIFACTS_CLI_VERSION`), and this is what
   makes the pin mean something: it downloads that exact coordinate from the REAL artifacts store,
-  composes a real release-phase step through `CiReleaseComposer`, runs the composed text under
-  `bash` against a scratch git origin and a stub store in its own process, and asserts the SBOM PUT
-  the pinned binary made. A missing coordinate is a **failure naming it**, never a skip; the one
+  asks that binary, offline, for the usage of `artifacts publish sbom submit` and
+  `artifacts publish exists` and asserts every option the postlude passes, then composes a real
+  release-phase step through `CiReleaseComposer` and runs it under `bash` against a scratch git
+  origin and a stub store serving a recording stand-in for the CLI, asserting the calls it made.
+  It no longer makes the pinned binary publish (qits-731): a CLI from qits-731 on derives every
+  address from `$QITS_DOMAIN` and reads no URL variable, so a live publish could only reach the
+  real, immutable sbom store. A missing coordinate is a **failure naming it**, never a skip; the one
   `assumeTrue` covers an artifacts origin configured to nothing and is defensive rather than a
   supported mode. **Not a `@QuarkusIntegrationTest`**: nothing in the assertion needs the
   application, and a second `@TestProfile` would be a second launched qits-ci for no assertion a
@@ -3033,12 +3043,12 @@ contract, tested where it lives.
   `.config/qits/release.yml`'s `release-request:` slot, needs no docker, and needs qits-artifacts reachable through
   `$QITS_MAVEN_REPOSITORY_URL` — which that recipe's verify step already exports. A class not named
   there never runs at all, silently, so the two move together.
-  <br>The store is stubbed for the PUT and real for the GET, and the split is the point: "the pinned
-  version exists" is the assertion, while writing an SBOM into the platform's own immutable sbom
-  store at a coordinate nobody released would be permanent litter a re-run then asserted against.
-  The child process's environment is stripped of every ambient `QITS_` variable before the five a
-  step really gets are set, for `WorkspaceDaemonPinIT`'s measured reason: a pin test whose result
-  depends on where it runs proves nothing about the pin.
+  <br>The pinned binary's GET from the real store is the only contact with the platform, and it is
+  a read: "the pinned version exists" is the assertion, while writing an SBOM into the platform's own
+  immutable sbom store at a coordinate nobody released would be permanent litter. The child
+  processes' environment is stripped of every ambient `QITS_` variable before the ones a step really
+  gets are set — `QITS_DOMAIN` to an unresolvable `.invalid` domain — for `WorkspaceDaemonPinIT`'s
+  measured reason: a pin test whose result depends on where it runs proves nothing about the pin.
 - `CiDaemonSocketTest` drives the real socket with a real WebSocket from `FakeCiDaemon`, an in-JVM
   dialler framing the real protocol exactly as the binary does. The host cannot tell it from a
   container, which is the point: admission, framing, dispatch and the blocking bridge are all

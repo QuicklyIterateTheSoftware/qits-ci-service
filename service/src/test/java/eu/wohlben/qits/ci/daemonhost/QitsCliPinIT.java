@@ -58,10 +58,18 @@ import org.junit.jupiter.api.io.TempDir;
  *   <li><b>The composed script works.</b> The prelude is taken from the shipped composer rather than
  *       hand-written here, so the {@code curl}, the {@code chmod}, the {@code qits-publish} symlink
  *       and the {@code PATH} export are the text every release on the platform runs.
- *   <li><b>The binary at that coordinate does the job.</b> It is executed, and the SBOM it publishes
- *       is read off the far side — the stub's record of the PUT — rather than inferred from an exit
- *       code.
+ *   <li><b>The binary at that coordinate carries what the composed text calls.</b> It is executed,
+ *       offline, and its own usage must name {@code artifacts publish sbom submit} with every option
+ *       the postlude passes, and {@code artifacts publish exists}. The composed script itself runs
+ *       against a recording stand-in for the CLI, so its calls are read off the far side rather
+ *       than inferred from an exit code.
  * </ul>
+ *
+ * <p><b>It no longer makes the pinned binary publish (qits-731).</b> A CLI from qits-731 on derives
+ * every address from {@code $QITS_DOMAIN} in code and reads no URL variable, so there is nothing a
+ * test process can point at a stub: a live publish could only reach the platform's real, immutable
+ * sbom store. What the pin can break between this reactor and the binary is the command surface,
+ * and that is held for the current CLI and the next one alike.
  *
  * <h2>Not a {@code @QuarkusIntegrationTest}, deliberately</h2>
  *
@@ -89,10 +97,12 @@ import org.junit.jupiter.api.io.TempDir;
  *
  * <h2>Why the store is a stub and the binary is not</h2>
  *
- * <p>The download is from the REAL store, because "the pinned version exists" is the assertion. The
- * publish is against a stub in this process, because the alternative is writing an SBOM into the
- * platform's own sbom store at a coordinate nobody released — an immutable surface, so the litter
- * would be permanent and a re-run would then be asserting against its own first run.
+ * <p>The download is from the REAL store, because "the pinned version exists" is the assertion, and
+ * it is a read. Nothing is published anywhere: the composed text runs against a stub store serving
+ * a recording stand-in, and the real binary is only asked for its usage, in an environment whose
+ * one address input is a domain that cannot resolve. Publishing for real would write an SBOM into
+ * the platform's own sbom store at a coordinate nobody released — an immutable surface, so the
+ * litter would be permanent.
  */
 public class QitsCliPinIT {
 
@@ -117,6 +127,46 @@ public class QitsCliPinIT {
   private static final String SBOM_BODY =
       "{\"bomFormat\":\"CycloneDX\",\"specVersion\":\"1.5\",\"version\":1,\"components\":[]}";
 
+  /**
+   * Where the step runs its composed postlude against, in place of the platform: a domain RFC 6761
+   * reserves to never resolve. A CLI that derives its hosts from {@code QITS_DOMAIN} (qits-731) and
+   * is somehow reached anyway fails to resolve rather than writing into a real store.
+   */
+  private static final String UNRESOLVABLE_DOMAIN = "qits-cli-pin-it.invalid";
+
+  /**
+   * The stand-in the stub store serves on the CLI's daemons route: a shell script that records every
+   * call the composed text makes to {@code qits}, copies the document a submit names, and answers the
+   * presence check from what was really submitted. Anything else is a loud refusal, so a postlude
+   * that grows a call nobody asserted fails here rather than passing by silence.
+   */
+  private static final String RECORDING_CLI =
+      """
+      #!/bin/sh
+      # qits-ci's QitsCliPinIT: a stand-in for the qits CLI that records what it is asked.
+      set -eu
+      record=${QITS_PIN_IT_RECORD:?}
+      mkdir -p "$record"
+      printf '%s\\n' "$*" >> "$record/calls"
+      case "$*" in
+        "artifacts publish sbom submit "*)
+          file=
+          while [ $# -gt 0 ]; do
+            case "$1" in
+              --file) file=$2; shift ;;
+              --file=*) file=${1#--file=} ;;
+            esac
+            shift
+          done
+          cp "$file" "$record/submitted" ;;
+        "artifacts publish exists sbom "*)
+          [ -f "$record/submitted" ] ;;
+        *)
+          echo "the pin test's qits stand-in was asked something nobody asserted: $*" >&2
+          exit 64 ;;
+      esac
+      """;
+
   private static String artifactsBase() {
     String maven =
         System.getProperty(
@@ -126,7 +176,7 @@ public class QitsCliPinIT {
   }
 
   @Test
-  public void theCliThisReactorPinsRunsAComposedReleaseStepAndPublishesTheSbom(@TempDir Path work)
+  public void theCliThisReactorPinsCarriesWhatAComposedReleaseStepCalls(@TempDir Path work)
       throws Exception {
     assumeTrue(
         !ARTIFACTS_BASE.isBlank(),
@@ -134,11 +184,18 @@ public class QitsCliPinIT {
             + " — a clone with no platform to ask cannot run the pin test");
 
     // 1. THE PINNED BINARY, OUT OF THE REAL STORE. A non-200 here is the whole point of the test.
+    // This GET is the test's only contact with the platform; nothing below writes anywhere real.
     byte[] binary = downloadPinnedBinary();
 
-    // 2. The stand-in store: it serves those same bytes back on the daemons route the composed
-    // prelude fetches from, and records what the CLI PUTs.
-    StubStore store = new StubStore(binary);
+    // 2. THE BINARY CARRIES WHAT THE POSTLUDE CALLS, with the options the postlude passes. Asked of
+    // the binary itself, offline — see pinnedBinaryCarriesThePostludesCommands for why it is not
+    // made to publish any more.
+    pinnedBinaryCarriesThePostludesCommands(binary, work.resolve("pinned"));
+
+    // 3. The stand-in store: it serves a RECORDING STAND-IN for the CLI on the daemons route the
+    // composed prelude fetches from, so the composed text runs end to end and every call it makes
+    // to `qits` is read back off the far side.
+    StubStore store = new StubStore(RECORDING_CLI.getBytes(StandardCharsets.UTF_8));
     try {
       // 3. THE SCRIPT IS THE SHIPPED COMPOSER'S, never a copy. Composed, then parsed back through
       // the ordinary trigger parser — which is exactly the road a real run's document travels.
@@ -165,32 +222,32 @@ public class QitsCliPinIT {
           "the composed release step failed.\n--- script ---\n" + script + "\n--- output ---\n"
               + result.output());
 
-      // 4. WHAT THE FAR SIDE SAW. An exit code says the script did not stop; the PUT is the only
-      // evidence that the pinned binary really published, at the coordinate the postlude declared,
-      // carrying the bytes the step wrote.
-      List<StubStore.Recorded> puts = store.puts();
-      assertEquals(1, puts.size(), "exactly one SBOM submission: " + puts);
-      StubStore.Recorded put = puts.get(0);
+      // 4. WHAT THE POSTLUDE ASKED THE CLI TO DO. An exit code says the script did not stop; the
+      // recorded calls say it submitted the declared coordinate and then asked for it back, in
+      // that order, with exactly the arguments the pinned binary's own usage names (step 2).
+      Path record = work.resolve("cli-record");
       assertEquals(
-          "/artifacts/sboms/" + SBOM_TYPE + "/" + SBOM_NAME + "/-/" + RELEASE_VERSION, put.path());
-      assertEquals("application/vnd.cyclonedx+json", put.contentType());
+          List.of(
+              "artifacts publish sbom submit --type "
+                  + SBOM_TYPE
+                  + " --name "
+                  + SBOM_NAME
+                  + " --version "
+                  + RELEASE_VERSION
+                  + " --file "
+                  + SBOM_PATH,
+              "artifacts publish exists sbom " + SBOM_TYPE + "/" + SBOM_NAME + " " + RELEASE_VERSION),
+          Files.readAllLines(record.resolve("calls")),
+          "the composed postlude's calls to the CLI");
       // The trailing newline is the heredoc's, and it is asserted rather than trimmed away: what the
-      // step wrote is what must arrive, byte for byte, and a publisher that normalised its input
-      // would be publishing something nobody wrote.
+      // step wrote is what the CLI was handed, byte for byte.
       assertArrayEquals(
           (SBOM_BODY + "\n").getBytes(StandardCharsets.UTF_8),
-          put.body(),
-          "the document the step wrote is the document that was published");
+          Files.readAllBytes(record.resolve("submitted")),
+          "the document the step wrote is the document handed to the CLI");
 
-      // 4b. AND THE LAST STEP ASKED FOR IT BACK. The presence check is the pinned binary's own
-      // `exists sbom`, so this is also the proof that the pinned CLI carries that command.
-      assertEquals(
-          List.of("/artifacts/sboms/" + SBOM_TYPE + "/" + SBOM_NAME + "/-/" + RELEASE_VERSION),
-          store.heads(),
-          "the presence check asked for the coordinate that was submitted");
-
-      // 5. AND IT WAS THE PINNED BINARY THAT DID IT. The prelude asked for exactly the coordinate
-      // the pom names, and what it ran is the byte-identical copy of what the real store served.
+      // 5. AND IT WAS THE PINNED COORDINATE THAT WAS FETCHED. The prelude asked for exactly the
+      // coordinate the pom names, which is the one step 1 found in the real store.
       assertEquals(
           List.of(
               "/artifacts/daemons/"
@@ -254,6 +311,70 @@ public class QitsCliPinIT {
     }
   }
 
+  /**
+   * The pinned binary's own usage for the two commands the composed postlude calls, asserted to
+   * name each command and every option the postlude passes it.
+   *
+   * <p><b>Why it is asked rather than made to publish (qits-731).</b> This test used to run the
+   * pinned binary's real {@code sbom submit} against a stub store it found through
+   * {@code $QITS_ARTIFACTS_URL}. A CLI from qits-731 on reads no URL variable at all: it derives
+   * {@code https://registry.qits.$QITS_DOMAIN} in code, and its only seam is a field a step cannot
+   * set — so a live publish could only ever reach the real, immutable sbom store. The command
+   * surface is what the pin can break between this reactor's composed text and the binary, so that
+   * is what is held, for the current CLI and the next one alike. {@code --help} is answered by the
+   * argument parser before any command body runs, and the environment holds nothing but a domain
+   * that cannot resolve.
+   *
+   * <p>A missing subcommand is NOT an exit code: the parser answers {@code --help} on an unknown
+   * name with the nearest parent's usage and 0. So the usage's own first line is what is read.
+   */
+  private static void pinnedBinaryCarriesThePostludesCommands(byte[] binary, Path dir)
+      throws Exception {
+    Files.createDirectories(dir);
+    Path cli = dir.resolve("qits");
+    Files.write(cli, binary);
+    assertTrue(cli.toFile().setExecutable(true), "the pinned binary could not be made executable");
+
+    String submit = usage(cli, dir, "artifacts", "publish", "sbom", "submit", "--help");
+    assertTrue(
+        submit.startsWith("Usage: qits artifacts publish sbom submit"),
+        "the pinned CLI carries `artifacts publish sbom submit`:\n" + submit);
+    for (String option : List.of("--type", "--name", "--version", "--file")) {
+      assertTrue(
+          submit.contains(option + "="),
+          "the pinned CLI's `sbom submit` takes " + option + ", which the postlude passes:\n"
+              + submit);
+    }
+
+    String exists = usage(cli, dir, "artifacts", "publish", "exists", "--help");
+    assertTrue(
+        exists.startsWith("Usage: qits artifacts publish exists"),
+        "the pinned CLI carries `artifacts publish exists`:\n" + exists);
+    assertTrue(
+        exists.contains("sbom"),
+        "the pinned CLI's `exists` answers for an sbom coordinate:\n" + exists);
+  }
+
+  private static String usage(Path cli, Path dir, String... args) throws Exception {
+    List<String> argv = new ArrayList<>();
+    argv.add(cli.toAbsolutePath().toString());
+    argv.addAll(List.of(args));
+    ProcessBuilder builder = new ProcessBuilder(argv).directory(dir.toFile());
+    Map<String, String> env = HermeticEnvironment.of(builder);
+    env.put("HOME", dir.toAbsolutePath().toString());
+    env.put("QITS_DOMAIN", UNRESOLVABLE_DOMAIN);
+    Path log = dir.resolve("usage.log");
+    Process process =
+        builder.redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.to(log.toFile())).start();
+    if (!process.waitFor(1, TimeUnit.MINUTES)) {
+      process.destroyForcibly();
+      fail("`qits " + String.join(" ", args) + "` did not answer within a minute:\n" + read(log));
+    }
+    String output = read(log);
+    assertEquals(0, process.exitValue(), "`qits " + String.join(" ", args) + "`:\n" + output);
+    return output;
+  }
+
   // --- the composed step ---------------------------------------------------------------------------
 
   /**
@@ -314,8 +435,8 @@ public class QitsCliPinIT {
    * the child from this process's environment, and this process runs somewhere that has opinions: a
    * workspace container carries a commissioned credential and a full set of platform addresses, a
    * CI step container carries another. A pin test whose result depends on where it runs proves nothing about the pin — so the
-   * child is handed exactly the five variables the composed text reads, and a sixth arriving from
-   * the host would be a failure this test could not see.
+   * child is handed exactly the variables the composed text reads, plus an unresolvable
+   * {@code QITS_DOMAIN} and the stand-in's record directory, and nothing arrives from the host.
    *
    * <p>{@code GIT_CONFIG_GLOBAL} points at a scratch file for the same reason: the running user's
    * own git configuration is not part of what a step container has.
@@ -332,6 +453,11 @@ public class QitsCliPinIT {
     env.put("QITS_CI_REPOSITORY_URL", origin.toAbsolutePath().toString());
     env.put("GIT_CONFIG_GLOBAL", work.resolve("gitconfig").toAbsolutePath().toString());
     env.put("HOME", work.toAbsolutePath().toString());
+    // What a step is told today beside the URL variables, pointed at nothing: the stand-in derives
+    // no host from it, and nothing else in the composed text may either.
+    env.put("QITS_DOMAIN", UNRESOLVABLE_DOMAIN);
+    // Where the stand-in CLI records the calls it was asked to make.
+    env.put("QITS_PIN_IT_RECORD", work.resolve("cli-record").toAbsolutePath().toString());
 
     Path log = work.resolve("step.log");
     Process step =
@@ -391,107 +517,36 @@ public class QitsCliPinIT {
   // --- the stand-in store ---------------------------------------------------------------------------
 
   /**
-   * qits-artifacts, as much of it as a release-phase step touches: the daemons route the prelude
-   * downloads from, and the sboms route the postlude PUTs to.
-   *
-   * <p>It serves the <b>real</b> bytes on the daemons route — the ones the pinned coordinate really
-   * answered with — so what runs here is the released binary and not a fixture. What it fakes is
-   * only where the SBOM lands, because the platform's sbom store is immutable and a test must not
-   * write into it at a coordinate nobody released.
-   *
-   * <p>The whole surface is a PUT, a HEAD and a GET: {@code Publisher.sbomSubmit} asks one PUT of
-   * the document, 201 with {@code sizeBytes} and {@code digest}, and no probe before it; the last
-   * step's presence check is one HEAD after it. A 200 arm would put the CLI on its digest-comparison path — that is the store's
-   * already-published rule and this test is about neither.
+   * qits-artifacts, as much of it as the composed prelude touches: the daemons route it downloads
+   * the CLI from. It serves the recording stand-in rather than the pinned bytes — the pinned bytes
+   * are checked by {@link #pinnedBinaryCarriesThePostludesCommands} — and records which coordinate
+   * was asked for. There is no sbom route any more: nothing in this test publishes.
    */
   private static final class StubStore implements AutoCloseable {
 
     private final HttpServer server;
-    private final List<Recorded> puts = new ArrayList<>();
     private final List<String> gets = new ArrayList<>();
-    private final List<String> heads = new ArrayList<>();
 
-    record Recorded(String path, String contentType, byte[] body) {
-      @Override
-      public String toString() {
-        return path + " (" + contentType + ", " + body.length + " bytes)";
-      }
-    }
-
-    StubStore(byte[] binary) throws IOException {
+    StubStore(byte[] served) throws IOException {
       server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-      server.createContext(
-          "/artifacts/daemons/",
-          exchange -> {
-            synchronized (gets) {
-              gets.add(exchange.getRequestURI().getPath());
-            }
-            exchange.getRequestBody().readAllBytes();
-            exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
-            exchange.sendResponseHeaders(200, binary.length);
-            try (var body = exchange.getResponseBody()) {
-              body.write(binary);
-            }
-          });
-      server.createContext("/artifacts/sboms/", this::sbom);
+      server.createContext("/artifacts/daemons/", exchange -> daemon(exchange, served));
       server.start();
     }
 
-    private void sbom(HttpExchange exchange) throws IOException {
-      byte[] body = exchange.getRequestBody().readAllBytes();
-      if ("HEAD".equals(exchange.getRequestMethod())) {
-        // The last release step's presence check (qits-621): `qits artifacts publish exists sbom`
-        // is a HEAD on the same coordinate, 200 when the document is there and 404 when it is not.
-        // The stub answers from what it was really sent, so a check that passes is one the PUT
-        // above it earned.
-        String path = exchange.getRequestURI().getPath();
-        boolean present;
-        synchronized (puts) {
-          heads.add(path);
-          present = puts.stream().anyMatch(put -> put.path().equals(path));
-        }
-        exchange.sendResponseHeaders(present ? 200 : 404, -1);
-        exchange.close();
-        return;
+    private void daemon(HttpExchange exchange, byte[] served) throws IOException {
+      synchronized (gets) {
+        gets.add(exchange.getRequestURI().getPath());
       }
-      if (!"PUT".equals(exchange.getRequestMethod())) {
-        // Deliberately a 405 rather than a 404: the CLI makes no other probe, and a stub that
-        // answered a hypothetical one with "absent" would be inventing a contract.
-        exchange.sendResponseHeaders(405, -1);
-        exchange.close();
-        return;
-      }
-      synchronized (puts) {
-        puts.add(
-            new Recorded(
-                exchange.getRequestURI().getPath(),
-                exchange.getRequestHeaders().getFirst("Content-Type"),
-                body));
-      }
-      byte[] receipt =
-          ("{\"sizeBytes\":" + body.length + ",\"digest\":\"sha256:" + sha256(body) + "\"}")
-              .getBytes(StandardCharsets.UTF_8);
-      exchange.getResponseHeaders().set("Content-Type", "application/json");
-      exchange.sendResponseHeaders(201, receipt.length);
-      try (var out = exchange.getResponseBody()) {
-        out.write(receipt);
+      exchange.getRequestBody().readAllBytes();
+      exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
+      exchange.sendResponseHeaders(200, served.length);
+      try (var body = exchange.getResponseBody()) {
+        body.write(served);
       }
     }
 
     String base() {
       return "http://127.0.0.1:" + server.getAddress().getPort();
-    }
-
-    List<Recorded> puts() {
-      synchronized (puts) {
-        return List.copyOf(puts);
-      }
-    }
-
-    List<String> heads() {
-      synchronized (puts) {
-        return List.copyOf(heads);
-      }
     }
 
     List<String> gets() {
@@ -504,18 +559,5 @@ public class QitsCliPinIT {
     public void close() {
       server.stop(0);
     }
-
-    private static String sha256(byte[] bytes) {
-      try {
-        StringBuilder hex = new StringBuilder();
-        for (byte b : java.security.MessageDigest.getInstance("SHA-256").digest(bytes)) {
-          hex.append(Character.forDigit((b >> 4) & 0xf, 16)).append(Character.forDigit(b & 0xf, 16));
-        }
-        return hex.toString();
-      } catch (java.security.NoSuchAlgorithmException impossible) {
-        throw new IllegalStateException(impossible);
-      }
-    }
   }
-
 }
