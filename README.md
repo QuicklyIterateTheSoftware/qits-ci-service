@@ -1894,8 +1894,9 @@ top of each candidate's own trigger files. Two today:
 - `maintenance-bump.yml` (`event: MaintenanceBump`): applies a qits-maintenance bump and pushes its
   branch.
 - `screenshot-baselines.yml` (`event: ScreenshotBaselines`): renders a release request's screenshot
-  tests on `node-browser-base` and commits only the reference images and `renderer.txt` to
-  `maintenance/baselines/<request>`.
+  tests on `node-browser-base`, runs the repository's `screenshots:prune` script if it has one
+  (deletes the references no test uses), and commits only the reference images and `renderer.txt`
+  to `maintenance/baselines/<request>`.
 
 Until 2026-10-02 they were `ci-platform-event-*.yml` files in the wrapper, read at its `main` head
 per event: a fix shipped only with a wrapper release, which needs a person's approval. No repository

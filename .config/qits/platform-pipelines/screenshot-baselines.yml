@@ -14,7 +14,10 @@
 # are rendered exactly as the gate renders them. Only `__screenshots__/` files and the
 # renderer record (`testing/browser/renderer.txt`) are committed - anything else the run
 # touches stays out. Missing references are written like changed
-# ones, so a repository's first baselines come from here too. No change, no commit.
+# ones, so a repository's first baselines come from here too. References no test uses any
+# more are deleted, when the repository says how: its `screenshots:prune` script (the
+# landing app's runs `qits-angular screenshots --prune` from @qits/angular). Vitest never
+# deletes a reference itself. No change, no commit.
 #
 # The push is plain, never forced. After the first join the fold contains the branch, so a
 # later run on the new fold is a fast-forward of it. A rejected push means the fold dropped
@@ -76,7 +79,13 @@ steps:
       # other reason fails the run, and nothing is committed.
       UPDATE_SNAPSHOT=all npm run test:browser
 
-      # The reference images, and the renderer record the compare step checks them against.
+      # Deletes the references no test asked for in the run above (a deleted spec, a renamed
+      # screenshot). The deletions are staged below with the new images. A repository without
+      # the script keeps its orphans.
+      npm run --if-present screenshots:prune
+
+      # The reference images (written or deleted), and the renderer record the compare step
+      # checks them against.
       git add -A -- ':(glob)**/__screenshots__/**' ':(glob)**/testing/browser/renderer.txt'
       # --ignore-submodules=none for maintenance-bump.yml's reason: a repository whose
       # .gitmodules says `ignore = all` hides staged gitlinks otherwise. Only the paths
