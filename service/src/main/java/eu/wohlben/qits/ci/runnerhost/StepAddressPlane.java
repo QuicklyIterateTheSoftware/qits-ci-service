@@ -32,6 +32,11 @@ import java.util.Objects;
  * <p>Pure: strings in, strings out, no I/O and no config of its own.
  */
 public record StepAddressPlane(
+    /**
+     * {@code $QITS_DOMAIN}: the bare public domain every address below is composed from, the one
+     * input a recipe derives its own registry and mirror addresses from (qits-731).
+     */
+    String domain,
     /** {@code $QITS_CI_DAEMON_URL}: the {@code /ci/daemon} socket, {@code wss://}. */
     String daemonUrl,
     /** qits-artifacts' public origin; a run's pinned daemon path is resolved under it. */
@@ -192,10 +197,11 @@ public record StepAddressPlane(
 
   /**
    * The public origin of each service a step reaches, {@code https://<host>.qits.<domain>} — what
-   * {@code RunnerAddresses.edgeOrigins} answers when the platform's domain is known.
+   * {@code RunnerAddresses.edgeOrigins} answers when the platform's domain is known — and that
+   * domain itself.
    */
   public record EdgeOrigins(
-      String ci, String artifacts, String mirror, String githost, String workspaces) {}
+      String domain, String ci, String artifacts, String mirror, String githost, String workspaces) {}
 
   /**
    * The addresses of a step, from the public origin of each service that answers one. qits-artifacts
@@ -218,6 +224,7 @@ public record StepAddressPlane(
       authHosts.add(mirror);
     }
     return new StepAddressPlane(
+        origins.domain(),
         socketOrigin(origins.ci()) + DAEMON_SOCKET_PATH,
         artifacts,
         strip(origins.githost()),

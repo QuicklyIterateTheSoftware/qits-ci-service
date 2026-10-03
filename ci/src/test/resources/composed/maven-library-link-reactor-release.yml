@@ -42,8 +42,9 @@ steps:
       fi
       # --- the declared step, run as data -------------------------------------------
       cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
-      export QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL"
-      export QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}"
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
+      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
 
       # THIS SCRIPT IS READ AT MAIN AND RUNS AGAINST THE TAG, which may predate a file it names. The
       # settings file arrived on 2026-08-11 and a bootstrap replaying an older tag measured the
@@ -74,7 +75,7 @@ steps:
         package \
         org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeBom \
         -DoutputFormat=json -DoutputName=sbom -DschemaVersion=1.6 \
-        -Dqits.maven.repository.url="$QITS_MAVEN_REGISTRY_URL"
+        -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL"
       QITS_SLOT_EOF
       if command -v bash > /dev/null 2>&1; then
         bash -eu /tmp/qits-slot.sh

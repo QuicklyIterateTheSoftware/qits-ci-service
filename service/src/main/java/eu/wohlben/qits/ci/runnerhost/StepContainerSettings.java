@@ -126,7 +126,8 @@ public class StepContainerSettings {
    *       element it is. Measured on Maven 3.9.12: the merge with a {@code -s} user settings keeps
    *       both files' servers, and {@code MAVEN_ARGS} beats an explicit {@code -gs} on the command
    *       line.
-   *   <li>An {@code _authToken} per npm registry host, appended to {@code ~/.npmrc}.
+   *   <li>An {@code _authToken} for {@code registry.qits.$QITS_DOMAIN} and {@code
+   *       mirror.qits.$QITS_DOMAIN}, the two npm hosts, appended to {@code ~/.npmrc}.
    * </ul>
    *
    * <p><b>{@link #DEPLOY_SETTINGS_FILE}'s {@code -gs} is not the only settings file in play, and a
@@ -281,17 +282,15 @@ public class StepContainerSettings {
       ' "$QITS_TOKEN" "$QITS_TOKEN" "$QITS_TOKEN" > /tmp/qits-deploy-settings.xml)
         MAVEN_ARGS="${MAVEN_ARGS:+$MAVEN_ARGS }-gs /tmp/qits-deploy-settings.xml"
         export MAVEN_ARGS
-        # And npm's: one _authToken per registry HOST the two npm roots name, APPENDED so an image's
-        # own ~/.npmrc survives. A home that cannot be written costs npm its credential and says
-        # so; it never costs the step its daemon.
-        if [ -n "$HOME" ] && [ -d "$HOME" ] && [ -w "$HOME" ]; then
-          npm_seen=
-          for npm_root in "$QITS_NPM_REGISTRY_URL" "$QITS_NPM_PROXY_URL"; do
-            npm_host=${npm_root#*://}
-            npm_host=${npm_host%%/*}
-            [ -n "$npm_host" ] || continue
-            [ "$npm_host" != "$npm_seen" ] || continue
-            npm_seen=$npm_host
+        # And npm's: one _authToken per npm HOST, APPENDED so an image's own ~/.npmrc survives. The
+        # hosts are code under $QITS_DOMAIN (qits-731): the registry one serves the hosted @qits
+        # scope and the mirror one the npmjs cache, and npm keys a token by the host it dials,
+        # whichever path under it. A home that cannot be written costs npm its credential and
+        # says so; it never costs the step its daemon.
+        if [ -z "$QITS_DOMAIN" ]; then
+          echo "qits-ci: this step was told no QITS_DOMAIN, so npm holds no platform credential" >&2
+        elif [ -n "$HOME" ] && [ -d "$HOME" ] && [ -w "$HOME" ]; then
+          for npm_host in "registry.qits.$QITS_DOMAIN" "mirror.qits.$QITS_DOMAIN"; do
             (umask 077; printf '//%s/:_authToken=%s\\n' "$npm_host" "$QITS_TOKEN" >> "$HOME/.npmrc") \\
               || echo "qits-ci: could not write $HOME/.npmrc, so npm holds no platform credential" >&2
           done

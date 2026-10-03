@@ -96,7 +96,7 @@
 # ---------------------------------------------------------------------------------------------
 # THE ONE THING THIS RECIPE READS OUT OF A REPOSITORY, AND WHY IT IS THE DECLARATION
 #
-# The release pushes `$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/<image>:$QITS_VERSION` and the
+# The release pushes `registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/<image>:$QITS_VERSION` and the
 # `<image>` half is per-repository. It is NOT derivable from `$QITS_CI_REPO_NAME`: measured across
 # all nineteen, `qits-idp-service` publishes `qits/qits-platform-idp` while
 # `qits-deployments-service` publishes `qits/qits-deployments`, and no rule covers both. The
@@ -187,7 +187,7 @@
 #
 # The rule these recipes are held to is that a step consumes the artifacts and the version of the
 # build it is part of. Everything a release PUBLISHES already obeys it: the image ref is
-# `$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/<declared>:$QITS_VERSION`, the SBOM the postlude
+# `registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/<declared>:$QITS_VERSION`, the SBOM the postlude
 # submits is `$QITS_VERSION`, and the coordinate is read out of this repository's own `artifacts:`
 # rather than derived. What is left is TOOLING, which by definition this build does not produce, and
 # the question for each is only whether two steps of one build can get two different versions of it:
@@ -297,9 +297,14 @@ release-request:
       # `qits-publish npm rewrite-lockfile-origin` is exactly this, and it is NOT usable here: the
       # composer installs the CLI in release-phase preludes only, so a QA step calling it would get
       # `command not found`. Keep this block matched with the release step's below.
-      npm_hosted_origin=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).origin')
-      npm_proxy_origin=$(node -p 'new URL(process.env.QITS_NPM_PROXY_URL).origin')
-      npm_hosted_path=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).pathname')
+      # THE ADDRESSES ARE CODE (qits-731): the platform's public domain is the one input, and the
+      # hosts and paths below are constants — registry.qits.<domain> serves the hosted @qits scope,
+      # mirror.qits.<domain> the npmjs cache. `wohlben.eu` covers a qits-ci too old to inject
+      # $QITS_DOMAIN, which is what runs this file while the qits-ci that does is being released.
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      npm_hosted_origin="https://registry.qits.$qits_domain"
+      npm_proxy_origin="https://mirror.qits.$qits_domain"
+      npm_hosted_path=/artifacts/npm/npm/
       for dir in $webui_dirs; do
         (
           cd "$dir"
@@ -313,8 +318,8 @@ release-request:
           # vhosts (right for a developer on the deployment host), and npm ranks a project .npmrc
           # ABOVE ~/.npmrc — so a `cat > ~/.npmrc` preamble would be written and silently ignored.
           # `npm_config_*` environment outranks both files without touching the submodule's tree.
-          env npm_config_registry="$QITS_NPM_PROXY_URL" \
-              "npm_config_@qits:registry=$QITS_NPM_REGISTRY_URL" \
+          env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
+              "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
               npm ci --no-audit --no-fund
           # The bundle the image build consumes. Lint and test are the frontend repository's own
           # pipeline's job; repeating them here would make this repository red for someone else's
@@ -329,6 +334,8 @@ release-request:
       #
       # NO --network host, AND NOTHING REPLACES IT. Every `RUN` executes in the builder's own
       # namespace, so the two addresses a build dials are the RUN's: the platform's public names.
+      # `QITS_DOMAIN` rides beside the two maven urls, which stay for the Dockerfiles that still
+      # read them; a Dockerfile derives both from the domain once it declares that ARG.
       #
       # THE CREDENTIAL IS A SECRET IN FILE FORM, never a build arg — an arg is recorded in the image
       # history. The composer wrote /tmp/qits-client-id and /tmp/qits-client-secret under umask 077
@@ -336,8 +343,9 @@ release-request:
       # neither can enter the build context.
       buildctl build --frontend dockerfile.v0 \
         --local context=. --local dockerfile=docker \
-        --opt build-arg:QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL" \
-        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --opt build-arg:QITS_DOMAIN="$qits_domain" \
+        --opt build-arg:QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central" \
         --secret id=qits-client-id,src=/tmp/qits-client-id \
         --secret id=qits-client-secret,src=/tmp/qits-client-secret
 
@@ -360,10 +368,11 @@ release-request:
     script: |
       # The platform registry: the poms' default names a host-published address unreachable from a
       # step container, and the exact-id mirror in .qits-maven-settings.xml is what passes Maven's
-      # HTTP blocker. Central rides the run's mirror address — EMPTY IS THE OFF
-      # SWITCH, which deactivates the settings profile and resolves Central directly.
-      export QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL"
-      export QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}"
+      # HTTP blocker. Central rides the mirror. Both are code under the platform's public domain
+      # (qits-731); `wohlben.eu` covers a qits-ci too old to inject $QITS_DOMAIN.
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
+      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
 
       # The story allow-list, if this repository keeps one. See the header: absent means the
       # repository's pom decides, which is the shape four repositories already prefer.
@@ -444,7 +453,7 @@ release-request:
         -H "X-Artifacts-Meta-git.branch.name: $QITS_CI_BRANCH" \
         -H "X-Artifacts-Meta-git.commit.hash: $QITS_CI_SHA" \
         -H "X-Artifacts-Meta-git.repository.name: ${site##*/}" \
-        "$QITS_DOCS_URL/@userflows/$site/-/$QITS_CI_SHA")
+        "https://registry.qits.$qits_domain/artifacts/docs/docs/@userflows/$site/-/$QITS_CI_SHA")
       case "$status" in
         201) echo "published userflows for $site@$QITS_CI_SHA ($QITS_CI_BRANCH)" ;;
         409) echo "userflows for $site@$QITS_CI_SHA are already published — skipping" ;;
@@ -480,7 +489,12 @@ release:
       # is how every hand-written file spelled it: a deployment may re-point the namespace and the
       # declaration may not have to move.
       image=${declared#*/}
-      ref="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
+      # THE ADDRESSES ARE CODE (qits-731): the platform's public domain is the one input, and every
+      # host and path below is a constant under it — registry.qits.<domain> is the image registry
+      # and the hosted @qits scope, mirror.qits.<domain> the npmjs cache. `wohlben.eu` covers a
+      # qits-ci too old to inject $QITS_DOMAIN.
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      ref="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
       echo "releasing $ref"
 
       # --- half one: the bundle -------------------------------------------------------------------
@@ -500,9 +514,9 @@ release:
         done
       fi
 
-      npm_hosted_origin=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).origin')
-      npm_proxy_origin=$(node -p 'new URL(process.env.QITS_NPM_PROXY_URL).origin')
-      npm_hosted_path=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).pathname')
+      npm_hosted_origin="https://registry.qits.$qits_domain"
+      npm_proxy_origin="https://mirror.qits.$qits_domain"
+      npm_hosted_path=/artifacts/npm/npm/
       for dir in $webui_dirs; do
         (
           cd "$dir"
@@ -512,8 +526,8 @@ release:
               -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
               package-lock.json
           fi
-          env npm_config_registry="$QITS_NPM_PROXY_URL" \
-              "npm_config_@qits:registry=$QITS_NPM_REGISTRY_URL" \
+          env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
+              "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
               npm ci --no-audit --no-fund
           npm run build
         )
@@ -521,12 +535,13 @@ release:
 
       # --- half two: the image --------------------------------------------------------------------
       # `push=true` IS THE PUBLISH: the image goes from the builder straight to the registry and
-      # never enters any local image store. $QITS_BUILD_REGISTRY is the registry as the BUILDER
-      # resolves it; $QITS_REGISTRY stays the host daemon's view and is not dialled here.
+      # never enters any local image store, at registry.qits.<domain> — the registry's public name,
+      # which the builder resolves like everything else here.
       buildctl build --frontend dockerfile.v0 \
         --local context=. --local dockerfile=docker \
-        --opt build-arg:QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL" \
-        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --opt build-arg:QITS_DOMAIN="$qits_domain" \
+        --opt build-arg:QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central" \
         --secret id=qits-client-id,src=/tmp/qits-client-id \
         --secret id=qits-client-secret,src=/tmp/qits-client-secret \
         --output "type=image,name=$ref,push=true"
@@ -544,8 +559,9 @@ release:
       buildctl build --frontend dockerfile.v0 \
         --local context=. --local dockerfile=docker \
         --opt target=sbom \
-        --opt build-arg:QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL" \
-        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --opt build-arg:QITS_DOMAIN="$qits_domain" \
+        --opt build-arg:QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central" \
         --secret id=qits-client-id,src=/tmp/qits-client-id \
         --secret id=qits-client-secret,src=/tmp/qits-client-secret \
         --output type=local,dest=.sbom

@@ -91,10 +91,14 @@ release-request:
         printf '%s' "$_minted"
       }
 
-      # -u is load-bearing here (the composer supplies it): with the registry vars unset, an
-      # unset-tolerant script writes a registry-less .npmrc and the install resolves the @qits scope
-      # against npmjs.org, where these packages do not exist and never will. The subshell inherits
-      # it, so an unset variable still kills the step.
+      # THE TWO NPM ROOTS ARE CODE (qits-731): the hosted @qits scope and the npmjs cache are
+      # constant paths under registry.qits.<domain> and mirror.qits.<domain>, and the platform's
+      # public domain is the one input. `wohlben.eu` covers a qits-ci too old to inject
+      # $QITS_DOMAIN — never a registry-less .npmrc, which would resolve the @qits scope against
+      # npmjs.org, where these packages do not exist and never will.
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      npm_hosted_url="https://registry.qits.$qits_domain/artifacts/npm/npm/"
+      npm_proxy_url="https://mirror.qits.$qits_domain/npm/npmjs/"
       #
       # `_authToken` IS THE HOOK because it is the only one npm offers: npm sends it as
       # `Authorization: Bearer <value>`, which is what a publish into qits-artifacts is identified
@@ -105,9 +109,9 @@ release-request:
       # up under the scheme-less form of the registry it is about to dial and does NOT normalise
       # the two ends together — measured on npm 10.9.8 against a real `npm publish`: with
       # `…/npm/hosted` the publish died on ENEEDAUTH with the line sitting right there in the file,
-      # and with `…/npm/hosted/` it sent `Authorization: Bearer …`. `$QITS_NPM_REGISTRY_URL` ends
-      # in a slash today, which is the only reason the `#*:` form below lands on the right key.
-      # A deployment that drops that slash turns this into a silent anonymous publish. `#*:` and not
+      # and with `…/npm/hosted/` it sent `Authorization: Bearer …`. `$npm_hosted_url` ends in a
+      # slash, which is the only reason the `#*:` form below lands on the right key; dropping that
+      # slash turns this into a silent anonymous publish. `#*:` and not
       # `#http:`: the latter leaves `https:` on an https address, and npm then never finds the key.
       #
       # THE MIRROR GETS THE TOKEN TOO. qits-ci writes a token for both hosts into ~/.npmrc before
@@ -125,11 +129,11 @@ release-request:
         _npmrc_token=$(mint_publish_token)
         ( umask 077
           printf 'registry=%s\n@qits:registry=%s\n' \
-            "${QITS_NPM_PROXY_URL}" "${QITS_NPM_REGISTRY_URL}" > ~/.npmrc
+            "$npm_proxy_url" "$npm_hosted_url" > ~/.npmrc
           if [ -n "$_npmrc_token" ]; then
             printf '%s:_authToken=%s\n%s:_authToken=%s\n' \
-              "${QITS_NPM_REGISTRY_URL#*:}" "$_npmrc_token" \
-              "${QITS_NPM_PROXY_URL#*:}" "$_npmrc_token" >> ~/.npmrc
+              "${npm_hosted_url#*:}" "$_npmrc_token" \
+              "${npm_proxy_url#*:}" "$_npmrc_token" >> ~/.npmrc
           fi )
       }
 
@@ -178,6 +182,9 @@ release:
     timeout-seconds: 1800
     script: |
       # Byte-identical to the QA step's preamble; read the rationale there.
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      npm_hosted_url="https://registry.qits.$qits_domain/artifacts/npm/npm/"
+      npm_proxy_url="https://mirror.qits.$qits_domain/npm/npmjs/"
       mint_publish_token() {
         [ -n "${QITS_PUBLISH_TOKEN_COMMAND:-}" ] || return 0
         command -v "$QITS_PUBLISH_TOKEN_COMMAND" >/dev/null 2>&1 || return 0
@@ -188,11 +195,11 @@ release:
         _npmrc_token=$(mint_publish_token)
         ( umask 077
           printf 'registry=%s\n@qits:registry=%s\n' \
-            "${QITS_NPM_PROXY_URL}" "${QITS_NPM_REGISTRY_URL}" > ~/.npmrc
+            "$npm_proxy_url" "$npm_hosted_url" > ~/.npmrc
           if [ -n "$_npmrc_token" ]; then
             printf '%s:_authToken=%s\n%s:_authToken=%s\n' \
-              "${QITS_NPM_REGISTRY_URL#*:}" "$_npmrc_token" \
-              "${QITS_NPM_PROXY_URL#*:}" "$_npmrc_token" >> ~/.npmrc
+              "${npm_hosted_url#*:}" "$_npmrc_token" \
+              "${npm_proxy_url#*:}" "$_npmrc_token" >> ~/.npmrc
           fi )
       }
       pnpm_install() {
@@ -247,7 +254,7 @@ release:
       # cyclonedx-npm reads `package-lock.json` only — there is no flag that changes that. It comes
       # through the mirror like every other package; `--registry` explicitly, because `npm exec`
       # resolves the tool itself and the `@qits:` line in ~/.npmrc covers only that scope.
-      npm exec --yes --registry "$QITS_NPM_PROXY_URL" -- \
+      npm exec --yes --registry "$npm_proxy_url" -- \
         @cyclonedx/cdxgen@11.2.7 -t pnpm --spec-version 1.6 -o sbom.json .
 
       # THE WORKBENCH, AS THE SECOND DECLARED ARTIFACT — same tree, same version, same run. Built

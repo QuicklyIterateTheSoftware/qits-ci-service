@@ -45,6 +45,8 @@ class RunnerAddressesTest {
     RunnerAddresses addresses = addresses("  Example.CO.uk. ");
 
     assertEquals("https://ci.qits.example.co.uk", addresses.ciBase());
+    // And a step is told it in exactly that normalised form, as $QITS_DOMAIN.
+    assertEquals("example.co.uk", addresses.edgeOrigins().orElseThrow().domain());
   }
 
   @Test

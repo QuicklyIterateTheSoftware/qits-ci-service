@@ -55,9 +55,15 @@
 #
 # What the release step hands the builder, and what the Dockerfile must therefore declare:
 #
-#     ARG QITS_NPM_REGISTRY_URL           the hosted registry that serves the @qits scope
-#     ARG QITS_NPM_PROXY_URL              the pull-through cache of npmjs every other install uses
+#     ARG QITS_DOMAIN                     the platform's public domain; the two npm roots are
+#                                         code under it (qits-731): the hosted @qits scope at
+#                                         https://registry.qits.$QITS_DOMAIN/artifacts/npm/npm/ and
+#                                         the npmjs cache at https://mirror.qits.$QITS_DOMAIN/npm/npmjs/
 #     RUN --mount=type=secret,id=qits-npm-token       → /run/secrets/qits-npm-token
+#
+# The step still hands `QITS_NPM_REGISTRY_URL` and `QITS_NPM_PROXY_URL` beside it, derived from the
+# same domain, for the Dockerfiles that have not moved to `QITS_DOMAIN` yet. They go once none reads
+# them; a new Dockerfile declares `QITS_DOMAIN` alone.
 #
 # FILE FORM (`/run/secrets/<id>`), never the `env=` mount form: `env=` needs a dockerfile frontend
 # the BUILDER picks, while the bare file mount is served identically by every frontend version, and
@@ -78,9 +84,9 @@
 # the other order lets the broad expression undo the narrow one); what the Dockerfile owes is this:
 #
 #     RUN --mount=type=secret,id=qits-npm-token \
-#         hosted_origin=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).origin'); \
-#         proxy_origin=$(node -p 'new URL(process.env.QITS_NPM_PROXY_URL).origin'); \
-#         hosted_path=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).pathname'); \
+#         hosted_origin="https://registry.qits.$QITS_DOMAIN"; \
+#         proxy_origin="https://mirror.qits.$QITS_DOMAIN"; \
+#         hosted_path=/artifacts/npm/npm/; \
 #         sed -i -E \
 #           -e "s#(\"resolved\": \")https?://[^/\"]+#\1$proxy_origin#" \
 #           -e "s#(\"resolved\": \")https?://[^/\"]+($hosted_path)#\1$hosted_origin\2#" \
@@ -88,10 +94,10 @@
 #         token=$(cat /run/secrets/qits-npm-token 2>/dev/null || true); \
 #         ( umask 077; \
 #           printf 'registry=%s\n@qits:registry=%s\n' \
-#             "$QITS_NPM_PROXY_URL" "$QITS_NPM_REGISTRY_URL" > ~/.npmrc; \
+#             "$proxy_origin/npm/npmjs/" "$hosted_origin$hosted_path" > ~/.npmrc; \
 #           [ -n "$token" ] && printf '%s:_authToken=%s\n%s:_authToken=%s\n' \
-#             "${QITS_NPM_REGISTRY_URL#*:}" "$token" \
-#             "${QITS_NPM_PROXY_URL#*:}" "$token" >> ~/.npmrc; ) ; \
+#             "${hosted_origin#*:}$hosted_path" "$token" \
+#             "${proxy_origin#*:}/npm/npmjs/" "$token" >> ~/.npmrc; ) ; \
 #         npm ci --no-audit --no-fund && npm run build
 #
 # Two things in that block are measured rather than stylistic. The `_authToken` KEY has to match the
@@ -162,10 +168,14 @@ release-request:
       # `qits-publish npm rewrite-lockfile-origin` is exactly this block, and it is NOT usable here:
       # CiReleaseComposer installs the CLI in RELEASE-phase preludes only, and this is a QA step, so
       # calling it would be `command not found`. The inline form stays until that changes.
+      # THE ADDRESSES ARE CODE (qits-731): the platform's public domain is the one input, and the
+      # hosts and paths are constants under it. `wohlben.eu` covers a qits-ci too old to inject
+      # $QITS_DOMAIN.
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      npm_hosted_origin="https://registry.qits.$qits_domain"
+      npm_proxy_origin="https://mirror.qits.$qits_domain"
+      npm_hosted_path=/artifacts/npm/npm/
       if [ -f package-lock.json ]; then
-        npm_hosted_origin=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).origin')
-        npm_proxy_origin=$(node -p 'new URL(process.env.QITS_NPM_PROXY_URL).origin')
-        npm_hosted_path=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).pathname')
         sed -i -E \
           -e "s#(\"resolved\": \")https?://[^/\"]+#\1$npm_proxy_origin#" \
           -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
@@ -176,8 +186,8 @@ release-request:
       # for a developer on the deployment host), and npm ranks a project .npmrc ABOVE ~/.npmrc — so
       # a `cat > ~/.npmrc` preamble would be written and silently ignored. `npm_config_*`
       # environment outranks both files, so it wins without touching the tree.
-      env npm_config_registry="$QITS_NPM_PROXY_URL" \
-          "npm_config_@qits:registry=$QITS_NPM_REGISTRY_URL" \
+      env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
+          "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
           npm ci --no-audit --no-fund
 
       # `--if-present` rather than a hard call: one recipe covers repositories that do not all carry
@@ -238,7 +248,10 @@ release:
       # is how every hand-written file spelled it: a deployment may re-point the namespace and the
       # declaration may not have to move.
       image=${declared#*/}
-      ref="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
+      # The addresses are code under the platform's public domain (qits-731); `wohlben.eu` covers a
+      # qits-ci too old to inject $QITS_DOMAIN.
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      ref="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
       echo "releasing $ref"
 
       # --- the @qits CREDENTIAL, ON ITS WAY TO THE BUILDER ------------------------------------------
@@ -271,24 +284,26 @@ release:
 
       # --- the image --------------------------------------------------------------------------------
       # `push=true` IS THE PUBLISH: the image goes from the builder straight to the registry and
-      # never enters any local image store. $QITS_BUILD_REGISTRY is the registry as the BUILDER
-      # resolves it; $QITS_REGISTRY stays the host daemon's view and is not dialled here.
+      # never enters any local image store, at registry.qits.<domain> — the registry's public name,
+      # which the builder resolves like everything else here.
       #
       # NO --network host, AND NOTHING REPLACES IT. Every `RUN` executes in the builder's own
       # namespace — the runner's buildkitd — so the two npm addresses below are the RUN's, the
       # platform's public names, which the builder reaches exactly as the step does.
       #
-      # THE TWO ORIGINS ARE BUILD ARGS AND THE TOKEN IS A SECRET, and that split is the contract the
+      # THE DOMAIN IS A BUILD ARG AND THE TOKEN IS A SECRET, and that split is the contract the
       # header states: an origin is not a credential and the build needs it in an `ARG`; a credential
       # in a build arg is written into the image history, where anyone who pulls the image reads it.
+      # The two npm urls ride beside the domain for the Dockerfiles that still read them.
       #
       # The Maven pair java-service passes is DROPPED — there is no Maven in an `-app` — and so is
       # the .gitmodules walk and the per-webui npm build: an `-app` has no webui submodule and builds
       # its own tree, inside the Dockerfile.
       buildctl build --frontend dockerfile.v0 \
         --local context=. --local dockerfile=docker \
-        --opt build-arg:QITS_NPM_REGISTRY_URL="$QITS_NPM_REGISTRY_URL" \
-        --opt build-arg:QITS_NPM_PROXY_URL="$QITS_NPM_PROXY_URL" \
+        --opt build-arg:QITS_DOMAIN="$qits_domain" \
+        --opt build-arg:QITS_NPM_REGISTRY_URL="https://registry.qits.$qits_domain/artifacts/npm/npm/" \
+        --opt build-arg:QITS_NPM_PROXY_URL="https://mirror.qits.$qits_domain/npm/npmjs/" \
         --secret id=qits-npm-token,src=/tmp/qits-npm-token \
         --output "type=image,name=$ref,push=true"
 
@@ -304,5 +319,5 @@ release:
       # It reads the lockfile rather than an installed tree, which is why the step needs no `npm ci`
       # — the install happens inside the Dockerfile.
       mkdir -p .sbom
-      npm exec --yes --registry "$QITS_NPM_PROXY_URL" -- \
+      npm exec --yes --registry "https://mirror.qits.$qits_domain/npm/npmjs/" -- \
         @cyclonedx/cdxgen@11.2.7 --spec-version 1.6 -o .sbom/sbom.json .

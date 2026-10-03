@@ -21,6 +21,7 @@ class StepAddressPlaneTest {
   void everyAddressIsThePublicNameOfTheServiceThatAnswersIt() {
     StepAddressPlane plane = StepFixtures.plane();
 
+    assertEquals("example.org", plane.domain());
     assertEquals("wss://ci.qits.example.org/ci/daemon", plane.daemonUrl());
     assertEquals("https://githost.qits.example.org", plane.gitBaseUrl());
     assertEquals(

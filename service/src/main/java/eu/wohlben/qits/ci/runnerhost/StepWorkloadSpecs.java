@@ -106,6 +106,15 @@ public final class StepWorkloadSpecs {
     // non-interactive mode, and one that says which CI this is.
     env.put("CI", "true");
     env.put("QITS_CI", "true");
+    // THE ONE ADDRESS INPUT A RECIPE READS (qits-731): the platform's bare public domain, the one
+    // every address below is composed from. A host is code, not configuration — `registry.qits.<d>`
+    // serves the hosted npm, maven and OCI stores, `mirror.qits.<d>` the npmjs and Maven Central
+    // caches, each under a constant path (StepAddressPlane's) — so a recipe spells those itself
+    // from this one value. Never empty: a qits-ci with no public domain launches no step at all.
+    //
+    // The URL variables below are the same addresses composed here, and survive this release only
+    // for the recipes still read at a repository's main that name them; they go once none does.
+    env.put("QITS_DOMAIN", value(plane.domain()));
     // Also for the script: where a published image goes. Every container gets them, because "which
     // registry" must never be a literal in a repository's pipeline. Together with $QITS_CI_SHA above
     // they are the whole of the tag convention qits-cd pulls by,

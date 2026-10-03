@@ -58,17 +58,21 @@ steps:
       [ -n "${HOME:-}" ] && [ -w "$HOME" ] || export HOME=/tmp
 
       # The same install the `app` QA step runs, lockfile-origin swap included.
+      # THE ADDRESSES ARE CODE (qits-731): the platform's public domain is the one input, and the
+      # hosts and paths are constants under it. `wohlben.eu` covers a qits-ci too old to inject
+      # $QITS_DOMAIN.
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      npm_hosted_origin="https://registry.qits.$qits_domain"
+      npm_proxy_origin="https://mirror.qits.$qits_domain"
+      npm_hosted_path=/artifacts/npm/npm/
       if [ -f package-lock.json ]; then
-        npm_hosted_origin=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).origin')
-        npm_proxy_origin=$(node -p 'new URL(process.env.QITS_NPM_PROXY_URL).origin')
-        npm_hosted_path=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).pathname')
         sed -i -E \
           -e "s#(\"resolved\": \")https?://[^/\"]+#\1$npm_proxy_origin#" \
           -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
           package-lock.json
       fi
-      env npm_config_registry="$QITS_NPM_PROXY_URL" \
-          "npm_config_@qits:registry=$QITS_NPM_REGISTRY_URL" \
+      env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
+          "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
           npm ci --no-audit --no-fund
 
       # Writes every reference that is missing or differs. A spec that fails for any

@@ -70,10 +70,14 @@ release-request:
       # `qits-publish npm rewrite-lockfile-origin` is exactly this block, and it is NOT usable here:
       # CiReleaseComposer installs the CLI in RELEASE-phase preludes only, and this is a QA step, so
       # calling it would be `command not found`. The inline form stays until that changes.
+      # THE ADDRESSES ARE CODE (qits-731): the platform's public domain is the one input, and the
+      # hosts and paths are constants under it. `wohlben.eu` covers a qits-ci too old to inject
+      # $QITS_DOMAIN.
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      npm_hosted_origin="https://registry.qits.$qits_domain"
+      npm_proxy_origin="https://mirror.qits.$qits_domain"
+      npm_hosted_path=/artifacts/npm/npm/
       if [ -f package-lock.json ]; then
-        npm_hosted_origin=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).origin')
-        npm_proxy_origin=$(node -p 'new URL(process.env.QITS_NPM_PROXY_URL).origin')
-        npm_hosted_path=$(node -p 'new URL(process.env.QITS_NPM_REGISTRY_URL).pathname')
         sed -i -E \
           -e "s#(\"resolved\": \")https?://[^/\"]+#\1$npm_proxy_origin#" \
           -e "s#(\"resolved\": \")https?://[^/\"]+($npm_hosted_path)#\1$npm_hosted_origin\2#" \
@@ -84,8 +88,8 @@ release-request:
       # for a developer on the deployment host), and npm ranks a project .npmrc ABOVE ~/.npmrc — so
       # a `cat > ~/.npmrc` preamble would be written and silently ignored. `npm_config_*`
       # environment outranks both files, so it wins without touching the tree.
-      env npm_config_registry="$QITS_NPM_PROXY_URL" \
-          "npm_config_@qits:registry=$QITS_NPM_REGISTRY_URL" \
+      env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
+          "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
           npm ci --no-audit --no-fund
 
       # `--if-present` rather than a hard call: see the header. A repository that grows the script

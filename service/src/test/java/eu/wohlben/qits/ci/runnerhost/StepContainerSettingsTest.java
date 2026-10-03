@@ -148,6 +148,9 @@ public class StepContainerSettingsTest {
     env.put("QITS_CI_REPO_NAME", "");
     env.put("CI", "true");
     env.put("QITS_CI", "true");
+    // The bare domain every address below is composed from, and the one a recipe derives its own
+    // registry and mirror addresses from (qits-731).
+    env.put("QITS_DOMAIN", "example.org");
     env.put("QITS_REGISTRY", "registry.qits.example.org");
     env.put("QITS_IMAGE_REPOSITORY", "qits");
     env.put("QITS_NPM_REGISTRY_URL", "https://registry.qits.example.org/artifacts/npm/npm/");
@@ -421,6 +424,15 @@ public class StepContainerSettingsTest {
       assertEquals("registry.qits.example.org", env.get("QITS_REGISTRY"));
       assertEquals("qits", env.get("QITS_IMAGE_REPOSITORY"));
       assertEquals("cafebabe", env.get("QITS_CI_SHA"));
+    }
+  }
+
+  @Test
+  public void everyStepIsToldThePublicDomainItsAddressesAreComposedFrom() {
+    // qits-731: hosts are code, so a recipe needs the domain and nothing else to spell
+    // registry.qits.<domain> and mirror.qits.<domain>. Unconditional, and bare: no scheme, no label.
+    for (LaunchSpec each : List.of(spec, publishing())) {
+      assertEquals("example.org", compose(each).env().get("QITS_DOMAIN"));
     }
   }
 

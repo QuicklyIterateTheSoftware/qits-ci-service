@@ -112,7 +112,9 @@ release:
           exit 1 ;;
       esac
       image=${declared#*/}
-      ref="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
+      # The registry is code under the platform's public domain (qits-731); `wohlben.eu` covers a
+      # qits-ci too old to inject $QITS_DOMAIN.
+      ref="registry.qits.${QITS_DOMAIN:-wohlben.eu}/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
       echo "releasing $ref"
 
       dockerfile_dir=.
@@ -122,8 +124,7 @@ release:
 
       # `push=true` IS THE PUBLISH: the image goes from the builder straight to the registry and
       # never enters any local image store, which is why there is no `docker rmi` question here at
-      # all. $QITS_BUILD_REGISTRY is the registry as the BUILDER resolves it; $QITS_REGISTRY stays
-      # the host daemon's view and is not dialled from a step.
+      # all. The registry is its public name, which the builder resolves like everything else.
       buildctl build --frontend dockerfile.v0 \
         --local context=. --local dockerfile="$dockerfile_dir" \
         --output "type=image,name=$ref,push=true"

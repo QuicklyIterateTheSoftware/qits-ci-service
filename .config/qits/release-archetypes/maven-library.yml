@@ -89,12 +89,14 @@ release-request:
     script: |
       # The platform registry: the poms' default names a host-published address that is unreachable
       # from inside a step container, and the derived non-localhost address then needs the exact-id
-      # mirror in .qits-maven-settings.xml to get past Maven's HTTP blocker.
-      export QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL"
-      # Maven Central through the platform mirror's public name. EMPTY IS THE OFF SWITCH — an
-      # older qits-ci that injects nothing, or a deployment with the mirror plane off, leaves this
-      # empty, which deactivates the settings profile so Central is resolved directly.
-      export QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}"
+      # mirror in .qits-maven-settings.xml to get past Maven's HTTP blocker. Both addresses are
+      # code under the platform's public domain (qits-731): the hosted registry on registry.qits,
+      # Maven Central through the mirror's public name. `wohlben.eu` covers a qits-ci too old to
+      # inject $QITS_DOMAIN. Exported because .qits-maven-settings.xml reads both as
+      # ${env.QITS_MAVEN_REPOSITORY_URL} and ${env.QITS_MAVEN_CENTRAL_URL}.
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
+      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
       ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
         -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL"
 
@@ -103,8 +105,9 @@ release:
   - image: qits/build-images/maven-base:latest
     timeout-seconds: 1800
     script: |
-      export QITS_MAVEN_REPOSITORY_URL="$QITS_MAVEN_REGISTRY_URL"
-      export QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}"
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
+      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
 
       # THIS SCRIPT IS READ AT MAIN AND RUNS AGAINST THE TAG, which may predate a file it names. The
       # settings file arrived on 2026-08-11 and a bootstrap replaying an older tag measured the
@@ -135,4 +138,4 @@ release:
         package \
         org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeBom \
         -DoutputFormat=json -DoutputName=sbom -DschemaVersion=1.6 \
-        -Dqits.maven.repository.url="$QITS_MAVEN_REGISTRY_URL"
+        -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL"

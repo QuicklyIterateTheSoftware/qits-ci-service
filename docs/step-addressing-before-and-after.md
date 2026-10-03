@@ -13,6 +13,7 @@ qits-441.
 | `QITS_CI_DAEMON_URL` | `ws://<env>-qits-ci:8080/ci/daemon` | `wss://ci.<env>.<domain>/ci/daemon` |
 | `QITS_CI_DAEMON_BINARY_URL` | `http://<env>-qits-artifacts:8080/artifacts/daemons/qits-ci-daemon/<v>` | `https://registry.<env>.<domain>/artifacts/daemons/qits-ci-daemon/<v>` (Bearer `QITS_TOKEN`) |
 | `QITS_CI_REPOSITORY_URL` | `http://<env>-qits-platform-edge:8080/git/<project>/<repo>` | `https://githost.<env>.<domain>/git/<project>/<repo>` |
+| `QITS_DOMAIN` | absent | the bare public domain, `<domain>` — the one address input a recipe reads (qits-731, see below) |
 | `QITS_REGISTRY`, `QITS_BUILD_REGISTRY` | internal registry alias | `registry.<env>.<domain>` |
 | `QITS_NPM_REGISTRY_URL`, `QITS_NPM_PROXY_URL` | internal artifacts/mirror aliases + path | `https://registry.<env>.<domain>/artifacts/npm/…`, `https://mirror.<env>.<domain>/…` (same paths, new origins) |
 | `QITS_MAVEN_REGISTRY_URL`, `QITS_MAVEN_*_URL` | internal + path | same paths on the registry and mirror vhosts |
@@ -26,7 +27,7 @@ qits-441.
 ```
 git   : credential helper → username=oauth2 password=$QITS_TOKEN        (edge: Basic oauth2:<token> → introspect)
 maven : <server><configuration><httpHeaders> Authorization: Bearer $QITS_TOKEN
-npm   : //registry.<env>.<domain>/:_authToken=$QITS_TOKEN  (and the mirror host)
+npm   : //registry.qits.$QITS_DOMAIN/:_authToken=$QITS_TOKEN  (and mirror.qits.$QITS_DOMAIN) — hosts derived from QITS_DOMAIN
 docker: config.json auths["registry.<env>.<domain>"].auth = base64("token:$QITS_TOKEN")   (edge realm: Basic any:<token>)
 publish: QITS_PUBLISH_TOKEN_COMMAND prints $QITS_TOKEN; qits-publish sends it as Bearer
 ```
@@ -57,12 +58,34 @@ handshake has one credential, not two.
 The owner ruled on 2026-09-30 that a cold bootstrap brings the edge up before it starts its same-node
 runner, and that runner is EDGE as well.
 
+## Hosts are code: `QITS_DOMAIN` (qits-731)
+
+The EDGE column's URL variables are still sent, and each is still the same address — but they are
+no longer what a recipe reads. Every step is also told `QITS_DOMAIN`, the platform's bare public
+domain (live: `wohlben.eu`), and the hosts and paths are constants a recipe spells from it:
+
+| what | address |
+|---|---|
+| image registry | `registry.qits.$QITS_DOMAIN` |
+| hosted npm (`@qits/*`) | `https://registry.qits.$QITS_DOMAIN/artifacts/npm/npm/` |
+| npmjs cache | `https://mirror.qits.$QITS_DOMAIN/npm/npmjs/` |
+| hosted maven | `https://registry.qits.$QITS_DOMAIN/artifacts/maven/maven` |
+| Maven Central cache | `https://mirror.qits.$QITS_DOMAIN/mirror/maven/central` |
+| docs store | `https://registry.qits.$QITS_DOMAIN/artifacts/docs/docs` |
+
+Every packaged archetype and platform pipeline reads `QITS_DOMAIN` (falling back to `wohlben.eu`
+under a qits-ci too old to send it) and passes it to image builds as the `QITS_DOMAIN` build-arg
+beside the old URL build-args. `QITS_DOMAIN` is never empty in a step: a qits-ci with no dotted
+public domain composes no address and launches no step at all (`EDGE_PLANE_UNCONFIGURED`). The URL
+variables and the URL build-args are removed once no recipe read at a repository's main and no
+Dockerfile names them.
+
 ## What the bootstrap writes from one token
 
 ```
 git   : credential helper → username=oauth2 password=$QITS_TOKEN        (edge: Basic oauth2:<token> → introspect)
 maven : <server><configuration><httpHeaders> Authorization: Bearer $QITS_TOKEN
-npm   : //registry.<env>.<domain>/:_authToken=$QITS_TOKEN  (and the mirror host)
+npm   : //registry.qits.$QITS_DOMAIN/:_authToken=$QITS_TOKEN  (and mirror.qits.$QITS_DOMAIN) — hosts derived from QITS_DOMAIN
 docker: config.json auths["registry.<env>.<domain>"].auth = base64("token:$QITS_TOKEN")   (edge realm: Basic any:<token>)
 publish: QITS_PUBLISH_TOKEN_COMMAND prints $QITS_TOKEN; qits-publish sends it as Bearer
 ```

@@ -193,6 +193,7 @@ public class RunnerAddresses {
         .map(
             ci ->
                 new StepAddressPlane.EdgeOrigins(
+                    publicDomain().orElseThrow(),
                     ci,
                     publicOrigin(ARTIFACTS_HOST).orElseThrow(),
                     publicOrigin(MIRROR_HOST).orElseThrow(),
@@ -215,10 +216,19 @@ public class RunnerAddresses {
    * dot in it is a developer's single-label {@code localhost}, which names no public host.
    */
   Optional<String> publicOrigin(String host) {
+    return publicDomain().map(value -> "https://" + host + "." + PLATFORM_PROJECT + "." + value);
+  }
+
+  /**
+   * The public domain every origin above is composed from — lower case, no leading or trailing dot —
+   * or empty when none is stated or it is a single label. It is a step's {@code $QITS_DOMAIN}, so a
+   * step is told exactly the domain its addresses were composed from, and is never told one at all
+   * on a qits-ci that could compose none of them.
+   */
+  Optional<String> publicDomain() {
     return set(domain)
         .map(value -> value.toLowerCase(Locale.ROOT).replaceAll("^\\.+|\\.+$", ""))
-        .filter(value -> value.indexOf('.') > 0)
-        .map(value -> "https://" + host + "." + PLATFORM_PROJECT + "." + value);
+        .filter(value -> value.indexOf('.') > 0);
   }
 
   private UnconfiguredException unconfigured(String what, String overrideKey) {

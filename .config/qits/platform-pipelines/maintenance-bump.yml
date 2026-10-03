@@ -65,10 +65,9 @@ steps:
       branch=$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -er '.branch')
       base=$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r '.baseRef // "main"')
 
-      # Every value below reaches an argv or an awk -v. A version also reaches a sed
-      # replacement in the npm step, and `#` is that expression's own delimiter, so the
-      # charset is refused rather than quoted - the hop files this replaces argue it in
-      # full. Nothing legitimate here needs a character outside these sets.
+      # Every value below reaches an argv or an awk -v, so the charset is refused rather
+      # than quoted - the hop files this replaces argue it in full. Nothing legitimate
+      # here needs a character outside these sets.
       case "$group" in ''|*[!0-9A-Za-z._-]*) echo "refusing an implausible group: $group" >&2; exit 1 ;; esac
       for ref in "$branch" "$base"; do
         case "$ref" in
@@ -370,26 +369,63 @@ steps:
         fi
 
         if [ "$ecosystem" = "npm" ]; then
-          if [ -z "${QITS_NPM_PROXY_URL:-}" ] || [ -z "${QITS_NPM_REGISTRY_URL:-}" ]; then
-            echo "this deployment injects no npm registry roots" >&2
+          # THE TWO NPM ROOTS ARE CODE (qits-731): the hosted @qits scope and the npmjs
+          # cache are constant paths under registry.qits.<domain> and mirror.qits.<domain>,
+          # and the platform's public domain is the one input. Both answer 401
+          # anonymously; the step's ~/.npmrc already carries the run's token for both
+          # hosts, written by qits-ci's bootstrap before this script started.
+          if [ -z "${QITS_DOMAIN:-}" ]; then
+            echo "this step was told no QITS_DOMAIN, so it has no npm registry to resolve against" >&2
             exit 1
           fi
+          registry_origin="https://registry.qits.$QITS_DOMAIN"
+          mirror_origin="https://mirror.qits.$QITS_DOMAIN"
           dir=$(dirname "$manifest")
           lock="$dir/package-lock.json"
           [ -f "$lock" ] || { echo "no package-lock.json beside $manifest" >&2; exit 1; }
-          # The lock-origin dance: the committed lock names a canonical origin that no
-          # deployment answers on, so it is rewritten to this platform's proxy for the
-          # install and back afterwards. The guard is what keeps a foreign origin from
-          # riding in on a resolved url.
-          origin=$(node -p 'new URL(process.env.QITS_NPM_PROXY_URL).origin')
-          sed -i -E "s#(\"resolved\": \")https?://[^/\"]+#\1$origin#" "$lock"
+          # THE SPECIFIER KEEPS ITS SHAPE. Read from whichever section holds the entry:
+          # an exact pin stays exact, a `^`/`~` range keeps its operator around the new
+          # version. Anything else - a wider range, a tag, a file: or git: source - is
+          # not a version a bump can move without changing what it means, so it is
+          # refused rather than rewritten to `^<to>`, which is what npm would do. Both
+          # flags are always passed, so a repository's own .npmrc `save-exact` cannot
+          # turn a `^` into a pin or a pin into a `^`.
+          current=$(BUMP_MANIFEST="$manifest" BUMP_NAME="$name" node -p '
+            const m = JSON.parse(require("fs").readFileSync(process.env.BUMP_MANIFEST, "utf8"));
+            const hit = ["dependencies", "devDependencies", "optionalDependencies"]
+              .map((s) => (m[s] || {})[process.env.BUMP_NAME])
+              .find((v) => typeof v === "string");
+            hit === undefined ? "" : hit')
+          case "$current" in
+            '') echo "$manifest declares no dependency on $name" >&2; exit 1 ;;
+            [0-9]*) exact=true; prefix= ;;
+            '^'[0-9]*) exact=false; prefix='^' ;;
+            '~'[0-9]*) exact=false; prefix='~' ;;
+            *) echo "refusing to bump $name: $manifest pins it as '$current', which is not an exact version, ^ or ~" >&2; exit 1 ;;
+          esac
+          # NO LOCKFILE REWRITE, in either direction. The install resolves against the
+          # platform's own public names and writes them into `resolved` as it finds them;
+          # environment rather than a file, because a committed project .npmrc outranks
+          # ~/.npmrc and `npm_config_*` outranks both.
           ( cd "$dir" \
-            && env npm_config_registry="$QITS_NPM_PROXY_URL" \
-                   "npm_config_@qits:registry=$QITS_NPM_REGISTRY_URL" \
-                   npm install --package-lock-only --no-audit --no-fund "$name@$to" )
-          sed -i -E "s#(\"resolved\": \")https?://[^/\"]+#\1http://localhost:8081#" "$lock"
-          if grep '"resolved": "' "$lock" | grep -v '"resolved": "http://localhost:8081/'; then
-            echo "a foreign origin survived in $lock" >&2
+            && env npm_config_registry="$mirror_origin/npm/npmjs/" \
+                   "npm_config_@qits:registry=$registry_origin/artifacts/npm/npm/" \
+                   npm install --package-lock-only --no-audit --no-fund \
+                     "--save-exact=$exact" "--save-prefix=$prefix" "$name@$to" )
+          # EVERY ORIGIN IN THE LOCK IS THE PLATFORM'S, OR THE BUMP FAILS. A lock still on
+          # an old placeholder (`http://localhost:8081`) or naming any other host keeps
+          # those entries across the install, and committing it would push a lockfile no
+          # step can install from. It is a migration the repository owes, so it is said
+          # here, with the entries named, rather than papered over by a rewrite.
+          foreign=$(grep -o '"resolved": *"[^"]*"' "$lock" \
+            | sed -e 's/^"resolved": *"//' -e 's/"$//' \
+            | awk -v r="$registry_origin/" -v m="$mirror_origin/" \
+                'index($0, r) != 1 && index($0, m) != 1' \
+            | head -n 5)
+          if [ -n "$foreign" ]; then
+            echo "$lock resolves packages outside $registry_origin and $mirror_origin, for example:" >&2
+            printf '  %s\n' $foreign >&2
+            echo "regenerate the lockfile against those two registries before this dependency can be bumped" >&2
             exit 1
           fi
           git add -- "$manifest" "$lock"

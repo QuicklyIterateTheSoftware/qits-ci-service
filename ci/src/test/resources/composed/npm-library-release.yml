@@ -42,6 +42,9 @@ steps:
       # --- the declared step, run as data -------------------------------------------
       cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
       # Byte-identical to the QA step's preamble; read the rationale there.
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      npm_hosted_url="https://registry.qits.$qits_domain/artifacts/npm/npm/"
+      npm_proxy_url="https://mirror.qits.$qits_domain/npm/npmjs/"
       mint_publish_token() {
         [ -n "${QITS_PUBLISH_TOKEN_COMMAND:-}" ] || return 0
         command -v "$QITS_PUBLISH_TOKEN_COMMAND" >/dev/null 2>&1 || return 0
@@ -52,11 +55,11 @@ steps:
         _npmrc_token=$(mint_publish_token)
         ( umask 077
           printf 'registry=%s\n@qits:registry=%s\n' \
-            "${QITS_NPM_PROXY_URL}" "${QITS_NPM_REGISTRY_URL}" > ~/.npmrc
+            "$npm_proxy_url" "$npm_hosted_url" > ~/.npmrc
           if [ -n "$_npmrc_token" ]; then
             printf '%s:_authToken=%s\n%s:_authToken=%s\n' \
-              "${QITS_NPM_REGISTRY_URL#*:}" "$_npmrc_token" \
-              "${QITS_NPM_PROXY_URL#*:}" "$_npmrc_token" >> ~/.npmrc
+              "${npm_hosted_url#*:}" "$_npmrc_token" \
+              "${npm_proxy_url#*:}" "$_npmrc_token" >> ~/.npmrc
           fi )
       }
       pnpm_install() {
@@ -111,7 +114,7 @@ steps:
       # cyclonedx-npm reads `package-lock.json` only — there is no flag that changes that. It comes
       # through the mirror like every other package; `--registry` explicitly, because `npm exec`
       # resolves the tool itself and the `@qits:` line in ~/.npmrc covers only that scope.
-      npm exec --yes --registry "$QITS_NPM_PROXY_URL" -- \
+      npm exec --yes --registry "$npm_proxy_url" -- \
         @cyclonedx/cdxgen@11.2.7 -t pnpm --spec-version 1.6 -o sbom.json .
 
       # THE WORKBENCH, AS THE SECOND DECLARED ARTIFACT — same tree, same version, same run. Built

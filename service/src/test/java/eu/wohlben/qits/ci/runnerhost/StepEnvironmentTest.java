@@ -52,6 +52,7 @@ class StepEnvironmentTest {
         "QITS_CI_REPO_NAME=qits-ci-service",
         "CI=true",
         "QITS_CI=true",
+        "QITS_DOMAIN=example.org",
         "QITS_REGISTRY=registry.qits.example.org",
         "QITS_IMAGE_REPOSITORY=qits",
         "QITS_NPM_REGISTRY_URL=https://registry.qits.example.org/artifacts/npm/npm/",

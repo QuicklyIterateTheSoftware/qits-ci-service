@@ -77,7 +77,7 @@
 #
 # THE TARBALL URLS ARE THE RUN'S, NOT THE DOCKERFILE'S DEFAULTS. BuildKit resolves an `ADD <url>` in
 # the BUILDER's network context, not the step's; the committed defaults name an edge vhost on the
-# host loopback. The route is `$QITS_MAVEN_REGISTRY_URL`, the run's registry — its public name,
+# host loopback. The route is the hosted maven repository on `registry.qits.$QITS_DOMAIN` — its public name,
 # where an anonymous read answers 401. So the `ADD` carries the run's token as the BuildKit session
 # secret `HTTP_AUTH_TOKEN_<host>`, which BuildKit's HTTP source sends as `Authorization: Bearer`; it
 # is passed only when `$QITS_TOKEN` is set. The maven COORDINATE is read out of the Dockerfile
@@ -116,23 +116,28 @@ release-request:
       # Dockerfile: it can only name what the owning repository last pushed, so it keeps the bare
       # tag. The owner, below, computes its own — and the owner is the only one that could ever
       # race itself, because it is the only one that pushes.
-      builder="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25"
+      #
+      # THE ADDRESSES ARE CODE (qits-731): the registry is registry.qits.<domain>, the hosted maven
+      # repository and the mirror's Central constant paths under it and mirror.qits.<domain>.
+      # `wohlben.eu` covers a qits-ci too old to inject $QITS_DOMAIN.
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      builder="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25"
 
       # The toolchain image, when this repository owns it. See the header, both for why it is a
       # pushed image and for why its tag is derived from the inputs rather than fixed.
       if [ -f docker/Dockerfile.musl-builder ]; then
-        maven_root="${QITS_MAVEN_REGISTRY_URL%/}"
+        maven_root="https://registry.qits.$qits_domain/artifacts/maven/maven"
         musl_url=$(sed -n 's/^ARG MUSL_URL=//p' docker/Dockerfile.musl-builder)
         zlib_url=$(sed -n 's/^ARG ZLIB_URL=//p' docker/Dockerfile.musl-builder)
         : "${musl_url:?docker/Dockerfile.musl-builder declares no ARG MUSL_URL}"
         : "${zlib_url:?docker/Dockerfile.musl-builder declares no ARG ZLIB_URL}"
         musl_url="$maven_root${musl_url#*/artifacts/maven/maven}"
         zlib_url="$maven_root${zlib_url#*/artifacts/maven/maven}"
-        # The Dockerfile's bytes AND the two urls it will be built with — the urls carry
-        # $QITS_MAVEN_REGISTRY_URL, so a deployment that re-points the registry gets its own
-        # toolchain rather than inheriting one built against an address it does not use.
+        # The Dockerfile's bytes AND the two urls it will be built with — the urls carry the
+        # registry's address, so a deployment on another domain gets its own toolchain rather than
+        # inheriting one built against an address it does not use.
         builder_tag=$( { cat docker/Dockerfile.musl-builder; printf '%s\n%s\n' "$musl_url" "$zlib_url"; } | sha256sum | cut -c1-16 )
-        builder="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25-$builder_tag"
+        builder="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25-$builder_tag"
         # THE TARBALL `ADD` NEEDS THE RUN'S TOKEN (qits-441, qits-541): $maven_root is the public
         # registry, which answers an anonymous read 401. BuildKit's HTTP source sends a session
         # secret named HTTP_AUTH_TOKEN_<url host> as `Authorization: Bearer`, so the secret is keyed
@@ -154,9 +159,9 @@ release-request:
       fi
 
       # No `--network host` and nothing replaces it: the `RUN` executes in the builder's namespace —
-      # the runner's own buildkitd — so Maven Central goes through the run's mirror, and an empty
-      # $QITS_MAVEN_PROXY_URL still deactivates the settings profile so the resolve goes to Central
-      # directly.
+      # the runner's own buildkitd — so Maven Central goes through the mirror's public name.
+      # `QITS_DOMAIN` rides beside the central url, which stays for the Dockerfiles that still
+      # read it.
       #
       # THE CREDENTIAL IS THE TWO SECRET FILES, AND IT IS UNCONDITIONAL, unlike the tarball's: the
       # files qits-ci's prelude writes become QITS_MAVEN_AUTH_USR/PSW inside the mvnw RUN
@@ -166,7 +171,8 @@ release-request:
         --local context=. --local dockerfile=docker \
         --opt target=binary \
         --opt build-arg:BUILDER_IMAGE="$builder" \
-        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --opt build-arg:QITS_DOMAIN="$qits_domain" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central" \
         --secret id=qits-client-id,src=/tmp/qits-client-id \
         --secret id=qits-client-secret,src=/tmp/qits-client-secret \
         --output type=local,dest=out
@@ -205,10 +211,11 @@ release:
       # the same registry produce the same `jdk-25-<hash>` in both phases, so `BUILDER_IMAGE` is
       # the same string and the native compile below is a cache hit on the fold that gated this
       # release rather than a second one. See the header.
-      builder="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25"
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
+      builder="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25"
 
       if [ -f docker/Dockerfile.musl-builder ]; then
-        maven_root="${QITS_MAVEN_REGISTRY_URL%/}"
+        maven_root="https://registry.qits.$qits_domain/artifacts/maven/maven"
         musl_url=$(sed -n 's/^ARG MUSL_URL=//p' docker/Dockerfile.musl-builder)
         zlib_url=$(sed -n 's/^ARG ZLIB_URL=//p' docker/Dockerfile.musl-builder)
         : "${musl_url:?docker/Dockerfile.musl-builder declares no ARG MUSL_URL}"
@@ -216,7 +223,7 @@ release:
         musl_url="$maven_root${musl_url#*/artifacts/maven/maven}"
         zlib_url="$maven_root${zlib_url#*/artifacts/maven/maven}"
         builder_tag=$( { cat docker/Dockerfile.musl-builder; printf '%s\n%s\n' "$musl_url" "$zlib_url"; } | sha256sum | cut -c1-16 )
-        builder="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25-$builder_tag"
+        builder="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25-$builder_tag"
         # The QA step's tarball credential, byte for byte: the run's token, when the step holds one.
         tarball_auth=
         if [ -n "${QITS_TOKEN:-}" ]; then
@@ -237,7 +244,8 @@ release:
         --local context=. --local dockerfile=docker \
         --opt target=binary \
         --opt build-arg:BUILDER_IMAGE="$builder" \
-        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --opt build-arg:QITS_DOMAIN="$qits_domain" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central" \
         --secret id=qits-client-id,src=/tmp/qits-client-id \
         --secret id=qits-client-secret,src=/tmp/qits-client-secret \
         --output type=local,dest=out
@@ -253,7 +261,8 @@ release:
         --local context=. --local dockerfile=docker \
         --opt target=sbom \
         --opt build-arg:BUILDER_IMAGE="$builder" \
-        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --opt build-arg:QITS_DOMAIN="$qits_domain" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central" \
         --secret id=qits-client-id,src=/tmp/qits-client-id \
         --secret id=qits-client-secret,src=/tmp/qits-client-secret \
         --output type=local,dest=out

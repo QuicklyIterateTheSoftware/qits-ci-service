@@ -152,7 +152,7 @@ public class CiDaemonBootstrapTokenTest {
         "-gs " + path(SETTINGS_PATH) + "\n",
         Files.readString(work.resolve("inherited-maven-args")));
 
-    // 4. npm: one _authToken per registry host the two roots name, appended to ~/.npmrc.
+    // 4. npm: one _authToken per npm host derived from $QITS_DOMAIN, appended to ~/.npmrc.
     assertEquals(
         "//registry.qits.example.org/:_authToken="
             + TOKEN
