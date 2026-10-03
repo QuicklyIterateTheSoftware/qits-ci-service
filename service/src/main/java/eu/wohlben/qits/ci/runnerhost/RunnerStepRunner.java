@@ -38,8 +38,13 @@ import org.jboss.logging.Logger;
  * {@code NEVER_STARTED}, a {@code LaunchFailed} is {@code LAUNCH_FAILED} carrying docker's own
  * words, and a socket that goes away is {@code CONNECTION_LOST}.
  *
- * <p><b>Two sockets can be lost now.</b> The daemon's ends the step at once, as it always did. The
- * runner's does not any more (qits-545): a runner that drops its socket keeps the step's container
+ * <p><b>Two sockets can be lost now, and neither ends the step at once.</b> The daemon's waits
+ * {@code qits.ci.daemon.reconnect-grace-seconds} for the daemon to dial again (qits-748): both
+ * sockets cross the platform edge, so an edge redeploy drops them together while the container keeps
+ * running, and the daemon re-dials, says {@code Hello} again and is sent its step again — the
+ * awaits here simply keep waiting through the gap, inside their own deadlines, and only a daemon
+ * that does not come back in time ends the step {@code CONNECTION_LOST} ({@link
+ * CiDaemonRegistry#onClose}). The runner's (qits-545): a runner that drops its socket keeps the step's container
  * and comes back for the run, so the step is only over once the registry says the <em>run</em> is
  * lost — its runner did not come back inside the grace, or came back without it ({@link
  * CiRunnerRegistry#onRunLost}). Then a loss hook reaps the step's launch record, which completes

@@ -401,6 +401,17 @@ runner does not claim (a restarted process, a runner older than the claim), ends
 `CONNECTION_LOST`, its output naming the runner (`[runner <name> disconnected]`); the run is an
 ordinary failed run and retries like one. A deleted or retired runner's runs get no grace.
 
+**The step's daemon socket has a grace of its own** (qits-748). It crosses the same edge, so an edge
+redeploy drops it together with the runner's while the container keeps running. A dropped daemon
+socket completes nothing: the launch waits `qits.ci.daemon.reconnect-grace-seconds` (60) for the
+daemon to dial again with the same token and name the same launch in a fresh `Hello` — admitted like
+the first once the old connection has closed (an open one still makes the second `ALREADY_CONNECTED`),
+answered an `Ack`, then its `RunStep` again (a daemon ignores a second) and any `Cancel` that found no
+socket. Replayed `StepChunk`s at or below the highest `seq` already relayed are dropped. A daemon that
+does not come back in time ends the step `CONNECTION_LOST` as before; the step's own deadlines keep
+running through the gap, and a reap (the run lost, cancelled or ended) ends it at once. 0 is the old
+behaviour.
+
 **Neither control socket closes when its bearer expires.** Quarkus' websockets-next closes a
 connection 1008 `Authentication expired` at the `exp` of the token that opened it, which cut every
 runner off exactly one token lifetime (an hour) after each connect and would cut a step's daemon

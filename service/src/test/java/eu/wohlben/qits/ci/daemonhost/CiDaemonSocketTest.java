@@ -274,8 +274,10 @@ public class CiDaemonSocketTest {
   }
 
   @Test
-  public void aSocketLostMidStepCompletesTheAwaitAsConnectionLostRatherThanTimingOut()
+  public void aSocketLostMidStepCompletesTheAwaitAsConnectionLostWhenTheGraceRunsOut()
       throws Exception {
+    Duration grace = Duration.ofMillis(800);
+    registry.reconnectGrace(grace);
     String daemonId = launch("run-drop");
     try {
       FakeCiDaemon daemon = admitted("run-drop", daemonId);
@@ -286,17 +288,74 @@ public class CiDaemonSocketTest {
       registry.sendRunStep(daemonId, "sleep 600", 600);
       assertInstanceOf(RunStep.class, daemon.next(SOON));
 
+      long start = System.nanoTime();
       daemon.close();
 
-      // A generous deadline that must NOT be spent: the close resolves the await immediately, which
-      // is the difference between a distinguishable outcome and a run that looks merely slow.
-      long start = System.nanoTime();
+      // A generous deadline that must NOT be spent: the grace running out with nobody back
+      // resolves the await, which is the difference between a distinguishable outcome and a run
+      // that looks merely slow — and it is the grace, not the close, that resolves it (qits-748).
       CiDaemonRegistry.Completion completion =
           registry.awaitFinished(daemonId, Duration.ofSeconds(30));
       long elapsedMs = (System.nanoTime() - start) / 1_000_000;
       assertEquals(CiDaemonRegistry.Completion.Status.CONNECTION_LOST, completion.status());
+      assertTrue(elapsedMs >= grace.toMillis() - 50, "lost at the close: " + elapsedMs + "ms");
       assertTrue(elapsedMs < 10_000, "the lost socket must resolve the await, not expire it");
     } finally {
+      registry.reconnectGrace(null);
+      registry.reap(daemonId);
+    }
+  }
+
+  /**
+   * qits-748 end to end: the daemon's socket drops mid-step (an edge redeploy), the daemon dials
+   * again with the same token and names the same launch, is answered an Ack and its step again, and
+   * finishes it on the new socket — the replayed chunk deduplicated by its seq.
+   */
+  @Test
+  public void aDaemonThatRedialsMidStepFinishesItsStepOnTheNewSocket() throws Exception {
+    registry.reconnectGrace(Duration.ofSeconds(30));
+    List<String> chunks = Collections.synchronizedList(new ArrayList<>());
+    String daemonId =
+        registry.registerLaunch(
+            "run-redial-mid",
+            0,
+            subject("run-redial-mid"),
+            (stream, seq, text) -> chunks.add(seq + ":" + text));
+    try {
+      FakeCiDaemon first = admitted("run-redial-mid", daemonId);
+      first.send(new Initialized());
+      assertEquals(
+          CiDaemonRegistry.Initialization.Status.INITIALIZED,
+          registry.awaitInitialized(daemonId, SOON).status());
+      String correlationId = registry.sendRunStep(daemonId, "make", 600);
+      assertInstanceOf(RunStep.class, first.next(SOON));
+      first.send(new StepChunk(correlationId, 0, Stream.OUT, "a\n"));
+
+      first.close();
+      long until = System.nanoTime() + SOON.toNanos();
+      while (registry.connected(daemonId) && System.nanoTime() < until) {
+        Thread.sleep(20);
+      }
+      assertFalse(registry.connected(daemonId), "the host never noticed the drop");
+      assertEquals(CiDaemonRegistry.Phase.RUNNING, registry.phaseOf(daemonId));
+
+      try (FakeCiDaemon second = FakeCiDaemon.dial(endpoint, subject("run-redial-mid"))) {
+        second.hello(daemonId);
+        assertInstanceOf(Ack.class, second.next(SOON));
+        RunStep again = assertInstanceOf(RunStep.class, second.next(SOON));
+        assertEquals(correlationId, again.correlationId());
+
+        second.send(new StepChunk(correlationId, 0, Stream.OUT, "a\n"));
+        second.send(new StepChunk(correlationId, 1, Stream.OUT, "b\n"));
+        second.send(new StepFinished(correlationId, 0, false));
+
+        CiDaemonRegistry.Completion completion = registry.awaitFinished(daemonId, SOON);
+        assertEquals(CiDaemonRegistry.Completion.Status.FINISHED, completion.status());
+        assertEquals(0, completion.exitCode());
+        assertEquals(List.of("0:a\n", "1:b\n"), chunks);
+      }
+    } finally {
+      registry.reconnectGrace(null);
       registry.reap(daemonId);
     }
   }
