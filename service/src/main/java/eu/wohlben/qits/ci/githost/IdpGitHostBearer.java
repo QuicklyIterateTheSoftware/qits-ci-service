@@ -13,11 +13,11 @@ import org.jboss.logging.Logger;
 /**
  * qits-ci's credential for reads from qits-githost.
  *
- * <p>The same {@code qits} named client every outbound call this service makes now shares
- * (service-client-identity-plan.md, C4), asking one audience — {@code qits-platform} — rather than a
- * git-host-specific one. Nothing this class cannot answer stops a read: an empty answer costs the
- * {@code Authorization} header, and the git host refuses the bare request itself — see {@code
- * HttpGitConfigSource#get}.
+ * <p>The same {@code qits} named client every outbound call this service makes now shares (epic
+ * qits-540 dossier, 'Plan (as of 2026-09-13)', C4), asking one audience — {@code qits-platform} —
+ * rather than a git-host-specific one. Nothing this class cannot answer stops a read: an empty
+ * answer costs the {@code Authorization} header, and the git host refuses the bare request itself —
+ * see {@code HttpGitConfigSource#get}.
  */
 @ApplicationScoped
 public class IdpGitHostBearer implements GitHostBearer {

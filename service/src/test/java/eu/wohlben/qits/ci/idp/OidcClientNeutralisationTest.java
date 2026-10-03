@@ -15,28 +15,26 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * The neutralisation of the two client names this application's DEPLOYMENT still sets — the unnamed
- * default client and {@code githost} — pinned against the environment that makes them exist at all.
+ * The neutralisation of the two client names this application's CONTAINER still carries — the
+ * unnamed default client and {@code githost} — pinned against the environment that makes them exist
+ * at all, beside the {@code qits} client that reads the deployer's {@code QITS_RESOURCE_IDP_*} and
+ * nothing else.
  *
  * <p><b>Why this cannot be a {@code @QuarkusTest}.</b> The whole statement is about the ENVIRONMENT
  * source: one {@code QUARKUS_OIDC_CLIENT_<NAME>_*} variable mints the map key, and that source
- * outranks {@code application.properties}. A surefire JVM cannot gain an environment variable, and a
- * {@code QuarkusTestProfile} override is an ordinary map-backed source — it is read by the
- * env-NAMED expressions (which is exactly what {@link QitsOidcClientOldExtrasFallbackTest} uses it
- * for) and never by the dotted key, so it cannot show which source a dotted key resolves from. So
- * this test assembles the real {@link PropertiesConfigSource} over the SHIPPED file and the real
- * {@link EnvConfigSource} over the deployment's own variables, at the ordinals a deployed Quarkus
- * gives them, and asks SmallRye Config the questions directly.
+ * outranks {@code application.properties}. A surefire JVM cannot gain an environment variable, and
+ * a {@code QuarkusTestProfile} override is an ordinary map-backed source that cannot show which
+ * source a dotted key resolves from. So this test assembles the real {@link PropertiesConfigSource}
+ * over the SHIPPED file and the real {@link EnvConfigSource} over the container's own variables, at
+ * the ordinals a deployed Quarkus gives them, and asks SmallRye Config the questions directly.
  *
- * <p><b>What it holds, and why each half matters.</b> With no environment at all both names are
- * switched off by this file, which is the arm every suite and every clone-alone build runs on. With
- * the deployment's variables set, {@code client-enabled} resolves the environment's {@code true} —
- * the properties {@code false} LOSES, ordinal 300 over 250 — which is precisely why
- * {@code discovery-enabled=false} and {@code token-path} are in the file beside it: they have no
- * environment twin, so they are what keeps an env-enabled client from dialling its issuer during
- * runtime init and from failing the boot on a token endpoint it cannot discover. And the surviving
- * {@code qits} client still reads the environment's own value through its env-named expressions,
- * which is the one thing about this change that would be worse than the bug it fixes.
+ * <p><b>What it holds, and why each half matters.</b> With no environment at all both old names are
+ * switched off by this file. With the container's variables set, {@code client-enabled} resolves
+ * the environment's {@code true} — the properties {@code false} LOSES, ordinal 300 over 250 — which
+ * is precisely why {@code discovery-enabled=false} and {@code token-path} are in the file beside
+ * it: they have no environment twin, so they are what keeps an env-enabled client from dialling its
+ * issuer during runtime init and from failing the boot on a token endpoint it cannot discover. And
+ * the {@code qits} client takes the deployer's resource triple and none of the old extras' values.
  *
  * @see QitsOidcClientShippedConfigTest the same file read through a booted application
  */
@@ -58,20 +56,25 @@ class OidcClientNeutralisationTest {
   }
 
   /**
-   * What qits-ci's dev deployment really sets today (checked 2026-09-15): the unnamed client's five
-   * keys, of which four are declared in {@code .config/qits/configuration.yml} as the {@code qits}
-   * client's fallback, and the {@code githost} family. Spelled as the environment spells them.
+   * What dev-qits-ci's container really carries (its envKeys, read 2026-10-02): the deployer's
+   * {@code idp:client} triple, and the old extras nothing reads any more — the unnamed client's
+   * five keys and the {@code githost} family — still reaching it until the config GC and the
+   * deployer's extras file let go of them (qits-375). Spelled as the environment spells them; the
+   * old extras deliberately carry values the {@code qits} client must NOT end up with.
    */
   private static Map<String, String> deployedEnvironment() {
     Map<String, String> env = new LinkedHashMap<>();
+    env.put("QITS_RESOURCE_IDP_URL", "http://dev-qits-idp:8080/idp");
+    env.put("QITS_RESOURCE_IDP_CLIENT_ID", "dev-qits-ci");
+    env.put("QITS_RESOURCE_IDP_CLIENT_SECRET", "resource-secret");
     env.put("QUARKUS_OIDC_CLIENT_CLIENT_ENABLED", "true");
     env.put("QUARKUS_OIDC_CLIENT_CLIENT_ID", "qits-ci");
-    env.put("QUARKUS_OIDC_CLIENT_CREDENTIALS_SECRET", "deployed-secret");
+    env.put("QUARKUS_OIDC_CLIENT_CREDENTIALS_SECRET", "old-extras-secret");
     env.put("QUARKUS_OIDC_CLIENT_AUTH_SERVER_URL", "http://qits-idp:8080/idp");
     env.put("QUARKUS_OIDC_CLIENT_GRANT_OPTIONS_CLIENT_AUDIENCE", "qits-containers");
     env.put("QUARKUS_OIDC_CLIENT_GITHOST_CLIENT_ENABLED", "true");
     env.put("QUARKUS_OIDC_CLIENT_GITHOST_CLIENT_ID", "qits-ci");
-    env.put("QUARKUS_OIDC_CLIENT_GITHOST_CREDENTIALS_SECRET", "deployed-secret");
+    env.put("QUARKUS_OIDC_CLIENT_GITHOST_CREDENTIALS_SECRET", "old-extras-secret");
     env.put("QUARKUS_OIDC_CLIENT_GITHOST_AUTH_SERVER_URL", "http://qits-idp:8080/idp");
     env.put("QUARKUS_OIDC_CLIENT_GITHOST_GRANT_OPTIONS_CLIENT_AUDIENCE", "qits-githost");
     return env;
@@ -92,14 +95,25 @@ class OidcClientNeutralisationTest {
   }
 
   @Test
-  void withNoEnvironmentBothNamesAreSwitchedOffByThisFile() throws IOException {
+  void withNoEnvironmentBothOldNamesAreSwitchedOffByThisFile() throws IOException {
     SmallRyeConfig config = config(Map.of());
 
     assertEquals("false", value(config, "quarkus.oidc-client.client-enabled"));
     assertEquals("false", value(config, "quarkus.oidc-client.githost.client-enabled"));
-    // The arm every test in this repo and every clone-alone build is on: no client is built, so
-    // nothing dials and the file's other two keys per name are never reached.
-    assertEquals("false", value(config, "quarkus.oidc-client.qits.client-enabled"));
+  }
+
+  @Test
+  void theQitsClientIsOnOutsideDevAndTestAndReadsNoEnvironmentToBeSo() throws IOException {
+    // No profile is active on this builder, so this is the deployed resolution: on, with no
+    // variable deciding it. %dev and %test switch it off, which QitsOidcClientShippedConfigTest
+    // reads through a booted application.
+    assertEquals("true", value(config(Map.of()), "quarkus.oidc-client.qits.client-enabled"));
+    assertEquals(
+        "true",
+        value(
+            config(Map.of("QUARKUS_OIDC_CLIENT_CLIENT_ENABLED", "false")),
+            "quarkus.oidc-client.qits.client-enabled"),
+        "the old unnamed client's switch no longer reaches the qits client");
   }
 
   @Test
@@ -134,16 +148,34 @@ class OidcClientNeutralisationTest {
   }
 
   @Test
-  void theSurvivingQitsClientStillReadsTheDeploymentsOwnValues() throws IOException {
+  void theQitsClientReadsTheDeployersResourceAndNoneOfTheOldExtras() throws IOException {
     SmallRyeConfig config = config(deployedEnvironment());
 
-    // The line this change could have broken: `${QUARKUS_OIDC_CLIENT_CLIENT_ENABLED:false}` names an
-    // environment VARIABLE, so it reads the environment's `true` and not the neutralising `false`
-    // declared for the dotted key above it. Switching the real client off would have been far worse
-    // than the boot hazard being closed.
     assertEquals("true", value(config, "quarkus.oidc-client.qits.client-enabled"));
-    assertEquals("qits-ci", value(config, "quarkus.oidc-client.qits.client-id"));
-    assertEquals("deployed-secret", value(config, "quarkus.oidc-client.qits.credentials.secret"));
-    assertEquals("http://qits-idp:8080/idp", value(config, "quarkus.oidc-client.qits.auth-server-url"));
+    assertEquals("dev-qits-ci", value(config, "quarkus.oidc-client.qits.client-id"));
+    assertEquals("resource-secret", value(config, "quarkus.oidc-client.qits.credentials.secret"));
+    assertEquals(
+        "http://dev-qits-idp:8080/idp", value(config, "quarkus.oidc-client.qits.auth-server-url"));
+    assertEquals(
+        "qits-platform", value(config, "quarkus.oidc-client.qits.grant-options.client.audience"));
+  }
+
+  @Test
+  void theOldExtrasAloneLeaveTheQitsClientOnItsShippedDefaults() throws IOException {
+    // A container carrying only the old extras — no QITS_RESOURCE_IDP_* — no longer borrows them:
+    // the qits client falls to its dev defaults and an empty secret, and is refused by the idp
+    // rather than presenting the old unnamed client's credential.
+    Map<String, String> oldExtrasOnly = new LinkedHashMap<>(deployedEnvironment());
+    oldExtrasOnly.keySet().removeIf(name -> name.startsWith("QITS_RESOURCE_IDP_"));
+    SmallRyeConfig config = config(oldExtrasOnly);
+
+    assertEquals("dev-qits-ci", value(config, "quarkus.oidc-client.qits.client-id"));
+    assertEquals(
+        "http://dev-qits-idp:8080/idp", value(config, "quarkus.oidc-client.qits.auth-server-url"));
+    assertTrue(
+        config
+            .getOptionalValue("quarkus.oidc-client.qits.credentials.secret", String.class)
+            .isEmpty(),
+        "the old extras' secret must not reach the qits client");
   }
 }

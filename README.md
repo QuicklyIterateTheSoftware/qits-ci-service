@@ -2439,9 +2439,11 @@ a repository's own listing will show.
   404 on the blob reads as "this commit declares no pipeline", so every push would report no
   pipeline instead of an error. A step container does not use this key: it clones from the git
   host's public name.
-- Leave `qits.auth.machine.audience=qits-platform` alone. It is the platform's one audience — qits-idp
-  puts it on every token it mints, whatever the client — not a deployment fact. What a caller may do
-  once it is in is decided by its roles.
+- Configure no audience. A machine token must carry `qits-platform`, the platform's one audience —
+  qits-idp puts it on every token it mints, whatever the client — and the shared guard reads it from
+  its own shipped `qits.auth.machine.platform-audience`; it is not a deployment fact, and a
+  `QITS_AUTH_MACHINE_AUDIENCE` entry sets nothing. What a caller may do once it is in is decided by
+  its roles.
 - Turn the machine guard on with `QITS_AUTH_MACHINE_REQUIRED=true`, once qits-idp is reachable.
   That one platform-wide gate switches on both the bearer validation and every `MachineAuth` call in
   the code, and it ships **off**: with it off the endpoints behave exactly as they did under network
@@ -2474,15 +2476,18 @@ a repository's own listing will show.
 - `qits.artifacts.maven.registry-url` (and `qits.artifacts.url`, blank by default) is where qits-ci
   **itself** asks the registry for a step image's digest, from inside the swarm; the shipped default
   is qits-artifacts' alias. It is not handed to a step.
-- **Turn the qits oidc client on (`QUARKUS_OIDC_CLIENT_CLIENT_ENABLED`), or no step runs.** A step's
-  only credential is its run's `ci-run` token, which qits-ci commissions at qits-idp — at
-  `<QUARKUS_OIDC_CLIENT_AUTH_SERVER_URL>/api/tokens`, with its own client id and secret as HTTP
-  Basic — at the run's first step, and deletes when the run closes. With the client off a step is
-  recorded `LAUNCH_FAILED`. `qits.ci.registry-auth.*` is gone, and a deployment still setting it is
-  setting nothing. The token is readable by the step's own script, which runs repo-authored code,
-  and it is worth one run rather than every future one. The leftovers of a killed process are reaped
-  at boot and hourly (`qits.ci.commission.reconcile-interval`); a commission that could not be made
-  fails the step after `qits.ci.commission.patience`.
+- **The qits oidc client is the deployer's `idp:client` resource, and without it no step runs.**
+  `.config/qits/deployments.yml` declares it, and the deployer injects `QITS_RESOURCE_IDP_URL`,
+  `QITS_RESOURCE_IDP_CLIENT_ID` and `QITS_RESOURCE_IDP_CLIENT_SECRET`; configure none of them, and
+  the old `QUARKUS_OIDC_CLIENT_*` entries set nothing. A step's only credential is its run's
+  `ci-run` token, which qits-ci commissions at qits-idp — at `<QITS_RESOURCE_IDP_URL>/api/tokens`,
+  with its own client id and secret as HTTP Basic — at the run's first step, and deletes when the
+  run closes. With the client off a step is recorded `LAUNCH_FAILED`. `qits.ci.registry-auth.*` is
+  gone, and a deployment still setting it is setting nothing. The token is readable by the step's
+  own script, which runs repo-authored code, and it is worth one run rather than every future one.
+  The leftovers of a killed process are reaped at boot and hourly
+  (`qits.ci.commission.reconcile-interval`); a commission that could not be made fails the step
+  after `qits.ci.commission.patience`.
 - **Delete these deployment entries; nothing reads them** (qits-515): `QITS_CI_CONTAINER_GIT_URL`,
   `QITS_CI_CONTAINER_DAEMON_URL`, `QITS_CI_NETWORK`, `QITS_CI_DOCKER_AUTH_HOSTS`,
   `QITS_CI_BUILDKIT_ENABLED`, `QITS_CI_BUILDKIT_REGISTRY_HOST`, `QITS_CI_WORKSPACES_URL`,

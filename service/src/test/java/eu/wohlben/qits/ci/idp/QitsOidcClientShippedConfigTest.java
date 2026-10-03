@@ -11,24 +11,20 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The one named oidc client, {@code qits}, as the shipped {@code application.properties} resolves
- * it with no {@code QITS_RESOURCE_IDP_*} or old extras env set — the "nothing configured" arm every
- * clone-alone build and every other test in this repo runs on (service-client-identity-plan.md, C4).
+ * it with no {@code QITS_RESOURCE_IDP_*} env set — the "no deployer" arm every clone-alone build
+ * and every other test in this repo runs on (epic qits-540 dossier, 'Plan (as of 2026-09-13)', C4).
  *
- * <p>{@link QitsOidcClientOldExtrasFallbackTest} and {@link
- * QitsOidcClientResourceOverridesOldExtrasTest} hold the other two arms — the old extras keys alone,
- * and the new resource keys winning over them — each in its own {@code @QuarkusTest} because a
- * {@code @TestProfile}'s config overrides are fixed for the life of one boot.
+ * <p>The deployed arm — the deployer's {@code QITS_RESOURCE_IDP_*} read, and the old {@code
+ * QUARKUS_OIDC_CLIENT_*} extras still in the container read by nothing — is {@link
+ * OidcClientNeutralisationTest}, against a real environment source.
  *
- * <p><b>The shipped fallback is DERIVED now, which is why the value below reads {@code dev-}.</b>
- * The innermost arm of that chain spells {@code http://${QITS_ENVIRONMENT:dev}-qits-platform-idp},
- * because an application's alias on qits-net is {@code <environment>-<application>} for every service
- * there is and qits-deployments injects {@code QITS_ENVIRONMENT} into every container it starts — so
- * the address is a spelling this process derives rather than a decision a configuration entry
- * carries. What it replaced, {@code http://qits-idp:8080/idp}, was neither the application name nor
- * the alias and resolved nowhere at all. A surefire JVM gains no environment variable, so what this
- * case sees is the {@code dev} fallback, which is also this estate's real environment;
- * {@code DerivedEnvironmentAddressTest} is what asks the expression the other question, with a real
- * environment source under it.
+ * <p><b>The idp address is DERIVED, which is why the value below reads {@code dev-}.</b> The
+ * default spells {@code http://${QITS_ENVIRONMENT:dev}-qits-idp}, because an application's alias on
+ * qits-net is {@code <environment>-<application>} for every service there is and qits-deployments
+ * injects {@code QITS_ENVIRONMENT} into every container it starts. A surefire JVM gains no
+ * environment variable, so what this case sees is the {@code dev} fallback, which is also this
+ * estate's real environment; {@code DerivedEnvironmentAddressTest} is what asks the expression the
+ * other question, with a real environment source under it.
  */
 @QuarkusTest
 class QitsOidcClientShippedConfigTest {
@@ -41,8 +37,8 @@ class QitsOidcClientShippedConfigTest {
   @Test
   void theQitsClientResolvesItsOwnLiteralDefaults() {
     assertEquals(
-        "http://dev-qits-platform-idp:8080/idp", value("quarkus.oidc-client.qits.auth-server-url"));
-    assertEquals("qits-ci", value("quarkus.oidc-client.qits.client-id"));
+        "http://dev-qits-idp:8080/idp", value("quarkus.oidc-client.qits.auth-server-url"));
+    assertEquals("dev-qits-ci", value("quarkus.oidc-client.qits.client-id"));
     // Empty, not absent — SmallRye reads a configured-empty String as null (the trap AGENTS.md
     // documents), so an empty secret reads as an empty Optional rather than as "" itself.
     Optional<String> secret =
@@ -55,20 +51,20 @@ class QitsOidcClientShippedConfigTest {
 
   @Test
   void theClientStaysDisabledUnderTest() {
-    // %test.quarkus.oidc-client.qits.client-enabled=false wins over the shipped expression
-    // regardless of what QUARKUS_OIDC_CLIENT_CLIENT_ENABLED says — the arm every test in this repo
-    // is on, so a suite never dials a real idp.
+    // %test.quarkus.oidc-client.qits.client-enabled=false wins over the shipped `true` — the arm
+    // every test in this repo is on, so a suite never dials a real idp.
     assertEquals("false", value("quarkus.oidc-client.qits.client-enabled"));
   }
 
   @Test
   void theTwoNamesTheDeploymentStillSetsShipNeutralised() {
-    // Not stubs: the deployment sets QUARKUS_OIDC_CLIENT_* and QUARKUS_OIDC_CLIENT_GITHOST_*, one
-    // such variable mints the map key, and an enabled client dials its issuer during runtime init
-    // before the listener accepts. `client-enabled` is what disables the client where no variable
-    // outranks this file; `discovery-enabled` and `token-path` are what keep an env-ENABLED client
-    // from dialling and from failing the boot, and they have no environment twin to lose to.
-    // OidcClientNeutralisationTest is the same three keys measured against a real env source.
+    // Not stubs: the container still carries QUARKUS_OIDC_CLIENT_* and
+    // QUARKUS_OIDC_CLIENT_GITHOST_*, one such variable mints the map key, and an enabled client
+    // dials its issuer during runtime init before the listener accepts. `client-enabled` is what
+    // disables the client where no variable outranks this file; `discovery-enabled` and
+    // `token-path` are what keep an env-ENABLED client from dialling and from failing the boot, and
+    // they have no environment twin to lose to. OidcClientNeutralisationTest is the same three keys
+    // measured against a real env source.
     assertEquals("false", value("quarkus.oidc-client.client-enabled"));
     assertEquals("false", value("quarkus.oidc-client.discovery-enabled"));
     assertEquals("token", value("quarkus.oidc-client.token-path"));

@@ -99,9 +99,8 @@ class DerivedEnvironmentAddressTest {
 
     // The `dev` fallback is not a placeholder: it is the environment this estate runs, so a clone,
     // a `quarkus:dev` and a deployment that somehow lost the variable all name an address that
-    // really answers here. The application is NOT renamed by the qualification — qits-platform-idp
-    // keeps that name and becomes dev-qits-platform-idp, never dev-qits-idp.
-    assertEquals("http://dev-qits-platform-idp:8080/idp", value(config, "quarkus.oidc.auth-server-url"));
+    // really answers here. The application is qits-idp, so its alias is dev-qits-idp.
+    assertEquals("http://dev-qits-idp:8080/idp", value(config, "quarkus.oidc.auth-server-url"));
     assertTrue(
         config
             .getConfigValue("quarkus.oidc.auth-server-url")
@@ -119,7 +118,7 @@ class DerivedEnvironmentAddressTest {
     // address moved with it. qits-deployments injects QITS_ENVIRONMENT into every container it
     // starts, so this is the shape every non-dev deployment really runs on.
     assertEquals(
-        "http://staging-qits-platform-idp:8080/idp", value(config, "quarkus.oidc.auth-server-url"));
+        "http://staging-qits-idp:8080/idp", value(config, "quarkus.oidc.auth-server-url"));
   }
 
   @Test

@@ -456,15 +456,15 @@ The host's side of the contract, including the 8 MiB blob cap and why a slashy b
 spawns no `git`**, and the image no longer carries one.
 
 **Both reads carry `IdpGitHostBearer`'s token, and a missing one costs the HEADER rather than the
-call.** The bearer is the `qits` named oidc client (`quarkus.oidc-client.qits`), the one client every
-outbound identity this service has (service-client-identity-plan.md, C4) — it used to be its own
-`githost`-named client, audience-bound to qits-githost specifically, before every outbound call
-moved to one audience, `qits-platform`. When it has nothing to give — the client is disabled, or the
-idp did not answer — the request goes out bare and the git host refuses it, which is a 401 this class
-reports like any other status. It used to throw instead, and that was worse in both directions: with
-the client shipped `false` every config read of every run failed before a socket was opened, and the
-refusal it stood in for is one the host makes anyway. Same rule, and the same reasoning, as the
-qits-containers client had while qits-ci still had one.
+call.** The bearer is the `qits` named oidc client (`quarkus.oidc-client.qits`), the one client
+every outbound identity this service has (epic qits-540 dossier, 'Plan (as of 2026-09-13)', C4) — it
+used to be its own `githost`-named client, audience-bound to qits-githost specifically, before every
+outbound call moved to one audience, `qits-platform`. When it has nothing to give — the client is
+disabled, or the idp did not answer — the request goes out bare and the git host refuses it, which
+is a 401 this class reports like any other status. It used to throw instead, and that was worse in
+both directions: with the client off every config read of every run failed before a socket was
+opened, and the refusal it stood in for is one the host makes anyway. Same rule, and the same
+reasoning, as the qits-containers client had while qits-ci still had one.
 
 ## The run queue, and what a run row means
 
@@ -889,7 +889,7 @@ rather than adding to it. `cancelReleaseRequestRuns` keeps the class pair, becau
 (qits-projects, withdrawing a release request) and an operator both legitimately call it. So three doors shut in
 order, and `MachineGuardTest` pins which: no token is 401, a token granted no roles is 403 at
 `@RolesAllowed`, a wrong audience or an uncovered project is `MachineAuth`'s own 403. **A machine
-token carries its roles in the `groups` claim** — qits-platform-idp copies them there from
+token carries its roles in the `groups` claim** — qits-idp copies them there from
 `qits.idp.client.<id>.roles` and quarkus-oidc reads that claim as roles with no configuration at
 all — so a fixture that mints a token without `groups` authenticates perfectly and is then refused
 403, which is a stale fixture rather than a regression. A method-level role list **replaces** the
@@ -2718,11 +2718,10 @@ two different facts.
 
 **Machines** are a bearer, and the guard is `MachineAuth`. qits-idp mints the token; quarkus-oidc
 validates its signature, issuer and expiry; `MachineAuth` then asks the two questions this service
-owns — is it addressed here (`aud` contains `qits.auth.machine.audience`, which
-`application.properties` pins to `qits-platform`, the one audience qits-idp puts on every token it
-mints; it is a fact about the platform and not about a deployment), and does its `project` claim
-cover the target. A missing claim is a mismatch, never a
-wildcard; `project=*` on the **token** covers everything, but `"*"` as the *target* is compared like
+owns — is it addressed here (`aud` contains `qits.auth.machine.platform-audience`, which the
+library itself ships as `qits-platform`, the one audience qits-idp puts on every token it mints; it
+is a fact about the platform and not about a deployment, so nothing here sets it), and does its
+`project` claim cover the target. A missing claim is a mismatch, never a wildcard; `project=*` on the **token** covers everything, but `"*"` as the *target* is compared like
 any other string, so a caller cannot widen its own check. Failures are 401 with no machine token and
 403 with the wrong one, both mapped by quarkus-security rather than by `CiExceptionMapper`.
 
@@ -2739,29 +2738,35 @@ accepting tokens meant for another service. Which endpoints call the guard, and 
 is under "Addressing"; the deployment steps are in `README.md`.
 
 **This service presents a credential to two hops, and both are the same identity — the one named
-oidc client `qits`** (service-client-identity-plan.md, C4; it replaced a default client
-audience-bound to qits-containers and a separately named `githost` one audience-bound to
-qits-githost). It asks qits-idp for a token to present to **qits-githost**, addressed with the single
-audience `qits-platform`, and it presents the same client id and secret as HTTP Basic to **qits-idp
-itself** to commission one credential per run (see "The credential is commissioned per run"). One is
-a bearer this service holds, the other a credential it mints for a container; both live or die with
-`quarkus.oidc-client.qits.client-enabled`. There was a third hop, the bearer presented to
-qits-containers (whose `OwnerGuard` made the client id this service's owner string,
+oidc client `qits`** (epic qits-540 dossier, 'Plan (as of 2026-09-13)', C4; it replaced a default
+client audience-bound to qits-containers and a separately named `githost` one audience-bound to
+qits-githost). It asks qits-idp for a token to present to **qits-githost**, addressed with the
+single audience `qits-platform`, and it presents the same client id and secret as HTTP Basic to
+**qits-idp itself** to commission one credential per run (see "The credential is commissioned per
+run"). One is a bearer this service holds, the other a credential it mints for a container; both
+live or die with `quarkus.oidc-client.qits.client-enabled`. There was a third hop, the bearer
+presented to qits-containers (whose `OwnerGuard` made the client id this service's owner string,
 `qits.ci.containers.owner`); it went with the in-process executor in qits-506, along with
 `containers/ContainersClientProducer`.
 
-One switch, `quarkus.oidc-client.qits.client-enabled`, shipped **false**, exactly as its predecessor
-was: off, the extension builds a disabled client, the process boots with no secret and dials nothing,
-and the calls go out bare — which is what the receivers' own gate (`qits.auth.machine.required`,
-also off) expects. It stays independent of the inbound gate: either end of a hop is switched on
-first. **It is also the commissioning switch**: `IdpCommissioner.enabled()` reads the same key plus
-both halves of the credential behind it, so a deployment that has not turned the oidc client on
-commissions nothing and a step container's environment is what it always was.
+**Its id, secret and idp address come from the deployer and nowhere else.**
+`.config/qits/deployments.yml` declares `resources: idp:client`, so qits-deployments provisions this
+application's own qits-idp service client and injects `QITS_RESOURCE_IDP_URL`,
+`QITS_RESOURCE_IDP_CLIENT_ID` and `QITS_RESOURCE_IDP_CLIENT_SECRET`; `application.properties` reads
+those three and nothing else (the shipped defaults are the dev estate's `dev-qits-idp` alias,
+derived from `QITS_ENVIRONMENT`, `dev-qits-ci`, and an empty secret). No configuration entry names
+any of them, and the old `QUARKUS_OIDC_CLIENT_*` fallback is gone.
+
+One switch, `quarkus.oidc-client.qits.client-enabled`: shipped **true**, because every deployment
+has the resource, and **false** under `%dev` and `%test`, so a suite or a local run builds a
+disabled client, boots with no secret and dials nothing. **It is also the commissioning switch**:
+`IdpCommissioner.enabled()` reads the same key plus both halves of the credential behind it, so a
+process with the client off commissions nothing and launches no step.
 
 **Two other client NAMES still ship keys, and they are neutralisation rather than dead stubs.** The
-deployment sets `QUARKUS_OIDC_CLIENT_*` (the unnamed default client — four of the five are declared
-in `.config/qits/configuration.yml` as the `qits` client's env-name fallback until the `idp:client`
-cutover) and the whole `QUARKUS_OIDC_CLIENT_GITHOST_*` family, and **one such variable mints the map
+container still carries `QUARKUS_OIDC_CLIENT_*` (the old unnamed default client, five keys) and the
+whole `QUARKUS_OIDC_CLIENT_GITHOST_*` family — nothing reads them and
+`.config/qits/configuration.yml` no longer declares them, but **one such variable mints the map
 key**: both clients exist at runtime whatever `application.properties` leaves out, with
 `client-enabled` and `discovery-enabled` defaulting to true. An enabled client is resolved during
 **runtime init** — `initOidcClients` awaits `createOidcClient` per client before the HTTP listener
@@ -2770,13 +2775,14 @@ accepts — so an issuer that accepts and does not answer fails the boot on a mu
 hazard in `2026.915.174621`. Three keys per name close it and each does a different job: with no
 variable set `client-enabled=false` disables the client outright, and where the deployment DOES set
 the variable it wins (env is ordinal 300, this file 250) — so `discovery-enabled=false` is what
-removes the dial, and `token-path` is what stops that same discovery-less client failing runtime init
-on a token endpoint it may no longer discover. The `qits` client is untouched by all of it because
-its fallbacks name environment VARIABLES inside `${…}` rather than the dotted keys.
-`OidcClientNeutralisationTest` measures both arms against a real `EnvConfigSource`, which is the only
-way to see it: a surefire JVM gains no environment variable and a `QuarkusTestProfile` override is
-read by the expressions but never by a dotted key. The keys go when the deployment's entries go, not
-before.
+removes the dial, and `token-path` is what stops that same discovery-less client failing runtime
+init on a token endpoint it may no longer discover. The `qits` client is untouched by all of it: it
+reads only `QITS_RESOURCE_IDP_*`, environment VARIABLES named inside `${…}`.
+`OidcClientNeutralisationTest` measures both arms against a real `EnvConfigSource`, which is the
+only way to see it: a surefire JVM gains no environment variable and a `QuarkusTestProfile` override
+is read by the expressions but never by a dotted key. The keys go once no such variable reaches the
+container — the config GC deletes the retired entries and the deployer's extras file stops stating
+them (qits-375) — not before.
 
 **This is a NEW arrangement rather than the old one coming back.** The retired one was
 `notify/PdBearer`, a bearer for qits-platform-deployments' HTTP intake, and it went with the call it

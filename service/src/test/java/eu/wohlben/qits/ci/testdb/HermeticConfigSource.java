@@ -20,7 +20,7 @@ import org.eclipse.microprofile.config.spi.ConfigSource;
  * the machine gate on ({@code MachineGuardTest.GateOn}) and presents a bearer {@code @TestSecurity}
  * did not install — {@code CiRunnerControllerTest.aRawTokenOpensNoOtherRoute}'s raw {@code
  * qits_tok_} on a route that is not the register door — is handed to quarkus-oidc, which fetched
- * the JWKS from the shipped address, {@code http://dev-qits-platform-idp:8080/idp}. That alias
+ * the JWKS from the shipped address, {@code http://dev-qits-idp:8080/idp}. That alias
  * resolves on qits-net, so the answer was a 401 in a workspace and in a local step and a 503 ("OIDC
  * server is not available") on an EDGE runner, which cannot resolve it: qits-ci's first edge QA run
  * failed on exactly that. With a public key and no address the tenant dials nothing, and every

@@ -314,7 +314,7 @@ public class HttpGitConfigSource implements CiConfigSource {
    * content routes, so a bare request comes back 401 — a status this method reports like any other,
    * naming the repository and the url. Refusing here instead put an exception on the run worker for
    * a refusal the host makes anyway, and it guarded nothing the host does not already guard: with
-   * {@code quarkus.oidc-client.qits.client-enabled} shipped false, every config read of every run
+   * {@code quarkus.oidc-client.qits.client-enabled} off, every config read of every run
    * failed before a socket was opened.
    */
   private Answer get(String url) {

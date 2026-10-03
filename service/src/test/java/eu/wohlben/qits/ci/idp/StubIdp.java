@@ -269,9 +269,9 @@ public final class StubIdp implements AutoCloseable {
   }
 
   /**
-   * The shipped posture: {@code quarkus.oidc-client.qits.client-enabled} off, so there is nothing to
-   * commission with and nothing is commissioned. No stub is needed for it — a disabled commissioner
-   * dials nothing, which is the property this arm is about.
+   * The %dev and %test posture: {@code quarkus.oidc-client.qits.client-enabled} off, so there is
+   * nothing to commission with and nothing is commissioned. No stub is needed for it — a disabled
+   * commissioner dials nothing, which is the property this arm is about.
    */
   public static RunCommissions disabledCommissions() {
     IdpCommissioner idp = new IdpCommissioner();

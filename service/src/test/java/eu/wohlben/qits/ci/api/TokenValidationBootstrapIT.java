@@ -218,7 +218,7 @@ public class TokenValidationBootstrapIT {
   @UserStoryDescription(
       """
       A freshly deployed qits-ci must validate service bearers before any caller arrives: at
-      startup it fetches the signing keys (JWKS) from qits-platform-idp — discovery stays off,
+      startup it fetches the signing keys (JWKS) from qits-idp — discovery stays off,
       the path is configured — so the very first machine request is judged on the platform's own
       keys. The callers that depend on it are the ones that cannot log in: the platform
       orchestrator polling what CI is doing, and the chrome asking a repository for its runs.
@@ -227,7 +227,7 @@ public class TokenValidationBootstrapIT {
   void serviceBootFetchesJwksAndAcceptsPlatformTokens(Interactions story) {
     MockIdp idp = MockIdp.attach();
 
-    story.note("qits-ci starts with the OIDC tenant on, beside a reachable qits-platform-idp");
+    story.note("qits-ci starts with the OIDC tenant on, beside a reachable qits-idp");
     given().get("/ci/q/health/ready").then().statusCode(200);
 
     // End (a), the idp side: the JWKS was served during startup — before this story presented any
@@ -313,9 +313,9 @@ public class TokenValidationBootstrapIT {
 
     // qits-containers and not an invented name: it was a real per-service audience on qits-net, so
     // the story documents a plausible mix-up rather than a strawman. It is not what this service's
-    // oidc client asks for — that is qits-platform (service-client-identity-plan.md, C4), the one
-    // audience this door accepts — so using that here would open the route instead of testing a
-    // refusal.
+    // oidc client asks for — that is qits-platform (epic qits-540 dossier, 'Plan (as of
+    // 2026-09-13)', C4), the one audience this door accepts — so using that here would open the
+    // route instead of testing a refusal.
     String wrongAudienceToken =
         idp.token().audience("qits-containers").groups("qits:system").mint();
     given()

@@ -263,7 +263,7 @@ public class RunCommissioningTest {
 
   @Test
   public void aDeploymentWithNoOidcClientCommissionsNothing() {
-    // quarkus.oidc-client.qits.client-enabled is false out of the box, so there is nothing to
+    // quarkus.oidc-client.qits.client-enabled is false under %test, so there is nothing to
     // commission with. The answer is null and RunnerStepRunner launches no step on it.
     assertNull(StubIdp.disabledCommissions().forRun(RUN, Map.of()));
     assertEquals(List.of(), idp.postedTokens);

@@ -11,9 +11,9 @@ import io.restassured.specification.RequestSpecification;
  *
  * <p>{@link #platformService(RequestSpecification)} presents an RS256 token minted by {@link
  * MockIdp} against the very JWKS the launched process fetched at startup: {@code aud=qits-platform}
- * (what {@code qits.auth.machine.audience} pins), {@code groups=[qits:system]} — the machine role
- * quarkus-oidc reads as a role with no configuration — and {@code project=*}, which is what {@code
- * POST /ci/api/events/trigger} demands, since an event names no repository and the
+ * (what {@code qits.auth.machine.platform-audience} admits), {@code groups=[qits:system]} — the
+ * machine role quarkus-oidc reads as a role with no configuration — and {@code project=*}, which is
+ * what {@code POST /ci/api/events/trigger} demands, since an event names no repository and the
  * repository-scoped grant it would otherwise need is "all of them".
  *
  * <h2>A person is a pair of headers</h2>

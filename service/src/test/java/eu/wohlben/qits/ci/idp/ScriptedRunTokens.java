@@ -10,7 +10,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * {@link RunCommissions} with no qits-idp behind it, for a suite that launches steps: every run is
  * handed a {@code ci-run} token whose subject is the one given here.
  *
- * <p><b>Why a suite needs one.</b> The shipped posture commissions nothing ({@code
+ * <p><b>Why a suite needs one.</b> The %test posture commissions nothing ({@code
  * quarkus.oidc-client.qits.client-enabled} is off), and since qits-515 a step with no token is not
  * launched at all — the token is its only credential, and the subject it carries is what the
  * step's daemon is admitted to its launch by. So a suite that drives a step through {@code

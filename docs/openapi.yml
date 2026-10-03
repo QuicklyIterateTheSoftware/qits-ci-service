@@ -652,7 +652,6 @@ components:
   securitySchemes:
     SecurityScheme:
       type: openIdConnect
-      openIdConnectUrl: http://dev-qits-platform-idp:8080/idp/.well-known/openid-configuration
       description: Authentication
 paths:
   /ci/api/daemon:
@@ -1434,4 +1433,4 @@ paths:
         - qits:agent
 info:
   title: qits-ci API
-  version: 2026.1002.11054
+  version: 2026.1003.132021

@@ -64,7 +64,7 @@ import org.junit.jupiter.api.Test;
  * would only re-assert the extension.
  *
  * <p><b>The reads are no longer open, and three doors now shut in order.</b> No token at all is a
- * 401. A token granted no roles is a 403 at {@code @RolesAllowed} — qits-platform-idp copies a
+ * 401. A token granted no roles is a 403 at {@code @RolesAllowed} — qits-idp copies a
  * client's {@code roles} into the token's {@code groups} claim and quarkus-oidc reads that claim as
  * roles with no configuration at all, so a token minted without it authenticates and covers
  * nothing. Only then is {@code MachineAuth} asked, and a wrong audience or an uncovered project is
@@ -125,7 +125,7 @@ public class MachineGuardTest {
   }
 
   /**
-   * The machine roles qits-platform-idp grants a platform service client, copied into the token's
+   * The machine roles qits-idp grants a platform service client, copied into the token's
    * {@code groups} claim from {@code qits.idp.client.<id>.roles}. quarkus-oidc reads that claim as
    * the identity's roles with no configuration at all, which is what lets a machine caller satisfy
    * the {@code @RolesAllowed("qits:system")} the guarded controllers carry.
@@ -458,7 +458,7 @@ public class MachineGuardTest {
         @Claim(key = QitsClaims.PROJECT, value = "*")
       })
   void aTokenGrantedNoRolesIs403() {
-    // A client id qits-platform-idp knows with no `.roles` line beside it mints exactly this:
+    // A client id qits-idp knows with no `.roles` line beside it mints exactly this:
     // correctly signed, addressed here, granted every project, and carrying an empty `groups`
     // claim. It authenticates and covers nothing, because @RolesAllowed shuts before MachineAuth is
     // ever asked. A 403 rather than the 401 an absent token gets, which is what tells a missing idp

@@ -53,9 +53,9 @@ import org.jboss.logging.Logger;
  * a commissioned client tries to commission again, which is what keeps the tree one level deep.
  *
  * <p><b>{@link #enabled()} is the fallback arm.</b> With {@code
- * quarkus.oidc-client.qits.client-enabled} off — the shipped posture, and every test's — there is no
- * credential to present and nothing to commission with, so this class does nothing at all, and no
- * step can be launched: {@code RunnerStepRunner} refuses one that has no token.
+ * quarkus.oidc-client.qits.client-enabled} off — {@code %dev} and {@code %test}, so every test —
+ * there is no credential to present and nothing to commission with, so this class does nothing at
+ * all, and no step can be launched: {@code RunnerStepRunner} refuses one that has no token.
  */
 @ApplicationScoped
 public class IdpCommissioner {
@@ -131,10 +131,11 @@ public class IdpCommissioner {
   /**
    * The single switch, read from the extension's own key rather than shadowed by one of ours.
    *
-   * <p>{@code qits}, the one named client every outbound identity this service has now shares
-   * (service-client-identity-plan.md, C4). This class never asks {@code quarkus-oidc-client} for a
-   * token on that client — the idp's commissioning door takes HTTP Basic, not a bearer — so it reads
-   * the client's id and secret directly rather than injecting the client bean itself.
+   * <p>{@code qits}, the one named client every outbound identity this service has now shares (epic
+   * qits-540 dossier, 'Plan (as of 2026-09-13)', C4). This class never asks {@code
+   * quarkus-oidc-client} for a token on that client — the idp's commissioning door takes HTTP
+   * Basic, not a bearer — so it reads the client's id and secret directly rather than injecting the
+   * client bean itself.
    */
   @ConfigProperty(name = "quarkus.oidc-client.qits.client-enabled")
   boolean clientEnabled;
@@ -145,7 +146,7 @@ public class IdpCommissioner {
   @ConfigProperty(name = "quarkus.oidc-client.qits.client-id")
   String clientId;
 
-  /** Unset on every deployment that has not turned the oidc client on — see {@link #enabled()}. */
+  /** Unset where no deployer injected {@code QITS_RESOURCE_IDP_CLIENT_SECRET}; see {@link #enabled}. */
   @ConfigProperty(name = "quarkus.oidc-client.qits.credentials.secret")
   Optional<String> clientSecret;
 
