@@ -177,7 +177,7 @@ sequenceDiagram
     participant Pd as qits-platform-deployments
 
     Ci-->>Step: RunStep{script} over the control WebSocket
-    Note over Step: the script is just a script:<br/>ref="$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/APP:$QITS_CI_SHA"<br/>docker build -t "$ref" . && docker push "$ref"
+    Note over Step: the script is just a script:<br/>ref="registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/APP:$QITS_VERSION"<br/>docker build -t "$ref" . && docker push "$ref"
     Step->>Dockerd: build, over the MOUNTED docker socket<br/>(the CLI streams the context; the daemon builds)
     Dockerd->>Reg: PUT blobs + manifest, logged in with the run's token
     Step-->>Ci: Output{chunks} — the build log, over the control WebSocket
@@ -194,18 +194,19 @@ image exists. **What the deployer hears is the release and not the build**: it s
 it goes. Its HTTP intake still takes a `POST /platform-deployments/api/events/software-released`,
 and that door is a bootstrap's and an operator's — qits-ci calls it never.
 
-`$QITS_REGISTRY` and `$QITS_IMAGE_REPOSITORY` are injected into *every* step container so the script
-names no deployment fact; `$QITS_CI_SHA` was already there.
+`$QITS_DOMAIN` and `$QITS_IMAGE_REPOSITORY` are injected into *every* step container so the script
+names no deployment fact: the registry is code under the domain, `registry.qits.$QITS_DOMAIN`
+(qits-731), and no variable carries it.
 
 And note who dials the registry in that diagram: **`Dockerd`, not `Step` and not `Ci`.** The CLI on
 the far side of the mounted socket is a client; the host's daemon is what resolves the registry name,
-negotiates TLS and performs both the build and the push. `$QITS_REGISTRY` is the registry's public
-name, `registry.qits.<domain>`, which is what the runner host's daemon resolves.
+negotiates TLS and performs both the build and the push. `registry.qits.$QITS_DOMAIN` is the
+registry's public name, which is what the runner host's daemon resolves.
 
 **A converted recipe replaces `Dockerd` in that diagram with the runner's builder.** The step calls
 `buildctl` against `$BUILDKIT_HOST` — the builder the runner owns, which fills that variable in — and
 the *builder* pulls the bases (rewriting the committed vhost spellings to the public names by the
-`registryMirrors` table qits-ci sends the runner) and pushes the ref the step composed from
-`$QITS_BUILD_REGISTRY`, the registry's public name, all without the host daemon in the path. The socket stays mounted until the
+`registryMirrors` table qits-ci sends the runner) and pushes the ref the step composed under
+`registry.qits.$QITS_DOMAIN`, the registry's public name, all without the host daemon in the path. The socket stays mounted until the
 last recipe converts; see the README's `docker: true` section and the wrapper's
 `qits-buildkit-plan.md`.

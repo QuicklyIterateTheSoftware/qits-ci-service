@@ -2114,7 +2114,9 @@ phase.
   platform half and is replayed byte for byte, as it always was; the predicted step durations are
   then derived from whichever document the retry really ends up with.
 - **The qits CLI a composed release step runs is a POM PIN, not a resolution.** The prelude
-  downloads `$QITS_ARTIFACTS_CLI_PACKAGE` at `$QITS_ARTIFACTS_CLI_VERSION`, and the version comes
+  downloads `$QITS_ARTIFACTS_CLI_PACKAGE` at `$QITS_ARTIFACTS_CLI_VERSION` from
+  `https://registry.qits.$QITS_DOMAIN/artifacts/daemons/` — the store's public name as code, never a
+  URL variable (`CiReleaseComposer.CLI_DOWNLOAD_BASE`, qits-731) — and the version comes
   from `eu.wohlben.qits:qits-platform-access-cli-binary` — one class, three strings, no bytes of the
   binary — by way of `StepContainerSettings`. It used to read qits-artifacts' own daemons listing and
   take that package's `latestVersion` at every step start, which made one CLI release a shared,
@@ -2130,7 +2132,9 @@ phase.
   parsed it are all gone. `qits.ci.artifacts-cli-version-override` is an emergency door that ships
   unset and must stay that way; setting it runs a CLI nothing gated.
 - **The qits CLI a composed release step runs is a POM PIN, not a resolution.** The prelude
-  downloads `$QITS_ARTIFACTS_CLI_PACKAGE` at `$QITS_ARTIFACTS_CLI_VERSION`, and the version comes
+  downloads `$QITS_ARTIFACTS_CLI_PACKAGE` at `$QITS_ARTIFACTS_CLI_VERSION` from
+  `https://registry.qits.$QITS_DOMAIN/artifacts/daemons/` — the store's public name as code, never a
+  URL variable (`CiReleaseComposer.CLI_DOWNLOAD_BASE`, qits-731) — and the version comes
   from `eu.wohlben.qits:qits-platform-access-cli-binary` — one class, three strings, no bytes of the
   binary — by way of `StepContainerSettings`. It used to read qits-artifacts' own daemons listing and
   take that package's `latestVersion` at every step start, which made one CLI release a shared,
@@ -2156,6 +2160,24 @@ phase.
   they did not build, and it is wrong the moment the image changes underneath the declaration. Only
   the CLI *fetch* degrades — the binary is static, so the postlude is unaffected by which arm ran —
   and there is no `jq` fallback to write because the pom pin left no JSON in the text to parse.
+- **A lockfile is installed as committed, and the prelude checks where it points** (qits-731).
+  Every recipe used to `sed -i` the origins of its lockfile's `resolved` URLs, because lockfiles were
+  generated on a host that named internal services. Nothing rewrites one now: every lockfile is
+  committed resolving against `https://registry.qits.$QITS_DOMAIN/` (the hosted `@qits` scope) or
+  `https://mirror.qits.$QITS_DOMAIN/` (the npmjs cache), and installs run against it as is with
+  `npm_config_registry`/`npm_config_@qits:registry` set to those two. The platform half of that is
+  the prelude: it demands `$QITS_DOMAIN` first in every composed step, then writes
+  `/tmp/qits-lockfile-origins.sh` (`CiReleaseComposer.lockfileOriginCheck`) and runs it before the
+  declared script. It `find`s every `package-lock.json` under the checkout — `find` and not `git
+  ls-files`, because a submodule's files are tracked by no index the parent can list — skips
+  `node_modules`, and fails the step naming the file and up to five entries when a `resolved` value
+  carrying `://` starts with neither origin. grep, sed and awk only, because docker:28-dind's busybox
+  is the floor. **The prelude runs before the declared script, so a submodule the script materialises
+  is not there yet**: java-service's two steps and this repository's `release.yml` run the same file
+  again right after their `git submodule update`, guarded on the file existing so a step composed by a
+  qits-ci that predates the check still runs. `NoLockfileRewriteTest` holds that no archetype,
+  platform pipeline or `release.yml` here carries a `sed -i` over `resolved` again. Platform pipelines
+  are not composed and get no prelude; `screenshot-baselines.yml` simply installs as committed.
 - **The heredoc is the security-shaped part.** A repository's script is data: quoted heredoc to
   `/tmp/qits-slot.sh`, run as a child shell under `-eu`. The only way out of a quoted heredoc is a line
   carrying the delimiter, so a script containing `QITS_SLOT_EOF` is a `CiConfigException` naming the
@@ -3006,6 +3028,9 @@ contract, tested where it lives.
   `artifacts publish exists` and asserts every option the postlude passes, then composes a real
   release-phase step through `CiReleaseComposer` and runs it under `bash` against a scratch git
   origin and a stub store serving a recording stand-in for the CLI, asserting the calls it made.
+  The stub is put in place of `CiReleaseComposer.CLI_DOWNLOAD_BASE` in the composed TEXT, on both
+  the curl and the wget arm: the download host is code, so no variable a step is handed can move it,
+  and the test's seam is one only its own copy of the script has.
   It no longer makes the pinned binary publish (qits-731): a CLI from qits-731 on derives every
   address from `$QITS_DOMAIN` and reads no URL variable, so a live publish could only reach the
   real, immutable sbom store. A missing coordinate is a **failure naming it**, never a skip; the one
@@ -3032,6 +3057,9 @@ contract, tested where it lives.
   `artifacts publish exists` and asserts every option the postlude passes, then composes a real
   release-phase step through `CiReleaseComposer` and runs it under `bash` against a scratch git
   origin and a stub store serving a recording stand-in for the CLI, asserting the calls it made.
+  The stub is put in place of `CiReleaseComposer.CLI_DOWNLOAD_BASE` in the composed TEXT, on both
+  the curl and the wget arm: the download host is code, so no variable a step is handed can move it,
+  and the test's seam is one only its own copy of the script has.
   It no longer makes the pinned binary publish (qits-731): a CLI from qits-731 on derives every
   address from `$QITS_DOMAIN` and reads no URL variable, so a live publish could only reach the
   real, immutable sbom store. A missing coordinate is a **failure naming it**, never a skip; the one

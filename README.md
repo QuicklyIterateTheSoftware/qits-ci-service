@@ -127,11 +127,9 @@ rest of qits it reaches over a URL it is configured with:
 | out | `POST/DELETE/GET /idp/api/tokens` — one `ci-run` TOKEN per run, minted at the run's first step and deleted when the run closes: every step clones, downloads, publishes and dials with it, and it is the step's only credential. And a runner's one-use registration token (`ci-runner-registration`) | `quarkus.oidc-client.qits.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.qits.client-enabled` |
 | out | `POST/DELETE/GET /idp/api/clients` — a registered runner's own client (`ci-runner`), given back when the runner is decommissioned — see "Runners" below. A run commissions no client (qits-515) | the same keys as the row above |
 | out | `HEAD <origin>/v2/<name>/manifests/<tag>` on qits-artifacts — the digest a run's step image is pinned to, asked by this process from inside the swarm | `qits.artifacts.url`, else the origin of `qits.artifacts.maven.registry-url`; the pinned reference is addressed under `qits.artifacts.registry-host` |
-| out | the platform's public domain itself, bare, as `$QITS_DOMAIN` in **every** step container — the one address input a recipe reads (qits-731). `registry.qits.$QITS_DOMAIN` (the image registry, the hosted npm `/artifacts/npm/npm/` and maven `/artifacts/maven/maven` roots, the docs store `/artifacts/docs/docs`) and `mirror.qits.$QITS_DOMAIN` (npmjs `/npm/npmjs/`, Maven Central `/mirror/maven/central`) are code, spelled from it with those constant paths. The URL variables in the rows below are those same addresses, kept only until no recipe read at a repository's main names them | `qits.ci.domain` |
-| out | the registry a publishing step pushes to, as `$QITS_REGISTRY`, `$QITS_BUILD_REGISTRY` and `$QITS_IMAGE_REPOSITORY` in a step container: `registry.qits.<domain>` | `qits.ci.domain`; `qits.artifacts.image-repository` |
-| out | the npm registry roots, as `$QITS_NPM_REGISTRY_URL` (hosted, `@qits/*` publishes: `https://registry.qits.<domain>/artifacts/npm/npm/`) and `$QITS_NPM_PROXY_URL` (the npmjs pull-through cache: `https://mirror.qits.<domain>/npm/npmjs/`) in **every** step container — dialled by the *step container itself* | `qits.ci.domain` |
-| out | the hosted Maven repository root, as `$QITS_MAVEN_REGISTRY_URL` in **every** step container (`https://registry.qits.<domain>/artifacts/maven/maven`), and Maven Central through the mirror as `$QITS_MAVEN_CENTRAL_MIRROR_URL` and `$QITS_MAVEN_PROXY_URL` (`https://mirror.qits.<domain>/mirror/maven/central`) — also dialled by the step container | `qits.ci.domain`; `qits.mirror.maven-central.enabled` sends the two mirror variables empty when off — the packaged recipes derive Central from `$QITS_DOMAIN` and no longer read that switch |
-| out | the docs store, the artifacts root and qits-workspaces, as `$QITS_DOCS_URL` (`https://registry.qits.<domain>/artifacts/docs/docs`), `$QITS_ARTIFACTS_URL` (`https://registry.qits.<domain>`) and `$QITS_WORKSPACES_URL` (`https://workspaces.qits.<domain>`) in **every** step container | `qits.ci.domain` |
+| out | the platform's public domain itself, bare, as `$QITS_DOMAIN` in **every** step container — the ONE address input a recipe reads (qits-731). `registry.qits.$QITS_DOMAIN` (the image registry, the hosted npm `/artifacts/npm/npm/` and maven `/artifacts/maven/maven` roots, the docs store `/artifacts/docs/docs`, the daemons store the prelude fetches the qits CLI from) and `mirror.qits.$QITS_DOMAIN` (npmjs `/npm/npmjs/`, Maven Central `/mirror/maven/central`) are code, spelled from it with those constant paths, and **no URL variable carries any of them**: `$QITS_REGISTRY`, `$QITS_BUILD_REGISTRY`, `$QITS_NPM_REGISTRY_URL`, `$QITS_NPM_PROXY_URL`, `$QITS_MAVEN_REGISTRY_URL`, `$QITS_MAVEN_CENTRAL_MIRROR_URL`, `$QITS_MAVEN_PROXY_URL`, `$QITS_DOCS_URL` and `$QITS_ARTIFACTS_URL` are no longer sent, and `qits.mirror.maven-central.enabled` went with the two Central ones | `qits.ci.domain` |
+| out | the namespace a published image goes under, as `$QITS_IMAGE_REPOSITORY` in **every** step container; the image is `registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/<application>:$QITS_VERSION` | `qits.artifacts.image-repository` |
+| out | qits-workspaces, as `$QITS_WORKSPACES_URL` (`https://workspaces.qits.<domain>`) in **every** step container | `qits.ci.domain` |
 
 **Every step row above is one plane.** A step runs on a runner outside the swarm and is told the
 public name of each service, `https://<host>.qits.<domain>`, composed by `runnerhost/StepAddressPlane`
@@ -276,10 +274,10 @@ repository's committed fixture.
 **A step is told the public name of every service** (epic qits-441, and the only plane since
 qits-515). `runnerhost/StepAddressPlane` composes each address from the public origin of the service
 that answers it and that service's own path — `$QITS_CI_DAEMON_URL`
-`wss://ci.qits.<domain>/ci/daemon`, the daemon binary, the registry, the hosted npm and maven roots, the
-docs store and `$QITS_ARTIFACTS_URL` on `registry.qits.<domain>`, the two pull-through roots on
-`mirror.qits.<domain>`, the clone url on `githost.qits.<domain>`, `$QITS_WORKSPACES_URL`
-`https://workspaces.qits.<domain>` — with no docker network and no extra host. The public names are
+`wss://ci.qits.<domain>/ci/daemon`, the daemon binary on `registry.qits.<domain>`, the clone url on
+`githost.qits.<domain>`, `$QITS_WORKSPACES_URL` `https://workspaces.qits.<domain>` — with no docker
+network and no extra host. The registry and the two pull-through caches are not among them: a recipe
+spells `registry.qits.$QITS_DOMAIN` and `mirror.qits.$QITS_DOMAIN` itself (qits-731). The public names are
 `RunnerAddresses.publicOrigin` — the same composition the runner is told, from `qits.ci.domain`
 (`QITS_DOMAIN`) — and **not** the epic's `<label>.<env>.<domain>` under two new `qits.ci.edge.*` keys:
 the platform project carries no environment label (`ci.dev.qits.wohlben.eu` is a 404 live), and
@@ -318,8 +316,9 @@ per-container secret (`$QITS_CI_DAEMON_SECRET`) and the `X-Qits-Ci-Daemon-Id`/`-
 headers are deleted.
 
 **A build step builds and pushes through the registry's public vhost** (qits-479): on a
-`docker: true` or `build: true` step `$QITS_REGISTRY` and `$QITS_BUILD_REGISTRY` are both
-`registry.qits.<domain>`, `$QITS_IMAGE_REPOSITORY` is `qits.artifacts.image-repository`,
+`docker: true` or `build: true` step the recipe pushes to `registry.qits.$QITS_DOMAIN` (qits-731;
+`$QITS_REGISTRY` and `$QITS_BUILD_REGISTRY` are no longer sent), `$QITS_IMAGE_REPOSITORY` is
+`qits.artifacts.image-repository`,
 `BUILDKIT_HOST` is left **absent** for the runner to fill (the runner owns its builder), and the docker
 document's hosts are `registry.` and `mirror.qits.<domain>`. `StepEnvironmentTest` pins the whole
 environment. There is no `qits.ci.buildkit.enabled` kill switch any more and no
@@ -327,8 +326,8 @@ environment. There is no `qits.ci.buildkit.enabled` kill switch any more and no
 subject to `/tmp/qits-client-secret` and `/tmp/qits-client-id`, the two files a Dockerfile build
 mounts as BuildKit secrets for `QITS_MAVEN_AUTH_USR`/`_PSW`; the file names are history. **The npm
 proxy is served at the root of qits-platform-mirror's own hostname, `/npm/npmjs/` (qits-474)**:
-`https://mirror.qits.<domain>/npm/npmjs/`, `StepAddressPlane.NPM_PROXY_PATH` and the path every
-recipe spells under `mirror.qits.$QITS_DOMAIN` (it is also `$QITS_NPM_PROXY_URL`, while that lasts). The earlier `/artifacts/npm/npmjs/` and the briefly used
+`https://mirror.qits.<domain>/npm/npmjs/`, the path every recipe spells under
+`mirror.qits.$QITS_DOMAIN`. The earlier `/artifacts/npm/npmjs/` and the briefly used
 `/mirror/npm/npmjs/` are both gone, and so is the key `qits.artifacts.npm.proxy-url`; a leftover
 deployment row for it is dead and never read.
 
@@ -837,7 +836,7 @@ steps:
     docker: true                               # optional, default false — see the warning below
     timeout-seconds: 3600                      # optional — else 30 minutes (qits.ci.step-timeout-seconds)
     script: |
-      ref="$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/qits-gateway:$QITS_CI_SHA"
+      ref="registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/qits-gateway:$QITS_CI_SHA"
       docker build -t "$ref" -f docker/Dockerfile .
       docker push "$ref"
       docker rmi "$ref" || true
@@ -952,9 +951,8 @@ step image supplies the docker CLI; the platform supplies the socket and the two
 >
 > - `$BUILDKIT_HOST` — the builder's address, filled in by **the runner**, which owns its builder
 >   (and so the address); this service never spells it;
-> - `$QITS_BUILD_REGISTRY` — the registry's public name, `registry.qits.<domain>`, what a converted
->   recipe composes its `buildctl … --output type=image,name=…,push=true` reference from.
->   `$QITS_REGISTRY` carries the same value.
+> - nothing naming the registry: it is `registry.qits.$QITS_DOMAIN`, code a converted recipe composes
+>   its `buildctl … --output type=image,name=…,push=true` reference from (qits-731).
 >
 > A converted recipe calls `buildctl` (ci-base and node-docker-base ship it), passes no
 > `--network host`, and hands its secrets in **file form** on both sides. The committed `FROM`
@@ -962,8 +960,8 @@ step image supplies the docker CLI; the platform supplies the socket and the two
 > carries.
 >
 > **`build: true` is the converted declaration**, and it is `docker: true` minus the
-> root-equivalence: the same per-step, diff-visible opt-in, the same registry login and
-> `$QITS_BUILD_REGISTRY`, the same `$BUILDKIT_HOST` (the runner fills it into a build step's
+> root-equivalence: the same per-step, diff-visible opt-in, the same registry login, the same
+> `$BUILDKIT_HOST` (the runner fills it into a build step's
 > container whenever the key is absent) — and **no socket**. Declaring both on one step is a parse error. An older qits-ci
 > ignores the key, hands the step neither socket nor build environment, and the recipe's
 > `${BUILDKIT_HOST:?}` guard stops it naming the cause.
@@ -1026,9 +1024,7 @@ published, and the pull-through cache of npmjs every install resolves through �
 no socket, no `docker: true` and no root-equivalence. **They are code, not configuration**
 (qits-731): every step is told `$QITS_DOMAIN`, the platform's bare public domain, and the roots are
 `https://registry.qits.$QITS_DOMAIN/artifacts/npm/npm/` and `https://mirror.qits.$QITS_DOMAIN/npm/npmjs/`
-— two constant labels and two constant paths. `$QITS_NPM_REGISTRY_URL` and `$QITS_NPM_PROXY_URL`
-carry the same two values while a recipe read at some repository's main still names them; nothing
-packaged here reads them any more.
+— two constant labels and two constant paths. No URL variable carries either.
 
 **Both hosts answer 401 anonymously, and the credential is already in place.** qits-ci's bootstrap
 appends `//registry.qits.$QITS_DOMAIN/:_authToken=$QITS_TOKEN` and the same line for the mirror host
@@ -1037,7 +1033,7 @@ a token up, so one line per host covers every path under it. A step that writes 
 from scratch has to write those lines too — `npm-library.yml`'s `write_npmrc` is the worked example:
 
 ```sh
-qits_domain=${QITS_DOMAIN:-wohlben.eu}
+qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
 npm_hosted_url="https://registry.qits.$qits_domain/artifacts/npm/npm/"
 npm_proxy_url="https://mirror.qits.$qits_domain/npm/npmjs/"
 ( umask 077
@@ -1047,14 +1043,26 @@ npm_proxy_url="https://mirror.qits.$qits_domain/npm/npmjs/"
 ```
 
 `#*:` is parameter expansion, not a comment: it turns the url into the `//host/path/` form npm keys
-credentials by. The `wohlben.eu` fallback is the platform's own domain, for a recipe running under a
-qits-ci too old to inject `$QITS_DOMAIN`; it is never an internal address.
+credentials by. The `:?` fails fast rather than falling back: every qits-ci that runs a recipe sends
+the domain, and the composed prelude demands it before the script starts.
 
 Maven has the same network posture. The hosted repository root is
 `https://registry.qits.$QITS_DOMAIN/artifacts/maven/maven` and Maven Central's cache is
 `https://mirror.qits.$QITS_DOMAIN/mirror/maven/central`; the maven recipes export them as
-`QITS_MAVEN_REPOSITORY_URL` and `QITS_MAVEN_CENTRAL_URL` for `.qits-maven-settings.xml`, and
-`$QITS_MAVEN_REGISTRY_URL` and the two central variables carry the same values while they last.
+`QITS_MAVEN_REPOSITORY_URL` and `QITS_MAVEN_CENTRAL_URL` for `.qits-maven-settings.xml` — a name
+the recipe sets for Maven, never one qits-ci sends.
+
+**A lockfile is installed as committed, and never rewritten** (qits-731). npm fetches every tarball
+by the `resolved` URL its lockfile pins and never asks the configured registry, so a lockfile is an
+address list; every one on the platform is committed resolving against
+`https://registry.qits.$QITS_DOMAIN/` (the hosted `@qits` scope) or `https://mirror.qits.$QITS_DOMAIN/`
+(everything else, through the npmjs cache). The recipes used to `sed` those origins in every step;
+none does now. **The composed prelude checks it instead**: before a step's script, it runs
+`/tmp/qits-lockfile-origins.sh` over every `package-lock.json` in the checkout outside
+`node_modules`, and fails the step naming the file and up to five entries when a `resolved` URL starts
+with neither origin. A recipe that materialises a submodule after the prelude (java-service's webui)
+runs the same file again. To fix a lockfile it names, regenerate it with the two `npm_config_*`
+variables below set and commit it.
 
 **The `~/.npmrc` form only works for a repository that commits no `.npmrc` of its own.** npm and
 pnpm rank a project `.npmrc` above the user one, so in a repo that commits registry routing (a
@@ -1768,10 +1776,18 @@ on an image with no bash, and the wrapper runs a script rather than translating 
 flag was rejected — it asks an author to restate a fact about an image they usually did not build,
 and it is wrong the moment that image changes underneath the declaration.
 
-- always — `set -eu`
-- release phase — `${QITS_VERSION:?}`, the tag fetch and `git checkout --detach`, and the qits CLI
-  (also answers to `qits-publish`) fetched **at the version qits-ci pins** and put onto `PATH`, when
-  `$QITS_ARTIFACTS_CLI_PACKAGE` names one. The download was always version-addressed; what changed
+- always — `set -eu`, then `${QITS_DOMAIN:?}`: the one address input, demanded of every step
+  (qits-731)
+- release phase — `${QITS_VERSION:?}`, the tag fetch and `git checkout --detach`
+- always, after the release checkout — the **lockfile origin check**: written to
+  `/tmp/qits-lockfile-origins.sh` and run, it fails the step naming the file and up to five entries
+  when any `package-lock.json` in the checkout (outside `node_modules`, submodule checkouts included)
+  pins a `resolved` URL outside `https://registry.qits.$QITS_DOMAIN/` and
+  `https://mirror.qits.$QITS_DOMAIN/`. POSIX `sh` with grep, sed and awk, so it runs on every step
+  image. Nothing rewrites a lockfile any more; see "Publishing an npm package needs none of that"
+- release phase — the qits CLI (also answers to `qits-publish`) fetched from
+  `https://registry.qits.$QITS_DOMAIN/artifacts/daemons/` **at the version qits-ci pins** and put
+  onto `PATH`, when `$QITS_ARTIFACTS_CLI_PACKAGE` names one. The download was always version-addressed; what changed
   is where the version comes from. It used to be read off qits-artifacts' own listing at every step
   start — so one CLI release was a shared, unversioned input to every composed release at once, and
   on 2026-09-13 one bad release broke all of them with no line anybody could revert. It is a pom pin
@@ -1782,9 +1798,8 @@ and it is wrong the moment that image changes underneath the declaration.
   runner does: `curl` where the image has it, `wget -O` where it does not, and a refusal **naming the
   image** where neither exists rather than an obscure `not found`. Only the fetch is at issue; the
   CLI is a static binary, so the postlude's `qits artifacts publish …` works whichever arm ran.
-- `build: true` — `${BUILDKIT_HOST:?}` and `${QITS_DOMAIN:?}`, which fail the step naming
-  the cause when a runner did not fill the builder's address in, or the step was told no domain to
-  derive `registry.qits.$QITS_DOMAIN` from (qits-731)
+- `build: true` — `${BUILDKIT_HOST:?}`, which fails the step naming the cause when a runner did not
+  fill the builder's address in
 - `build:`/`docker:` — the run's token and its subject written to `/tmp/qits-client-*` under `umask 077`, in a
   subshell so the umask bounds those two files and nothing after them
 - release phase, on EVERY step — one `qits artifacts publish sbom submit` per declared artifact

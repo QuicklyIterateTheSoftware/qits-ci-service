@@ -14,10 +14,11 @@ qits-441.
 | `QITS_CI_DAEMON_BINARY_URL` | `http://<env>-qits-artifacts:8080/artifacts/daemons/qits-ci-daemon/<v>` | `https://registry.<env>.<domain>/artifacts/daemons/qits-ci-daemon/<v>` (Bearer `QITS_TOKEN`) |
 | `QITS_CI_REPOSITORY_URL` | `http://<env>-qits-platform-edge:8080/git/<project>/<repo>` | `https://githost.<env>.<domain>/git/<project>/<repo>` |
 | `QITS_DOMAIN` | absent | the bare public domain, `<domain>` — the one address input a recipe reads (qits-731, see below) |
-| `QITS_REGISTRY`, `QITS_BUILD_REGISTRY` | internal registry alias | `registry.<env>.<domain>` |
-| `QITS_NPM_REGISTRY_URL`, `QITS_NPM_PROXY_URL` | internal artifacts/mirror aliases + path | `https://registry.<env>.<domain>/artifacts/npm/…`, `https://mirror.<env>.<domain>/…` (same paths, new origins) |
-| `QITS_MAVEN_REGISTRY_URL`, `QITS_MAVEN_*_URL` | internal + path | same paths on the registry and mirror vhosts |
-| `QITS_ARTIFACTS_URL`, `QITS_DOCS_URL`, `QITS_WORKSPACES_URL` | internal | vhosts |
+| `QITS_REGISTRY`, `QITS_BUILD_REGISTRY` | internal registry alias | `registry.<env>.<domain>` — **no longer sent since qits-731** |
+| `QITS_NPM_REGISTRY_URL`, `QITS_NPM_PROXY_URL` | internal artifacts/mirror aliases + path | `https://registry.<env>.<domain>/artifacts/npm/…`, `https://mirror.<env>.<domain>/…` (same paths, new origins) — **no longer sent since qits-731** |
+| `QITS_MAVEN_REGISTRY_URL`, `QITS_MAVEN_*_URL` | internal + path | same paths on the registry and mirror vhosts — **no longer sent since qits-731** |
+| `QITS_ARTIFACTS_URL`, `QITS_DOCS_URL` | internal | vhosts — **no longer sent since qits-731** |
+| `QITS_WORKSPACES_URL` | internal | vhost |
 | `BUILDKIT_HOST` | absent → qits-containers fills `tcp://qits-buildkitd:1234` on `qits-net` | absent → the runner fills its own buildkitd on its bridge |
 | network | `qits-net` | none named (runner's default bridge) |
 | extra hosts | `host.docker.internal:host-gateway` | none |
@@ -60,9 +61,10 @@ runner, and that runner is EDGE as well.
 
 ## Hosts are code: `QITS_DOMAIN` (qits-731)
 
-The EDGE column's URL variables are still sent, and each is still the same address — but they are
-no longer what a recipe reads. Every step is also told `QITS_DOMAIN`, the platform's bare public
-domain (live: `wohlben.eu`), and the hosts and paths are constants a recipe spells from it:
+The registry and mirror URL variables in the EDGE column are no longer sent (qits-ci's second
+qits-731 release; the first sent them beside the domain while recipes moved off them). A step is told
+`QITS_DOMAIN`, the platform's bare public domain (live: `wohlben.eu`), and the hosts and paths are
+constants a recipe spells from it:
 
 | what | address |
 |---|---|
@@ -72,13 +74,19 @@ domain (live: `wohlben.eu`), and the hosts and paths are constants a recipe spel
 | hosted maven | `https://registry.qits.$QITS_DOMAIN/artifacts/maven/maven` |
 | Maven Central cache | `https://mirror.qits.$QITS_DOMAIN/mirror/maven/central` |
 | docs store | `https://registry.qits.$QITS_DOMAIN/artifacts/docs/docs` |
+| qits CLI the prelude fetches | `https://registry.qits.$QITS_DOMAIN/artifacts/daemons/<package>/<version>` |
 
-Every packaged archetype and platform pipeline reads `QITS_DOMAIN` (falling back to `wohlben.eu`
-under a qits-ci too old to send it) and passes it to image builds as the `QITS_DOMAIN` build-arg
-beside the old URL build-args. `QITS_DOMAIN` is never empty in a step: a qits-ci with no dotted
-public domain composes no address and launches no step at all (`EDGE_PLANE_UNCONFIGURED`). The URL
-variables and the URL build-args are removed once no recipe read at a repository's main and no
-Dockerfile names them.
+Every packaged archetype and platform pipeline reads `QITS_DOMAIN` with a fail-fast
+`${QITS_DOMAIN:?…}`, and the composed prelude demands it at the top of every step. It passes it to
+image builds as the `QITS_DOMAIN` build-arg; the old URL build-args still ride beside it for the
+Dockerfiles that have not moved, and go once none declares them. `QITS_DOMAIN` is never empty in a
+step: a qits-ci with no dotted public domain composes no address and launches no step at all
+(`EDGE_PLANE_UNCONFIGURED`).
+
+**Lockfiles are installed as committed.** No recipe rewrites a `package-lock.json`'s `resolved`
+origins any more; every lockfile is committed resolving against `https://registry.qits.$QITS_DOMAIN/`
+or `https://mirror.qits.$QITS_DOMAIN/`, and the composed prelude fails a step whose checkout holds one
+naming anything else (`/tmp/qits-lockfile-origins.sh`, the file and up to five entries named).
 
 ## What the bootstrap writes from one token
 
