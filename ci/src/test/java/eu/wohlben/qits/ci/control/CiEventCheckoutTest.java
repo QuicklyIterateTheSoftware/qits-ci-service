@@ -199,41 +199,6 @@ public class CiEventCheckoutTest extends CiTestSupport {
   }
 
   @Test
-  public void suppressCiIsAWhenConditionAndMatchesTheBooleanLiteral() throws Exception {
-    // The engine gains no flag knowledge: suppression is declared in when:, and the matcher
-    // compares the JSON literal — `exact: "false"` matches the boolean false. This is the shape
-    // both qits-githost trigger files carry.
-    fakeConfig.putTriggers(
-        repoId,
-        "main",
-        HEAD,
-        new EventTriggerFile(
-            CHECKOUT_PATH,
-            """
-            event: SCMPublishCommit
-            when:
-              - suppressCi: { exact: "false" }
-            checkout:
-              branch: branch
-              sha: sha
-            steps:
-              - image: alpine:3
-                script: "true"
-            """));
-    deliver(
-        arrival(
-            UUID.randomUUID().toString(),
-            "{\"branch\":\"main\",\"sha\":\"" + PUSHED + "\",\"suppressCi\":true}"));
-    assertEquals(List.of(), runService.runsFor(repoId), "a -o qits.no-ci push stays dark");
-
-    deliver(
-        arrival(
-            UUID.randomUUID().toString(),
-            "{\"branch\":\"main\",\"sha\":\"" + PUSHED + "\",\"suppressCi\":false}"));
-    assertEquals(1, runService.runsFor(repoId).size());
-  }
-
-  @Test
   public void aPlatformTriggerDeclaringCheckoutRecordsNoRun() throws Exception {
     String platformId = "wrapper-" + UUID.randomUUID().toString().substring(0, 8);
     String targetId = "target-" + UUID.randomUUID().toString().substring(0, 8);
@@ -598,7 +563,7 @@ public class CiEventCheckoutTest extends CiTestSupport {
   }
 
   private static String push(String branch, String sha) {
-    return "{\"branch\":\"" + branch + "\",\"sha\":\"" + sha + "\",\"suppressCi\":false}";
+    return "{\"branch\":\"" + branch + "\",\"sha\":\"" + sha + "\"}";
   }
 
   private CiEventTriggerService.Arrival arrival(String eventId, String payload) {

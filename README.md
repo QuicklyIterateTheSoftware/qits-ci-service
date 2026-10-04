@@ -705,9 +705,6 @@ never built it — then `bus/ScmPublishCommitListener`, a durable consumption th
 back off the log. On 2026-09-05 the listener went too: the platform runs no CI outside release
 requests. Two consequences worth stating:
 
-- **`-o qits.no-ci` is a fact on the event and nothing here reads it.** The git host used to decide
-  for its consumers by not POSTing; the option travels as `suppressCi` on `SCMPublishCommit`, and a
-  repository that declares a trigger on that event spells it as a `when:` condition (below).
 - **There is no address to keep in step.** Nothing in another repository spells a qits-ci path for
   pushes. What can silently stop CI is a listener that does not subscribe, which is why
   `EventstreamDarknessTest` asserts the trigger engine's bean exists.
@@ -1205,7 +1202,6 @@ steps:                          # the `steps:` grammar above
 event: SCMPublishCommit
 when:
   - repoId: { exact: qits-githost }
-    suppressCi: { exact: "false" }   # -o qits.no-ci pushes stay dark; the engine adds no flag
 checkout:
   branch: branch                     # payload dot-path — the run's ref
   sha: sha                           # payload dot-path — the commit the run checks out
@@ -1264,9 +1260,6 @@ steps:
 - **Not available in platform pipelines** (`.config/qits/platform-pipelines/*.yml`): a platform
   run's head comes from the candidate pass, and a checkout there would build an arbitrary sha of the
   repository the payload named. Declared anyway, it is one WARN per event and no run.
-- `suppressCi` is a `when:` condition and nothing in the engine reads it: matchers compare JSON
-  literals, so `exact: "false"` matches the boolean. It used to be honoured by the push listener,
-  which is gone, so **every `SCMPublishCommit` trigger must carry it** — nothing else will.
 
 ### Every step gates, and a red run is a red verdict
 

@@ -1105,17 +1105,13 @@ push intake — it had itself replaced `POST /ci/api/events/post-receive` — an
 `CiRunService.onPostReceive` for every `SCMPublishCommit`, accepting one `QUEUED` run per pushed
 branch ref against `.config/qits/ci-post-receive.yml`. The platform runs no CI outside release
 requests and every repository's file was gone; the listener was not, so every push still cost a
-runner slot to discover that nothing was declared. It is deleted, along with the intake, the parser
-and `suppressCi`'s only reader. Four things about the retirement are worth keeping in front of you:
+runner slot to discover that nothing was declared. It is deleted, along with the intake and the
+parser. Three things about the retirement are worth keeping in front of you:
 
 - **`SCMPublishCommit` still arrives, and that is deliberate.** `CiEventTriggerListener` subscribes
   to `"*"`, so a repository declaring `event: SCMPublishCommit` in a `ci-event-*.yml` is served by
   the ordinary grammar — matching, `when:` and `checkout:` — with no code special to pushes anywhere.
   None does today. That capability is the reason the *engine* arm stays while the hard-coded one goes.
-- **`suppressCi` has no reader here any more.** `-o qits.no-ci` was the git host's decision (it
-  skipped the POST), then a fact on the event that this service honoured. Now it is a fact nothing in
-  qits-ci consumes: a trigger on that event spells `suppressCi: { exact: "false" }` as a `when:`
-  condition, and matchers compare JSON literals, so the string matches the boolean.
 - **`ci-push-runs` is an ABANDONED consumer id.** Its `consumed_event` rows and its
   `consumer_watermark` are left where they are — no migration, no deletion — which is what
   qits-platform-deployments did with `pd-build-succeeded`. The rows are pruned by the sweeper's own
