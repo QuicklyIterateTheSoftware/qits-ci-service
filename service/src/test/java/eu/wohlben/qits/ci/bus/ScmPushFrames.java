@@ -30,12 +30,7 @@ public final class ScmPushFrames {
 
   /** An ordinary push: the branch moved, and CI is meant to build it. */
   public static EventFrame push(String repoId, String branch, String oldSha, String sha) {
-    return frame(commit(repoId, null, null, branch, oldSha, sha, false));
-  }
-
-  /** The same push made with {@code -o qits.no-ci}: announced, and not to be built. */
-  public static EventFrame suppressed(String repoId, String branch, String oldSha, String sha) {
-    return frame(commit(repoId, null, null, branch, oldSha, sha, true));
+    return frame(commit(repoId, null, null, branch, oldSha, sha));
   }
 
   /**
@@ -45,7 +40,7 @@ public final class ScmPushFrames {
    */
   public static EventFrame named(
       String repoId, String projectId, String repoName, String branch, String oldSha, String sha) {
-    return frame(commit(repoId, projectId, repoName, branch, oldSha, sha, false));
+    return frame(commit(repoId, projectId, repoName, branch, oldSha, sha));
   }
 
   /**
@@ -60,8 +55,7 @@ public final class ScmPushFrames {
       String repoName,
       String branch,
       String oldSha,
-      String sha,
-      boolean suppressCi) {
+      String sha) {
     Instant receivedAt = Instant.parse("2026-08-10T09:00:00Z");
     return new SCMPublishCommit(
         repoId,
@@ -76,7 +70,6 @@ public final class ScmPushFrames {
         receivedAt,
         receivedAt,
         "a commit",
-        suppressCi,
         receivedAt);
   }
 
