@@ -495,9 +495,9 @@ public final class CiReleaseComposer {
   /**
    * Which release step carries the publish block and the SBOM presence checks: the <b>last</b> one.
    *
-   * <p>Last, and not the last building step, because every repository with its own slot builds its
-   * maven module in its last step — a {@code maven-base} step after any image build — and the CLI
-   * needs that step's {@code target/} to upload from. The presence checks go there for a different
+   * <p>Last, and not the last building step, because every release slot that builds a maven module
+   * builds it in its last step — a {@code maven-base} step after any image build, java-service's own
+   * recipe included since qits-890 — and the CLI needs that step's {@code target/} to upload from. The presence checks go there for a different
    * reason: it is the one point at which every step that could have produced a declared SBOM has
    * already run.
    */

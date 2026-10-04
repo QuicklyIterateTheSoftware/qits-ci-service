@@ -78,8 +78,9 @@
 #   carries uid 1001. A repository whose suite needs root does not exist today; one that needs
 #   different flags overrides `release-request:` (phase one) entirely.
 # - A repository publishing something besides jars (qits-containers-service publishes two jars AND
-#   an image) is not a maven-library — it declares its own slots and keeps a `package` build in its
-#   LAST release step, which is where the platform publishes its maven entries from.
+#   an image) is not a maven-library — it is a java-service, whose release slot ends on a step that
+#   packages every declared `type: maven` module, so its jars are `artifacts:` entries and need no
+#   slot of its own (qits-890).
 
 release-request:
 

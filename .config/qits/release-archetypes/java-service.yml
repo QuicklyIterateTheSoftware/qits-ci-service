@@ -66,11 +66,19 @@
 #     artifacts:
 #       - { type: docker, name: qits/qits-platform-idp, sbom: .sbom/sbom.json }
 #       - { type: docs, name: "@apidocs/qits-idp", path: docs/openapi.yml }   # optional
+#       - { type: maven, name: "eu.wohlben.qits:qits-githost-events", path: githost-events, sbom: githost-events/target/sbom.json }   # optional, one per published module
 #     userflows: true            # or `userflows: <site>` when the bundle's site is not the repo name
 #
 # and nothing else. `artifacts:` and `userflows:` MUST be in the repository's own file rather than
 # here: qits-projects reads both out of the repository at the tag, so an archetype default is
 # invisible to it — a bundle nobody is told about, or a release announcing nothing.
+#
+# A JAR BESIDE THE IMAGE IS A DECLARATION, NOT AN OVERRIDE. A `type: maven` entry names a module of
+# the reactor in `path:` (`.` when absent) and is published exactly as maven-library publishes one —
+# flattened pom, `link:` for a sibling that stays a dependency, `publish: if-changed` — by the
+# composed postlude on the release slot's LAST step. That step is this recipe's own `maven-base`
+# step, which packages the declared modules and writes their SBOMs; see the release slot below. A
+# repository that declares no maven entry pays one container that prints a line and exits 0.
 #
 # THE API DOCS ARE THE PLATFORM'S TO PUBLISH. An `@apidocs/<application>` docs entry naming its
 # OpenAPI document in `path:` (`.yml`, `.yaml` or `.json`, relative to the repository root) is
@@ -94,7 +102,7 @@
 # provider's package holds only its own file.
 #
 # ---------------------------------------------------------------------------------------------
-# THE ONE THING THIS RECIPE READS OUT OF A REPOSITORY, AND WHY IT IS THE DECLARATION
+# WHAT THIS RECIPE READS OUT OF A REPOSITORY, AND WHY IT IS THE DECLARATION
 #
 # The release pushes `registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/<image>:$QITS_VERSION` and the
 # `<image>` half is per-repository. It is NOT derivable from `$QITS_CI_REPO_NAME`: measured across
@@ -121,6 +129,13 @@
 #
 # Two docker entries, a block-form entry or none at all is a loud failure naming this file, never a
 # ref composed out of an empty string.
+#
+# THE MAVEN MODULES ARE READ THE SAME WAY, AND FOR THE SAME REASON. The release slot's `maven-base`
+# step builds the `path:` of every `type: maven` entry — the same declaration the postlude uploads
+# from — so the module built and the module published are one string too. The same one-line flow
+# spelling is required; a maven entry the extractor cannot read (block form, a quoted or absolute
+# `path:`, one climbing out with `..`) fails the step naming it, never a build that silently skips
+# a jar the postlude then cannot find. Zero maven entries is the ordinary case, not a failure.
 #
 # ---------------------------------------------------------------------------------------------
 # WHAT ELSE IS DISCOVERED RATHER THAN DECLARED
@@ -230,8 +245,10 @@
 # A repository declaring `release-request:` (phase one) or `release:` (phase two) replaces THAT slot
 # entirely — there is no per-step merging. Override when:
 #
-# - the release publishes more than one image, or something other than an image (qits-ci-service
-#   also PUTs `@apidocs/qits-ci`; qits-projects-daemon pushes two; qits-build-images-oci five);
+# - the release publishes more than one image (qits-projects-daemon pushes two;
+#   qits-build-images-oci five), or something that is none of the image, a declared `type: maven`
+#   module and a declared `@apidocs` document — those three this recipe and its postlude publish,
+#   so a jar beside the image is an `artifacts:` line and never a reason to copy this slot;
 # - the image build needs a build-arg, a target or a context this recipe does not pass;
 # - the QA verify needs flags beyond the allow-list (qits-ci-service must keep `-Dit.test`, because
 #   its `extended` docker gates would otherwise run and fail on a step container).
@@ -449,6 +466,12 @@ release-request:
 
 release:
 
+  # TWO STEPS: the image, then the jars. The composed postlude publishes from the LAST release step
+  # only — every maven upload, the contract packages, `@apidocs` — so the step that leaves the
+  # declared modules' jars on disk has to be that one, and it is the second. Each step still submits
+  # every declared SBOM its own tree holds (the image's from this one, the jars' from the next), and
+  # the last checks that all of them arrived.
+  #
   # The same image and the same build as the QA half, plus the two exports. The composer has already
   # fetched the release tag and detached at it before this script runs.
   - image: qits/build-images/node-docker-base:latest
@@ -549,3 +572,78 @@ release:
         --secret id=qits-client-id,src=/tmp/qits-client-id \
         --secret id=qits-client-secret,src=/tmp/qits-client-secret \
         --output type=local,dest=.sbom
+
+  # --- the jars: every `type: maven` module this repository declares ----------------------------
+  # maven-library's release step, narrowed to the declared modules: `maven-base` and no `user:`, as
+  # there. It builds and nothing else — the postlude after it uploads each jar and flattened pom with
+  # the run's own credential and submits each `<path>/target/sbom.json`. A repository declaring no
+  # maven entry gets a step that says so and exits 0; the postlude still runs, because its
+  # `@apidocs`, contract publishes and SBOM presence checks ride on the last step whatever it built.
+  - image: qits/build-images/maven-base:latest
+    timeout-seconds: 1800
+    script: |
+      # THE MODULES, OUT OF THE DECLARATIONS THAT PUBLISH THEM — see the header. Comments go first,
+      # so prose naming an entry is never read as one. Every line still mentioning `type: maven`
+      # must be the one-line flow form, or the count below disagrees and the step refuses.
+      declared=$(sed -e 's/#.*//' .config/qits/release.yml \
+        | grep -E 'type:[[:space:]]*"?maven"?[[:space:]]*(,|}|$)' || true)
+      flow=$(printf '%s\n' "$declared" \
+        | grep -E '^[[:space:]]*-[[:space:]]*\{[[:space:]]*type:[[:space:]]*maven[[:space:]]*,.*\}[[:space:]]*$' || true)
+      count=$(printf '%s' "$declared" | grep -c . || true)
+      readable=$(printf '%s' "$flow" | grep -c . || true)
+      if [ "$count" != "$readable" ]; then
+        echo "release.yml declares $count maven artifact(s) and only $readable is spelled as one flow line." >&2
+        echo "Spell each as '- { type: maven, name: \"g:a\", path: <module>, sbom: <module>/target/sbom.json }'." >&2
+        exit 1
+      fi
+      if [ "$count" = 0 ]; then
+        echo "release.yml declares no maven artifact, so this java-service release builds no jar"
+        exit 0
+      fi
+
+      # `path:` is the module's directory under the reactor root, `.` when absent — maven-library's
+      # rule, and what the postlude's `--path` reads. A path is a word under the root and nothing
+      # else: no quotes, no leading `/`, no `..`.
+      modules=$(printf '%s\n' "$flow" | while IFS= read -r entry; do
+        path=$(printf '%s' "$entry" \
+          | sed -n 's/.*[{,][[:space:]]*path:[[:space:]]*\([^,}[:space:]]*\).*/\1/p')
+        printf '%s\n' "${path:-.}"
+      done)
+      for module in $modules; do
+        case "$module" in
+          /*|*..*|*[!A-Za-z0-9._/-]*)
+            echo "release.yml's maven artifact path is not a module under the reactor root: $module" >&2
+            exit 1 ;;
+        esac
+      done
+      projects=$(printf '%s\n' $modules | tr '\n' ',')
+      projects=${projects%,}
+
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+      export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
+      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
+
+      # Guarded on presence for maven-library's reason: this script runs against a tag, which may
+      # predate the file.
+      settings=""
+      if [ -f .qits-maven-settings.xml ]; then
+        settings="-s .qits-maven-settings.xml"
+      fi
+
+      # THE DECLARED MODULES AND WHAT THEY NEED, IN ONE INVOCATION. `-pl … -am` builds each declared
+      # module and the reactor modules it depends on — its parent and any sibling — and never the
+      # service, so this is seconds rather than a second native compile. `package` leaves each
+      # `<path>/target/*.jar` for the postlude; `-DskipTests`, because the fold that gated this
+      # release already ran them.
+      #
+      # makeBom runs IN THE SAME INVOCATION, as on maven-library and for its reason: a sibling at
+      # the release version exists only in this reactor, so a second maven invocation narrowed to
+      # the declared modules would look for it in the registry, where it is not. It writes
+      # `<module>/target/sbom.json` for every module the invocation selected, which covers each
+      # declared `sbom:`; one written for an undeclared parent or sibling is submitted by nobody.
+      echo "building the declared maven module(s): $projects"
+      ./mvnw -B -ntp $settings -pl "$projects" -am -DskipTests \
+        package \
+        org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeBom \
+        -DoutputFormat=json -DoutputName=sbom -DschemaVersion=1.6 \
+        -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL"
