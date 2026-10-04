@@ -19,9 +19,9 @@ import java.util.UUID;
  * the listener is byte for byte what qits-githost publishes. {@link #commit} assembles that instance
  * by decoding a map of wire keys rather than by calling the record's own constructor, precisely so
  * that a boolean flag the publisher has retired, as of this writing, costs this fixture nothing: the
- * key is simply not in the map, and Jackson binds the missing primitive to its default. A field
- * truly renamed (not merely dropped) still shows up as a mismatch at this seam, since the decode
- * fails loudly when the resulting JSON does not round-trip through the real type.
+ * key is simply not in the map, and Jackson binds the missing primitive to its default. The price is
+ * the compile error the constructor used to give: the decode is lenient, so a key renamed on the
+ * record binds to null here and only the tests that read that field notice.
  *
  * <p>Shared across packages ({@code api} drives it too) rather than copied per test class, which is
  * the opposite of what this repo does with {@code FakeCiStepRunner} — those are duplicated because
