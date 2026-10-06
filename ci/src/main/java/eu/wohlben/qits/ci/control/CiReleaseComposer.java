@@ -167,11 +167,32 @@ import java.util.Set;
  * which is what keeps the file guard from turning a missing SBOM into a silent green.
  *
  * <p>The postlude runs only after the declared script exited 0 (the wrapper is {@code set -eu}), as
- * it always has. On the last step the publishes come first, so a submitted SBOM always describes
+ * it always has; it is the release phase's alone, and a QA step's report hook (below) is not one. On the last step the publishes come first, so a submitted SBOM always describes
  * something that was uploaded. An {@code if-changed} entry is the exception to "every step": its
  * submit and its presence check sit on the publishing step alone and run only when its publish
  * answered {@code published <v>} — {@code unchanged since <v>} published nothing at this version,
  * so there is nothing to submit and nothing to find.
+ *
+ * <h2>The QA report hook (qits-754)</h2>
+ *
+ * <p><b>Every QA step submits its reports whatever its exit code, and the exit code stays the
+ * declared script's.</b> A {@code release-request:} step runs the declared script between {@code set
+ * +e} and {@code set -e}, keeps its code in {@code qits_step_exit}, writes {@value #REPORT_HOOK}
+ * through a quoted heredoc and runs it as {@code sh <hook> "$qits_step_exit" || echo …}, then ends
+ * with {@code exit "$qits_step_exit"}. A red build is exactly the one whose test results somebody
+ * wants to read, so the hook cannot wait for green; and nothing the hook does — a CLI that cannot be
+ * fetched, an image with neither curl nor wget, a refused upload — can move the verdict, because the
+ * {@code ||} absorbs its failure and the last line re-states the captured code.
+ *
+ * <p>The hook fetches the pinned CLI the way the release prelude does — the same store, the same
+ * {@code $QITS_ARTIFACTS_CLI_PACKAGE}/{@code $QITS_ARTIFACTS_CLI_VERSION}, the run's {@code
+ * $QITS_TOKEN} as bearer, curl then wget — but <b>soft</b>: every failure is a printed line and a
+ * non-zero exit of the hook, never of the step. It goes into {@value #REPORT_CLI_DIR}, not onto
+ * {@code PATH}, and then calls {@code qits ci report submit --exit-code "$1"}; the CLI finds the run
+ * and the step in {@code $QITS_CI_RUN_ID}/{@code $QITS_CI_STEP_INDEX} and its bearer through {@code
+ * $QITS_PUBLISH_TOKEN_COMMAND}, all inherited from the step's environment. With no CLI package
+ * configured it says reports were skipped and succeeds. Release-phase documents carry no hook and
+ * are unchanged: their postlude still runs only after the declared script exited 0.
  */
 public final class CiReleaseComposer {
 
@@ -227,6 +248,22 @@ public final class CiReleaseComposer {
    * old name.
    */
   static final String CLI_DIR = "/tmp/qits-bin";
+
+  /**
+   * Where a QA step's report hook is written before it runs (qits-754) — a file, like {@link
+   * #SLOT_SCRIPT}, so its {@code exit} and its positional parameters are its own.
+   */
+  static final String REPORT_HOOK = "/tmp/qits-report-hook.sh";
+
+  /** The quoted heredoc delimiter the report hook is written through. Platform text only. */
+  static final String REPORT_HOOK_DELIMITER = "QITS_REPORT_HOOK";
+
+  /**
+   * Where a QA step's report hook fetches the qits CLI: {@link #CLI_DIR}'s layout (the binary as
+   * {@code qits}) in a directory of its own, so it neither lands on nor shadows anything a declared
+   * script put on its own {@code PATH}.
+   */
+  static final String REPORT_CLI_DIR = "/tmp/qits-cli";
 
   /**
    * Where a release-phase prelude downloads the qits CLI from: the daemons store of qits-artifacts'
@@ -579,67 +616,7 @@ public final class CiReleaseComposer {
       // Soft on the package: a deployment that has switched it off still runs every recipe that does
       // not call it, and one that does gets `command not found` rather than a silent skip. The
       // postlude below demands the package outright.
-      out.append("if [ -n \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]; then\n");
-      // Hard on the version, and the message names the real cause. The launcher's constant cannot be
-      // blank (PlatformAccessCliBinary refuses that at class-init) and the variable is always sent,
-      // so the only way to be inside this branch without one is a qits-ci older than the pin having
-      // launched this step — which a re-run against a current qits-ci fixes.
-      out.append(
-          "  : \"${QITS_ARTIFACTS_CLI_VERSION:?the qits CLI package is configured but no version was"
-              + " injected; the qits-ci that launched this step predates the CLI pin}\"\n");
-      out.append("  mkdir -p ").append(CLI_DIR).append('\n');
-      // curl, then wget, then a refusal that names the image. An image with neither is a real
-      // shape in the fleet's neighbourhood — docker:28-dind has wget and no curl — and the one
-      // thing it must not produce is `curl: not found` from a line nobody can see the reason for.
-      // Only the FETCH degrades: the CLI itself is a static binary, so everything downstream of
-      // this block, the postlude's `qits artifacts publish` included, is unaffected by which arm
-      // ran.
-      // The download goes through the public edge, which answers an anonymous read with a 401.
-      // `$QITS_TOKEN` is this run's ci-run token, exactly as `StepContainerSettings.BOOTSTRAP` reads
-      // it for the daemon binary's own download, and the idiom is the same: a local `set --` builds
-      // the bearer header as a positional list, spent as `"$@"` on both arms and never interpolated
-      // into the url. `set --` is safe here because nothing else this method emits reads
-      // `$@`/`$1`/`$2` — check that before adding a second such block. With no token `"$@"`
-      // expands to nothing.
-      out.append("  set --\n");
-      out.append("  if [ -n \"${QITS_TOKEN:-}\" ]; then\n");
-      out.append("    set -- --header \"Authorization: Bearer $QITS_TOKEN\"\n");
-      out.append("  fi\n");
-      // The store is qits-artifacts' public name, code under the domain (qits-731): no URL
-      // variable is read, so nothing in a step's environment decides where its CLI comes from.
-      String cliUrl =
-          " \"" + CLI_DOWNLOAD_BASE + "$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
-      out.append("  if command -v curl > /dev/null 2>&1; then\n");
-      out.append("    curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o ")
-          .append(CLI_DIR)
-          .append("/qits")
-          .append(cliUrl)
-          .append('\n');
-      out.append("  elif command -v wget > /dev/null 2>&1; then\n");
-      out.append("    wget -q \"$@\" -O ")
-          .append(CLI_DIR)
-          .append("/qits")
-          .append(cliUrl)
-          .append('\n');
-      out.append("  else\n");
-      out.append("    echo ")
-          .append(
-              shellQuote(
-                  "qits-ci: the image for this step ("
-                      + step.image()
-                      + ") has neither curl nor wget, so the qits CLI cannot be fetched into it —"
-                      + " add one to the image, or take the qits calls out of this step"))
-          .append(" >&2\n");
-      out.append("    exit 1\n");
-      out.append("  fi\n");
-      out.append("  chmod +x ").append(CLI_DIR).append("/qits\n");
-      out.append("  ln -sf ").append(CLI_DIR).append("/qits ").append(CLI_DIR).append("/qits-publish\n");
-      out.append(
-          "  echo \"qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION\""
-              + " >&2\n");
-      out.append("  PATH=\"").append(CLI_DIR).append(":$PATH\"\n");
-      out.append("  export PATH\n");
-      out.append("fi\n");
+      cliFetch(out, step, false);
     }
     if (step.build()) {
       // The platform builder, demanded loudly before anything is built. Unset means a
@@ -683,11 +660,46 @@ public final class CiReleaseComposer {
     // because the composer cannot see inside an image. A declared script that uses a bashism will
     // fail on an image with no bash; that is the repository's own business, and its alternative was
     // a flag asking an author to restate a fact about an image they did not build.
+    if (!releasePhase) {
+      // THE QA REPORT HOOK (qits-754). The declared script's exit code is CAPTURED rather than
+      // allowed to end the step, so the hook runs whatever it was — a red build is exactly the one
+      // whose test results somebody wants to read — and the step then exits with that code, byte
+      // for byte: the verdict stays the declared script's. A QA step has no postlude to skip (the
+      // release-phase postlude is the only one, and `release` is null here), so nothing that used
+      // to run "only on exit 0" moves.
+      out.append("set +e\n");
+    }
     out.append("if command -v bash > /dev/null 2>&1; then\n");
     out.append("  bash -eu ").append(SLOT_SCRIPT).append('\n');
     out.append("else\n");
     out.append("  sh -eu ").append(SLOT_SCRIPT).append('\n');
     out.append("fi\n");
+    if (!releasePhase) {
+      out.append("qits_step_exit=$?\n");
+      out.append("set -e\n");
+      out.append(
+          "# --- platform report hook: always runs, never changes the step's verdict ---\n");
+      // A FILE run by a child `sh`, through a quoted heredoc like the declared script: nothing in
+      // it is expanded on the way in, `exit` inside it ends the hook rather than the step, and its
+      // positional parameters are its own — `$1` is the exit code, which is why the fetch in it
+      // builds the bearer in a named variable rather than with `set --`. The environment (the run's
+      // token, QITS_PUBLISH_TOKEN_COMMAND, QITS_CI_RUN_ID and QITS_CI_STEP_INDEX) is inherited.
+      out.append("cat > ")
+          .append(REPORT_HOOK)
+          .append(" <<'")
+          .append(REPORT_HOOK_DELIMITER)
+          .append("'\n");
+      out.append(reportHook(step));
+      out.append(REPORT_HOOK_DELIMITER).append('\n');
+      // `||` and not a bare call: under the wrapper's `set -e` a failing hook would otherwise end
+      // the step with the HOOK's code, which is the one outcome this block exists to rule out.
+      out.append("sh ")
+          .append(REPORT_HOOK)
+          .append(" \"$qits_step_exit\" || echo \"qits-ci: reports were not submitted; the step's"
+              + " verdict is unchanged\" >&2\n");
+      out.append("exit \"$qits_step_exit\"\n");
+      return out.toString();
+    }
     List<SlotArtifact> artifacts = release == null ? List.of() : release.artifacts();
     // An if-changed entry's SBOM is the publishing step's alone (see sbomSubmit), so an earlier
     // step carrying nothing else gets no postlude at all.
@@ -717,6 +729,156 @@ public final class CiReleaseComposer {
       }
     }
     return out.toString();
+  }
+
+  /**
+   * The report hook's text (qits-754): a soft fetch of the pinned qits CLI into {@value
+   * #REPORT_CLI_DIR}, then {@code qits ci report submit --exit-code "$1"}. Run as {@code sh <file>
+   * <exit code>}; every way it can fail prints a line and exits non-zero, and the caller's {@code ||}
+   * turns that into one more line. With no CLI package configured it prints that reports were
+   * skipped and succeeds — a deployment with the CLI switched off has nothing to fail at.
+   */
+  private static String reportHook(CiStepDecl step) {
+    StringBuilder out = new StringBuilder();
+    out.append("# qits-ci report hook (qits-754). $1 is the declared script's exit code.\n");
+    out.append("set -u\n");
+    out.append("if [ -z \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]; then\n");
+    out.append("  echo \"qits-ci: reports skipped: no qits CLI configured\" >&2\n");
+    out.append("  exit 0\n");
+    out.append("fi\n");
+    cliFetch(out, step, true);
+    out.append(REPORT_CLI_DIR)
+        .append("/qits ci report submit --exit-code \"$1\"\n");
+    return out.toString();
+  }
+
+  /**
+   * The qits CLI download, one text for both its callers.
+   *
+   * <p><b>Hard</b> ({@code soft == false}) is the release prelude: inside {@code if
+   * $QITS_ARTIFACTS_CLI_PACKAGE is set}, into {@value #CLI_DIR}, a missing fetcher {@code exit 1}s
+   * the step, and the binary goes on {@code PATH}. Its bytes are what the release goldens hold.
+   *
+   * <p><b>Soft</b> is the QA report hook's: top level of the hook file (the package check is the
+   * hook's own), into {@value #REPORT_CLI_DIR}, and every failure — no version, no directory, no
+   * fetcher, a failed download, no chmod — echoes what happened and exits the HOOK non-zero. The
+   * bearer is a named variable spent through {@code ${v:+…}} rather than {@code set --}, because
+   * the hook's {@code $1} is the exit code it reports.
+   */
+  private static void cliFetch(StringBuilder out, CiStepDecl step, boolean soft) {
+    String dir = soft ? REPORT_CLI_DIR : CLI_DIR;
+    // The store is qits-artifacts' public name, code under the domain (qits-731): no URL
+    // variable is read, so nothing in a step's environment decides where its CLI comes from.
+    String cliUrl =
+        " \"" + CLI_DOWNLOAD_BASE + "$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
+    String noFetcher =
+        shellQuote(
+            "qits-ci: the image for this step ("
+                + step.image()
+                + ") has neither curl nor wget, so the qits CLI cannot be fetched into it —"
+                + (soft
+                    ? " add one to the image to get its reports submitted"
+                    : " add one to the image, or take the qits calls out of this step"));
+    if (soft) {
+      out.append("if [ -z \"${QITS_ARTIFACTS_CLI_VERSION:-}\" ]; then\n");
+      out.append(
+          "  echo \"qits-ci: the qits CLI package is configured but no version was injected; the"
+              + " qits-ci that launched this step predates the CLI pin\" >&2\n");
+      out.append("  exit 1\n");
+      out.append("fi\n");
+      out.append("mkdir -p ")
+          .append(dir)
+          .append(" || { echo \"qits-ci: could not create ")
+          .append(dir)
+          .append("\" >&2; exit 1; }\n");
+      // The edge answers an anonymous read with a 401, so the bearer is this run's token, as in
+      // the release prelude — held in a NAMED variable: `${v:+--header} ${v:+"$v"}` is two words
+      // with a token and none without, on dash, bash and busybox ash alike.
+      out.append("qits_cli_bearer=\n");
+      out.append("if [ -n \"${QITS_TOKEN:-}\" ]; then\n");
+      out.append("  qits_cli_bearer=\"Authorization: Bearer $QITS_TOKEN\"\n");
+      out.append("fi\n");
+      String header = " ${qits_cli_bearer:+--header} ${qits_cli_bearer:+\"$qits_cli_bearer\"}";
+      String failed =
+          " || { echo \"qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE"
+              + " $QITS_ARTIFACTS_CLI_VERSION\" >&2; exit 1; }\n";
+      out.append("if command -v curl > /dev/null 2>&1; then\n");
+      out.append("  curl -fsSL --retry 2 --retry-delay 2")
+          .append(header)
+          .append(" -o ")
+          .append(dir)
+          .append("/qits")
+          .append(cliUrl)
+          .append(failed);
+      out.append("elif command -v wget > /dev/null 2>&1; then\n");
+      out.append("  wget -q")
+          .append(header)
+          .append(" -O ")
+          .append(dir)
+          .append("/qits")
+          .append(cliUrl)
+          .append(failed);
+      out.append("else\n");
+      out.append("  echo ").append(noFetcher).append(" >&2\n");
+      out.append("  exit 1\n");
+      out.append("fi\n");
+      out.append("chmod +x ")
+          .append(dir)
+          .append("/qits || { echo \"qits-ci: could not make ")
+          .append(dir)
+          .append("/qits executable\" >&2; exit 1; }\n");
+      out.append(
+          "echo \"qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION\""
+              + " >&2\n");
+      return;
+    }
+    out.append("if [ -n \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]; then\n");
+    // Hard on the version, and the message names the real cause. The launcher's constant cannot be
+    // blank (PlatformAccessCliBinary refuses that at class-init) and the variable is always sent,
+    // so the only way to be inside this branch without one is a qits-ci older than the pin having
+    // launched this step — which a re-run against a current qits-ci fixes.
+    out.append(
+        "  : \"${QITS_ARTIFACTS_CLI_VERSION:?the qits CLI package is configured but no version was"
+            + " injected; the qits-ci that launched this step predates the CLI pin}\"\n");
+    out.append("  mkdir -p ").append(dir).append('\n');
+    // curl, then wget, then a refusal that names the image. An image with neither is a real
+    // shape in the fleet's neighbourhood — docker:28-dind has wget and no curl — and the one
+    // thing it must not produce is `curl: not found` from a line nobody can see the reason for.
+    // Only the FETCH degrades: the CLI itself is a static binary, so everything downstream of
+    // this block, the postlude's `qits artifacts publish` included, is unaffected by which arm
+    // ran.
+    // The download goes through the public edge, which answers an anonymous read with a 401.
+    // `$QITS_TOKEN` is this run's ci-run token, exactly as `StepContainerSettings.BOOTSTRAP` reads
+    // it for the daemon binary's own download, and the idiom is the same: a local `set --` builds
+    // the bearer header as a positional list, spent as `"$@"` on both arms and never interpolated
+    // into the url. `set --` is safe here because nothing else the release prelude, the declared
+    // script's invocation or the postlude emits reads `$@`/`$1`/`$2` — check that before adding a
+    // second such block. (The QA report hook's `$1` is its own file's, which is why the soft arm
+    // above uses a named variable instead.) With no token `"$@"` expands to nothing.
+    out.append("  set --\n");
+    out.append("  if [ -n \"${QITS_TOKEN:-}\" ]; then\n");
+    out.append("    set -- --header \"Authorization: Bearer $QITS_TOKEN\"\n");
+    out.append("  fi\n");
+    out.append("  if command -v curl > /dev/null 2>&1; then\n");
+    out.append("    curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o ")
+        .append(dir)
+        .append("/qits")
+        .append(cliUrl)
+        .append('\n');
+    out.append("  elif command -v wget > /dev/null 2>&1; then\n");
+    out.append("    wget -q \"$@\" -O ").append(dir).append("/qits").append(cliUrl).append('\n');
+    out.append("  else\n");
+    out.append("    echo ").append(noFetcher).append(" >&2\n");
+    out.append("    exit 1\n");
+    out.append("  fi\n");
+    out.append("  chmod +x ").append(dir).append("/qits\n");
+    out.append("  ln -sf ").append(dir).append("/qits ").append(dir).append("/qits-publish\n");
+    out.append(
+        "  echo \"qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION\""
+            + " >&2\n");
+    out.append("  PATH=\"").append(dir).append(":$PATH\"\n");
+    out.append("  export PATH\n");
+    out.append("fi\n");
   }
 
   /**
