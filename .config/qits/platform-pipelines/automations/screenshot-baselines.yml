@@ -1,0 +1,58 @@
+# Render a release request's screenshot tests so the reference images they write can be
+# committed: the `screenshot-baselines` kind of qits-maintenance's release-request automations.
+#
+# A KIND FILE, not a pipeline. qits-ci's CiAutomationComposer composes it into a platform
+# trigger on `ReleaseRequestAutomation` selected by `kind: screenshot-baselines` (this file's
+# name), and wraps the script below in the platform's own prelude and postlude:
+#
+#   prelude   validates the payload, fetches the fold (`baseRef`) and refuses with
+#             "superseded before start" unless it is still `foldSha`; checks it out, gives the
+#             step a writable HOME and works out the commit subject's work item
+#   script    this file's, run as data in a child shell
+#   postlude  stages only the payload's `commitPaths`, commits `chore(<item>): update
+#             screenshot baselines` (or prints `unchanged` and exits 0), and makes a plain push
+#             to the payload's `branch`
+#
+# So nothing here touches a ref or makes a commit. The paths that get committed are the
+# payload's - qits-maintenance sends `__screenshots__/` and `testing/browser/renderer.txt` for
+# this kind - and anything else the run touches stays out.
+#
+# It runs on node-browser-base, the image the `app` QA step compares in, so the references are
+# rendered exactly as the gate renders them. Missing references are written like changed ones,
+# so a repository's first baselines come from here too. References no test uses any more are
+# deleted, when the repository says how: its `screenshots:prune` script (the landing app's runs
+# `qits-angular screenshots --prune` from @qits/angular). Vitest never deletes a reference
+# itself.
+#
+# Until feature 5 of qits-978 retires it, `../screenshot-baselines.yml` beside this directory
+# does the same work for the older `ScreenshotBaselines` event.
+image: qits/build-images/node-browser-base:latest
+timeout-seconds: 1800
+script: |
+  if ! jq -e '.scripts["test:browser"]' package.json >/dev/null 2>&1; then
+    echo "this repository has no test:browser script - there are no screenshot tests to render" >&2
+    exit 1
+  fi
+
+  # The same install the `app` QA step runs: the lockfile as committed, resolving against the
+  # platform's two public registries, and nothing rewritten (qits-731). An entry naming any
+  # other host fails `npm ci` itself.
+  # THE ADDRESSES ARE CODE: the platform's public domain is the one input, and the hosts and
+  # paths are constants under it. A step is always told the domain; the `:?` stops one that
+  # is not, here, rather than at a host named `registry.qits.`.
+  qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+  npm_hosted_origin="https://registry.qits.$qits_domain"
+  npm_proxy_origin="https://mirror.qits.$qits_domain"
+  npm_hosted_path=/artifacts/npm/npm/
+  env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
+      "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
+      npm ci --no-audit --no-fund
+
+  # Writes every reference that is missing or differs. A spec that fails for any
+  # other reason fails the run, and nothing is committed.
+  UPDATE_SNAPSHOT=all npm run test:browser
+
+  # Deletes the references no test asked for in the run above (a deleted spec, a renamed
+  # screenshot). The postlude stages the deletions with the new images. A repository without
+  # the script keeps its orphans.
+  npm run --if-present screenshots:prune

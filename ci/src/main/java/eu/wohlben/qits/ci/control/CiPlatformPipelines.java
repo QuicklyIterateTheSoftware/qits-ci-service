@@ -27,9 +27,16 @@ import java.util.TreeSet;
  * <p>Each file is recorded on its runs under its path in qits-ci-service, {@code
  * .config/qits/platform-pipelines/<name>.yml}, the way a packaged archetype is.
  *
- * <p><b>The set is fixed per build</b> ({@link #PACKAGED}), checked at boot, and read once. In the
- * native image the files have to be named to be bundled: {@code quarkus.native.resources.includes}
- * in {@code service}.
+ * <p><b>A second source: the automation kind files.</b> Every {@code
+ * .config/qits/platform-pipelines/automations/<kind>.yml} is packaged as {@code
+ * platform-pipelines/automations/<kind>.yml} and passed through {@link CiAutomationComposer}, which
+ * turns its {@code image}, {@code timeout-seconds} and {@code script} into a {@code
+ * ReleaseRequestAutomation} trigger selecting {@code kind: <kind>}. The run is recorded under the
+ * kind file's path. A kind file the composer refuses is a boot error naming it, like a missing file.
+ *
+ * <p><b>The set is fixed per build</b> ({@link #PACKAGED} and {@link #AUTOMATIONS}), checked at
+ * boot, and read once. In the native image the files have to be named to be bundled: {@code
+ * quarkus.native.resources.includes} in {@code service}.
  */
 @ApplicationScoped
 public class CiPlatformPipelines {
@@ -46,6 +53,16 @@ public class CiPlatformPipelines {
    */
   static final Set<String> PACKAGED = Set.of("maintenance-bump", "screenshot-baselines");
 
+  /** Where the automation kind files sit, under {@link #PACKAGED_DIR} and {@link #CONFIG_DIR}. */
+  static final String AUTOMATIONS_DIR = "automations/";
+
+  /**
+   * Every automation kind this build carries, each composed by {@link CiAutomationComposer}. {@code
+   * PackagedPlatformPipelinesTest} holds it equal to the {@code *.yml} files in {@code
+   * .config/qits/platform-pipelines/automations/}.
+   */
+  static final Set<String> AUTOMATIONS = Set.of("screenshot-baselines");
+
   private volatile List<EventTriggerFile> files;
 
   /** A test's own set, or null for the packaged one. */
@@ -55,7 +72,10 @@ public class CiPlatformPipelines {
     files();
   }
 
-  /** The pipelines, in name order. Throws when a packaged file is missing: a broken build. */
+  /**
+   * The pipelines: the packaged ones in name order, then the composed automations in kind order.
+   * Throws when a packaged file is missing or a kind file is refused: a broken build.
+   */
   public List<EventTriggerFile> files() {
     List<EventTriggerFile> armed = override;
     if (armed != null) {
@@ -80,20 +100,27 @@ public class CiPlatformPipelines {
   private static List<EventTriggerFile> load() {
     List<EventTriggerFile> loaded = new ArrayList<>();
     for (String name : new TreeSet<>(PACKAGED)) {
-      String resource = PACKAGED_DIR + name + ".yml";
-      try (InputStream in = open(resource)) {
-        if (in == null) {
-          throw new IllegalStateException(
-              "the platform pipeline " + resource + " is not packaged into this qits-ci");
-        }
-        loaded.add(
-            new EventTriggerFile(
-                CONFIG_DIR + name + ".yml", new String(in.readAllBytes(), StandardCharsets.UTF_8)));
-      } catch (IOException e) {
-        throw new IllegalStateException("could not read the platform pipeline " + resource, e);
-      }
+      loaded.add(new EventTriggerFile(CONFIG_DIR + name + ".yml", read(PACKAGED_DIR + name + ".yml")));
+    }
+    for (String kind : new TreeSet<>(AUTOMATIONS)) {
+      String path = CONFIG_DIR + AUTOMATIONS_DIR + kind + ".yml";
+      String content = read(PACKAGED_DIR + AUTOMATIONS_DIR + kind + ".yml");
+      loaded.add(new EventTriggerFile(path, CiAutomationComposer.compose(kind, path, content)));
     }
     return List.copyOf(loaded);
+  }
+
+  /** One packaged file's text. Throws when it is missing: a broken build. */
+  static String read(String resource) {
+    try (InputStream in = open(resource)) {
+      if (in == null) {
+        throw new IllegalStateException(
+            "the platform pipeline " + resource + " is not packaged into this qits-ci");
+      }
+      return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+    } catch (IOException e) {
+      throw new IllegalStateException("could not read the platform pipeline " + resource, e);
+    }
   }
 
   private static InputStream open(String resource) {

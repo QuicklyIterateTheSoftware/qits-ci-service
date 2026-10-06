@@ -53,6 +53,58 @@ public class RunGitRefsTest {
     assertEquals(MAY_PUSH_NOTHING, of("ScreenshotBaselines", "{}"));
   }
 
+  /** The payload shape qits-maintenance sends to run one automation kind. */
+  private static String automation(String kind, String branch) {
+    return "{\"kind\":\""
+        + kind
+        + "\",\"repository\":\"qits-landing-app\",\"requestId\":\"abc\","
+        + "\"foldSha\":\""
+        + "a".repeat(40)
+        + "\",\"baseRef\":\"release/abc\",\"branch\":\""
+        + branch
+        + "\",\"commitPaths\":[\":(glob)**/__screenshots__/**\"]}";
+  }
+
+  @Test
+  public void anAutomationMayPushOnlyABranchUnderItsOwnKind() {
+    assertEquals(
+        Optional.of(List.of("refs/heads/maintenance/automations/screenshot-baselines/abc")),
+        of(
+            "ReleaseRequestAutomation",
+            automation("screenshot-baselines", "maintenance/automations/screenshot-baselines/abc")));
+    assertEquals(
+        Optional.of(List.of("refs/heads/maintenance/automations/entity-diagram/abc")),
+        of(
+            "ReleaseRequestAutomation",
+            automation("entity-diagram", "maintenance/automations/entity-diagram/abc")));
+  }
+
+  @Test
+  public void anAutomationBranchOutsideItsKindMayPushNothing() {
+    for (String payload :
+        Arrays.asList(
+            // another kind's prefix
+            automation("screenshot-baselines", "maintenance/automations/entity-diagram/abc"),
+            // the retiring baselines prefix is not an automation's
+            automation("screenshot-baselines", "maintenance/baselines/x"),
+            automation("screenshot-baselines", "main"),
+            automation("screenshot-baselines", "maintenance/automations/screenshot-baselines/../main"),
+            automation("screenshot-baselines", "maintenance/automations/screenshot-baselines/"),
+            automation("screenshot-baselines", "maintenance/automations/screenshot-baselines"),
+            // a kind that is no kind cannot name a prefix
+            automation("", "maintenance/automations//abc"),
+            automation("Screenshot", "maintenance/automations/Screenshot/abc"),
+            automation("screenshot-baselines/abc", "maintenance/automations/screenshot-baselines/abc/x"),
+            "{\"branch\":\"maintenance/automations/screenshot-baselines/abc\"}",
+            "{\"kind\":42,\"branch\":\"maintenance/automations/42/abc\"}",
+            "not json",
+            "",
+            null)) {
+      assertEquals(
+          MAY_PUSH_NOTHING, of("ReleaseRequestAutomation", payload), String.valueOf(payload));
+    }
+  }
+
   @Test
   public void aTargetedBumpMayPushTheOneSourceBranchItWasAskedToBump() {
     assertEquals(

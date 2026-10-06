@@ -46,7 +46,8 @@ public class NoLockfileRewriteTest {
 
   private static List<Path> recipes() throws Exception {
     List<Path> files = new ArrayList<>();
-    for (String dir : List.of("release-archetypes", "platform-pipelines")) {
+    for (String dir :
+        List.of("release-archetypes", "platform-pipelines", "platform-pipelines/automations")) {
       try (Stream<Path> listed = Files.list(CONFIG.resolve(dir))) {
         listed.filter(path -> path.toString().endsWith(".yml")).sorted().forEach(files::add);
       }
