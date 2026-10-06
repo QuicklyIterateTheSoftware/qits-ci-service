@@ -14,6 +14,24 @@
 # is therefore up to TWO commits on the branch, not one - the service must read the
 # branch head rather than expect a single commit.
 #
+# A BRANCH IS EITHER CONTINUED OR REBUILT, and never force-pushed otherwise. `baseRef`
+# is what a new branch starts from: a bare name means `refs/heads/<name>`, and a full
+# ref is fetched as written - `refs/tags/<version>` when the repository has a release
+# that is not merged yet, so the bump lands on what actually ships. `replaceHead` is
+# the branch head as the maintenance service last read it, sent when the branch was
+# started from an older base and has to be rebuilt on the new one. Both steps make the
+# same decision from the same three facts - the branch's head now, `replaceHead`, and
+# the base:
+#   no branch                    start it from baseRef, plain push
+#   head == replaceHead          REBUILD: start from baseRef, push with a lease on
+#                                replaceHead
+#   head != replaceHead, or      continue it, plain push - which is how the node step
+#   no replaceHead at all        lands on top of the maven step's rebuilt commit, and
+#                                how a branch somebody else moved meanwhile ends in a
+#                                non-ff rejection rather than an overwrite
+# So a rebuild is carried by whichever step commits first: when the maven step has
+# nothing to commit, the node step still finds head == replaceHead and rebuilds.
+#
 # What this reads of a `changes[]` entry, and what it does not:
 #   ecosystem     maven here, npm, docker and gitlink in the second step
 #   manifestPath  the file to edit, repository-relative - EXCEPT for gitlink, where it
@@ -64,6 +82,7 @@ steps:
       group=$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -er '.group')
       branch=$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -er '.branch')
       base=$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r '.baseRef // "main"')
+      replace=$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r '.replaceHead // empty')
 
       # Every value below reaches an argv or an awk -v, so the charset is refused rather
       # than quoted - the hop files this replaces argue it in full. Nothing legitimate
@@ -74,6 +93,24 @@ steps:
           ''|-*|*..*|*[!0-9A-Za-z._/-]*) echo "refusing an implausible ref: $ref" >&2; exit 1 ;;
         esac
       done
+      # A bare name is a branch, as it always was; a full ref - `refs/tags/<version>` - is
+      # fetched as written. The charset above already holds a full ref to the same rules.
+      case "$base" in
+        refs/*) base_ref=$base ;;
+        *) base_ref="refs/heads/$base" ;;
+      esac
+      # A commit name and nothing else: sha-1 or sha-256, lowercase, as rev-parse prints it.
+      # It is compared, and it reaches a --force-with-lease, so anything else is refused.
+      case "$replace" in
+        '') ;;
+        *[!0-9a-f]*) echo "refusing an implausible replaceHead: $replace" >&2; exit 1 ;;
+        *)
+          if [ ${#replace} -ne 40 ] && [ ${#replace} -ne 64 ]; then
+            echo "refusing an implausible replaceHead: $replace" >&2
+            exit 1
+          fi
+          ;;
+      esac
 
       # --- the two edits, anchored and counted -------------------------------------
       # Not a global sed: a bump must change the one element it names or fail loudly.
@@ -145,21 +182,40 @@ steps:
       }
       AWK
 
-      # --- the branch: ff-only, never force ----------------------------------------
+      # --- the branch: ff-only, or a rebuild under a lease ------------------------
       # Steps do NOT share a working tree - every step is its own container with its
       # own shallow clone - so this step puts its own commit on the branch and the next
       # one fetches it back and commits on top. If the branch exists we continue it; if
-      # it does not we start it from baseRef.
+      # it does not we start it from baseRef; if it is exactly the replaceHead we were
+      # sent, we rebuild it on baseRef. The node step makes the same decision in the
+      # same words.
       # A failed fetch is read as "no such branch". That is safe in the only direction
-      # that matters: we then build on baseRef and the push is refused as a non-ff rather
-      # than overwriting work.
+      # that matters: we then build on baseRef and the push is refused as a non-ff - or
+      # by the lease, on a rebuild - rather than overwriting work.
+      lease=
       if git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$branch" 2>/dev/null; then
-        echo "continuing $branch"
+        head=$(git rev-parse --verify "FETCH_HEAD^{commit}")
       else
-        echo "starting $branch from $base"
-        git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$base"
+        head=
       fi
-      git checkout -q --detach FETCH_HEAD
+      if [ -n "$head" ] && [ "$head" != "$replace" ]; then
+        echo "continuing $branch"
+        start=$head
+      else
+        git fetch -q "$QITS_CI_REPOSITORY_URL" "$base_ref"
+        start=$(git rev-parse --verify "FETCH_HEAD^{commit}")
+        if [ -z "$head" ]; then
+          echo "starting $branch from $base"
+        else
+          # A REBUILD THROWS THE BRANCH AWAY, which is safe because a maintenance branch
+          # is written by the maintenance service and nobody else. The lease is what keeps
+          # it honest: the push names replaceHead as the value it replaces, so a branch
+          # that moved after the maintenance service read it is refused, not overwritten.
+          echo "rebuilding $branch on $base (was $replace)"
+          lease="--force-with-lease=refs/heads/$branch:$replace"
+        fi
+      fi
+      git checkout -q --detach "$start"
 
       # --- apply -------------------------------------------------------------------
       : > /tmp/bump-body.txt
@@ -220,10 +276,12 @@ steps:
       } > /tmp/bump-message.txt
       git -c user.name="qits maintenance" -c user.email="maintenance@qits.local" \
           commit -q -F /tmp/bump-message.txt
-      # NEVER --force. A rejection means somebody rewrote the branch by hand; it is
-      # theirs now, and the maintenance service marks it STALE.
-      if ! git push "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
-        echo "push to $branch was rejected - the branch is not a fast-forward of what we built on" >&2
+      # NEVER a bare --force. A rejection means somebody rewrote the branch by hand; it
+      # is theirs now, and the maintenance service marks it STALE. A rebuild is the one
+      # non-ff push, and it carries a lease on replaceHead: if the branch moved after
+      # the maintenance service read it, the push is refused the same way.
+      if ! git push ${lease:+"$lease"} "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
+        echo "push to $branch was rejected - the branch is not what we built on" >&2
         exit 1
       fi
   - image: qits/build-images/node-base:latest
@@ -250,6 +308,7 @@ steps:
       group=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).group')
       branch=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).branch')
       base=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).baseRef || "main"')
+      replace=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).replaceHead || ""')
 
       case "$group" in ''|*[!0-9A-Za-z._-]*) echo "refusing an implausible group: $group" >&2; exit 1 ;; esac
       for ref in "$branch" "$base"; do
@@ -257,6 +316,24 @@ steps:
           ''|-*|*..*|*[!0-9A-Za-z._/-]*) echo "refusing an implausible ref: $ref" >&2; exit 1 ;;
         esac
       done
+      # A bare name is a branch, as it always was; a full ref - `refs/tags/<version>` - is
+      # fetched as written. The charset above already holds a full ref to the same rules.
+      case "$base" in
+        refs/*) base_ref=$base ;;
+        *) base_ref="refs/heads/$base" ;;
+      esac
+      # A commit name and nothing else: sha-1 or sha-256, lowercase, as rev-parse prints it.
+      # It is compared, and it reaches a --force-with-lease, so anything else is refused.
+      case "$replace" in
+        '') ;;
+        *[!0-9a-f]*) echo "refusing an implausible replaceHead: $replace" >&2; exit 1 ;;
+        *)
+          if [ ${#replace} -ne 40 ] && [ ${#replace} -ne 64 ]; then
+            echo "refusing an implausible replaceHead: $replace" >&2
+            exit 1
+          fi
+          ;;
+      esac
 
       # --- the docker edits, anchored and counted ----------------------------------
       # TWO PROGRAMS, because a base image is pinned in one of two places and the
@@ -336,19 +413,39 @@ steps:
       }
       AWK
 
-      # --- the branch: ff-only, never force ----------------------------------------
+      # --- the branch: ff-only, or a rebuild under a lease ------------------------
       # This step's container is a fresh clone, so the maven step's commit is fetched
-      # back here rather than inherited - steps share no working tree.
+      # back here rather than inherited - steps share no working tree. The decision is
+      # the maven step's, word for word: a branch the maven step already rebuilt has a
+      # head that is no longer replaceHead, so it is continued; one the maven step left
+      # alone - it had nothing to commit - still is replaceHead, so it is rebuilt here.
       # A failed fetch is read as "no such branch". That is safe in the only direction
-      # that matters: we then build on baseRef and the push is refused as a non-ff rather
-      # than overwriting work.
+      # that matters: we then build on baseRef and the push is refused as a non-ff - or
+      # by the lease, on a rebuild - rather than overwriting work.
+      lease=
       if git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$branch" 2>/dev/null; then
-        echo "continuing $branch"
+        head=$(git rev-parse --verify "FETCH_HEAD^{commit}")
       else
-        echo "starting $branch from $base"
-        git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$base"
+        head=
       fi
-      git checkout -q --detach FETCH_HEAD
+      if [ -n "$head" ] && [ "$head" != "$replace" ]; then
+        echo "continuing $branch"
+        start=$head
+      else
+        git fetch -q "$QITS_CI_REPOSITORY_URL" "$base_ref"
+        start=$(git rev-parse --verify "FETCH_HEAD^{commit}")
+        if [ -z "$head" ]; then
+          echo "starting $branch from $base"
+        else
+          # A REBUILD THROWS THE BRANCH AWAY, which is safe because a maintenance branch
+          # is written by the maintenance service and nobody else. The lease is what keeps
+          # it honest: the push names replaceHead as the value it replaces, so a branch
+          # that moved after the maintenance service read it is refused, not overwritten.
+          echo "rebuilding $branch on $base (was $replace)"
+          lease="--force-with-lease=refs/heads/$branch:$replace"
+        fi
+      fi
+      git checkout -q --detach "$start"
 
       # --- apply -------------------------------------------------------------------
       : > /tmp/bump-body.txt
@@ -514,8 +611,9 @@ steps:
       } > /tmp/bump-message.txt
       git -c user.name="qits maintenance" -c user.email="maintenance@qits.local" \
           commit -q -F /tmp/bump-message.txt
-      # NEVER --force, for the reason the maven step states.
-      if ! git push "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
-        echo "push to $branch was rejected - the branch is not a fast-forward of what we built on" >&2
+      # NEVER a bare --force, and a rebuild under its lease, for the reasons the maven
+      # step states.
+      if ! git push ${lease:+"$lease"} "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
+        echo "push to $branch was rejected - the branch is not what we built on" >&2
         exit 1
       fi
