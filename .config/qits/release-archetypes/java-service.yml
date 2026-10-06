@@ -389,11 +389,58 @@ release-request:
         it_selection="-Dit.test=$stories"
       fi
 
+      # THE COVERAGE AGENT (qits-754). JaCoCo's runtime agent, fetched from the Central mirror and
+      # handed to every JVM the verify starts, writes `.qits-reports/jacoco.exec` at the checkout
+      # root; the composed report hook reads it against the reactor's `target/classes` after this
+      # script, whatever its exit code. Nothing in the repository is configured for it: no pom
+      # plugin, no `report` goal.
+      #
+      # THROUGH JAVA_TOOL_OPTIONS, NOT `-DargLine`. Many poms on the estate set a literal surefire
+      # `<argLine>` (qits-ci-service's own service/pom.xml among them), and a literal argLine
+      # REPLACES the property — so an agent added through `-DargLine` or `prepare-agent` would be
+      # dropped silently, with a green build and no coverage. The environment is inherited by every
+      # forked test JVM and by the application failsafe launches for the stories, which no flag
+      # reaches. Every one of those JVMs prints `Picked up JAVA_TOOL_OPTIONS: …` on stderr; measured
+      # 2026-10-06 against qits-ci-service's and qits-projects-service's whole verify: no test failed
+      # on that line, and the wall time stayed inside the run-to-run noise.
+      #
+      # WHAT IT CANNOT SEE: a class Quarkus rewrites at runtime (Panache entities and repositories,
+      # many CDI beans) does not match its `target/classes` bytes, so JaCoCo drops its data and it
+      # reads as uncovered — measured on the same two suites, where it hid 23 classes and 3,040 of
+      # qits-ci-service's 7,719 lines (CiRunService among them) and every Panache repository of
+      # qits-projects-service. Reading those classes is the CLI's problem to solve, not this flag's.
+      #
+      # SCOPED TO THE ONE INVOCATION: `env` hands it to this mvnw and to nothing after it, so the
+      # bundle and the publish below run without the agent.
+      #
+      # A FAILED FETCH COSTS THE COVERAGE AND NEVER THE STEP. One line says so and the verify runs
+      # exactly as it did before this block existed; the report hook then finds no exec and reports
+      # no coverage. The mirror refuses an anonymous read, so the bearer is the run's own token, as
+      # a `set --` argument list like the docs PUT's below: an absent token sends no header rather
+      # than an empty one, and the `-H`/`--header` in front of it appears only when there is one.
+      # 0.8.14 is the version the qits CLI reads the exec with; the two move together.
+      jacoco_version=0.8.14
+      jacoco_agent=/tmp/qits-jacoco/org.jacoco.agent-$jacoco_version-runtime.jar
+      jacoco_url="$QITS_MAVEN_CENTRAL_URL/org/jacoco/org.jacoco.agent/$jacoco_version/org.jacoco.agent-$jacoco_version-runtime.jar"
+      set --
+      if [ -n "${QITS_TOKEN:-}" ]; then
+        set -- "Authorization: Bearer $QITS_TOKEN"
+      fi
+      jacoco_options=""
+      mkdir -p /tmp/qits-jacoco .qits-reports
+      if curl -fsSL --retry 2 ${1:+-H} "$@" -o "$jacoco_agent" "$jacoco_url" 2>/dev/null \
+        || wget -q ${1:+--header} "$@" -O "$jacoco_agent" "$jacoco_url" 2>/dev/null; then
+        jacoco_options="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-javaagent:$jacoco_agent=destfile=$PWD/.qits-reports/jacoco.exec,append=true,includes=eu.wohlben.*"
+      else
+        echo "coverage: could not fetch the JaCoCo $jacoco_version agent; this verify runs without coverage"
+      fi
+
       # Quinoa off: the client is the build step's business, and the stories assert nothing about
       # the SPA. It is also what keeps this step from needing the submodule at all — the daemon's
       # clone does not recurse, so the webui directory is empty here, which is the one state Quinoa
       # calls a misconfiguration.
-      ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
+      env ${jacoco_options:+"JAVA_TOOL_OPTIONS=$jacoco_options"} \
+        ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
         -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
         -Dquarkus.quinoa=false \
         -DskipITs=false \

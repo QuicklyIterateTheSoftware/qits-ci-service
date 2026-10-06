@@ -143,6 +143,8 @@ public class MigrationChecksumTest {
     PINS.put(
         "V32__runner_connection_loss_window.sql",
         "a2fdab5f29070d6c1715e472d16ef0b62d8020eabbe2abf0c13bde62026ef775");
+    PINS.put(
+        "V33__ci_report.sql", "3dd5dd600810764064db1501669ca8419b623fca2d4b92c7dff979f1ae21666f");
   }
 
   @Test

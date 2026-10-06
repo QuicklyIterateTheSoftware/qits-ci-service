@@ -98,7 +98,31 @@ release-request:
       qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
       export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
-      ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
+
+      # THE COVERAGE AGENT (qits-754) — java-service.yml's QA verify block, byte for byte; read the
+      # rationale there. In short: JaCoCo's runtime agent writes `.qits-reports/jacoco.exec` for the
+      # composed report hook; it rides JAVA_TOOL_OPTIONS rather than `-DargLine`, because a pom
+      # with a literal surefire `<argLine>` silently drops an agent added through the property;
+      # `env` scopes it to this one mvnw; and a failed fetch is one line and a verify without
+      # coverage, never a red step.
+      jacoco_version=0.8.14
+      jacoco_agent=/tmp/qits-jacoco/org.jacoco.agent-$jacoco_version-runtime.jar
+      jacoco_url="$QITS_MAVEN_CENTRAL_URL/org/jacoco/org.jacoco.agent/$jacoco_version/org.jacoco.agent-$jacoco_version-runtime.jar"
+      set --
+      if [ -n "${QITS_TOKEN:-}" ]; then
+        set -- "Authorization: Bearer $QITS_TOKEN"
+      fi
+      jacoco_options=""
+      mkdir -p /tmp/qits-jacoco .qits-reports
+      if curl -fsSL --retry 2 ${1:+-H} "$@" -o "$jacoco_agent" "$jacoco_url" 2>/dev/null \
+        || wget -q ${1:+--header} "$@" -O "$jacoco_agent" "$jacoco_url" 2>/dev/null; then
+        jacoco_options="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-javaagent:$jacoco_agent=destfile=$PWD/.qits-reports/jacoco.exec,append=true,includes=eu.wohlben.*"
+      else
+        echo "coverage: could not fetch the JaCoCo $jacoco_version agent; this verify runs without coverage"
+      fi
+
+      env ${jacoco_options:+"JAVA_TOOL_OPTIONS=$jacoco_options"} \
+        ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
         -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL"
 
 release:

@@ -165,19 +165,95 @@ release-request:
           "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
           npm ci --no-audit --no-fund
 
+      # THE COVERAGE PROVIDER IS THE PLATFORM'S, AND THE REPOSITORY DECLARES NOTHING (qits-754).
+      # vitest measures coverage through a provider package no repository on the estate depends on,
+      # and the rule is that none is made to: no devDependency is added for the platform's sake. So
+      # `@vitest/coverage-v8` is supplied here, at EXACTLY the vitest version the lockfile installed
+      # — a provider of another version refuses to load.
+      #
+      # NOT `npm install --no-save` IN THE TREE. That re-resolves the whole dependency tree against
+      # the registry and was measured moving @angular/build 21.2.19 → 21.2.25 under a committed
+      # lockfile: the suite would then run against packages nobody committed. Instead the provider is
+      # installed alone into a scratch directory outside the checkout and copied in as a
+      # self-contained tree — its own dependencies nested under it, so nothing the lockfile placed is
+      # touched or shadowed — and neither package.json nor the lockfile is ever opened. The
+      # arguments are the registry configuration the install above ran under, prefixed to `npm`.
+      #
+      # A FAILURE COSTS THE COVERAGE AND NEVER THE STEP: every command is checked by hand (a
+      # function called as a condition runs without `-e`), one line says what happened, and the
+      # tests run exactly as they would have without coverage. Under pnpm's isolated node_modules
+      # the same copy is resolved the same way, measured; npm does the scratch install there too.
+      install_coverage_provider() {
+        _vitest=$(node -p "require('./node_modules/vitest/package.json').version" 2>/dev/null) \
+          || return 2
+        [ -n "$_vitest" ] || return 2
+        [ ! -f node_modules/@vitest/coverage-v8/package.json ] || return 0
+        _scratch=$(mktemp -d) || return 1
+        _status=0
+        (
+          cd "$_scratch" || exit 1
+          npm init -y > /dev/null 2>&1 || exit 1
+          "$@" npm install --no-save --no-package-lock --legacy-peer-deps --no-audit --no-fund \
+            "@vitest/coverage-v8@$_vitest" > /tmp/qits-coverage-provider.log 2>&1 || exit 1
+        ) && (
+          provider=node_modules/@vitest/coverage-v8
+          mkdir -p "$provider/node_modules/@vitest" || exit 1
+          cp -a "$_scratch/node_modules/@vitest/coverage-v8/." "$provider/" || exit 1
+          for dep in "$_scratch"/node_modules/*; do
+            [ "${dep##*/}" = @vitest ] || cp -a "$dep" "$provider/node_modules/" || exit 1
+          done
+          for dep in "$_scratch"/node_modules/@vitest/*; do
+            [ "${dep##*/}" = coverage-v8 ] || cp -a "$dep" "$provider/node_modules/@vitest/" || exit 1
+          done
+        ) || _status=1
+        rm -rf "$_scratch"
+        return "$_status"
+      }
+
+      # Supplied after the install, so the composed lockfile check before this script read the
+      # committed tree, and with the install's own registry configuration.
+      coverage_flags=""
+      coverage_status=0
+      install_coverage_provider env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
+        "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" || coverage_status=$?
+      case "$coverage_status" in
+        0) coverage_flags="--coverage --coverage-reporters=json" ;;
+        2) echo "coverage: no vitest in node_modules, so there is nothing to measure" ;;
+        *) echo "coverage: could not supply @vitest/coverage-v8 for this vitest; the tests run without coverage" ;;
+      esac
+
       # `--if-present` rather than a hard call: one recipe covers repositories that do not all carry
       # the same scripts, and a missing script must not be a red gate for one that never had it.
       # ADDING the script is what turns the check on — no pipeline edit.
       npm run --if-present lint
 
       # The jsdom target.
-      npm run --if-present test
+      #
+      # THE REPORTS (qits-754): vitest's JUnit reporter and, when the provider above is in place,
+      # istanbul's `json` coverage — the two files the composed report hook reads after this script,
+      # whatever its exit code. `--output-file` applies to the FIRST reporter, which is why `junit`
+      # comes first and `default` keeps the log readable. Every repository's `test` ends in `ng
+      # test`, so the flags land on @angular/build's unit-test builder, which takes all four.
+      # Coverage cannot be pointed elsewhere from here — the builder has no directory option and
+      # the flag refuses the reporter tuple — so it lands at `coverage/<project>/coverage-final.json`,
+      # untracked, where the CLI looks for it. A red suite writes no coverage, and that is fine: its
+      # test results are the report that matters. ONE run, with the coverage flags appended only
+      # when the provider is there.
+      mkdir -p .qits-reports
+      npm run --if-present test -- --reporters=junit --reporters=default \
+        --output-file=.qits-reports/vitest-unit.xml $coverage_flags
 
       # Browser screenshot tests, by the same opt-in: a repository turns them on by having the
       # script. They run in real Chromium from this image and compare against the committed
       # reference screenshots. THIS STEP ONLY COMPARES: `CI=true` makes a missing reference a
       # failure instead of a new file, and nothing here writes one. Regenerating references is a
       # separate job (run in this same image with UPDATE_SNAPSHOT=all), never part of the gate.
+      #
+      # NO REPORTER FLAGS HERE, deliberately (qits-754). `test:browser` is not one `ng test`: on
+      # qits-landing-app, the one repository on this recipe, it is `node scripts/check-renderer.mjs
+      # && ng run …:test-browser && qits-angular screenshots --check`, so arguments appended after
+      # `--` would land on the screenshot check rather than on vitest and break the gate. Its
+      # failures stay in the log; the unit suite above is what reports.
       CI=true npm run --if-present test:browser
 
       # The same `npm run build` the Dockerfile runs, on the same tree — which is the point of the

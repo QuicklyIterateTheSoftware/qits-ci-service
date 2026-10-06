@@ -92,6 +92,12 @@ public final class StepWorkloadSpecs {
     env.put("QITS_CI_REPOSITORY_URL", value(cloneUrl(plane.gitBaseUrl(), spec.repo())));
     env.put("QITS_CI_BRANCH", value(spec.branch()));
     env.put("QITS_CI_SHA", value(spec.sha()));
+    // Which run and which step this container is (qits-754). The QA report hook a composed
+    // release-request step ends with, and the `qits ci report submit` it calls, read these two to
+    // say what the reports they upload belong to; the run's token alone proves the run, never the
+    // step.
+    env.put("QITS_CI_RUN_ID", value(spec.runId()));
+    env.put("QITS_CI_STEP_INDEX", String.valueOf(spec.stepIndex()));
     // The repository, in both coordinate systems. QITS_CI_REPO_ID is the storage id the event
     // announced and keeps its meaning exactly, while the pair beside it is the public address —
     // which is what every release call in the estate now spells, the storage id staying below the

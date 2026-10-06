@@ -1,14 +1,15 @@
-# Composed by qits-ci from .config/qits/release.yml and .config/qits/release-archetypes/spa-frontend.yml.
+# Composed by qits-ci from .config/qits/release.yml and .config/qits/release-archetypes/cli.yml.
 # Generated: this text is never committed. Edit the slot file or the archetype recipe.
 event: ReleaseRequestChanged
 when:
-  - repoName: { exact: 'qits-observability-frontend' }
+  - repoName: { exact: 'qits-cli-example' }
 checkout:
   branch: backingBranch
   sha: mergedSha
 steps:
-  - image: 'qits/build-images/node-base:latest'
+  - image: 'qits/build-images/maven-base:latest'
     timeout-seconds: 1800
+    user: 'build'
     script: |
       set -eu
       # --- platform prelude ---------------------------------------------------------
@@ -44,10 +45,34 @@ steps:
       sh /tmp/qits-lockfile-origins.sh
       # --- the declared step, run as data -------------------------------------------
       cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
-      npm ci --no-audit --no-fund
-      npm run lint
-      npm run test
-      npm run build
+      # Maven Central through the platform mirror's public name — code under the platform's public
+      # domain (qits-731), which the composed prelude has already demanded.
+      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.${QITS_DOMAIN:?this step was told no QITS_DOMAIN}/mirror/maven/central"
+
+      # THE COVERAGE AGENT (qits-754) — java-service.yml's QA verify block, byte for byte; read the
+      # rationale there. In short: JaCoCo's runtime agent writes `.qits-reports/jacoco.exec` for the
+      # composed report hook; it rides JAVA_TOOL_OPTIONS rather than `-DargLine`, because a pom
+      # with a literal surefire `<argLine>` silently drops an agent added through the property;
+      # `env` scopes it to this one mvnw; and a failed fetch is one line and a verify without
+      # coverage, never a red step.
+      jacoco_version=0.8.14
+      jacoco_agent=/tmp/qits-jacoco/org.jacoco.agent-$jacoco_version-runtime.jar
+      jacoco_url="$QITS_MAVEN_CENTRAL_URL/org/jacoco/org.jacoco.agent/$jacoco_version/org.jacoco.agent-$jacoco_version-runtime.jar"
+      set --
+      if [ -n "${QITS_TOKEN:-}" ]; then
+        set -- "Authorization: Bearer $QITS_TOKEN"
+      fi
+      jacoco_options=""
+      mkdir -p /tmp/qits-jacoco .qits-reports
+      if curl -fsSL --retry 2 ${1:+-H} "$@" -o "$jacoco_agent" "$jacoco_url" 2>/dev/null \
+        || wget -q ${1:+--header} "$@" -O "$jacoco_agent" "$jacoco_url" 2>/dev/null; then
+        jacoco_options="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-javaagent:$jacoco_agent=destfile=$PWD/.qits-reports/jacoco.exec,append=true,includes=eu.wohlben.*"
+      else
+        echo "coverage: could not fetch the JaCoCo $jacoco_version agent; this verify runs without coverage"
+      fi
+
+      env ${jacoco_options:+"JAVA_TOOL_OPTIONS=$jacoco_options"} \
+        ./mvnw -B -ntp -s .qits-maven-settings.xml verify
       QITS_SLOT_EOF
       set +e
       if command -v bash > /dev/null 2>&1; then
@@ -79,7 +104,7 @@ steps:
       elif command -v wget > /dev/null 2>&1; then
         wget -q ${qits_cli_bearer:+--header} ${qits_cli_bearer:+"$qits_cli_bearer"} -O /tmp/qits-cli/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION" || { echo "qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2; exit 1; }
       else
-        echo 'qits-ci: the image for this step (qits/build-images/node-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image to get its reports submitted' >&2
+        echo 'qits-ci: the image for this step (qits/build-images/maven-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image to get its reports submitted' >&2
         exit 1
       fi
       chmod +x /tmp/qits-cli/qits || { echo "qits-ci: could not make /tmp/qits-cli/qits executable" >&2; exit 1; }

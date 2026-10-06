@@ -47,6 +47,9 @@ class StepEnvironmentTest {
         "QITS_CI_REPOSITORY_URL=https://githost.qits.example.org/git/qits/qits-ci-service",
         "QITS_CI_BRANCH=main",
         "QITS_CI_SHA=cafebabecafebabecafebabecafebabecafebabe",
+        // What the QA report hook and `qits ci report submit` name their upload by (qits-754).
+        "QITS_CI_RUN_ID=" + StepFixtures.RUN,
+        "QITS_CI_STEP_INDEX=2",
         "QITS_CI_REPO_ID=5ca0e7e9-repo",
         "QITS_CI_PROJECT_ID=qits",
         "QITS_CI_REPO_NAME=qits-ci-service",

@@ -2,7 +2,7 @@ package eu.wohlben.qits.ci.daemonhost;
 
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonMessage;
 import eu.wohlben.qits.cidaemon.protocol.Hello;
-import eu.wohlben.qits.auth.MachineIdentity;
+import eu.wohlben.qits.ci.idp.CallerSubject;
 import io.quarkus.security.identity.SecurityIdentity;
 import io.quarkus.websockets.next.CloseReason;
 import io.quarkus.websockets.next.OnClose;
@@ -115,21 +115,9 @@ public class CiDaemonSocket {
     connection.userData().put(RUN_SUBJECT, runSubject());
   }
 
-  /**
-   * The {@code sub} the caller arrived as — empty when it carries none, which matches no launch.
-   * The subject is the validated token's claim when there is one, and the forward-auth user
-   * otherwise: the edge names the token's subject either way.
-   */
+  /** The {@code sub} the caller arrived as — see {@link CallerSubject#of}. */
   private String runSubject() {
-    if (identity == null || identity.isAnonymous()) {
-      return "";
-    }
-    return MachineIdentity.claim(identity, "sub")
-        .or(
-            () ->
-                java.util.Optional.ofNullable(
-                    identity.getPrincipal() == null ? null : identity.getPrincipal().getName()))
-        .orElse("");
+    return CallerSubject.of(identity);
   }
 
   @OnTextMessage

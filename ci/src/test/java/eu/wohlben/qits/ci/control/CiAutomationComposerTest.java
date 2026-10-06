@@ -127,7 +127,7 @@ public class CiAutomationComposerTest {
     assertFalse(without.contains(CiReleaseComposer.CLI_DOWNLOAD_BASE));
     assertEquals(without, off);
     StringBuilder fetch = new StringBuilder();
-    CiReleaseComposer.cliFetch(fetch, "qits/build-images/node-browser-base:latest");
+    CiAutomationComposer.cliFetch(fetch, "qits/build-images/node-browser-base:latest");
     String step =
         CiAutomationComposer.step(
             "test-kind", "qits/build-images/node-browser-base:latest", "echo regenerate\n", true);

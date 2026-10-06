@@ -57,8 +57,42 @@ steps:
       cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
       buildctl build --frontend dockerfile.v0 --opt target=binary
       QITS_SLOT_EOF
+      set +e
       if command -v bash > /dev/null 2>&1; then
         bash -eu /tmp/qits-slot.sh
       else
         sh -eu /tmp/qits-slot.sh
       fi
+      qits_step_exit=$?
+      set -e
+      # --- platform report hook: always runs, never changes the step's verdict ---
+      cat > /tmp/qits-report-hook.sh <<'QITS_REPORT_HOOK'
+      # qits-ci report hook (qits-754). $1 is the declared script's exit code.
+      set -u
+      if [ -z "${QITS_ARTIFACTS_CLI_PACKAGE:-}" ]; then
+        echo "qits-ci: reports skipped: no qits CLI configured" >&2
+        exit 0
+      fi
+      if [ -z "${QITS_ARTIFACTS_CLI_VERSION:-}" ]; then
+        echo "qits-ci: the qits CLI package is configured but no version was injected; the qits-ci that launched this step predates the CLI pin" >&2
+        exit 1
+      fi
+      mkdir -p /tmp/qits-cli || { echo "qits-ci: could not create /tmp/qits-cli" >&2; exit 1; }
+      qits_cli_bearer=
+      if [ -n "${QITS_TOKEN:-}" ]; then
+        qits_cli_bearer="Authorization: Bearer $QITS_TOKEN"
+      fi
+      if command -v curl > /dev/null 2>&1; then
+        curl -fsSL --retry 2 --retry-delay 2 ${qits_cli_bearer:+--header} ${qits_cli_bearer:+"$qits_cli_bearer"} -o /tmp/qits-cli/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION" || { echo "qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2; exit 1; }
+      elif command -v wget > /dev/null 2>&1; then
+        wget -q ${qits_cli_bearer:+--header} ${qits_cli_bearer:+"$qits_cli_bearer"} -O /tmp/qits-cli/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION" || { echo "qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2; exit 1; }
+      else
+        echo 'qits-ci: the image for this step (qits/build-images/ci-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image to get its reports submitted' >&2
+        exit 1
+      fi
+      chmod +x /tmp/qits-cli/qits || { echo "qits-ci: could not make /tmp/qits-cli/qits executable" >&2; exit 1; }
+      echo "qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+      /tmp/qits-cli/qits ci report submit --exit-code "$1"
+      QITS_REPORT_HOOK
+      sh /tmp/qits-report-hook.sh "$qits_step_exit" || echo "qits-ci: reports were not submitted; the step's verdict is unchanged" >&2
+      exit "$qits_step_exit"

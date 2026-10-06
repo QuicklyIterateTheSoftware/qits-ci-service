@@ -253,6 +253,12 @@ public class CiRunService {
   @Inject CiRunRepository runs;
   @Inject CiStepRepository steps;
 
+  /**
+   * A run's release reports (qits-983). Deleted wherever the run's steps are, so a restarted run's
+   * reports never outlive the steps that submitted them.
+   */
+  @Inject CiReportStore reports;
+
   /** The green-run event port (see {@link RunAnnouncer}); zero implementations is fine. */
   @Inject Instance<RunAnnouncer> runAnnouncers;
 
@@ -697,6 +703,7 @@ public class CiRunService {
       // replay if it had one.
       if (orphan.triggerType == CiTriggerType.EVENT && orphan.triggerConfig != null) {
         steps.delete("runId = ?1", orphan.id);
+        reports.deleteForRun(orphan.id);
         orphan.status = CiRunStatus.QUEUED;
         orphan.finishedAt = null;
         orphan.daemonVersion = null;
@@ -2904,6 +2911,7 @@ public class CiRunService {
         .run(
             () -> {
               steps.delete("runId = ?1", runId);
+              reports.deleteForRun(runId);
               runs.deleteById(runId);
             });
   }
