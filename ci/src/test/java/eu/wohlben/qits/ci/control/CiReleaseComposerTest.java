@@ -15,7 +15,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestFactory;
 
 /**
  * The composer, against <b>golden documents</b>.
@@ -916,6 +918,67 @@ public class CiReleaseComposerTest {
         document);
     assertEquals(2, occurrences(document, "if [ -f 'out/sbom.json' ]; then"), document);
     assertEquals(1, occurrences(document, "publish exists sbom"), document);
+  }
+
+  /**
+   * qits-754: the QA document of every packaged archetype that has a {@code release-request:} slot
+   * outside a container build, composed from the recipe exactly as it ships. The fixtures above
+   * prove the composer; these prove the recipes — so a change to what a QA step runs (the JaCoCo
+   * agent, the vitest reporters and the coverage provider) is a diff of the composed text a person
+   * reads line by line, the same as a change to the prelude. Each declaration is the one the
+   * recipe's own header names.
+   */
+  @TestFactory
+  public List<DynamicTest> thePackagedArchetypesComposeTheirQaDocuments() {
+    Map<String, String> declarations =
+        Map.of(
+            "java-service",
+            """
+            archetype: java-service
+            artifacts:
+              - { type: docker, name: qits/qits-ci, sbom: .sbom/sbom.json }
+            userflows: qits-ci
+            """,
+            "maven-library",
+            """
+            archetype: maven-library
+            artifacts:
+              - { type: maven, name: "eu.wohlben.qits:qits-eventstream", sbom: target/sbom.json }
+            """,
+            "cli",
+            "archetype: cli\n",
+            "spa-frontend",
+            "archetype: spa-frontend\n",
+            "app",
+            """
+            archetype: app
+            artifacts:
+              - { type: docker, name: qits/qits-landing, sbom: .sbom/sbom.json }
+            """,
+            "npm-library",
+            """
+            archetype: npm-library
+            artifacts:
+              - { type: npm, name: "@qits/ui-components", path: dist/qits-spa-ui-components, sbom: sbom.json }
+            """);
+    return declarations.entrySet().stream()
+        .sorted(Map.Entry.comparingByKey())
+        .map(
+            entry ->
+                DynamicTest.dynamicTest(
+                    entry.getKey(),
+                    () ->
+                        golden(
+                            "packaged-" + entry.getKey() + "-release-request.yml",
+                            CiReleaseComposer.compose(
+                                    CiRepoRef.of(
+                                        "77777777-8888-9999-aaaa-bbbbbbbbbbbb",
+                                        "qits",
+                                        "qits-" + entry.getKey() + "-example"),
+                                    slots(entry.getValue()),
+                                    packaged(entry.getKey()))
+                                .releaseRequestDocument())))
+        .toList();
   }
 
   // --- the publishing postlude (qits-620) ---------------------------------------------------------
