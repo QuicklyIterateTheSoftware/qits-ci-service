@@ -141,6 +141,9 @@ public class StepContainerSettingsTest {
     env.put("QITS_CI_REPOSITORY_URL", "https://githost.qits.example.org/git/repo-1");
     env.put("QITS_CI_BRANCH", "main");
     env.put("QITS_CI_SHA", "cafebabe");
+    // The run and the step, which the QA report hook and `qits ci report submit` read (qits-754).
+    env.put("QITS_CI_RUN_ID", "0123456789abcdef-run");
+    env.put("QITS_CI_STEP_INDEX", "2");
     env.put("QITS_CI_REPO_ID", "repo-1");
     // The public coordinate, EMPTY rather than absent on an id-addressed run: one shape for a step
     // to read, whichever way its run was announced.
