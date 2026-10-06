@@ -23,7 +23,11 @@ import java.util.regex.Pattern;
  *       the caller asked to bump. It is the only ref the bump pipeline
  *       ({@code .config/qits/platform-pipelines/maintenance-bump.yml}, packaged into qits-ci)
  *       pushes. A payload with no usable branch gives an empty list: the pipeline refuses such a
- *       payload before it pushes anything.
+ *       payload before it pushes anything. A rebuild (the payload's {@code replaceHead}) is a
+ *       non-fast-forward update of that same ref under a {@code --force-with-lease}, so it needs no
+ *       wider scope: qits-githost checks a push's ref NAMES against the list and admits any update
+ *       kind of a ref inside it. The {@code refs/tags/<version>} a rebuild starts from is fetched,
+ *       never pushed, and the list does not narrow a fetch.
  *   <li><b>{@code ScreenshotBaselines}</b>: the payload's {@code branch} too, and only when it is
  *       under {@code maintenance/baselines/} — the one ref {@code screenshot-baselines.yml}
  *       pushes. Anything else gives an empty list.
