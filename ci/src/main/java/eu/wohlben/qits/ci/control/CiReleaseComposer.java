@@ -493,94 +493,6 @@ public final class CiReleaseComposer {
   }
 
   /**
-   * The prelude block that fetches the qits CLI at the version qits-ci pins and puts it on {@code
-   * PATH} for the rest of the step: the release phase's, and an automation kind file's that declares
-   * {@code qits-cli: true} ({@link CiAutomationComposer}). One text for both, so the two cannot
-   * drift.
-   *
-   * @param image the step's image, named in the refusal when it has neither curl nor wget
-   */
-  static void cliFetch(StringBuilder out, String image) {
-    // The qits CLI (qits, which also answers to qits-publish), fetched AT THE VERSION qits-ci
-    // PINS and put on PATH for the whole release phase.
-    //
-    // THE DOWNLOAD WAS ALREADY VERSION-ADDRESSED; what changed is where the version comes from.
-    // This block used to read qits-artifacts' own daemons listing and take that package's
-    // `latestVersion` — so every composed release on the platform ran whatever the last CLI
-    // release had been, with nothing in any consumer's tree naming it and no line anybody could
-    // revert. It is a pom pin now (eu.wohlben.qits:qits-platform-access-cli-binary), injected by
-    // StepContainerSettings as $QITS_ARTIFACTS_CLI_VERSION, and this text simply spends it.
-    //
-    // Which is why the listing read, its best-effort bearer and the jq that parsed it are all
-    // gone: a release step's image no longer needs jq for the CLI's sake at all.
-    //
-    // Soft on the package: a deployment that has switched it off still runs every recipe that does
-    // not call it, and one that does gets `command not found` rather than a silent skip. The
-    // release postlude demands the package outright.
-    out.append("if [ -n \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]; then\n");
-    // Hard on the version, and the message names the real cause. The launcher's constant cannot be
-    // blank (PlatformAccessCliBinary refuses that at class-init) and the variable is always sent,
-    // so the only way to be inside this branch without one is a qits-ci older than the pin having
-    // launched this step — which a re-run against a current qits-ci fixes.
-    out.append(
-        "  : \"${QITS_ARTIFACTS_CLI_VERSION:?the qits CLI package is configured but no version was"
-            + " injected; the qits-ci that launched this step predates the CLI pin}\"\n");
-    out.append("  mkdir -p ").append(CLI_DIR).append('\n');
-    // curl, then wget, then a refusal that names the image. An image with neither is a real
-    // shape in the fleet's neighbourhood — docker:28-dind has wget and no curl — and the one
-    // thing it must not produce is `curl: not found` from a line nobody can see the reason for.
-    // Only the FETCH degrades: the CLI itself is a static binary, so everything downstream of
-    // this block, the postlude's `qits artifacts publish` included, is unaffected by which arm
-    // ran.
-    // The download goes through the public edge, which answers an anonymous read with a 401.
-    // `$QITS_TOKEN` is this run's ci-run token, exactly as `StepContainerSettings.BOOTSTRAP` reads
-    // it for the daemon binary's own download, and the idiom is the same: a local `set --` builds
-    // the bearer header as a positional list, spent as `"$@"` on both arms and never interpolated
-    // into the url. `set --` is safe here because nothing else a release step emits reads
-    // `$@`/`$1`/`$2`, and an automation postlude rebuilds its own list with a `set --` of its own —
-    // check that before adding a second such block. With no token `"$@"` expands to nothing.
-    out.append("  set --\n");
-    out.append("  if [ -n \"${QITS_TOKEN:-}\" ]; then\n");
-    out.append("    set -- --header \"Authorization: Bearer $QITS_TOKEN\"\n");
-    out.append("  fi\n");
-    // The store is qits-artifacts' public name, code under the domain (qits-731): no URL
-    // variable is read, so nothing in a step's environment decides where its CLI comes from.
-    String cliUrl =
-        " \"" + CLI_DOWNLOAD_BASE + "$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
-    out.append("  if command -v curl > /dev/null 2>&1; then\n");
-    out.append("    curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o ")
-        .append(CLI_DIR)
-        .append("/qits")
-        .append(cliUrl)
-        .append('\n');
-    out.append("  elif command -v wget > /dev/null 2>&1; then\n");
-    out.append("    wget -q \"$@\" -O ")
-        .append(CLI_DIR)
-        .append("/qits")
-        .append(cliUrl)
-        .append('\n');
-    out.append("  else\n");
-    out.append("    echo ")
-        .append(
-            shellQuote(
-                "qits-ci: the image for this step ("
-                    + image
-                    + ") has neither curl nor wget, so the qits CLI cannot be fetched into it —"
-                    + " add one to the image, or take the qits calls out of this step"))
-        .append(" >&2\n");
-    out.append("    exit 1\n");
-    out.append("  fi\n");
-    out.append("  chmod +x ").append(CLI_DIR).append("/qits\n");
-    out.append("  ln -sf ").append(CLI_DIR).append("/qits ").append(CLI_DIR).append("/qits-publish\n");
-    out.append(
-        "  echo \"qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION\""
-            + " >&2\n");
-    out.append("  PATH=\"").append(CLI_DIR).append(":$PATH\"\n");
-    out.append("  export PATH\n");
-    out.append("fi\n");
-  }
-
-  /**
    * Which release step carries the publish block and the SBOM presence checks: the <b>last</b> one.
    *
    * <p>Last, and not the last building step, because every release slot that builds a maven module
@@ -651,7 +563,83 @@ public final class CiReleaseComposer {
     out.append(LOCKFILE_CHECK_DELIMITER).append('\n');
     out.append("sh ").append(LOCKFILE_CHECK).append('\n');
     if (releasePhase) {
-      cliFetch(out, step.image());
+      // The qits CLI (qits, which also answers to qits-publish), fetched AT THE VERSION qits-ci
+      // PINS and put on PATH for the whole release phase.
+      //
+      // THE DOWNLOAD WAS ALREADY VERSION-ADDRESSED; what changed is where the version comes from.
+      // This block used to read qits-artifacts' own daemons listing and take that package's
+      // `latestVersion` — so every composed release on the platform ran whatever the last CLI
+      // release had been, with nothing in any consumer's tree naming it and no line anybody could
+      // revert. It is a pom pin now (eu.wohlben.qits:qits-platform-access-cli-binary), injected by
+      // StepContainerSettings as $QITS_ARTIFACTS_CLI_VERSION, and this text simply spends it.
+      //
+      // Which is why the listing read, its best-effort bearer and the jq that parsed it are all
+      // gone: a release step's image no longer needs jq for the CLI's sake at all.
+      //
+      // Soft on the package: a deployment that has switched it off still runs every recipe that does
+      // not call it, and one that does gets `command not found` rather than a silent skip. The
+      // postlude below demands the package outright.
+      out.append("if [ -n \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]; then\n");
+      // Hard on the version, and the message names the real cause. The launcher's constant cannot be
+      // blank (PlatformAccessCliBinary refuses that at class-init) and the variable is always sent,
+      // so the only way to be inside this branch without one is a qits-ci older than the pin having
+      // launched this step — which a re-run against a current qits-ci fixes.
+      out.append(
+          "  : \"${QITS_ARTIFACTS_CLI_VERSION:?the qits CLI package is configured but no version was"
+              + " injected; the qits-ci that launched this step predates the CLI pin}\"\n");
+      out.append("  mkdir -p ").append(CLI_DIR).append('\n');
+      // curl, then wget, then a refusal that names the image. An image with neither is a real
+      // shape in the fleet's neighbourhood — docker:28-dind has wget and no curl — and the one
+      // thing it must not produce is `curl: not found` from a line nobody can see the reason for.
+      // Only the FETCH degrades: the CLI itself is a static binary, so everything downstream of
+      // this block, the postlude's `qits artifacts publish` included, is unaffected by which arm
+      // ran.
+      // The download goes through the public edge, which answers an anonymous read with a 401.
+      // `$QITS_TOKEN` is this run's ci-run token, exactly as `StepContainerSettings.BOOTSTRAP` reads
+      // it for the daemon binary's own download, and the idiom is the same: a local `set --` builds
+      // the bearer header as a positional list, spent as `"$@"` on both arms and never interpolated
+      // into the url. `set --` is safe here because nothing else this method emits reads
+      // `$@`/`$1`/`$2` — check that before adding a second such block. With no token `"$@"`
+      // expands to nothing.
+      out.append("  set --\n");
+      out.append("  if [ -n \"${QITS_TOKEN:-}\" ]; then\n");
+      out.append("    set -- --header \"Authorization: Bearer $QITS_TOKEN\"\n");
+      out.append("  fi\n");
+      // The store is qits-artifacts' public name, code under the domain (qits-731): no URL
+      // variable is read, so nothing in a step's environment decides where its CLI comes from.
+      String cliUrl =
+          " \"" + CLI_DOWNLOAD_BASE + "$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
+      out.append("  if command -v curl > /dev/null 2>&1; then\n");
+      out.append("    curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o ")
+          .append(CLI_DIR)
+          .append("/qits")
+          .append(cliUrl)
+          .append('\n');
+      out.append("  elif command -v wget > /dev/null 2>&1; then\n");
+      out.append("    wget -q \"$@\" -O ")
+          .append(CLI_DIR)
+          .append("/qits")
+          .append(cliUrl)
+          .append('\n');
+      out.append("  else\n");
+      out.append("    echo ")
+          .append(
+              shellQuote(
+                  "qits-ci: the image for this step ("
+                      + step.image()
+                      + ") has neither curl nor wget, so the qits CLI cannot be fetched into it —"
+                      + " add one to the image, or take the qits calls out of this step"))
+          .append(" >&2\n");
+      out.append("    exit 1\n");
+      out.append("  fi\n");
+      out.append("  chmod +x ").append(CLI_DIR).append("/qits\n");
+      out.append("  ln -sf ").append(CLI_DIR).append("/qits ").append(CLI_DIR).append("/qits-publish\n");
+      out.append(
+          "  echo \"qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION\""
+              + " >&2\n");
+      out.append("  PATH=\"").append(CLI_DIR).append(":$PATH\"\n");
+      out.append("  export PATH\n");
+      out.append("fi\n");
     }
     if (step.build()) {
       // The platform builder, demanded loudly before anything is built. Unset means a
