@@ -53,6 +53,9 @@ public class CiDaemonBootstrapTokenTest {
   private static final String GIT_HELPER_PATH = "/tmp/qits-git-credential";
   private static final String SETTINGS_PATH = StepContainerSettings.DEPLOY_SETTINGS_FILE;
 
+  /** The step's {@code http.postBuffer}: qits-githost's 64 MiB {@code max-pack-size}. */
+  private static final long GIT_POST_BUFFER = 64L * 1024 * 1024;
+
   private HttpServer server;
   private Path work;
 
@@ -120,7 +123,11 @@ public class CiDaemonBootstrapTokenTest {
     // 2. The git helper answers the clone host with oauth2/token, and nobody else; the global git
     // config names it.
     assertEquals(
-        "[credential]\n\thelper = " + path(GIT_HELPER_PATH) + "\n",
+        "[credential]\n\thelper = "
+            + path(GIT_HELPER_PATH)
+            + "\n[http]\n\tpostBuffer = "
+            + GIT_POST_BUFFER
+            + "\n",
         Files.readString(work.resolve("gitconfig")));
     assertEquals(
         "username=oauth2\npassword=" + TOKEN + "\n\n",
@@ -208,6 +215,39 @@ public class CiDaemonBootstrapTokenTest {
     assertEquals(
         "-Dstyle.color=never -Dfoo=bar -gs " + path(SETTINGS_PATH) + "\n",
         Files.readString(work.resolve("inherited-maven-args")));
+  }
+
+  /**
+   * qits-887: git reads the bootstrap's global config as a post buffer as large as qits-githost's
+   * {@code max-pack-size}, so no push the git host would accept is streamed. A pack past git's 1 MB
+   * default used to go through libcurl's read callback, which the step images' libcurl 7.88.1 over
+   * HTTP/2 can call again after it returned EOF; git-remote-https then blocked on a pipe send-pack
+   * had finished writing, and qits-landing-app's 89-image baselines push (runs 636c3918, b9ecf9ce)
+   * hung until the step's 1800 s timeout. Asked of git itself, not of the text, so a config the
+   * real git does not parse fails here.
+   */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  public void gitBuffersEveryPushTheGitHostAcceptsRatherThanStreamingIt() throws Exception {
+    assumeShell();
+    assumeTrue(onPath("git"), "git is required to read the config back");
+
+    Result result = runBootstrap(composedEnv());
+    assertEquals(0, result.exitCode, result.diagnosis());
+
+    Process read =
+        stripped(new ProcessBuilder("git", "config", "--global", "--int", "http.postBuffer"),
+                composedEnv())
+            .start();
+    read.getOutputStream().close();
+    String value = new String(read.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+    assertTrue(read.waitFor(30, TimeUnit.SECONDS), "git config never exited");
+    assertEquals(0, read.exitValue(), "git found no http.postBuffer in the step's global config");
+    assertEquals(GIT_POST_BUFFER, Long.parseLong(value));
+    // The git host's own bound (qits-githost qits.repositories.git.max-pack-size=64M): anything
+    // larger is refused there whatever framing it arrives in.
+    assertTrue(GIT_POST_BUFFER >= 64L * 1024 * 1024, "smaller than the git host's pack limit");
+    assertTrue(GIT_POST_BUFFER > 1024 * 1024, "not above git's 1 MB streaming default");
   }
 
   /**

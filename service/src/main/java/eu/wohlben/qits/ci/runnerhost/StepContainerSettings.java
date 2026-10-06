@@ -116,7 +116,13 @@ public class StepContainerSettings {
    *       $QITS_CI_REPOSITORY_URL} names and nobody else — git may invoke a helper for any remote
    *       in a repository, a repository-authored submodule included, and handing the credential to
    *       an arbitrary host would be an exfiltration vulnerability. The edge reads the password of
-   *       git's Basic as a {@code qits_tok_} and introspects it.
+   *       git's Basic as a {@code qits_tok_} and introspects it. The same global config raises
+   *       {@code http.postBuffer} to 64 MiB, qits-githost's {@code max-pack-size}: a request body
+   *       past git's 1 MB default is streamed through libcurl's read callback, and the step images'
+   *       libcurl 7.88.1 over HTTP/2 intermittently asks that callback for more after it returned
+   *       EOF — git-remote-https then blocks on a pipe send-pack has finished writing, the body
+   *       never ends, and the push hangs until the step times out (qits-887). A buffered body
+   *       goes with a {@code Content-Length} and never takes that path.
    *   <li>{@link #DEPLOY_SETTINGS_FILE}, with the bearer as an {@code Authorization} header on every
    *       server id the estate's settings use ({@code qits}, {@code qits-maven-network}, {@code
    *       qits-central-proxy}), plus a re-declared {@code maven-default-http-blocker} mirror, and
@@ -221,7 +227,13 @@ public class StepContainerSettings {
       printf 'username=oauth2\\npassword=%s\\n\\n' "$QITS_TOKEN"
       EOF
         chmod 0700 /tmp/qits-git-credential
-        printf '[credential]\n\thelper = /tmp/qits-git-credential\n' > "$GIT_CONFIG_GLOBAL"
+        # http.postBuffer at qits-githost's own max-pack-size (64M), so every push it would accept
+        # leaves git as ONE buffered POST with a Content-Length. At git's 1 MB default a larger
+        # push is streamed through a curl read callback instead, and the images' libcurl (7.88.1)
+        # over HTTP/2 can call that callback again after it returned EOF: git-remote-https then
+        # blocks reading a pipe send-pack will never write to again, the request body never ends,
+        # and the push hangs until the step's timeout (qits-887).
+        printf '[credential]\n\thelper = /tmp/qits-git-credential\n[http]\n\tpostBuffer = 67108864\n' > "$GIT_CONFIG_GLOBAL"
         QITS_PUBLISH_TOKEN=$QITS_TOKEN
         export QITS_PUBLISH_TOKEN
         # Maven's credential for every platform repository a step dials through the edge, every one
