@@ -478,6 +478,153 @@ public class CiPackagedSurfaceIT {
     }
   }
 
+  /**
+   * The release-report reads in the artifact (qits-983): a report row and a baseline written straight
+   * into the injected database, then read back through all four doors.
+   *
+   * <p>What only the binary can show is the reflection: the highlights are parsed back out of
+   * {@code ci_report.highlights} through a {@code TypeReference} the build-time scan never sees, so
+   * an unregistered {@code CiReportHighlightDto} is a 500 here and a green JVM suite everywhere else
+   * — {@code ReportWireReflection} is what this case proves. The submit door cannot be knocked on in
+   * here (no run holds a commissioned token in a launched artifact); its body parse is the same
+   * injected {@code ObjectMapper} against a record registered in the same annotation.
+   *
+   * <p>Every seeded run is finished, so no runner is ever handed one, and every row is deleted again
+   * — the story classes share this database (see {@link #aTriggeredRunGoesThroughYamlFlywayAndPanache}).
+   */
+  @Test
+  public void aStoredReportIsReadBackThroughEveryReportDoor() throws Exception {
+    String repo = "packaged-reports-" + UUID.randomUUID();
+    String version = "2026.1003.52637";
+    String gate = UUID.randomUUID().toString();
+    String release = UUID.randomUUID().toString();
+    String asking = UUID.randomUUID().toString();
+    String report = UUID.randomUUID().toString();
+    try (Connection ci =
+        DriverManager.getConnection(
+            EmbeddedPg.url("ci_packaged_it"), EmbeddedPg.USER, EmbeddedPg.PASSWORD)) {
+      try (PreparedStatement fact =
+          ci.prepareStatement(
+              "insert into ci_scm_release (id, repo_id, version, event_id, occurred_at, seen_at)"
+                  + " values (?, ?, ?, ?, current_timestamp, current_timestamp)")) {
+        fact.setString(1, UUID.randomUUID().toString());
+        fact.setString(2, repo);
+        fact.setString(3, version);
+        fact.setString(4, UUID.randomUUID().toString());
+        fact.executeUpdate();
+      }
+      insertFinishedRun(ci, gate, repo, "release/rr-base", "rr-base", "RELEASE_REQUEST", 1);
+      insertFinishedRun(ci, release, repo, version, "rr-base", "RELEASE", 2);
+      insertFinishedRun(ci, asking, repo, "release/rr-new", "rr-new", "RELEASE_REQUEST", 3);
+      try (PreparedStatement row =
+          ci.prepareStatement(
+              "insert into ci_report (id, run_id, step_index, kind, kind_version, payload,"
+                  + " highlights, baseline_run_id, baseline_version, payload_bytes, submitted_at)"
+                  + " values (cast(? as uuid), ?, 1, 'coverage', 1, ?, ?, null, null, ?,"
+                  + " current_timestamp)")) {
+        String payload = "{\"total\":{\"linesCovered\":8120,\"linesTotal\":10031,\"percent\":80.95}}";
+        row.setString(1, report);
+        row.setString(2, gate);
+        row.setString(3, payload);
+        row.setString(
+            4,
+            "[{\"severity\":\"good\",\"text\":\"coverage 80.95%\",\"metric\":\"total\","
+                + "\"value\":80.95,\"delta\":null}]");
+        row.setInt(5, payload.length());
+        row.executeUpdate();
+      }
+    }
+    try {
+      given()
+          .headers(OPERATOR)
+          .when()
+          .get("/ci/api/runs/" + gate + "/reports")
+          .then()
+          .statusCode(200)
+          .body("runId", org.hamcrest.Matchers.equalTo(gate))
+          .body("reports[0].id", org.hamcrest.Matchers.equalTo(report))
+          .body("reports[0].highlights[0].text", org.hamcrest.Matchers.equalTo("coverage 80.95%"))
+          .body("reports[0].highlights[0].value", org.hamcrest.Matchers.equalTo(80.95f));
+      given()
+          .headers(OPERATOR)
+          .when()
+          .get("/ci/api/runs/" + gate + "/reports/" + report)
+          .then()
+          .statusCode(200)
+          .body("highlights[0].severity", org.hamcrest.Matchers.equalTo("good"))
+          .body("payload.total.linesCovered", org.hamcrest.Matchers.equalTo(8120));
+      given()
+          .headers(OPERATOR)
+          .when()
+          .get("/ci/api/runs/" + asking + "/baseline")
+          .then()
+          .statusCode(200)
+          .body("baseline.version", org.hamcrest.Matchers.equalTo(version))
+          .body("baseline.runId", org.hamcrest.Matchers.equalTo(gate))
+          .body("baseline.releaseRequestId", org.hamcrest.Matchers.equalTo("rr-base"));
+      given()
+          .headers(OPERATOR)
+          .when()
+          .get("/ci/api/runs/" + asking + "/baseline/reports/coverage")
+          .then()
+          .statusCode(200)
+          .body("[0].id", org.hamcrest.Matchers.equalTo(report))
+          .body("[0].payload.total.percent", org.hamcrest.Matchers.equalTo(80.95f));
+      assertEquals(
+          "{\"baseline\":null}",
+          given()
+              .headers(OPERATOR)
+              .when()
+              .get("/ci/api/runs/" + gate + "/baseline")
+              .then()
+              .statusCode(200)
+              .extract()
+              .asString(),
+          "the gate's own request produced the only release, so it has no baseline");
+    } finally {
+      try (Connection ci =
+          DriverManager.getConnection(
+              EmbeddedPg.url("ci_packaged_it"), EmbeddedPg.USER, EmbeddedPg.PASSWORD)) {
+        try (PreparedStatement delete = ci.prepareStatement("delete from ci_report where run_id = ?")) {
+          delete.setString(1, gate);
+          delete.executeUpdate();
+        }
+        try (PreparedStatement delete = ci.prepareStatement("delete from ci_run where repo_id = ?")) {
+          delete.setString(1, repo);
+          delete.executeUpdate();
+        }
+        try (PreparedStatement delete =
+            ci.prepareStatement("delete from ci_scm_release where repo_id = ?")) {
+          delete.setString(1, repo);
+          delete.executeUpdate();
+        }
+      }
+    }
+  }
+
+  /** A finished, green run row carrying a release phase — nothing will ever pick it up. */
+  private static void insertFinishedRun(
+      Connection ci, String id, String repo, String branch, String requestId, String phase, int minute)
+      throws Exception {
+    try (PreparedStatement run =
+        ci.prepareStatement(
+            "insert into ci_run (id, repo_id, branch, commit_sha, release_request_id, phase, status,"
+                + " created_at, started_at, finished_at, trigger_type, trigger_event_id, config_path,"
+                + " purpose) values (?, ?, ?, ?, ?, ?, 'SUCCESS', current_timestamp + make_interval("
+                + "mins => ?), current_timestamp, current_timestamp, 'EVENT', ?,"
+                + " '.config/qits/release.yml', 'BUILD')")) {
+      run.setString(1, id);
+      run.setString(2, repo);
+      run.setString(3, branch);
+      run.setString(4, String.format("%040x", minute));
+      run.setString(5, requestId);
+      run.setString(6, phase);
+      run.setInt(7, minute);
+      run.setString(8, UUID.randomUUID().toString());
+      run.executeUpdate();
+    }
+  }
+
   @Test
   public void theOutboxLineageIsInTheArtifactToo() throws Exception {
     // The second datasource, and the second Flyway lineage — the qits-eventstream jar's, migrated at

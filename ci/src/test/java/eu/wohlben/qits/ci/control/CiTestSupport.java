@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.control;
 
 import eu.wohlben.qits.ci.persistence.CiOwedEventRepository;
 import eu.wohlben.qits.ci.persistence.CiReleaseAnnouncementRepository;
+import eu.wohlben.qits.ci.persistence.CiReportRepository;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import eu.wohlben.qits.ci.persistence.CiScmReleaseRepository;
 import eu.wohlben.qits.ci.persistence.CiStepRepository;
@@ -25,6 +26,7 @@ public abstract class CiTestSupport {
 
   @Inject protected CiRunRepository runs;
   @Inject protected CiStepRepository steps;
+  @Inject protected CiReportRepository reports;
   @Inject protected CiReleaseAnnouncementRepository announcements;
   @Inject protected CiScmReleaseRepository scmReleases;
   @Inject protected CiOwedEventRepository owedEvents;
@@ -134,6 +136,7 @@ public abstract class CiTestSupport {
         .run(
             () -> {
               steps.deleteAll();
+              reports.deleteAll();
               runs.deleteAll();
               announcements.deleteAll();
               scmReleases.deleteAll();

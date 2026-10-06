@@ -4,6 +4,13 @@
 openapi: 3.1.0
 components:
   schemas:
+    Baseline:
+      type: object
+      properties:
+        runId:
+          type: string
+        version:
+          type: string
     Blocker:
       type: object
       properties:
@@ -35,6 +42,11 @@ components:
       properties:
         reason:
           type: string
+    CiBaselineAnswer:
+      type: object
+      properties:
+        baseline:
+          $ref: "#/components/schemas/CiReportBaselineDto"
     CiLiveStepDto:
       type: object
       properties:
@@ -45,6 +57,100 @@ components:
           $ref: "#/components/schemas/Instant"
         output:
           type: string
+    CiReportBaselineDto:
+      type: object
+      properties:
+        version:
+          type: string
+        runId:
+          type: string
+        releaseRequestId:
+          type: string
+        tagSha:
+          type: string
+    CiReportDto:
+      type: object
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+        kindVersion:
+          type: integer
+          format: int32
+        stepIndex:
+          type: integer
+          format: int32
+        highlights:
+          type: array
+          items:
+            $ref: "#/components/schemas/CiReportHighlightDto"
+        baselineRunId:
+          type: string
+        baselineVersion:
+          type: string
+        payloadBytes:
+          type: integer
+          format: int32
+        submittedAt:
+          $ref: "#/components/schemas/Instant"
+        payload:
+          $ref: "#/components/schemas/JsonNode"
+    CiReportHighlightDto:
+      type: object
+      properties:
+        severity:
+          type: string
+        text:
+          type: string
+        metric:
+          type: string
+        value:
+          type: number
+          format: double
+        delta:
+          type: number
+          format: double
+    CiReportSubmission:
+      type: object
+      properties:
+        kindVersion:
+          type: integer
+          format: int32
+        highlights:
+          type: array
+          items:
+            $ref: "#/components/schemas/CiReportHighlightDto"
+        baseline:
+          $ref: "#/components/schemas/Baseline"
+        payload:
+          $ref: "#/components/schemas/JsonNode"
+    CiReportSummaryDto:
+      type: object
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+        kindVersion:
+          type: integer
+          format: int32
+        stepIndex:
+          type: integer
+          format: int32
+        highlights:
+          type: array
+          items:
+            $ref: "#/components/schemas/CiReportHighlightDto"
+        baselineRunId:
+          type: string
+        baselineVersion:
+          type: string
+        payloadBytes:
+          type: integer
+          format: int32
+        submittedAt:
+          $ref: "#/components/schemas/Instant"
     CiRunDto:
       type: object
       properties:
@@ -155,6 +261,21 @@ components:
       enum:
       - RELEASE_REQUEST
       - RELEASE
+    CiRunReportsDto:
+      type: object
+      properties:
+        runId:
+          type: string
+        commitSha:
+          type: string
+        releaseRequestId:
+          type: string
+        baseline:
+          $ref: "#/components/schemas/CiReportBaselineDto"
+        reports:
+          type: array
+          items:
+            $ref: "#/components/schemas/CiReportSummaryDto"
     CiRunStatus:
       type: string
       enum:
@@ -1365,6 +1486,76 @@ paths:
         - qits:admin
         - qits:system
         - qits:agent
+  /ci/api/runs/{runId}/baseline:
+    get:
+      summary: "A run's baseline: the gating run of its repository's newest released\
+        \ version, or null"
+      parameters:
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: "The baseline, or {\"baseline\":null}"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CiBaselineAnswer"
+        "404":
+          description: No such run
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Report Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:system
+        - qits:agent
+        - qits:ci-run
+  /ci/api/runs/{runId}/baseline/reports/{kind}:
+    get:
+      summary: "The baseline run's release reports of one kind, with payloads"
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: "The reports; [] when there is no baseline or none"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CiReportDto"
+        "400":
+          description: A bad kind name
+        "404":
+          description: No such run
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Report Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:system
+        - qits:agent
+        - qits:ci-run
   /ci/api/runs/{runId}/cancel:
     post:
       summary: Cancel a queued or running CI run
@@ -1399,6 +1590,71 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+  /ci/api/runs/{runId}/reports:
+    get:
+      summary: "A run's release reports, without payloads, and its baseline"
+      parameters:
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The run's reports; an empty list when it has none
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CiRunReportsDto"
+        "404":
+          description: No such run
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Report Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:system
+        - qits:agent
+        - qits:ci-run
+  /ci/api/runs/{runId}/reports/{reportId}:
+    get:
+      summary: "One release report of a run, with its payload"
+      parameters:
+      - name: reportId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CiReportDto"
+        "404":
+          description: "No such run, or no such report on it"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Report Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:system
+        - qits:agent
+        - qits:ci-run
   /ci/api/runs/{runId}/retry:
     post:
       summary: "Run a finished CI run's pipeline again, at the same commit"
@@ -1431,6 +1687,53 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:agent
+  /ci/api/runs/{runId}/steps/{stepIndex}/reports/{kind}:
+    put:
+      summary: Submit a step's release report of one kind (a run's own ci-run token
+        only)
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: stepIndex
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int32
+      requestBody:
+        content:
+          '*/*':
+            schema:
+              $ref: "#/components/schemas/CiReportSubmission"
+        required: true
+      responses:
+        "204":
+          description: "Stored, replacing any earlier report of the kind"
+        "400":
+          description: "A bad kind name, body, or more than 10 highlights"
+        "403":
+          description: The token is not this run's
+        "404":
+          description: No such run
+        "409":
+          description: The run is not RUNNING
+        "413":
+          description: The body is larger than 1 MiB
+        "401":
+          description: Not Authorized
+      tags:
+      - Ci Report Controller
+      security:
+      - SecurityScheme:
+        - qits:ci-run
 info:
   title: qits-ci API
-  version: 2026.1003.132021
+  version: 2026.1006.131505

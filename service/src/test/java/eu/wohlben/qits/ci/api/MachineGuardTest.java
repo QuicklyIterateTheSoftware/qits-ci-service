@@ -2,11 +2,23 @@ package eu.wohlben.qits.ci.api;
 
 import static io.restassured.RestAssured.given;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import eu.wohlben.qits.auth.MachineAuth;
 import eu.wohlben.qits.auth.QitsClaims;
 import eu.wohlben.qits.ci.control.CiRepoRef;
+import eu.wohlben.qits.ci.control.CiReportStore;
+import eu.wohlben.qits.ci.entity.CiRun;
+import eu.wohlben.qits.ci.entity.CiRunStatus;
+import eu.wohlben.qits.ci.entity.CiTriggerType;
 import eu.wohlben.qits.ci.githost.FakeGitHostRepoListing;
+import eu.wohlben.qits.ci.idp.RunCommissions;
+import eu.wohlben.qits.ci.idp.ScriptedRunTokens;
+import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import eu.wohlben.qits.ci.projects.FakeProjectsRepoListing;
+import io.quarkus.narayana.jta.QuarkusTransaction;
+import io.quarkus.test.junit.QuarkusMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
@@ -15,7 +27,9 @@ import io.quarkus.test.security.oidc.Claim;
 import io.quarkus.test.security.oidc.OidcSecurity;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.MediaType;
+import java.time.Instant;
 import java.util.Map;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -771,5 +785,165 @@ public class MachineGuardTest {
         .get("/ci/api/repositories")
         .then()
         .statusCode(200);
+  }
+
+  // --- the release-report submit door (qits-983) ---------------------------------------------------
+
+  /** The subject the run's ci-run token was commissioned as, in the cases that seed one. */
+  private static final String RUN_SUBJECT = "tok-ci-run-report-guard";
+
+  /** Another run's ci-run token: the same role, a different subject. */
+  private static final String OTHER_RUN_SUBJECT = "tok-ci-run-someone-else";
+
+  private static final String REPORT_BODY =
+      """
+      {"kindVersion":1,"highlights":[{"severity":"bad","text":"1 test failed"}],"baseline":null,\
+      "payload":{"totals":{"tests":1,"failed":1}}}""";
+
+  @Inject CiRunRepository reportRuns;
+
+  @Inject CiReportStore reportStore;
+
+  @Test
+  void theReportSubmitWithNoMachineTokenIs401() {
+    // No run needs to exist: @RolesAllowed shuts before the door reads anything.
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(REPORT_BODY)
+        .when()
+        .put("/ci/api/runs/no-such-run/steps/0/reports/test-results")
+        .then()
+        .statusCode(401);
+  }
+
+  @Test
+  @TestSecurity(user = "ticket-agent", roles = {"qits:agent"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void anAgentTokenMayNotSubmitAReport() {
+    // Agents read every report and submit none: the door is qits:ci-run's alone.
+    String runId = seedReportRun(CiRunStatus.RUNNING);
+    try {
+      given()
+          .contentType(MediaType.APPLICATION_JSON)
+          .body(REPORT_BODY)
+          .when()
+          .put(reportDoor(runId))
+          .then()
+          .statusCode(403);
+      assertTrue(reportStore.forRun(runId).isEmpty());
+    } finally {
+      dropReportRun(runId);
+    }
+  }
+
+  @Test
+  @TestSecurity(user = OTHER_RUN_SUBJECT, roles = {"qits:ci-run"})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = OWN_AUDIENCE),
+        @Claim(key = "sub", value = OTHER_RUN_SUBJECT)
+      })
+  void anotherRunsCiRunTokenMayNotSubmitToThisRun() {
+    // The role every run's token holds, and the binding is what refuses it: the caller's sub is not
+    // the subject this run's token was commissioned as.
+    String runId = seedReportRun(CiRunStatus.RUNNING);
+    try {
+      given()
+          .contentType(MediaType.APPLICATION_JSON)
+          .body(REPORT_BODY)
+          .when()
+          .put(reportDoor(runId))
+          .then()
+          .statusCode(403);
+      assertTrue(reportStore.forRun(runId).isEmpty());
+    } finally {
+      dropReportRun(runId);
+    }
+  }
+
+  @Test
+  @TestSecurity(user = RUN_SUBJECT, roles = {"qits:ci-run"})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = OWN_AUDIENCE),
+        @Claim(key = "sub", value = RUN_SUBJECT)
+      })
+  void theRunsOwnTokenSubmitsWhileTheRunIsRunning() {
+    String runId = seedReportRun(CiRunStatus.RUNNING);
+    try {
+      given()
+          .contentType(MediaType.APPLICATION_JSON)
+          .body(REPORT_BODY)
+          .when()
+          .put(reportDoor(runId))
+          .then()
+          .statusCode(204);
+      assertEquals(1, reportStore.forRun(runId).size());
+    } finally {
+      dropReportRun(runId);
+    }
+  }
+
+  @Test
+  @TestSecurity(user = RUN_SUBJECT, roles = {"qits:ci-run"})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = OWN_AUDIENCE),
+        @Claim(key = "sub", value = RUN_SUBJECT)
+      })
+  void aFinishedRunTakesNoReport() {
+    // The right token, too late: a report belongs to a run in flight, and a finished run's verdict
+    // is already what it is. 409 only after the binding — the caller is entitled to the status.
+    String runId = seedReportRun(CiRunStatus.SUCCESS);
+    try {
+      given()
+          .contentType(MediaType.APPLICATION_JSON)
+          .body(REPORT_BODY)
+          .when()
+          .put(reportDoor(runId))
+          .then()
+          .statusCode(409);
+      assertTrue(reportStore.forRun(runId).isEmpty());
+    } finally {
+      dropReportRun(runId);
+    }
+  }
+
+  private static String reportDoor(String runId) {
+    return "/ci/api/runs/" + runId + "/steps/1/reports/test-results";
+  }
+
+  /** A run row, and a ci-run token held for it as {@link #RUN_SUBJECT}. */
+  private String seedReportRun(CiRunStatus status) {
+    String runId = UUID.randomUUID().toString();
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              CiRun run = new CiRun();
+              run.id = runId;
+              run.repoId = "report-guard-repo";
+              run.branch = "main";
+              run.commitSha = "a".repeat(40);
+              run.status = status;
+              run.triggerType = CiTriggerType.EVENT;
+              run.configPath = ".config/qits/ci-event-report-guard.yml";
+              run.triggerEventId = UUID.randomUUID().toString();
+              run.createdAt = Instant.now();
+              run.startedAt = Instant.now();
+              reportRuns.persist(run);
+            });
+    ScriptedRunTokens tokens = new ScriptedRunTokens(RUN_SUBJECT);
+    tokens.forRun(runId, Map.of());
+    QuarkusMock.installMockForType(tokens, RunCommissions.class);
+    return runId;
+  }
+
+  private void dropReportRun(String runId) {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              reportStore.deleteForRun(runId);
+              reportRuns.deleteById(runId);
+            });
   }
 }
