@@ -70,15 +70,30 @@ steps:
         set -- "Authorization: Bearer $QITS_TOKEN"
       fi
       jacoco_options=""
-      mkdir -p /tmp/qits-jacoco .qits-reports
+      mkdir -p /tmp/qits-jacoco .qits-reports/pact-verification
       if curl -fsSL --retry 2 ${1:+-H} "$@" -o "$jacoco_agent" "$jacoco_url" 2>/dev/null \
         || wget -q ${1:+--header} "$@" -O "$jacoco_agent" "$jacoco_url" 2>/dev/null; then
-        jacoco_options="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-javaagent:$jacoco_agent=destfile=$PWD/.qits-reports/jacoco.exec,append=true,includes=eu.wohlben.*"
+        jacoco_options="-javaagent:$jacoco_agent=destfile=$PWD/.qits-reports/jacoco.exec,append=true,includes=eu.wohlben.*"
       else
         echo "coverage: could not fetch the JaCoCo $jacoco_version agent; this verify runs without coverage"
       fi
 
-      env ${jacoco_options:+"JAVA_TOOL_OPTIONS=$jacoco_options"} \
+      # THE PACT VERIFICATION REPORT (qits-759). A system property, inert in every JVM this verify
+      # starts that is not a Pact-JVM provider verifier — nothing here checks which JVMs those are,
+      # because the property costs nothing in any other. It exists because of WHERE the knowledge
+      # lives: the pacts a provider verifies are resolved from pinned consumer jars on its OWN test
+      # classpath, so only the verifying JVM itself ever learns which ones, and that is the one fact
+      # qits-ci cannot read from outside. Pact-JVM's provider verifier writes
+      # `.qits-reports/pact-verification/*.json` when it sees these two properties and reads neither
+      # any other way; the CLI's `contracts` report kind is what reads that directory back after the
+      # step ends.
+      #
+      # SET WHETHER OR NOT THE COVERAGE AGENT'S FETCH ABOVE SUCCEEDED: it must not sit inside that
+      # `if`/`else`, so it is composed as its own always-set part and JAVA_TOOL_OPTIONS below is
+      # built from both parts rather than from one living inside the other's branch.
+      pact_options="-Dpact.verification.reports=json -Dpact.verification.reportDir=$PWD/.qits-reports/pact-verification"
+
+      env "JAVA_TOOL_OPTIONS=${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }${jacoco_options:+$jacoco_options }$pact_options" \
         ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
         -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL"
       QITS_SLOT_EOF
