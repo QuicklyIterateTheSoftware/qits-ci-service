@@ -20,16 +20,27 @@ import java.util.Optional;
  * <ol>
  *   <li>The newest {@link CiScmRelease} of the run's repository by {@link VersionSort}, matching
  *       {@code repoId} or {@code repoName} in every combination, as the release join does.
- *   <li>The newest {@code RELEASE}-phase run of that repository whose {@code branch} is that version
- *       (a release run checks out {@code branch: version}) and whose {@code releaseRequestId} is
- *       set. Its {@code commitSha} is the version's {@code tagSha}.
+ *   <li>That release's request. When the row carries {@link CiScmRelease#releaseRequestId} — every
+ *       {@code SCMRelease} qits-projects publishes names it — that is the request, and the row's
+ *       {@link CiScmRelease#commitSha} is the version's {@code tagSha} (falling back to the release
+ *       run's {@code commitSha} when the row has none, and to null when there is no such run either).
+ *       Only a historical row, recorded before the fact row kept the request, goes the old way: the
+ *       newest {@code RELEASE}-phase run of that repository whose {@code branch} is that version (a
+ *       release run checks out {@code branch: version}) and whose {@code releaseRequestId} is set,
+ *       whose {@code commitSha} is the {@code tagSha}.
  *   <li>The newest {@code SUCCESS} {@code RELEASE_REQUEST}-phase run of that repository for that
  *       request — the run that gated the version.
  * </ol>
  *
+ * <p><b>Why the release row comes first.</b> A repository with no deployment — an spa-frontend, an
+ * npm-library, a maven-library — has no release recipe and therefore no {@code RELEASE}-phase run at
+ * all, so a lookup that went through that run found no baseline for any of them however many times
+ * they had released. The request id {@code SCMRelease} carries is the same fact without the detour.
+ *
  * <p><b>The run's own release request is excluded.</b> Once a request has released, the newest
  * version is the one it produced, and comparing a run with itself is no baseline; such a version is
- * passed over and the next older release asked instead.
+ * passed over and the next older release asked instead. The request compared is whichever step 2
+ * found — the row's own, or the release run's for a historical row.
  *
  * <p><b>Nothing found is {@link Optional#empty()}, never an exception</b>: a first release and every
  * version from before reports existed have no baseline, and "no baseline" degrades every kind to
@@ -55,18 +66,28 @@ public class CiReportBaselines {
                 .reversed())
             .toList();
     for (CiScmRelease release : releases) {
-      Optional<CiRun> releaseRun =
-          newestRun(
-              run,
-              " and phase = ?3 and branch = ?4 and releaseRequestId is not null",
-              CiRunPhase.RELEASE,
-              release.version);
-      if (releaseRun.isEmpty()) {
-        return Optional.empty();
-      }
-      String requestId = releaseRun.get().releaseRequestId;
-      if (requestId.equals(run.releaseRequestId)) {
-        continue;
+      String requestId;
+      String tagSha;
+      if (release.releaseRequestId != null) {
+        requestId = release.releaseRequestId;
+        if (requestId.equals(run.releaseRequestId)) {
+          continue;
+        }
+        tagSha =
+            release.commitSha != null
+                ? release.commitSha
+                : releaseRunOf(run, release.version).map(r -> r.commitSha).orElse(null);
+      } else {
+        // A historical row: the request is known only to the version's release run, if any.
+        Optional<CiRun> releaseRun = releaseRunOf(run, release.version);
+        if (releaseRun.isEmpty()) {
+          return Optional.empty();
+        }
+        requestId = releaseRun.get().releaseRequestId;
+        if (requestId.equals(run.releaseRequestId)) {
+          continue;
+        }
+        tagSha = releaseRun.get().commitSha;
       }
       Optional<CiRun> gate =
           newestRun(
@@ -75,10 +96,18 @@ public class CiReportBaselines {
               CiRunPhase.RELEASE_REQUEST,
               CiRunStatus.SUCCESS,
               requestId);
-      return gate.map(
-          qa -> new Baseline(release.version, qa.id, requestId, releaseRun.get().commitSha));
+      return gate.map(qa -> new Baseline(release.version, qa.id, requestId, tagSha));
     }
     return Optional.empty();
+  }
+
+  /** The newest {@code RELEASE}-phase run of {@code version} that names its release request. */
+  private Optional<CiRun> releaseRunOf(CiRun run, String version) {
+    return newestRun(
+        run,
+        " and phase = ?3 and branch = ?4 and releaseRequestId is not null",
+        CiRunPhase.RELEASE,
+        version);
   }
 
   /** Every release of the run's repository, matched as {@code CiScmReleaseRepository#released}. */

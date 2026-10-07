@@ -22,17 +22,18 @@ import org.jboss.logging.Logger;
  * arrival.
  *
  * <p>It is the same shape as the three listeners beside it and adapts inward like {@code
- * CiEventTriggerListener} does: an {@link EventFrame} becomes five plain strings and an instant, so
+ * CiEventTriggerListener} does: an {@link EventFrame} becomes seven plain strings and an instant, so
  * the {@code ci} module keeps importing no publish/subscribe type.
  *
  * <h2>What it reads, and why by name</h2>
  *
- * <p>{@code repository}, {@code repositoryName}, {@code version} and {@code priority} are read out of
- * the payload with a {@code readTree} walk, the trigger engine's own precedent — no binding, so no native-image
- * reflection metadata and no dependency on qits-workspaces' vocabulary jar, which is on neither
- * module's classpath here. That is also the one guard this path does not have: unlike {@code
- * SCMPublishTag}, whose field names {@code ScmPublishTagContractTest} resolves against the real
- * record, a rename over there would stop the join closing rather than fail a build here.
+ * <p>{@code repository}, {@code repositoryName}, {@code version}, {@code priority}, {@code
+ * releaseRequestId} and {@code commitSha} are read out of the payload with a {@code readTree} walk,
+ * the trigger engine's own precedent — no binding, so no native-image reflection metadata and no
+ * dependency on qits-workspaces' vocabulary jar, which is on neither module's classpath here. That
+ * is also the one guard this path does not have: unlike {@code SCMPublishTag}, whose field names
+ * {@code ScmPublishTagContractTest} resolves against the real record, a rename over there would stop
+ * the join closing rather than fail a build here.
  *
  * <h2>Inline, in the claiming transaction</h2>
  *
@@ -88,6 +89,17 @@ public class ScmReleaseListener implements QitsDurableEventListener {
    */
   static final String PRIORITY_FIELD = "priority";
 
+  /**
+   * The release request the release came out of, read like {@link #PRIORITY_FIELD} and judged like
+   * it: optional, no part of the join key, absent on every release published before the field
+   * existed. The join records it on the fact row, where {@code CiReportBaselines} finds a version's
+   * gating QA run by it — the only route there is for a repository that has no release run.
+   */
+  static final String RELEASE_REQUEST_ID_FIELD = "releaseRequestId";
+
+  /** What the release's tag points at, read and recorded beside {@link #RELEASE_REQUEST_ID_FIELD}. */
+  static final String COMMIT_SHA_FIELD = "commitSha";
+
   @Inject ReleaseJoin join;
 
   @Override
@@ -130,7 +142,11 @@ public class ScmReleaseListener implements QitsDurableEventListener {
         frame.occurredAt() == null ? java.time.Instant.now() : frame.occurredAt(),
         // Verbatim, and null when the release named none — which is every release published before
         // the field existed. Not poison and not a gate: nothing in this service reads the value.
-        text(payload, PRIORITY_FIELD));
+        text(payload, PRIORITY_FIELD),
+        // Both optional the same way: absent on every older release, recorded as nothing, and never
+        // poison — the baseline lookup falls back to the release run for such a row.
+        text(payload, RELEASE_REQUEST_ID_FIELD),
+        text(payload, COMMIT_SHA_FIELD));
   }
 
   /** One payload field as a non-blank string, or null. */

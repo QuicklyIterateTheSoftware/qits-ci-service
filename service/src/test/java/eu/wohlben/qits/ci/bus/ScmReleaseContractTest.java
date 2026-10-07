@@ -240,6 +240,28 @@ public class ScmReleaseContractTest {
         release(repository, repositoryName, version, BACKING_BRANCH, RELEASED_SHA, priority));
   }
 
+  /**
+   * The same, naming the release request when {@code withRequest} — the bytes {@code
+   * DurableBusConsumptionTest} drives through the real listener to prove the request and the commit
+   * reach the fact row.
+   */
+  static String canonicalPayload(
+      String repository,
+      String repositoryName,
+      String version,
+      String priority,
+      boolean withRequest) {
+    return CanonicalJson.payload(
+        release(
+            repository,
+            repositoryName,
+            version,
+            BACKING_BRANCH,
+            RELEASED_SHA,
+            priority,
+            withRequest ? RELEASE_REQUEST_ID : null));
+  }
+
   @Test
   public void theEventNameTheJoinMatchesIsTheOneThisEventRidesUnder() {
     // The signature is the simple class name — what ScmReleaseListener subscribes by, and what the
@@ -522,6 +544,30 @@ public class ScmReleaseContractTest {
           without.get(field),
           field + " moved with releaseRequestId, so the addition was not additive after all");
     }
+  }
+
+  /**
+   * <b>The two the fact row now keeps for the report baseline, by the listener's own constants.</b>
+   *
+   * <p>{@code ScmReleaseListener} reads {@code releaseRequestId} and {@code commitSha} and the join
+   * records both on {@code ci_scm_release}, where {@code CiReportBaselines} finds a version's gating
+   * QA run without going through a release run — which a repository with no deployment never has.
+   * The assertion resolves the listener's strings, not literals, against the transcription's bytes.
+   */
+  @Test
+  public void theRequestAndCommitTheFactRowKeepsAreInTheCanonicalPayload() throws Exception {
+    JsonNode payload =
+        MAPPER.readTree(canonicalPayload("qits-ci", "qits-ci", "2026.812.153438", null, true));
+
+    assertTrue(
+        payload.has(ScmReleaseListener.RELEASE_REQUEST_ID_FIELD),
+        "the canonical payload carries no " + ScmReleaseListener.RELEASE_REQUEST_ID_FIELD);
+    assertEquals(
+        RELEASE_REQUEST_ID, payload.get(ScmReleaseListener.RELEASE_REQUEST_ID_FIELD).asText());
+    assertTrue(
+        payload.has(ScmReleaseListener.COMMIT_SHA_FIELD),
+        "the canonical payload carries no " + ScmReleaseListener.COMMIT_SHA_FIELD);
+    assertEquals(RELEASED_SHA, payload.get(ScmReleaseListener.COMMIT_SHA_FIELD).asText());
   }
 
   @Test

@@ -367,8 +367,38 @@ public class ReleaseJoin {
       String eventId,
       Instant occurredAt,
       String priority) {
+    onScmRelease(repoId, repoName, version, eventId, occurredAt, priority, null, null);
+  }
+
+  /**
+   * The same, with the release request the release came out of and the commit its tag points at —
+   * both recorded on the fact row verbatim for {@code CiReportBaselines}, and both null when the
+   * event named none. Neither is part of the join key or of any announcement.
+   *
+   * @param releaseRequestId the release request this release came out of, or null
+   * @param commitSha what the release's tag points at, or null
+   */
+  public void onScmRelease(
+      String repoId,
+      String repoName,
+      String version,
+      String eventId,
+      Instant occurredAt,
+      String priority,
+      String releaseRequestId,
+      String commitSha) {
     QuarkusTransaction.requiringNew()
-        .run(() -> recordRelease(repoId, repoName, version, eventId, occurredAt, priority));
+        .run(
+            () ->
+                recordRelease(
+                    repoId,
+                    repoName,
+                    version,
+                    eventId,
+                    occurredAt,
+                    priority,
+                    releaseRequestId,
+                    commitSha));
     announceOwed(repoId, repoName, version);
     if (repoName != null && !repoName.isBlank() && !repoName.equals(repoId)) {
       announceOwed(repoName, repoId, version);
@@ -382,7 +412,9 @@ public class ReleaseJoin {
       String version,
       String eventId,
       Instant occurredAt,
-      String priority) {
+      String priority,
+      String releaseRequestId,
+      String commitSha) {
     if (releases.findRelease(repoId, version).isPresent()) {
       return;
     }
@@ -395,7 +427,14 @@ public class ReleaseJoin {
     release.occurredAt = occurredAt;
     release.seenAt = Instant.now();
     release.priority = priorityToRecord(repoId, version, priority);
+    release.releaseRequestId = withinColumn(releaseRequestId);
+    release.commitSha = withinColumn(commitSha);
     releases.persist(release);
+  }
+
+  /** What a {@code varchar(255)} column may hold: the value, or none when blank or wider. */
+  private static String withinColumn(String value) {
+    return value == null || value.isBlank() || value.length() > 255 ? null : value;
   }
 
   /**

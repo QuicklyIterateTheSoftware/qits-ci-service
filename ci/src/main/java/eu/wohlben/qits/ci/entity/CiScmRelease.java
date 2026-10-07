@@ -74,4 +74,23 @@ public class CiScmRelease extends PanacheEntityBase {
    */
   @Column(length = 32)
   public String priority;
+
+  /**
+   * The release request this release came out of, verbatim from {@code SCMRelease}.
+   *
+   * <p>What {@code CiReportBaselines} finds a version's gating QA run by. It used to reach the
+   * request only through the version's {@code RELEASE}-phase run, and a repository with no
+   * deployment has no such run — so every spa-frontend and library went without a baseline. Nullable,
+   * no backfill: a release published before the field existed, a replay, and every historical row
+   * carry nothing, and the lookup falls back to the release run for those.
+   */
+  @Column(name = "release_request_id")
+  public String releaseRequestId;
+
+  /**
+   * What the release's tag points at, verbatim from {@code SCMRelease} — the baseline's {@code
+   * tagSha} when {@link #releaseRequestId} is set. Nullable, no backfill, for the same reasons.
+   */
+  @Column(name = "commit_sha")
+  public String commitSha;
 }

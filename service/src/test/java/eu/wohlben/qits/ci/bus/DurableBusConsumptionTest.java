@@ -2,12 +2,14 @@ package eu.wohlben.qits.ci.bus;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.control.ReleaseJoin;
 import eu.wohlben.qits.ci.entity.CiReleaseAnnouncement;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
+import eu.wohlben.qits.ci.entity.CiScmRelease;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
 import eu.wohlben.qits.ci.persistence.CiReleaseAnnouncementRepository;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
@@ -292,6 +294,81 @@ public class DurableBusConsumptionTest {
         Optional.empty(),
         QuarkusTransaction.requiringNew()
             .call(() -> releases.priorityOf(repository, "2026.906.130000")));
+  }
+
+  /**
+   * <b>The release request and the tag's commit, from the real canonical bytes onto the fact row.</b>
+   * What {@code CiReportBaselines} reads to find a baseline for a repository with no release run.
+   */
+  @Test
+  public void anScmReleaseNamingItsRequestRecordsTheRequestAndTheCommit() {
+    String repository = "requested-repo-" + anId().substring(0, 8);
+
+    assertEquals(
+        DurableFunnel.Result.HANDLED,
+        funnel.offer(
+            scmReleases,
+            new EventFrame(
+                anId(),
+                ReleaseJoin.RELEASE_EVENT_NAME,
+                T0,
+                ScmReleaseContractTest.canonicalPayload(
+                    repository, repository, "2026.906.140000", null, true),
+                null,
+                null,
+                null)));
+
+    CiScmRelease row =
+        QuarkusTransaction.requiringNew()
+            .call(() -> releases.findRelease(repository, "2026.906.140000").orElseThrow());
+    assertEquals(ScmReleaseContractTest.RELEASE_REQUEST_ID, row.releaseRequestId);
+    assertEquals(ScmReleaseContractTest.RELEASED_SHA, row.commitSha);
+  }
+
+  /**
+   * And a release from before the field: no {@code releaseRequestId} key, recorded with none and
+   * never poison. (The transcription's default commit rides along; a payload without one is the
+   * {@code commitSha} compatibility arm of {@code ScmReleaseContractTest}.)
+   */
+  @Test
+  public void anScmReleaseNamingNoRequestIsRecordedWithNone() {
+    String repository = "unrequested-repo-" + anId().substring(0, 8);
+
+    assertEquals(
+        DurableFunnel.Result.HANDLED,
+        funnel.offer(scmReleases, releaseFrame(anId(), repository, "2026.906.150000")));
+
+    CiScmRelease row =
+        QuarkusTransaction.requiringNew()
+            .call(() -> releases.findRelease(repository, "2026.906.150000").orElseThrow());
+    assertNull(row.releaseRequestId, "the release named no request, so the row holds none");
+  }
+
+  /**
+   * A release naming neither the request nor the commit is an ordinary release, not poison.
+   */
+  @Test
+  public void anScmReleaseNamingNeitherRequestNorCommitIsStillRecorded() {
+    String repository = "bare-repo-" + anId().substring(0, 8);
+
+    assertEquals(
+        DurableFunnel.Result.HANDLED,
+        funnel.offer(
+            scmReleases,
+            new EventFrame(
+                anId(),
+                ReleaseJoin.RELEASE_EVENT_NAME,
+                T0,
+                "{\"repository\":\"" + repository + "\",\"version\":\"2026.906.160000\"}",
+                null,
+                null,
+                null)));
+
+    CiScmRelease row =
+        QuarkusTransaction.requiringNew()
+            .call(() -> releases.findRelease(repository, "2026.906.160000").orElseThrow());
+    assertNull(row.releaseRequestId);
+    assertNull(row.commitSha);
   }
 
   /**
