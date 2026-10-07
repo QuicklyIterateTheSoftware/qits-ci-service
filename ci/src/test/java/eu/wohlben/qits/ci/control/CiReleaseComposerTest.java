@@ -15,7 +15,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestFactory;
 
 /**
  * The composer, against <b>golden documents</b>.
@@ -918,6 +920,67 @@ public class CiReleaseComposerTest {
     assertEquals(1, occurrences(document, "publish exists sbom"), document);
   }
 
+  /**
+   * qits-754: the QA document of every packaged archetype that has a {@code release-request:} slot
+   * outside a container build, composed from the recipe exactly as it ships. The fixtures above
+   * prove the composer; these prove the recipes — so a change to what a QA step runs (the JaCoCo
+   * agent, the vitest reporters and the coverage provider) is a diff of the composed text a person
+   * reads line by line, the same as a change to the prelude. Each declaration is the one the
+   * recipe's own header names.
+   */
+  @TestFactory
+  public List<DynamicTest> thePackagedArchetypesComposeTheirQaDocuments() {
+    Map<String, String> declarations =
+        Map.of(
+            "java-service",
+            """
+            archetype: java-service
+            artifacts:
+              - { type: docker, name: qits/qits-ci, sbom: .sbom/sbom.json }
+            userflows: qits-ci
+            """,
+            "maven-library",
+            """
+            archetype: maven-library
+            artifacts:
+              - { type: maven, name: "eu.wohlben.qits:qits-eventstream", sbom: target/sbom.json }
+            """,
+            "cli",
+            "archetype: cli\n",
+            "spa-frontend",
+            "archetype: spa-frontend\n",
+            "app",
+            """
+            archetype: app
+            artifacts:
+              - { type: docker, name: qits/qits-landing, sbom: .sbom/sbom.json }
+            """,
+            "npm-library",
+            """
+            archetype: npm-library
+            artifacts:
+              - { type: npm, name: "@qits/ui-components", path: dist/qits-spa-ui-components, sbom: sbom.json }
+            """);
+    return declarations.entrySet().stream()
+        .sorted(Map.Entry.comparingByKey())
+        .map(
+            entry ->
+                DynamicTest.dynamicTest(
+                    entry.getKey(),
+                    () ->
+                        golden(
+                            "packaged-" + entry.getKey() + "-release-request.yml",
+                            CiReleaseComposer.compose(
+                                    CiRepoRef.of(
+                                        "77777777-8888-9999-aaaa-bbbbbbbbbbbb",
+                                        "qits",
+                                        "qits-" + entry.getKey() + "-example"),
+                                    slots(entry.getValue()),
+                                    packaged(entry.getKey()))
+                                .releaseRequestDocument())))
+        .toList();
+  }
+
   // --- the publishing postlude (qits-620) ---------------------------------------------------------
 
   /** A packaged archetype recipe, exactly as qits-ci ships it. */
@@ -1545,6 +1608,214 @@ public class CiReleaseComposerTest {
       out.append(line.length() >= 6 ? line.substring(6) : line).append('\n');
     }
     return out.toString();
+  }
+
+  // --- the QA report hook (qits-754) ---------------------------------------------------------------
+
+  /**
+   * The QA report hook, EXECUTED: a whole composed {@code release-request:} step under {@code sh},
+   * with a stub {@code curl} that "downloads" a stub {@code qits} recording its argv and the run
+   * coordinates it inherited. The goldens prove the bytes; this proves the verdict — the step exits
+   * with the declared script's code whatever the hook does, and the hook is told that code.
+   *
+   * <p>The seam is the test's own copy of the text: every {@code /tmp/} path in it (the slot script,
+   * the lockfile check, the hook, {@code /tmp/qits-cli}) is moved under a scratch directory, the way
+   * {@code QitsCliPinIT} moves the download base. Production text is untouched, and no network is
+   * dialled — the stub curl answers the fetch.
+   */
+  @Test
+  public void theQaReportHookRunsWhateverTheExitCodeAndNeverChangesIt() throws Exception {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO,
+            slots(
+                """
+                release-request:
+                  - image: alpine:3
+                    script: |
+                      echo declared-script-ran
+                      exit "$QITS_TEST_EXIT"
+                """),
+            null);
+    assertNull(composed.releaseDocument());
+    Path work = Files.createTempDirectory("qa-report-hook");
+    try {
+      String script = stepScript(composed.releaseRequestDocument()).replace("/tmp/", work + "/");
+      Path scriptFile = work.resolve("step.sh");
+      Files.writeString(scriptFile, script);
+      Path checkout = Files.createDirectories(work.resolve("checkout"));
+      Files.writeString(
+          work.resolve("stub-qits"),
+          "#!/bin/sh\n"
+              + "printf '%s\\n' \"$*\" > '" + work.resolve("qits-argv.txt") + "'\n"
+              + "printf '%s %s %s\\n' \"$QITS_CI_RUN_ID\" \"$QITS_CI_STEP_INDEX\""
+              + " \"$QITS_PUBLISH_TOKEN_COMMAND\" > '" + work.resolve("qits-env.txt") + "'\n"
+              + "exit \"${QITS_STUB_EXIT:-0}\"\n");
+      Path bin = Files.createDirectories(work.resolve("bin"));
+      Path curl = bin.resolve("curl");
+      Files.writeString(
+          curl,
+          "#!/bin/sh\n"
+              + "printf '%s\\n' \"$*\" >> '" + work.resolve("curl-argv.txt") + "'\n"
+              + "prev=\n"
+              + "for a in \"$@\"; do\n"
+              + "  if [ \"$prev\" = \"-o\" ]; then cp '" + work.resolve("stub-qits") + "' \"$a\"; fi\n"
+              + "  prev=\"$a\"\n"
+              + "done\n");
+      assertTrue(curl.toFile().setExecutable(true));
+      String withCurl = bin + ":" + System.getenv("PATH");
+
+      // The declared script's exit 3 is the step's exit 3, and the hook was told 3.
+      HookRun red = runQaStep(scriptFile, checkout, withCurl, Map.of("QITS_TEST_EXIT", "3"));
+      assertEquals(3, red.exit(), red.output());
+      assertTrue(red.output().contains("declared-script-ran"), red.output());
+      assertEquals("ci report submit --exit-code 3\n", read(work, "qits-argv.txt"), red.output());
+      // The run coordinates and the CLI's bearer command reach the hook's child by inheritance.
+      assertEquals("run-1 0 /tmp/qits-publish-token\n", read(work, "qits-env.txt"));
+      String fetched = read(work, "curl-argv.txt");
+      assertTrue(fetched.contains("--header Authorization: Bearer the-run-token"), fetched);
+      assertTrue(
+          fetched.contains(
+              "-o " + work + "/qits-cli/qits https://registry.qits.example.invalid/artifacts/daemons/"
+                  + "qits-platform-access-cli/2026.1006.1"),
+          fetched);
+      assertFalse(red.output().contains("reports were not submitted"), red.output());
+
+      // Green stays green, and is reported as 0.
+      HookRun green = runQaStep(scriptFile, checkout, withCurl, Map.of("QITS_TEST_EXIT", "0"));
+      assertEquals(0, green.exit(), green.output());
+      assertEquals("ci report submit --exit-code 0\n", read(work, "qits-argv.txt"));
+
+      // No token: no header, and still a fetch (the edge's answer is the CLI's problem, not ours).
+      Files.deleteIfExists(work.resolve("curl-argv.txt"));
+      Map<String, String> noToken = new java.util.HashMap<>(Map.of("QITS_TEST_EXIT", "0"));
+      noToken.put("QITS_TOKEN", null);
+      HookRun anonymous = runQaStep(scriptFile, checkout, withCurl, noToken);
+      assertEquals(0, anonymous.exit(), anonymous.output());
+      assertFalse(read(work, "curl-argv.txt").contains("Authorization"), read(work, "curl-argv.txt"));
+
+      // A hook that fails changes nothing: red stays 3, green stays 0, and it says so.
+      for (String code : List.of("3", "0")) {
+        HookRun refused =
+            runQaStep(
+                scriptFile, checkout, withCurl, Map.of("QITS_TEST_EXIT", code, "QITS_STUB_EXIT", "1"));
+        assertEquals(Integer.parseInt(code), refused.exit(), refused.output());
+        assertTrue(
+            refused.output().contains("reports were not submitted; the step's verdict is unchanged"),
+            refused.output());
+      }
+
+      // An image with neither curl nor wget: the fetch refuses, the verdict does not move.
+      Path bare = Files.createDirectories(work.resolve("bare-bin"));
+      for (String tool :
+          List.of("sh", "cat", "mkdir", "chmod", "find", "grep", "sed", "awk", "head", "wc", "tr")) {
+        Files.createSymbolicLink(bare.resolve(tool), which(tool));
+      }
+      for (String code : List.of("3", "0")) {
+        HookRun noFetcher =
+            runQaStep(scriptFile, checkout, bare.toString(), Map.of("QITS_TEST_EXIT", code));
+        assertEquals(Integer.parseInt(code), noFetcher.exit(), noFetcher.output());
+        assertTrue(noFetcher.output().contains("has neither curl nor wget"), noFetcher.output());
+        assertTrue(
+            noFetcher.output().contains("reports were not submitted"), noFetcher.output());
+        assertTrue(noFetcher.output().contains("declared-script-ran"), noFetcher.output());
+      }
+
+      // No CLI configured — empty, and unset outright: `set -u` holds, the hook skips and succeeds.
+      Files.deleteIfExists(work.resolve("curl-argv.txt"));
+      Files.deleteIfExists(work.resolve("qits-argv.txt"));
+      for (String pkg : java.util.Arrays.asList("", null)) {
+        Map<String, String> env = new java.util.HashMap<>(Map.of("QITS_TEST_EXIT", "3"));
+        env.put("QITS_ARTIFACTS_CLI_PACKAGE", pkg);
+        HookRun skipped = runQaStep(scriptFile, checkout, withCurl, env);
+        assertEquals(3, skipped.exit(), skipped.output());
+        assertTrue(
+            skipped.output().contains("reports skipped: no qits CLI configured"), skipped.output());
+        assertFalse(skipped.output().contains("not submitted"), skipped.output());
+        assertFalse(skipped.output().contains("unbound"), skipped.output());
+        assertFalse(skipped.output().contains("parameter not set"), skipped.output());
+      }
+      assertFalse(Files.exists(work.resolve("curl-argv.txt")), "nothing is fetched with no CLI");
+      assertFalse(Files.exists(work.resolve("qits-argv.txt")), "nothing is submitted with no CLI");
+    } finally {
+      try (var stream = Files.walk(work)) {
+        stream.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+      }
+    }
+  }
+
+  @Test
+  public void onlyQaStepsCarryTheReportHook() {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO, slots("archetype: java-service\n"), archetype("java-service", JAVA_SERVICE));
+    String qa = composed.releaseRequestDocument();
+    assertEquals(1, occurrences(qa, "sh /tmp/qits-report-hook.sh \"$qits_step_exit\" ||"), qa);
+    assertTrue(qa.trim().endsWith("exit \"$qits_step_exit\""), qa);
+    // The QA hook's fetch never touches the step's own positional parameters.
+    assertFalse(qa.contains("set --"), qa);
+    String release = composed.releaseDocument();
+    assertFalse(release.contains("qits-report-hook"), release);
+    assertFalse(release.contains("qits_step_exit"), release);
+    assertFalse(release.contains("set +e"), release);
+  }
+
+  private record HookRun(int exit, String output) {}
+
+  /** Runs a composed step script the way the daemon would, with the platform's step environment. */
+  private static HookRun runQaStep(
+      Path scriptFile, Path checkout, String path, Map<String, String> overrides) throws Exception {
+    ProcessBuilder pb =
+        new ProcessBuilder("/bin/sh", scriptFile.toString())
+            .directory(checkout.toFile())
+            .redirectErrorStream(true);
+    Map<String, String> env = pb.environment();
+    env.clear();
+    env.put("PATH", path);
+    env.put("QITS_DOMAIN", "example.invalid");
+    env.put("QITS_ARTIFACTS_CLI_PACKAGE", "qits-platform-access-cli");
+    env.put("QITS_ARTIFACTS_CLI_VERSION", "2026.1006.1");
+    env.put("QITS_TOKEN", "the-run-token");
+    env.put("QITS_CI_RUN_ID", "run-1");
+    env.put("QITS_CI_STEP_INDEX", "0");
+    env.put("QITS_PUBLISH_TOKEN_COMMAND", "/tmp/qits-publish-token");
+    overrides.forEach(
+        (key, value) -> {
+          if (value == null) {
+            env.remove(key);
+          } else {
+            env.put(key, value);
+          }
+        });
+    Process process = pb.start();
+    String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    return new HookRun(process.waitFor(), output);
+  }
+
+  /** A composed document's one step script, as a plain shell script. */
+  private static String stepScript(String document) {
+    int begin = document.indexOf("    script: |\n");
+    assertTrue(begin >= 0, document);
+    assertEquals(-1, document.indexOf("    script: |\n", begin + 1), "one step expected");
+    StringBuilder out = new StringBuilder();
+    for (String line : document.substring(begin + "    script: |\n".length()).split("\n", -1)) {
+      out.append(line.length() >= 6 ? line.substring(6) : line).append('\n');
+    }
+    return out.toString();
+  }
+
+  private static String read(Path work, String name) throws IOException {
+    return Files.readString(work.resolve(name));
+  }
+
+  private static Path which(String tool) {
+    for (String dir : System.getenv("PATH").split(":")) {
+      Path candidate = Path.of(dir, tool);
+      if (Files.isExecutable(candidate)) {
+        return candidate;
+      }
+    }
+    throw new IllegalStateException(tool + " is not on PATH");
   }
 
   // --- goldens -------------------------------------------------------------------------------------

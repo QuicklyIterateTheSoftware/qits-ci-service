@@ -1,0 +1,255 @@
+# Composed by qits-ci from .config/qits/release.yml and .config/qits/release-archetypes/npm-library.yml.
+# Generated: this text is never committed. Edit the slot file or the archetype recipe.
+event: ReleaseRequestChanged
+when:
+  - repoName: { exact: 'qits-npm-library-example' }
+checkout:
+  branch: backingBranch
+  sha: mergedSha
+steps:
+  - image: 'qits/build-images/node-base:latest'
+    timeout-seconds: 1800
+    script: |
+      set -eu
+      # --- platform prelude ---------------------------------------------------------
+      : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no platform address}"
+      cat > /tmp/qits-lockfile-origins.sh <<'QITS_LOCKFILE_EOF'
+      # qits-ci: every npm lockfile here resolves from the platform's two registries (qits-731).
+      set -eu
+      : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so no lockfile origin can be checked}"
+      registry="https://registry.qits.$QITS_DOMAIN/"
+      mirror="https://mirror.qits.$QITS_DOMAIN/"
+      find . -name package-lock.json ! -path '*/node_modules/*' | {
+        refused=0
+        while IFS= read -r lock; do
+          foreign=$(grep -o '"resolved": *"[^"]*"' "$lock" \
+            | sed -e 's/^"resolved": *"//' -e 's/"$//' \
+            | awk -v r="$registry" -v m="$mirror" \
+              'index($0, "://") && index($0, r) != 1 && index($0, m) != 1')
+          if [ -n "$foreign" ]; then
+            count=$(printf '%s\n' "$foreign" | wc -l | tr -d ' ')
+            echo "qits-ci: $lock resolves $count package(s) outside $registry and $mirror:" >&2
+            printf '%s\n' "$foreign" | head -n 5 | sed 's/^/  /' >&2
+            refused=1
+          fi
+        done
+        if [ "$refused" -ne 0 ]; then
+          echo "qits-ci: no lockfile is rewritten on this platform. Regenerate it against the" \
+            "public registries (npm_config_registry=${mirror}npm/npmjs/," \
+            "npm_config_@qits:registry=${registry}artifacts/npm/npm/) and commit it." >&2
+          exit 1
+        fi
+      }
+      QITS_LOCKFILE_EOF
+      sh /tmp/qits-lockfile-origins.sh
+      # --- the declared step, run as data -------------------------------------------
+      cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
+      # THE RUN'S OWN BEARER, MINTED AT THE CALL SITE. qits-ci hands a step both a
+      # $QITS_PUBLISH_TOKEN minted when the container started and a $QITS_PUBLISH_TOKEN_COMMAND
+      # that prints a FRESH raw token on every call. This uses the command: the mint's TTL and a
+      # step's timeout are the same number (3600s) and a publish is always the last thing a step
+      # does, so the variable can be expired where a re-mint cannot.
+      #
+      # IT DEGRADES TO ANONYMOUS, NEVER TO A BROKEN HEADER. This file is read at main and runs
+      # against a tag on whatever qits-ci the estate is running, so the command may be absent and a
+      # mint may fail. qits-artifacts still accepts an anonymous publish today, so NO `_authToken`
+      # LINE AT ALL is the call that worked yesterday; an empty one is npm sending `Bearer ` with
+      # nothing after it, which is a 401 that would cost a release before the store's refusal has
+      # landed. Neither case may abort the step, which is what the two `return 0`s are.
+      mint_publish_token() {
+        [ -n "${QITS_PUBLISH_TOKEN_COMMAND:-}" ] || return 0
+        command -v "$QITS_PUBLISH_TOKEN_COMMAND" >/dev/null 2>&1 || return 0
+        _minted=$("$QITS_PUBLISH_TOKEN_COMMAND" 2>/dev/null) || return 0
+        printf '%s' "$_minted"
+      }
+
+      # THE TWO NPM ROOTS ARE CODE (qits-731): the hosted @qits scope and the npmjs cache are
+      # constant paths under registry.qits.<domain> and mirror.qits.<domain>, and the platform's
+      # public domain is the one input, demanded by the composed prelude and again by the `:?`
+      # — never a registry-less .npmrc, which would resolve the @qits scope against npmjs.org,
+      # where these packages do not exist and never will.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+      npm_hosted_url="https://registry.qits.$qits_domain/artifacts/npm/npm/"
+      npm_proxy_url="https://mirror.qits.$qits_domain/npm/npmjs/"
+      #
+      # `_authToken` IS THE HOOK because it is the only one npm offers: npm sends it as
+      # `Authorization: Bearer <value>`, which is what a publish into qits-artifacts is identified
+      # by. The literal `qits-ci` that used to sit here, and the comment calling the credential
+      # ceremony, were true only while the store accepted anyone.
+      #
+      # THE KEY HAS TO MATCH THE REGISTRY URL EXACTLY, TRAILING SLASH INCLUDED. npm looks the token
+      # up under the scheme-less form of the registry it is about to dial and does NOT normalise
+      # the two ends together — measured on npm 10.9.8 against a real `npm publish`: with
+      # `…/npm/hosted` the publish died on ENEEDAUTH with the line sitting right there in the file,
+      # and with `…/npm/hosted/` it sent `Authorization: Bearer …`. `$npm_hosted_url` ends in a
+      # slash, which is the only reason the `#*:` form below lands on the right key; dropping that
+      # slash turns this into a silent anonymous publish. `#*:` and not
+      # `#http:`: the latter leaves `https:` on an https address, and npm then never finds the key.
+      #
+      # THE MIRROR GETS THE TOKEN TOO. qits-ci writes a token for both hosts into ~/.npmrc before
+      # the step runs, and this function overwrites that file. Since the mirror stopped accepting
+      # anonymous reads, dropping its line made every install die on a 401 (2026-09-29).
+      #
+      # A FUNCTION THAT REWRITES THE WHOLE FILE, not a preamble that appends: the release step
+      # calls it a SECOND time immediately before its publish, because a build sits between the two
+      # and would otherwise hand npm a token older than its own TTL. Rewriting means the second
+      # call replaces the stale line instead of stacking a second one. 077 because the last line is
+      # a bearer.
+      #
+      # This preamble is byte-identical to the release step's. Keep them matched.
+      write_npmrc() {
+        _npmrc_token=$(mint_publish_token)
+        ( umask 077
+          printf 'registry=%s\n@qits:registry=%s\n' \
+            "$npm_proxy_url" "$npm_hosted_url" > ~/.npmrc
+          if [ -n "$_npmrc_token" ]; then
+            printf '%s:_authToken=%s\n%s:_authToken=%s\n' \
+              "${npm_hosted_url#*:}" "$_npmrc_token" \
+              "${npm_proxy_url#*:}" "$_npmrc_token" >> ~/.npmrc
+          fi )
+      }
+
+      # A COPY THAT RACES THE FILESYSTEM IS RETRIED, AND NOTHING ELSE IS. pnpm writes a package into
+      # its store and copies it into node_modules seconds later; on the EDGE runner `qits-ci`, whose
+      # docker data root is OpenZFS with block cloning, that copy reaches `zfs_clone_range`, which
+      # refuses blocks still dirty in the open txg and answers EAGAIN — `ERR_PNPM_EAGAIN … copyfile`
+      # (qits-618). A txg syncs within `zfs_txg_timeout` (5s), so 10s between attempts guarantees the
+      # previous attempt's files are clean by the next. Only that one code is retried: a network
+      # failure, a stale lockfile or a 401 fails the same way every time, and retrying it would only
+      # bury the cause under three copies of the log. The real fix is the host's
+      # `zfs_bclone_wait_dirty=1`; this is the belt, for a host that does not have it.
+      pnpm_install() {
+        _attempt=1
+        while :; do
+          _status=0
+          pnpm install --frozen-lockfile > /tmp/pnpm-install.log 2>&1 || _status=$?
+          cat /tmp/pnpm-install.log
+          [ "$_status" = 0 ] && return 0
+          if [ "$_attempt" -ge 3 ] || ! grep -q ERR_PNPM_EAGAIN /tmp/pnpm-install.log; then
+            return "$_status"
+          fi
+          echo "pnpm install hit ERR_PNPM_EAGAIN (attempt $_attempt of 3, ZFS block cloning, qits-618) — retrying in 10s" >&2
+          sleep 10
+          _attempt=$((_attempt + 1))
+        done
+      }
+      write_npmrc
+
+      pnpm_install
+      pnpm lint
+
+      # THE COVERAGE PROVIDER IS THE PLATFORM'S, AND THE REPOSITORY DECLARES NOTHING (qits-754).
+      # vitest measures coverage through a provider package no repository on the estate depends on,
+      # and the rule is that none is made to: no devDependency is added for the platform's sake. So
+      # `@vitest/coverage-v8` is supplied here, at EXACTLY the vitest version the lockfile installed
+      # — a provider of another version refuses to load.
+      #
+      # NOT `npm install --no-save` IN THE TREE. That re-resolves the whole dependency tree against
+      # the registry and was measured moving @angular/build 21.2.19 → 21.2.25 under a committed
+      # lockfile: the suite would then run against packages nobody committed. Instead the provider is
+      # installed alone into a scratch directory outside the checkout and copied in as a
+      # self-contained tree — its own dependencies nested under it, so nothing the lockfile placed is
+      # touched or shadowed — and neither package.json nor the lockfile is ever opened. The
+      # arguments are the registry configuration the install above ran under, prefixed to `npm`.
+      #
+      # A FAILURE COSTS THE COVERAGE AND NEVER THE STEP: every command is checked by hand (a
+      # function called as a condition runs without `-e`), one line says what happened, and the
+      # tests run exactly as they would have without coverage. Under pnpm's isolated node_modules
+      # the same copy is resolved the same way, measured; npm does the scratch install there too.
+      install_coverage_provider() {
+        _vitest=$(node -p "require('./node_modules/vitest/package.json').version" 2>/dev/null) \
+          || return 2
+        [ -n "$_vitest" ] || return 2
+        [ ! -f node_modules/@vitest/coverage-v8/package.json ] || return 0
+        _scratch=$(mktemp -d) || return 1
+        _status=0
+        (
+          cd "$_scratch" || exit 1
+          npm init -y > /dev/null 2>&1 || exit 1
+          "$@" npm install --no-save --no-package-lock --legacy-peer-deps --no-audit --no-fund \
+            "@vitest/coverage-v8@$_vitest" > /tmp/qits-coverage-provider.log 2>&1 || exit 1
+        ) && (
+          provider=node_modules/@vitest/coverage-v8
+          mkdir -p "$provider/node_modules/@vitest" || exit 1
+          cp -a "$_scratch/node_modules/@vitest/coverage-v8/." "$provider/" || exit 1
+          for dep in "$_scratch"/node_modules/*; do
+            [ "${dep##*/}" = @vitest ] || cp -a "$dep" "$provider/node_modules/" || exit 1
+          done
+          for dep in "$_scratch"/node_modules/@vitest/*; do
+            [ "${dep##*/}" = coverage-v8 ] || cp -a "$dep" "$provider/node_modules/@vitest/" || exit 1
+          done
+        ) || _status=1
+        rm -rf "$_scratch"
+        return "$_status"
+      }
+
+      # No arguments: write_npmrc above already put the registries and the bearer in ~/.npmrc, and
+      # the scratch directory has no project .npmrc to outrank it. After the install, as in
+      # spa-frontend.yml, so the committed lockfile is what pnpm installed.
+      coverage_flags=""
+      coverage_status=0
+      install_coverage_provider || coverage_status=$?
+      case "$coverage_status" in
+        0) coverage_flags="--coverage --coverage-reporters=json" ;;
+        2) echo "coverage: no vitest in node_modules, so there is nothing to measure" ;;
+        *) echo "coverage: could not supply @vitest/coverage-v8 for this vitest; the tests run without coverage" ;;
+      esac
+
+      # THE REPORTS (qits-754) — spa-frontend.yml's flags, read the rationale there. Passed with NO
+      # `--`: pnpm forwards a script's arguments itself, and a `--` of its own reaches the builder
+      # as a second one, which yargs refuses ("Option '--' has been specified multiple times").
+      # Both repositories' `test` ends in `ng test <project>`, which is where the flags land —
+      # qits-integrations-angular-jslib runs its eslint and screenshot checks before it.
+      mkdir -p .qits-reports
+      pnpm test --reporters=junit --reporters=default \
+        --output-file=.qits-reports/vitest-unit.xml $coverage_flags
+
+      pnpm build
+      # The workbench ships nothing FROM HERE — storybook-static/ dies with the container. It runs
+      # so the workbench cannot rot unnoticed: a story that stops compiling, a broken .storybook
+      # config or a compodoc pass that fails to produce the property tables all fail here instead of
+      # the next time somebody runs `pnpm storybook`. Like the build it is Vite compiling, not a
+      # browser rendering, so the browserless image is enough.
+      if node -e "process.exit((require('./package.json').scripts||{})['build-storybook']?0:1)"; then
+        pnpm build-storybook
+      fi
+      QITS_SLOT_EOF
+      set +e
+      if command -v bash > /dev/null 2>&1; then
+        bash -eu /tmp/qits-slot.sh
+      else
+        sh -eu /tmp/qits-slot.sh
+      fi
+      qits_step_exit=$?
+      set -e
+      # --- platform report hook: always runs, never changes the step's verdict ---
+      cat > /tmp/qits-report-hook.sh <<'QITS_REPORT_HOOK'
+      # qits-ci report hook (qits-754). $1 is the declared script's exit code.
+      set -u
+      if [ -z "${QITS_ARTIFACTS_CLI_PACKAGE:-}" ]; then
+        echo "qits-ci: reports skipped: no qits CLI configured" >&2
+        exit 0
+      fi
+      if [ -z "${QITS_ARTIFACTS_CLI_VERSION:-}" ]; then
+        echo "qits-ci: the qits CLI package is configured but no version was injected; the qits-ci that launched this step predates the CLI pin" >&2
+        exit 1
+      fi
+      mkdir -p /tmp/qits-cli || { echo "qits-ci: could not create /tmp/qits-cli" >&2; exit 1; }
+      qits_cli_bearer=
+      if [ -n "${QITS_TOKEN:-}" ]; then
+        qits_cli_bearer="Authorization: Bearer $QITS_TOKEN"
+      fi
+      if command -v curl > /dev/null 2>&1; then
+        curl -fsSL --retry 2 --retry-delay 2 ${qits_cli_bearer:+--header} ${qits_cli_bearer:+"$qits_cli_bearer"} -o /tmp/qits-cli/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION" || { echo "qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2; exit 1; }
+      elif command -v wget > /dev/null 2>&1; then
+        wget -q ${qits_cli_bearer:+--header} ${qits_cli_bearer:+"$qits_cli_bearer"} -O /tmp/qits-cli/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION" || { echo "qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2; exit 1; }
+      else
+        echo 'qits-ci: the image for this step (qits/build-images/node-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image to get its reports submitted' >&2
+        exit 1
+      fi
+      chmod +x /tmp/qits-cli/qits || { echo "qits-ci: could not make /tmp/qits-cli/qits executable" >&2; exit 1; }
+      echo "qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+      /tmp/qits-cli/qits ci report submit --exit-code "$1"
+      QITS_REPORT_HOOK
+      sh /tmp/qits-report-hook.sh "$qits_step_exit" || echo "qits-ci: reports were not submitted; the step's verdict is unchanged" >&2
+      exit "$qits_step_exit"

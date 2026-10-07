@@ -17,6 +17,12 @@ import eu.wohlben.qits.ci.control.FakeCiStepRunner;
 import eu.wohlben.qits.ci.control.SuiteRunner;
 import eu.wohlben.qits.ci.githost.FakeGitHostRepoListing;
 import eu.wohlben.qits.ci.githost.StubGitHost;
+import eu.wohlben.qits.ci.entity.CiRun;
+import eu.wohlben.qits.ci.entity.CiRunStatus;
+import eu.wohlben.qits.ci.entity.CiTriggerType;
+import eu.wohlben.qits.ci.persistence.CiRunRepository;
+import io.quarkus.narayana.jta.QuarkusTransaction;
+import java.time.Instant;
 import io.quarkus.test.common.TestResourceScope;
 import io.quarkus.test.common.WithTestResource;
 import io.quarkus.test.junit.QuarkusTest;
@@ -101,6 +107,9 @@ public class CiPipelineBoundaryTest {
   @Inject SuiteRunner suiteRunner;
 
   @Inject FakeGitHostRepoListing gitHostListing;
+
+  /** For the one case that seeds a run row directly rather than through a trigger. */
+  @Inject CiRunRepository runRows;
 
   /** The bus end of the trigger engine, for the one case that is about what a push does NOT do. */
   @Inject CiEventTriggerListener triggers;
@@ -598,6 +607,66 @@ public class CiPipelineBoundaryTest {
         .body("$", org.hamcrest.Matchers.hasKey("runs"))
         .body("id", org.hamcrest.Matchers.nullValue())
         .body("commitSha", org.hamcrest.Matchers.nullValue());
+  }
+
+  @Test
+  public void theReportControllerSharesRunsWithoutCapturingItsLiteralsOrItsLookup() {
+    // CiReportController is a second root resource on @Path("/runs") (qits-983), with every route
+    // under /{runId}/… templates. Two classes on one prefix is exactly where a matcher could pick the
+    // wrong class for a literal and answer a client 404, so all four of CiRunController's single-
+    // segment routes are asked again here with the new class present, beside one of its own.
+    for (String literal : List.of("active", "finished")) {
+      given()
+          .when()
+          .get("/ci/api/runs/" + literal)
+          .then()
+          .statusCode(200)
+          .body("$", org.hamcrest.Matchers.hasKey("runs"));
+    }
+    given()
+        .when()
+        .get("/ci/api/runs/queue")
+        .then()
+        .statusCode(200)
+        .body("$", org.hamcrest.Matchers.hasKey("queued"));
+    String runId = UUID.randomUUID().toString();
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              CiRun run = new CiRun();
+              run.id = runId;
+              run.repoId = "boundary-reports-" + runId;
+              run.branch = "main";
+              run.commitSha = "c".repeat(40);
+              run.status = CiRunStatus.SUCCESS;
+              run.triggerType = CiTriggerType.EVENT;
+              run.configPath = TRIGGER_PATH;
+              run.triggerEventId = UUID.randomUUID().toString();
+              run.createdAt = Instant.now();
+              run.finishedAt = run.createdAt;
+              runRows.persist(run);
+            });
+    try {
+      // The lookup is still CiRunController's single-run shape...
+      given()
+          .when()
+          .get("/ci/api/runs/" + runId)
+          .then()
+          .statusCode(200)
+          .body("id", org.hamcrest.Matchers.equalTo(runId))
+          .body("$", org.hamcrest.Matchers.hasKey("steps"));
+      // ...and the report listing beneath it is the new class's envelope.
+      given()
+          .when()
+          .get("/ci/api/runs/" + runId + "/reports")
+          .then()
+          .statusCode(200)
+          .body("runId", org.hamcrest.Matchers.equalTo(runId))
+          .body("reports.size()", org.hamcrest.Matchers.equalTo(0));
+    } finally {
+      QuarkusTransaction.requiringNew()
+          .run(() -> runRows.deleteById(runId));
+    }
   }
 
   @Test

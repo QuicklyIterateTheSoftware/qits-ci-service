@@ -15,7 +15,7 @@ import java.util.regex.Pattern;
  * states them as {@code gitRefs}, and qits-idp stamps them into every token of that client as
  * {@code git_refs} (contract C6 in the superproject's {@code principal-bound-git-refs-plan.md}).
  *
- * <p>Five answers:
+ * <p>Six answers:
  *
  * <ul>
  *   <li><b>{@code MaintenanceBump}</b>: the one branch the payload names in {@code branch}. For a
@@ -31,6 +31,12 @@ import java.util.regex.Pattern;
  *   <li><b>{@code ScreenshotBaselines}</b>: the payload's {@code branch} too, and only when it is
  *       under {@code maintenance/baselines/} — the one ref {@code screenshot-baselines.yml}
  *       pushes. Anything else gives an empty list.
+ *   <li><b>{@code ReleaseRequestAutomation}</b>: one generic arm for every automation kind. The
+ *       payload's {@code branch}, and only when it is a plain branch under {@code
+ *       maintenance/automations/<kind>/}, where {@code <kind>} is the payload's own {@code kind}
+ *       and matches {@code [a-z0-9-]+} — the one ref the composed automation step ({@code
+ *       CiAutomationComposer}) pushes. Another kind's prefix, any other branch, or a missing or
+ *       implausible kind gives an empty list. A new kind needs no change here.
  *   <li><b>{@code ReleaseRequestChanged} and {@code SCMRelease}</b>: an empty list, "may push
  *       nothing". Inventory of 2026-09-12: 46 and 31 recipes across the estate, and none of them
  *       pushes — they only fetch release tags.
@@ -57,6 +63,21 @@ public final class RunGitRefs {
 
   /** The only branches a {@link #SCREENSHOT_BASELINES} run may push. */
   static final String BASELINES_PREFIX = "maintenance/baselines/";
+
+  /** The event qits-maintenance sends to run one release-request automation kind. */
+  public static final String RELEASE_REQUEST_AUTOMATION = "ReleaseRequestAutomation";
+
+  /**
+   * Where a {@link #RELEASE_REQUEST_AUTOMATION} run's branches live: this, then the payload's kind,
+   * then a slash.
+   */
+  static final String AUTOMATIONS_PREFIX = "maintenance/automations/";
+
+  /** The payload field naming an automation's kind. */
+  static final String KIND_FIELD = "kind";
+
+  /** What a kind may spell: {@code CiAutomationComposer.KIND}'s rule. */
+  private static final Pattern KIND = Pattern.compile("[a-z0-9-]+");
 
   /** The payload field that names the branch the bump pipeline pushes. */
   static final String BRANCH_FIELD = "branch";
@@ -116,6 +137,16 @@ public final class RunGitRefs {
               ? List.of()
               : List.of(HEADS + branch));
     }
+    if (RELEASE_REQUEST_AUTOMATION.equals(eventName)) {
+      String branch = branchOf(payload, json);
+      String kind = textOf(payload, json, KIND_FIELD);
+      boolean scoped =
+          branch != null
+              && kind != null
+              && KIND.matcher(kind).matches()
+              && branch.startsWith(AUTOMATIONS_PREFIX + kind + "/");
+      return Optional.of(scoped ? List.of(HEADS + branch) : List.of());
+    }
     if (eventName != null && PUSH_NOTHING.contains(eventName)) {
       return Optional.of(List.of());
     }
@@ -128,6 +159,23 @@ public final class RunGitRefs {
    * empty scope again (a null mapper did, on 2026-09-13).
    */
   private static String branchOf(String payload, ObjectMapper json) {
+    String name = textOf(payload, json, BRANCH_FIELD);
+    if (name == null) {
+      return null;
+    }
+    boolean plain =
+        BRANCH.matcher(name).matches()
+            && !name.startsWith("-")
+            && !name.contains("..")
+            && HEADS.length() + name.length() <= MAX_REF_LENGTH;
+    return plain ? name : null;
+  }
+
+  /**
+   * A top-level text field of the payload, or null when the payload is missing, is not JSON, or
+   * carries no such text field. The same JSON-error-only rule as {@link #branchOf}.
+   */
+  private static String textOf(String payload, ObjectMapper json, String field) {
     if (payload == null || payload.isBlank()) {
       return null;
     }
@@ -137,16 +185,10 @@ public final class RunGitRefs {
     } catch (JsonProcessingException notJson) {
       return null;
     }
-    JsonNode branch = root == null ? null : root.get(BRANCH_FIELD);
-    if (branch == null || !branch.isTextual()) {
+    JsonNode value = root == null ? null : root.get(field);
+    if (value == null || !value.isTextual()) {
       return null;
     }
-    String name = branch.asText();
-    boolean plain =
-        BRANCH.matcher(name).matches()
-            && !name.startsWith("-")
-            && !name.contains("..")
-            && HEADS.length() + name.length() <= MAX_REF_LENGTH;
-    return plain ? name : null;
+    return value.asText();
   }
 }

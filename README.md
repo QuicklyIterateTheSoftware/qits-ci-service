@@ -1022,6 +1022,8 @@ push to any other ref.
 | trigger | `gitRefs` |
 |---|---|
 | `MaintenanceBump` | `["refs/heads/<payload.branch>"]`: `maintenance/<group>`, or the one source branch of a targeted bump. `[]` if the payload names no usable branch. |
+| `ScreenshotBaselines` | `["refs/heads/<payload.branch>"]` only under `maintenance/baselines/`; `[]` otherwise. |
+| `ReleaseRequestAutomation` | `["refs/heads/<payload.branch>"]` only when it is a plain branch under `maintenance/automations/<payload.kind>/` and the kind is `[a-z0-9-]+`; `[]` otherwise. One arm for every automation kind. |
 | `ReleaseRequestChanged`, `SCMRelease` | `[]`. No recipe on these events pushes. |
 | `SoftwareRelease` | `[]`. No recipe selects it. The hop files (`ci-event-upstream-*.yml`) that force-pushed `maintenance/<payload.repository>` were deleted on 2026-09-02/03; qits-platform-maintenance follows releases through a `MaintenanceBump` run now. |
 | any other event, or none | not stated. The token has no Git scope, as before. |
@@ -1890,6 +1892,22 @@ top of each candidate's own trigger files. Two today:
   tests on `node-browser-base`, runs the repository's `screenshots:prune` script if it has one
   (deletes the references no test uses), and commits only the reference images and `renderer.txt`
   to `maintenance/baselines/<request>`.
+
+**Release-request automations are composed from kind files.** Each
+`.config/qits/platform-pipelines/automations/<kind>.yml` declares only `image`, `timeout-seconds`,
+the regeneration `script` and, optionally, `qits-cli: true` (the pinned qits CLI on `PATH`, fetched
+as the release phase fetches it); any other key fails the boot naming the file.
+`CiAutomationComposer` turns it into a trigger on `event: ReleaseRequestAutomation` with `when:
+[{kind: {exact: <kind>}}]` — the kind is the file's name — and one step: a prelude that refuses an
+implausible payload (`kind`, `branch` under `maintenance/automations/<kind>/`, `baseRef` under
+`release/`, a 40/64-hex `foldSha`, an optional `workItem`, a non-empty `commitPaths` of relative,
+optionally `:(glob)`-prefixed paths), fetches `refs/heads/<baseRef>` and ends `superseded before
+start` unless it is still `foldSha`; the kind's script, run as data; and a postlude that stages only
+`commitPaths`, prints `unchanged` and exits 0 when the `--ignore-submodules=none` guard finds
+nothing, else commits `chore(<item>): update <kind words>` and pushes plainly to `branch`, ending
+`pushed <sha> to <branch>`. No `checkout:`: the run is recorded at the target's `main` head, so its
+verdict is never the fold's. One kind today, `screenshot-baselines` (`node-browser-base`, 1800 s);
+`screenshot-baselines.yml` beside it stays until qits-maintenance stops sending `ScreenshotBaselines`.
 
 Until 2026-10-02 they were `ci-platform-event-*.yml` files in the wrapper, read at its `main` head
 per event: a fix shipped only with a wrapper release, which needs a person's approval. No repository

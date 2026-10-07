@@ -72,6 +72,33 @@ public class PackagedPlatformPipelinesTest {
   }
 
   @Test
+  public void theAutomationSetIsExactlyTheKindFilesOnDisk() throws Exception {
+    Set<String> kinds = new TreeSet<>();
+    try (Stream<Path> files = Files.list(SOURCE.resolve("automations"))) {
+      files
+          .map(path -> path.getFileName().toString())
+          .filter(name -> name.endsWith(".yml"))
+          .forEach(name -> kinds.add(name.substring(0, name.length() - ".yml".length())));
+    }
+    assertEquals(kinds, new TreeSet<>(CiPlatformPipelines.AUTOMATIONS));
+  }
+
+  @Test
+  public void everyKindFileIsOnTheClasspathByteForByte() throws Exception {
+    for (String kind : CiPlatformPipelines.AUTOMATIONS) {
+      String resource =
+          CiPlatformPipelines.PACKAGED_DIR + CiPlatformPipelines.AUTOMATIONS_DIR + kind + ".yml";
+      try (InputStream in = getClass().getClassLoader().getResourceAsStream(resource)) {
+        assertNotNull(in, resource + " is not packaged: ci/pom.xml must include automations/");
+        assertEquals(
+            Files.readString(SOURCE.resolve("automations").resolve(kind + ".yml")),
+            new String(in.readAllBytes(), StandardCharsets.UTF_8),
+            resource + " differs from its file: Maven must not filter a kind file");
+      }
+    }
+  }
+
+  @Test
   public void everyPipelineParsesAndItsScriptsPassBashN(@TempDir Path dir) throws Exception {
     for (EventTriggerFile file : packaged()) {
       CiEventTrigger trigger = triggerParser.parse(file.path(), file.content());
@@ -86,10 +113,98 @@ public class PackagedPlatformPipelinesTest {
   @Test
   public void eachPipelineAnswersItsOwnEvent() {
     assertEquals(
-        List.of("MaintenanceBump", "ScreenshotBaselines"),
+        List.of("MaintenanceBump", "ScreenshotBaselines", "ReleaseRequestAutomation"),
         packaged().stream()
             .map(file -> triggerParser.parse(file.path(), file.content()).eventName())
             .toList());
+  }
+
+  // --- the composed screenshot-baselines automation ---------------------------------------------
+
+  private static final String SCREENSHOT_KIND_PATH =
+      ".config/qits/platform-pipelines/automations/screenshot-baselines.yml";
+
+  private static String composedScreenshotBaselines() {
+    return packaged().stream()
+        .filter(file -> file.path().equals(SCREENSHOT_KIND_PATH))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError(SCREENSHOT_KIND_PATH + " is not in the set"))
+        .content();
+  }
+
+  @Test
+  public void theScreenshotBaselinesKindIsComposedIntoOneAutomationStep(@TempDir Path dir)
+      throws Exception {
+    String composed = composedScreenshotBaselines();
+    CiEventTrigger trigger = triggerParser.parse(SCREENSHOT_KIND_PATH, composed);
+    assertEquals("ReleaseRequestAutomation", trigger.eventName());
+    assertEquals(null, trigger.checkout(), "recorded at main's head, never at the fold");
+    assertTrue(composed.contains("  - kind: { exact: 'screenshot-baselines' }\n"), composed);
+    assertEquals(1, trigger.pipeline().steps().size());
+    CiStepDecl step = trigger.pipeline().steps().get(0);
+    assertEquals("qits/build-images/node-browser-base:latest", step.image());
+    assertEquals(1800, step.timeoutSeconds());
+    // The kind's own script, between the prelude and the postlude, and valid shell on its own.
+    String script = step.script();
+    int body = script.indexOf("cat > " + CiAutomationComposer.KIND_SCRIPT);
+    int npmCi = script.indexOf("npm ci --no-audit --no-fund");
+    int prune = script.indexOf("npm run --if-present screenshots:prune");
+    int add = script.indexOf("git add -A --");
+    assertTrue(script.indexOf("superseded before start") < body, "the prelude comes first");
+    assertTrue(body < script.indexOf("no test:browser script"));
+    assertTrue(script.indexOf("no test:browser script") < npmCi);
+    assertTrue(npmCi < script.indexOf("UPDATE_SNAPSHOT=all npm run test:browser"));
+    assertTrue(script.indexOf("UPDATE_SNAPSHOT=all npm run test:browser") < prune);
+    assertTrue(prune < add, "the postlude stages after the kind's script");
+    String kindScript =
+        script.substring(
+            script.indexOf('\n', body) + 1,
+            script.indexOf("\n" + CiAutomationComposer.HEREDOC_DELIMITER + "\n"));
+    syntax(dir, kindScript, SCREENSHOT_KIND_PATH + " (the kind's script)");
+  }
+
+  @Test
+  public void theScreenshotBaselinesKindFileCarriesNoRefHandlingAndNoCommitCode() throws Exception {
+    String kindFile = Files.readString(SOURCE.resolve("automations/screenshot-baselines.yml"));
+    for (String forbidden :
+        List.of("git fetch", "git checkout", "git add", "git commit", "git push", "QITS_EVENT")) {
+      assertFalse(
+          kindFile.contains(forbidden),
+          "the composer owns refs and commits; the kind file says " + forbidden);
+    }
+  }
+
+  @Test
+  public void theComposedCommitGuardSeesAStagedGitlink() {
+    Matcher matcher = GUARD.matcher(composedScreenshotBaselines());
+    assertTrue(matcher.find(), "the composed automation has no commit guard");
+    assertTrue(matcher.group().contains("--ignore-submodules=none"), matcher.group());
+  }
+
+  @Test
+  public void theComposedAutomationNeverForcesAPush() {
+    String composed = composedScreenshotBaselines();
+    assertFalse(composed.contains("--force"), "a forced push in the composed automation");
+    assertFalse(composed.contains("push -f"), "a forced push in the composed automation");
+    assertFalse(composed.contains("+HEAD:"), "a forced refspec in the composed automation");
+    assertTrue(composed.contains("git push \"$QITS_CI_REPOSITORY_URL\" \"HEAD:refs/heads/$branch\""));
+  }
+
+  @Test
+  public void theComposedAutomationStagesOnlyThePayloadsPaths() {
+    String composed = composedScreenshotBaselines();
+    // Exactly one `git add`, and what it names is the positional list built from the validated
+    // payload paths — never a literal path, never the whole tree.
+    Matcher adds = Pattern.compile("git add[^\n]*").matcher(composed);
+    List<String> found = new java.util.ArrayList<>();
+    while (adds.find()) {
+      found.add(adds.group().strip());
+    }
+    assertEquals(List.of("git add -A -- \"$@\""), found);
+    assertTrue(composed.contains("jq -r '\n"), composed);
+    assertTrue(composed.contains("  .commitPaths\n"), composed);
+    assertTrue(composed.contains("done < " + CiAutomationComposer.COMMIT_PATHS));
+    assertFalse(composed.contains("__screenshots__"), "a path the payload did not name");
   }
 
   // --- the commit guard ------------------------------------------------------------------------

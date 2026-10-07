@@ -2,6 +2,8 @@ package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.control.CiConfigSource.EventTriggerFile;
 import eu.wohlben.qits.ci.entity.CiRun;
@@ -252,7 +254,63 @@ public class CiPlatformTriggerTest extends CiTestSupport {
     assertEquals(
         List.of(
             ".config/qits/platform-pipelines/maintenance-bump.yml",
-            ".config/qits/platform-pipelines/screenshot-baselines.yml"),
+            ".config/qits/platform-pipelines/screenshot-baselines.yml",
+            ".config/qits/platform-pipelines/automations/screenshot-baselines.yml"),
         platformPipelines.files().stream().map(EventTriggerFile::path).toList());
+  }
+
+  // --- the composed automations, from the packaged set ---
+
+  private static final String AUTOMATION_PATH =
+      ".config/qits/platform-pipelines/automations/screenshot-baselines.yml";
+
+  private static String automationPayload(String kind) {
+    return "{\"kind\":\""
+        + kind
+        + "\",\"repository\":\"qits-target\",\"requestId\":\"abc\",\"foldSha\":\""
+        + "c".repeat(40)
+        + "\",\"baseRef\":\"release/abc\",\"branch\":\"maintenance/automations/"
+        + kind
+        + "/abc\",\"commitPaths\":[\":(glob)**/__screenshots__/**\"]}";
+  }
+
+  private CiEventTriggerService.Arrival automation(String kind) {
+    return new CiEventTriggerService.Arrival(
+        UUID.randomUUID().toString(),
+        "ReleaseRequestAutomation",
+        Instant.parse("2026-10-06T09:00:00Z"),
+        automationPayload(kind));
+  }
+
+  @Test
+  public void aScreenshotBaselinesAutomationStartsExactlyOneRunAtMainsHead() throws Exception {
+    platformPipelines.override(null);
+    CiEventTriggerService.Arrival arrival = automation("screenshot-baselines");
+
+    deliver(arrival);
+
+    List<CiRun> recorded = runService.runsFor(targetId);
+    assertEquals(1, recorded.size(), "one kind file, one run");
+    CiRun run = recorded.get(0);
+    assertEquals(AUTOMATION_PATH, run.configPath);
+    assertEquals("ReleaseRequestAutomation", run.triggerEventName);
+    assertEquals(arrival.eventId(), run.triggerEventId);
+    // Recorded at the target's main head, never at the fold: its verdict is not the fold's.
+    assertEquals("main", run.branch);
+    assertEquals(TARGET_HEAD, run.commitSha);
+    assertNull(run.releaseRequestId, "an automation run is no part of a release's CI");
+    assertNull(run.phase);
+    String image = fakeRunner.executed().get(0).image();
+    assertTrue(image.contains("qits/build-images/node-browser-base"), image);
+    assertEquals(TARGET_HEAD, fakeRunner.executed().get(0).sha(), "the step clones main's head");
+  }
+
+  @Test
+  public void aKindWithNoKindFileStartsNothing() throws Exception {
+    platformPipelines.override(null);
+
+    deliver(automation("entity-diagram"));
+
+    assertEquals(List.of(), runService.runsFor(targetId), "no entity-diagram kind file yet");
   }
 }

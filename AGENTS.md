@@ -259,7 +259,10 @@ Three rules for that scope:
 - **The bump scope is the payload's `branch`**, because that is the one ref
   `.config/qits/platform-pipelines/maintenance-bump.yml` pushes. `ScreenshotBaselines` gets the
   payload's `branch` only under `maintenance/baselines/`, the one ref `screenshot-baselines.yml`
-  pushes. If a platform pipeline starts to push another ref, change `RunGitRefs` with it.
+  pushes. `ReleaseRequestAutomation` is one generic arm: the payload's `branch` only under
+  `maintenance/automations/<payload.kind>/`, the one ref a composed automation kind pushes, so a new
+  kind file needs no change there. If a platform pipeline starts to push another ref, change
+  `RunGitRefs` with it.
 - **A 400 on a scoped commission means qits-idp refused the list.** A qits-idp without the contract
   ignores `gitRefs` and answers 201, so a 400 never means "older idp". `IdpCommissioner` asks again
   at once with `gitRefs: []` and logs an ERROR naming the run and the idp's reason. It fails closed:
@@ -1957,6 +1960,14 @@ is about*.
   candidate answered with and the platform pass looks the target's up in it. So a platform pipeline
   costs no read at all — and a target the
   evaluation could not read has no head, which is exactly the case that must not become a run.
+- **Automation kind files are the second packaged source.** `platform-pipelines/automations/<kind>.yml`
+  declares `image`, `timeout-seconds`, `script` and optionally `qits-cli: true`, nothing else;
+  `CiAutomationComposer` composes it into a `ReleaseRequestAutomation` trigger selecting `kind:
+  <kind>` with the platform's prelude (payload refusals, fold fetch, `superseded before start`) and
+  postlude (stage only `commitPaths`, the `--ignore-submodules=none` guard, plain push). The set is
+  `CiPlatformPipelines.AUTOMATIONS`, held to the files by `PackagedPlatformPipelinesTest`; a refused
+  kind file fails the boot. `ci/pom.xml` and `quarkus.native.resources.includes` each name the
+  `automations/` subdirectory explicitly, because a `*` does not reach into it.
 - **Two files are two runs, deliberately.** A repository carrying both a local and a platform trigger
   for one event gets two rows: the dedupe is `(trigger_event_id, repo_id, config_path)` and the paths
   differ. That is also how a run says which kind it was — `config_path` already travels to the API,

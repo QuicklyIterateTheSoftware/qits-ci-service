@@ -405,6 +405,41 @@ public class CiSchemaTest {
     }
   }
 
+  @Test
+  public void theReportTableIsKeyedByRunStepAndKind() throws SQLException {
+    // V33 (qits-983). The payload and the highlights are text, the id a uuid, and the triple is
+    // unique — a second row for the same (run, step, kind) is refused, which is what makes "the"
+    // report of a kind on a step one row and the store's replace a replace.
+    assertEquals("uuid", columnType("ci_report", "id"));
+    assertEquals("text", columnType("ci_report", "payload"));
+    assertEquals("text", columnType("ci_report", "highlights"));
+    assertEquals("timestamp with time zone", columnType("ci_report", "submitted_at"));
+    assertTrue(constraints("ci_report", 'u').contains("uq_ci_report_run_step_kind"));
+    try (Connection connection = ci.getConnection()) {
+      connection.setAutoCommit(false);
+      String insert =
+          "insert into ci_report (id, run_id, step_index, kind, kind_version, payload, highlights,"
+              + " payload_bytes, submitted_at) values (cast(? as uuid), 'schema-probe', 0,"
+              + " 'coverage', 1, '{}', '[]', 2, current_timestamp)";
+      try (PreparedStatement row = connection.prepareStatement(insert)) {
+        row.setString(1, "00000000-0000-0000-0000-000000000983");
+        row.executeUpdate();
+      }
+      try (PreparedStatement again = connection.prepareStatement(insert)) {
+        // A different id, so it is the triple and not the primary key that refuses it.
+        again.setString(1, "00000000-0000-0000-0000-000000000984");
+        SQLException refused = null;
+        try {
+          again.executeUpdate();
+        } catch (SQLException e) {
+          refused = e;
+        }
+        assertTrue(refused != null, "a second (run, step, kind) row must be refused");
+      }
+      connection.rollback();
+    }
+  }
+
   private List<String> constraints(String table, char type) throws SQLException {
     List<String> names = new ArrayList<>();
     try (Connection connection = ci.getConnection();
