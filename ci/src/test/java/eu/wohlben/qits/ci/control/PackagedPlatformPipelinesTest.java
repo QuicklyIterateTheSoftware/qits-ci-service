@@ -241,7 +241,7 @@ public class PackagedPlatformPipelinesTest {
     int fetched = script.indexOf(fetch.toString());
     int body = script.indexOf("cat > " + CiAutomationComposer.KIND_SCRIPT);
     int noPom = script.indexOf("no pom.xml: only JPA/Hibernate entity diagrams are generated today");
-    int maven = script.indexOf("compile dependency:build-classpath");
+    int maven = script.indexOf("test-compile dependency:build-classpath");
     int diagram = script.indexOf("qits database diagram --root . --out docs/database");
     int add = script.indexOf("git add -A --");
     assertTrue(fetched > 0, "the shared hard CLI fetch is composed in:\n" + script);
@@ -255,8 +255,8 @@ public class PackagedPlatformPipelinesTest {
             "export QITS_MAVEN_REPOSITORY_URL=\"https://registry.qits.$qits_domain/artifacts/maven/maven\"",
             "export QITS_MAVEN_CENTRAL_URL=\"https://mirror.qits.$qits_domain/mirror/maven/central\"",
             "-Dmdep.outputFile=target/qits-classpath.txt",
-            "-Dmdep.includeScope=runtime",
-            "-DskipTests -Dquarkus.quinoa=false")) {
+            "-DincludeScope=runtime",
+            "-Dmaven.test.skip=true -Dquarkus.quinoa=false")) {
       assertTrue(script.contains(line), line);
     }
     String kindScript =

@@ -28,8 +28,11 @@
 #
 # What runs is only a build and one CLI call: the mapping is reconstructed from the class files
 # by `qits database diagram` (JPA/Hibernate, Mermaid erDiagram, one file per persistence unit).
-# No tests, no Quarkus augmentation and no SPA: `compile` holds the plain annotated classes, and
-# `dependency:build-classpath` lists the jars library entities arrive in.
+# No tests run, no Quarkus augmentation and no SPA: `test-compile` holds the plain annotated
+# classes (reached with `-Dmaven.test.skip=true`, which compiles no test either - `compile` alone
+# cannot resolve a sibling module's test-jar in the reactor, which is why this phase is one step
+# further than the classes alone need), and `dependency:build-classpath` lists the jars library
+# entities arrive in.
 image: qits/build-images/maven-base:latest
 timeout-seconds: 1800
 qits-cli: true
@@ -55,12 +58,17 @@ script: |
 
   # The classes and the runtime classpath the generator reads. Quinoa off: the SPA is no input,
   # and the clone does not recurse, so a webui submodule is an empty directory here.
+  # test-compile, not compile: a sibling module's test-jar only resolves in the reactor from
+  # test-compile on, and `compile` fails there (qits-projects-service). -Dmaven.test.skip=true
+  # keeps that phase from compiling or running any tests, so this still runs no tests. And
+  # -DincludeScope, not -Dmdep.includeScope: that is dependency:build-classpath's actual user
+  # property, so the Dmdep spelling was silently ignored.
   ./mvnw -B -ntp ${settings} \
     -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
-    -DskipTests -Dquarkus.quinoa=false \
-    compile dependency:build-classpath \
+    -Dmaven.test.skip=true -Dquarkus.quinoa=false \
+    test-compile dependency:build-classpath \
     -Dmdep.outputFile=target/qits-classpath.txt \
-    -Dmdep.includeScope=runtime
+    -DincludeScope=runtime
 
   # Writes every unit's file and deletes only the generated ones it did not produce this time.
   qits database diagram --root . --out docs/database

@@ -1914,8 +1914,10 @@ start` unless it is still `foldSha`; the kind's script, run as data; and a postl
 nothing, else commits `chore(<item>): update <kind words>` and pushes plainly to `branch`, ending
 `pushed <sha> to <branch>`. No `checkout:`: the run is recorded at the target's `main` head, so its
 verdict is never the fold's. Two kinds today: `screenshot-baselines` (`node-browser-base`, 1800 s)
-and `entity-diagram` (`maven-base`, 1800 s, `qits-cli: true`), which compiles the fold, lists its
-runtime classpath and runs `qits database diagram --root . --out docs/database` (qits-760). Its
+and `entity-diagram` (`maven-base`, 1800 s, `qits-cli: true`), which runs `test-compile` on the fold
+(`-Dmaven.test.skip=true`, so a sibling module's test-jar resolves in the reactor and no test is
+compiled or run), lists its runtime classpath (`dependency:build-classpath -DincludeScope=runtime`)
+and runs `qits database diagram --root . --out docs/database` (qits-760). Its
 committed path, `docs/database/**`, is never its own input, so the re-fold its commit causes is
 carried without a second run.
 
