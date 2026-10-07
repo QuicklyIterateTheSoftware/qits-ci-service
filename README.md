@@ -1901,7 +1901,9 @@ more. A `ScreenshotBaselines` event today matches no trigger file and starts no 
 **Release-request automations are composed from kind files.** Each
 `.config/qits/platform-pipelines/automations/<kind>.yml` declares only `image`, `timeout-seconds`,
 the regeneration `script` and, optionally, `qits-cli: true` (the pinned qits CLI on `PATH`, fetched
-as the release phase fetches it); any other key fails the boot naming the file.
+by the same emitter as the release prelude and the QA report hook, but hard: a failed fetch ends the
+step with `the qits CLI could not be fetched`); any other key, or any other `qits-cli` value, fails
+the boot naming the file.
 `CiAutomationComposer` turns it into a trigger on `event: ReleaseRequestAutomation` with `when:
 [{kind: {exact: <kind>}}]` — the kind is the file's name — and one step: a prelude that refuses an
 implausible payload (`kind`, `branch` under `maintenance/automations/<kind>/`, `baseRef` under
@@ -1911,7 +1913,11 @@ start` unless it is still `foldSha`; the kind's script, run as data; and a postl
 `commitPaths`, prints `unchanged` and exits 0 when the `--ignore-submodules=none` guard finds
 nothing, else commits `chore(<item>): update <kind words>` and pushes plainly to `branch`, ending
 `pushed <sha> to <branch>`. No `checkout:`: the run is recorded at the target's `main` head, so its
-verdict is never the fold's. One kind today, `screenshot-baselines` (`node-browser-base`, 1800 s).
+verdict is never the fold's. Two kinds today: `screenshot-baselines` (`node-browser-base`, 1800 s)
+and `entity-diagram` (`maven-base`, 1800 s, `qits-cli: true`), which compiles the fold, lists its
+runtime classpath and runs `qits database diagram --root . --out docs/database` (qits-760). Its
+committed path, `docs/database/**`, is never its own input, so the re-fold its commit causes is
+carried without a second run.
 
 Until 2026-10-02 they were `ci-platform-event-*.yml` files in the wrapper, read at its `main` head
 per event: a fix shipped only with a wrapper release, which needs a person's approval. No repository

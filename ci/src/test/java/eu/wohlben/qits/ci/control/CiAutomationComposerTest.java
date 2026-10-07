@@ -84,7 +84,6 @@ public class CiAutomationComposerTest {
             "image: x\ntimeout-seconds: 600\n",
             "image: x\ntimeout-seconds: 0\nscript: echo\n",
             "image: x\ntimeout-seconds: soon\nscript: echo\n",
-            "image: x\ntimeout-seconds: 600\nscript: echo\nqits-cli: yes please\n",
             "",
             "- a list\n")) {
       CiConfigException error =
@@ -119,23 +118,88 @@ public class CiAutomationComposerTest {
         "qits/build-images/node-browser-base:latest", trigger.pipeline().steps().get(0).image());
   }
 
+  // --- qits-cli ----------------------------------------------------------------------------------
+
+  private static final String IMAGE = "qits/build-images/node-browser-base:latest";
+
+  /** The block a {@code qits-cli: true} kind gets: the shared emitter, in its automation form. */
+  private static String automationFetch() {
+    StringBuilder fetch = new StringBuilder();
+    CiReleaseComposer.cliFetch(fetch, IMAGE, CiReleaseComposer.CliFetch.AUTOMATION);
+    return fetch.toString();
+  }
+
   @Test
-  public void qitsCliFetchesThePinnedCliTheWayTheReleasePhaseDoes() {
+  public void qitsCliTrueAddsTheSharedFetchBeforeTheScript() {
     String without = CiAutomationComposer.compose("test-kind", PATH, MINIMAL);
     String with = CiAutomationComposer.compose("test-kind", PATH, MINIMAL + "qits-cli: true\n");
-    String off = CiAutomationComposer.compose("test-kind", PATH, MINIMAL + "qits-cli: false\n");
-    assertFalse(without.contains(CiReleaseComposer.CLI_DOWNLOAD_BASE));
-    assertEquals(without, off);
-    StringBuilder fetch = new StringBuilder();
-    CiAutomationComposer.cliFetch(fetch, "qits/build-images/node-browser-base:latest");
-    String step =
-        CiAutomationComposer.step(
-            "test-kind", "qits/build-images/node-browser-base:latest", "echo regenerate\n", true);
-    assertTrue(step.contains(fetch), "the release phase's own fetch block, verbatim");
+    assertFalse(without.contains(CiReleaseComposer.CLI_DOWNLOAD_BASE), without);
+    assertTrue(with.contains(CiReleaseComposer.CLI_DOWNLOAD_BASE), with);
+
+    String fetch = automationFetch();
+    String step = CiAutomationComposer.step("test-kind", IMAGE, "echo regenerate\n", true);
+    assertTrue(step.contains(fetch), "the shared emitter's block, verbatim");
     assertTrue(
-        step.indexOf(fetch.toString()) < step.indexOf("cat > " + CiAutomationComposer.KIND_SCRIPT),
+        step.indexOf(fetch) > step.indexOf("git checkout -q --detach FETCH_HEAD"),
+        "fetched into the fold's step, after the prelude");
+    assertTrue(
+        step.indexOf(fetch) < step.indexOf("cat > " + CiAutomationComposer.KIND_SCRIPT),
         "on PATH before the kind's script runs");
-    assertTrue(with.contains("$QITS_ARTIFACTS_CLI_VERSION"));
+    // The fetch is the ONLY difference the key makes.
+    assertEquals(
+        CiAutomationComposer.step("test-kind", IMAGE, "echo regenerate\n", false),
+        step.replace(
+            "# --- the qits CLI, pinned, on PATH: this kind declares qits-cli: true ---\n" + fetch,
+            ""));
+  }
+
+  @Test
+  public void theAutomationFetchIsTheReleaseDownloadMadeHard() {
+    String fetch = automationFetch();
+    StringBuilder release = new StringBuilder();
+    CiReleaseComposer.cliFetch(release, IMAGE, CiReleaseComposer.CliFetch.RELEASE);
+    // One store, one pinned address, one bearer source, one destination — the release prelude's.
+    String url =
+        "\""
+            + CiReleaseComposer.CLI_DOWNLOAD_BASE
+            + "$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
+    for (String shared :
+        List.of(url, "-o " + CiReleaseComposer.CLI_DIR + "/qits", "Authorization: Bearer $QITS_TOKEN")) {
+      assertTrue(release.toString().contains(shared), "release: " + shared);
+      assertTrue(fetch.contains(shared), "automation: " + shared);
+    }
+    // Hard: the package is demanded, and every failure ends the step naming what it died of.
+    assertTrue(fetch.startsWith("if [ -z \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]; then\n"), fetch);
+    assertTrue(fetch.contains("the qits CLI could not be fetched"), fetch);
+    assertTrue(fetch.endsWith("PATH=\"" + CiReleaseComposer.CLI_DIR + ":$PATH\"\nexport PATH\n"));
+    assertFalse(fetch.contains("set --"), "the postlude's positional list is its own");
+  }
+
+  @Test
+  public void anyQitsCliValueButTrueIsABootErrorNamingTheFile() {
+    for (String value : List.of("false", "yes please", "'true'", "1", "", "[true]")) {
+      CiConfigException error =
+          assertThrows(
+              CiConfigException.class,
+              () -> CiAutomationComposer.compose("test-kind", PATH, MINIMAL + "qits-cli: " + value + "\n"),
+              value);
+      assertTrue(error.getMessage().startsWith(PATH + ": "), error.getMessage());
+      assertTrue(error.getMessage().contains("'qits-cli'"), error.getMessage());
+    }
+  }
+
+  @Test
+  public void theScreenshotBaselinesKindIsComposedByteIdenticallyToBefore() throws Exception {
+    // composed/automation-screenshot-baselines.yml is the composition from before qits-cli: the
+    // key is additive, so a kind that does not set it must not move by a byte.
+    String path = ".config/qits/platform-pipelines/automations/screenshot-baselines.yml";
+    String kindFile = Files.readString(Path.of("..").resolve(path));
+    try (var in =
+        getClass().getClassLoader().getResourceAsStream("composed/automation-screenshot-baselines.yml")) {
+      assertEquals(
+          new String(in.readAllBytes(), StandardCharsets.UTF_8),
+          CiAutomationComposer.compose("screenshot-baselines", path, kindFile));
+    }
   }
 
   // --- the composed step, run --------------------------------------------------------------------
@@ -262,6 +326,66 @@ public class CiAutomationComposerTest {
     assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH));
   }
 
+  // --- the qits CLI fetch, run ------------------------------------------------------------------
+
+  private static final String DIAGRAM =
+      "mkdir -p out\nqits database diagram --root . --out out > out/file.txt\n";
+
+  @Test
+  public void aQitsCliKindRunsTheScriptWithThePinnedCliOnPath(@TempDir Path dir) throws Exception {
+    Path store = dir.resolve("store");
+    Files.createDirectories(store.resolve("qits"));
+    Files.writeString(store.resolve("qits/9.9.9"), "#!/bin/sh\necho \"stub qits $*\"\n");
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell));
+      Result run =
+          scratch.run(
+              shell,
+              DIAGRAM,
+              scratch.payload(BRANCH, scratch.fold, "\":(glob)out/**\""),
+              true,
+              "file://" + store + "/",
+              Map.of("QITS_ARTIFACTS_CLI_PACKAGE", "qits", "QITS_ARTIFACTS_CLI_VERSION", "9.9.9"));
+
+      assertEquals(0, run.exit, shell + ":\n" + run.output);
+      assertTrue(run.output.contains("qits-ci: fetched qits 9.9.9"), run.output);
+      String pushed = scratch.originRev("refs/heads/" + BRANCH);
+      assertEquals(
+          "stub qits database diagram --root . --out out",
+          scratch.git(scratch.origin, "show", pushed + ":out/file.txt"),
+          "the kind's script called the fetched CLI");
+    }
+  }
+
+  @Test
+  public void aQitsCliKindWhoseFetchFailsNeverRunsItsScript(@TempDir Path dir) throws Exception {
+    Path empty = dir.resolve("empty-store");
+    Files.createDirectories(empty);
+    Map<String, Map<String, String>> failures =
+        Map.of(
+            "no package", Map.of(),
+            "no version", Map.of("QITS_ARTIFACTS_CLI_PACKAGE", "qits"),
+            "a failed download",
+                Map.of("QITS_ARTIFACTS_CLI_PACKAGE", "qits", "QITS_ARTIFACTS_CLI_VERSION", "9.9.9"));
+    Scratch scratch = new Scratch(dir.resolve("scratch"));
+    for (Map.Entry<String, Map<String, String>> failure : failures.entrySet()) {
+      Result run =
+          scratch.run(
+              "bash",
+              DIAGRAM,
+              scratch.payload(BRANCH, scratch.fold, "\"out/**\""),
+              true,
+              "file://" + empty + "/",
+              failure.getValue());
+      assertEquals(1, run.exit, failure.getKey() + ":\n" + run.output);
+      assertTrue(
+          run.output.contains("the qits CLI could not be fetched"),
+          failure.getKey() + ":\n" + run.output);
+      assertFalse(run.output.contains("stub qits"), failure.getKey() + ": the script ran");
+    }
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH), "nothing was pushed");
+  }
+
   // --- the scratch origin ------------------------------------------------------------------------
 
   private record Result(int exit, String output) {}
@@ -320,11 +444,27 @@ public class CiAutomationComposerTest {
     }
 
     Result run(String shell, String kindScript, String payload) throws Exception {
+      return run(shell, kindScript, payload, false, null, Map.of());
+    }
+
+    /**
+     * Runs the composed step. With {@code qitsCli}, the download base is replaced by {@code store}
+     * — the seam {@code QitsCliPinIT} uses, since no step can reach it — and {@code env} is added.
+     */
+    Result run(
+        String shell,
+        String kindScript,
+        String payload,
+        boolean qitsCli,
+        String store,
+        Map<String, String> extraEnv)
+        throws Exception {
       Path script = Files.createTempFile(root, "step", ".sh");
-      Files.writeString(
-          script,
-          CiAutomationComposer.step("test-kind", "test-image", kindScript, false),
-          StandardCharsets.UTF_8);
+      String step = CiAutomationComposer.step("test-kind", "test-image", kindScript, qitsCli);
+      if (store != null) {
+        step = step.replace(CiReleaseComposer.CLI_DOWNLOAD_BASE, store);
+      }
+      Files.writeString(script, step, StandardCharsets.UTF_8);
       ProcessBuilder builder =
           new ProcessBuilder(shell, script.toString()).directory(work.toFile()).redirectErrorStream(true);
       Map<String, String> env = builder.environment();
@@ -336,6 +476,7 @@ public class CiAutomationComposerTest {
       env.put("QITS_CI_REPOSITORY_URL", origin.toString());
       env.put("QITS_EVENT_NAME", CiAutomationComposer.EVENT);
       env.put("QITS_EVENT_PAYLOAD", payload);
+      env.putAll(extraEnv);
       Process process = builder.start();
       String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
       assertTrue(process.waitFor(60, TimeUnit.SECONDS), "the step did not return");

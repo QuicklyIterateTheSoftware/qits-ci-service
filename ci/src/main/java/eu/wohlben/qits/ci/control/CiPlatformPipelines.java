@@ -30,9 +30,9 @@ import java.util.TreeSet;
  * <p><b>A second source: the automation kind files.</b> Every {@code
  * .config/qits/platform-pipelines/automations/<kind>.yml} is packaged as {@code
  * platform-pipelines/automations/<kind>.yml} and passed through {@link CiAutomationComposer}, which
- * turns its {@code image}, {@code timeout-seconds} and {@code script} into a {@code
- * ReleaseRequestAutomation} trigger selecting {@code kind: <kind>}. The run is recorded under the
- * kind file's path. A kind file the composer refuses is a boot error naming it, like a missing file.
+ * turns its {@code image}, {@code timeout-seconds}, {@code script} and optional {@code qits-cli}
+ * into a {@code ReleaseRequestAutomation} trigger selecting {@code kind: <kind>}. The run is
+ * recorded under the kind file's path. A kind file the composer refuses is a boot error naming it, like a missing file.
  *
  * <p><b>The set is fixed per build</b> ({@link #PACKAGED} and {@link #AUTOMATIONS}), checked at
  * boot, and read once. In the native image the files have to be named to be bundled: {@code
@@ -61,7 +61,7 @@ public class CiPlatformPipelines {
    * PackagedPlatformPipelinesTest} holds it equal to the {@code *.yml} files in {@code
    * .config/qits/platform-pipelines/automations/}.
    */
-  static final Set<String> AUTOMATIONS = Set.of("screenshot-baselines");
+  static final Set<String> AUTOMATIONS = Set.of("entity-diagram", "screenshot-baselines");
 
   private volatile List<EventTriggerFile> files;
 

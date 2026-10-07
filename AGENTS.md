@@ -1963,13 +1963,17 @@ is about*.
   costs no read at all — and a target the
   evaluation could not read has no head, which is exactly the case that must not become a run.
 - **Automation kind files are the second packaged source.** `platform-pipelines/automations/<kind>.yml`
-  declares `image`, `timeout-seconds`, `script` and optionally `qits-cli: true`, nothing else;
+  declares `image`, `timeout-seconds`, `script` and optionally `qits-cli: true` (only `true`: any
+  other value fails the boot), nothing else;
   `CiAutomationComposer` composes it into a `ReleaseRequestAutomation` trigger selecting `kind:
   <kind>` with the platform's prelude (payload refusals, fold fetch, `superseded before start`) and
   postlude (stage only `commitPaths`, the `--ignore-submodules=none` guard, plain push). The set is
   `CiPlatformPipelines.AUTOMATIONS`, held to the files by `PackagedPlatformPipelinesTest`; a refused
   kind file fails the boot. `ci/pom.xml` and `quarkus.native.resources.includes` each name the
-  `automations/` subdirectory explicitly, because a `*` does not reach into it.
+  `automations/` subdirectory explicitly, because a `*` does not reach into it. `qits-cli: true`
+  spends `CiReleaseComposer.cliFetch` in its `AUTOMATION` form — one download text for the release
+  prelude, the QA report hook and the automations, never a copy — and that form is hard: a kind that
+  asked for the CLI cannot run without it.
 - **Two files are two runs, deliberately.** A repository carrying both a local and a platform trigger
   for one event gets two rows: the dedupe is `(trigger_event_id, repo_id, config_path)` and the paths
   differ. That is also how a run says which kind it was — `config_path` already travels to the API,
