@@ -113,7 +113,7 @@ public class PackagedPlatformPipelinesTest {
   @Test
   public void eachPipelineAnswersItsOwnEvent() {
     assertEquals(
-        List.of("MaintenanceBump", "ScreenshotBaselines", "ReleaseRequestAutomation"),
+        List.of("MaintenanceBump", "ReleaseRequestAutomation"),
         packaged().stream()
             .map(file -> triggerParser.parse(file.path(), file.content()).eventName())
             .toList());

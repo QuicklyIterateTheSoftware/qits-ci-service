@@ -257,10 +257,12 @@ Three rules for that scope:
   event is in `PUSH_NOTHING` too. Copies of them under a service's `src/main/webui` or in the
   bootstrap's `.qits-bootstrap-src` are stale working trees, not recipes.
 - **The bump scope is the payload's `branch`**, because that is the one ref
-  `.config/qits/platform-pipelines/maintenance-bump.yml` pushes. `ScreenshotBaselines` gets the
-  payload's `branch` only under `maintenance/baselines/`, the one ref `screenshot-baselines.yml`
-  pushes. `ReleaseRequestAutomation` is one generic arm: the payload's `branch` only under
-  `maintenance/automations/<payload.kind>/`, the one ref a composed automation kind pushes, so a new
+  `.config/qits/platform-pipelines/maintenance-bump.yml` pushes. `ScreenshotBaselines` is retired
+  (qits-1007): `.config/qits/platform-pipelines/screenshot-baselines.yml`, the one ref it pushed
+  under `maintenance/baselines/`, and its `RunGitRefs` arm are gone, and the event states nothing
+  now — the unknown-event answer. `ReleaseRequestAutomation` is one generic arm: the payload's
+  `branch` only under `maintenance/automations/<payload.kind>/`, the one ref a composed automation
+  kind pushes, so a new
   kind file needs no change there. If a platform pipeline starts to push another ref, change
   `RunGitRefs` with it.
 - **A 400 on a scoped commission means qits-idp refused the list.** A qits-idp without the contract
@@ -2194,8 +2196,10 @@ phase.
   is not there yet**: java-service's two steps and this repository's `release.yml` run the same file
   again right after their `git submodule update`, guarded on the file existing so a step composed by a
   qits-ci that predates the check still runs. `NoLockfileRewriteTest` holds that no archetype,
-  platform pipeline or `release.yml` here carries a `sed -i` over `resolved` again. Platform pipelines
-  are not composed and get no prelude; `screenshot-baselines.yml` simply installs as committed.
+  platform pipeline or `release.yml` here carries a `sed -i` over `resolved` again. Platform
+  pipelines are not composed and get no prelude, so one that installs from npm has to write the
+  same lockfile discipline into its own script by hand — as the retired `screenshot-baselines.yml`
+  did (qits-1007), and as the `screenshot-baselines` automation kind file still does.
 - **The heredoc is the security-shaped part.** A repository's script is data: quoted heredoc to
   `/tmp/qits-slot.sh`, run as a child shell under `-eu`. The only way out of a quoted heredoc is a line
   carrying the delimiter, so a script containing `QITS_SLOT_EOF` is a `CiConfigException` naming the
