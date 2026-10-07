@@ -212,7 +212,7 @@ public class CiEventController {
    */
   @POST
   @Path("/trigger")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:system"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system"})
   @Operation(summary = "Run every event pipeline that selects a caller-supplied domain event")
   @APIResponse(
       responseCode = "200",
@@ -304,6 +304,13 @@ public class CiEventController {
   private static final String ADMIN_ROLE = "qits:admin";
 
   /**
+   * {@code qits:admin-agent} is admitted wherever {@code ADMIN_ROLE} is (qits-628 follow-up): an
+   * ADMIN workspace's coding agent carries it alongside {@code qits:agent}, and for now it may use
+   * everything {@code qits:admin} may use.
+   */
+  private static final String ADMIN_AGENT_ROLE = "qits:admin-agent";
+
+  /**
    * The guard, and the whole of it: what this caller may have the event evaluated against.
    *
    * <p>{@code null} is every project; a non-null value narrows the evaluation to it. The order of
@@ -348,7 +355,9 @@ public class CiEventController {
     machineAuth.require();
     String project = MachineIdentity.claim(identity, QitsClaims.PROJECT).orElse(null);
     if (project == null) {
-      if (!identity.hasRole(ADMIN_ROLE) && !identity.hasRole(SYSTEM_ROLE)) {
+      if (!identity.hasRole(ADMIN_ROLE)
+          && !identity.hasRole(ADMIN_AGENT_ROLE)
+          && !identity.hasRole(SYSTEM_ROLE)) {
         throw new ForbiddenException(
             "Token carries no "
                 + QitsClaims.PROJECT

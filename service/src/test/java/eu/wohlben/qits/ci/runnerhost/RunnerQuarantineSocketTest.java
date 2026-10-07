@@ -325,6 +325,21 @@ class RunnerQuarantineSocketTest {
     given().post(RUNNERS + "/" + runnerId + "/healthcheck").then().statusCode(403);
   }
 
+  /**
+   * qits-628 follow-up: an ADMIN workspace's coding agent carries {@code qits:admin-agent} alongside
+   * {@code qits:agent}, and for now it may press everything {@code qits:admin} may — including the
+   * greenlight button, which {@code anAgentPressesNeitherButton} just proved {@code qits:agent} alone
+   * cannot. {@code qits:agent} alone must still be refused.
+   */
+  @Test
+  @TestSecurity(user = "admin-agent", roles = {"qits:admin-agent", "qits:agent"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE)})
+  void anAdminAgentPressesGreenlightAndAgentAloneStillCannot() {
+    declare(1, CiRunnerPlane.EDGE, Instant.now(), "admin-agent greenlight coverage");
+
+    given().post(RUNNERS + "/" + runnerId + "/greenlight").then().statusCode(200);
+  }
+
   // --- staging ------------------------------------------------------------------------------------
 
   private void declare(int slots, CiRunnerPlane plane, Instant quarantinedAt, String reason) {

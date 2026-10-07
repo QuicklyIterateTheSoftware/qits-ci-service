@@ -2707,6 +2707,11 @@ migration to point at. `baseline-on-migrate` is gone with the H2 file it existed
 
 ## Authentication
 
+**`qits:admin-agent` is admitted wherever `qits:admin` is** (qits-628 follow-up): an ADMIN
+workspace's coding agent carries it alongside `qits:agent`, and for now it may use everything
+`qits:admin` may use. Stated explicitly beside every `qits:admin` check, never implied, so a later
+per-endpoint removal stays possible.
+
 **Two identity tracks, and nothing in this repo implements either.** Both arrive in the
 `qits-auth-core` jar (`components/qits-integrations/qits-integrations-quarkus-javalib/`), and
 `service/pom.xml` says so in a comment beside the dependency. There is no `security` package here any more, and no filter.
