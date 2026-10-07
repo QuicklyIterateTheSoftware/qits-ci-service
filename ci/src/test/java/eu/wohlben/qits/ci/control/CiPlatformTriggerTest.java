@@ -254,9 +254,26 @@ public class CiPlatformTriggerTest extends CiTestSupport {
     assertEquals(
         List.of(
             ".config/qits/platform-pipelines/maintenance-bump.yml",
-            ".config/qits/platform-pipelines/screenshot-baselines.yml",
             ".config/qits/platform-pipelines/automations/screenshot-baselines.yml"),
         platformPipelines.files().stream().map(EventTriggerFile::path).toList());
+  }
+
+  @Test
+  public void aScreenshotBaselinesEventStartsNoRun() throws Exception {
+    // ScreenshotBaselines retired (qits-1007): the platform pipeline that answered it is gone, so
+    // the event matches no trigger file at all and no run is recorded anywhere.
+    platformPipelines.override(null);
+    CiEventTriggerService.Arrival arrival =
+        new CiEventTriggerService.Arrival(
+            UUID.randomUUID().toString(),
+            "ScreenshotBaselines",
+            Instant.parse("2026-10-07T09:00:00Z"),
+            payloadNaming("qits-target"));
+
+    deliver(arrival);
+
+    assertEquals(List.of(), runService.runsFor(targetId));
+    assertEquals(List.of(), runService.runsFor(platformId));
   }
 
   // --- the composed automations, from the packaged set ---

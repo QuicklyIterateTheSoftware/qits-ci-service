@@ -1022,7 +1022,6 @@ push to any other ref.
 | trigger | `gitRefs` |
 |---|---|
 | `MaintenanceBump` | `["refs/heads/<payload.branch>"]`: `maintenance/<group>`, or the one source branch of a targeted bump. `[]` if the payload names no usable branch. |
-| `ScreenshotBaselines` | `["refs/heads/<payload.branch>"]` only under `maintenance/baselines/`; `[]` otherwise. |
 | `ReleaseRequestAutomation` | `["refs/heads/<payload.branch>"]` only when it is a plain branch under `maintenance/automations/<payload.kind>/` and the kind is `[a-z0-9-]+`; `[]` otherwise. One arm for every automation kind. |
 | `ReleaseRequestChanged`, `SCMRelease` | `[]`. No recipe on these events pushes. |
 | `SoftwareRelease` | `[]`. No recipe selects it. The hop files (`ci-event-upstream-*.yml`) that force-pushed `maintenance/<payload.repository>` were deleted on 2026-09-02/03; qits-platform-maintenance follows releases through a `MaintenanceBump` run now. |
@@ -1884,14 +1883,16 @@ costs exactly what it cost before this feature existed.
 Pipelines for **every** repository live in this repository, under
 `.config/qits/platform-pipelines/`, and `ci/pom.xml` packages them into the jar the way it packages
 the release archetypes (`CiPlatformPipelines`). They are evaluated against every arriving event, on
-top of each candidate's own trigger files. Two today:
+top of each candidate's own trigger files. One today:
 
 - `maintenance-bump.yml` (`event: MaintenanceBump`): applies a qits-maintenance bump and pushes its
   branch.
-- `screenshot-baselines.yml` (`event: ScreenshotBaselines`): renders a release request's screenshot
-  tests on `node-browser-base`, runs the repository's `screenshots:prune` script if it has one
-  (deletes the references no test uses), and commits only the reference images and `renderer.txt`
-  to `maintenance/baselines/<request>`.
+
+`screenshot-baselines.yml` (`event: ScreenshotBaselines`) was its sibling — rendering a release
+request's screenshot tests on `node-browser-base`, pruning references the way the kind file below
+still does, and pushing `maintenance/baselines/<request>` — and is retired (qits-1007): qits-maintenance
+sends `ReleaseRequestAutomation` now, for every kind, and nothing sends `ScreenshotBaselines` any
+more. A `ScreenshotBaselines` event today matches no trigger file and starts no run.
 
 **Release-request automations are composed from kind files.** Each
 `.config/qits/platform-pipelines/automations/<kind>.yml` declares only `image`, `timeout-seconds`,
@@ -1906,8 +1907,7 @@ start` unless it is still `foldSha`; the kind's script, run as data; and a postl
 `commitPaths`, prints `unchanged` and exits 0 when the `--ignore-submodules=none` guard finds
 nothing, else commits `chore(<item>): update <kind words>` and pushes plainly to `branch`, ending
 `pushed <sha> to <branch>`. No `checkout:`: the run is recorded at the target's `main` head, so its
-verdict is never the fold's. One kind today, `screenshot-baselines` (`node-browser-base`, 1800 s);
-`screenshot-baselines.yml` beside it stays until qits-maintenance stops sending `ScreenshotBaselines`.
+verdict is never the fold's. One kind today, `screenshot-baselines` (`node-browser-base`, 1800 s).
 
 Until 2026-10-02 they were `ci-platform-event-*.yml` files in the wrapper, read at its `main` head
 per event: a fix shipped only with a wrapper release, which needs a person's approval. No repository

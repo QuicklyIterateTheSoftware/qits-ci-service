@@ -15,7 +15,7 @@ import java.util.regex.Pattern;
  * states them as {@code gitRefs}, and qits-idp stamps them into every token of that client as
  * {@code git_refs} (contract C6 in the superproject's {@code principal-bound-git-refs-plan.md}).
  *
- * <p>Six answers:
+ * <p>Five answers:
  *
  * <ul>
  *   <li><b>{@code MaintenanceBump}</b>: the one branch the payload names in {@code branch}. For a
@@ -28,9 +28,6 @@ import java.util.regex.Pattern;
  *       wider scope: qits-githost checks a push's ref NAMES against the list and admits any update
  *       kind of a ref inside it. The {@code refs/tags/<version>} a rebuild starts from is fetched,
  *       never pushed, and the list does not narrow a fetch.
- *   <li><b>{@code ScreenshotBaselines}</b>: the payload's {@code branch} too, and only when it is
- *       under {@code maintenance/baselines/} — the one ref {@code screenshot-baselines.yml}
- *       pushes. Anything else gives an empty list.
  *   <li><b>{@code ReleaseRequestAutomation}</b>: one generic arm for every automation kind. The
  *       payload's {@code branch}, and only when it is a plain branch under {@code
  *       maintenance/automations/<kind>/}, where {@code <kind>} is the payload's own {@code kind}
@@ -57,12 +54,6 @@ public final class RunGitRefs {
 
   /** The event qits-platform-maintenance sends to apply a bump. */
   public static final String MAINTENANCE_BUMP = "MaintenanceBump";
-
-  /** The event qits-maintenance sends to render a release request's screenshot baselines. */
-  public static final String SCREENSHOT_BASELINES = "ScreenshotBaselines";
-
-  /** The only branches a {@link #SCREENSHOT_BASELINES} run may push. */
-  static final String BASELINES_PREFIX = "maintenance/baselines/";
 
   /** The event qits-maintenance sends to run one release-request automation kind. */
   public static final String RELEASE_REQUEST_AUTOMATION = "ReleaseRequestAutomation";
@@ -129,13 +120,6 @@ public final class RunGitRefs {
     if (MAINTENANCE_BUMP.equals(eventName)) {
       String branch = branchOf(payload, json);
       return Optional.of(branch == null ? List.of() : List.of(HEADS + branch));
-    }
-    if (SCREENSHOT_BASELINES.equals(eventName)) {
-      String branch = branchOf(payload, json);
-      return Optional.of(
-          branch == null || !branch.startsWith(BASELINES_PREFIX)
-              ? List.of()
-              : List.of(HEADS + branch));
     }
     if (RELEASE_REQUEST_AUTOMATION.equals(eventName)) {
       String branch = branchOf(payload, json);

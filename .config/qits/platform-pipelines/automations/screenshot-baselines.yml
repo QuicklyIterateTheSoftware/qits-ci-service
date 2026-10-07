@@ -24,8 +24,8 @@
 # `qits-angular screenshots --prune` from @qits/angular). Vitest never deletes a reference
 # itself.
 #
-# Until feature 5 of qits-978 retires it, `../screenshot-baselines.yml` beside this directory
-# does the same work for the older `ScreenshotBaselines` event.
+# `../screenshot-baselines.yml`, which did the same work for the older `ScreenshotBaselines`
+# event, is retired (qits-1007): this kind file is the only way to render baselines now.
 image: qits/build-images/node-browser-base:latest
 timeout-seconds: 1800
 script: |

@@ -40,17 +40,13 @@ public class RunGitRefsTest {
   }
 
   @Test
-  public void aBaselinesRunMayPushOnlyItsMaintenanceBaselinesBranch() {
+  public void aRetiredScreenshotBaselinesEventStatesNothing() {
+    // ScreenshotBaselines is retired (qits-1007): the platform pipeline that sent it is gone, so
+    // it is an unknown event now, answered like any other.
     String payload =
         "{\"repository\":\"qits-landing-app\",\"branch\":\"maintenance/baselines/abc\","
             + "\"baseRef\":\"release/abc\"}";
-    assertEquals(
-        Optional.of(List.of("refs/heads/maintenance/baselines/abc")),
-        of("ScreenshotBaselines", payload));
-    assertEquals(
-        MAY_PUSH_NOTHING,
-        of("ScreenshotBaselines", payload.replace("maintenance/baselines/abc", "main")));
-    assertEquals(MAY_PUSH_NOTHING, of("ScreenshotBaselines", "{}"));
+    assertEquals(NOTHING_STATED, of("ScreenshotBaselines", payload));
   }
 
   /** The payload shape qits-maintenance sends to run one automation kind. */

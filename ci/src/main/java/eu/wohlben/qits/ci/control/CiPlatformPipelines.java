@@ -51,7 +51,7 @@ public class CiPlatformPipelines {
    * Every pipeline this build carries. {@code PackagedPlatformPipelinesTest} holds it equal to the
    * {@code *.yml} files in {@code .config/qits/platform-pipelines/}.
    */
-  static final Set<String> PACKAGED = Set.of("maintenance-bump", "screenshot-baselines");
+  static final Set<String> PACKAGED = Set.of("maintenance-bump");
 
   /** Where the automation kind files sit, under {@link #PACKAGED_DIR} and {@link #CONFIG_DIR}. */
   static final String AUTOMATIONS_DIR = "automations/";
