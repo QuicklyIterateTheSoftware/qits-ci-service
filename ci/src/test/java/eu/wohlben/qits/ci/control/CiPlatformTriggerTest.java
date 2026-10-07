@@ -254,6 +254,7 @@ public class CiPlatformTriggerTest extends CiTestSupport {
     assertEquals(
         List.of(
             ".config/qits/platform-pipelines/maintenance-bump.yml",
+            ".config/qits/platform-pipelines/automations/entity-diagram.yml",
             ".config/qits/platform-pipelines/automations/screenshot-baselines.yml"),
         platformPipelines.files().stream().map(EventTriggerFile::path).toList());
   }
@@ -323,11 +324,34 @@ public class CiPlatformTriggerTest extends CiTestSupport {
   }
 
   @Test
+  public void anEntityDiagramAutomationStartsExactlyOneRunOnMavenBase() throws Exception {
+    // qits-760: the kind file is packaged now, so the kind qits-996 left without one starts a run.
+    platformPipelines.override(null);
+    CiEventTriggerService.Arrival arrival = automation("entity-diagram");
+
+    deliver(arrival);
+
+    List<CiRun> recorded = runService.runsFor(targetId);
+    assertEquals(1, recorded.size(), "one kind file, one run");
+    CiRun run = recorded.get(0);
+    assertEquals(".config/qits/platform-pipelines/automations/entity-diagram.yml", run.configPath);
+    assertEquals("ReleaseRequestAutomation", run.triggerEventName);
+    assertEquals(arrival.eventId(), run.triggerEventId);
+    assertEquals("main", run.branch);
+    assertEquals(TARGET_HEAD, run.commitSha, "recorded at main's head, never at the fold");
+    assertNull(run.releaseRequestId, "an automation run is no part of a release's CI");
+    assertNull(run.phase);
+    String image = fakeRunner.executed().get(0).image();
+    assertTrue(image.contains("qits/build-images/maven-base"), image);
+    assertEquals(TARGET_HEAD, fakeRunner.executed().get(0).sha(), "the step clones main's head");
+  }
+
+  @Test
   public void aKindWithNoKindFileStartsNothing() throws Exception {
     platformPipelines.override(null);
 
-    deliver(automation("entity-diagram"));
+    deliver(automation("no-such-kind"));
 
-    assertEquals(List.of(), runService.runsFor(targetId), "no entity-diagram kind file yet");
+    assertEquals(List.of(), runService.runsFor(targetId), "no no-such-kind kind file");
   }
 }

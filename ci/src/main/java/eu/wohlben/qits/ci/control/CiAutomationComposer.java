@@ -19,9 +19,13 @@ import java.util.regex.Pattern;
  *   <li>{@code image} — the step's image;
  *   <li>{@code timeout-seconds} — the step's deadline;
  *   <li>{@code script} — the regeneration, with no ref handling and no commit code;
- *   <li>{@code qits-cli} — optional, {@code true} to have the pinned qits CLI on {@code PATH} for the
- *       script, fetched exactly as the release phase fetches it ({@link
- *       #cliFetch}).
+ *   <li>{@code qits-cli} — optional, and only ever {@code true}: the pinned qits CLI is fetched
+ *       and put on {@code PATH} for the script. The text is {@link CiReleaseComposer#cliFetch}'s —
+ *       the one download the release prelude and the QA report hook spend too — in its {@link
+ *       CiReleaseComposer.CliFetch#AUTOMATION} form, which is HARD: the kind cannot run without the
+ *       CLI, so no package, no version, no curl/wget or a failed download ends the step 1 with
+ *       {@code the qits CLI could not be fetched}. A kind without the key is composed exactly as
+ *       if the key did not exist, and pays nothing.
  * </ul>
  *
  * <p>Anything else is a {@link CiConfigException} naming the file, and so a boot error: a kind file
@@ -153,7 +157,7 @@ public final class CiAutomationComposer {
     String image = requireText(root, IMAGE_KEY, configPath);
     int timeout = requireTimeout(root, configPath);
     String script = requireText(root, SCRIPT_KEY, configPath);
-    boolean qitsCli = optionalFlag(root, QITS_CLI_KEY, configPath);
+    boolean qitsCli = optionalTrue(root, QITS_CLI_KEY, configPath);
     for (String line : script.split("\n", -1)) {
       if (line.strip().equals(HEREDOC_DELIMITER)) {
         throw new CiConfigException(
@@ -297,7 +301,8 @@ public final class CiAutomationComposer {
     out.append("    | head -n 1)\n");
     out.append("fi\n");
     if (qitsCli) {
-      cliFetch(out, image);
+      out.append("# --- the qits CLI, pinned, on PATH: this kind declares qits-cli: true ---\n");
+      CiReleaseComposer.cliFetch(out, image, CiReleaseComposer.CliFetch.AUTOMATION);
     }
     out.append("# --- the kind's script, run as data ---\n");
     out.append("cat > ").append(KIND_SCRIPT).append(" <<'").append(HEREDOC_DELIMITER).append("'\n");
@@ -370,15 +375,25 @@ public final class CiAutomationComposer {
     return seconds;
   }
 
-  private static boolean optionalFlag(Map<?, ?> root, String key, String configPath) {
-    Object value = root.get(key);
-    if (value == null) {
+  /**
+   * A key that is either absent or {@code true}. Any other value — {@code false} included — is a
+   * boot error naming the file: {@code false} would be a key nobody reads, and a string such as
+   * {@code "true"} a decision the composer cannot tell apart from a typo.
+   */
+  private static boolean optionalTrue(Map<?, ?> root, String key, String configPath) {
+    if (!root.containsKey(key)) {
       return false;
     }
-    if (!(value instanceof Boolean flag)) {
-      throw new CiConfigException(configPath + ": '" + key + "' must be true or false");
+    if (!Boolean.TRUE.equals(root.get(key))) {
+      throw new CiConfigException(
+          configPath
+              + ": '"
+              + key
+              + "' may only be true (leave it out for a kind that needs no qits CLI), not '"
+              + root.get(key)
+              + "'");
     }
-    return flag;
+    return true;
   }
 
   /** A YAML single-quoted scalar. */
@@ -389,95 +404,6 @@ public final class CiAutomationComposer {
   /** A shell single-quoted word for a value already held to a charset without {@code '}. */
   private static String quote(String value) {
     return "'" + value + "'";
-  }
-
-  /**
-   * The prelude block that fetches the qits CLI at the version qits-ci pins and puts it on {@code
-   * PATH} for the rest of the step, for a kind file that declares {@code qits-cli: true}: the same
-   * text {@link CiReleaseComposer}'s release prelude emits inline, copied rather than shared so this
-   * feature does not reshape the release composer while another change is rewriting the same block.
-   * Fold the two into one helper once both are on main.
-   *
-   * @param image the step's image, named in the refusal when it has neither curl nor wget
-   */
-  static void cliFetch(StringBuilder out, String image) {
-    // The qits CLI (qits, which also answers to qits-publish), fetched AT THE VERSION qits-ci
-    // PINS and put on PATH for the whole release phase.
-    //
-    // THE DOWNLOAD WAS ALREADY VERSION-ADDRESSED; what changed is where the version comes from.
-    // This block used to read qits-artifacts' own daemons listing and take that package's
-    // `latestVersion` — so every composed release on the platform ran whatever the last CLI
-    // release had been, with nothing in any consumer's tree naming it and no line anybody could
-    // revert. It is a pom pin now (eu.wohlben.qits:qits-platform-access-cli-binary), injected by
-    // StepContainerSettings as $QITS_ARTIFACTS_CLI_VERSION, and this text simply spends it.
-    //
-    // Which is why the listing read, its best-effort bearer and the jq that parsed it are all
-    // gone: a release step's image no longer needs jq for the CLI's sake at all.
-    //
-    // Soft on the package: a deployment that has switched it off still runs every recipe that does
-    // not call it, and one that does gets `command not found` rather than a silent skip. The
-    // release postlude demands the package outright.
-    out.append("if [ -n \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]; then\n");
-    // Hard on the version, and the message names the real cause. The launcher's constant cannot be
-    // blank (PlatformAccessCliBinary refuses that at class-init) and the variable is always sent,
-    // so the only way to be inside this branch without one is a qits-ci older than the pin having
-    // launched this step — which a re-run against a current qits-ci fixes.
-    out.append(
-        "  : \"${QITS_ARTIFACTS_CLI_VERSION:?the qits CLI package is configured but no version was"
-            + " injected; the qits-ci that launched this step predates the CLI pin}\"\n");
-    out.append("  mkdir -p ").append(CiReleaseComposer.CLI_DIR).append('\n');
-    // curl, then wget, then a refusal that names the image. An image with neither is a real
-    // shape in the fleet's neighbourhood — docker:28-dind has wget and no curl — and the one
-    // thing it must not produce is `curl: not found` from a line nobody can see the reason for.
-    // Only the FETCH degrades: the CLI itself is a static binary, so everything downstream of
-    // this block, the postlude's `qits artifacts publish` included, is unaffected by which arm
-    // ran.
-    // The download goes through the public edge, which answers an anonymous read with a 401.
-    // `$QITS_TOKEN` is this run's ci-run token, exactly as `StepContainerSettings.BOOTSTRAP` reads
-    // it for the daemon binary's own download, and the idiom is the same: a local `set --` builds
-    // the bearer header as a positional list, spent as `"$@"` on both arms and never interpolated
-    // into the url. `set --` is safe here because nothing else a release step emits reads
-    // `$@`/`$1`/`$2`, and an automation postlude rebuilds its own list with a `set --` of its own —
-    // check that before adding a second such block. With no token `"$@"` expands to nothing.
-    out.append("  set --\n");
-    out.append("  if [ -n \"${QITS_TOKEN:-}\" ]; then\n");
-    out.append("    set -- --header \"Authorization: Bearer $QITS_TOKEN\"\n");
-    out.append("  fi\n");
-    // The store is qits-artifacts' public name, code under the domain (qits-731): no URL
-    // variable is read, so nothing in a step's environment decides where its CLI comes from.
-    String cliUrl =
-        " \"" + CiReleaseComposer.CLI_DOWNLOAD_BASE + "$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
-    out.append("  if command -v curl > /dev/null 2>&1; then\n");
-    out.append("    curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o ")
-        .append(CiReleaseComposer.CLI_DIR)
-        .append("/qits")
-        .append(cliUrl)
-        .append('\n');
-    out.append("  elif command -v wget > /dev/null 2>&1; then\n");
-    out.append("    wget -q \"$@\" -O ")
-        .append(CiReleaseComposer.CLI_DIR)
-        .append("/qits")
-        .append(cliUrl)
-        .append('\n');
-    out.append("  else\n");
-    out.append("    echo ")
-        .append(
-            shellQuote(
-                "qits-ci: the image for this step ("
-                    + image
-                    + ") has neither curl nor wget, so the qits CLI cannot be fetched into it —"
-                    + " add one to the image, or take the qits calls out of this step"))
-        .append(" >&2\n");
-    out.append("    exit 1\n");
-    out.append("  fi\n");
-    out.append("  chmod +x ").append(CiReleaseComposer.CLI_DIR).append("/qits\n");
-    out.append("  ln -sf ").append(CiReleaseComposer.CLI_DIR).append("/qits ").append(CiReleaseComposer.CLI_DIR).append("/qits-publish\n");
-    out.append(
-        "  echo \"qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION\""
-            + " >&2\n");
-    out.append("  PATH=\"").append(CiReleaseComposer.CLI_DIR).append(":$PATH\"\n");
-    out.append("  export PATH\n");
-    out.append("fi\n");
   }
 
   /** A shell single-quoted string for free text — the image, in one diagnostic. */

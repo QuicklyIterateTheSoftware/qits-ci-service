@@ -113,7 +113,7 @@ public class PackagedPlatformPipelinesTest {
   @Test
   public void eachPipelineAnswersItsOwnEvent() {
     assertEquals(
-        List.of("MaintenanceBump", "ReleaseRequestAutomation"),
+        List.of("MaintenanceBump", "ReleaseRequestAutomation", "ReleaseRequestAutomation"),
         packaged().stream()
             .map(file -> triggerParser.parse(file.path(), file.content()).eventName())
             .toList());
@@ -164,13 +164,15 @@ public class PackagedPlatformPipelinesTest {
   }
 
   @Test
-  public void theScreenshotBaselinesKindFileCarriesNoRefHandlingAndNoCommitCode() throws Exception {
-    String kindFile = Files.readString(SOURCE.resolve("automations/screenshot-baselines.yml"));
-    for (String forbidden :
-        List.of("git fetch", "git checkout", "git add", "git commit", "git push", "QITS_EVENT")) {
-      assertFalse(
-          kindFile.contains(forbidden),
-          "the composer owns refs and commits; the kind file says " + forbidden);
+  public void noKindFileCarriesRefHandlingOrCommitCode() throws Exception {
+    for (String kind : CiPlatformPipelines.AUTOMATIONS) {
+      String kindFile = Files.readString(SOURCE.resolve("automations/" + kind + ".yml"));
+      for (String forbidden :
+          List.of("git fetch", "git checkout", "git add", "git commit", "git push", "QITS_EVENT")) {
+        assertFalse(
+            kindFile.contains(forbidden),
+            kind + ": the composer owns refs and commits; the kind file says " + forbidden);
+      }
     }
   }
 
@@ -205,6 +207,117 @@ public class PackagedPlatformPipelinesTest {
     assertTrue(composed.contains("  .commitPaths\n"), composed);
     assertTrue(composed.contains("done < " + CiAutomationComposer.COMMIT_PATHS));
     assertFalse(composed.contains("__screenshots__"), "a path the payload did not name");
+  }
+
+  // --- the composed entity-diagram automation (qits-760) ----------------------------------------
+
+  private static final String ENTITY_KIND_PATH =
+      ".config/qits/platform-pipelines/automations/entity-diagram.yml";
+
+  private static String composedEntityDiagram() {
+    return packaged().stream()
+        .filter(file -> file.path().equals(ENTITY_KIND_PATH))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError(ENTITY_KIND_PATH + " is not in the set"))
+        .content();
+  }
+
+  @Test
+  public void theEntityDiagramKindFetchesTheCliBeforeItsScript(@TempDir Path dir)
+      throws Exception {
+    String composed = composedEntityDiagram();
+    CiEventTrigger trigger = triggerParser.parse(ENTITY_KIND_PATH, composed);
+    assertEquals("ReleaseRequestAutomation", trigger.eventName());
+    assertEquals(null, trigger.checkout(), "recorded at main's head, never at the fold");
+    assertTrue(composed.contains("  - kind: { exact: 'entity-diagram' }\n"), composed);
+    assertEquals(1, trigger.pipeline().steps().size());
+    CiStepDecl step = trigger.pipeline().steps().get(0);
+    assertEquals("qits/build-images/maven-base:latest", step.image());
+    assertEquals(1800, step.timeoutSeconds());
+
+    String script = step.script();
+    StringBuilder fetch = new StringBuilder();
+    CiReleaseComposer.cliFetch(fetch, step.image(), CiReleaseComposer.CliFetch.AUTOMATION);
+    int fetched = script.indexOf(fetch.toString());
+    int body = script.indexOf("cat > " + CiAutomationComposer.KIND_SCRIPT);
+    int noPom = script.indexOf("no pom.xml: only JPA/Hibernate entity diagrams are generated today");
+    int maven = script.indexOf("test-compile dependency:build-classpath");
+    int diagram = script.indexOf("qits database diagram --root . --out docs/database");
+    int add = script.indexOf("git add -A --");
+    assertTrue(fetched > 0, "the shared hard CLI fetch is composed in:\n" + script);
+    assertTrue(script.indexOf("superseded before start") < fetched, "the prelude comes first");
+    assertTrue(fetched < body, "the CLI is on PATH before the kind's script");
+    assertTrue(body < noPom && noPom < maven && maven < diagram, script);
+    assertTrue(diagram < add, "the postlude stages after the kind's script");
+    for (String line :
+        List.of(
+            "qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}",
+            "export QITS_MAVEN_REPOSITORY_URL=\"https://registry.qits.$qits_domain/artifacts/maven/maven\"",
+            "export QITS_MAVEN_CENTRAL_URL=\"https://mirror.qits.$qits_domain/mirror/maven/central\"",
+            "-Dmdep.outputFile=target/qits-classpath.txt",
+            "-DincludeScope=runtime",
+            "-Dmaven.test.skip=true -Dquarkus.quinoa=false")) {
+      assertTrue(script.contains(line), line);
+    }
+    String kindScript =
+        script.substring(
+            script.indexOf('\n', body) + 1,
+            script.indexOf("\n" + CiAutomationComposer.HEREDOC_DELIMITER + "\n"));
+    syntax(dir, kindScript, ENTITY_KIND_PATH + " (the kind's script)");
+  }
+
+  @Test
+  public void theEntityDiagramKindReadsTheMavenAddressesAsJavaServicesQaStepDoes()
+      throws Exception {
+    String javaService =
+        Files.readString(
+            SOURCE.getParent().resolve("release-archetypes").resolve("java-service.yml"));
+    String kindFile = Files.readString(SOURCE.resolve("automations/entity-diagram.yml"));
+    for (String line :
+        List.of(
+            "qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}",
+            "export QITS_MAVEN_REPOSITORY_URL=\"https://registry.qits.$qits_domain/artifacts/maven/maven\"",
+            "export QITS_MAVEN_CENTRAL_URL=\"https://mirror.qits.$qits_domain/mirror/maven/central\"")) {
+      assertTrue(javaService.contains(line), "java-service no longer says: " + line);
+      assertTrue(kindFile.contains(line), "entity-diagram does not say: " + line);
+    }
+  }
+
+  @Test
+  public void theEntityDiagramAutomationStagesOnlyThePayloadsPaths() {
+    String composed = composedEntityDiagram();
+    Matcher adds = Pattern.compile("git add[^\n]*").matcher(composed);
+    List<String> found = new java.util.ArrayList<>();
+    while (adds.find()) {
+      found.add(adds.group().strip());
+    }
+    assertEquals(List.of("git add -A -- \"$@\""), found);
+    assertTrue(composed.contains("done < " + CiAutomationComposer.COMMIT_PATHS));
+    // docs/database is the payload's to name (qits-maintenance sends it), never the composition's.
+    assertFalse(composed.contains("docs/database/**"), "a path the payload did not name");
+  }
+
+  @Test
+  public void theEntityDiagramAutomationNeverForcesAndGuardsGitlinks() {
+    String composed = composedEntityDiagram();
+    assertFalse(composed.contains("--force"), "a forced push in the composed automation");
+    assertFalse(composed.contains("push -f"), "a forced push in the composed automation");
+    assertFalse(composed.contains("+HEAD:"), "a forced refspec in the composed automation");
+    Matcher matcher = GUARD.matcher(composed);
+    assertTrue(matcher.find(), "the composed automation has no commit guard");
+    assertTrue(matcher.group().contains("--ignore-submodules=none"), matcher.group());
+  }
+
+  @Test
+  public void theEntityDiagramKindNeverReadsWhatItCommits() throws Exception {
+    // The carry-over invariant: docs/database/** is committed and never this kind's input, so the
+    // re-fold its own commit causes is carried with no second run. The one mention allowed in the
+    // script is the generator's --out.
+    String kindFile = Files.readString(SOURCE.resolve("automations/entity-diagram.yml"));
+    String script = kindFile.substring(kindFile.indexOf("\nscript: |\n"));
+    int mentions = script.split("docs/database", -1).length - 1;
+    assertEquals(1, mentions, script);
+    assertTrue(script.contains("--out docs/database"), script);
   }
 
   // --- the commit guard ------------------------------------------------------------------------

@@ -616,7 +616,7 @@ public final class CiReleaseComposer {
       // Soft on the package: a deployment that has switched it off still runs every recipe that does
       // not call it, and one that does gets `command not found` rather than a silent skip. The
       // postlude below demands the package outright.
-      cliFetch(out, step, false);
+      cliFetch(out, step.image(), CliFetch.RELEASE);
     }
     if (step.build()) {
       // The platform builder, demanded loudly before anything is built. Unset means a
@@ -746,49 +746,96 @@ public final class CiReleaseComposer {
     out.append("  echo \"qits-ci: reports skipped: no qits CLI configured\" >&2\n");
     out.append("  exit 0\n");
     out.append("fi\n");
-    cliFetch(out, step, true);
+    cliFetch(out, step.image(), CliFetch.REPORT_HOOK);
     out.append(REPORT_CLI_DIR)
         .append("/qits ci report submit --exit-code \"$1\"\n");
     return out.toString();
   }
 
+  /** Which of the qits CLI download's three callers {@link #cliFetch} is writing for. */
+  enum CliFetch {
+    /** The release prelude: hard on the version, soft on the package, onto {@code PATH}. */
+    RELEASE,
+    /** The QA report hook (qits-754): every failure exits the hook, never the step. */
+    REPORT_HOOK,
+    /**
+     * A release-request automation kind file that declares {@code qits-cli: true} ({@link
+     * CiAutomationComposer}): the kind cannot run without the CLI, so everything is hard — no package,
+     * no version, no fetcher or a failed download exits the step 1, saying {@code the qits CLI could
+     * not be fetched} — and the binary goes on {@code PATH} for the kind's script.
+     */
+    AUTOMATION
+  }
+
   /**
-   * The qits CLI download, one text for both its callers.
+   * The qits CLI download, one text for all three of its callers ({@link CliFetch}).
    *
-   * <p><b>Hard</b> ({@code soft == false}) is the release prelude: inside {@code if
+   * <p><b>{@link CliFetch#RELEASE}</b> is the release prelude: inside {@code if
    * $QITS_ARTIFACTS_CLI_PACKAGE is set}, into {@value #CLI_DIR}, a missing fetcher {@code exit 1}s
    * the step, and the binary goes on {@code PATH}. Its bytes are what the release goldens hold.
    *
-   * <p><b>Soft</b> is the QA report hook's: top level of the hook file (the package check is the
-   * hook's own), into {@value #REPORT_CLI_DIR}, and every failure — no version, no directory, no
-   * fetcher, a failed download, no chmod — echoes what happened and exits the HOOK non-zero. The
-   * bearer is a named variable spent through {@code ${v:+…}} rather than {@code set --}, because
-   * the hook's {@code $1} is the exit code it reports.
+   * <p><b>{@link CliFetch#REPORT_HOOK}</b> is the QA report hook's: top level of the hook file (the
+   * package check is the hook's own), into {@value #REPORT_CLI_DIR}, and every failure — no version,
+   * no directory, no fetcher, a failed download, no chmod — echoes what happened and exits the HOOK
+   * non-zero. The bearer is a named variable spent through {@code ${v:+…}} rather than {@code set
+   * --}, because the hook's {@code $1} is the exit code it reports.
+   *
+   * <p><b>{@link CliFetch#AUTOMATION}</b> is the report hook's text with every failure made the
+   * step's: it demands the package as well, every message reads {@code qits-ci: the qits CLI could
+   * not be fetched: <why>}, and it ends by putting {@value #CLI_DIR} on {@code PATH}. Same named
+   * bearer, so the automation postlude's own {@code set --} list is untouched.
+   *
+   * <p>Package-private for {@link CiAutomationComposer}: a kind file's {@code qits-cli: true} spends
+   * this text rather than a copy of it.
+   *
+   * @param image the step's image, named in the refusal when it has neither curl nor wget
    */
-  private static void cliFetch(StringBuilder out, CiStepDecl step, boolean soft) {
-    String dir = soft ? REPORT_CLI_DIR : CLI_DIR;
+  static void cliFetch(StringBuilder out, String image, CliFetch mode) {
+    boolean soft = mode != CliFetch.RELEASE;
+    boolean automation = mode == CliFetch.AUTOMATION;
+    String dir = mode == CliFetch.REPORT_HOOK ? REPORT_CLI_DIR : CLI_DIR;
     // The store is qits-artifacts' public name, code under the domain (qits-731): no URL
     // variable is read, so nothing in a step's environment decides where its CLI comes from.
     String cliUrl =
         " \"" + CLI_DOWNLOAD_BASE + "$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
     String noFetcher =
         shellQuote(
-            "qits-ci: the image for this step ("
-                + step.image()
-                + ") has neither curl nor wget, so the qits CLI cannot be fetched into it —"
-                + (soft
-                    ? " add one to the image to get its reports submitted"
-                    : " add one to the image, or take the qits calls out of this step"));
+            automation
+                ? "qits-ci: the qits CLI could not be fetched: the image for this step ("
+                    + image
+                    + ") has neither curl nor wget — add one to the image"
+                : "qits-ci: the image for this step ("
+                    + image
+                    + ") has neither curl nor wget, so the qits CLI cannot be fetched into it —"
+                    + (soft
+                        ? " add one to the image to get its reports submitted"
+                        : " add one to the image, or take the qits calls out of this step"));
     if (soft) {
+      // Every failure line starts with this; the automation's says what the step died of.
+      String failure = automation ? "qits-ci: the qits CLI could not be fetched: " : "qits-ci: ";
+      if (automation) {
+        // The report hook checks the package itself and skips; a kind that asked for the CLI
+        // cannot run without it, so here an unconfigured package is a failure like any other.
+        out.append("if [ -z \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]; then\n");
+        out.append("  echo \"")
+            .append(failure)
+            .append("no qits CLI package is configured for this deployment\" >&2\n");
+        out.append("  exit 1\n");
+        out.append("fi\n");
+      }
       out.append("if [ -z \"${QITS_ARTIFACTS_CLI_VERSION:-}\" ]; then\n");
-      out.append(
-          "  echo \"qits-ci: the qits CLI package is configured but no version was injected; the"
-              + " qits-ci that launched this step predates the CLI pin\" >&2\n");
+      out.append("  echo \"")
+          .append(failure)
+          .append(
+              "the qits CLI package is configured but no version was injected; the"
+                  + " qits-ci that launched this step predates the CLI pin\" >&2\n");
       out.append("  exit 1\n");
       out.append("fi\n");
       out.append("mkdir -p ")
           .append(dir)
-          .append(" || { echo \"qits-ci: could not create ")
+          .append(" || { echo \"")
+          .append(failure)
+          .append("could not create ")
           .append(dir)
           .append("\" >&2; exit 1; }\n");
       // The edge answers an anonymous read with a 401, so the bearer is this run's token, as in
@@ -800,8 +847,12 @@ public final class CiReleaseComposer {
       out.append("fi\n");
       String header = " ${qits_cli_bearer:+--header} ${qits_cli_bearer:+\"$qits_cli_bearer\"}";
       String failed =
-          " || { echo \"qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE"
-              + " $QITS_ARTIFACTS_CLI_VERSION\" >&2; exit 1; }\n";
+          " || { echo \""
+              + failure
+              + (automation ? "the download of " : "could not fetch ")
+              + "$QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION"
+              + (automation ? " failed" : "")
+              + "\" >&2; exit 1; }\n";
       out.append("if command -v curl > /dev/null 2>&1; then\n");
       out.append("  curl -fsSL --retry 2 --retry-delay 2")
           .append(header)
@@ -824,12 +875,19 @@ public final class CiReleaseComposer {
       out.append("fi\n");
       out.append("chmod +x ")
           .append(dir)
-          .append("/qits || { echo \"qits-ci: could not make ")
+          .append("/qits || { echo \"")
+          .append(failure)
+          .append("could not make ")
           .append(dir)
           .append("/qits executable\" >&2; exit 1; }\n");
       out.append(
           "echo \"qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION\""
               + " >&2\n");
+      if (automation) {
+        // Exported, so the kind's script - a child shell - inherits it.
+        out.append("PATH=\"").append(dir).append(":$PATH\"\n");
+        out.append("export PATH\n");
+      }
       return;
     }
     out.append("if [ -n \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]; then\n");

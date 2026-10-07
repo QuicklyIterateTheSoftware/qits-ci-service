@@ -1,0 +1,138 @@
+# Composed by qits-ci from .config/qits/platform-pipelines/automations/screenshot-baselines.yml.
+# Generated: this text is never committed. Edit the kind file.
+event: ReleaseRequestAutomation
+when:
+  - kind: { exact: 'screenshot-baselines' }
+steps:
+  - image: 'qits/build-images/node-browser-base:latest'
+    timeout-seconds: 1800
+    script: |
+      set -eu
+      # --- platform prelude: the screenshot-baselines automation ---
+      : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no platform address}"
+      if ! command -v jq > /dev/null 2>&1; then
+        echo 'qits-ci: the image for this step (qits/build-images/node-browser-base:latest) has no jq, so the automation payload cannot be read' >&2
+        exit 1
+      fi
+      field() {
+        printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r --arg f "$1" '.[$f] // "" | if type == "string" then . else error("refusing a payload whose \($f) is not a string") end'
+      }
+      expected_kind='screenshot-baselines'
+      kind=$(field kind) || exit 1
+      branch=$(field branch) || exit 1
+      base=$(field baseRef) || exit 1
+      fold=$(field foldSha) || exit 1
+      item=$(field workItem) || exit 1
+      case "$kind" in ''|*[!a-z0-9-]*) echo "refusing an implausible kind: $kind" >&2; exit 1 ;; esac
+      if [ "$kind" != "$expected_kind" ]; then
+        echo "refusing a $kind payload: this step is composed from the $expected_kind kind file" >&2
+        exit 1
+      fi
+      for ref in "$branch" "$base"; do
+        case "$ref" in
+          ''|-*|*..*|*[!0-9A-Za-z._/-]*) echo "refusing an implausible ref: $ref" >&2; exit 1 ;;
+        esac
+      done
+      case "$branch" in
+        "maintenance/automations/$kind/"?*) ;;
+        *) echo "refusing an automation branch outside maintenance/automations/$kind/: $branch" >&2; exit 1 ;;
+      esac
+      case "$base" in
+        release/?*) ;;
+        *) echo "refusing a base that is not a release request's fold: $base" >&2; exit 1 ;;
+      esac
+      case "$fold" in
+        ''|*[!0-9a-f]*) echo "refusing an implausible foldSha: $fold" >&2; exit 1 ;;
+      esac
+      if [ ${#fold} -ne 40 ] && [ ${#fold} -ne 64 ]; then
+        echo "refusing an implausible foldSha: $fold" >&2
+        exit 1
+      fi
+      case "$item" in *[!0-9A-Za-z-]*) echo "refusing an implausible work item: $item" >&2; exit 1 ;; esac
+      printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r '
+        .commitPaths
+        | if type == "array" and length > 0 and all(.[]; type == "string" and (contains("\n") | not))
+          then .[]
+          else error("refusing a payload whose commitPaths is not a non-empty array of paths") end' > /tmp/qits-automation-paths || exit 1
+      while IFS= read -r path; do
+        rest=${path#':(glob)'}
+        case "$rest" in
+          ''|/*|-*|*..*|*[!0-9A-Za-z._/*-]*) echo "refusing an implausible commit path: $path" >&2; exit 1 ;;
+        esac
+      done < /tmp/qits-automation-paths
+      git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$base"
+      head=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
+      if [ "$head" != "$fold" ]; then
+        echo "superseded before start: $base is at $head, not at the fold $fold this run was sent for" >&2
+        exit 1
+      fi
+      git checkout -q --detach FETCH_HEAD
+      [ -n "${HOME:-}" ] && [ -w "$HOME" ] || export HOME=/tmp
+      if [ -z "$item" ]; then
+        item=$(git log -n 200 --format=%s 2>/dev/null \
+          | sed -nE 's/^[A-Za-z][A-Za-z0-9_\/.-]*\(([A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18})\)!?: .*/\1/p' \
+          | head -n 1)
+      fi
+      # --- the kind's script, run as data ---
+      cat > /tmp/qits-automation.sh <<'QITS_AUTOMATION_EOF'
+      if ! jq -e '.scripts["test:browser"]' package.json >/dev/null 2>&1; then
+        echo "this repository has no test:browser script - there are no screenshot tests to render" >&2
+        exit 1
+      fi
+
+      # The same install the `app` QA step runs: the lockfile as committed, resolving against the
+      # platform's two public registries, and nothing rewritten (qits-731). An entry naming any
+      # other host fails `npm ci` itself.
+      # THE ADDRESSES ARE CODE: the platform's public domain is the one input, and the hosts and
+      # paths are constants under it. A step is always told the domain; the `:?` stops one that
+      # is not, here, rather than at a host named `registry.qits.`.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+      npm_hosted_origin="https://registry.qits.$qits_domain"
+      npm_proxy_origin="https://mirror.qits.$qits_domain"
+      npm_hosted_path=/artifacts/npm/npm/
+      env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
+          "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
+          npm ci --no-audit --no-fund
+
+      # Writes every reference that is missing or differs. A spec that fails for any
+      # other reason fails the run, and nothing is committed.
+      UPDATE_SNAPSHOT=all npm run test:browser
+
+      # Deletes the references no test asked for in the run above (a deleted spec, a renamed
+      # screenshot). The postlude stages the deletions with the new images. A repository without
+      # the script keeps its orphans.
+      npm run --if-present screenshots:prune
+      QITS_AUTOMATION_EOF
+      if command -v bash > /dev/null 2>&1; then
+        bash -eu /tmp/qits-automation.sh
+      else
+        sh -eu /tmp/qits-automation.sh
+      fi
+      # --- platform postlude: commit only the payload's paths, push plainly ---
+      set --
+      while IFS= read -r path; do
+        if [ -n "$(git ls-files --cached --others --exclude-standard -- "$path" | head -n 1)" ]; then
+          set -- "$@" "$path"
+        fi
+      done < /tmp/qits-automation-paths
+      if [ $# -gt 0 ]; then
+        git add -A -- "$@"
+      fi
+      if git diff --cached --quiet --ignore-submodules=none; then
+        echo "unchanged: the screenshot-baselines regeneration changed nothing under the commit paths"
+        exit 0
+      fi
+      git diff --cached --stat --ignore-submodules=none
+      subject='update screenshot baselines'
+      if [ -n "$item" ]; then
+        subject="chore($item): $subject"
+      else
+        subject="chore: $subject"
+      fi
+      git -c user.name="qits maintenance" -c user.email="maintenance@qits.local" \
+          commit -q -m "$subject"
+      if ! git push "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
+        echo "push to $branch was rejected - the fold no longer contains it; remove the branch or join it again" >&2
+        exit 1
+      fi
+      echo "pushed $(git rev-parse HEAD) to $branch"

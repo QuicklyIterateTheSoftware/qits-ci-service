@@ -1,0 +1,74 @@
+# Regenerate a release request's database entity diagram, `docs/database/*.md`: the
+# `entity-diagram` kind of qits-maintenance's release-request automations (qits-760).
+#
+# A KIND FILE, not a pipeline. qits-ci's CiAutomationComposer composes it into a platform
+# trigger on `ReleaseRequestAutomation` selected by `kind: entity-diagram` (this file's name),
+# and wraps the script below in the platform's own prelude and postlude:
+#
+#   prelude   validates the payload, fetches the fold (`baseRef`) and refuses with
+#             "superseded before start" unless it is still `foldSha`; checks it out, gives the
+#             step a writable HOME and works out the commit subject's work item. Because this
+#             file says `qits-cli: true`, it then fetches the qits CLI at the version qits-ci
+#             pins and puts it on PATH - HARD: no CLI, no diagram, so a failed fetch ends the
+#             step with "the qits CLI could not be fetched"
+#   script    this file's, run as data in a child shell
+#   postlude  stages only the payload's `commitPaths`, commits `chore(<item>): update entity
+#             diagram` (or prints `unchanged` and exits 0), and makes a plain push to the
+#             payload's `branch`
+#
+# So nothing here touches a ref or makes a commit.
+#
+# THE ONLY PATH COMMITTED IS `docs/database/**` - qits-maintenance sends exactly
+# `:(glob)docs/database/**` for this kind - and it is NEVER THIS KIND'S INPUT. The generator
+# reads the compiled classes and the runtime classpath, never its own output, so the re-fold its
+# own commit causes changes nothing it reads and is carried with no second run (the carry-over
+# invariant). Keep it that way: a step here that read docs/database/ would make every commit of
+# this kind a reason to run it again. Everything else the build writes (target/, the local
+# repository) stays out of the commit.
+#
+# What runs is only a build and one CLI call: the mapping is reconstructed from the class files
+# by `qits database diagram` (JPA/Hibernate, Mermaid erDiagram, one file per persistence unit).
+# No tests run, no Quarkus augmentation and no SPA: `test-compile` holds the plain annotated
+# classes (reached with `-Dmaven.test.skip=true`, which compiles no test either - `compile` alone
+# cannot resolve a sibling module's test-jar in the reactor, which is why this phase is one step
+# further than the classes alone need), and `dependency:build-classpath` lists the jars library
+# entities arrive in.
+image: qits/build-images/maven-base:latest
+timeout-seconds: 1800
+qits-cli: true
+script: |
+  if [ ! -f pom.xml ]; then
+    echo "no pom.xml: only JPA/Hibernate entity diagrams are generated today" >&2
+    exit 1
+  fi
+
+  # The platform registry and the Central mirror, composed exactly as java-service's QA step
+  # composes them: both are code under the platform's public domain (qits-731), which the
+  # composed prelude has already demanded.
+  qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+  export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
+  export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
+
+  # The repository's own settings when it keeps them: the exact-id mirror there is what passes
+  # Maven's HTTP blocker, and its servers read the run's credential from the step environment.
+  settings=""
+  if [ -f .qits-maven-settings.xml ]; then
+    settings="-s .qits-maven-settings.xml"
+  fi
+
+  # The classes and the runtime classpath the generator reads. Quinoa off: the SPA is no input,
+  # and the clone does not recurse, so a webui submodule is an empty directory here.
+  # test-compile, not compile: a sibling module's test-jar only resolves in the reactor from
+  # test-compile on, and `compile` fails there (qits-projects-service). -Dmaven.test.skip=true
+  # keeps that phase from compiling or running any tests, so this still runs no tests. And
+  # -DincludeScope, not -Dmdep.includeScope: that is dependency:build-classpath's actual user
+  # property, so the Dmdep spelling was silently ignored.
+  ./mvnw -B -ntp ${settings} \
+    -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
+    -Dmaven.test.skip=true -Dquarkus.quinoa=false \
+    test-compile dependency:build-classpath \
+    -Dmdep.outputFile=target/qits-classpath.txt \
+    -DincludeScope=runtime
+
+  # Writes every unit's file and deletes only the generated ones it did not produce this time.
+  qits database diagram --root . --out docs/database
