@@ -98,6 +98,10 @@ change here beyond the prefix, along with runs becoming their own entity (below)
 
 ## The boundary
 
+**`qits:admin-agent` is admitted wherever `qits:admin` is**, throughout the table below and in
+"Authentication" (qits-628 follow-up): an ADMIN workspace's coding agent carries it alongside
+`qits:agent`, and for now it may use everything `qits:admin` may use.
+
 Runs reference repositories **by string id and branches by name, never a foreign key** — a deleted
 repository simply leaves runs behind as dangling history. Everything this context needs from the
 rest of qits it reaches over a URL it is configured with:

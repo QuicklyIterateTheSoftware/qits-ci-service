@@ -87,6 +87,13 @@ public class CiRunnerController {
    */
   static final String SYSTEM_ROLE = "qits:system";
 
+  /**
+   * {@code qits:admin-agent} is admitted wherever {@code ADMIN_ROLE} is (qits-628 follow-up): an
+   * ADMIN workspace's coding agent carries it alongside {@code qits:agent}, and for now it may use
+   * everything {@code qits:admin} may use.
+   */
+  static final String ADMIN_AGENT_ROLE = "qits:admin-agent";
+
   /** The role a registration token carries, and the only one the register door admits. */
   static final String REGISTRATION_ROLE = "qits:ci-runner-registration";
 
@@ -223,7 +230,7 @@ public class CiRunnerController {
 
   @POST
   @Consumes(MediaType.APPLICATION_JSON)
-  @RolesAllowed({ADMIN_ROLE, SYSTEM_ROLE})
+  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE})
   @Operation(summary = "Declare a runner; answers its install line, once")
   @APIResponse(
       responseCode = "201",
@@ -281,7 +288,7 @@ public class CiRunnerController {
   }
 
   @GET
-  @RolesAllowed({"qits:admin", "qits:system", "qits:agent"})
+  @RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system", "qits:agent"})
   @Operation(summary = "Every runner, with whether it is connected and how many runs it holds")
   @APIResponse(responseCode = "200", description = "Every runner, by name")
   public ListRunnersResponse list() {
@@ -298,7 +305,7 @@ public class CiRunnerController {
   @GET
   @Path("/install.sh")
   @Produces(MediaType.TEXT_PLAIN)
-  @RolesAllowed({REGISTRATION_ROLE, "qits:admin", "qits:system", "qits:agent"})
+  @RolesAllowed({REGISTRATION_ROLE, "qits:admin", "qits:admin-agent", "qits:system", "qits:agent"})
   @Operation(summary = "The generic runner install script, which the install line pipes into sh")
   @APIResponse(responseCode = "200", description = "A POSIX sh script, carrying no secret")
   @APIResponse(
@@ -311,7 +318,7 @@ public class CiRunnerController {
 
   @GET
   @Path("/{id}")
-  @RolesAllowed({"qits:admin", "qits:system", "qits:agent"})
+  @RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system", "qits:agent"})
   @Operation(summary = "One runner")
   @APIResponse(responseCode = "200", description = "The runner")
   @APIResponse(responseCode = "404", description = "No such runner")
@@ -322,7 +329,7 @@ public class CiRunnerController {
   @PATCH
   @Path("/{id}")
   @Consumes(MediaType.APPLICATION_JSON)
-  @RolesAllowed({ADMIN_ROLE, SYSTEM_ROLE})
+  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE})
   @Operation(summary = "Change a runner's slots, description or step memory limit")
   @APIResponse(responseCode = "200", description = "The runner as it now is")
   @APIResponse(
@@ -369,7 +376,7 @@ public class CiRunnerController {
    */
   @POST
   @Path("/{id}/registration-token")
-  @RolesAllowed({ADMIN_ROLE, SYSTEM_ROLE})
+  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE})
   @Operation(summary = "Replace a runner's registration token; answers a new install line, once")
   @APIResponse(
       responseCode = "200",
@@ -413,7 +420,7 @@ public class CiRunnerController {
    */
   @DELETE
   @Path("/{id}")
-  @RolesAllowed({ADMIN_ROLE, SYSTEM_ROLE})
+  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE})
   @Operation(summary = "Decommission a runner and give its credentials back")
   @APIResponse(responseCode = "204", description = "Gone")
   @APIResponse(responseCode = "404", description = "No such runner")
@@ -442,7 +449,9 @@ public class CiRunnerController {
    */
   @POST
   @Path("/{id}/greenlight")
-  @RolesAllowed("qits:admin")
+  // qits:admin-agent is admitted too (qits-628 follow-up); remove it here if this door must stay
+  // human-only.
+  @RolesAllowed({"qits:admin", "qits:admin-agent"})
   @Operation(summary = "Lift a runner's quarantine")
   @APIResponse(responseCode = "200", description = "The runner as it now is")
   @APIResponse(responseCode = "404", description = "No such runner")
@@ -457,7 +466,9 @@ public class CiRunnerController {
    */
   @POST
   @Path("/{id}/healthcheck")
-  @RolesAllowed("qits:admin")
+  // qits:admin-agent is admitted too (qits-628 follow-up); remove it here if this door must stay
+  // human-only.
+  @RolesAllowed({"qits:admin", "qits:admin-agent"})
   @Operation(summary = "Queue a health check for a runner")
   @APIResponse(
       responseCode = "202",
@@ -604,7 +615,9 @@ public class CiRunnerController {
    * in none of these doors' {@code @RolesAllowed}.
    */
   private void requireMachineAudience() {
-    if (MachineIdentity.isMachine(identity) && !identity.hasRole(ADMIN_ROLE)) {
+    if (MachineIdentity.isMachine(identity)
+        && !identity.hasRole(ADMIN_ROLE)
+        && !identity.hasRole(ADMIN_AGENT_ROLE)) {
       machineAuth.require();
     }
   }

@@ -65,7 +65,7 @@ import org.jboss.logging.Logger;
  */
 @Path("/runs")
 @Produces(MediaType.APPLICATION_JSON)
-@RolesAllowed({"qits:admin", "qits:system", "qits:agent", "qits:ci-run"})
+@RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system", "qits:agent", "qits:ci-run"})
 public class CiReportController {
 
   private static final Logger LOG = Logger.getLogger(CiReportController.class);
