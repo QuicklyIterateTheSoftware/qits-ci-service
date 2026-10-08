@@ -30,7 +30,21 @@
 #                                how a branch somebody else moved meanwhile ends in a
 #                                non-ff rejection rather than an overwrite
 # So a rebuild is carried by whichever step commits first: when the maven step has
-# nothing to commit, the node step still finds head == replaceHead and rebuilds.
+# nothing to commit, the node step still finds head == replaceHead and rebuilds. And when
+# NEITHER step has anything to commit - the base already carries every pin this bump would
+# have written - a rebuild that only ever pushes a commit would push nothing at all, and the
+# stale branch would stay exactly where it was: still naming replaceHead, still conflicting
+# with the base it was supposed to move onto. The NODE STEP alone carries that case: finding
+# REBUILD still decided (`$lease` set) and nothing staged, it pushes the commit it started
+# from under that same lease - no new commit, same guarantee - so the branch moves onto the
+# base either way. The maven step takes no such action on nothing to commit; it is never the
+# step with the last word, so leaving a stale branch to it would still leave it stale.
+#
+# A MAVEN-ONLY BUMP MUST REACH THAT DECISION TOO, even though the node step's own change list
+# is then empty from the start. The node step's early "nothing for me" exit is conditioned on
+# `replaceHead` as well as on its change list, so a payload carrying one still walks down into
+# the branch decision with an empty list to apply - which the apply loop and the commit/push
+# block both already tolerate - rather than returning before ever looking at the branch.
 #
 # What this reads of a `changes[]` entry, and what it does not:
 #   ecosystem     maven here, npm, docker and gitlink in the second step
@@ -300,7 +314,15 @@ steps:
         process.stdout.write(mine.map(c =>
           [c.ecosystem, c.name, c.from || "", c.to, c.manifestPath, c.location || ""].join("\t") + "\n").join(""));
       ' > /tmp/bump-node.tsv
-      if [ ! -s /tmp/bump-node.tsv ]; then
+      # A REPLACEHEAD IS A REASON TO CARRY ON EVEN WITH NOTHING OF OUR OWN: this step is the
+      # one that runs last, so a REBUILD the maven step left undone - because IT had nothing to
+      # commit, maven-only bump or not - is this step's only remaining chance to carry it; see
+      # the header. So the early exit is conditioned on replaceHead too, not on the change list
+      # alone. Everything from the branch decision down already tolerates an empty
+      # /tmp/bump-node.tsv - the apply loop below just does nothing over it - so carrying on
+      # costs nothing when there turns out to be no rebuild to carry either.
+      replace=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).replaceHead || ""')
+      if [ ! -s /tmp/bump-node.tsv ] && [ -z "$replace" ]; then
         echo "no npm, docker or gitlink changes in this bump"
         exit 0
       fi
@@ -602,6 +624,23 @@ steps:
       # still counts for nothing. Only a gitlink this step deliberately staged is seen,
       # which is exactly the change it is trying not to lose.
       if git diff --cached --quiet --ignore-submodules=none; then
+        # A REBUILD STILL HAS TO MOVE THE BRANCH, even when the base already carries every pin
+        # this bump would have written and this step has nothing to add on top. Nothing-to-commit
+        # is ordinarily silence - the maven step takes exactly this branch above with no push at
+        # all - but silence here is this bump's LAST word: if neither step pushes, the stale
+        # branch is left naming replaceHead forever, still conflicting with the base it was
+        # supposed to move onto. So when `$lease` is set - REBUILD was decided and nothing earlier
+        # rebuilt it - push the commit this step started from. No new commit, the same lease on
+        # replaceHead a rebuild that did write something would use, so a branch that moved since
+        # is refused exactly as it would be otherwise.
+        if [ -n "$lease" ]; then
+          if ! git push "$lease" "$QITS_CI_REPOSITORY_URL" "$start:refs/heads/$branch"; then
+            echo "push to $branch was rejected - the branch is not what we built on" >&2
+            exit 1
+          fi
+          echo "rebuilt $branch on $base with nothing to commit"
+          exit 0
+        fi
         echo "every npm, docker and gitlink change in this bump is already the pin - nothing to commit"
         exit 0
       fi

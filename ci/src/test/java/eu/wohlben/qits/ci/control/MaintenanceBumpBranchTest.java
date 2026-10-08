@@ -116,6 +116,115 @@ public class MaintenanceBumpBranchTest {
   }
 
   @Test
+  public void aRebuildWithNothingToCommitStillMovesTheBranch() throws Exception {
+    // Cut a second, newer release whose tree already carries every pin this bump would write -
+    // the maven step's edit and the node step's docker edit are both no-ops against it. Neither
+    // step has anything to commit, so only the node step's "push what we started from" arm can
+    // move the stale branch off replaceHead at all.
+    Files.writeString(
+        seed.resolve("pom.xml"),
+        "<project>\n  <properties>\n    <lib.version>1.1.0</lib.version>\n  </properties>\n</project>\n");
+    Files.writeString(seed.resolve("Dockerfile"), "FROM busybox:2.0\n");
+    git(seed, "add", "pom.xml", "Dockerfile");
+    commitAs(seed, "person@example.com", "chore: already at the target pins");
+    git(seed, "push", "-q", "origin", "HEAD:refs/heads/main");
+    String secondTag = "2026.1006.70511";
+    git(
+        seed, "-c", "user.name=p", "-c", "user.email=person@example.com", "tag", "-a", "-m", secondTag, secondTag);
+    git(seed, "push", "-q", "origin", "refs/tags/" + secondTag);
+    String base = out(seed, "rev-parse", "HEAD");
+
+    String payload =
+        "{\"group\":\"libs\",\"branch\":\"" + BRANCH + "\",\"baseRef\":\"refs/tags/" + secondTag + "\""
+            + ",\"replaceHead\":\"" + oldHead + "\""
+            + ",\"changes\":["
+            + "{\"ecosystem\":\"maven\",\"name\":\"eu.wohlben:lib\",\"from\":\"1.0.0\",\"to\":\"1.1.0\","
+            + "\"manifestPath\":\"pom.xml\",\"location\":\"property:lib.version\"},"
+            + "{\"ecosystem\":\"docker\",\"name\":\"busybox\",\"from\":\"1.0\",\"to\":\"2.0\","
+            + "\"manifestPath\":\"Dockerfile\",\"location\":\"\"}"
+            + "]}";
+
+    Run maven = step(0, payload);
+    assertEquals(0, maven.exit, maven.output);
+    assertTrue(maven.output.contains("rebuilding " + BRANCH), maven.output);
+    assertTrue(maven.output.contains("nothing to commit"), maven.output);
+    assertEquals(oldHead, branchHead(), "the maven step must never push on nothing to commit");
+
+    Run node = step(1, payload);
+    assertEquals(0, node.exit, node.output);
+    assertTrue(node.output.contains("rebuilding " + BRANCH), node.output);
+    assertTrue(
+        node.output.contains("rebuilt " + BRANCH + " on refs/tags/" + secondTag + " with nothing to commit"),
+        node.output);
+    assertEquals(base, branchHead(), "a rebuild with nothing to commit must still move the branch");
+  }
+
+  @Test
+  public void aMavenOnlyRebuildWithNothingToCommitStillMovesTheBranch() throws Exception {
+    // A maven-only payload: the node step's own change list is empty from the start, not merely
+    // a no-op after applying it. Its early "nothing for me" exit must still give way to the
+    // branch decision when replaceHead says a rebuild may be owed - otherwise this bump leaves
+    // the branch exactly where aRebuildWithNothingToCommitStillMovesTheBranch would have, with
+    // neither step ever looking at it.
+    Files.writeString(
+        seed.resolve("pom.xml"),
+        "<project>\n  <properties>\n    <lib.version>1.1.0</lib.version>\n  </properties>\n</project>\n");
+    git(seed, "add", "pom.xml");
+    commitAs(seed, "person@example.com", "chore: already at the target pin");
+    git(seed, "push", "-q", "origin", "HEAD:refs/heads/main");
+    String secondTag = "2026.1006.70522";
+    git(
+        seed, "-c", "user.name=p", "-c", "user.email=person@example.com", "tag", "-a", "-m", secondTag, secondTag);
+    git(seed, "push", "-q", "origin", "refs/tags/" + secondTag);
+    String base = out(seed, "rev-parse", "HEAD");
+
+    String payload =
+        "{\"group\":\"libs\",\"branch\":\"" + BRANCH + "\",\"baseRef\":\"refs/tags/" + secondTag + "\""
+            + ",\"replaceHead\":\"" + oldHead + "\""
+            + ",\"changes\":["
+            + "{\"ecosystem\":\"maven\",\"name\":\"eu.wohlben:lib\",\"from\":\"1.0.0\",\"to\":\"1.1.0\","
+            + "\"manifestPath\":\"pom.xml\",\"location\":\"property:lib.version\"}"
+            + "]}";
+
+    Run maven = step(0, payload);
+    assertEquals(0, maven.exit, maven.output);
+    assertTrue(maven.output.contains("rebuilding " + BRANCH), maven.output);
+    assertTrue(maven.output.contains("nothing to commit"), maven.output);
+    assertEquals(oldHead, branchHead(), "the maven step must never push on nothing to commit");
+
+    Run node = step(1, payload);
+    assertEquals(0, node.exit, node.output);
+    assertTrue(node.output.contains("rebuilding " + BRANCH), node.output);
+    assertTrue(
+        node.output.contains("rebuilt " + BRANCH + " on refs/tags/" + secondTag + " with nothing to commit"),
+        node.output);
+    assertEquals(base, branchHead(), "a maven-only rebuild with nothing to commit must still move the branch");
+  }
+
+  @Test
+  public void aMavenOnlyRebuildThatPushedARealCommitIsContinuedByTheNodeStep() throws Exception {
+    // A maven-only payload whose edit is a REAL change this time (the tag's pom.xml is still at
+    // 1.0.0, as the shared fixture leaves it): the maven step carries the rebuild itself, and the
+    // node step - finding head != replaceHead, and nothing of its own either way - must simply
+    // continue and exit clean, never touching the branch again.
+    String payload = payload(oldHead, true, false);
+
+    Run maven = step(0, payload);
+    assertEquals(0, maven.exit, maven.output);
+    assertTrue(
+        maven.output.contains("rebuilding " + BRANCH + " on refs/tags/" + TAG + " (was " + oldHead + ")"),
+        maven.output);
+    String mavenCommit = branchHead();
+    assertEquals(tagCommit, rev(mavenCommit + "^"), "the rebuild did not start from the tag");
+
+    Run node = step(1, payload);
+    assertEquals(0, node.exit, node.output);
+    assertTrue(node.output.contains("continuing " + BRANCH), node.output);
+    assertTrue(node.output.contains("nothing to commit"), node.output);
+    assertEquals(mavenCommit, branchHead(), "the node step must not push again when it has nothing of its own");
+  }
+
+  @Test
   public void aRebuildIsRefusedWhenTheBranchMovesBeforeItsPush() throws Exception {
     // A pre-push hook in the step's clone moves the remote branch after the step decided to
     // rebuild and before its push lands: the lease on replaceHead must refuse the overwrite.
