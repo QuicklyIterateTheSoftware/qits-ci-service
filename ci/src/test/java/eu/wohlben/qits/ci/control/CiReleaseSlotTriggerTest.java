@@ -639,6 +639,100 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     assertFalse(stillOwed(arrival.eventId()), "and the ledger is clear again");
   }
 
+  // The same case one read EARLIER (qits-1080): the named repository's trigger listing does not
+  // answer, so its release.yml is never asked for — and the old rule saw nothing unreadable, settled
+  // the row and lost the release run for good.
+
+  @Test
+  public void aReleaseWhoseRepositoryCannotBeListedRecordsNoRunAndStaysOwedForTheSweep()
+      throws Exception {
+    seedSlots(
+        """
+        release:
+          - image: alpine:3
+            script: echo publish
+        """);
+    fakeConfig.putTriggersUnreachable(repoId, "main");
+
+    CiEventTriggerService.Arrival arrival = release();
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(List.of(), runService.runsFor(repoId), "nothing was learned, so nothing ran");
+    assertTrue(stillOwed(arrival.eventId()), "and the publish run is still owed");
+
+    // The git host comes back.
+    fakeConfig.putTriggers(repoId, "main", HEAD);
+    engine.sweepOwed(Instant.now().plusSeconds(60));
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+
+    List<CiRun> recovered = runService.runsFor(repoId);
+    assertEquals(1, recovered.size(), "the composed publish run the release was owed");
+    assertEquals(CiReleaseSlotParser.CONFIG_PATH, recovered.get(0).configPath);
+    assertEquals(RELEASED_SHA, recovered.get(0).commitSha);
+    assertEquals(arrival.eventId(), recovered.get(0).triggerEventId, "under the original event");
+    assertFalse(stillOwed(arrival.eventId()), "and the ledger is clear again");
+  }
+
+  @Test
+  public void aReleaseRequestWhoseRepositoryCannotBeListedRecordsNoRunAndStaysOwedForTheSweep()
+      throws Exception {
+    seedSlots("archetype: spa-frontend\n");
+    seedArchetype("spa-frontend", SPA_FRONTEND);
+    fakeConfig.putTriggersUnreachable(repoId, "main");
+
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(List.of(), runService.runsFor(repoId), "nothing was learned, so nothing ran");
+    assertTrue(stillOwed(arrival.eventId()), "and the QA run is still owed");
+
+    fakeConfig.putTriggers(repoId, "main", HEAD);
+    engine.sweepOwed(Instant.now().plusSeconds(60));
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+
+    List<CiRun> recovered = runService.runsFor(repoId);
+    assertEquals(1, recovered.size(), "the composed QA run the release request was owed");
+    assertEquals(CiReleaseSlotParser.CONFIG_PATH, recovered.get(0).configPath);
+    assertEquals(MERGED_SHA, recovered.get(0).commitSha);
+    assertEquals(arrival.eventId(), recovered.get(0).triggerEventId, "under the original event");
+    assertFalse(stillOwed(arrival.eventId()), "and the ledger is clear again");
+  }
+
+  @Test
+  public void aReleaseEventSettlesWhenOnlyACandidateItDoesNotNameCannotBeListed()
+      throws Exception {
+    // A deleted repository stays a candidate. If ITS silence kept release events owed, every
+    // release on the platform would be re-evaluated forever.
+    seedSlots("archetype: spa-frontend\n");
+    seedArchetype("spa-frontend", SPA_FRONTEND);
+    fakeConfig.putTriggersUnreachable(wrapperId, "main");
+
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(1, runService.runsFor(repoId).size(), "the named repository's QA run");
+    assertFalse(stillOwed(arrival.eventId()), "settled: the silent candidate is not the named one");
+  }
+
+  @Test
+  public void anOrdinaryEventSettlesEvenWhenNoCandidateCanBeListed() throws Exception {
+    fakeConfig.putTriggersUnreachable(repoId, "main");
+    fakeConfig.putTriggersUnreachable(wrapperId, "main");
+
+    CiEventTriggerService.Arrival arrival =
+        new CiEventTriggerService.Arrival(
+            UUID.randomUUID().toString(),
+            "BuildSuccessful",
+            Instant.parse("2026-09-06T11:00:00Z"),
+            "{\"repository\":\"qits-target\",\"repoName\":\"qits-target\"}");
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(List.of(), runService.runsFor(repoId));
+    assertFalse(stillOwed(arrival.eventId()), "only a release event is owed on a silent listing");
+  }
+
   @Test
   public void aLocalArchetypeThatCannotBeLookedForIsOwedAndIsNotAnsweredFromThePackagedCopy()
       throws Exception {

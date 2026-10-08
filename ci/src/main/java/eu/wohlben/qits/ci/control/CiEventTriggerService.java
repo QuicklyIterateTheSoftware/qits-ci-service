@@ -109,8 +109,9 @@ import org.jboss.logging.Logger;
  * (trigger_event_id, repo_id, config_path)} makes a second evaluation of an event that already
  * recorded its runs a no-op. That constraint is what lets this ledger be at-least-once.
  *
- * <p><b>Three outcomes leave a row owed: a throw, a release evaluation that could not read a
- * candidate's release pipeline, and a run whose step image could not be pinned.</b> The second covers both reads that pipeline is made of, and
+ * <p><b>Four outcomes leave a row owed: a throw, a release evaluation that could not read a
+ * candidate's release pipeline, a run whose step image could not be pinned, and a release event
+ * whose own repository's trigger listing did not answer.</b> The second covers both reads that pipeline is made of, and
  * both are reads of the candidate itself: its {@code .config/qits/release.yml} coming back {@code
  * UNREACHABLE}, and — when that file names an archetype — the look for the repository's own copy
  * of the recipe coming back {@code UNREACHABLE} ({@code CiReleaseArchetypes.Status.UNREADABLE}).
@@ -137,6 +138,17 @@ import org.jboss.logging.Logger;
  * is known about which tool the build would have run inside, and accepting the run anyway is the
  * floating-tag defect the pin exists to close. So the accept refuses, the candidate lands on {@link
  * Evaluation#repositoriesUnreadable()} beside the {@code release.yml} case, and a sweep asks again.
+ *
+ * <p>The fourth is the second one a read EARLIER (qits-1080). A candidate whose trigger listing comes
+ * back {@code UNREACHABLE} is skipped before its {@code release.yml} is ever asked for, so the old
+ * rule saw nothing unreadable and settled the row — an {@code SCMRelease} arriving during a short
+ * git-host failure lost its publish run for good. So the candidate the release event NAMES ({@code
+ * repository} on an {@code SCMRelease}, {@code repoName} on a {@code ReleaseRequestChanged}, the
+ * fields the composed {@code when:} selects on) goes on {@link Evaluation#repositoriesUnreadable()}
+ * when its listing did not answer, or when the manual door's deadline arrived before its turn. Only
+ * that one: every other silent candidate is skipped and nothing more, because a deleted repository
+ * stays a candidate and must not keep every release event on the platform owed forever. A
+ * non-release event, or a release event naming no candidate, settles exactly as before.
  *
  * <p>What makes that safe is the dedupe two paragraphs up and nothing else: the candidates that
  * <em>did</em> answer have already recorded their runs, the constraint refuses them a second time,
@@ -298,8 +310,10 @@ public class CiEventTriggerService {
    *     {@code repositoriesUnreadable} is on this list too, because a candidate whose pipeline could
    *     not be read is exactly a candidate that did not answer, and the synchronous door reports
    *     this list.
-   * @param repositoriesUnreadable the candidates whose {@code .config/qits/release.yml} came back
-   *     {@code UNREACHABLE} during a release event — the one outcome that leaves the event OWED. It
+   * @param repositoriesUnreadable the candidates a release event is still owed a verdict for —
+   *     their {@code .config/qits/release.yml}, an archetype it names or the trigger listing of the
+   *     repository the event names came back {@code UNREACHABLE}, or a step image could not be
+   *     pinned — the one outcome that leaves the event OWED. It
    *     is a separate list rather than a flag on the one above because the skipped list mixes four
    *     answers that are all final for this evaluation, and this one is the only one a later sweep
    *     can improve on. See the class javadoc for the release it cost.
@@ -538,16 +552,16 @@ public class CiEventTriggerService {
       return;
     }
     if (!done.repositoriesUnreadable().isEmpty()) {
-      // The other one. A release event whose candidate could not have its release.yml read has had
-      // no verdict recorded for that repository, and nothing else on the platform would ever ask
+      // The other one. A release event with a candidate whose release pipeline could not be read —
+      // its trigger listing, its release.yml, the archetype that names, or a step image — has had no
+      // verdict recorded for that repository, and nothing else on the platform would ever ask
       // again — so the row stands and the next sweep asks a git host that has probably come back.
       LOG.warnf(
-          "Event %s (%s) stays owed: %s could not have %s read, so no release pipeline was composed"
-              + " for it — the next sweep re-evaluates the event",
+          "Event %s (%s) stays owed: the release pipeline of %s could not be read, so no run it is"
+              + " owed was recorded — the next sweep re-evaluates the event",
           arrival.eventId(),
           arrival.eventName(),
-          done.repositoriesUnreadable(),
-          CiReleaseSlotParser.CONFIG_PATH);
+          done.repositoriesUnreadable());
       return;
     }
     settle(arrival.eventId());
@@ -590,15 +604,24 @@ public class CiEventTriggerService {
     // would be the same answer arrived at N times and N copies of the same log line. Null for every
     // event that is not one of the two release events — see releaseRevision.
     ReleaseRevision revision = releaseRevision(arrival, payload);
+    // The one candidate a RELEASE event is about, and the only one whose silent trigger listing
+    // leaves the event owed — see the class javadoc. Null for every other event.
+    CiRepoRef releasing = releasingRepository(arrival, payload, candidates);
     for (CiRepoRef repo : candidates) {
+      boolean owedIfSilent = releasing != null && releasing.repoId().equals(repo.repoId());
       if (deadlineNanos != null && System.nanoTime() - deadlineNanos >= 0) {
         // Out of time rather than out of answers, and the two must not look alike to the caller —
-        // so the repository goes on the skipped list like any other one that could not be asked.
+        // so the repository goes on the skipped list like any other one that could not be asked,
+        // and on the owed one too when it is the repository the release event is about.
         skipped.add(repo.repoId());
+        if (owedIfSilent) {
+          unreadable.add(repo.repoId());
+        }
         continue;
       }
       try {
-        if (!evaluateRepo(repo, arrival, payload, revision, runIds, heads, unreadable)) {
+        if (!evaluateRepo(
+            repo, arrival, payload, revision, runIds, heads, unreadable, owedIfSilent)) {
           skipped.add(repo.repoId());
         }
       } catch (RuntimeException e) {
@@ -666,7 +689,9 @@ public class CiEventTriggerService {
    * Evaluates one repository. {@code false} means it could not be read, which is not "no match" —
    * either its trigger listing did not answer at all, or its {@code release.yml} — or the look for
    * its own copy of the archetype that file names — did not, and the second of those also lands the
-   * repository on {@code unreadable}.
+   * repository on {@code unreadable}. The first does too when {@code owedIfSilent}: the repository
+   * is the one the arriving release event names, and a listing that did not answer has told the
+   * engine nothing about the run that event is owed.
    *
    * <p>The reference travels rather than an id: the trigger files are read name-addressed when the
    * candidate carries a public coordinate, and id-addressed when it does not.
@@ -678,11 +703,22 @@ public class CiEventTriggerService {
       ReleaseRevision revision,
       List<String> runIds,
       Map<String, String> heads,
-      List<String> unreadable) {
+      List<String> unreadable,
+      boolean owedIfSilent) {
     String repoId = repo.display();
     EventTriggerLookup lookup =
         configSource.readEventTriggers(repo, TRIGGER_BRANCH, CiTriggerScope.REPOSITORY);
     if (lookup.status() != EventTriggerLookup.Status.FOUND) {
+      if (owedIfSilent) {
+        // The repository this release event is ABOUT: its release.yml was never reached, so this
+        // is the unreadable slot file's case one read earlier — owed, not settled. WARN, because
+        // it is one repository per release event rather than one per candidate per frame.
+        LOG.warnf(
+            "Could not read %s@%s for triggers during %s %s, which names it — the event stays owed",
+            repoId, TRIGGER_BRANCH, arrival.eventName(), arrival.eventId());
+        unreadable.add(repo.repoId());
+        return false;
+      }
       // DEBUG rather than WARN: the candidate list is "every repository ci has ever heard of", so a
       // deleted repository or one with no main would otherwise warn once per repo per event forever.
       LOG.debugf("Could not read %s@%s for triggers", repoId, TRIGGER_BRANCH);
@@ -1917,7 +1953,34 @@ public class CiEventTriggerService {
 
   /** The payload's {@code repository}, or null when it carries none or carries a non-string. */
   private static String payloadRepository(JsonNode payload) {
-    JsonNode value = payload == null ? null : payload.get(PAYLOAD_REPOSITORY_FIELD);
+    return payloadText(payload, PAYLOAD_REPOSITORY_FIELD);
+  }
+
+  /**
+   * The candidate a release event is about, or null — for any other event, for a payload naming no
+   * repository, and for a name the catalogue does not hold (a release of a repository this platform
+   * cannot read owes nothing a sweep could ever deliver).
+   *
+   * <p>The field is per event, and each is the one the composed {@code when:} selects on ({@code
+   * CiReleaseComposer}): {@code repository} on an {@code SCMRelease}, {@code repoName} on a {@code
+   * ReleaseRequestChanged}.
+   */
+  private static CiRepoRef releasingRepository(
+      Arrival arrival, JsonNode payload, List<CiRepoRef> candidates) {
+    if (!RELEASE_EVENTS.contains(arrival.eventName())) {
+      return null;
+    }
+    String field =
+        CiReleaseComposer.RELEASE_REQUEST_EVENT.equals(arrival.eventName())
+            ? CiEventSelectionEvaluator.REPO_NAME_PATH
+            : PAYLOAD_REPOSITORY_FIELD;
+    String named = payloadText(payload, field);
+    return named == null ? null : find(candidates, named);
+  }
+
+  /** One top-level string of the payload, or null when absent, blank or not a string. */
+  private static String payloadText(JsonNode payload, String field) {
+    JsonNode value = payload == null ? null : payload.get(field);
     if (value == null || !value.isTextual() || value.asText().isBlank()) {
       return null;
     }
@@ -2000,8 +2063,10 @@ public class CiEventTriggerService {
    * <p>One row at a time on this thread, and per-row containment: a row that throws stays owed for
    * the next sweep, and the ones behind it are still swept. A row whose evaluation <em>returned</em>
    * is settled even if no repository could be read — see the class javadoc for why that is not a
-   * retry this ledger owes — <b>unless it returned naming a candidate whose {@code release.yml} it
-   * could not read</b>, which is the one returning outcome that is worth asking again. Such a row is
+   * retry this ledger owes — <b>unless it returned naming a candidate whose release pipeline it
+   * could not read</b> (its {@code release.yml}, the archetype that names, a step image, or — for
+   * the repository the release event names — its trigger listing), which is the one returning
+   * outcome that is worth asking again. Such a row is
    * left owed and is <em>not</em> counted as recovered, so the sweep's own line says what happened
    * rather than reporting a recovery the next sweep will repeat.
    */
@@ -2025,12 +2090,11 @@ public class CiEventTriggerService {
         Evaluation done = evaluate(arrival);
         if (!done.repositoriesUnreadable().isEmpty()) {
           LOG.warnf(
-              "Owed event %s (%s) was re-evaluated and stays owed: %s could not have %s read, so no"
-                  + " release pipeline was composed for it",
+              "Owed event %s (%s) was re-evaluated and stays owed: the release pipeline of %s could"
+                  + " not be read, so no run it is owed was recorded",
               row.eventId,
               row.eventName,
-              done.repositoriesUnreadable(),
-              CiReleaseSlotParser.CONFIG_PATH);
+              done.repositoriesUnreadable());
           continue;
         }
         settle(row.eventId);
