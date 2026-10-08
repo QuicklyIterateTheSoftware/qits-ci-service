@@ -289,6 +289,61 @@ public class CiAutomationComposerTest {
   }
 
   @Test
+  public void aStepExecutedAgainAfterItsPushIsAlreadyPushedAndGreen(@TempDir Path dir)
+      throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell));
+      String payload = scratch.payload(BRANCH, scratch.fold, "\":(glob)out/**\"");
+      Result first = scratch.run(shell, WRITES, payload);
+      assertEquals(0, first.exit, shell + ":\n" + first.output);
+      String pushed = scratch.originRev("refs/heads/" + BRANCH);
+
+      // The re-dispatched execution commits the same content at another instant: another sha, so
+      // its plain push is rejected as non-fast-forward.
+      Result again =
+          scratch.run(
+              shell,
+              WRITES,
+              payload,
+              false,
+              null,
+              Map.of(
+                  "GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z",
+                  "GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z"));
+
+      assertEquals(0, again.exit, shell + ":\n" + again.output);
+      assertTrue(
+          again.output.contains(
+              "already pushed: " + BRANCH + " at " + pushed + " carries the same content"),
+          again.output);
+      assertTrue(again.output.contains("pushed " + pushed + " to " + BRANCH), again.output);
+      assertFalse(again.output.contains("the fold no longer contains it"), again.output);
+      assertEquals(pushed, scratch.originRev("refs/heads/" + BRANCH), "no second commit");
+      assertEquals(scratch.fold, scratch.git(scratch.origin, "rev-parse", pushed + "^"));
+    }
+  }
+
+  @Test
+  public void aBranchOnTheFoldHoldingOtherContentIsStillARejectedPush(@TempDir Path dir)
+      throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell));
+      String payload = scratch.payload(BRANCH, scratch.fold, "\":(glob)out/**\"");
+      // Somebody else's commit on the very same fold, writing the same path differently.
+      Result other = scratch.run(shell, "mkdir -p out\necho other > out/file.txt\n", payload);
+      assertEquals(0, other.exit, shell + ":\n" + other.output);
+      String before = scratch.originRev("refs/heads/" + BRANCH);
+
+      Result run = scratch.run(shell, WRITES, payload);
+
+      assertEquals(1, run.exit, shell + ":\n" + run.output);
+      assertTrue(run.output.contains("the fold no longer contains it"), run.output);
+      assertFalse(run.output.contains("already pushed"), run.output);
+      assertEquals(before, scratch.originRev("refs/heads/" + BRANCH), "never forced");
+    }
+  }
+
+  @Test
   public void anImplausiblePayloadIsRefusedBeforeAnythingIsFetched(@TempDir Path dir)
       throws Exception {
     Scratch scratch = new Scratch(dir);

@@ -190,6 +190,10 @@ public class PackagedPlatformPipelinesTest {
     assertFalse(composed.contains("push -f"), "a forced push in the composed automation");
     assertFalse(composed.contains("+HEAD:"), "a forced refspec in the composed automation");
     assertTrue(composed.contains("git push \"$QITS_CI_REPOSITORY_URL\" \"HEAD:refs/heads/$branch\""));
+    // A rejection is checked for a re-executed step's own push before it is called a failure.
+    int already = composed.indexOf("already pushed: $branch at $remote carries the same content");
+    assertTrue(already > 0, "the composed automation is not idempotent under re-execution");
+    assertTrue(already < composed.indexOf("the fold no longer contains it"), composed);
   }
 
   @Test

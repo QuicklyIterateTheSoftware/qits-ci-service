@@ -62,9 +62,12 @@ import java.util.regex.Pattern;
  * <p>The <b>postlude</b> stages <b>only</b> the payload's {@code commitPaths} ({@code git add -A
  * --}), commits {@code chore(<item>): update <kind words>} unless the {@code
  * --ignore-submodules=none} guard finds nothing staged — then it prints {@code unchanged} and exits
- * 0 — and makes a plain push, never forced, to {@code HEAD:refs/heads/<branch>}. A rejection means
- * the fold no longer contains the branch, and the step fails saying so. It ends {@code pushed <sha>
- * to <branch>}.
+ * 0 — and makes a plain push, never forced, to {@code HEAD:refs/heads/<branch>}. A rejected push
+ * fetches the branch: a tip whose one parent is the fold and whose tree is this step's is the same
+ * step executed again after its first execution pushed (a runner re-dispatch), so it prints {@code
+ * already pushed: <branch> at <sha> carries the same content} and is green, the branch having moved
+ * as a fresh push would have moved it. Any other rejection means the fold no longer contains the
+ * branch, and the step fails saying so. It ends {@code pushed <sha> to <branch>}.
  *
  * <p><b>The payload is read with {@code jq}</b>, so a kind's image must carry it; one without it is
  * refused in the prelude with a sentence naming the image. Every platform image a kind runs on
@@ -348,6 +351,24 @@ public final class CiAutomationComposer {
     // Plain, never forced. After the first join the fold contains the branch, so a later run on a
     // newer fold is a fast-forward of it.
     out.append("if ! git push \"$QITS_CI_REPOSITORY_URL\" \"HEAD:refs/heads/$branch\"; then\n");
+    // A step executed again after its first execution pushed - a runner re-dispatch - commits the
+    // same content under another sha, and that push is rejected. The branch's tip with the fold as
+    // its one parent and our tree is exactly what this step produced: already pushed, and green -
+    // the branch moved, which is what qits-maintenance reads as COMMITTED.
+    out.append("  remote=\n");
+    out.append(
+        "  if git fetch -q \"$QITS_CI_REPOSITORY_URL\" \"refs/heads/$branch\" 2>/dev/null; then\n");
+    out.append("    remote=$(git rev-parse --verify -q 'FETCH_HEAD^{commit}' || true)\n");
+    out.append("  fi\n");
+    out.append("  if [ -n \"$remote\" ] \\\n");
+    out.append("      && [ \"$(git rev-list --parents -n 1 \"$remote\")\" = \"$remote $fold\" ] \\\n");
+    out.append(
+        "      && [ \"$(git rev-parse \"$remote^{tree}\")\" = \"$(git rev-parse 'HEAD^{tree}')\" ];"
+            + " then\n");
+    out.append("    echo \"already pushed: $branch at $remote carries the same content\"\n");
+    out.append("    echo \"pushed $remote to $branch\"\n");
+    out.append("    exit 0\n");
+    out.append("  fi\n");
     out.append(
         "  echo \"push to $branch was rejected - the fold no longer contains it; remove the branch"
             + " or join it again\" >&2\n");

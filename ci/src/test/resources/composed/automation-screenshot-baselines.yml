@@ -132,6 +132,17 @@ steps:
       git -c user.name="qits maintenance" -c user.email="maintenance@qits.local" \
           commit -q -m "$subject"
       if ! git push "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
+        remote=
+        if git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$branch" 2>/dev/null; then
+          remote=$(git rev-parse --verify -q 'FETCH_HEAD^{commit}' || true)
+        fi
+        if [ -n "$remote" ] \
+            && [ "$(git rev-list --parents -n 1 "$remote")" = "$remote $fold" ] \
+            && [ "$(git rev-parse "$remote^{tree}")" = "$(git rev-parse 'HEAD^{tree}')" ]; then
+          echo "already pushed: $branch at $remote carries the same content"
+          echo "pushed $remote to $branch"
+          exit 0
+        fi
         echo "push to $branch was rejected - the fold no longer contains it; remove the branch or join it again" >&2
         exit 1
       fi
