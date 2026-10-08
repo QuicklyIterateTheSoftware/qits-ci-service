@@ -33,6 +33,9 @@ public class NoLockfileRewriteTest {
 
   private static final Path CONFIG = Path.of("..", ".config", "qits");
 
+  /** The platform pipelines: this module's own classpath resources, not {@code .config/qits/}. */
+  private static final Path PLATFORM_PIPELINES = Path.of("src", "main", "resources", "platform-pipelines");
+
   /** The form every recipe carried until qits-731, verbatim: the matcher must see it. */
   private static final String THE_RETIRED_REWRITE =
       """
@@ -46,9 +49,11 @@ public class NoLockfileRewriteTest {
 
   private static List<Path> recipes() throws Exception {
     List<Path> files = new ArrayList<>();
-    for (String dir :
-        List.of("release-archetypes", "platform-pipelines", "platform-pipelines/automations")) {
-      try (Stream<Path> listed = Files.list(CONFIG.resolve(dir))) {
+    try (Stream<Path> listed = Files.list(CONFIG.resolve("release-archetypes"))) {
+      listed.filter(path -> path.toString().endsWith(".yml")).sorted().forEach(files::add);
+    }
+    for (Path dir : List.of(PLATFORM_PIPELINES, PLATFORM_PIPELINES.resolve("automations"))) {
+      try (Stream<Path> listed = Files.list(dir)) {
         listed.filter(path -> path.toString().endsWith(".yml")).sorted().forEach(files::add);
       }
     }

@@ -30,7 +30,8 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 public class CiPlatformTriggerTest extends CiTestSupport {
 
-  private static final String PLATFORM_PATH = ".config/qits/platform-pipelines/maintenance-bump.yml";
+  private static final String PLATFORM_PATH =
+      "ci/src/main/resources/platform-pipelines/maintenance-bump.yml";
 
   private static final String LOCAL_PATH = ".config/qits/ci-event-bump.yml";
 
@@ -253,9 +254,9 @@ public class CiPlatformTriggerTest extends CiTestSupport {
     platformPipelines.override(null);
     assertEquals(
         List.of(
-            ".config/qits/platform-pipelines/maintenance-bump.yml",
-            ".config/qits/platform-pipelines/automations/entity-diagram.yml",
-            ".config/qits/platform-pipelines/automations/screenshot-baselines.yml"),
+            "ci/src/main/resources/platform-pipelines/maintenance-bump.yml",
+            "ci/src/main/resources/platform-pipelines/automations/entity-diagram.yml",
+            "ci/src/main/resources/platform-pipelines/automations/screenshot-baselines.yml"),
         platformPipelines.files().stream().map(EventTriggerFile::path).toList());
   }
 
@@ -280,7 +281,7 @@ public class CiPlatformTriggerTest extends CiTestSupport {
   // --- the composed automations, from the packaged set ---
 
   private static final String AUTOMATION_PATH =
-      ".config/qits/platform-pipelines/automations/screenshot-baselines.yml";
+      "ci/src/main/resources/platform-pipelines/automations/screenshot-baselines.yml";
 
   private static String automationPayload(String kind) {
     return "{\"kind\":\""
@@ -334,7 +335,8 @@ public class CiPlatformTriggerTest extends CiTestSupport {
     List<CiRun> recorded = runService.runsFor(targetId);
     assertEquals(1, recorded.size(), "one kind file, one run");
     CiRun run = recorded.get(0);
-    assertEquals(".config/qits/platform-pipelines/automations/entity-diagram.yml", run.configPath);
+    assertEquals(
+        "ci/src/main/resources/platform-pipelines/automations/entity-diagram.yml", run.configPath);
     assertEquals("ReleaseRequestAutomation", run.triggerEventName);
     assertEquals(arrival.eventId(), run.triggerEventId);
     assertEquals("main", run.branch);

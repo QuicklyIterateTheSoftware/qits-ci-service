@@ -208,7 +208,8 @@ public class CiEventCheckoutTest extends CiTestSupport {
       fakeConfig.putTriggers(targetId, "main", HEAD);
       platformPipelines.override(
           List.of(
-              new EventTriggerFile(".config/qits/platform-pipelines/build.yml", CHECKOUT_TRIGGER)));
+              new EventTriggerFile(
+                  "ci/src/main/resources/platform-pipelines/build.yml", CHECKOUT_TRIGGER)));
       engine.platformPipelines(true);
 
       deliver(

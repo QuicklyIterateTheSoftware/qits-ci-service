@@ -257,8 +257,8 @@ Three rules for that scope:
   event is in `PUSH_NOTHING` too. Copies of them under a service's `src/main/webui` or in the
   bootstrap's `.qits-bootstrap-src` are stale working trees, not recipes.
 - **The bump scope is the payload's `branch`**, because that is the one ref
-  `.config/qits/platform-pipelines/maintenance-bump.yml` pushes. `ScreenshotBaselines` is retired
-  (qits-1007): `.config/qits/platform-pipelines/screenshot-baselines.yml`, the one ref it pushed
+  `ci/src/main/resources/platform-pipelines/maintenance-bump.yml` pushes. `ScreenshotBaselines` is
+  retired (qits-1007): `screenshot-baselines.yml`, the one ref it pushed
   under `maintenance/baselines/`, and its `RunGitRefs` arm are gone, and the event states nothing
   now — the unknown-event answer. `ReleaseRequestAutomation` is one generic arm: the payload's
   `branch` only under `maintenance/automations/<payload.kind>/`, the one ref a composed automation
@@ -1946,12 +1946,16 @@ names"), and what follows is what biting it feels like.
 A second source of trigger files, and the whole of what is new about it is *which repository the run
 is about*.
 
-- **Packaged, like the archetypes.** `.config/qits/platform-pipelines/*.yml` in this repository,
-  built into the jar as `platform-pipelines/<name>.yml` and read once by `CiPlatformPipelines`
-  (boot fails when one is missing; the native image names them in
-  `quarkus.native.resources.includes`). Parsed by the same `CiEventTriggerParser`. Until 2026-10-02
-  they were the wrapper's `ci-platform-event-*.yml`, listed at its `main` per event;
-  `qits.ci.platform-pipelines-repository` is retired and only logged as ignored.
+- **Packaged, like the archetypes — but as this module's own resources, not a copy out of
+  `.config/qits/`.** `ci/src/main/resources/platform-pipelines/*.yml` in this repository, carried
+  onto the jar's classpath as `platform-pipelines/<name>.yml` by `src/main/resources`'s ordinary,
+  unfiltered declaration, and read once by `CiPlatformPipelines` (boot fails when one is missing;
+  the native image names them in `quarkus.native.resources.includes`). Parsed by the same
+  `CiEventTriggerParser`. Until 2026-10-02 they were the wrapper's `ci-platform-event-*.yml`, listed
+  at its `main` per event; `qits.ci.platform-pipelines-repository` is retired and only logged as
+  ignored. They moved out of `.config/qits/` in qits-1077: that directory is a repository's own
+  configuration, gated by qits-projects' `ApprovalPolicy` for a person's approval, while these files
+  are platform code and belong beside the Java that reads them.
 - **The payload names the repository, and it must be in the catalogue.** The run is recorded against,
   and its steps clone, the repository `payload.repository` names, resolved against the same candidate
   list the evaluation already has (name first, storage id second — the pre-cutover arm). No field, no
@@ -1969,7 +1973,7 @@ is about*.
   <kind>` with the platform's prelude (payload refusals, fold fetch, `superseded before start`) and
   postlude (stage only `commitPaths`, the `--ignore-submodules=none` guard, plain push). The set is
   `CiPlatformPipelines.AUTOMATIONS`, held to the files by `PackagedPlatformPipelinesTest`; a refused
-  kind file fails the boot. `ci/pom.xml` and `quarkus.native.resources.includes` each name the
+  kind file fails the boot. `quarkus.native.resources.includes` names the
   `automations/` subdirectory explicitly, because a `*` does not reach into it. `qits-cli: true`
   spends `CiReleaseComposer.cliFetch` in its `AUTOMATION` form — one download text for the release
   prelude, the QA report hook and the automations, never a copy — and that form is hard: a kind that
@@ -1977,7 +1981,7 @@ is about*.
 - **Two files are two runs, deliberately.** A repository carrying both a local and a platform trigger
   for one event gets two rows: the dedupe is `(trigger_event_id, repo_id, config_path)` and the paths
   differ. That is also how a run says which kind it was — `config_path` already travels to the API,
-  and `.config/qits/platform-pipelines/` is the answer. Nothing was added to the schema for this.
+  and `ci/src/main/resources/platform-pipelines/` is the answer. Nothing was added to the schema for this.
 - **Blank is off and reads nothing.** The key is injected as `Optional<String>`, because a property
   spelled as the empty string arrives as *absent* and a bare `String` injection point fails the whole
   deployment on the one value that means "off". The suites turn it off in their
@@ -2039,8 +2043,10 @@ phase.
   `.config/qits/release-archetypes/<name>.yml` in the repository the run is for, through
   `CiConfigSource.readFile` at the revision its `release.yml` was read at; otherwise the classpath
   resource `release-archetypes/<name>.yml`, which `ci/pom.xml` packages into this jar from this
-  repository's own `.config/qits/release-archetypes/`. Platform pipelines are packaged the same way
-  (`CiPlatformPipelines`), so no repository is read for either.
+  repository's own `.config/qits/release-archetypes/`. Platform pipelines are packaged too, but not
+  the same way: they are this module's own `ci/src/main/resources/platform-pipelines/*.yml`, carried
+  onto the classpath by `src/main/resources`'s ordinary declaration rather than copied out of
+  `.config/qits/` (`CiPlatformPipelines`) — so, as with the archetype, no repository is read for one.
   Until qits-583 the recipe was read from that repository at its newest released tag, which made a
   recipe fix ship only with a wrapper release — the last step of a ticket — and meant no CI run ever
   executed a changed recipe before it shipped.

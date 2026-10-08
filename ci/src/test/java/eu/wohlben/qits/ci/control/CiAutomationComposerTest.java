@@ -25,7 +25,8 @@ import org.junit.jupiter.api.io.TempDir;
  */
 public class CiAutomationComposerTest {
 
-  private static final String PATH = ".config/qits/platform-pipelines/automations/test-kind.yml";
+  private static final String PATH =
+      "ci/src/main/resources/platform-pipelines/automations/test-kind.yml";
 
   private static final String MINIMAL =
       """
@@ -68,7 +69,7 @@ public class CiAutomationComposerTest {
 
   @Test
   public void anImplausibleKindIsAnErrorNamingTheFile() {
-    String path = ".config/qits/platform-pipelines/automations/Test_Kind.yml";
+    String path = "ci/src/main/resources/platform-pipelines/automations/Test_Kind.yml";
     CiConfigException error =
         assertThrows(
             CiConfigException.class, () -> CiAutomationComposer.compose("Test_Kind", path, MINIMAL));
@@ -192,7 +193,7 @@ public class CiAutomationComposerTest {
   public void theScreenshotBaselinesKindIsComposedByteIdenticallyToBefore() throws Exception {
     // composed/automation-screenshot-baselines.yml is the composition from before qits-cli: the
     // key is additive, so a kind that does not set it must not move by a byte.
-    String path = ".config/qits/platform-pipelines/automations/screenshot-baselines.yml";
+    String path = "ci/src/main/resources/platform-pipelines/automations/screenshot-baselines.yml";
     String kindFile = Files.readString(Path.of("..").resolve(path));
     try (var in =
         getClass().getClassLoader().getResourceAsStream("composed/automation-screenshot-baselines.yml")) {

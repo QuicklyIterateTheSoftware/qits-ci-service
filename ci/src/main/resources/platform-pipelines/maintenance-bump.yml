@@ -1,8 +1,8 @@
 # Apply one maintenance bump: qits-platform-maintenance decides WHAT moves, this
 # pipeline moves it and pushes the branch.
 #
-# A PLATFORM pipeline: packaged into qits-ci from qits-ci-service's own
-# `.config/qits/platform-pipelines/` (until 2026-10-02 it lived in the wrapper as
+# A PLATFORM pipeline: this module's own classpath resource at qits-ci-service's
+# `ci/src/main/resources/platform-pipelines/` (until 2026-10-02 it lived in the wrapper as
 # `ci-platform-event-maintenance-bump.yml`), and run against the repository the payload
 # names. No `when:` - every MaintenanceBump is for us, and the payload's changes decide
 # what each step does. `PackagedPlatformPipelinesTest` holds the commit guards below to

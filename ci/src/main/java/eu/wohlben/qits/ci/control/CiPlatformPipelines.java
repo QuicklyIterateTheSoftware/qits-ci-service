@@ -14,25 +14,35 @@ import java.util.TreeSet;
 
 /**
  * The platform pipelines: event pipelines that act on whichever repository the event's payload
- * names, packaged into this qits-ci.
+ * names, this module's own classpath resources rather than a repository's committed config.
  *
- * <p><b>qits-ci owns them, like the release archetypes.</b> {@code ci/pom.xml} builds
- * qits-ci-service's own {@code .config/qits/platform-pipelines/*.yml} into this jar as {@code
- * platform-pipelines/<name>.yml}, and {@link CiEventTriggerService} evaluates them for every
- * arriving event. Until 2026-10-02 they were {@code ci-platform-event-*.yml} files in the wrapper,
- * read at its {@code main} head per event: a pipeline fix then shipped only with a wrapper release,
- * which needs a person's approval, and no repository's release ever exercised it. Packaged, a
- * pipeline moves with a qits-ci release. No repository is read for one any more.
+ * <p><b>qits-ci owns them, like the release archetypes.</b> They are ordinary files of this module
+ * at {@code ci/src/main/resources/platform-pipelines/*.yml}, carried onto the jar's classpath by
+ * {@code src/main/resources}'s own unfiltered declaration in {@code ci/pom.xml} — no copying out of
+ * another directory, no {@code targetPath} — and {@link CiEventTriggerService} evaluates them for
+ * every arriving event. Until 2026-10-02 they were {@code ci-platform-event-*.yml} files in the
+ * wrapper, read at its {@code main} head per event: a pipeline fix then shipped only with a wrapper
+ * release, which needs a person's approval, and no repository's release ever exercised it. Packaged,
+ * a pipeline moves with a qits-ci release. No repository is read for one any more.
  *
- * <p>Each file is recorded on its runs under its path in qits-ci-service, {@code
- * .config/qits/platform-pipelines/<name>.yml}, the way a packaged archetype is.
+ * <p><b>They do not live under {@code .config/qits/}, and that absence is deliberate (qits-1077).</b>
+ * That directory is a repository's own configuration — a committed trigger file or archetype a
+ * person owns — and a change there is held for a person's approval by qits-projects' {@code
+ * ApprovalPolicy}. These files are platform code: qits-ci's own behaviour, not a declaration one of
+ * its repositories makes about itself. So they sit beside the Java that reads them and are gated the
+ * way any other source change to this module is, rather than by a policy built for someone else's
+ * config.
+ *
+ * <p>Each file is recorded on its runs under its real path in qits-ci-service, {@code
+ * ci/src/main/resources/platform-pipelines/<name>.yml} — the same path on disk and the one a run's
+ * {@code configPath} states, with no second packaged-only name standing in for it.
  *
  * <p><b>A second source: the automation kind files.</b> Every {@code
- * .config/qits/platform-pipelines/automations/<kind>.yml} is packaged as {@code
- * platform-pipelines/automations/<kind>.yml} and passed through {@link CiAutomationComposer}, which
- * turns its {@code image}, {@code timeout-seconds}, {@code script} and optional {@code qits-cli}
- * into a {@code ReleaseRequestAutomation} trigger selecting {@code kind: <kind>}. The run is
- * recorded under the kind file's path. A kind file the composer refuses is a boot error naming it, like a missing file.
+ * ci/src/main/resources/platform-pipelines/automations/<kind>.yml} is passed through {@link
+ * CiAutomationComposer}, which turns its {@code image}, {@code timeout-seconds}, {@code script} and
+ * optional {@code qits-cli} into a {@code ReleaseRequestAutomation} trigger selecting {@code kind:
+ * <kind>}. The run is recorded under the kind file's path. A kind file the composer refuses is a
+ * boot error naming it, like a missing file.
  *
  * <p><b>The set is fixed per build</b> ({@link #PACKAGED} and {@link #AUTOMATIONS}), checked at
  * boot, and read once. In the native image the files have to be named to be bundled: {@code
@@ -41,15 +51,18 @@ import java.util.TreeSet;
 @ApplicationScoped
 public class CiPlatformPipelines {
 
-  /** Where the packaged pipelines sit on the classpath: {@code ci/pom.xml}'s {@code targetPath}. */
+  /**
+   * Where the packaged pipelines sit on the classpath: the {@code platform-pipelines/} subdirectory
+   * of this module's own {@code src/main/resources}.
+   */
   static final String PACKAGED_DIR = "platform-pipelines/";
 
-  /** The path a packaged pipeline is recorded under: its file in qits-ci-service. */
-  static final String CONFIG_DIR = ".config/qits/platform-pipelines/";
+  /** The path a packaged pipeline is recorded under: its real path in qits-ci-service. */
+  static final String CONFIG_DIR = "ci/src/main/resources/platform-pipelines/";
 
   /**
    * Every pipeline this build carries. {@code PackagedPlatformPipelinesTest} holds it equal to the
-   * {@code *.yml} files in {@code .config/qits/platform-pipelines/}.
+   * {@code *.yml} files in {@code ci/src/main/resources/platform-pipelines/}.
    */
   static final Set<String> PACKAGED = Set.of("maintenance-bump");
 
@@ -59,7 +72,7 @@ public class CiPlatformPipelines {
   /**
    * Every automation kind this build carries, each composed by {@link CiAutomationComposer}. {@code
    * PackagedPlatformPipelinesTest} holds it equal to the {@code *.yml} files in {@code
-   * .config/qits/platform-pipelines/automations/}.
+   * ci/src/main/resources/platform-pipelines/automations/}.
    */
   static final Set<String> AUTOMATIONS = Set.of("entity-diagram", "screenshot-baselines");
 

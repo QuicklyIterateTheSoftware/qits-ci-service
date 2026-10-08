@@ -20,10 +20,10 @@ import java.util.regex.Pattern;
  * <ul>
  *   <li><b>{@code MaintenanceBump}</b>: the one branch the payload names in {@code branch}. For a
  *       group bump that is {@code maintenance/<group>}; for a targeted bump it is the source branch
- *       the caller asked to bump. It is the only ref the bump pipeline
- *       ({@code .config/qits/platform-pipelines/maintenance-bump.yml}, packaged into qits-ci)
- *       pushes. A payload with no usable branch gives an empty list: the pipeline refuses such a
- *       payload before it pushes anything. A rebuild (the payload's {@code replaceHead}) is a
+ *       the caller asked to bump. It is the only ref the bump pipeline ({@code
+ *       ci/src/main/resources/platform-pipelines/maintenance-bump.yml}, this module's own classpath
+ *       resource) pushes. A payload with no usable branch gives an empty list: the pipeline refuses
+ *       such a payload before it pushes anything. A rebuild (the payload's {@code replaceHead}) is a
  *       non-fast-forward update of that same ref under a {@code --force-with-lease}, so it needs no
  *       wider scope: qits-githost checks a push's ref NAMES against the list and admits any update
  *       kind of a ref inside it. The {@code refs/tags/<version>} a rebuild starts from is fetched,

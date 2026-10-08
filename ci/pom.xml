@@ -209,19 +209,6 @@
                     <include>*.yml</include>
                 </includes>
             </resource>
-            <!-- The platform pipelines, packaged the same way and for the same reasons:
-                 `platform-pipelines/<name>.yml`, read by CiPlatformPipelines, and the automation
-                 kind files as `platform-pipelines/automations/<kind>.yml`, composed by
-                 CiAutomationComposer. `*.yml` alone does not reach into the subdirectory.
-                 NOT filtered. -->
-            <resource>
-                <directory>../.config/qits/platform-pipelines</directory>
-                <targetPath>platform-pipelines</targetPath>
-                <includes>
-                    <include>*.yml</include>
-                    <include>automations/*.yml</include>
-                </includes>
-            </resource>
         </resources>
         <plugins>
             <plugin>

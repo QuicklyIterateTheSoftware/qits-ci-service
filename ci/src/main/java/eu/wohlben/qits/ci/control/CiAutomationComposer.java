@@ -12,8 +12,8 @@ import java.util.regex.Pattern;
  * screenshot baselines today, more regenerations after it — and every one of them has the same
  * frame: read a fold, regenerate something, commit only what the kind owns, push one maintenance
  * branch. The frame is platform process, so it is written here, once, in Java; a kind contributes
- * only what differs. A kind file, {@code .config/qits/platform-pipelines/automations/<kind>.yml},
- * declares exactly:
+ * only what differs. A kind file, {@code ci/src/main/resources/platform-pipelines/automations/
+ * <kind>.yml}, declares exactly:
  *
  * <ul>
  *   <li>{@code image} — the step's image;

@@ -1262,7 +1262,7 @@ steps:
   collapsed this way — their "main" is a convention shared by distinct events — **and a run that
   took the `optional:` fallback counts as one of those**, because it is one: it is accepted with the
   checkout stripped, so nothing downstream has to remember the difference.
-- **Not available in platform pipelines** (`.config/qits/platform-pipelines/*.yml`): a platform
+- **Not available in platform pipelines** (`ci/src/main/resources/platform-pipelines/*.yml`): a platform
   run's head comes from the candidate pass, and a checkout there would build an arbitrary sha of the
   repository the payload named. Declared anyway, it is one WARN per event and no run.
 
@@ -1882,12 +1882,13 @@ revision** in that same repository, and otherwise comes out of qits-ci's own jar
 **The extra blob read is gated on the two release event names**, so every other event on the bus
 costs exactly what it cost before this feature existed.
 
-### Platform pipelines: `.config/qits/platform-pipelines/*.yml`, packaged
+### Platform pipelines: `ci/src/main/resources/platform-pipelines/*.yml`, this module's own
 
-Pipelines for **every** repository live in this repository, under
-`.config/qits/platform-pipelines/`, and `ci/pom.xml` packages them into the jar the way it packages
-the release archetypes (`CiPlatformPipelines`). They are evaluated against every arriving event, on
-top of each candidate's own trigger files. One today:
+Pipelines for **every** repository live in this repository, as ordinary classpath resources of the
+`ci` module under `ci/src/main/resources/platform-pipelines/` — no copy out of a repository's own
+`.config/qits/`, since these are platform code rather than a repository's declaration about itself
+(`CiPlatformPipelines`). They are evaluated against every arriving event, on top of each candidate's
+own trigger files. One today:
 
 - `maintenance-bump.yml` (`event: MaintenanceBump`): applies a qits-maintenance bump and pushes its
   branch.
@@ -1899,7 +1900,7 @@ sends `ReleaseRequestAutomation` now, for every kind, and nothing sends `Screens
 more. A `ScreenshotBaselines` event today matches no trigger file and starts no run.
 
 **Release-request automations are composed from kind files.** Each
-`.config/qits/platform-pipelines/automations/<kind>.yml` declares only `image`, `timeout-seconds`,
+`ci/src/main/resources/platform-pipelines/automations/<kind>.yml` declares only `image`, `timeout-seconds`,
 the regeneration `script` and, optionally, `qits-cli: true` (the pinned qits CLI on `PATH`, fetched
 by the same emitter as the release prelude and the QA report hook, but hard: a failed fetch ends the
 step with `the qits CLI could not be fetched`); any other key, or any other `qits-cli` value, fails

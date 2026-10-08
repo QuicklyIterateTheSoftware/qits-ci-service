@@ -23,8 +23,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 /**
  * The packaged platform pipelines, as a set: every file under {@code
- * .config/qits/platform-pipelines/} is in this jar, byte for byte, parses as an event trigger, and
- * its step scripts pass {@code bash -n}.
+ * ci/src/main/resources/platform-pipelines/} is in this jar, byte for byte, parses as an event
+ * trigger, and its step scripts pass {@code bash -n}.
  *
  * <p>It also carries the commit-guard check that lived in the wrapper's {@code release.yml} while
  * the bump pipeline was a wrapper file: every {@code git diff --cached --quiet} guard in a platform
@@ -36,8 +36,12 @@ import org.junit.jupiter.api.io.TempDir;
  */
 public class PackagedPlatformPipelinesTest {
 
-  /** This repository's own copy, relative to the {@code ci} module surefire runs in. */
-  private static final Path SOURCE = Path.of("..", ".config", "qits", "platform-pipelines");
+  /** This module's own copy, relative to the {@code ci} module surefire runs in. */
+  private static final Path SOURCE = Path.of("src", "main", "resources", "platform-pipelines");
+
+  /** The release archetypes, which did not move and stay under {@code .config/qits/}. */
+  private static final Path RELEASE_ARCHETYPES =
+      Path.of("..", ".config", "qits", "release-archetypes");
 
   private final CiEventTriggerParser triggerParser = new CiEventTriggerParser();
 
@@ -122,7 +126,7 @@ public class PackagedPlatformPipelinesTest {
   // --- the composed screenshot-baselines automation ---------------------------------------------
 
   private static final String SCREENSHOT_KIND_PATH =
-      ".config/qits/platform-pipelines/automations/screenshot-baselines.yml";
+      "ci/src/main/resources/platform-pipelines/automations/screenshot-baselines.yml";
 
   private static String composedScreenshotBaselines() {
     return packaged().stream()
@@ -216,7 +220,7 @@ public class PackagedPlatformPipelinesTest {
   // --- the composed entity-diagram automation (qits-760) ----------------------------------------
 
   private static final String ENTITY_KIND_PATH =
-      ".config/qits/platform-pipelines/automations/entity-diagram.yml";
+      "ci/src/main/resources/platform-pipelines/automations/entity-diagram.yml";
 
   private static String composedEntityDiagram() {
     return packaged().stream()
@@ -274,8 +278,7 @@ public class PackagedPlatformPipelinesTest {
   public void theEntityDiagramKindReadsTheMavenAddressesAsJavaServicesQaStepDoes()
       throws Exception {
     String javaService =
-        Files.readString(
-            SOURCE.getParent().resolve("release-archetypes").resolve("java-service.yml"));
+        Files.readString(RELEASE_ARCHETYPES.resolve("java-service.yml"));
     String kindFile = Files.readString(SOURCE.resolve("automations/entity-diagram.yml"));
     for (String line :
         List.of(

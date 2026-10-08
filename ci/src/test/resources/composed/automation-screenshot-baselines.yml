@@ -1,4 +1,4 @@
-# Composed by qits-ci from .config/qits/platform-pipelines/automations/screenshot-baselines.yml.
+# Composed by qits-ci from ci/src/main/resources/platform-pipelines/automations/screenshot-baselines.yml.
 # Generated: this text is never committed. Edit the kind file.
 event: ReleaseRequestAutomation
 when:
