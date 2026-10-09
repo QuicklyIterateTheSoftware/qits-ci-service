@@ -995,7 +995,9 @@ public class CiReleaseComposerTest {
   /**
    * qits-registries-javalib's shape, declared OUT of dependency order on purpose: the entry that
    * links both siblings comes first. The postlude decides each linked sibling before anything
-   * linking it, keeps declared order otherwise, and resolves each artifactId to its full GAV.
+   * linking it, keeps declared order otherwise, and resolves each artifactId to its full GAV. All
+   * three are if-changed, so they are one link group: asked with --dry-run first, and published
+   * together or not at all.
    */
   @Test
   public void aLinkedReactorOnMavenLibraryPublishesInLinkOrder() throws Exception {
@@ -1007,8 +1009,8 @@ public class CiReleaseComposerTest {
                 archetype: maven-library
                 artifacts:
                   - { type: maven, name: "eu.wohlben.qits:qits-registries-npm", path: npm, sbom: npm/target/sbom.json, link: [qits-blobstore, qits-registries-common], publish: if-changed }
-                  - { type: maven, name: "eu.wohlben.qits:qits-blobstore", path: blobstore, sbom: blobstore/target/sbom.json }
-                  - { type: maven, name: "eu.wohlben.qits:qits-registries-common", path: common, sbom: common/target/sbom.json, link: [qits-blobstore] }
+                  - { type: maven, name: "eu.wohlben.qits:qits-blobstore", path: blobstore, sbom: blobstore/target/sbom.json, publish: if-changed }
+                  - { type: maven, name: "eu.wohlben.qits:qits-registries-common", path: common, sbom: common/target/sbom.json, link: [qits-blobstore], publish: if-changed }
                 """),
             packaged("maven-library"));
 
@@ -1022,12 +1024,44 @@ public class CiReleaseComposerTest {
     assertTrue(
         document.contains(
             "--link 'eu.wohlben.qits:qits-blobstore' --link 'eu.wohlben.qits:qits-registries-common'"
-                + " --if-changed --version \"$QITS_VERSION\")"),
+                + " --if-changed --dry-run --version \"$QITS_VERSION\")"),
         document);
+    // Every dry run comes before the first real publish, and a changed group publishes
+    // unconditionally, so a linked sibling sits at the release version.
+    int lastDryRun = document.lastIndexOf("--dry-run");
+    int firstGate = document.indexOf("= changed ]; then");
+    assertTrue(lastDryRun > 0 && firstGate > lastDryRun, document);
+    assertTrue(
+        document.contains(
+            "  qits_published_0=$(qits artifacts publish maven --name 'eu.wohlben.qits:qits-registries-npm'"
+                + " --path 'npm' --sbom 'npm/target/sbom.json'"
+                + " --link 'eu.wohlben.qits:qits-blobstore' --link 'eu.wohlben.qits:qits-registries-common'"
+                + " --version \"$QITS_VERSION\")"),
+        document);
+    assertTrue(document.contains("  qits_published_0=$qits_dry_run_0\n"), document);
     // The archetype only builds now: no deploy, no bearer of its own, no pom probe.
     assertFalse(document.contains("deploy -DskipTests"), document);
     assertFalse(document.contains("altDeploymentRepository"), document);
     assertFalse(document.contains("qits-recipe-deploy-settings"), document);
+  }
+
+  @Test
+  public void anIfChangedEntryNobodyLinksIsDecidedAlone() throws Exception {
+    CiReleaseSlots slots =
+        slots(
+            """
+            artifacts:
+              - { type: maven, name: "g:a", sbom: a/sbom.json, publish: if-changed }
+              - { type: maven, name: "g:b", sbom: b/sbom.json, link: [c] }
+              - { type: maven, name: "g:c", sbom: c/sbom.json }
+              - { type: maven, name: "g:d", sbom: d/sbom.json, link: [e], publish: if-changed }
+              - { type: maven, name: "g:e", sbom: e/sbom.json, publish: if-changed }
+            """);
+    int[] groups = CiReleaseComposer.ifChangedLinkGroups(slots.artifacts());
+    assertEquals(-1, groups[0], "a lone if-changed entry is no group");
+    assertEquals(-1, groups[1], "an always group needs no dry run");
+    assertEquals(-1, groups[2]);
+    assertTrue(groups[3] >= 0 && groups[3] == groups[4], java.util.Arrays.toString(groups));
   }
 
   @Test

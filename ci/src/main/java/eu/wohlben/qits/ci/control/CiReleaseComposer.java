@@ -149,7 +149,8 @@ import java.util.Set;
  * <p><b>The platform uploads every maven and npm artifact, packs every contract and publishes every
  * {@code @apidocs} document; a recipe only builds.</b> On the LAST step of the release slot, after the
  * declared script, the postlude calls the qits CLI: one {@code qits artifacts publish maven|npm} per
- * maven or npm entry in {@code link:} dependency order, then one {@code contract} per contract
+ * maven or npm entry in {@code link:} dependency order (an {@code if-changed} link group asked with
+ * {@code --dry-run} first, so it publishes together or not at all), then one {@code contract} per contract
  * package, then {@code contract-docs} when golden masters are declared, then one {@code docs submit
  * --openapi} per {@code @apidocs} entry naming its file. Each call fails the step on a non-zero
  * exit.
@@ -1045,10 +1046,70 @@ public final class CiReleaseComposer {
     return "qits_published_" + index;
   }
 
+  /** The shell variable a link-group member's dry-run answer is kept in. */
+  private static String dryRunVariable(int index) {
+    return "qits_dry_run_" + index;
+  }
+
+  /** The shell variable saying whether a link group publishes: {@code changed} or {@code unchanged}. */
+  private static String groupVariable(int group) {
+    return "qits_link_group_" + group;
+  }
+
+  /**
+   * Each entry's {@code if-changed} link group, or {@code -1}. A group is the entries {@code link:}
+   * joins, directly or through each other, when there are two or more of them; the parser holds them
+   * to one {@code publish:}, so a group is if-changed as a whole or not at all. An {@code always}
+   * group needs nothing: every member publishes at every release anyway.
+   */
+  static int[] ifChangedLinkGroups(List<SlotArtifact> artifacts) {
+    int[] parent = new int[artifacts.size()];
+    Map<String, Integer> byArtifactId = new HashMap<>();
+    for (int i = 0; i < artifacts.size(); i++) {
+      parent[i] = i;
+      if (artifacts.get(i).artifact().type() == CiArtifact.Type.MAVEN) {
+        byArtifactId.put(CiReleaseSlotParser.artifactId(artifacts.get(i).artifact().name()), i);
+      }
+    }
+    for (int i = 0; i < artifacts.size(); i++) {
+      for (String link : artifacts.get(i).link()) {
+        Integer target = byArtifactId.get(link);
+        if (target != null) {
+          parent[root(parent, i)] = root(parent, target);
+        }
+      }
+    }
+    Map<Integer, Integer> size = new HashMap<>();
+    for (int i = 0; i < artifacts.size(); i++) {
+      size.merge(root(parent, i), 1, Integer::sum);
+    }
+    int[] group = new int[artifacts.size()];
+    for (int i = 0; i < artifacts.size(); i++) {
+      int r = root(parent, i);
+      group[i] = size.get(r) > 1 && artifacts.get(i).artifact().publishIfChanged() ? r : -1;
+    }
+    return group;
+  }
+
+  private static int root(int[] parent, int at) {
+    while (parent[at] != at) {
+      at = parent[at];
+    }
+    return at;
+  }
+
   /**
    * The publish calls, in the order the class javadoc states. An {@code if-changed} entry's answer
    * is captured — {@code var=$(…)} on its own line still fails the step under {@code set -e} on a
    * non-zero exit — echoed, and read by its SBOM submit; every other call simply runs.
+   *
+   * <p><b>An {@code if-changed} link group publishes together or not at all.</b> Linked jars are the
+   * ones consumers take together, often through one version property, so one member published at
+   * the release version and another left at an older one would point that property at a version
+   * that does not exist. Every member is first asked with {@code --dry-run}; when any answers other
+   * than {@code unchanged since <v>}, every member publishes unconditionally (a linked sibling then
+   * sits at the release version), and otherwise each keeps its dry-run answer and nothing is
+   * uploaded.
    */
   private static void publishBlock(StringBuilder out, Postlude postlude) {
     List<SlotArtifact> artifacts = postlude.artifacts();
@@ -1059,27 +1120,50 @@ public final class CiReleaseComposer {
             CiReleaseSlotParser.artifactId(artifact.artifact().name()), artifact.artifact().name());
       }
     }
-    for (int i : publishOrder(artifacts)) {
+    List<Integer> order = publishOrder(artifacts);
+    int[] group = ifChangedLinkGroups(artifacts);
+    // THE LINK GROUP'S DRY RUN: every member is asked first, uploading nothing. One `changed` (or
+    // a re-run's `published <v>`) makes the whole group publish below; all `unchanged since` makes
+    // it publish nothing. So linked jars that consumers pin through one property never part ways.
+    Set<Integer> grouped = new HashSet<>();
+    for (int i : order) {
+      if (group[i] < 0) {
+        continue;
+      }
+      if (grouped.add(group[i])) {
+        out.append(groupVariable(group[i])).append("=unchanged\n");
+      }
+      out.append(dryRunVariable(i))
+          .append("=$(")
+          .append(publishCall(artifacts.get(i), mavenByArtifactId, true, true))
+          .append(")\n");
+      out.append("echo \"dry run: $").append(dryRunVariable(i)).append("\"\n");
+      out.append("case \"$")
+          .append(dryRunVariable(i))
+          .append("\" in unchanged\\ since\\ *) ;; *) ")
+          .append(groupVariable(group[i]))
+          .append("=changed ;; esac\n");
+    }
+    for (int i : order) {
       SlotArtifact artifact = artifacts.get(i);
-      StringBuilder call = new StringBuilder("qits artifacts publish ");
-      call.append(artifact.artifact().type().declared())
-          .append(" --name ")
-          .append(quote(artifact.artifact().name()))
-          .append(" --path ")
-          .append(quote(artifact.path()));
-      if (artifact.hasSbom()) {
-        call.append(" --sbom ").append(quote(artifact.sbomPath()));
+      if (group[i] >= 0) {
+        out.append("if [ \"$").append(groupVariable(group[i])).append("\" = changed ]; then\n");
+        out.append("  ")
+            .append(publishedVariable(i))
+            .append("=$(")
+            .append(publishCall(artifact, mavenByArtifactId, false, false))
+            .append(")\n");
+        out.append("else\n");
+        out.append("  ")
+            .append(publishedVariable(i))
+            .append("=$")
+            .append(dryRunVariable(i))
+            .append("\n");
+        out.append("fi\n");
+        out.append("echo \"$").append(publishedVariable(i)).append("\"\n");
+        continue;
       }
-      for (String glob : artifact.include()) {
-        call.append(" --include ").append(quote(glob));
-      }
-      for (String link : artifact.link()) {
-        call.append(" --link ").append(quote(mavenByArtifactId.get(link)));
-      }
-      if (artifact.artifact().publishIfChanged()) {
-        call.append(" --if-changed");
-      }
-      call.append(" --version \"$QITS_VERSION\"");
+      String call = publishCall(artifact, mavenByArtifactId, artifact.artifact().publishIfChanged(), false);
       if (artifact.artifact().publishIfChanged()) {
         out.append(publishedVariable(i)).append("=$(").append(call).append(")\n");
         out.append("echo \"$").append(publishedVariable(i)).append("\"\n");
@@ -1087,6 +1171,40 @@ public final class CiReleaseComposer {
         out.append(call).append('\n');
       }
     }
+    publishContractsAndDocs(out, postlude);
+  }
+
+  /** One {@code qits artifacts publish maven|npm} call for an entry. */
+  private static String publishCall(
+      SlotArtifact artifact, Map<String, String> mavenByArtifactId, boolean ifChanged, boolean dryRun) {
+    StringBuilder call = new StringBuilder("qits artifacts publish ");
+    call.append(artifact.artifact().type().declared())
+        .append(" --name ")
+        .append(quote(artifact.artifact().name()))
+        .append(" --path ")
+        .append(quote(artifact.path()));
+    if (artifact.hasSbom()) {
+      call.append(" --sbom ").append(quote(artifact.sbomPath()));
+    }
+    for (String glob : artifact.include()) {
+      call.append(" --include ").append(quote(glob));
+    }
+    for (String link : artifact.link()) {
+      call.append(" --link ").append(quote(mavenByArtifactId.get(link)));
+    }
+    if (ifChanged) {
+      call.append(" --if-changed");
+    }
+    if (dryRun) {
+      call.append(" --dry-run");
+    }
+    call.append(" --version \"$QITS_VERSION\"");
+    return call.toString();
+  }
+
+  /** The contract packages, the golden-master docs and the {@code @apidocs} documents. */
+  private static void publishContractsAndDocs(StringBuilder out, Postlude postlude) {
+    List<SlotArtifact> artifacts = postlude.artifacts();
     CiContracts contracts = postlude.contracts();
     if (contracts != null) {
       for (CiContracts.Package contract : postlude.contractPackages()) {

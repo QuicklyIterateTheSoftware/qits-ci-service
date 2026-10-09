@@ -497,6 +497,22 @@ public class CiReleaseSlotParserTest {
   }
 
   @Test
+  public void linkedEntriesWithDifferentPublishPoliciesAreRefused() {
+    // A link group publishes together, so it has one policy: an always sibling would publish at
+    // every release and drag an if-changed one along, or leave it behind at an older version.
+    String message =
+        refused(
+                """
+                artifacts:
+                  - { type: maven, name: "eu.wohlben.qits:qits-runner-protocol", sbom: p/sbom.json }
+                  - { type: maven, name: "eu.wohlben.qits:qits-runner-toolkit", sbom: t/sbom.json, link: [qits-runner-protocol], publish: if-changed }
+                """)
+            .getMessage();
+    assertTrue(message.contains("eu.wohlben.qits:qits-runner-toolkit"), message);
+    assertTrue(message.contains("same publish:"), message);
+  }
+
+  @Test
   public void anEntryLinkingItselfIsRefused() {
     String message =
         refused(
