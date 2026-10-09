@@ -1346,6 +1346,7 @@ paths:
   /ci/api/runs:
     get:
       summary: "List a repository's CI runs, newest first"
+      operationId: listRuns
       parameters:
       - description: Return only the newest n runs; omit for all of them
         schema:
@@ -1829,4 +1830,4 @@ paths:
         - qits:ci-run
 info:
   title: qits-ci API
-  version: 2026.1007.60229
+  version: 2026.1009.85005

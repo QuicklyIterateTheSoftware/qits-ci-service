@@ -1,0 +1,49 @@
+{
+  "formatVersion": 1,
+  "provider": "qits-ci",
+  "states": [
+    {
+      "name": "a repository with the runs of a release request",
+      "slug": "a-repository-with-the-runs-of-a-release-request",
+      "params": {
+        "automationRunId": "00000000-0000-4000-8000-000000000001",
+        "qaCancelledRunId": "00000000-0000-4000-8000-000000000002",
+        "qaFailedRunId": "00000000-0000-4000-8000-000000000003",
+        "qaSucceededRunId": "00000000-0000-4000-8000-000000000004",
+        "releaseRequestId": "00000000-0000-4000-8000-000000000005",
+        "releaseRunId": "00000000-0000-4000-8000-000000000006",
+        "repositoryId": "00000000-0000-4000-8000-000000000007"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listRuns",
+          "method": "GET",
+          "path": "/ci/api/runs",
+          "query": {
+            "limit": "100",
+            "repositoryId": "00000000-0000-4000-8000-000000000007"
+          },
+          "status": 200,
+          "file": "a-repository-with-the-runs-of-a-release-request/listRuns.json",
+          "frozen": {
+            "ids": [
+              "$.runs[*].id",
+              "$.runs[*].repoId",
+              "$.runs[*].releaseRequestId"
+            ],
+            "instants": [
+              "$.runs[*].createdAt",
+              "$.runs[*].startedAt",
+              "$.runs[*].finishedAt"
+            ],
+            "strings": [
+              "$.runs[*].branch"
+            ],
+            "listFilteredTo": "$.runs"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -220,6 +220,14 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- contracts/ConsumerPactVerificationTest: verifies the consumer pacts this provider
+                 pins (none yet; the first is qits-landing-app's). -->
+            <groupId>au.com.dius.pact.provider</groupId>
+            <artifactId>junit5</artifactId>
+            <version>${pact.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- @TestSecurity + @OidcSecurity: installs the identity quarkus-oidc would have built
                  from a validated bearer, without a running qits-idp. What MachineGuardTest asserts
                  is this service's DECISION on a token's claims — signature and expiry checking is
