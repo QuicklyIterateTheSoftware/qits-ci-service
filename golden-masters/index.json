@@ -44,6 +44,63 @@
           }
         }
       ]
+    },
+    {
+      "name": "a run with reports: failing tests and coverage",
+      "slug": "a-run-with-reports-failing-tests-and-coverage",
+      "params": {
+        "baselineRequestId": "00000000-0000-4000-8000-000000000001",
+        "baselineRunId": "00000000-0000-4000-8000-000000000002",
+        "coverageReportId": "00000000-0000-4000-8000-000000000003",
+        "entityChangesReportId": "00000000-0000-4000-8000-000000000004",
+        "releaseRequestId": "00000000-0000-4000-8000-000000000005",
+        "reportId": "00000000-0000-4000-8000-000000000006",
+        "repositoryId": "00000000-0000-4000-8000-000000000007",
+        "runId": "00000000-0000-4000-8000-000000000008"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getRunReport",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}/reports/{reportId}",
+          "status": 200,
+          "file": "a-run-with-reports-failing-tests-and-coverage/getRunReport.json",
+          "frozen": {
+            "ids": [
+              "$.id",
+              "$.baselineRunId"
+            ],
+            "instants": [
+              "$.submittedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "listRunReports",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}/reports",
+          "status": 200,
+          "file": "a-run-with-reports-failing-tests-and-coverage/listRunReports.json",
+          "frozen": {
+            "ids": [
+              "$.runId",
+              "$.releaseRequestId",
+              "$.baseline.runId",
+              "$.baseline.releaseRequestId",
+              "$.reports[*].id",
+              "$.reports[*].baselineRunId"
+            ],
+            "instants": [
+              "$.reports[*].submittedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
     }
   ]
 }

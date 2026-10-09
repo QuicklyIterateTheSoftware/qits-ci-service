@@ -73,7 +73,7 @@ class GoldenMasterRecordingTest {
 
   /**
    * The release request page in qits-landing-app: a repository's newest 100 runs, from which it
-   * picks the runs of one request.
+   * picks the runs of one request; then a run's reports, and the payload of one (its test results).
    */
   static final List<Interaction> INTERACTIONS =
       List.of(
@@ -84,7 +84,23 @@ class GoldenMasterRecordingTest {
               "/ci/api/runs",
               Map.of("repositoryId", "{repositoryId}", "limit", "100"),
               200,
-              "$.runs"));
+              "$.runs"),
+          new Interaction(
+              ProviderStates.A_RUN_WITH_REPORTS_FAILING_TESTS_AND_COVERAGE,
+              "listRunReports",
+              "GET",
+              "/ci/api/runs/{runId}/reports",
+              Map.of(),
+              200,
+              null),
+          new Interaction(
+              ProviderStates.A_RUN_WITH_REPORTS_FAILING_TESTS_AND_COVERAGE,
+              "getRunReport",
+              "GET",
+              "/ci/api/runs/{runId}/reports/{reportId}",
+              Map.of(),
+              200,
+              null));
 
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final Pattern TEMPLATE_PARAM = Pattern.compile("\\{([^}]+)}");

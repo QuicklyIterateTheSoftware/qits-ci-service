@@ -150,7 +150,9 @@ public class CiReportController {
 
   @GET
   @Path("/{runId}/reports")
-  @Operation(summary = "A run's release reports, without payloads, and its baseline")
+  @Operation(
+      operationId = "listRunReports",
+      summary = "A run's release reports, without payloads, and its baseline")
   @APIResponse(responseCode = "200", description = "The run's reports; an empty list when it has none")
   @APIResponse(responseCode = "404", description = "No such run")
   public CiRunReportsDto reports(@PathParam("runId") String runId) {
@@ -165,7 +167,9 @@ public class CiReportController {
 
   @GET
   @Path("/{runId}/reports/{reportId}")
-  @Operation(summary = "One release report of a run, with its payload")
+  @Operation(
+      operationId = "getRunReport",
+      summary = "One release report of a run, with its payload")
   @APIResponse(responseCode = "200", description = "The report")
   @APIResponse(responseCode = "404", description = "No such run, or no such report on it")
   public CiReportDto report(
