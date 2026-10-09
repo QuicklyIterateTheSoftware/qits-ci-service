@@ -131,7 +131,7 @@ rest of qits it reaches over a URL it is configured with:
 | out | `POST/DELETE/GET /idp/api/tokens` — one `ci-run` TOKEN per run, minted at the run's first step and deleted when the run closes: every step clones, downloads, publishes and dials with it, and it is the step's only credential. And a runner's one-use registration token (`ci-runner-registration`) | `quarkus.oidc-client.qits.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.qits.client-enabled` |
 | out | `POST/DELETE/GET /idp/api/clients` — a registered runner's own client (`ci-runner`), given back when the runner is decommissioned — see "Runners" below. A run commissions no client (qits-515) | the same keys as the row above |
 | out | `HEAD <origin>/v2/<name>/manifests/<tag>` on qits-artifacts — the digest a run's step image is pinned to, asked by this process from inside the swarm | `qits.artifacts.url`, else the origin of `qits.artifacts.maven.registry-url`; the pinned reference is addressed under `qits.artifacts.registry-host` |
-| out | the platform's public domain itself, bare, as `$QITS_DOMAIN` in **every** step container — the ONE address input a recipe reads (qits-731). `registry.qits.$QITS_DOMAIN` (the image registry, the hosted npm `/artifacts/npm/npm/` and maven `/artifacts/maven/maven` roots, the docs store `/artifacts/docs/docs`, the daemons store the prelude fetches the qits CLI from) and `mirror.qits.$QITS_DOMAIN` (npmjs `/npm/npmjs/`, Maven Central `/mirror/maven/central`) are code, spelled from it with those constant paths, and **no URL variable carries any of them**: `$QITS_REGISTRY`, `$QITS_BUILD_REGISTRY`, `$QITS_NPM_REGISTRY_URL`, `$QITS_NPM_PROXY_URL`, `$QITS_MAVEN_REGISTRY_URL`, `$QITS_MAVEN_CENTRAL_MIRROR_URL`, `$QITS_MAVEN_PROXY_URL`, `$QITS_DOCS_URL` and `$QITS_ARTIFACTS_URL` are no longer sent, and `qits.mirror.maven-central.enabled` went with the two Central ones | `qits.ci.domain` |
+| out | the platform's public domain itself, bare, as `$QITS_DOMAIN` in **every** step container — the address input a recipe derives the platform's other addresses from (qits-731). `registry.qits.$QITS_DOMAIN` (the image registry, the hosted npm `/artifacts/npm/npm/` root, the docs store `/artifacts/docs/docs`, the daemons store the prelude fetches the qits CLI from) and `mirror.qits.$QITS_DOMAIN` (npmjs `/npm/npmjs/`) are code, spelled from it with those constant paths, and **no URL variable carries either**: `$QITS_REGISTRY`, `$QITS_BUILD_REGISTRY`, `$QITS_NPM_REGISTRY_URL`, `$QITS_NPM_PROXY_URL`, `$QITS_DOCS_URL` and `$QITS_ARTIFACTS_URL` are no longer sent. The hosted **maven** `/artifacts/maven/maven` root and Maven Central's cache `/mirror/maven/central` are the one pair that IS sent, as `$QITS_MAVEN_REPOSITORY_URL`/`$QITS_MAVEN_CENTRAL_URL` (qits-896) — still composed in code from this same domain by `StepAddressPlane`, never from configuration, because every repository's committed `.qits-maven-settings.xml` already reads exactly those two names and a repository overriding an archetype's slots would otherwise re-derive both by hand; `qits.mirror.maven-central.enabled`, the old empty-string kill switch for them, stays gone | `qits.ci.domain` |
 | out | the namespace a published image goes under, as `$QITS_IMAGE_REPOSITORY` in **every** step container; the image is `registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/<application>:$QITS_VERSION` | `qits.artifacts.image-repository` |
 | out | qits-workspaces, as `$QITS_WORKSPACES_URL` (`https://workspaces.qits.<domain>`) in **every** step container | `qits.ci.domain` |
 
@@ -1091,11 +1091,17 @@ npm_proxy_url="https://mirror.qits.$qits_domain/npm/npmjs/"
 credentials by. The `:?` fails fast rather than falling back: every qits-ci that runs a recipe sends
 the domain, and the composed prelude demands it before the script starts.
 
-Maven has the same network posture. The hosted repository root is
+Maven has the same network posture, and it is the one pair of these addresses qits-ci hands over as
+URL variables rather than leaving to the recipe (qits-896). The hosted repository root is
 `https://registry.qits.$QITS_DOMAIN/artifacts/maven/maven` and Maven Central's cache is
-`https://mirror.qits.$QITS_DOMAIN/mirror/maven/central`; the maven recipes export them as
-`QITS_MAVEN_REPOSITORY_URL` and `QITS_MAVEN_CENTRAL_URL` for `.qits-maven-settings.xml` — a name
-the recipe sets for Maven, never one qits-ci sends.
+`https://mirror.qits.$QITS_DOMAIN/mirror/maven/central`; every step container gets them as
+`$QITS_MAVEN_REPOSITORY_URL` and `$QITS_MAVEN_CENTRAL_URL`, composed from `$QITS_DOMAIN` by
+`StepAddressPlane` rather than read from configuration — the names every repository's committed
+`.qits-maven-settings.xml` already reads (`${env.QITS_MAVEN_REPOSITORY_URL}` as the mirror for
+server id `qits-maven`, `${env.QITS_MAVEN_CENTRAL_URL}` to activate the central-proxy profile). The
+maven recipes still export both themselves too — harmless, since the value is identical — because a
+repository that overrides an archetype's slots (the runner daemons do) would otherwise have to
+re-derive them by hand; a recipe that must bypass the mirror can `unset QITS_MAVEN_CENTRAL_URL`.
 
 **A lockfile is installed as committed, and never rewritten** (qits-731). npm fetches every tarball
 by the `resolved` URL its lockfile pins and never asks the configured registry, so a lockfile is an

@@ -111,17 +111,25 @@ public final class StepWorkloadSpecs {
     // non-interactive mode, and one that says which CI this is.
     env.put("CI", "true");
     env.put("QITS_CI", "true");
-    // THE ONE ADDRESS INPUT A RECIPE READS (qits-731): the platform's bare public domain, the one
-    // every address below is composed from. A host is code, not configuration — `registry.qits.<d>`
+    // THE ADDRESS INPUT EVERY RECIPE DERIVES FROM (qits-731): the platform's bare public domain, the
+    // one every address below is composed from. A host is code, not configuration — `registry.qits.<d>`
     // serves the hosted npm, maven and OCI stores, `mirror.qits.<d>` the npmjs and Maven Central
-    // caches, each under a constant path (StepAddressPlane's) — so a recipe spells those itself
-    // from this one value. Never empty: a qits-ci with no public domain launches no step at all.
+    // caches, each under a constant path (StepAddressPlane's) — so a recipe spells most of those
+    // itself from this one value. Never empty: a qits-ci with no public domain launches no step at
+    // all.
     //
-    // And it is the ONLY one. The URL variables a step used to be handed beside it — the registry
-    // host, the npm, maven, docs and artifacts urls, the build registry — were these same addresses
-    // composed here, and every recipe now spells them from the domain itself; sending them would be
-    // a second answer for a step to read instead.
+    // qits-896 partially reverses the "and it is the ONLY one" half of that rule, for exactly two of
+    // those addresses: QITS_MAVEN_REPOSITORY_URL and QITS_MAVEN_CENTRAL_URL, both still DERIVED here
+    // from this same domain (StepAddressPlane.mavenRepositoryUrl()/mavenCentralUrl(), never a config
+    // key) rather than read from configuration. They ride beside the domain because a repository
+    // that overrides an archetype's slots — the runner daemons do — would otherwise have to
+    // re-derive both by hand, and every repository's committed .qits-maven-settings.xml already
+    // reads exactly these two names. Every other address this domain composes is still undelivered:
+    // no $QITS_REGISTRY, no $QITS_NPM_*, no $QITS_DOCS_URL, no $QITS_ARTIFACTS_URL — a recipe spells
+    // those from the domain itself, as qits-731 intended.
     env.put("QITS_DOMAIN", value(plane.domain()));
+    env.put("QITS_MAVEN_REPOSITORY_URL", value(plane.mavenRepositoryUrl()));
+    env.put("QITS_MAVEN_CENTRAL_URL", value(plane.mavenCentralUrl()));
     // Also for the script: the namespace a published image goes under. Every container gets it,
     // because a deployment may re-point the namespace and the declaration may not have to move.
     // With the registry `registry.qits.$QITS_DOMAIN` and $QITS_VERSION it is the whole of the tag

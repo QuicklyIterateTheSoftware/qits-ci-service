@@ -153,8 +153,12 @@ public class StepContainerSettingsTest {
     env.put("QITS_CI", "true");
     // The bare domain every address below is composed from, and the one a recipe derives its own
     // registry and mirror addresses from (qits-731).
-    // It is the ONLY address input: no URL variable rides beside it.
     env.put("QITS_DOMAIN", "example.org");
+    // The one pair of derived addresses that DOES ride beside the domain as its own variable
+    // (qits-896): every repository's committed .qits-maven-settings.xml reads exactly these two
+    // names, so qits-ci hands them over rather than making every recipe re-derive them.
+    env.put("QITS_MAVEN_REPOSITORY_URL", "https://registry.qits.example.org/artifacts/maven/maven");
+    env.put("QITS_MAVEN_CENTRAL_URL", "https://mirror.qits.example.org/mirror/maven/central");
     env.put("QITS_IMAGE_REPOSITORY", "qits");
     // The coordinate a composed release prelude downloads the qits CLI at. The version is qits-ci's
     // own pinned dependency's constant rather than a literal, because a literal here would be a

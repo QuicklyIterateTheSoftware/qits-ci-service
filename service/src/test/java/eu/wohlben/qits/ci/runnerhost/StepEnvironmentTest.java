@@ -56,6 +56,8 @@ class StepEnvironmentTest {
         "CI=true",
         "QITS_CI=true",
         "QITS_DOMAIN=example.org",
+        "QITS_MAVEN_REPOSITORY_URL=https://registry.qits.example.org/artifacts/maven/maven",
+        "QITS_MAVEN_CENTRAL_URL=https://mirror.qits.example.org/mirror/maven/central",
         "QITS_IMAGE_REPOSITORY=qits",
         "QITS_ARTIFACTS_CLI_PACKAGE=qits",
         "QITS_ARTIFACTS_CLI_VERSION=" + PlatformAccessCliBinary.VERSION,
@@ -134,10 +136,14 @@ class StepEnvironmentTest {
   }
 
   /**
-   * qits-731: the platform's public domain is the ONE address input a step is told. Every host a
+   * qits-731: the platform's public domain is the address input every step is told. Every host a
    * recipe reaches is code under it — {@code registry.qits.<d>}, {@code mirror.qits.<d>} — so the
    * URL variables that used to carry the same addresses composed here are gone, from every shape of
-   * step, and none may come back as a second answer for a recipe to read instead.
+   * step. qits-896 carved out the one exception: {@code QITS_MAVEN_REPOSITORY_URL} and {@code
+   * QITS_MAVEN_CENTRAL_URL} ride beside the domain (asserted in {@code common()} above) because
+   * every repository's {@code .qits-maven-settings.xml} already reads exactly those two names;
+   * every other retired URL variable stays gone and none of them may come back as a second answer
+   * for a recipe to read instead.
    */
   @Test
   void theDomainIsTheOnlyAddressInputAndNoUrlVariableRemains() {

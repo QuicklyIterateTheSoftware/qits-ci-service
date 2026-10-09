@@ -58,6 +58,25 @@ public record StepAddressPlane(
    */
   static final String DAEMON_BINARY_PATH = "/artifacts/daemons/";
 
+  /**
+   * The registry's public host and the hosted Maven repository's path under it — {@code
+   * $QITS_MAVEN_REPOSITORY_URL} (qits-896). Every repository's committed {@code
+   * .qits-maven-settings.xml} reads it as {@code ${env.QITS_MAVEN_REPOSITORY_URL}}, the mirror for
+   * server id {@code qits-maven}.
+   */
+  static final String MAVEN_REPOSITORY_HOST = "registry.qits.";
+
+  static final String MAVEN_REPOSITORY_PATH = "/artifacts/maven/maven";
+
+  /**
+   * The mirror's public host and the Maven Central cache's path under it — {@code
+   * $QITS_MAVEN_CENTRAL_URL} (qits-896). Every repository's committed {@code
+   * .qits-maven-settings.xml} activates its central-proxy profile on it being non-empty.
+   */
+  static final String MAVEN_CENTRAL_HOST = "mirror.qits.";
+
+  static final String MAVEN_CENTRAL_PATH = "/mirror/maven/central";
+
   public StepAddressPlane {
     authHosts = List.copyOf(authHosts);
     Objects.requireNonNull(imageRegistries, "imageRegistries");
@@ -181,9 +200,13 @@ public record StepAddressPlane(
   /**
    * The addresses of a step, from the public origin of each service that answers one. qits-artifacts
    * answers the daemon binary and, with qits-mirror, the registry logins and image pulls;
-   * qits-githost the clone url; qits-workspaces its own root; qits-ci the daemon socket. The npm,
-   * maven and docs roots are not here: a step spells those itself under {@code $QITS_DOMAIN}
-   * (qits-731), and no URL variable carries them.
+   * qits-githost the clone url; qits-workspaces its own root; qits-ci the daemon socket. The npm and
+   * docs roots are not here: a step spells those itself under {@code $QITS_DOMAIN} (qits-731), and
+   * no URL variable carries them. The two Maven roots are the one exception (qits-896): {@link
+   * #mavenRepositoryUrl()} and {@link #mavenCentralUrl()} compose them here too, both still derived
+   * from the domain alone, because every repository's committed {@code .qits-maven-settings.xml}
+   * already reads them as {@code $QITS_MAVEN_REPOSITORY_URL}/{@code $QITS_MAVEN_CENTRAL_URL} and a
+   * repository overriding an archetype's slots would otherwise have to re-derive both by hand.
    *
    * @param spellings the hosts that name the platform's two image stores, which an image reference
    *     is recognised by; this plane pulls them from the public registry and mirror hosts
@@ -222,6 +245,27 @@ public record StepAddressPlane(
    */
   public String imagePullHost(String image) {
     return imageRegistries.pullHost(image);
+  }
+
+  /**
+   * {@code https://registry.qits.<domain>/artifacts/maven/maven} — the platform's hosted Maven
+   * repository, the exact string a repository's own {@code .qits-maven-settings.xml} reads as
+   * {@code ${env.QITS_MAVEN_REPOSITORY_URL}} (qits-896). Derived from {@link #domain()} and nothing
+   * else — a host is code, not configuration, the rule qits-731 states for every address this plane
+   * composes.
+   */
+  public String mavenRepositoryUrl() {
+    return "https://" + MAVEN_REPOSITORY_HOST + domain + MAVEN_REPOSITORY_PATH;
+  }
+
+  /**
+   * {@code https://mirror.qits.<domain>/mirror/maven/central} — the platform's Maven Central cache,
+   * the exact string a repository's own {@code .qits-maven-settings.xml} reads as {@code
+   * ${env.QITS_MAVEN_CENTRAL_URL}} to decide whether its central-proxy profile activates (qits-896).
+   * Derived from {@link #domain()} and nothing else, {@link #mavenRepositoryUrl()}'s reason.
+   */
+  public String mavenCentralUrl() {
+    return "https://" + MAVEN_CENTRAL_HOST + domain + MAVEN_CENTRAL_PATH;
   }
 
   /**
