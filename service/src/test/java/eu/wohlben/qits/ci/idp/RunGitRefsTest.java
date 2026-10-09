@@ -40,6 +40,15 @@ public class RunGitRefsTest {
   }
 
   @Test
+  public void aDependencyBumpMayPushOnlyItsRequestsOwnBranch() {
+    // qits-1133: the pre-run kind rides MaintenanceBump, so the payload's branch is the scope.
+    String branch = "maintenance/automations/dependency-bump/0b6f1c2e-1d2a-4c3b-9e8f-7a6b5c4d3e2f";
+    assertEquals(
+        Optional.of(List.of("refs/heads/" + branch)),
+        of("MaintenanceBump", bump("dependencies", branch).replace("{", "{\"kind\":\"dependency-bump\",")));
+  }
+
+  @Test
   public void aRetiredScreenshotBaselinesEventStatesNothing() {
     // ScreenshotBaselines is retired (qits-1007): the platform pipeline that sent it is gone, so
     // it is an unknown event now, answered like any other.

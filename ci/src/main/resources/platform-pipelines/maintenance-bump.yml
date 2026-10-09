@@ -38,9 +38,13 @@
 # that head is already one commit on the base, nothing is pushed, so an open release
 # request is not re-gated for nothing.
 #
-# ONLY `maintenance/<group>` IS REBUILT. A release-request automation (estate pins, group
-# `targeted`, payload carrying `kind`) writes a request's own source branch - somebody
-# else's - so that branch is appended to, ff-only, with a plain push, exactly as before.
+# ONLY OUR OWN BRANCHES ARE REBUILT: `maintenance/<group>`, and the `dependency-bump`
+# pre-run kind's `maintenance/automations/dependency-bump/<request>` (qits-1133; payload
+# `kind: dependency-bump`, `requestId`, `foldSha`, optional `workItem`). That kind is refused
+# with "superseded before start" when the request's fold moved, and its subject is
+# `bump(<workItem or dependencies>)`. Any other release-request automation (estate pins, group
+# `targeted`) writes a request's own source branch - somebody else's - so that branch is
+# appended to, ff-only, with a plain push, exactly as before.
 #
 # `replaceHead` is the head the maintenance service read. It is checked for shape and
 # logged; the lease uses the head this step read, and the ownership walk decides.
@@ -121,6 +125,39 @@ steps:
           fi
           ;;
       esac
+
+      # --- the dependency-bump automation (qits-1133) --------------------------------
+      # A release request's pre-run kind `dependency-bump` is sent here too, with `kind`,
+      # `requestId` and `foldSha` in the payload. Its branch is the request's own
+      # `maintenance/automations/dependency-bump/<request>`, ours alone, so it is REBUILT
+      # like `maintenance/<group>`: one commit on `baseRef` (main), force-with-lease, and
+      # exit 42 over a hand-written commit. Every other `kind` is appended to, as before.
+      kind=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).kind || ""')
+      scope=$group
+      if [ "$kind" = "dependency-bump" ]; then
+        request=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).requestId || ""')
+        fold=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).foldSha || ""')
+        item=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).workItem || ""')
+        case "$request" in ''|*[!0-9A-Za-z-]*) echo "refusing an implausible requestId: $request" >&2; exit 1 ;; esac
+        case "$branch" in
+          "maintenance/automations/dependency-bump/$request") ;;
+          *) echo "refusing a dependency-bump branch that is not maintenance/automations/dependency-bump/$request: $branch" >&2; exit 1 ;;
+        esac
+        case "$fold" in ''|*[!0-9a-f]*) echo "refusing an implausible foldSha: $fold" >&2; exit 1 ;; esac
+        if [ ${#fold} -ne 40 ] && [ ${#fold} -ne 64 ]; then
+          echo "refusing an implausible foldSha: $fold" >&2
+          exit 1
+        fi
+        case "$item" in *[!0-9A-Za-z-]*) echo "refusing an implausible work item: $item" >&2; exit 1 ;; esac
+        # The fold this run was planned on, and only that one: a newer fold has its own run coming.
+        git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/release/$request"
+        now=$(git rev-parse --verify "FETCH_HEAD^{commit}")
+        if [ "$now" != "$fold" ]; then
+          echo "superseded before start: release/$request is at $now, not at the fold $fold this run was sent for" >&2
+          exit 1
+        fi
+        scope=${item:-dependencies}
+      fi
 
       # --- the maven edits, anchored and counted -----------------------------------
       # Both programs exit non-zero unless they matched EXACTLY once.
@@ -306,12 +343,14 @@ steps:
         exit 42
       }
 
-      # ONLY OUR OWN BRANCH IS REBUILT. `maintenance/<group>` is the maintenance service's,
-      # and nobody else writes it. A release-request automation (estate pins, group
+      # ONLY OUR OWN BRANCH IS REBUILT. `maintenance/<group>` and a request's
+      # `maintenance/automations/dependency-bump/<request>` are the maintenance service's,
+      # and nobody else writes them. A release-request automation (estate pins, group
       # `targeted`) sends a request's own SOURCE branch - a ticket branch, somebody's work -
       # and carries `kind` in the payload: that branch is APPENDED to, ff-only, never forced.
-      kind=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).kind || ""')
       if [ "$branch" = "maintenance/$group" ] && [ -z "$kind" ]; then
+        owned=true
+      elif [ "$kind" = "dependency-bump" ]; then
         owned=true
       else
         owned=false
@@ -560,7 +599,7 @@ steps:
         exit 0
       fi
       {
-        printf 'bump(%s): %d dependencies\n\n' "$group" "$applied"
+        printf 'bump(%s): %d dependencies\n\n' "$scope" "$applied"
         cat /tmp/bump-body.txt
       } > /tmp/bump-message.txt
       git -c user.name="qits maintenance" -c user.email="$bot" commit -q -F /tmp/bump-message.txt

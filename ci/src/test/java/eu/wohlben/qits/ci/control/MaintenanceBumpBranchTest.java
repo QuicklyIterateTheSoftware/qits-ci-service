@@ -251,6 +251,116 @@ public class MaintenanceBumpBranchTest {
     assertEquals(head, out(remote, "rev-parse", "refs/heads/ticket/x"));
   }
 
+  // --- the dependency-bump pre-run kind (qits-1133) --------------------------------------------
+
+  private static final String REQUEST = "0b6f1c2e-1d2a-4c3b-9e8f-7a6b5c4d3e2f";
+  private static final String RR_BRANCH = "maintenance/automations/dependency-bump/" + REQUEST;
+
+  /** The request's fold on {@code release/<request>}: main plus a person's commit. */
+  private String fold() throws Exception {
+    return fold("feat(qits-1133): the person's work");
+  }
+
+  private String fold(String message) throws Exception {
+    git(seed, "checkout", "-q", "--detach", tagCommit);
+    commitAs(seed, "person@example.com", message);
+    git(seed, "push", "-q", "-f", "origin", "HEAD:refs/heads/release/" + REQUEST);
+    return out(seed, "rev-parse", "HEAD");
+  }
+
+  private String dependencyBump(String fold, String extra) {
+    return payload(null, true, true)
+        .replace("\"group\":\"libs\"", "\"group\":\"dependencies\",\"kind\":\"dependency-bump\""
+            + ",\"requestId\":\"" + REQUEST + "\",\"foldSha\":\"" + fold + "\"" + extra)
+        .replace(BRANCH, RR_BRANCH)
+        .replace("refs/tags/" + TAG, "main");
+  }
+
+  @Test
+  public void aDependencyBumpIsOneCommitOnMainOnTheRequestsOwnBranch() throws Exception {
+    String fold = fold();
+    Run run = step(dependencyBump(fold, ",\"workItem\":\"qits-1133\""));
+    assertEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains("starting " + RR_BRANCH + " from main"), run.output);
+    String head = rev("refs/heads/" + RR_BRANCH);
+    assertEquals(tagCommit, rev(head + "^"), "one commit on main, never on the fold");
+    String message = out(remote, "log", "-1", "--format=%B", head);
+    assertTrue(message.startsWith("bump(qits-1133): 2 dependencies\n\n"), message);
+    assertEquals(BOT, out(remote, "log", "-1", "--format=%ae", head));
+
+    // The same step again (a re-dispatch): already this one commit on main, nothing pushed.
+    String next = out(remote, "rev-parse", "refs/heads/release/" + REQUEST);
+    Run again = step(dependencyBump(next, ""));
+    assertEquals(0, again.exit, again.output);
+    assertTrue(again.output.contains("nothing to push"), again.output);
+    assertEquals(head, rev("refs/heads/" + RR_BRANCH));
+  }
+
+  @Test
+  public void aDependencyBumpWithoutAWorkItemSaysDependencies() throws Exception {
+    Run run = step(dependencyBump(fold(), ""));
+    assertEquals(0, run.exit, run.output);
+    String message = out(remote, "log", "-1", "--format=%s", "refs/heads/" + RR_BRANCH);
+    assertEquals("bump(dependencies): 2 dependencies", message);
+  }
+
+  @Test
+  public void aDependencyBumpStackIsSquashedOnMain() throws Exception {
+    String fold = fold();
+    git(seed, "checkout", "-q", "--detach", tagCommit);
+    for (int i = 0; i < 2; i++) {
+      commitAs(seed, BOT, "bump(dependencies): 1 dependencies");
+    }
+    git(seed, "push", "-q", "origin", "HEAD:refs/heads/" + RR_BRANCH);
+
+    Run run = step(dependencyBump(fold, ""));
+    assertEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains("rebuilding " + RR_BRANCH + " on main"), run.output);
+    String head = rev("refs/heads/" + RR_BRANCH);
+    assertEquals("1", out(remote, "rev-list", "--count", head, "^" + tagCommit));
+  }
+
+  @Test
+  public void aDependencyBumpOverAHandWrittenCommitIsNeverRebuilt() throws Exception {
+    String fold = fold();
+    git(seed, "checkout", "-q", "--detach", tagCommit);
+    commitAs(seed, "person@example.com", "fix: by hand");
+    git(seed, "push", "-q", "origin", "HEAD:refs/heads/" + RR_BRANCH);
+    String hand = out(seed, "rev-parse", "HEAD");
+
+    Run run = step(dependencyBump(fold, ""));
+    assertEquals(42, run.exit, run.output);
+    assertEquals(hand, rev("refs/heads/" + RR_BRANCH));
+  }
+
+  @Test
+  public void aDependencyBumpOnAMovedFoldIsSupersededBeforeStart() throws Exception {
+    String stale = fold();
+    fold("feat(qits-1133): the person pushed again");
+    Run run = step(dependencyBump(stale, ""));
+    assertEquals(1, run.exit, run.output);
+    assertTrue(run.output.contains("superseded before start"), run.output);
+    assertNotEquals(0, status(remote, "rev-parse", "--verify", "-q", "refs/heads/" + RR_BRANCH));
+  }
+
+  @Test
+  public void aDependencyBumpPayloadOutsideItsShapeIsRefused() throws Exception {
+    String fold = fold();
+    String good = dependencyBump(fold, "");
+    for (String bad :
+        List.of(
+            good.replace(RR_BRANCH, "maintenance/automations/dependency-bump/other"),
+            good.replace(RR_BRANCH, "maintenance/dependencies"),
+            good.replace(REQUEST + "\",\"foldSha", "a b\",\"foldSha"),
+            good.replace(fold, fold.substring(0, 12)),
+            dependencyBump(fold, ",\"workItem\":\"a b\""))) {
+      Run run = step(bad);
+      assertEquals(1, run.exit, run.output);
+      assertTrue(run.output.contains("refusing"), run.output);
+    }
+    assertNotEquals(0, status(remote, "rev-parse", "--verify", "-q", "refs/heads/" + RR_BRANCH));
+  }
+
   /** A newer main, released as {@code tag}: pom.xml at {@code lib}, and a Dockerfile if given. */
   private String release(String lib, String dockerfile, String tag) throws Exception {
     git(seed, "checkout", "-q", "--detach", tagCommit);
