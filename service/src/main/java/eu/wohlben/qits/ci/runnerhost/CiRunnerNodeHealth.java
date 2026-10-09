@@ -36,10 +36,12 @@ import org.jboss.logging.Logger;
  * — greeted at the pin, not draining — is asked; any other is answered null and sent nothing.
  *
  * <p><b>The image</b> the runner's {@code stepImage} check looks for is {@code
- * qits.ci.runner.healthcheck.image}, resolved exactly as the pseudo-build's step image is ({@link
- * CiRunService#resolveStepImage}) and moved to the registry's public name the way a step's launch is
- * ({@link StepAddressPlane#imageReference}), so the runner pulls what its next health check would
- * start. Unpinned: the digest is a run's, taken at its accept.
+ * qits.ci.runner.healthcheck.image}, resolved and pinned to a digest exactly as a pseudo-build
+ * accepted now would pin it ({@link CiRunService#launchStepImage}) and moved to the registry's public
+ * name the way a step's launch is ({@link StepAddressPlane#imageReference}) — {@code
+ * registry.qits.<domain>/qits/build-images/ci-base@sha256:…}, the very reference that run's launch
+ * names, since a tag is never what a launch pulls. When no pin can be had (registry unreachable, no
+ * address for it) it is the tag, and the request goes out regardless.
  *
  * <p><b>A pending request is memory, keyed by its {@code requestId}</b> (a UUID per frame sent), one
  * per runner. An answer naming it settles it; an answer naming none — a runner older than the field —
@@ -103,12 +105,13 @@ public class CiRunnerNodeHealth {
   }
 
   /**
-   * The image the runner's {@code stepImage} check is told to look for: the health check's step
-   * image, resolved as the pseudo-build resolves it, under the registry's public name when this
-   * qits-ci knows its domain.
+   * The image the runner's {@code stepImage} check is told to look for: the reference a
+   * pseudo-build accepted now would launch — the health check's step image resolved and pinned to
+   * its digest as at accept ({@link CiRunService#launchStepImage}), under the registry's public name
+   * as a launch moves it when this qits-ci knows its domain. The tag when no pin could be had.
    */
   String image() {
-    String resolved = runService.resolveStepImage(healthcheckImage);
+    String resolved = runService.launchStepImage(healthcheckImage);
     try {
       return addresses
           .edgeOrigins()

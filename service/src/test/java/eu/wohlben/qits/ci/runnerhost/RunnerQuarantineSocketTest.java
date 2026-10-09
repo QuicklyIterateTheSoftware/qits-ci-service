@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.api.MachineGuardTest;
+import eu.wohlben.qits.ci.control.CiRunService;
 import eu.wohlben.qits.ci.control.CiRunnerPresence;
 import eu.wohlben.qits.ci.control.CiRunnerSignals;
 import eu.wohlben.qits.ci.control.CiRunners;
@@ -100,6 +101,12 @@ class RunnerQuarantineSocketTest {
   @Inject CiRunnerNodeHealth nodeHealth;
 
   @Inject CiRunnerRegistry registry;
+
+  @Inject CiRunService runService;
+
+  @Inject StepContainerSettings stepSettings;
+
+  @Inject RunnerAddresses addresses;
 
   /** The seam CiRunnerHealth speaks through — the registry — called as CiRunnerHealth calls it. */
   @Inject CiRunnerSignals signals;
@@ -354,6 +361,7 @@ class RunnerQuarantineSocketTest {
   void aConnectedRunnerIsAskedForItsNodeReportAndItsAnswerIsReadable() throws Exception {
     declare(1, CiRunnerPlane.EDGE, null, null);
     QueuedHealthChecks queued = QueuedHealthChecks.install();
+    StagedImagePins.install(null);
 
     try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
       runner.send(hello());
@@ -380,7 +388,7 @@ class RunnerQuarantineSocketTest {
       assertEquals(
           "registry.qits." + HermeticConfigSource.DOMAIN + "/qits/build-images/ci-base:latest",
           frame.image(),
-          "the health check's image, with the registry's public name, as a launch pulls it");
+          "no pin to be had: the health check's tag, with the registry's public name");
 
       assertEquals(
           requestId,
@@ -419,6 +427,45 @@ class RunnerQuarantineSocketTest {
       assertNull(row().quarantinedAt, "a failing node report quarantines nothing");
       assertNull(runner.next(Quarantined.class, Duration.ofMillis(300)));
       assertNull(nodeHealth.pendingRequest(runnerId), "the answer settled it");
+    }
+  }
+
+  /**
+   * The image a runner's {@code stepImage} check is told to find is the reference a pseudo-build
+   * accepted now would launch: the health-check image pinned to its digest as at accept, then moved
+   * to the registry's public name by the plane a step's launch is composed with — never the tag,
+   * which no launch names and so is never on the node.
+   */
+  @Test
+  @TestSecurity(user = "agent", roles = {RUNNER_ROLE, "qits:agent"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void theNodeReportIsAskedAboutThePinnedReferenceAPseudoBuildLaunches() throws Exception {
+    declare(1, CiRunnerPlane.EDGE, null, null);
+    QueuedHealthChecks.install();
+    String digest = "sha256:" + "9".repeat(64);
+    StagedImagePins.install(digest);
+
+    try (FakeCiRunner runner = FakeCiRunner.dial(endpoint)) {
+      runner.send(hello());
+      assertEquals(1, runner.next(Ack.class, SOON).slots());
+      assertNotNull(runner.next(Backlog.class, SOON));
+      awaitGreeted();
+
+      given().post(RUNNERS + "/" + runnerId + "/healthcheck").then().statusCode(202);
+      HealthCheck frame = runner.next(HealthCheck.class, SOON);
+      assertNotNull(frame, "the runner is sent the frame");
+
+      String pinned =
+          runService.launchStepImage(
+              ConfigProvider.getConfig().getValue("qits.ci.runner.healthcheck.image", String.class));
+      assertTrue(pinned.endsWith("/qits/build-images/ci-base@" + digest), pinned);
+      assertEquals(
+          stepSettings.plane(addresses.edgeOrigins().orElseThrow()).imageReference(pinned),
+          frame.image(),
+          "the pinned reference under the public name, exactly as a step's launch moves it");
+      assertEquals(
+          "registry.qits." + HermeticConfigSource.DOMAIN + "/qits/build-images/ci-base@" + digest,
+          frame.image());
     }
   }
 

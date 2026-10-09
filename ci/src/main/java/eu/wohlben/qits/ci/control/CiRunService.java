@@ -1127,14 +1127,40 @@ public class CiRunService {
 
   /**
    * A step image as a run resolves it — {@link CiStepImage#resolve} against this platform's
-   * registry, unless {@code qits.ci.resolve-platform-step-images} is off — and unpinned. What a
-   * runner's node health check is told to look for (qits-896): the image the next health check's
-   * pseudo-build would start, minus the digest a run takes at its accept.
+   * registry, unless {@code qits.ci.resolve-platform-step-images} is off — and unpinned: what
+   * {@code ci_step.image} records. What a step is STARTED with is {@link #launchStepImage}.
    */
   public String resolveStepImage(String image) {
     return resolvePlatformStepImages
         ? CiStepImage.resolve(image, artifactsRegistryHost, artifactsImageRepository)
         : image;
+  }
+
+  /**
+   * <b>The reference a run accepted NOW would start {@code image} with</b>: {@link
+   * #resolveStepImage}, then the one pin {@link #pinStepImages} would record for it and {@link
+   * #pinnedImage} would launch — the digest form for a platform image, the reference as named for a
+   * foreign one or one that already carries a digest. What a runner's node health check is told to
+   * look for (qits-896), so its {@code stepImage} check asks the node for the bytes its next
+   * pseudo-build pulls rather than a tag no launch ever names.
+   *
+   * <p><b>Where accept would refuse, this answers the resolved tag</b> — the registry did not answer,
+   * or this deployment states no address for it. A diagnosis asking about the tag is still a
+   * diagnosis; a run started on it would not be, which is why only accept refuses. One registry
+   * {@code HEAD}, bounded by the pin seam's own timeouts. Never throws.
+   */
+  public String launchStepImage(String image) {
+    String resolved = resolveStepImage(image);
+    if (resolved == null || resolved.isBlank()) {
+      return resolved;
+    }
+    try {
+      CiStepImagePins.Pin pin = imagePins.pin(resolved);
+      return pin.status() == CiStepImagePins.Status.UNRESOLVED ? resolved : pin.reference();
+    } catch (RuntimeException e) {
+      LOG.debugf("Could not pin %s: %s", resolved, e.getMessage());
+      return resolved;
+    }
   }
 
   /**

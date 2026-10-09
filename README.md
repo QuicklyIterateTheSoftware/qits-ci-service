@@ -518,9 +518,12 @@ carries on, and a new quarantine starts it over at +1 m. It replaced `qits.ci.ru
 runner can also be asked to run its own named checks on its node — `healthCheck{requestId, image}` →
 `healthChecked{ok, detail, requestId, checks}`, qits-ci-runner-daemon's README under "The node health
 check" — and it is asked whenever the operator's door queues a pseudo-build for it and whenever the
-schedule above does. `image` is `qits.ci.runner.healthcheck.image` resolved exactly as the
-pseudo-build's step image (`CiRunService.resolveStepImage`) and moved to the registry's public name, so
-the runner's `stepImage` check looks for what its next health check would start. One request is pending
+schedule above does. `image` is `qits.ci.runner.healthcheck.image` resolved and pinned to its digest
+exactly as a pseudo-build accepted now would be (`CiRunService.launchStepImage`) and moved to the
+registry's public name as a launch moves it — `registry.qits.<domain>/qits/build-images/ci-base@sha256:…`,
+the reference that run's launch names — so the runner's `stepImage` check looks for what its next health
+check would start; the tag only when no pin could be had (registry unreachable), and the request goes
+out either way. One request is pending
 per runner, in memory (`runnerhost/CiRunnerNodeHealth`): a second ask while one is pending on a live
 session answers its `requestId` and sends nothing; an answer naming another id is dropped; an answer
 naming none settles the pending one; and one not answered within

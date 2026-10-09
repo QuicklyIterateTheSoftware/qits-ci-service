@@ -23,6 +23,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -380,6 +381,37 @@ public class CiRunnerHealthTest extends CiTestSupport {
     assertEquals(target.id, run(check.id).runnerId);
     assertTrue(service.reserveFor(target).isEmpty(), "and nothing else while it is quarantined");
     service.executeReserved(taken);
+  }
+
+  /**
+   * <b>What a runner's node health check is told to look for is what its pseudo-build launches</b>
+   * (qits-896): the health-check image pinned to its digest at accept, not the tag — a tag no launch
+   * names is never on the node, so a {@code stepImage} check asked about it fails on a runner whose
+   * builds work. With no pin to be had it is the resolved tag, and asking still answers.
+   */
+  @Test
+  public void theNodeHealthImageIsTheReferenceAPseudoBuildLaunches() throws Exception {
+    String image =
+        ConfigProvider.getConfig().getValue("qits.ci.runner.healthcheck.image", String.class);
+    String tag = service.resolveStepImage(image);
+    String digest = "sha256:" + "7".repeat(64);
+    fakeImagePins.pins(tag, digest);
+
+    String told = service.launchStepImage(image);
+    assertEquals(tag.substring(0, tag.lastIndexOf(':')) + "@" + digest, told);
+
+    CiRunner runner = runner("pinned-check", 1);
+    CiRun check = health.requestHealthCheck(runner.id);
+    service.executeReserved(service.reserveFor(runner).orElseThrow());
+    List<String> launched =
+        fakeRunner.executed().stream()
+            .filter(s -> s.runId().equals(check.id))
+            .map(CiStepRunner.StepSpec::image)
+            .toList();
+    assertEquals(List.of(told), launched, "the very reference the pseudo-build's step started");
+
+    fakeImagePins.unresolvable(tag);
+    assertEquals(tag, service.launchStepImage(image), "no pin: the tag, and never a failure");
   }
 
   @Test
