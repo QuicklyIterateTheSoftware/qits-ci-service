@@ -34,7 +34,7 @@
          and the mandatory -Dqits.variant=oauth|forwardauth|local auth profiles. -->
     <groupId>eu.wohlben.qits</groupId>
     <artifactId>qits-ci</artifactId>
-    <version>2026.1009.190249</version>
+    <version>2026.1009.200457</version>
     <packaging>pom</packaging>
     <name>qits-ci</name>
 
@@ -83,7 +83,7 @@
              side of its socket landed in one epic, and the first release of the protocol jar
              replaces this line through the ordinary bump. Do not ship a release request of this
              repository with the snapshot still in it. -->
-        <qits.ci-runner-protocol.version>2026.1009.183238</qits.ci-runner-protocol.version>
+        <qits.ci-runner-protocol.version>2026.1009.192322</qits.ci-runner-protocol.version>
         <qits.eventstream.version>2026.1003.44717</qits.eventstream.version>
         <!-- qits-githost's event vocabulary: the SCM records a push announces. qits-ci consumes
              SCMPublishCommit and nothing else, but the jar is the whole vocabulary — it is a data
@@ -134,7 +134,7 @@
              qits-platform-maintenance moves it like any internal pin, on a maintenance/* branch, and
              THIS repository's own release request is what gates the move. Do not hand-edit it to
              chase a release. -->
-        <qits.platform-access-cli-binary.version>2026.1009.82004</qits.platform-access-cli-binary.version>
+        <qits.platform-access-cli-binary.version>2026.1009.193251</qits.platform-access-cli-binary.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
