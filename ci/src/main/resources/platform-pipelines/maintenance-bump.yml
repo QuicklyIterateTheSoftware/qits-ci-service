@@ -38,6 +38,10 @@
 # that head is already one commit on the base, nothing is pushed, so an open release
 # request is not re-gated for nothing.
 #
+# ONLY `maintenance/<group>` IS REBUILT. A release-request automation (estate pins, group
+# `targeted`, payload carrying `kind`) writes a request's own source branch - somebody
+# else's - so that branch is appended to, ff-only, with a plain push, exactly as before.
+#
 # `replaceHead` is the head the maintenance service read. It is checked for shape and
 # logged; the lease uses the head this step read, and the ownership walk decides.
 #
@@ -302,9 +306,25 @@ steps:
         exit 42
       }
 
+      # ONLY OUR OWN BRANCH IS REBUILT. `maintenance/<group>` is the maintenance service's,
+      # and nobody else writes it. A release-request automation (estate pins, group
+      # `targeted`) sends a request's own SOURCE branch - a ticket branch, somebody's work -
+      # and carries `kind` in the payload: that branch is APPENDED to, ff-only, never forced.
+      kind=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).kind || ""')
+      if [ "$branch" = "maintenance/$group" ] && [ -z "$kind" ]; then
+        owned=true
+      else
+        owned=false
+      fi
+
       if [ -z "$head" ]; then
         echo "starting $branch from $base"
+        start=$base_sha
         lease="--force-with-lease=refs/heads/$branch:"
+      elif [ "$owned" = false ]; then
+        echo "appending to $branch"
+        start=$head
+        lease=
       else
         stop=$(first_foreign "$head")
         if ! in_base "$stop"; then
@@ -315,13 +335,15 @@ steps:
           in_base "$stop" || not_ours "$stop on $branch was not written by $bot and $base does not contain it"
         fi
         echo "rebuilding $branch on $base (was $head)"
+        start=$base_sha
         lease="--force-with-lease=refs/heads/$branch:$head"
       fi
-      git checkout -q --detach "$base_sha"
+      git checkout -q --detach "$start"
 
       # --- apply -------------------------------------------------------------------
-      # Every change, on the base. A change counts only when it moves the index - the base
-      # may already carry it - so the subject says what this commit really changes.
+      # Every change, on the start (the base, or an appended branch's head). A change counts
+      # only when it moves the index - the start may already carry it - so the subject says
+      # what this commit really changes.
       : > /tmp/bump-body.txt
       applied=0
       tab=$(printf '\t')
@@ -501,7 +523,12 @@ steps:
       # blinds `git diff --cached` to a staged gitlink. A tree is a tree.
       tree=$(git write-tree)
       push() {
-        if ! git push "$lease" "$QITS_CI_REPOSITORY_URL" "$1:refs/heads/$branch"; then
+        if ! git push ${lease:+"$lease"} "$QITS_CI_REPOSITORY_URL" "$1:refs/heads/$branch"; then
+          if [ "$owned" = false ]; then
+            # An appended branch is somebody else's: a non-ff rejection is an ordinary red run.
+            echo "push to $branch was rejected - the branch is not what we built on" >&2
+            exit 1
+          fi
           # Refused, or the host was not reached. Only a branch that really moved since this
           # step read it is somebody else's; anything else is an ordinary red run.
           now=$(git ls-remote "$QITS_CI_REPOSITORY_URL" "refs/heads/$branch" | cut -f1) || exit 1
@@ -512,7 +539,11 @@ steps:
           exit 1
         fi
       }
-      if [ "$tree" = "$(git rev-parse "$base_sha^{tree}")" ]; then
+      if [ "$owned" = false ] && [ "$tree" = "$(git rev-parse "$start^{tree}")" ]; then
+        echo "$branch already carries every change in this bump - nothing to commit"
+        exit 0
+      fi
+      if [ "$owned" = true ] && [ "$tree" = "$(git rev-parse "$base_sha^{tree}")" ]; then
         if [ -z "$head" ] || [ "$head" = "$base_sha" ]; then
           echo "$base already carries every change in this bump - nothing to commit"
           exit 0
@@ -522,7 +553,7 @@ steps:
         echo "reset $branch to $base, which already carries every change"
         exit 0
       fi
-      if [ -n "$head" ] \
+      if [ "$owned" = true ] && [ -n "$head" ] \
         && [ "$(git rev-parse "$head^{tree}")" = "$tree" ] \
         && [ "$(git rev-parse -q --verify "$head^" 2>/dev/null || true)" = "$base_sha" ]; then
         echo "$branch is already this one commit on $base - nothing to push"
@@ -534,4 +565,4 @@ steps:
       } > /tmp/bump-message.txt
       git -c user.name="qits maintenance" -c user.email="$bot" commit -q -F /tmp/bump-message.txt
       push HEAD
-      echo "pushed $branch: one commit, $applied dependencies, on $base"
+      echo "pushed $branch: one commit, $applied dependencies"

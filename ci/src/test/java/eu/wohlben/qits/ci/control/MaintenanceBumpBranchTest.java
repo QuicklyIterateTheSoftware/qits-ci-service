@@ -225,6 +225,32 @@ public class MaintenanceBumpBranchTest {
     assertEquals(oldHead, branchHead());
   }
 
+  @Test
+  public void aRequestsOwnSourceBranchIsAppendedToNeverRebuilt() throws Exception {
+    // The estate-pins automation: group `targeted`, a ticket branch somebody else owns, and a
+    // `kind` in the payload. Their commit stays; ours lands on top, ff-only.
+    git(seed, "checkout", "-q", "--detach", tagCommit);
+    commitAs(seed, "person@example.com", "feat: the ticket's work");
+    git(seed, "push", "-q", "origin", "HEAD:refs/heads/ticket/x");
+    String ticket = out(seed, "rev-parse", "HEAD");
+    String payload =
+        payload(null, true, false)
+            .replace("\"group\":\"libs\"", "\"group\":\"targeted\",\"kind\":\"estate-pins\"")
+            .replace(BRANCH, "ticket/x");
+
+    Run run = step(payload);
+    assertEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains("appending to ticket/x"), run.output);
+    String head = out(remote, "rev-parse", "refs/heads/ticket/x");
+    assertEquals(ticket, rev(head + "^"), "the ticket's commit must stay under ours");
+    assertTrue(out(remote, "log", "-1", "--format=%s", head).startsWith("bump(targeted): 1 dependencies"));
+
+    Run again = step(payload);
+    assertEquals(0, again.exit, again.output);
+    assertTrue(again.output.contains("nothing to commit"), again.output);
+    assertEquals(head, out(remote, "rev-parse", "refs/heads/ticket/x"));
+  }
+
   /** A newer main, released as {@code tag}: pom.xml at {@code lib}, and a Dockerfile if given. */
   private String release(String lib, String dockerfile, String tag) throws Exception {
     git(seed, "checkout", "-q", "--detach", tagCommit);
