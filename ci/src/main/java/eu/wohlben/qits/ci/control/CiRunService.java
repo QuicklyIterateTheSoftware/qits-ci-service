@@ -1122,9 +1122,19 @@ public class CiRunService {
    * moved, which is not what that rule means by a step changing its image.
    */
   private String stepImage(CiPipeline.CiStepDecl decl) {
+    return resolveStepImage(decl.image());
+  }
+
+  /**
+   * A step image as a run resolves it — {@link CiStepImage#resolve} against this platform's
+   * registry, unless {@code qits.ci.resolve-platform-step-images} is off — and unpinned. What a
+   * runner's node health check is told to look for (qits-896): the image the next health check's
+   * pseudo-build would start, minus the digest a run takes at its accept.
+   */
+  public String resolveStepImage(String image) {
     return resolvePlatformStepImages
-        ? CiStepImage.resolve(decl.image(), artifactsRegistryHost, artifactsImageRepository)
-        : decl.image();
+        ? CiStepImage.resolve(image, artifactsRegistryHost, artifactsImageRepository)
+        : image;
   }
 
   /**

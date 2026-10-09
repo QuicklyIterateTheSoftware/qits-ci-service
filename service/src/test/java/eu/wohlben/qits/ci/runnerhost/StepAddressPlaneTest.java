@@ -32,6 +32,21 @@ class StepAddressPlaneTest {
         List.of("registry.qits.example.org", "mirror.qits.example.org"), plane.authHosts());
   }
 
+  /**
+   * qits-896: the one pair of addresses a step is handed as URL variables rather than left for the
+   * recipe to derive, because every repository's committed {@code .qits-maven-settings.xml} already
+   * reads exactly these two names. Derived from the domain alone, like every other address here.
+   */
+  @Test
+  void theTwoMavenUrlsAreDerivedFromTheDomainAloneLikeEveryOtherAddress() {
+    StepAddressPlane plane = StepFixtures.plane();
+
+    assertEquals(
+        "https://registry.qits.example.org/artifacts/maven/maven", plane.mavenRepositoryUrl());
+    assertEquals(
+        "https://mirror.qits.example.org/mirror/maven/central", plane.mavenCentralUrl());
+  }
+
   @Test
   void theDaemonSocketPathIsTheSocketsOwnLiteral() {
     // One string in two packages: move the socket's path and this composition moves with it.

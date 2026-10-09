@@ -43,4 +43,14 @@ public interface CiRunnerSignals {
    * RUNNER_DELETED}.
    */
   void deleted(UUID runnerId);
+
+  /**
+   * Ask the connected runner for its NODE health report now (qits-896): a {@code healthCheck} frame,
+   * whose answer — or the lack of one — lands on {@code ci_runner.node_health}. Sent beside a
+   * pseudo-build the schedule queued, so the report an operator reads next to that check's verdict is
+   * as fresh as it is. A diagnosis and never a decision: nothing the report says moves the runner's
+   * standing. A runner that is not connected, or already has a request pending, is asked nothing
+   * more.
+   */
+  void nodeHealthCheck(UUID runnerId);
 }

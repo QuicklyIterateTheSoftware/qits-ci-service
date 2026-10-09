@@ -198,6 +198,9 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
   /** What a runner's builder rewrites — every {@code Ack} carries it. */
   @Inject RunnerRegistryMirrors registryMirrors;
 
+  /** The node health report's request and answer (qits-896), asked for through {@link #nodeHealthCheck}. */
+  @Inject CiRunnerNodeHealth nodeHealth;
+
   /**
    * Every open session of each runner, oldest first. A list rather than one session because a
    * self-updating runner holds two for a while; mutated only inside {@link ConcurrentHashMap#compute}
@@ -1018,6 +1021,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
    */
   @Override
   public void deleted(UUID runnerId) {
+    nodeHealth.forget(runnerId);
     // A deleted runner is not waited for.
     orphans.forEach(
         (runId, orphan) -> {
@@ -1074,6 +1078,15 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
     if (session != null) {
       reAck(session);
     }
+  }
+
+  /**
+   * Ask the runner for its node health report — {@link CiRunnerNodeHealth#request}, best effort like
+   * every signal: a runner with no serving session is asked nothing.
+   */
+  @Override
+  public void nodeHealthCheck(UUID runnerId) {
+    nodeHealth.request(runnerId);
   }
 
   /**
@@ -1136,7 +1149,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
   }
 
   /** The session a runner's slots are granted on — greeted, pinned, not draining — or null. */
-  private Session serving(UUID runnerId) {
+  Session serving(UUID runnerId) {
     Session session = current(runnerId);
     return session != null && session.greeted && !session.draining && session.isOpen()
         ? session

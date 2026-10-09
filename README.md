@@ -131,7 +131,7 @@ rest of qits it reaches over a URL it is configured with:
 | out | `POST/DELETE/GET /idp/api/tokens` — one `ci-run` TOKEN per run, minted at the run's first step and deleted when the run closes: every step clones, downloads, publishes and dials with it, and it is the step's only credential. And a runner's one-use registration token (`ci-runner-registration`) | `quarkus.oidc-client.qits.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.qits.client-enabled` |
 | out | `POST/DELETE/GET /idp/api/clients` — a registered runner's own client (`ci-runner`), given back when the runner is decommissioned — see "Runners" below. A run commissions no client (qits-515) | the same keys as the row above |
 | out | `HEAD <origin>/v2/<name>/manifests/<tag>` on qits-artifacts — the digest a run's step image is pinned to, asked by this process from inside the swarm | `qits.artifacts.url`, else the origin of `qits.artifacts.maven.registry-url`; the pinned reference is addressed under `qits.artifacts.registry-host` |
-| out | the platform's public domain itself, bare, as `$QITS_DOMAIN` in **every** step container — the ONE address input a recipe reads (qits-731). `registry.qits.$QITS_DOMAIN` (the image registry, the hosted npm `/artifacts/npm/npm/` and maven `/artifacts/maven/maven` roots, the docs store `/artifacts/docs/docs`, the daemons store the prelude fetches the qits CLI from) and `mirror.qits.$QITS_DOMAIN` (npmjs `/npm/npmjs/`, Maven Central `/mirror/maven/central`) are code, spelled from it with those constant paths, and **no URL variable carries any of them**: `$QITS_REGISTRY`, `$QITS_BUILD_REGISTRY`, `$QITS_NPM_REGISTRY_URL`, `$QITS_NPM_PROXY_URL`, `$QITS_MAVEN_REGISTRY_URL`, `$QITS_MAVEN_CENTRAL_MIRROR_URL`, `$QITS_MAVEN_PROXY_URL`, `$QITS_DOCS_URL` and `$QITS_ARTIFACTS_URL` are no longer sent, and `qits.mirror.maven-central.enabled` went with the two Central ones | `qits.ci.domain` |
+| out | the platform's public domain itself, bare, as `$QITS_DOMAIN` in **every** step container — the address input a recipe derives the platform's other addresses from (qits-731). `registry.qits.$QITS_DOMAIN` (the image registry, the hosted npm `/artifacts/npm/npm/` root, the docs store `/artifacts/docs/docs`, the daemons store the prelude fetches the qits CLI from) and `mirror.qits.$QITS_DOMAIN` (npmjs `/npm/npmjs/`) are code, spelled from it with those constant paths, and **no URL variable carries either**: `$QITS_REGISTRY`, `$QITS_BUILD_REGISTRY`, `$QITS_NPM_REGISTRY_URL`, `$QITS_NPM_PROXY_URL`, `$QITS_DOCS_URL` and `$QITS_ARTIFACTS_URL` are no longer sent. The hosted **maven** `/artifacts/maven/maven` root and Maven Central's cache `/mirror/maven/central` are the one pair that IS sent, as `$QITS_MAVEN_REPOSITORY_URL`/`$QITS_MAVEN_CENTRAL_URL` (qits-896) — still composed in code from this same domain by `StepAddressPlane`, never from configuration, because every repository's committed `.qits-maven-settings.xml` already reads exactly those two names and a repository overriding an archetype's slots would otherwise re-derive both by hand; `qits.mirror.maven-central.enabled`, the old empty-string kill switch for them, stays gone | `qits.ci.domain` |
 | out | the namespace a published image goes under, as `$QITS_IMAGE_REPOSITORY` in **every** step container; the image is `registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/<application>:$QITS_VERSION` | `qits.artifacts.image-repository` |
 | out | qits-workspaces, as `$QITS_WORKSPACES_URL` (`https://workspaces.qits.<domain>`) in **every** step container | `qits.ci.domain` |
 
@@ -164,17 +164,20 @@ it then holds open to pull work.
 | `POST /ci/api/runners/{id}/registration-token` | the runner's fields plus a fresh `installScript` line with a new token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin`, `qits:system` |
 | `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run; 409 `LAST_RUNNER` for `localhost` while no other runner exists | `qits:admin`, `qits:system` |
 | `POST /ci/api/runners/{id}/greenlight` | the runner, its quarantine lifted and its failure streak reset; a runner in service is answered as it is | `qits:admin` |
-| `POST /ci/api/runners/{id}/healthcheck` | 202 `{runId}`: a health check queued for it now; 409 while one is queued or running, 503 when its repository, head or image cannot be resolved | `qits:admin` |
+| `POST /ci/api/runners/{id}/healthcheck` | 202 `{runId, requestId}`: a health check queued for it now and, when the runner is connected, its node health report asked for (`requestId` null otherwise); 409 while one is queued or running, 503 when its repository, head or image cannot be resolved — neither sends the node frame | `qits:admin`, `qits:system`, `qits:agent` |
+| `GET /ci/api/runners/{id}/health` | 200 `{at, ok, detail, requestId, dataOmitted, checks: [{name, ok, detail, data}]}`: the runner's newest node health report; 204 while it has never reported; 404 | `qits:admin`, `qits:system`, `qits:agent` |
 
 **The four lifecycle writes take `qits:system` as well as `qits:admin`** (qits-521), the pair `POST
 /ci/api/runs/cancellations` takes, and on the machine arm the bearer must be addressed to the platform
 (`MachineAuth.require()`, exactly as the cancellation asks; no `project` claim is required, since a
 runner belongs to no project). **The machine caller is the bootstrap's own service client**: on a cold
 start it creates the `localhost` runner, reads the registration token out of the 201's
-`installScript`, and hands it to the deployer — with nobody at a keyboard. Greenlight and a health
-check on demand stay `qits:admin` alone, because nothing on that path needs them: the register door
-queues a new runner's first health check itself and a green one lifts the quarantine. `qits:agent`
-writes nothing here, and the register door admits `qits:ci-runner-registration` alone.
+`installScript`, and hands it to the deployer — with nobody at a keyboard. Greenlight stays
+`qits:admin` alone, because nothing on that path needs it: the register door queues a new runner's
+first health check itself and a green one lifts the quarantine. **A health check on demand is open to
+`qits:system` and `qits:agent` too** (qits-896): it probes and changes nothing a person set, and its
+only effect on the runner's standing is the one its own result has. It is the only write `qits:agent`
+may press here, and the register door admits `qits:ci-runner-registration` alone.
 
 **`stepMemoryLimit` is the one cap a runner may set for its own steps.** Every step container is capped
 at `qits.ci.memory-limit` (4g), sent as its memory **and** memory-swap; that number is sized for the
@@ -510,6 +513,24 @@ then waits for its next slot, not a backlog; a red check leaves `quarantinedAt` 
 carries on, and a new quarantine starts it over at +1 m. It replaced `qits.ci.runner.healthcheck.interval`
 (a flat hour). One still `QUEUED` after
 `qits.ci.runner.healthcheck.queue-timeout` (30 min) is settled `FAILED`, `runner not connected`.
+
+**The node health report is a diagnosis beside the check, never part of it** (qits-896). A connected
+runner can also be asked to run its own named checks on its node — `healthCheck{requestId, image}` →
+`healthChecked{ok, detail, requestId, checks}`, qits-ci-runner-daemon's README under "The node health
+check" — and it is asked whenever the operator's door queues a pseudo-build for it and whenever the
+schedule above does. `image` is `qits.ci.runner.healthcheck.image` resolved exactly as the
+pseudo-build's step image (`CiRunService.resolveStepImage`) and moved to the registry's public name, so
+the runner's `stepImage` check looks for what its next health check would start. One request is pending
+per runner, in memory (`runnerhost/CiRunnerNodeHealth`): a second ask while one is pending on a live
+session answers its `requestId` and sends nothing; an answer naming another id is dropped; an answer
+naming none settles the pending one; and one not answered within
+`qits.ci.runner.node-healthcheck.timeout` (`PT5M`) is stored as `ok: false`, `detail: NO_ANSWER`, its
+`requestId` and no checks — what a runner older than the frame always gets. The report lands on
+`ci_runner.node_health` (`jsonb`, `{ok, detail, requestId, dataOmitted, checks}`) and
+`node_health_at` (`V35__runner_node_health.sql`), bounded at 128 KiB by dropping every check's `data`
+and setting `dataOmitted`, and `GET /ci/api/runners/{id}/health` reads it. **Nothing reads it to decide
+anything**: the quarantine, the streak, the schedule and the reinstatement follow the pseudo-build and
+the infra streak alone, and no event announces a node report.
 
 **A connected runner is told**: `Quarantined{reason, since}` when it is taken out and right after its
 `Ack` at every `Hello` while out, `Reinstated{by: admin|healthcheck}` when it is put back — both
@@ -1070,11 +1091,17 @@ npm_proxy_url="https://mirror.qits.$qits_domain/npm/npmjs/"
 credentials by. The `:?` fails fast rather than falling back: every qits-ci that runs a recipe sends
 the domain, and the composed prelude demands it before the script starts.
 
-Maven has the same network posture. The hosted repository root is
+Maven has the same network posture, and it is the one pair of these addresses qits-ci hands over as
+URL variables rather than leaving to the recipe (qits-896). The hosted repository root is
 `https://registry.qits.$QITS_DOMAIN/artifacts/maven/maven` and Maven Central's cache is
-`https://mirror.qits.$QITS_DOMAIN/mirror/maven/central`; the maven recipes export them as
-`QITS_MAVEN_REPOSITORY_URL` and `QITS_MAVEN_CENTRAL_URL` for `.qits-maven-settings.xml` — a name
-the recipe sets for Maven, never one qits-ci sends.
+`https://mirror.qits.$QITS_DOMAIN/mirror/maven/central`; every step container gets them as
+`$QITS_MAVEN_REPOSITORY_URL` and `$QITS_MAVEN_CENTRAL_URL`, composed from `$QITS_DOMAIN` by
+`StepAddressPlane` rather than read from configuration — the names every repository's committed
+`.qits-maven-settings.xml` already reads (`${env.QITS_MAVEN_REPOSITORY_URL}` as the mirror for
+server id `qits-maven`, `${env.QITS_MAVEN_CENTRAL_URL}` to activate the central-proxy profile). The
+maven recipes still export both themselves too — harmless, since the value is identical — because a
+repository that overrides an archetype's slots (the runner daemons do) would otherwise have to
+re-derive them by hand; a recipe that must bypass the mirror can `unset QITS_MAVEN_CENTRAL_URL`.
 
 **A lockfile is installed as committed, and never rewritten** (qits-731). npm fetches every tarball
 by the `resolved` URL its lockfile pins and never asks the configured registry, so a lockfile is an

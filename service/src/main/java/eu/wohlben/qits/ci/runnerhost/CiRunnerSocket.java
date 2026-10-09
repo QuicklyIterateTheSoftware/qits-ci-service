@@ -5,6 +5,7 @@ import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.entity.CiRunner;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerMessage;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerProtocol;
+import eu.wohlben.qits.cirunner.protocol.HealthChecked;
 import eu.wohlben.qits.cirunner.protocol.Heartbeat;
 import eu.wohlben.qits.cirunner.protocol.Hello;
 import eu.wohlben.qits.cirunner.protocol.LaunchFailed;
@@ -93,6 +94,8 @@ public class CiRunnerSocket {
 
   @Inject RunnerReservations reservations;
 
+  @Inject CiRunnerNodeHealth nodeHealth;
+
   @Inject SecurityIdentity identity;
 
   @OnOpen
@@ -144,6 +147,7 @@ public class CiRunnerSocket {
       case Launched launched -> registry.onLaunched(session, launched);
       case LaunchFailed failed -> registry.onLaunchFailed(session, failed);
       case Reaped reaped -> registry.onReaped(session, reaped);
+      case HealthChecked checked -> nodeHealth.onHealthChecked(session, checked);
       default ->
           // Host → runner frames are never received here; ignored rather than trusted.
           LOG.debugf(

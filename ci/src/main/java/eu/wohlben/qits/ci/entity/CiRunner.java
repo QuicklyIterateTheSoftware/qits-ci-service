@@ -158,6 +158,21 @@ public class CiRunner extends PanacheEntityBase implements CausedRow {
   public String lastHealthcheckDetail;
 
   /** Whether the register door has answered this runner. */
+  /**
+   * The runner's newest NODE health report (qits-896) — the answer to a {@code healthCheck} frame,
+   * or a {@code NO_ANSWER} one when it went unanswered — as {@link RunnerNodeHealth} writes it:
+   * {@code {ok, detail, requestId, dataOmitted, checks:[{name, ok, detail, data}]}}. A diagnosis
+   * only: nothing here reads it to decide a runner's standing, which the pseudo-build's {@code
+   * last_healthcheck_*} columns alone drive. Null while the runner has never reported.
+   */
+  @JdbcTypeCode(SqlTypes.JSON)
+  @Column(name = "node_health", columnDefinition = "jsonb")
+  public String nodeHealth;
+
+  /** When {@link #nodeHealth} settled — answered, or timed out. */
+  @Column(name = "node_health_at")
+  public Instant nodeHealthAt;
+
   public boolean registered() {
     return clientId != null;
   }

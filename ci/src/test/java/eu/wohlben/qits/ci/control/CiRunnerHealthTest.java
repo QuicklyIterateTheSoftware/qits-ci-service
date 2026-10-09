@@ -519,6 +519,13 @@ public class CiRunnerHealthTest extends CiTestSupport {
     assertNull(pendingOrNull(inService.id), "in service: nothing to prove");
     assertNull(pendingOrNull(recent.id), "checked since its last slot");
     assertEquals(alreadyQueued.id, pendingCheck(pending.id).id, "one pending check is enough");
+
+    // qits-896: a check the sweep queues comes with a node health request, and only that one.
+    assertEquals(1, signals.nodeHealthChecksOf(due.id), "asked for its node report beside it");
+    assertEquals(0, signals.nodeHealthChecksOf(disconnected.id));
+    assertEquals(0, signals.nodeHealthChecksOf(pending.id), "nothing queued, nothing asked");
+    assertEquals(0, signals.nodeHealthChecksOf(inService.id));
+    assertEquals(0, signals.nodeHealthChecksOf(recent.id));
   }
 
   /**

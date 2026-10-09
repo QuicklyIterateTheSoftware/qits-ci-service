@@ -20,8 +20,22 @@ public class RecordingRunnerSignals implements CiRunnerSignals {
 
   private final List<String> signals = Collections.synchronizedList(new ArrayList<>());
 
+  /**
+   * The runners asked for a node health report, in order — kept apart from {@link #of}, so a case
+   * about the standing's own signals reads exactly the list it always read.
+   */
+  private final List<UUID> nodeHealthChecks = Collections.synchronizedList(new ArrayList<>());
+
   public void reset() {
     signals.clear();
+    nodeHealthChecks.clear();
+  }
+
+  /** How many times the runner was asked for its node health report. */
+  public long nodeHealthChecksOf(UUID runnerId) {
+    synchronized (nodeHealthChecks) {
+      return nodeHealthChecks.stream().filter(runnerId::equals).count();
+    }
   }
 
   /** Every signal about one runner, in order: {@code quarantined:<reason>}, {@code reinstated:<by>}, {@code slotsChanged}, {@code deleted}. */
@@ -53,5 +67,10 @@ public class RecordingRunnerSignals implements CiRunnerSignals {
   @Override
   public void deleted(UUID runnerId) {
     signals.add(runnerId + " deleted");
+  }
+
+  @Override
+  public void nodeHealthCheck(UUID runnerId) {
+    nodeHealthChecks.add(runnerId);
   }
 }

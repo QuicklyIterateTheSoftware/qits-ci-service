@@ -6,6 +6,7 @@ import eu.wohlben.qits.auth.MachineIdentity;
 import eu.wohlben.qits.ci.control.CiRunnerHealth;
 import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.dto.CiRunnerDto;
+import eu.wohlben.qits.ci.dto.CiRunnerHealthDto;
 import eu.wohlben.qits.ci.dto.CiRunnerHealthcheckDto;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunner;
@@ -16,8 +17,10 @@ import eu.wohlben.qits.ci.error.CiException;
 import eu.wohlben.qits.ci.error.NotFoundException;
 import eu.wohlben.qits.ci.error.UnavailableException;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
+import eu.wohlben.qits.ci.runnerhost.CiRunnerNodeHealth;
 import eu.wohlben.qits.ci.runnerhost.RunnerAddresses;
 import eu.wohlben.qits.ci.runnerhost.RunnerInstallScript;
+import io.quarkus.runtime.annotations.RegisterForReflection;
 import io.quarkus.security.identity.SecurityIdentity;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
@@ -49,8 +52,10 @@ import org.jboss.logging.Logger;
  * qits:admin}, {@code qits:system} and {@code qits:agent}. The four lifecycle writes — create,
  * patch, a registration token rotation and delete — take the pair {@code {qits:admin, qits:system}}
  * the release-request cancellation takes (qits-521), because the bootstrap's own service client is
- * a real caller of them; greenlight and a health check on demand stay {@code qits:admin} alone, the
- * cancel button's role. {@code qits:agent} writes nothing here. {@code qits:ci-runner-registration} — what a registration token carries
+ * a real caller of them; greenlight stays {@code qits:admin} alone, the cancel button's role. The
+ * health check on demand takes all three (qits-896): it probes and changes nothing a person set, and
+ * it is the only write {@code qits:agent} may press here. Its node health report is a read of the
+ * same three. {@code qits:ci-runner-registration} — what a registration token carries
  * — opens exactly two routes anywhere on the platform: the register door, only for the runner the
  * token was minted for (the bearer's {@code sub} must be that runner's registration token subject,
  * or it is 403), and {@code GET /runners/install.sh}, the generic install script, which carries no
@@ -70,6 +75,14 @@ import org.jboss.logging.Logger;
  */
 @Path("/runners")
 @Produces(MediaType.APPLICATION_JSON)
+// The health check door (202) and the node health read (200 or 204) answer through a bare Response,
+// so their records are on no signature the native build indexes.
+@RegisterForReflection(
+    targets = {
+      CiRunnerController.HealthCheckQueued.class,
+      CiRunnerHealthDto.class,
+      CiRunnerHealthDto.CheckReport.class
+    })
 public class CiRunnerController {
 
   private static final Logger LOG = Logger.getLogger(CiRunnerController.class);
@@ -80,10 +93,10 @@ public class CiRunnerController {
   /**
    * The machine role, and the second one the four lifecycle writes take (qits-521): the bootstrap's
    * own service client creates the {@code localhost} runner on a cold start with nobody at a
-   * keyboard. Greenlight and a health check on demand stay {@code qits:admin} alone — a freshly
-   * registered runner's first health check is queued by the register door itself ({@code
-   * CiRunnerHealth.onRegistered}) and a green one lifts the quarantine, so no machine caller needs
-   * either door to bring a runner into service.
+   * keyboard. Greenlight stays {@code qits:admin} alone — a freshly registered runner's first health
+   * check is queued by the register door itself ({@code CiRunnerHealth.onRegistered}) and a green one
+   * lifts the quarantine, so no machine caller needs it to bring a runner into service. The health
+   * check on demand takes this role too (qits-896): it changes nothing a person set.
    */
   static final String SYSTEM_ROLE = "qits:system";
 
@@ -93,6 +106,12 @@ public class CiRunnerController {
    * everything {@code qits:admin} may use.
    */
   static final String ADMIN_AGENT_ROLE = "qits:admin-agent";
+
+  /**
+   * A coding agent's role: every read here takes it, and so does the health check on demand
+   * (qits-896) — the one write it may press, because a check changes nothing a person set.
+   */
+  static final String AGENT_ROLE = "qits:agent";
 
   /** The role a registration token carries, and the only one the register door admits. */
   static final String REGISTRATION_ROLE = "qits:ci-runner-registration";
@@ -106,6 +125,8 @@ public class CiRunnerController {
   @Inject RunnerInstallScript installScript;
 
   @Inject CiRunnerHealth health;
+
+  @Inject CiRunnerNodeHealth nodeHealth;
 
   @Inject MachineAuth machineAuth;
 
@@ -463,16 +484,29 @@ public class CiRunnerController {
    * Queue a health check for a runner now: the pseudo-build only that runner may take, quarantined or
    * not. Answers the run's id, which {@code GET /ci/api/runs/{runId}} reads — the run is in no
    * listing. The runner's standing follows the result: green lifts a quarantine, red begins one.
+   *
+   * <p>A connected runner is also asked for its NODE health report (qits-896): a {@code healthCheck}
+   * frame, whose {@code requestId} the answer carries and whose report {@code GET
+   * /runners/{id}/health} reads once the runner answers — or once it has not, within {@code
+   * qits.ci.runner.node-healthcheck.timeout}. A diagnosis only; the pseudo-build alone moves the
+   * runner's standing. {@code requestId} is null for a runner that is not connected. The frame is
+   * sent only once the pseudo-build is queued, so a 409 or a 503 sends nothing.
+   *
+   * <p>Open to {@code qits:system} and {@code qits:agent} beside the admin (qits-896, as
+   * qits-workspaces' runner health check is since qits-850): a check reads and probes, changes
+   * nothing a person set, and its only effect on the runner's standing is the one its own result
+   * has.
    */
   @POST
   @Path("/{id}/healthcheck")
-  // qits:admin-agent is admitted too (qits-628 follow-up); remove it here if this door must stay
-  // human-only.
-  @RolesAllowed({"qits:admin", "qits:admin-agent"})
-  @Operation(summary = "Queue a health check for a runner")
+  // qits:admin-agent is admitted too (qits-628 follow-up).
+  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE, AGENT_ROLE})
+  @Operation(summary = "Queue a health check for a runner, and ask a connected one for its node report")
   @APIResponse(
       responseCode = "202",
-      description = "The health check's run id",
+      description =
+          "The health check's run id, and the node health request's id when the runner is"
+              + " connected",
       content = @Content(schema = @Schema(implementation = HealthCheckQueued.class)))
   @APIResponse(responseCode = "404", description = "No such runner")
   @APIResponse(responseCode = "409", description = "One is already queued or running for it")
@@ -481,12 +515,41 @@ public class CiRunnerController {
       description =
           "The health check's repository, its head or its image could not be resolved; ask again")
   public Response healthcheck(@PathParam("id") String id) {
-    CiRun run = health.requestHealthCheck(runnerId(id));
-    return Response.accepted(new HealthCheckQueued(run.id)).build();
+    UUID runnerId = runnerId(id);
+    CiRun run = health.requestHealthCheck(runnerId);
+    String requestId = nodeHealth.request(runnerId);
+    return Response.accepted(new HealthCheckQueued(run.id, requestId)).build();
   }
 
-  /** The door's answer: the health check's run, readable at {@code GET /ci/api/runs/{runId}}. */
-  public record HealthCheckQueued(String runId) {}
+  /**
+   * The door's answer: the health check's run, readable at {@code GET /ci/api/runs/{runId}}, and the
+   * node health request sent beside it.
+   *
+   * @param runId the pseudo-build's run
+   * @param requestId the {@code healthCheck} frame's id, which the stored node report carries; null
+   *     when the runner is not connected, so nothing was asked
+   */
+  public record HealthCheckQueued(String runId, String requestId) {}
+
+  /**
+   * The runner's newest node health report in full (qits-896): the verdict, the request it answered
+   * and every named check with its data — or {@code NO_ANSWER} when the runner did not answer in
+   * time. 204 with no body while it has never reported; the runner exists, so it is not a 404.
+   */
+  @GET
+  @Path("/{id}/health")
+  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE, AGENT_ROLE})
+  @Operation(summary = "A runner's newest node health report, every check's data included")
+  @APIResponse(
+      responseCode = "200",
+      description = "The newest node health report",
+      content = @Content(schema = @Schema(implementation = CiRunnerHealthDto.class)))
+  @APIResponse(responseCode = "204", description = "The runner has never reported")
+  @APIResponse(responseCode = "404", description = "No such runner")
+  public Response nodeHealth(@PathParam("id") String id) {
+    CiRunnerHealthDto report = runners.nodeHealth(runnerId(id));
+    return report == null ? Response.noContent().build() : Response.ok(report).build();
+  }
 
   /**
    * The register door. A runner presents its registration token to the platform edge, which

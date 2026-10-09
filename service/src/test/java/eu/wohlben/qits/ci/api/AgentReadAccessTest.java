@@ -27,7 +27,8 @@ import org.junit.jupiter.api.Test;
 
 /**
  * A {@code qits:agent} reads every read route {@code qits:admin} or {@code qits:system} reads, with no
- * filter, and writes nothing but a retry. One case per changed controller, and one for the writes.
+ * filter, and writes nothing but a retry and a runner's health check. One case per changed
+ * controller, and one for the writes.
  *
  * <p><b>The one write an agent may press is {@code POST /ci/api/runs/{runId}/retry}</b> (owner
  * ruling, 2026-09-19), and it is project-scoped rather than open. It is therefore not asserted here
@@ -173,6 +174,24 @@ class AgentReadAccessTest {
     given().when().get("/ci/api/daemon").then().statusCode(200);
   }
 
+  /**
+   * A runner's node health report (qits-896) is a read like every other, and asking for a health
+   * check is the second write an agent may press: it probes and changes nothing a person set. Both
+   * reach their handlers — a runner nobody declared is a 404, never a 403.
+   */
+  @Test
+  @TestSecurity(user = "ticket-agent", roles = {AGENT})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = OWN_AUDIENCE),
+        @Claim(key = QitsClaims.PROJECT, value = "agent-project")
+      })
+  void anAgentReadsARunnersNodeHealthAndAsksForAHealthCheck() {
+    String runner = UUID.randomUUID().toString();
+    given().when().get("/ci/api/runners/" + runner + "/health").then().statusCode(404);
+    given().when().post("/ci/api/runners/" + runner + "/healthcheck").then().statusCode(404);
+  }
+
   @Test
   @TestSecurity(user = "ticket-agent", roles = {AGENT})
   @OidcSecurity(
@@ -181,9 +200,10 @@ class AgentReadAccessTest {
         @Claim(key = QitsClaims.PROJECT, value = "*")
       })
   void anAgentWritesNothingButARetry() {
-    // The retry left this list on 2026-09-19 and is the single exception: an agent may re-fire a
-    // run whose repository its project claim covers, and is refused one in anybody else's.
-    // AgentRetryAccessTest holds both sides. Everything below is still shut.
+    // The retry left this list on 2026-09-19: an agent may re-fire a run whose repository its
+    // project claim covers, and is refused one in anybody else's. AgentRetryAccessTest holds both
+    // sides. A runner's health check left it with qits-896 (the case above). Everything below is
+    // still shut.
     given().when().post("/ci/api/runs/" + foreignRun + "/cancel").then().statusCode(403);
     given()
         .contentType(MediaType.APPLICATION_JSON)
