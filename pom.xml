@@ -83,7 +83,7 @@
              side of its socket landed in one epic, and the first release of the protocol jar
              replaces this line through the ordinary bump. Do not ship a release request of this
              repository with the snapshot still in it. -->
-        <qits.ci-runner-protocol.version>2026.1009.142946</qits.ci-runner-protocol.version>
+        <qits.ci-runner-protocol.version>2026.1009.145524</qits.ci-runner-protocol.version>
         <qits.eventstream.version>2026.1003.44717</qits.eventstream.version>
         <!-- qits-githost's event vocabulary: the SCM records a push announces. qits-ci consumes
              SCMPublishCommit and nothing else, but the jar is the whole vocabulary — it is a data
