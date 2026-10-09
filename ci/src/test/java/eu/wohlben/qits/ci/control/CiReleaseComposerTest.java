@@ -1052,8 +1052,8 @@ public class CiReleaseComposerTest {
             """
             artifacts:
               - { type: maven, name: "g:a", sbom: a/sbom.json, publish: if-changed }
-              - { type: maven, name: "g:b", sbom: b/sbom.json, link: [c] }
-              - { type: maven, name: "g:c", sbom: c/sbom.json }
+              - { type: maven, name: "g:b", sbom: b/sbom.json, link: [c], publish: always }
+              - { type: maven, name: "g:c", sbom: c/sbom.json, publish: always }
               - { type: maven, name: "g:d", sbom: d/sbom.json, link: [e], publish: if-changed }
               - { type: maven, name: "g:e", sbom: e/sbom.json, publish: if-changed }
             """);
@@ -1101,7 +1101,8 @@ public class CiReleaseComposerTest {
     assertTrue(
         document.contains(
             "qits artifacts publish npm --name '@qits/ui-components' --path"
-                + " 'dist/qits-spa-ui-components' --sbom 'sbom.json' --version \"$QITS_VERSION\"\n"),
+                + " 'dist/qits-spa-ui-components' --sbom 'sbom.json' --if-changed --version"
+                + " \"$QITS_VERSION\")\n"),
         document);
     assertFalse(document.contains("npm plan"), document);
     assertFalse(document.contains("npm publish \""), document);
@@ -1274,9 +1275,9 @@ public class CiReleaseComposerTest {
                       - image: qits/build-images/maven-base:latest
                         script: ./mvnw -B -ntp package
                     artifacts:
-                      - { type: maven, name: "eu.wohlben.qits:qits-ci-daemon-protocol", path: ci-daemon-protocol, sbom: ci-daemon-protocol/target/sbom.json }
-                      - { type: maven, name: "eu.wohlben.qits:qits-workspace-editor-image", sbom: target/sbom.json }
-                      - { type: npm, name: "@qits/thing", path: dist/thing, sbom: dist/thing/sbom.json }
+                      - { type: maven, name: "eu.wohlben.qits:qits-ci-daemon-protocol", path: ci-daemon-protocol, sbom: ci-daemon-protocol/target/sbom.json, publish: always }
+                      - { type: maven, name: "eu.wohlben.qits:qits-workspace-editor-image", sbom: target/sbom.json, publish: always }
+                      - { type: npm, name: "@qits/thing", path: dist/thing, sbom: dist/thing/sbom.json, publish: always }
                     """),
                 null)
             .releaseDocument();
@@ -1322,7 +1323,7 @@ public class CiReleaseComposerTest {
                     script: ./mvnw -B -ntp package
                 artifacts:
                   - { type: docker, name: qits/qits-thing, sbom: .sbom/sbom.json }
-                  - { type: maven, name: "eu.wohlben.qits:qits-thing-client", path: core, sbom: core/target/sbom.json }
+                  - { type: maven, name: "eu.wohlben.qits:qits-thing-client", path: core, sbom: core/target/sbom.json, publish: always }
                 """),
             null);
 
@@ -1480,7 +1481,7 @@ public class CiReleaseComposerTest {
                     script: echo built
                 artifacts:
                   - { type: maven, name: "g:a", sbom: target/sbom.json, publish: if-changed }
-                  - { type: npm, name: "@qits/b", path: dist/b, sbom: sbom.json }
+                  - { type: npm, name: "@qits/b", path: dist/b, sbom: sbom.json, publish: always }
                 """),
             null);
     String postlude = extractPostlude(composed.releaseDocument());

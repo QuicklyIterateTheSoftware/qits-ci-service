@@ -376,9 +376,15 @@ public class CiReleaseSlotParser {
             type,
             name,
             CiArtifact.requirePublish(
-                map.get(CiArtifact.PUBLISH_KEY), type, name, configPath, index));
+                map.get(CiArtifact.PUBLISH_KEY),
+                type.releaseDefault() == null ? CiArtifact.Publish.ALWAYS : type.releaseDefault(),
+                type,
+                name,
+                configPath,
+                index));
     String sbomPath = parseSbomPath(map.get(SBOM_KEY), configPath, index);
-    if (artifact.publishIfChanged() && sbomPath.isEmpty()) {
+    // Only a DECLARED if-changed gets this message; a defaulted one is the generic rule below.
+    if (map.get(CiArtifact.PUBLISH_KEY) != null && artifact.publishIfChanged() && sbomPath.isEmpty()) {
       throw new CiConfigException(
           CiArtifact.entry(configPath, index, type, name)
               + " declares "
