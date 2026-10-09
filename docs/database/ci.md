@@ -105,6 +105,8 @@ erDiagram
     string last_healthcheck_run_id "length 255"
     instant last_seen_at
     string name "not null, length 64"
+    jsonb node_health
+    instant node_health_at
     converted plane "not null"
     text quarantine_reason
     instant quarantined_at
