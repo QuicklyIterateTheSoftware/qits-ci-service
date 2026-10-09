@@ -42,6 +42,17 @@ components:
       properties:
         reason:
           type: string
+    CheckReport:
+      type: object
+      properties:
+        name:
+          type: string
+        ok:
+          type: boolean
+        detail:
+          type: string
+        data:
+          $ref: "#/components/schemas/JsonNode"
     CiBaselineAnswer:
       type: object
       properties:
@@ -378,6 +389,23 @@ components:
           $ref: "#/components/schemas/Instant"
         lastHealthcheck:
           $ref: "#/components/schemas/CiRunnerHealthcheckDto"
+    CiRunnerHealthDto:
+      type: object
+      properties:
+        at:
+          $ref: "#/components/schemas/Instant"
+        ok:
+          type: boolean
+        detail:
+          type: string
+        requestId:
+          type: string
+        dataOmitted:
+          type: boolean
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/CheckReport"
     CiRunnerHealthcheckDto:
       type: object
       properties:
@@ -468,6 +496,8 @@ components:
       type: object
       properties:
         runId:
+          type: string
+        requestId:
           type: string
     Instant:
       type: string
@@ -1163,9 +1193,42 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+  /ci/api/runners/{id}/health:
+    get:
+      summary: "A runner's newest node health report, every check's data included"
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The newest node health report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CiRunnerHealthDto"
+        "204":
+          description: The runner has never reported
+        "404":
+          description: No such runner
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Runner Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:system
+        - qits:agent
   /ci/api/runners/{id}/healthcheck:
     post:
-      summary: Queue a health check for a runner
+      summary: "Queue a health check for a runner, and ask a connected one for its\
+        \ node report"
       parameters:
       - name: id
         in: path
@@ -1174,7 +1237,8 @@ paths:
           type: string
       responses:
         "202":
-          description: The health check's run id
+          description: "The health check's run id, and the node health request's id\
+            \ when the runner is connected"
           content:
             application/json:
               schema:
@@ -1196,6 +1260,8 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:system
+        - qits:agent
   /ci/api/runners/{id}/register:
     post:
       summary: "Register a runner with its registration token; answers its client,\

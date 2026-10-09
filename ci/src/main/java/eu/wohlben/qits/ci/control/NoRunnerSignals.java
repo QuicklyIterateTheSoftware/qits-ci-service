@@ -25,4 +25,7 @@ public class NoRunnerSignals implements CiRunnerSignals {
 
   @Override
   public void deleted(UUID runnerId) {}
+
+  @Override
+  public void nodeHealthCheck(UUID runnerId) {}
 }

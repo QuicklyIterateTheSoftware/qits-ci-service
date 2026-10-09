@@ -1,11 +1,14 @@
 package eu.wohlben.qits.ci.control;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import eu.wohlben.qits.ci.dto.CiRunDto;
 import eu.wohlben.qits.ci.dto.CiRunnerDto;
+import eu.wohlben.qits.ci.dto.CiRunnerHealthDto;
 import eu.wohlben.qits.ci.entity.CiRunner;
 import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import eu.wohlben.qits.ci.entity.RunnerCapabilities;
+import eu.wohlben.qits.ci.entity.RunnerNodeHealth;
 import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.CiException;
 import eu.wohlben.qits.ci.error.ConflictException;
@@ -732,6 +735,58 @@ public class CiRunners {
                   recorded.id.toString(), recorded.name, runId, result, detail, at));
     }
     return recorded;
+  }
+
+  /**
+   * Records a runner's NODE health report (qits-896) — {@code ci_runner.node_health}, the text {@link
+   * RunnerNodeHealth#encode} wrote, and when it settled. Nothing else on the row moves and nothing is
+   * announced: the report is a diagnosis, and the runner's standing is the pseudo-build's alone.
+   *
+   * @return the row as it now is, or null for a runner deleted meanwhile
+   */
+  public CiRunner recordNodeHealth(UUID id, String report, Instant at) {
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () -> {
+              CiRunner runner = runners.findById(id, LockModeType.PESSIMISTIC_WRITE);
+              if (runner == null) {
+                return null;
+              }
+              runner.nodeHealth = report;
+              runner.nodeHealthAt = at;
+              return runner;
+            });
+  }
+
+  /**
+   * The runner's newest node health report in full, or null while it has never reported.
+   *
+   * @throws NotFoundException for no such runner
+   */
+  public CiRunnerHealthDto nodeHealth(UUID id) {
+    CiRunner runner = get(id);
+    JsonNode report = RunnerNodeHealth.decode(runner.nodeHealth);
+    if (report == null || runner.nodeHealthAt == null) {
+      return null;
+    }
+    List<CiRunnerHealthDto.CheckReport> checks = new ArrayList<>();
+    for (JsonNode check : report.path("checks")) {
+      checks.add(
+          new CiRunnerHealthDto.CheckReport(
+              check.path("name").asText(null),
+              check.path("ok").asBoolean(false),
+              check.path("detail").asText(null),
+              check.path("data").isObject()
+                  ? check.path("data")
+                  : JsonNodeFactory.instance.objectNode()));
+    }
+    return new CiRunnerHealthDto(
+        runner.nodeHealthAt,
+        report.path("ok").asBoolean(false),
+        report.path("detail").asText(null),
+        report.path("requestId").isTextual() ? report.path("requestId").textValue() : null,
+        report.path(RunnerNodeHealth.DATA_OMITTED).asBoolean(false),
+        List.copyOf(checks));
   }
 
   /** {@code last_healthcheck_result} of a check that ran green. */

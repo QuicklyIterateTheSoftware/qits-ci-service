@@ -74,6 +74,14 @@ import org.jboss.logging.Logger;
  * never count toward the streak — a quarantine is about builds the runner failed, and a check is
  * about the runner already.
  *
+ * <p><b>The node health report is not part of any of this</b> (qits-896). Beside the pseudo-build,
+ * a connected runner can be asked to run its own named checks on its node ({@code healthCheck} →
+ * {@code healthChecked}, {@code runnerhost/CiRunnerNodeHealth}); the {@link #sweep} asks for one
+ * whenever it queues a check, and the operator's door does too. Its answer is stored on {@code
+ * ci_runner.node_health} for a person to read, and <em>nothing here reads it</em>: the quarantine,
+ * the streak, the schedule and the reinstatement follow the pseudo-build and the infra streak
+ * alone.
+ *
  * <p><b>Telling the runner</b> is {@link CiRunnerSignals}': {@code Quarantined} and {@code
  * Reinstated} frames, and a fresh {@code Ack} whenever the slots it may hold moved. They are hints —
  * the rows are the decision, and a runner that missed one reads the rows again at its next {@code
@@ -496,6 +504,9 @@ public class CiRunnerHealth {
       try {
         if (pendingHealthCheck(runner.id) == null) {
           queueHealthCheck(runner);
+          // The node's own report beside it (qits-896), so what an operator reads next to this
+          // check's verdict is as fresh. A diagnosis: it settles nothing here.
+          signals.nodeHealthCheck(runner.id);
         }
       } catch (RuntimeException e) {
         LOG.warnf(

@@ -164,17 +164,20 @@ it then holds open to pull work.
 | `POST /ci/api/runners/{id}/registration-token` | the runner's fields plus a fresh `installScript` line with a new token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin`, `qits:system` |
 | `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run; 409 `LAST_RUNNER` for `localhost` while no other runner exists | `qits:admin`, `qits:system` |
 | `POST /ci/api/runners/{id}/greenlight` | the runner, its quarantine lifted and its failure streak reset; a runner in service is answered as it is | `qits:admin` |
-| `POST /ci/api/runners/{id}/healthcheck` | 202 `{runId}`: a health check queued for it now; 409 while one is queued or running, 503 when its repository, head or image cannot be resolved | `qits:admin` |
+| `POST /ci/api/runners/{id}/healthcheck` | 202 `{runId, requestId}`: a health check queued for it now and, when the runner is connected, its node health report asked for (`requestId` null otherwise); 409 while one is queued or running, 503 when its repository, head or image cannot be resolved — neither sends the node frame | `qits:admin`, `qits:system`, `qits:agent` |
+| `GET /ci/api/runners/{id}/health` | 200 `{at, ok, detail, requestId, dataOmitted, checks: [{name, ok, detail, data}]}`: the runner's newest node health report; 204 while it has never reported; 404 | `qits:admin`, `qits:system`, `qits:agent` |
 
 **The four lifecycle writes take `qits:system` as well as `qits:admin`** (qits-521), the pair `POST
 /ci/api/runs/cancellations` takes, and on the machine arm the bearer must be addressed to the platform
 (`MachineAuth.require()`, exactly as the cancellation asks; no `project` claim is required, since a
 runner belongs to no project). **The machine caller is the bootstrap's own service client**: on a cold
 start it creates the `localhost` runner, reads the registration token out of the 201's
-`installScript`, and hands it to the deployer — with nobody at a keyboard. Greenlight and a health
-check on demand stay `qits:admin` alone, because nothing on that path needs them: the register door
-queues a new runner's first health check itself and a green one lifts the quarantine. `qits:agent`
-writes nothing here, and the register door admits `qits:ci-runner-registration` alone.
+`installScript`, and hands it to the deployer — with nobody at a keyboard. Greenlight stays
+`qits:admin` alone, because nothing on that path needs it: the register door queues a new runner's
+first health check itself and a green one lifts the quarantine. **A health check on demand is open to
+`qits:system` and `qits:agent` too** (qits-896): it probes and changes nothing a person set, and its
+only effect on the runner's standing is the one its own result has. It is the only write `qits:agent`
+may press here, and the register door admits `qits:ci-runner-registration` alone.
 
 **`stepMemoryLimit` is the one cap a runner may set for its own steps.** Every step container is capped
 at `qits.ci.memory-limit` (4g), sent as its memory **and** memory-swap; that number is sized for the
@@ -510,6 +513,24 @@ then waits for its next slot, not a backlog; a red check leaves `quarantinedAt` 
 carries on, and a new quarantine starts it over at +1 m. It replaced `qits.ci.runner.healthcheck.interval`
 (a flat hour). One still `QUEUED` after
 `qits.ci.runner.healthcheck.queue-timeout` (30 min) is settled `FAILED`, `runner not connected`.
+
+**The node health report is a diagnosis beside the check, never part of it** (qits-896). A connected
+runner can also be asked to run its own named checks on its node — `healthCheck{requestId, image}` →
+`healthChecked{ok, detail, requestId, checks}`, qits-ci-runner-daemon's README under "The node health
+check" — and it is asked whenever the operator's door queues a pseudo-build for it and whenever the
+schedule above does. `image` is `qits.ci.runner.healthcheck.image` resolved exactly as the
+pseudo-build's step image (`CiRunService.resolveStepImage`) and moved to the registry's public name, so
+the runner's `stepImage` check looks for what its next health check would start. One request is pending
+per runner, in memory (`runnerhost/CiRunnerNodeHealth`): a second ask while one is pending on a live
+session answers its `requestId` and sends nothing; an answer naming another id is dropped; an answer
+naming none settles the pending one; and one not answered within
+`qits.ci.runner.node-healthcheck.timeout` (`PT5M`) is stored as `ok: false`, `detail: NO_ANSWER`, its
+`requestId` and no checks — what a runner older than the frame always gets. The report lands on
+`ci_runner.node_health` (`jsonb`, `{ok, detail, requestId, dataOmitted, checks}`) and
+`node_health_at` (`V35__runner_node_health.sql`), bounded at 128 KiB by dropping every check's `data`
+and setting `dataOmitted`, and `GET /ci/api/runners/{id}/health` reads it. **Nothing reads it to decide
+anything**: the quarantine, the streak, the schedule and the reinstatement follow the pseudo-build and
+the infra streak alone, and no event announces a node report.
 
 **A connected runner is told**: `Quarantined{reason, since}` when it is taken out and right after its
 `Ack` at every `Hello` while out, `Reinstated{by: admin|healthcheck}` when it is put back — both

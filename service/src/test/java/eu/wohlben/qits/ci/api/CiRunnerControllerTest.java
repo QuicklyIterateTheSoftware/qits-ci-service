@@ -12,11 +12,13 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.dto.CiRunnerDto;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiRunner;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
+import eu.wohlben.qits.ci.entity.RunnerNodeHealth;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.StubIdp;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
@@ -103,6 +105,8 @@ class CiRunnerControllerTest {
   @Inject CiRunnerRepository runnerRows;
 
   @Inject CiRunRepository runs;
+
+  @Inject CiRunners runners;
 
   private StubIdp idp;
 
@@ -493,10 +497,69 @@ class CiRunnerControllerTest {
     given().when().post(RUNNERS + "/" + id + "/registration-token").then().statusCode(403);
     given().when().delete(RUNNERS + "/" + id).then().statusCode(403);
     given().when().post(RUNNERS + "/" + id + "/greenlight").then().statusCode(403);
-    given().when().post(RUNNERS + "/" + id + "/healthcheck").then().statusCode(403);
+    // The one write an agent may press (qits-896): it reaches the door, which cannot resolve the
+    // health check's repository in this suite — 503, never 403.
+    given().when().post(RUNNERS + "/" + id + "/healthcheck").then().statusCode(503);
+    // And its node health report is a read like every other: never reported is 204.
+    given().when().get(RUNNERS + "/" + id + "/health").then().statusCode(204);
     assertNotNull(row(id), "every write was refused, so the runner is still there");
     assertEquals(1, row(id).slots);
     assertEquals(List.of(), idp.postedTokens, "and nothing was minted for it");
+  }
+
+  /**
+   * qits-896: {@code GET /runners/{id}/health} answers the newest node report in full — 200 with
+   * every check's data, 204 while none was recorded, 404 for no runner — to admin, system and agent
+   * alike. A report above the bound keeps its verdicts and drops its data.
+   */
+  @Test
+  @TestSecurity(user = "dev-qits-bootstrap", roles = {SYSTEM})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void aRunnersNodeHealthReportIsReadInFull() {
+    UUID id = declaredRunner("reported");
+    given().when().get(RUNNERS + "/" + id + "/health").then().statusCode(204);
+    given().when().get(RUNNERS + "/" + UUID.randomUUID() + "/health").then().statusCode(404);
+
+    Instant at = Instant.parse("2026-10-09T10:00:00Z");
+    runners.recordNodeHealth(
+        id,
+        RunnerNodeHealth.encode(
+            true,
+            "all 2 checks passed",
+            "req-1",
+            List.of(
+                new RunnerNodeHealth.Check("docker", true, "server 27", Map.of("serverVersion", "27")),
+                new RunnerNodeHealth.Check(
+                    "nodeInventory", true, "2 containers", Map.of("containers", List.of("a", "b"))))),
+        at);
+    JsonPath report =
+        given().when().get(RUNNERS + "/" + id + "/health").then().statusCode(200).extract().jsonPath();
+    assertEquals("2026-10-09T10:00:00Z", report.getString("at"));
+    assertTrue(report.getBoolean("ok"));
+    assertEquals("all 2 checks passed", report.getString("detail"));
+    assertEquals("req-1", report.getString("requestId"));
+    assertFalse(report.getBoolean("dataOmitted"));
+    assertEquals(List.of("docker", "nodeInventory"), report.getList("checks.name", String.class));
+    assertEquals("27", report.getString("checks[0].data.serverVersion"));
+    assertEquals(List.of("a", "b"), report.getList("checks[1].data.containers", String.class));
+
+    // Above the bound: the verdicts stay, the data goes, and the report says so.
+    String huge = "x".repeat(RunnerNodeHealth.MAX_CHARS);
+    runners.recordNodeHealth(
+        id,
+        RunnerNodeHealth.encode(
+            false,
+            "nodeInventory: too much",
+            "req-2",
+            List.of(new RunnerNodeHealth.Check("nodeInventory", false, "big", Map.of("blob", huge)))),
+        at.plusSeconds(60));
+    JsonPath bounded =
+        given().when().get(RUNNERS + "/" + id + "/health").then().statusCode(200).extract().jsonPath();
+    assertTrue(bounded.getBoolean("dataOmitted"));
+    assertFalse(bounded.getBoolean("checks[0].ok"));
+    assertEquals("big", bounded.getString("checks[0].detail"));
+    assertEquals(Map.of(), bounded.getMap("checks[0].data"));
+    assertNull(row(id).quarantinedAt, "a report moves nothing about the runner's standing");
   }
 
   /**

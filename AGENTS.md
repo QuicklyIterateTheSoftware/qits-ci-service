@@ -123,7 +123,10 @@ package:
   (the rules, the schedule) over `CiRunners`' row writes, and reach a connected runner through the
   `CiRunnerSignals` seam, which `CiRunnerRegistry` implements: every change of what a runner may hold
   is a fresh `Ack` and a `Backlog`, and every `Ack` to an EDGE runner carries `RunnerRegistryMirrors`'
-  table.
+  table. The runner's NODE health report (qits-896) is `runnerhost/CiRunnerNodeHealth` — the
+  `healthCheck` frame, its pending request in memory, the `NO_ANSWER` timeout — reached from the
+  schedule through `CiRunnerSignals.nodeHealthCheck` and stored by `CiRunners.recordNodeHealth`; it is
+  a diagnosis, and nothing in `CiRunnerHealth` reads it.
 - `ci-events/` — the event classes qits-ci emits, `eu.wohlben.qits.ci.events`. Under this repo's own
   namespace because it *is* this repo's vocabulary; depends on `eventstream` and nothing else.
 
@@ -900,7 +903,9 @@ all — so a fixture that mints a token without `groups` authenticates perfectly
 403, which is a stale fixture rather than a regression. A method-level role list **replaces** the
 class-level one rather than adding to it; a route both a person and a machine read must name both.
 
-**Every read route also takes `qits:agent`, and exactly ONE write does.** Agents keep all read
+**Every read route also takes `qits:agent`, and exactly TWO writes do** — the retry below, and a
+runner's health check on demand (`POST /ci/api/runners/{id}/healthcheck`, qits-896), which probes and
+changes nothing a person set. Agents keep all read
 access and lost write access wholesale (user ruling, 2026-09-12). So `CiRepositoryController` and
 `CiDaemonController` name it on the class, and `CiRunController` names it on each of its four
 reads: its class list also guards the `cancellations` write. Nothing filters what an agent reads.

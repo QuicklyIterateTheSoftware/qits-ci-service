@@ -148,6 +148,9 @@ public class MigrationChecksumTest {
     PINS.put(
         "V34__ci_scm_release_request.sql",
         "8b8c02a161d6942bc95ce03149524d3450d0c39fcf3a11eaad9ad1e8b8adaca0");
+    PINS.put(
+        "V35__runner_node_health.sql",
+        "34252dc2ec7ec06575209de27c6fe1a720d893b70dbf30b29b05a42454c32772");
   }
 
   @Test
