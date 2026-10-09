@@ -377,6 +377,17 @@ public class CiRunService {
    */
   public static final String RELEASE_REQUEST_DOWNSTREAM_FIELD = "downstreamTechnicalComponents";
 
+  /**
+   * The payload field on {@code ReleaseRequestChanged} that says whether the request's pre-run is
+   * done (qits-1133): {@code PENDING} or {@code DONE}. {@link #PRE_RUN_PENDING} starts no QA run
+   * ({@code CiEventTriggerService.preRunPending}); absent means DONE. Guarded by {@code
+   * bus/ReleaseRequestChangedContractTest}.
+   */
+  public static final String PRE_RUN_FIELD = "preRun";
+
+  /** The {@link #PRE_RUN_FIELD} value that holds the QA run back. */
+  public static final String PRE_RUN_PENDING = "PENDING";
+
   /** What {@code ci_run.release_request_id} can hold; a longer value is recorded as none. */
   static final int MAX_RELEASE_REQUEST_ID_LENGTH = 255;
 

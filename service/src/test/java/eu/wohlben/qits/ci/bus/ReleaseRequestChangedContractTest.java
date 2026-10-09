@@ -41,7 +41,8 @@ import org.junit.jupiter.api.Test;
  * and — since the ordering campaign — the two fields the run QUEUE is ordered by ({@link
  * CiRunService#PRIORITY_FIELD} and {@link CiRunService#RELEASE_REQUEST_DOWNSTREAM_FIELD}, read onto
  * {@code ci_run.priority} and {@code ci_run.downstream_repos} and consumed by {@link
- * CiRunOrdering}). Nothing in this service binds the payload — the trigger engine subscribes to
+ * CiRunOrdering}). A seventh since qits-1133: {@link CiRunService#PRE_RUN_FIELD}, whose {@code
+ * PENDING} starts no QA run. Nothing in this service binds the payload — the trigger engine subscribes to
  * {@code "*"} and walks a {@code JsonNode} — so nothing but this file would notice a rename.
  *
  * <p><b>The two halves fail differently and both matter.</b> A rename of the event or the checkout
@@ -102,7 +103,8 @@ public class ReleaseRequestChangedContractTest {
       String mergedSha,
       Instant changedAt,
       String priority,
-      List<String> downstreamTechnicalComponents)
+      List<String> downstreamTechnicalComponents,
+      String preRun)
       implements QitsEvent {
 
     @Override
@@ -130,6 +132,17 @@ public class ReleaseRequestChangedContractTest {
       String mergedSha,
       String priority,
       List<String> downstream) {
+    return changed(repoId, requestId, mergedSha, priority, downstream, null);
+  }
+
+  /** The same again, with the pre-run state qits-projects reports for the fold (qits-1133). */
+  static ReleaseRequestChanged changed(
+      String repoId,
+      String requestId,
+      String mergedSha,
+      String priority,
+      List<String> downstream,
+      String preRun) {
     return new ReleaseRequestChanged(
         UUID.randomUUID(),
         "qits",
@@ -140,7 +153,8 @@ public class ReleaseRequestChangedContractTest {
         mergedSha,
         Instant.parse("2026-09-03T09:07:06Z"),
         priority,
-        downstream);
+        downstream,
+        preRun);
   }
 
   /** The canonical payload of one re-fold — the bytes a frame carries. */
@@ -330,6 +344,27 @@ public class ReleaseRequestChangedContractTest {
           without.get(field),
           field + " moved with the new components, so they were not additive after all");
     }
+  }
+
+  /**
+   * <b>The eleventh component, and the one that holds a QA run back</b> (qits-1133). qits-projects
+   * sends {@code PENDING} while the request's pre-run automations still move on this fold and
+   * {@code DONE} when they have settled; {@code CiEventTriggerService} starts no run for {@code
+   * PENDING}. Added LAST, for the reason the closure's paragraph gives. Absent (an older producer)
+   * means DONE, which is NON_NULL's absent key.
+   */
+  @Test
+  public void thePreRunStateIsInTheCanonicalPayloadUnderTheNameCiReadsIt() throws Exception {
+    JsonNode pending =
+        MAPPER.readTree(
+            CanonicalJson.payload(
+                changed("r-1", "rr-42", "c".repeat(40), "HIGHER", List.of(), "PENDING")));
+    JsonNode older = MAPPER.readTree(canonicalPayload("r-1", "rr-42", "c".repeat(40), "HIGHER"));
+
+    assertEquals("preRun", CiRunService.PRE_RUN_FIELD);
+    assertEquals("PENDING", CiRunService.PRE_RUN_PENDING);
+    assertEquals("PENDING", pending.get(CiRunService.PRE_RUN_FIELD).asText());
+    assertFalse(older.has(CiRunService.PRE_RUN_FIELD), "an older producer sends no key: DONE");
   }
 
   /**

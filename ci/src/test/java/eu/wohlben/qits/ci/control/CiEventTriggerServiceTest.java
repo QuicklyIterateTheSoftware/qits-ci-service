@@ -611,6 +611,86 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
                 arrival(UUID.randomUUID().toString(), "BuildSuccessful", PAYLOAD), "project-alpha"));
   }
 
+  // --- the pre-run gate (qits-1133): a fold whose automations still move starts no QA ---
+
+  private static String releaseRequestPayload(String preRunJson) {
+    return RELEASE_REQUEST_PAYLOAD.replace("}", ",\"preRun\":" + preRunJson + "}");
+  }
+
+  @Test
+  public void aReFoldWhosePreRunIsPendingStartsNoQaRunAndIsSettled() throws Exception {
+    seedTrigger(RELEASE_REQUEST_PATH, RELEASE_REQUEST_TRIGGER);
+    String eventId = UUID.randomUUID().toString();
+
+    assertTrue(
+        engine.onEvent(arrival(eventId, "ReleaseRequestChanged", releaseRequestPayload("\"PENDING\""))));
+    engine.awaitIdle();
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+
+    assertEquals(List.of(), runService.runsFor(repoId), "PENDING holds the QA run back");
+    assertNull(owedRow(eventId), "held is an answer, so nothing is owed: the DONE announce comes");
+  }
+
+  @Test
+  public void thePendingHoldIsAnAnswerAtTheManualDoorToo() {
+    seedTrigger(RELEASE_REQUEST_PATH, RELEASE_REQUEST_TRIGGER);
+
+    CiEventTriggerService.Evaluation done =
+        engine.evaluateNow(
+            arrival(
+                UUID.randomUUID().toString(),
+                "ReleaseRequestChanged",
+                releaseRequestPayload("\"PENDING\"")));
+
+    assertEquals(List.of(), done.runIds());
+    assertTrue(done.answered(), "a held event was evaluated: 200, never the 503 that asks again");
+  }
+
+  @Test
+  public void aReFoldWhosePreRunIsDoneStartsItsQaRun() throws Exception {
+    seedTrigger(RELEASE_REQUEST_PATH, RELEASE_REQUEST_TRIGGER);
+
+    deliver(
+        arrival(
+            UUID.randomUUID().toString(), "ReleaseRequestChanged", releaseRequestPayload("\"DONE\"")));
+
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(1, recorded.size());
+    assertEquals("b".repeat(40), recorded.get(0).commitSha);
+  }
+
+  @Test
+  public void anyPreRunButTheStringPendingStartsTheQaRunAsBefore() throws Exception {
+    seedTrigger(RELEASE_REQUEST_PATH, RELEASE_REQUEST_TRIGGER);
+    // Absent is today's producer; an unknown word, a null or another type is not a hold either.
+    List<String> payloads =
+        List.of(
+            RELEASE_REQUEST_PAYLOAD,
+            releaseRequestPayload("\"pending\""),
+            releaseRequestPayload("\"RUNNING\""),
+            releaseRequestPayload("null"),
+            releaseRequestPayload("{\"state\":\"PENDING\"}"));
+    for (String payload : payloads) {
+      deliver(arrival(UUID.randomUUID().toString(), "ReleaseRequestChanged", payload));
+    }
+
+    assertEquals(payloads.size(), runService.runsFor(repoId).size());
+  }
+
+  @Test
+  public void aPreRunFieldOnAnotherEventHoldsNothing() throws Exception {
+    seedTrigger(TRIGGER_PATH, TRIGGER);
+
+    deliver(
+        arrival(
+            UUID.randomUUID().toString(),
+            "BuildSuccessful",
+            PAYLOAD.replace("}", ",\"preRun\":\"PENDING\"}")));
+
+    assertEquals(1, runService.runsFor(repoId).size());
+  }
+
   // --- the owed-event ledger: an accepted event survives the process that accepted it ---
 
   /**
