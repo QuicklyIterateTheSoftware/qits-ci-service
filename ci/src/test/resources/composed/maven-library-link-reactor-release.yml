@@ -8,8 +8,8 @@ checkout:
   sha: commitSha
 artifacts:
   - { type: 'maven', name: 'eu.wohlben.qits:qits-registries-npm', publish: 'if-changed' }
-  - { type: 'maven', name: 'eu.wohlben.qits:qits-blobstore' }
-  - { type: 'maven', name: 'eu.wohlben.qits:qits-registries-common' }
+  - { type: 'maven', name: 'eu.wohlben.qits:qits-blobstore', publish: 'if-changed' }
+  - { type: 'maven', name: 'eu.wohlben.qits:qits-registries-common', publish: 'if-changed' }
 steps:
   - image: 'qits/build-images/maven-base:latest'
     timeout-seconds: 1800
@@ -114,25 +114,49 @@ steps:
       fi
       # --- platform postlude --------------------------------------------------------
       : "${QITS_ARTIFACTS_CLI_PACKAGE:?this release publishes or submits an SBOM, and the qits CLI is not configured on this deployment}"
-      qits artifacts publish maven --name 'eu.wohlben.qits:qits-blobstore' --path 'blobstore' --sbom 'blobstore/target/sbom.json' --version "$QITS_VERSION"
-      qits artifacts publish maven --name 'eu.wohlben.qits:qits-registries-common' --path 'common' --sbom 'common/target/sbom.json' --link 'eu.wohlben.qits:qits-blobstore' --version "$QITS_VERSION"
-      qits_published_0=$(qits artifacts publish maven --name 'eu.wohlben.qits:qits-registries-npm' --path 'npm' --sbom 'npm/target/sbom.json' --link 'eu.wohlben.qits:qits-blobstore' --link 'eu.wohlben.qits:qits-registries-common' --if-changed --version "$QITS_VERSION")
+      qits_link_group_2=unchanged
+      qits_dry_run_1=$(qits artifacts publish maven --name 'eu.wohlben.qits:qits-blobstore' --path 'blobstore' --sbom 'blobstore/target/sbom.json' --if-changed --dry-run --version "$QITS_VERSION")
+      echo "dry run: $qits_dry_run_1"
+      case "$qits_dry_run_1" in unchanged\ since\ *) ;; *) qits_link_group_2=changed ;; esac
+      qits_dry_run_2=$(qits artifacts publish maven --name 'eu.wohlben.qits:qits-registries-common' --path 'common' --sbom 'common/target/sbom.json' --link 'eu.wohlben.qits:qits-blobstore' --if-changed --dry-run --version "$QITS_VERSION")
+      echo "dry run: $qits_dry_run_2"
+      case "$qits_dry_run_2" in unchanged\ since\ *) ;; *) qits_link_group_2=changed ;; esac
+      qits_dry_run_0=$(qits artifacts publish maven --name 'eu.wohlben.qits:qits-registries-npm' --path 'npm' --sbom 'npm/target/sbom.json' --link 'eu.wohlben.qits:qits-blobstore' --link 'eu.wohlben.qits:qits-registries-common' --if-changed --dry-run --version "$QITS_VERSION")
+      echo "dry run: $qits_dry_run_0"
+      case "$qits_dry_run_0" in unchanged\ since\ *) ;; *) qits_link_group_2=changed ;; esac
+      if [ "$qits_link_group_2" = changed ]; then
+        qits_published_1=$(qits artifacts publish maven --name 'eu.wohlben.qits:qits-blobstore' --path 'blobstore' --sbom 'blobstore/target/sbom.json' --version "$QITS_VERSION")
+      else
+        qits_published_1=$qits_dry_run_1
+      fi
+      echo "$qits_published_1"
+      if [ "$qits_link_group_2" = changed ]; then
+        qits_published_2=$(qits artifacts publish maven --name 'eu.wohlben.qits:qits-registries-common' --path 'common' --sbom 'common/target/sbom.json' --link 'eu.wohlben.qits:qits-blobstore' --version "$QITS_VERSION")
+      else
+        qits_published_2=$qits_dry_run_2
+      fi
+      echo "$qits_published_2"
+      if [ "$qits_link_group_2" = changed ]; then
+        qits_published_0=$(qits artifacts publish maven --name 'eu.wohlben.qits:qits-registries-npm' --path 'npm' --sbom 'npm/target/sbom.json' --link 'eu.wohlben.qits:qits-blobstore' --link 'eu.wohlben.qits:qits-registries-common' --version "$QITS_VERSION")
+      else
+        qits_published_0=$qits_dry_run_0
+      fi
       echo "$qits_published_0"
       case "$qits_published_0" in published\ *) qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-registries-npm' --version "$QITS_VERSION" --file 'npm/target/sbom.json' ;; esac
-      if [ -f 'blobstore/target/sbom.json' ]; then
-        qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-blobstore' \
-          --version "$QITS_VERSION" --file 'blobstore/target/sbom.json'
-      fi
-      if [ -f 'common/target/sbom.json' ]; then
-        qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-registries-common' \
-          --version "$QITS_VERSION" --file 'common/target/sbom.json'
-      fi
+      case "$qits_published_1" in published\ *) qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-blobstore' --version "$QITS_VERSION" --file 'blobstore/target/sbom.json' ;; esac
+      case "$qits_published_2" in published\ *) qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-registries-common' --version "$QITS_VERSION" --file 'common/target/sbom.json' ;; esac
       case "$qits_published_0" in published\ *)
         qits artifacts publish exists sbom 'maven/eu.wohlben.qits:qits-registries-npm' "$QITS_VERSION" \
           || { echo '.config/qits/release.yml declares sbom: npm/target/sbom.json for maven eu.wohlben.qits:qits-registries-npm, and no release step produced it' >&2; exit 1; }
         ;;
       esac
-      qits artifacts publish exists sbom 'maven/eu.wohlben.qits:qits-blobstore' "$QITS_VERSION" \
-        || { echo '.config/qits/release.yml declares sbom: blobstore/target/sbom.json for maven eu.wohlben.qits:qits-blobstore, and no release step produced it' >&2; exit 1; }
-      qits artifacts publish exists sbom 'maven/eu.wohlben.qits:qits-registries-common' "$QITS_VERSION" \
-        || { echo '.config/qits/release.yml declares sbom: common/target/sbom.json for maven eu.wohlben.qits:qits-registries-common, and no release step produced it' >&2; exit 1; }
+      case "$qits_published_1" in published\ *)
+        qits artifacts publish exists sbom 'maven/eu.wohlben.qits:qits-blobstore' "$QITS_VERSION" \
+          || { echo '.config/qits/release.yml declares sbom: blobstore/target/sbom.json for maven eu.wohlben.qits:qits-blobstore, and no release step produced it' >&2; exit 1; }
+        ;;
+      esac
+      case "$qits_published_2" in published\ *)
+        qits artifacts publish exists sbom 'maven/eu.wohlben.qits:qits-registries-common' "$QITS_VERSION" \
+          || { echo '.config/qits/release.yml declares sbom: common/target/sbom.json for maven eu.wohlben.qits:qits-registries-common, and no release step produced it' >&2; exit 1; }
+        ;;
+      esac

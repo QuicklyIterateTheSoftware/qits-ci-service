@@ -18,8 +18,8 @@
 #     # .config/qits/release.yml — a reactor, one entry per PUBLISHED module
 #     archetype: maven-library
 #     artifacts:
-#       - { type: maven, name: "eu.wohlben.qits:qits-blobstore", path: blobstore, sbom: blobstore/target/sbom.json }
-#       - { type: maven, name: "eu.wohlben.qits:qits-registries-common", path: common, sbom: common/target/sbom.json, link: [qits-blobstore] }
+#       - { type: maven, name: "eu.wohlben.qits:qits-blobstore", path: blobstore, sbom: blobstore/target/sbom.json, publish: if-changed }
+#       - { type: maven, name: "eu.wohlben.qits:qits-registries-common", path: common, sbom: common/target/sbom.json, link: [qits-blobstore], publish: if-changed }
 #       - { type: maven, name: "eu.wohlben.qits:qits-registries-npm", path: npm, sbom: npm/target/sbom.json, link: [qits-blobstore, qits-registries-common], publish: if-changed }
 #
 # The GAV is quoted because `:` after a space is a YAML mapping indicator. `artifacts:` must be in the
@@ -34,7 +34,9 @@
 # - `publish: if-changed` uploads the module only when its content — the jar's entries and its
 #   SBOM's dependency graph — differs from the newest published version's. Otherwise the release
 #   publishes nothing for it, qits-ci records `unchanged since <v>`, and no consumer is offered a
-#   bump. It needs `sbom:`. `always` is the default.
+#   bump. It needs `sbom:`, and it is the default; `publish: always` opts out. Entries joined by
+#   `link:` share one `publish:` and publish together: each is asked with `--dry-run` first, and if
+#   any changed, all publish.
 #
 # HOW A MODULE IS PUBLISHED. The pom uploaded is FLATTENED: no `<parent>`, every version resolved,
 # and only external dependencies. A dependency on another module of the same reactor is BUNDLED into
