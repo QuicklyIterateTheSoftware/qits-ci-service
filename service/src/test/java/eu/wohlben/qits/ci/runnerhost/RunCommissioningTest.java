@@ -114,14 +114,13 @@ public class RunCommissioningTest {
   }
 
   @Test
-  public void aGroupBumpRunMayPushItsMaintenanceBranch() {
+  public void aNonTargetedGroupBumpRunMayPushNothing() {
+    // The GROUP arm is retired (qits-1133): the pipeline refuses any group but "targeted" before
+    // it ever reads a branch, so such a run's scope is empty rather than a ref it will never push.
     compose(idp.runCommissions(PATIENCE), step(RUN, 0, false, bump("dependencies", "maintenance/dependencies")));
 
     assertEquals(
-        List.of(
-            "{\"contextKind\":\"ci-run\",\"contextId\":\""
-                + RUN
-                + "\",\"gitRefs\":[\"refs/heads/maintenance/dependencies\"]}"),
+        List.of("{\"contextKind\":\"ci-run\",\"contextId\":\"" + RUN + "\",\"gitRefs\":[]}"),
         idp.postedTokens);
   }
 

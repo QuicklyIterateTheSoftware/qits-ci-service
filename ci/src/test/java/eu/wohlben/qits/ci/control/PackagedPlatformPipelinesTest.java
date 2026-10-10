@@ -424,13 +424,27 @@ public class PackagedPlatformPipelinesTest {
   }
 
   @Test
-  public void theDependencyBumpKindAppliesWhatMaintenanceBumpApplies() throws Exception {
-    // Lifted, not rewritten: the four anchored programs are maintenance-bump.yml's, line for line,
-    // so the retirement of that file moves no edit a bump makes.
+  public void theDependencyBumpKindAppliesWhatTheRetiredMavenStepApplied() throws Exception {
+    // `bump-property.awk` and `bump-dependency.awk` were lifted from maintenance-bump.yml's own
+    // maven step when the GROUP arm moved here (qits-1133) - a per-repository dependency bump is
+    // this kind now, not a `maintenance/<group>` branch. That step is gone from
+    // maintenance-bump.yml, which applies no maven change any more (its one caller, estate-pins,
+    // sends gitlinks only), so there is nothing left there to compare these two against: this kind
+    // file is their only copy on the platform now.
+    String kindFile = Files.readString(SOURCE.resolve("automations/dependency-bump.yml"));
+    for (String program : List.of("bump-property.awk", "bump-dependency.awk")) {
+      assertTrue(kindFile.contains("cat > /tmp/" + program + " <<'AWK'\n"), program + " is not in " + kindFile);
+    }
+  }
+
+  @Test
+  public void theDependencyBumpKindAppliesWhatMaintenanceBumpStillApplies() throws Exception {
+    // The two docker programs are maintenance-bump.yml's own node step, which the targeted path
+    // still runs: lifted, not rewritten, so the two files cannot drift on how a docker pin is
+    // edited.
     String bump = Files.readString(SOURCE.resolve("maintenance-bump.yml"));
     String kindFile = Files.readString(SOURCE.resolve("automations/dependency-bump.yml"));
-    for (String program :
-        List.of("bump-property.awk", "bump-dependency.awk", "bump-from.awk", "bump-arg.awk")) {
+    for (String program : List.of("bump-from.awk", "bump-arg.awk")) {
       assertEquals(
           awkProgram(bump, program, "      "),
           awkProgram(kindFile, program, "  "),

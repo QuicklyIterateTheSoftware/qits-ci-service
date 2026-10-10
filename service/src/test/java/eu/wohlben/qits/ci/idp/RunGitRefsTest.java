@@ -33,10 +33,11 @@ public class RunGitRefsTest {
   }
 
   @Test
-  public void aGroupBumpMayPushItsMaintenanceBranch() {
+  public void aNonTargetedGroupBumpMayPushNothing() {
+    // The GROUP arm is retired (qits-1133): the pipeline refuses any group but "targeted" before
+    // it ever reads a branch, so such a run's scope is empty rather than a ref it will never push.
     assertEquals(
-        Optional.of(List.of("refs/heads/maintenance/dependencies")),
-        of("MaintenanceBump", bump("dependencies", "maintenance/dependencies")));
+        MAY_PUSH_NOTHING, of("MaintenanceBump", bump("dependencies", "maintenance/dependencies")));
   }
 
   @Test
@@ -110,17 +111,17 @@ public class RunGitRefsTest {
 
   @Test
   public void aBumpWithNoUsableBranchMayPushNothing() {
-    // The pipeline refuses each of these before it pushes, so "may push nothing" is exact.
+    // Targeted, so the branch is what is under test here and not the group gate above.
     for (String payload :
         Arrays.asList(
-            "{\"group\":\"dependencies\"}",
+            "{\"group\":\"targeted\"}",
             "{\"branch\":42}",
-            bump("dependencies", ""),
-            bump("dependencies", "-f"),
-            bump("dependencies", "maintenance/../main"),
-            bump("dependencies", "main branch"),
-            bump("dependencies", "external/*"),
-            bump("dependencies", "a".repeat(245)),
+            bump("targeted", ""),
+            bump("targeted", "-f"),
+            bump("targeted", "maintenance/../main"),
+            bump("targeted", "main branch"),
+            bump("targeted", "external/*"),
+            bump("targeted", "a".repeat(245)),
             "not json",
             "",
             null)) {
@@ -184,11 +185,10 @@ public class RunGitRefsTest {
     Map<String, String> env = new HashMap<>();
     env.put("QITS_EVENT_ID", "0b5f3c1e-0000-4000-8000-000000000001");
     env.put("QITS_EVENT_NAME", "MaintenanceBump");
-    env.put("QITS_EVENT_PAYLOAD", bump("dependencies", "maintenance/dependencies"));
+    env.put("QITS_EVENT_PAYLOAD", bump("targeted", "ticket/some-ticket"));
 
     assertEquals(
-        Optional.of(List.of("refs/heads/maintenance/dependencies")),
-        RunGitRefs.fromRunEnv(env, JSON));
+        Optional.of(List.of("refs/heads/ticket/some-ticket")), RunGitRefs.fromRunEnv(env, JSON));
     // A run nothing announced carries no event variables, and states nothing.
     assertEquals(NOTHING_STATED, RunGitRefs.fromRunEnv(Map.of(), JSON));
     assertEquals(NOTHING_STATED, RunGitRefs.fromRunEnv(null, JSON));

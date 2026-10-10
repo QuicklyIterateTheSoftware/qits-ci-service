@@ -1,68 +1,72 @@
-# Apply one maintenance bump: qits-platform-maintenance decides WHAT moves, this
-# pipeline moves it and pushes the branch.
+# Apply one TARGETED maintenance bump: qits-platform-maintenance decides WHAT moves, this
+# pipeline moves it and pushes the branch the payload names.
+#
+# ONLY TARGETED SURVIVES (qits-1133). The payload's `group` must read exactly `targeted`, refused
+# otherwise, because the GROUP arm this pipeline used to also serve is retired: a per-repository
+# dependency bump onto a fresh `maintenance/<group>` branch is the `dependency-bump`
+# release-request automation now (`automations/dependency-bump.yml`), which never names a
+# `maintenance/<group>` branch at all. The one caller left is qits-maintenance's `estate-pins`
+# automation: it writes a wrapper's gitlinks onto a release request's OWN source branch - the
+# branch the payload names - so that the fold CI gates and a person approves names what every
+# member has released. `EstatePinsAutomation.TARGETED_GROUP` is the sentinel it always sends, kept
+# as a label for the history (the commit still reads `bump(targeted): N dependencies`) rather than
+# a key anything branches on.
 #
 # A PLATFORM pipeline: this module's own classpath resource at qits-ci-service's
 # `ci/src/main/resources/platform-pipelines/` (until 2026-10-02 it lived in the wrapper as
 # `ci-platform-event-maintenance-bump.yml`), and run against the repository the payload
 # names. No `when:` - every MaintenanceBump is for us, and the payload's changes decide
-# what each step does. `PackagedPlatformPipelinesTest` holds the commit guards below to
+# what the step does. `PackagedPlatformPipelinesTest` holds the commit guard below to
 # `--ignore-submodules=none`.
 #
-# STEPS SHARE NO WORKING TREE. Every step is its own container with its own shallow
-# clone, so each of the two below fetches the branch, commits its own ecosystem and
-# pushes. The maven step runs first; the node step fetches its commit back. One bump
-# is therefore up to TWO commits on the branch, not one - the service must read the
-# branch head rather than expect a single commit.
+# ONE STEP, not two. This file used to run a maven step first and a node/docker/gitlink step
+# second, because no build image carries both toolchains and estate pins share the pipeline with
+# ordinary dependency bumps that could touch a pom.xml. `EstatePinsAutomation.change` hard-codes
+# `ecosystem: gitlink` on every entry it ever sends - a wrapper's gitlink is the only thing this
+# caller ever writes - so the maven step had nothing to apply on a real run: every targeted run
+# printed "no maven changes in this bump" and exited. The GROUP arm was the maven step's only
+# user, and `automations/dependency-bump.yml` carries that ecosystem now, lifted into its own
+# single step, for the one caller left that bumps a pom.xml. So the maven step - and the two
+# anchored programs it ran, `bump-property.awk` and `bump-dependency.awk` - is deleted here rather
+# than kept printing that it had nothing to do; the node step below, unchanged in what it applies,
+# is now the whole pipeline. A payload carrying a maven change is refused rather than silently
+# dropped, since nothing here applies one any more.
 #
-# A BRANCH IS EITHER CONTINUED OR REBUILT, and never force-pushed otherwise. `baseRef`
-# is what a new branch starts from: a bare name means `refs/heads/<name>`, and a full
-# ref is fetched as written - `refs/tags/<version>` when the repository has a release
-# that is not merged yet, so the bump lands on what actually ships. `replaceHead` is
-# the branch head as the maintenance service last read it, sent when the branch was
-# started from an older base and has to be rebuilt on the new one. Both steps make the
-# same decision from the same three facts - the branch's head now, `replaceHead`, and
-# the base:
-#   no branch                    start it from baseRef, plain push
-#   head == replaceHead          REBUILD: start from baseRef, push with a lease on
-#                                replaceHead
-#   head != replaceHead, or      continue it, plain push - which is how the node step
-#   no replaceHead at all        lands on top of the maven step's rebuilt commit, and
-#                                how a branch somebody else moved meanwhile ends in a
-#                                non-ff rejection rather than an overwrite
-# So a rebuild is carried by whichever step commits first: when the maven step has
-# nothing to commit, the node step still finds head == replaceHead and rebuilds. And when
-# NEITHER step has anything to commit - the base already carries every pin this bump would
-# have written - a rebuild that only ever pushes a commit would push nothing at all, and the
-# stale branch would stay exactly where it was: still naming replaceHead, still conflicting
-# with the base it was supposed to move onto. The NODE STEP alone carries that case: finding
-# REBUILD still decided (`$lease` set) and nothing staged, it pushes the commit it started
-# from under that same lease - no new commit, same guarantee - so the branch moves onto the
-# base either way. The maven step takes no such action on nothing to commit; it is never the
-# step with the last word, so leaving a stale branch to it would still leave it stale.
+# A BRANCH IS CONTINUED OR STARTED, and NEVER REBUILT. `baseRef` is what a new branch starts
+# from - always the repository's main branch for a targeted payload, never a tag - sent only as
+# the honest fallback for a branch this step cannot find; a targeted branch is a release request's
+# own source branch, already carrying real work by the time estate-pins writes a pin onto it, so
+# every real run takes the "continue" arm.
 #
-# A MAVEN-ONLY BUMP MUST REACH THAT DECISION TOO, even though the node step's own change list
-# is then empty from the start. The node step's early "nothing for me" exit is conditioned on
-# `replaceHead` as well as on its change list, so a payload carrying one still walks down into
-# the branch decision with an empty list to apply - which the apply loop and the commit/push
-# block both already tolerate - rather than returning before ever looking at the branch.
+# What is GONE is the REBUILD the retired GROUP arm needed: a `maintenance/<group>` branch, cut
+# from an unmerged release's tag, could be found stale against a newer one, and the payload then
+# carried `replaceHead` - the branch head as the maintenance service last read it - so this step
+# could throw the branch away and start over on the new tag under a `--force-with-lease` on
+# exactly that head. `AutomationService.dispatchSourceBranch` never sets `replaceHead` on a
+# targeted payload, so that case was dead weight for the one caller left; removing it is what
+# makes this step read exactly what a targeted payload sends:
+#   no branch        start it from baseRef, plain push
+#   branch exists    continue it, plain push
+# A failed fetch is read as "no such branch", which is safe in the only direction that matters: it
+# then builds on baseRef and the push is refused as a non-ff rather than overwriting work. The push
+# is never forced: a rejection means somebody rewrote the branch by hand, or pushed to it since this
+# step read it, and either way it is theirs now rather than something to overwrite.
 #
 # What this reads of a `changes[]` entry, and what it does not:
-#   ecosystem     maven here, npm, docker and gitlink in the second step
+#   ecosystem     npm, docker and gitlink. A `maven` entry is refused - see above.
 #   manifestPath  the file to edit, repository-relative - EXCEPT for gitlink, where it
 #                 is the DIRECTORY the submodule sits at and no file exists
 #   name          npm/docker: the thing to install or the image to re-tag
-#                 maven: the commit message only - `location` carries the coordinates
 #                 gitlink: the SIBLING REPOSITORY, which is what the clone url is
 #                 derived from. Load-bearing, and the only ecosystem where it is.
 #   to            the new version, refused unless [0-9A-Za-z._+-]+
 #   from          the commit message only. It is NOT a precondition: a manifest that
 #                 already holds `to` is a no-op, never a failure. For gitlink it is the
 #                 commit sha the tree holds now, which is what makes the body readable.
-#   location      maven: `property:<name>` or `dependency:<groupId>:<artifactId>`
-#                 npm: IGNORED - npm updates the entry in whichever section holds it
+#   location      npm: IGNORED - npm updates the entry in whichever section holds it
 #                 docker: it says WHICH KIND OF LINE holds the pin, and there are two.
-#                 `line:<n>` is IGNORED - a line number goes stale the moment the first
-#                 step commits, so a FROM is anchored on the image name instead.
+#                 `line:<n>` is IGNORED - a line number goes stale the moment the step
+#                 commits, so a FROM is anchored on the image name instead.
 #                 `arg:<name>` is NOT ignored and is the anchor itself: the pin sits in
 #                 an `ARG <name>=<image>:<tag>` default that a later `FROM ${<name>}`
 #                 resolves, and the argument's name is a stable address where a line
@@ -76,232 +80,27 @@
 # released through the same door as everything else.
 event: MaintenanceBump
 steps:
-  - image: qits/build-images/maven-base:latest
-    timeout-seconds: 900
-    script: |
-      set -eu
-
-      # --- what this step has to do, if anything -----------------------------------
-      # The payload holds changes for every ecosystem. This image has maven; the next
-      # step has node. Each applies its own and exits 0 quietly when it has none.
-      printf '%s' "$QITS_EVENT_PAYLOAD" \
-        | jq -r '.changes[]? | select(.ecosystem == "maven")
-                 | [.name, (.from // ""), .to, .manifestPath, (.location // "")] | @tsv' \
-        > /tmp/bump-maven.tsv
-      if [ ! -s /tmp/bump-maven.tsv ]; then
-        echo "no maven changes in this bump"
-        exit 0
-      fi
-
-      group=$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -er '.group')
-      branch=$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -er '.branch')
-      base=$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r '.baseRef // "main"')
-      replace=$(printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r '.replaceHead // empty')
-
-      # Every value below reaches an argv or an awk -v, so the charset is refused rather
-      # than quoted - the hop files this replaces argue it in full. Nothing legitimate
-      # here needs a character outside these sets.
-      case "$group" in ''|*[!0-9A-Za-z._-]*) echo "refusing an implausible group: $group" >&2; exit 1 ;; esac
-      for ref in "$branch" "$base"; do
-        case "$ref" in
-          ''|-*|*..*|*[!0-9A-Za-z._/-]*) echo "refusing an implausible ref: $ref" >&2; exit 1 ;;
-        esac
-      done
-      # A bare name is a branch, as it always was; a full ref - `refs/tags/<version>` - is
-      # fetched as written. The charset above already holds a full ref to the same rules.
-      case "$base" in
-        refs/*) base_ref=$base ;;
-        *) base_ref="refs/heads/$base" ;;
-      esac
-      # A commit name and nothing else: sha-1 or sha-256, lowercase, as rev-parse prints it.
-      # It is compared, and it reaches a --force-with-lease, so anything else is refused.
-      case "$replace" in
-        '') ;;
-        *[!0-9a-f]*) echo "refusing an implausible replaceHead: $replace" >&2; exit 1 ;;
-        *)
-          if [ ${#replace} -ne 40 ] && [ ${#replace} -ne 64 ]; then
-            echo "refusing an implausible replaceHead: $replace" >&2
-            exit 1
-          fi
-          ;;
-      esac
-
-      # --- the two edits, anchored and counted -------------------------------------
-      # Not a global sed: a bump must change the one element it names or fail loudly.
-      # Both programs exit non-zero unless they matched EXACTLY once.
-      cat > /tmp/bump-property.awk <<'AWK'
-      # <name>...</name> inside a <properties> block, and nowhere else.
-      BEGIN { n = 0; inprops = 0; open = "<" prop ">"; shut = "</" prop ">" }
-      {
-        if (index($0, "<properties>") > 0) inprops = 1
-        if (inprops == 1) {
-          s = index($0, open)
-          if (s > 0) {
-            e = index($0, shut)
-            if (e > s) {
-              $0 = substr($0, 1, s + length(open) - 1) to substr($0, e)
-              n++
-            }
-          }
-        }
-        if (index($0, "</properties>") > 0) inprops = 0
-        print
-      }
-      END {
-        if (n != 1) {
-          printf("matched %d <%s> properties, expected 1\n", n, prop) > "/dev/stderr"
-          exit 3
-        }
-      }
-      AWK
-
-      cat > /tmp/bump-dependency.awk <<'AWK'
-      # The <version> of the one <dependency> or <parent> block carrying this g:a.
-      function strip(text, tag) { sub("<" tag ">", "", text); sub("</" tag ">", "", text); return text }
-      BEGIN { n = 0; nb = 0; inblock = 0; bad = 0 }
-      {
-        if (inblock == 0 && ($0 ~ /<dependency>/ || $0 ~ /<parent>/)) { inblock = 1; nb = 0; g = ""; a = "" }
-        if (inblock == 0) { print; next }
-        nb++
-        buf[nb] = $0
-        if (match($0, /<groupId>[^<]*<\/groupId>/)) g = strip(substr($0, RSTART, RLENGTH), "groupId")
-        if (match($0, /<artifactId>[^<]*<\/artifactId>/)) a = strip(substr($0, RSTART, RLENGTH), "artifactId")
-        if ($0 ~ /<\/dependency>/ || $0 ~ /<\/parent>/) {
-          if (g == gid && a == aid) {
-            hits = 0
-            for (i = 1; i <= nb; i++) {
-              if (buf[i] ~ /<version>[^<]*<\/version>/) {
-                sub(/<version>[^<]*<\/version>/, "<version>" to "</version>", buf[i])
-                hits++
-              }
-            }
-            if (hits == 1) n++
-            else {
-              printf("%s:%s carries %d <version> elements, expected 1\n", gid, aid, hits) > "/dev/stderr"
-              bad = 1
-            }
-          }
-          for (i = 1; i <= nb; i++) print buf[i]
-          inblock = 0
-          nb = 0
-        }
-      }
-      END {
-        for (i = 1; i <= nb; i++) print buf[i]
-        if (bad) exit 4
-        if (n != 1) {
-          printf("matched %d dependencies for %s:%s, expected 1\n", n, gid, aid) > "/dev/stderr"
-          exit 3
-        }
-      }
-      AWK
-
-      # --- the branch: ff-only, or a rebuild under a lease ------------------------
-      # Steps do NOT share a working tree - every step is its own container with its
-      # own shallow clone - so this step puts its own commit on the branch and the next
-      # one fetches it back and commits on top. If the branch exists we continue it; if
-      # it does not we start it from baseRef; if it is exactly the replaceHead we were
-      # sent, we rebuild it on baseRef. The node step makes the same decision in the
-      # same words.
-      # A failed fetch is read as "no such branch". That is safe in the only direction
-      # that matters: we then build on baseRef and the push is refused as a non-ff - or
-      # by the lease, on a rebuild - rather than overwriting work.
-      lease=
-      if git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$branch" 2>/dev/null; then
-        head=$(git rev-parse --verify "FETCH_HEAD^{commit}")
-      else
-        head=
-      fi
-      if [ -n "$head" ] && [ "$head" != "$replace" ]; then
-        echo "continuing $branch"
-        start=$head
-      else
-        git fetch -q "$QITS_CI_REPOSITORY_URL" "$base_ref"
-        start=$(git rev-parse --verify "FETCH_HEAD^{commit}")
-        if [ -z "$head" ]; then
-          echo "starting $branch from $base"
-        else
-          # A REBUILD THROWS THE BRANCH AWAY, which is safe because a maintenance branch
-          # is written by the maintenance service and nobody else. The lease is what keeps
-          # it honest: the push names replaceHead as the value it replaces, so a branch
-          # that moved after the maintenance service read it is refused, not overwritten.
-          echo "rebuilding $branch on $base (was $replace)"
-          lease="--force-with-lease=refs/heads/$branch:$replace"
-        fi
-      fi
-      git checkout -q --detach "$start"
-
-      # --- apply -------------------------------------------------------------------
-      : > /tmp/bump-body.txt
-      applied=0
-      tab=$(printf '\t')
-      while IFS="$tab" read -r name from to manifest location <&3; do
-        case "$to" in ''|*[!0-9A-Za-z._+-]*) echo "refusing an implausible version: $to" >&2; exit 1 ;; esac
-        case "$name" in ''|*[!0-9A-Za-z._:-]*) echo "refusing an implausible dependency: $name" >&2; exit 1 ;; esac
-        case "$manifest" in
-          ''|/*|*..*|*[!0-9A-Za-z._/-]*) echo "refusing an implausible manifest: $manifest" >&2; exit 1 ;;
-        esac
-        [ -f "$manifest" ] || { echo "no such manifest: $manifest" >&2; exit 1; }
-
-        case "$location" in
-          property:*)
-            prop=${location#property:}
-            case "$prop" in
-              ''|*[!0-9A-Za-z._-]*) echo "refusing an implausible property: $prop" >&2; exit 1 ;;
-            esac
-            awk -v prop="$prop" -v to="$to" -f /tmp/bump-property.awk "$manifest" > /tmp/bump-edited
-            ;;
-          dependency:*:*)
-            coords=${location#dependency:}
-            gid=${coords%%:*}
-            aid=${coords#*:}
-            for part in "$gid" "$aid"; do
-              case "$part" in
-                ''|*[!0-9A-Za-z._-]*) echo "refusing implausible coordinates: $location" >&2; exit 1 ;;
-              esac
-            done
-            awk -v gid="$gid" -v aid="$aid" -v to="$to" -f /tmp/bump-dependency.awk "$manifest" > /tmp/bump-edited
-            ;;
-          *)
-            echo "unknown maven location: $location" >&2
-            exit 1
-            ;;
-        esac
-        mv /tmp/bump-edited "$manifest"
-        git add -- "$manifest"
-        applied=$((applied + 1))
-        echo "- maven $name $from -> $to ($manifest)" >> /tmp/bump-body.txt
-        echo "bumped $name to $to in $manifest"
-      done 3< /tmp/bump-maven.tsv
-
-      # --- commit and push ---------------------------------------------------------
-      # --ignore-submodules=none because `.gitmodules` sets `ignore = all` on the webui
-      # submodule of every service, and that setting makes `git diff` blind to gitlink
-      # entries - `--cached` included. No gitlink reaches this step today, so the flag
-      # changes nothing here; it is written the same way as the node step's so the two
-      # guards cannot drift, and so a gitlink arriving here later is not silently dropped.
-      if git diff --cached --quiet --ignore-submodules=none; then
-        echo "every maven change in this bump is already the pin - nothing to commit"
-        exit 0
-      fi
-      {
-        printf 'bump(%s): %d dependencies\n\n' "$group" "$applied"
-        cat /tmp/bump-body.txt
-      } > /tmp/bump-message.txt
-      git -c user.name="qits maintenance" -c user.email="maintenance@qits.local" \
-          commit -q -F /tmp/bump-message.txt
-      # NEVER a bare --force. A rejection means somebody rewrote the branch by hand; it
-      # is theirs now, and the maintenance service marks it STALE. A rebuild is the one
-      # non-ff push, and it carries a lease on replaceHead: if the branch moved after
-      # the maintenance service read it, the push is refused the same way.
-      if ! git push ${lease:+"$lease"} "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
-        echo "push to $branch was rejected - the branch is not what we built on" >&2
-        exit 1
-      fi
   - image: qits/build-images/node-base:latest
     timeout-seconds: 1800
     script: |
       set -eu
+
+      # --- the gate: only a targeted bump runs here ---------------------------------
+      group=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).group')
+      if [ "$group" != "targeted" ]; then
+        echo "refusing a '$group' bump: the group-branch arm of this pipeline is retired" \
+             "(qits-1133) - a per-repository dependency bump is the dependency-bump" \
+             "release-request automation now, and a targeted bump (qits-maintenance's" \
+             "estate-pins) is the only caller left" >&2
+        exit 1
+      fi
+      hasMaven=$(node -p \
+        '(JSON.parse(process.env.QITS_EVENT_PAYLOAD || "{}").changes || []).some(c => c.ecosystem === "maven")')
+      if [ "$hasMaven" = "true" ]; then
+        echo "refusing a maven change: this pipeline applies npm, docker and gitlink only now -" \
+             "the maven step retired with the group-branch arm (qits-1133)" >&2
+        exit 1
+      fi
 
       # --- what this step has to do, if anything -----------------------------------
       # npm, docker and gitlink changes. node-base carries node, npm, git and curl - and
@@ -314,54 +113,34 @@ steps:
         process.stdout.write(mine.map(c =>
           [c.ecosystem, c.name, c.from || "", c.to, c.manifestPath, c.location || ""].join("\t") + "\n").join(""));
       ' > /tmp/bump-node.tsv
-      # A REPLACEHEAD IS A REASON TO CARRY ON EVEN WITH NOTHING OF OUR OWN: this step is the
-      # one that runs last, so a REBUILD the maven step left undone - because IT had nothing to
-      # commit, maven-only bump or not - is this step's only remaining chance to carry it; see
-      # the header. So the early exit is conditioned on replaceHead too, not on the change list
-      # alone. Everything from the branch decision down already tolerates an empty
-      # /tmp/bump-node.tsv - the apply loop below just does nothing over it - so carrying on
-      # costs nothing when there turns out to be no rebuild to carry either.
-      replace=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).replaceHead || ""')
-      if [ ! -s /tmp/bump-node.tsv ] && [ -z "$replace" ]; then
+      if [ ! -s /tmp/bump-node.tsv ]; then
         echo "no npm, docker or gitlink changes in this bump"
         exit 0
       fi
 
-      group=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).group')
       branch=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).branch')
       base=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).baseRef || "main"')
-      replace=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).replaceHead || ""')
 
-      case "$group" in ''|*[!0-9A-Za-z._-]*) echo "refusing an implausible group: $group" >&2; exit 1 ;; esac
+      # Every value below reaches an argv or an awk -v, so the charset is refused rather
+      # than quoted. Nothing legitimate here needs a character outside these sets.
       for ref in "$branch" "$base"; do
         case "$ref" in
           ''|-*|*..*|*[!0-9A-Za-z._/-]*) echo "refusing an implausible ref: $ref" >&2; exit 1 ;;
         esac
       done
-      # A bare name is a branch, as it always was; a full ref - `refs/tags/<version>` - is
-      # fetched as written. The charset above already holds a full ref to the same rules.
+      # A bare name is a branch, as it always was; a full ref would be fetched as written,
+      # though a targeted payload's `baseRef` is always the repository's main branch name
+      # and never one.
       case "$base" in
         refs/*) base_ref=$base ;;
         *) base_ref="refs/heads/$base" ;;
-      esac
-      # A commit name and nothing else: sha-1 or sha-256, lowercase, as rev-parse prints it.
-      # It is compared, and it reaches a --force-with-lease, so anything else is refused.
-      case "$replace" in
-        '') ;;
-        *[!0-9a-f]*) echo "refusing an implausible replaceHead: $replace" >&2; exit 1 ;;
-        *)
-          if [ ${#replace} -ne 40 ] && [ ${#replace} -ne 64 ]; then
-            echo "refusing an implausible replaceHead: $replace" >&2
-            exit 1
-          fi
-          ;;
       esac
 
       # --- the docker edits, anchored and counted ----------------------------------
       # TWO PROGRAMS, because a base image is pinned in one of two places and the
       # payload's `location` says which.
       #
-      # A `line:<n>` location is not used: a line number goes stale the moment the maven
+      # A `line:<n>` location is not used: a line number goes stale the moment this
       # step commits, and the image name is the thing that is actually true about the
       # line. Exactly one FROM must match, or the step fails.
       cat > /tmp/bump-from.awk <<'AWK'
@@ -435,37 +214,29 @@ steps:
       }
       AWK
 
-      # --- the branch: ff-only, or a rebuild under a lease ------------------------
-      # This step's container is a fresh clone, so the maven step's commit is fetched
-      # back here rather than inherited - steps share no working tree. The decision is
-      # the maven step's, word for word: a branch the maven step already rebuilt has a
-      # head that is no longer replaceHead, so it is continued; one the maven step left
-      # alone - it had nothing to commit - still is replaceHead, so it is rebuilt here.
-      # A failed fetch is read as "no such branch". That is safe in the only direction
-      # that matters: we then build on baseRef and the push is refused as a non-ff - or
-      # by the lease, on a rebuild - rather than overwriting work.
-      lease=
+      # --- the branch: ff-only, continued or started from baseRef, never rebuilt ---
+      # A TARGETED BRANCH ALWAYS EXISTS: it is a release request's own source branch, already
+      # carrying real work by the time estate-pins writes a pin onto it, so every real run takes
+      # the "continue" arm below. "start fresh" is kept as the honest answer to a branch this step
+      # cannot find - nothing here can prove the branch exists before asking - rather than a case a
+      # targeted payload ever really takes. See the header for what is gone: the REBUILD the
+      # retired GROUP arm needed, and the `--force-with-lease` on a `replaceHead` that carried it.
+      #
+      # A failed fetch is read as "no such branch". That is safe in the only direction that
+      # matters: this then builds on baseRef and the push is refused as a non-ff rather than
+      # overwriting work.
       if git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$branch" 2>/dev/null; then
         head=$(git rev-parse --verify "FETCH_HEAD^{commit}")
       else
         head=
       fi
-      if [ -n "$head" ] && [ "$head" != "$replace" ]; then
+      if [ -n "$head" ]; then
         echo "continuing $branch"
         start=$head
       else
         git fetch -q "$QITS_CI_REPOSITORY_URL" "$base_ref"
         start=$(git rev-parse --verify "FETCH_HEAD^{commit}")
-        if [ -z "$head" ]; then
-          echo "starting $branch from $base"
-        else
-          # A REBUILD THROWS THE BRANCH AWAY, which is safe because a maintenance branch
-          # is written by the maintenance service and nobody else. The lease is what keeps
-          # it honest: the push names replaceHead as the value it replaces, so a branch
-          # that moved after the maintenance service read it is refused, not overwritten.
-          echo "rebuilding $branch on $base (was $replace)"
-          lease="--force-with-lease=refs/heads/$branch:$replace"
-        fi
+        echo "starting $branch from $base"
       fi
       git checkout -q --detach "$start"
 
@@ -624,23 +395,6 @@ steps:
       # still counts for nothing. Only a gitlink this step deliberately staged is seen,
       # which is exactly the change it is trying not to lose.
       if git diff --cached --quiet --ignore-submodules=none; then
-        # A REBUILD STILL HAS TO MOVE THE BRANCH, even when the base already carries every pin
-        # this bump would have written and this step has nothing to add on top. Nothing-to-commit
-        # is ordinarily silence - the maven step takes exactly this branch above with no push at
-        # all - but silence here is this bump's LAST word: if neither step pushes, the stale
-        # branch is left naming replaceHead forever, still conflicting with the base it was
-        # supposed to move onto. So when `$lease` is set - REBUILD was decided and nothing earlier
-        # rebuilt it - push the commit this step started from. No new commit, the same lease on
-        # replaceHead a rebuild that did write something would use, so a branch that moved since
-        # is refused exactly as it would be otherwise.
-        if [ -n "$lease" ]; then
-          if ! git push "$lease" "$QITS_CI_REPOSITORY_URL" "$start:refs/heads/$branch"; then
-            echo "push to $branch was rejected - the branch is not what we built on" >&2
-            exit 1
-          fi
-          echo "rebuilt $branch on $base with nothing to commit"
-          exit 0
-        fi
         echo "every npm, docker and gitlink change in this bump is already the pin - nothing to commit"
         exit 0
       fi
@@ -650,9 +404,10 @@ steps:
       } > /tmp/bump-message.txt
       git -c user.name="qits maintenance" -c user.email="maintenance@qits.local" \
           commit -q -F /tmp/bump-message.txt
-      # NEVER a bare --force, and a rebuild under its lease, for the reasons the maven
-      # step states.
-      if ! git push ${lease:+"$lease"} "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
+      # NEVER a bare --force. A rejection means somebody rewrote the branch by hand, or
+      # pushed to it since this step read it: either way it is theirs now, and nothing
+      # here overwrites it.
+      if ! git push "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
         echo "push to $branch was rejected - the branch is not what we built on" >&2
         exit 1
       fi
