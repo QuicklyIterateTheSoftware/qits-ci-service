@@ -42,6 +42,9 @@ public class CiReleaseArchetypesTest {
   /** The repository that keeps the packaged set, as production names it. */
   private static final String SOURCE_REPOSITORY = "qits-ci-service";
 
+  /** The platform project's id, as production names it beside its slug. */
+  private static final String PLATFORM_PROJECT_ID = "8273c743-e0bb-4d93-90d4-391aa10d9151";
+
   private static final String LOCAL =
       """
       release-request:
@@ -78,6 +81,7 @@ public class CiReleaseArchetypesTest {
     archetypes.slotParser = new CiReleaseSlotParser();
     archetypes.applicationVersion = Optional.of(VERSION);
     archetypes.sourceRepository = Optional.of(SOURCE_REPOSITORY);
+    archetypes.sourceProjects = Optional.of(List.of(PLATFORM_PROJECT_ID, "qits"));
     repo = CiRepoRef.of("repo-1", "qits", "qits-target");
   }
 
@@ -255,12 +259,41 @@ public class CiReleaseArchetypesTest {
   }
 
   @Test
-  public void theSourceRepositoryIsRecognisedByStorageIdWhenTheReferenceCarriesNoName() {
-    CiRepoRef unnamed = CiRepoRef.of(SOURCE_REPOSITORY);
-    commitSource(unnamed, "java-service", LOCAL);
+  public void theSourceRepositoryIsRecognisedByTheProjectsIdAsWellAsItsSlug() {
+    CiRepoRef owner = CiRepoRef.of("repo-ci", PLATFORM_PROJECT_ID, SOURCE_REPOSITORY);
+    commitSource(owner, "java-service", LOCAL);
     packageRecipe("java-service", PACKAGED);
 
-    assertEquals("echo local", script(archetypes.read(unnamed, REV, "java-service")));
+    assertEquals("echo local", script(archetypes.read(owner, REV, "java-service")));
+  }
+
+  @Test
+  public void aRepositoryOfTheSameNameInAnotherProjectGetsThePackagedCopyAndNeverItsResourceFile() {
+    // The name alone must never make a repository the source: its ci/src/main/resources/ is
+    // outside .config/qits/, so no approval gate would see the recipe it ran.
+    CiRepoRef impostor = CiRepoRef.of("repo-other", "another-project", SOURCE_REPOSITORY);
+    commitSource(impostor, "java-service", LOCAL);
+    packageRecipe("java-service", PACKAGED);
+
+    Resolution found = archetypes.read(impostor, REV, "java-service");
+
+    assertEquals("echo packaged", script(found));
+    assertNull(found.archetype().rev());
+    assertEquals(
+        List.of(
+            impostor.repoId() + "@" + REV + "/" + CiReleaseSlotParser.archetypePath("java-service")),
+        config.fileReads(),
+        "only the .config/qits/ path is read, never the resource file");
+  }
+
+  @Test
+  public void aReferenceWithNoProjectIsNeverTheSourceEvenWhenItsIdIsTheName() {
+    // Fail closed: what cannot be placed in the platform project is an ordinary repository.
+    CiRepoRef unplaced = CiRepoRef.of(SOURCE_REPOSITORY);
+    commitSource(unplaced, "java-service", LOCAL);
+    packageRecipe("java-service", PACKAGED);
+
+    assertEquals("echo packaged", script(archetypes.read(unplaced, REV, "java-service")));
   }
 
   @Test

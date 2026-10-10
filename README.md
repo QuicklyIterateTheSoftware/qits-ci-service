@@ -1824,7 +1824,7 @@ repository could already replace in its own `release.yml`.
 
 **So a change to a packaged recipe is one commit here and a qits-ci release.** This repository is a
 `java-service`, and for this repository alone the local step reads the packaged set's source file
-(`qits.ci.release-archetypes.source-repository`), so its own release request reads
+(`qits.ci.release-archetypes.source-repository` in `source-project`), so its own release request reads
 `java-service.yml` from its fold and runs the changed recipe before it ships; the other seven are
 covered by `PackagedReleaseArchetypesTest` (on the classpath byte-for-byte, parse, declare a QA
 slot, compose, every script passes a shell syntax check).

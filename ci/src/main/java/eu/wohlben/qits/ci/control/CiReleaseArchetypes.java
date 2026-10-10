@@ -29,8 +29,8 @@ import org.jboss.logging.Logger;
  *       repository the run is for, read through {@link CiConfigSource#readFile} at <b>the same
  *       revision its {@code release.yml} was read at</b> (the fold for a {@code
  *       ReleaseRequestChanged}, the released tag's commit for an {@code SCMRelease}). For the
- *       repository that keeps the packaged set ({@code qits.ci.release-archetypes.source-repository},
- *       qits-ci-service) the local recipe is that set's own source file, {@link #SOURCE_DIR}{@code
+ *       repository that keeps the packaged set (qits-ci-service in the platform project, {@code
+ *       qits.ci.release-archetypes.source-*}) the local recipe is that set's own source file, {@link #SOURCE_DIR}{@code
  *       <name>.yml}, at the same revision;
  *   <li><b>the packaged recipe</b> — the classpath resource {@code release-archetypes/<name>.yml},
  *       this module's own {@code src/main/resources/release-archetypes/}.
@@ -137,14 +137,26 @@ public class CiReleaseArchetypes {
   Optional<String> applicationVersion;
 
   /**
-   * The repository that keeps the packaged set — qits-ci-service — matched by name, then by storage
-   * id. Its local recipe is the source file under {@link #SOURCE_DIR}, so its own release request
-   * runs its branch's copy. {@code Optional} for the same reason as {@link #applicationVersion}: a
-   * missing key costs that repository its branch copy (it composes from the packaged set), never
-   * the composition.
+   * The name of the repository that keeps the packaged set — qits-ci-service. Its local recipe is
+   * the source file under {@link #SOURCE_DIR}, so its own release request runs its branch's copy.
+   *
+   * <p><b>The name alone never identifies it</b>: any project may have a repository of that name,
+   * and reading <em>its</em> {@link #SOURCE_DIR} would let it run a recipe from outside {@code
+   * .config/qits/}, where no approval gate looks. So a match needs this name <b>and</b> one of
+   * {@link #sourceProjects} as the reference's project. A reference with no project is never the
+   * source. {@code Optional} for the same reason as {@link #applicationVersion}: a missing key
+   * costs qits-ci-service its branch copy (it composes from the packaged set), never the
+   * composition.
    */
   @ConfigProperty(name = "qits.ci.release-archetypes.source-repository")
   Optional<String> sourceRepository;
+
+  /**
+   * The project the source repository must be in: its id and its slug, since a reference may carry
+   * either. Missing or empty means no repository is the source.
+   */
+  @ConfigProperty(name = "qits.ci.release-archetypes.source-project")
+  Optional<List<String>> sourceProjects;
 
   /** Packaged recipes already parsed, by name. Only successes are kept: see {@link #packaged}. */
   private final Map<String, CiReleaseSlots> packagedByName = new ConcurrentHashMap<>();
@@ -350,15 +362,18 @@ public class CiReleaseArchetypes {
   }
 
   /**
-   * Whether {@code repo} is the repository that keeps the packaged set. By name first, the public
-   * coordinate, and by storage id for a reference that carries no name.
+   * Whether {@code repo} is the repository that keeps the packaged set: its project is one of
+   * {@link #sourceProjects} <b>and</b> its name is {@link #sourceRepository}. Anything less —
+   * the right name in another project, or a reference with no project — is an ordinary repository.
    */
   private boolean isSource(CiRepoRef repo) {
     String source = sourceRepository == null ? null : sourceRepository.orElse(null);
-    if (source == null || source.isBlank()) {
+    List<String> projects =
+        sourceProjects == null ? List.of() : sourceProjects.orElse(List.of());
+    if (source == null || source.isBlank() || !repo.named()) {
       return false;
     }
-    return repo.named() ? source.equals(repo.name()) : source.equals(repo.repoId());
+    return source.equals(repo.name()) && projects.contains(repo.projectId());
   }
 
   /**

@@ -2069,8 +2069,9 @@ phase.
   repository's own configuration. The defaults are the platform's templates, so editing one is an
   ordinary source change here. A shadow in another repository is still a `.config/qits/` file, so a
   repository's deviation from a default still needs that approval.
-  <br>**This repository reads its branch copy instead** (`qits.ci.release-archetypes.source-repository`,
-  matched by name, then by storage id): for qits-ci-service the local step reads
+  <br>**This repository reads its branch copy instead** (`qits.ci.release-archetypes.source-repository`
+  AND `source-project`; never the name alone, because a repository of that name in another project
+  must not run a recipe from outside `.config/qits/`): for qits-ci-service the local step reads
   `ci/src/main/resources/release-archetypes/<name>.yml` at the run's revision, not the `.config/qits/`
   path. A revision without that file (from before the move) composes from the packaged copy.
   Until qits-583 the recipe was read from that repository at its newest released tag, which made a
