@@ -1110,7 +1110,9 @@ public class CiReleaseComposerTest {
     String resource = CiReleaseArchetypes.PACKAGED_DIR + name + CiEventTriggerParser.CONFIG_SUFFIX;
     try (InputStream in = getClass().getClassLoader().getResourceAsStream(resource)) {
       assertNotNull(in, resource);
-      return archetype(name, new String(in.readAllBytes(), StandardCharsets.UTF_8));
+      // Under the path production records a packaged recipe at: its source file in this module.
+      return parser.parseArchetype(
+          CiReleaseArchetypes.sourcePath(name), new String(in.readAllBytes(), StandardCharsets.UTF_8));
     }
   }
 

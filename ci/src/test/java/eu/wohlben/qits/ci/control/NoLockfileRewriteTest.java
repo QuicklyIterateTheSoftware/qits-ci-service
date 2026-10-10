@@ -33,6 +33,10 @@ public class NoLockfileRewriteTest {
 
   private static final Path CONFIG = Path.of("..", ".config", "qits");
 
+  /** The release archetypes: this module's own classpath resources, not {@code .config/qits/}. */
+  private static final Path RELEASE_ARCHETYPES =
+      Path.of("src", "main", "resources", "release-archetypes");
+
   /** The platform pipelines: this module's own classpath resources, not {@code .config/qits/}. */
   private static final Path PLATFORM_PIPELINES = Path.of("src", "main", "resources", "platform-pipelines");
 
@@ -49,7 +53,7 @@ public class NoLockfileRewriteTest {
 
   private static List<Path> recipes() throws Exception {
     List<Path> files = new ArrayList<>();
-    try (Stream<Path> listed = Files.list(CONFIG.resolve("release-archetypes"))) {
+    try (Stream<Path> listed = Files.list(RELEASE_ARCHETYPES)) {
       listed.filter(path -> path.toString().endsWith(".yml")).sorted().forEach(files::add);
     }
     for (Path dir : List.of(PLATFORM_PIPELINES, PLATFORM_PIPELINES.resolve("automations"))) {

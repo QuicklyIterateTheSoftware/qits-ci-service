@@ -89,9 +89,10 @@ import java.util.UUID;
  * <p><b>{@code archetypeName}, {@code archetypeConfigPath}, {@code archetypeRev} and {@code
  * archetypeVersion} say which release archetype recipe this run's pipeline was composed from, and
  * whose copy of it.</b> A composed release pipeline's recipe is the repository's own {@code
- * .config/qits/release-archetypes/<name>.yml} if it carries one, and otherwise the one packaged
- * into qits-ci. {@code archetypeRev} non-null means the first — shadowed locally, read at that
- * revision, which is the run's own {@code commitSha} — and {@code archetypeVersion} is then null.
+ * .config/qits/release-archetypes/<name>.yml} if it carries one (for qits-ci-service: its own {@code
+ * ci/src/main/resources/release-archetypes/<name>.yml}), and otherwise the one packaged into
+ * qits-ci, recorded under that resource path. {@code archetypeRev} non-null means the first —
+ * read at that revision, which is the run's own {@code commitSha} — and {@code archetypeVersion} is then null.
  * {@code archetypeVersion} non-null means the second, and it is the <b>qits-ci-service version</b>
  * whose packaged recipe composed the run, with {@code archetypeRev} null: two runs of one
  * repository at one {@code commitSha} whose {@code archetypeVersion} differs were composed by two

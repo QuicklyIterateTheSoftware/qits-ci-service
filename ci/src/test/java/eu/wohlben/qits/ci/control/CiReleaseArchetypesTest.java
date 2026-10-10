@@ -39,6 +39,9 @@ public class CiReleaseArchetypesTest {
 
   private static final String VERSION = "2026.930.40058";
 
+  /** The repository that keeps the packaged set, as production names it. */
+  private static final String SOURCE_REPOSITORY = "qits-ci-service";
+
   private static final String LOCAL =
       """
       release-request:
@@ -74,6 +77,7 @@ public class CiReleaseArchetypesTest {
     archetypes.configSource = config;
     archetypes.slotParser = new CiReleaseSlotParser();
     archetypes.applicationVersion = Optional.of(VERSION);
+    archetypes.sourceRepository = Optional.of(SOURCE_REPOSITORY);
     repo = CiRepoRef.of("repo-1", "qits", "qits-target");
   }
 
@@ -118,7 +122,10 @@ public class CiReleaseArchetypesTest {
 
     assertEquals(Status.FOUND, found.status());
     assertEquals("echo packaged", script(found));
-    assertEquals(CiReleaseSlotParser.archetypePath("java-service"), found.archetype().configPath());
+    assertEquals(
+        "ci/src/main/resources/release-archetypes/java-service.yml",
+        found.archetype().configPath(),
+        "recorded under its real path in qits-ci-service, not under .config/qits/");
     assertNull(found.archetype().rev(), "it was read from no revision of any repository");
     assertEquals(VERSION, found.archetype().version());
     assertEquals(1, config.fileReads().size(), "the repository was asked first: " + config.fileReads());
@@ -216,5 +223,80 @@ public class CiReleaseArchetypesTest {
     assertEquals(Status.UNKNOWN, archetypes.read(repo, REV, null).status());
     assertEquals(
         List.of(), config.fileReads(), "refused before a read is attempted: " + config.fileReads());
+  }
+
+  // --- the repository that keeps the packaged set (qits-1155) ------------------------------------
+
+  private void commitSource(CiRepoRef owner, String name, String content) {
+    config.putFile(owner.repoId(), REV, CiReleaseArchetypes.sourcePath(name), content);
+  }
+
+  @Test
+  public void theSourceRepositoryReadsItsBranchCopyOfThePackagedSetAtItsOwnRevision() {
+    // qits-ci-service's own release request must run the recipe its branch carries, so a template
+    // change is exercised before it ships. Its copy is the packaged set's source file, not a
+    // .config/qits/ file; a decoy there must not be what is read.
+    CiRepoRef owner = CiRepoRef.of("repo-ci", "qits", SOURCE_REPOSITORY);
+    commitSource(owner, "java-service", LOCAL);
+    config.putFile(owner.repoId(), REV, CiReleaseSlotParser.archetypePath("java-service"), PACKAGED);
+    packageRecipe("java-service", PACKAGED);
+
+    Resolution found = archetypes.read(owner, REV, "java-service");
+
+    assertEquals(Status.FOUND, found.status());
+    assertEquals("echo local", script(found), "the branch copy, not the deployed one");
+    assertEquals(CiReleaseArchetypes.sourcePath("java-service"), found.archetype().configPath());
+    assertEquals(REV, found.archetype().rev(), "read at its own revision");
+    assertNull(found.archetype().version());
+    assertEquals(
+        List.of(owner.repoId() + "@" + REV + "/" + CiReleaseArchetypes.sourcePath("java-service")),
+        config.fileReads(),
+        "one read, of the source file only");
+  }
+
+  @Test
+  public void theSourceRepositoryIsRecognisedByStorageIdWhenTheReferenceCarriesNoName() {
+    CiRepoRef unnamed = CiRepoRef.of(SOURCE_REPOSITORY);
+    commitSource(unnamed, "java-service", LOCAL);
+    packageRecipe("java-service", PACKAGED);
+
+    assertEquals("echo local", script(archetypes.read(unnamed, REV, "java-service")));
+  }
+
+  @Test
+  public void aSourceRepositoryRevisionWithoutTheFileComposesFromThePackagedSet() {
+    // A revision from before the move carries no source file: the packaged recipe answers.
+    CiRepoRef owner = CiRepoRef.of("repo-ci", "qits", SOURCE_REPOSITORY);
+    packageRecipe("java-service", PACKAGED);
+
+    Resolution found = archetypes.read(owner, REV, "java-service");
+
+    assertEquals("echo packaged", script(found));
+    assertNull(found.archetype().rev());
+  }
+
+  @Test
+  public void anyOtherRepositoryIsNeverReadAtTheSourcePath() {
+    // A file at qits-ci-service's resource path in some other repository is not a shadow: only
+    // .config/qits/release-archetypes/ is, and a change there is still held for approval.
+    commitSource(repo, "java-service", LOCAL);
+    packageRecipe("java-service", PACKAGED);
+
+    Resolution found = archetypes.read(repo, REV, "java-service");
+
+    assertEquals("echo packaged", script(found));
+    assertEquals(
+        List.of(repo.repoId() + "@" + REV + "/" + CiReleaseSlotParser.archetypePath("java-service")),
+        config.fileReads());
+  }
+
+  @Test
+  public void withNoSourceRepositoryConfiguredEveryRepositoryIsAnOrdinaryOne() {
+    archetypes.sourceRepository = Optional.empty();
+    CiRepoRef owner = CiRepoRef.of("repo-ci", "qits", SOURCE_REPOSITORY);
+    commitSource(owner, "java-service", LOCAL);
+    packageRecipe("java-service", PACKAGED);
+
+    assertEquals("echo packaged", script(archetypes.read(owner, REV, "java-service")));
   }
 }

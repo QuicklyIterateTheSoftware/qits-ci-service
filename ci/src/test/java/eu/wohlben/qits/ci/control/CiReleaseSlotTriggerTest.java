@@ -291,7 +291,7 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     assertEquals(1, recorded.size(), "the packaged recipe composes: " + fakeConfig.fileReads());
     CiRun run = recorded.get(0);
     assertEquals("spa-frontend", run.archetypeName);
-    assertEquals(CiReleaseSlotParser.archetypePath("spa-frontend"), run.archetypeConfigPath);
+    assertEquals(CiReleaseArchetypes.sourcePath("spa-frontend"), run.archetypeConfigPath);
     assertNull(run.archetypeRev, "no revision of any repository: it was not read from one");
     assertNotNull(thisVersion(), "this suite can name the application's version");
     assertEquals(

@@ -1146,7 +1146,8 @@ public class CiEventTriggerService {
    * executed against another.
    *
    * <p><b>An archetype the file names is resolved against that same revision</b>: the repository's
-   * own {@code .config/qits/release-archetypes/<name>.yml} there if it carries one, and otherwise
+   * own {@code .config/qits/release-archetypes/<name>.yml} there if it carries one (qits-ci-service:
+   * its packaged set's source file), and otherwise
    * the recipe packaged into this qits-ci ({@link CiReleaseArchetypes}). So the declaration and a
    * local recipe are one commit's bytes, the run row records which of the two recipes it was
    * ({@code archetype_rev} for a local one, {@code archetype_version} for the packaged one), and no

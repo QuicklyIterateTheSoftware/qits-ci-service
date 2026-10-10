@@ -28,11 +28,21 @@ import org.jboss.logging.Logger;
  *   <li><b>the local recipe</b> — {@code .config/qits/release-archetypes/<name>.yml} in the
  *       repository the run is for, read through {@link CiConfigSource#readFile} at <b>the same
  *       revision its {@code release.yml} was read at</b> (the fold for a {@code
- *       ReleaseRequestChanged}, the released tag's commit for an {@code SCMRelease});
+ *       ReleaseRequestChanged}, the released tag's commit for an {@code SCMRelease}). For the
+ *       repository that keeps the packaged set ({@code qits.ci.release-archetypes.source-repository},
+ *       qits-ci-service) the local recipe is that set's own source file, {@link #SOURCE_DIR}{@code
+ *       <name>.yml}, at the same revision;
  *   <li><b>the packaged recipe</b> — the classpath resource {@code release-archetypes/<name>.yml},
- *       which {@code ci/pom.xml} builds into this jar from qits-ci-service's own {@code
- *       .config/qits/release-archetypes/}.
+ *       this module's own {@code src/main/resources/release-archetypes/}.
  * </ol>
+ *
+ * <p><b>The packaged set is not under {@code .config/qits/}, and that is deliberate (qits-1155).</b>
+ * That directory is a repository's own configuration, and qits-projects holds every change there
+ * for a person's approval. The defaults are the platform's templates, not qits-ci-service's own
+ * configuration, so they sit beside the Java that reads them, like {@link CiPlatformPipelines}.
+ * qits-ci-service still exercises its branch's copy of a recipe before it ships — the source file is
+ * its local recipe — and a shadow in any other repository is still a {@code .config/qits/} file, so
+ * a repository's deviation from a default is still a change a person approves.
  *
  * <p><b>No other repository is read for a recipe.</b> Until qits-583 the recipe came from the
  * platform-pipelines repository (the wrapper) at the sha of its newest released tag. That made a
@@ -40,7 +50,7 @@ import org.jboss.logging.Logger;
  * resolves a workspace, so it could ship only as the last step of a ticket — and it meant no CI run
  * ever executed a changed recipe before it shipped, since the wrapper's own {@code release.yml}
  * names no archetype. Packaged, a recipe moves with a qits-ci release, and qits-ci-service's own
- * release request reads {@code java-service} locally at its fold, so that one recipe is exercised
+ * release request reads {@code java-service}'s source file at its fold, so that one recipe is exercised
  * by the release that carries it. The other seven are held by {@code
  * PackagedReleaseArchetypesTest}.
  *
@@ -89,12 +99,19 @@ public class CiReleaseArchetypes {
   static final String PACKAGED_DIR = "release-archetypes/";
 
   /**
+   * Where the packaged recipes sit in qits-ci-service: this module's own resources. It is the path a
+   * packaged recipe is recorded under, and the path qits-ci-service's own release reads its
+   * branch's copy at.
+   */
+  static final String SOURCE_DIR = "ci/src/main/resources/" + PACKAGED_DIR;
+
+  /**
    * The recipes this build <b>must</b> carry — the eight the estate's {@code release.yml} files name.
    *
    * <p><b>It is what {@link #requirePackaged} checks at boot and nothing else</b>: never an
    * allow-list for {@link #read}, which resolves any name a repository carries itself and any
    * further recipe a later build packages. {@code PackagedReleaseArchetypesTest} holds it equal to
-   * the {@code *.yml} files in {@code .config/qits/release-archetypes/}, so a ninth file added
+   * the {@code *.yml} files in {@link #SOURCE_DIR}, so a ninth file added
    * without naming it here, or a name left here after its file went, is a red build.
    */
   static final Set<String> REQUIRED_PACKAGED =
@@ -119,6 +136,16 @@ public class CiReleaseArchetypes {
   @ConfigProperty(name = "quarkus.application.version")
   Optional<String> applicationVersion;
 
+  /**
+   * The repository that keeps the packaged set — qits-ci-service — matched by name, then by storage
+   * id. Its local recipe is the source file under {@link #SOURCE_DIR}, so its own release request
+   * runs its branch's copy. {@code Optional} for the same reason as {@link #applicationVersion}: a
+   * missing key costs that repository its branch copy (it composes from the packaged set), never
+   * the composition.
+   */
+  @ConfigProperty(name = "qits.ci.release-archetypes.source-repository")
+  Optional<String> sourceRepository;
+
   /** Packaged recipes already parsed, by name. Only successes are kept: see {@link #packaged}. */
   private final Map<String, CiReleaseSlots> packagedByName = new ConcurrentHashMap<>();
 
@@ -134,11 +161,12 @@ public class CiReleaseArchetypes {
    *   <tr><th></th><th>{@code name}</th><th>{@code configPath}</th><th>{@code rev}</th>
    *       <th>{@code version}</th></tr>
    *   <tr><td>local</td><td>the name asked for</td>
-   *       <td>{@code .config/qits/release-archetypes/<name>.yml}</td>
+   *       <td>{@code .config/qits/release-archetypes/<name>.yml}, or {@link #SOURCE_DIR}{@code
+   *       <name>.yml} for qits-ci-service</td>
    *       <td>the revision it was read at — the run's own commit</td><td>null</td></tr>
    *   <tr><td>packaged</td><td>the name asked for</td>
-   *       <td>the same path, which is the file's path in qits-ci-service</td><td>null</td>
-   *       <td>this qits-ci's own version</td></tr>
+   *       <td>{@link #SOURCE_DIR}{@code <name>.yml}, the file's path in qits-ci-service</td>
+   *       <td>null</td><td>this qits-ci's own version</td></tr>
    * </table>
    *
    * <p>So <b>{@code rev} non-null means "shadowed locally"</b>, and a null {@code rev} beside a
@@ -147,7 +175,9 @@ public class CiReleaseArchetypes {
    * ({@link CiReleaseSlots#namesArchetype()}) and never "unknown".
    *
    * <p>The columns are older than this meaning: until qits-583 {@code rev} was a commit of the
-   * wrapper repository and {@code version} the wrapper release that commit was. The schema did not
+   * wrapper repository and {@code version} the wrapper release that commit was. Until qits-1155 a
+   * packaged recipe was recorded under {@code .config/qits/release-archetypes/<name>.yml}, where
+   * qits-ci-service kept it then. The schema did not
    * move — an applied migration is never edited — so a row from before then reads the old way.
    */
   public record ArchetypeRef(String name, String configPath, String rev, String version) {}
@@ -242,7 +272,7 @@ public class CiReleaseArchetypes {
               + " no release pipeline. In a native image, check that"
               + " quarkus.native.resources.includes (service/src/main/resources/"
               + "application.properties) names release-archetypes/*.yml; otherwise check the"
-              + " <resources> block in ci/pom.xml that packages .config/qits/release-archetypes/.");
+              + " files in ci/src/main/resources/release-archetypes/ and ci/pom.xml's resources.");
     }
   }
 
@@ -265,7 +295,7 @@ public class CiReleaseArchetypes {
       LOG.warnf("Release archetype '%s' is not a name this qits-ci will read — no release run", name);
       return Resolution.unknown("'" + name + "' is not a release archetype name");
     }
-    String path = CiReleaseSlotParser.archetypePath(name);
+    String path = isSource(repo) ? sourcePath(name) : CiReleaseSlotParser.archetypePath(name);
     FileLookup local = configSource.readFile(repo, rev, path);
     switch (local.status()) {
       case FOUND -> {
@@ -311,7 +341,24 @@ public class CiReleaseArchetypes {
               + " and this qits-ci packages none of that name");
     }
     return Resolution.found(
-        new Archetype(name, path, null, applicationVersion.orElse(null), packaged));
+        new Archetype(name, sourcePath(name), null, applicationVersion.orElse(null), packaged));
+  }
+
+  /** The path of one packaged recipe in qits-ci-service — where it is edited and recorded. */
+  static String sourcePath(String name) {
+    return SOURCE_DIR + name + CiEventTriggerParser.CONFIG_SUFFIX;
+  }
+
+  /**
+   * Whether {@code repo} is the repository that keeps the packaged set. By name first, the public
+   * coordinate, and by storage id for a reference that carries no name.
+   */
+  private boolean isSource(CiRepoRef repo) {
+    String source = sourceRepository == null ? null : sourceRepository.orElse(null);
+    if (source == null || source.isBlank()) {
+      return false;
+    }
+    return repo.named() ? source.equals(repo.name()) : source.equals(repo.repoId());
   }
 
   /**

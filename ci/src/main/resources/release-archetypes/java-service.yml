@@ -1,14 +1,16 @@
 # java-service — the release cycle of a Quarkus service that ships ONE container image.
 #
 # Most services on the estate run this recipe, and qits-ci resolves `archetype: java-service` in two
-# steps: `.config/qits/release-archetypes/java-service.yml` in the repository the run is for, at the
-# revision its `release.yml` was read at, and otherwise the copy PACKAGED into the running qits-ci —
-# which is this file, built into the `qits-ci-domain` jar. So a change here reaches every repository
-# that does not carry a copy of its own when the qits-ci release carrying it is deployed, with no
+# steps: the repository's own copy at the revision its `release.yml` was read at, and otherwise the
+# copy PACKAGED into the running qits-ci — which is this file, a resource of the `qits-ci-domain`
+# jar. A repository's own copy is `.config/qits/release-archetypes/java-service.yml`; for
+# qits-ci-service it is this file at its own fold. So a change here reaches every repository that
+# does not carry a copy of its own when the qits-ci release carrying it is deployed, with no
 # repository edit. Of the eight recipes in this directory, this repository's own release request
-# gates only this one — qits-ci-service is a java-service, so it reads this file at its own fold —
-# and the other seven are covered by `PackagedReleaseArchetypesTest`. (It was read from the
-# wrapper's newest released tag until qits-583.)
+# gates only this one — qits-ci-service is a java-service — and the other seven are covered by
+# `PackagedReleaseArchetypesTest`. This file sits in `ci/src/main/resources/` and not in
+# `.config/qits/` on purpose (qits-1155): it is the platform's template, not this repository's own
+# configuration, so editing it does not need the approval a `.config/qits/` change does.
 #
 # ---------------------------------------------------------------------------------------------
 # THE PHASES, AND WHAT GATES BETWEEN THEM
