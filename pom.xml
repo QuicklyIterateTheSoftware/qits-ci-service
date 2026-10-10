@@ -137,7 +137,7 @@
         <qits.platform-access-cli-binary.version>2026.1010.125311</qits.platform-access-cli-binary.version>
         <!-- pact-jvm's JUnit 5 provider, for contracts/ConsumerPactVerificationTest: the version every
              provider on the estate verifies with, so a consumer's pact is read the same way. -->
-        <pact.version>4.6.21</pact.version>
+        <pact.version>4.7.5</pact.version>
         <!-- qits-events' golden masters, test scope (qits-1149): the recorded answers this
              repository's consumer pact against qits-events-service is built from. Moved by the
              bump train like every internal pin; do not hand-edit it to chase a release. -->
@@ -149,7 +149,7 @@
 
         <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
         <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
-        <quarkus.platform.version>3.34.6</quarkus.platform.version>
+        <quarkus.platform.version>3.40.1</quarkus.platform.version>
 
         <!-- Embedded PostgreSQL for the suites. Both stores this repo boots are postgres now — its
              own `ci` datasource and the qits-eventstream jar's `eventstream` outbox — so every test
@@ -164,17 +164,17 @@
              run on is named explicitly in the modules: the binaries are per-arch artifacts, and a
              missing one fails in the middle of a suite rather than during resolution. -->
         <zonky.embedded-postgres.version>2.2.2</zonky.embedded-postgres.version>
-        <zonky.postgres-binaries.version>18.4.0</zonky.postgres-binaries.version>
+        <zonky.postgres-binaries.version>18.6.0</zonky.postgres-binaries.version>
 
         <compiler-plugin.version>3.15.0</compiler-plugin.version>
         <surefire-plugin.version>3.5.4</surefire-plugin.version>
         <failsafe-plugin.version>3.5.4</failsafe-plugin.version>
         <jandex-plugin.version>3.4.0</jandex-plugin.version>
-        <lombok.version>1.18.38</lombok.version>
+        <lombok.version>1.18.48</lombok.version>
         <!-- Quinoa is a quarkiverse extension and is not in the platform BOM, so it carries its own
              version. Used by `service` only; see the dependency's comment there for why 2.8.2 and
              not the newer 2.8.3. -->
-        <quinoa.version>2.8.2</quinoa.version>
+        <quinoa.version>2.9.2</quinoa.version>
         <lombok-mapstruct-binding.version>0.2.0</lombok-mapstruct-binding.version>
         <mapstruct.version>1.6.3</mapstruct.version>
 
