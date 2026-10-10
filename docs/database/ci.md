@@ -71,6 +71,7 @@ erDiagram
     string project_id "length 255"
     enum purpose "not null"
     string release_request_id "length 255"
+    string release_request_qualified_id "length 255"
     string repo_id "not null"
     string repo_name "length 255"
     string retry_of_run_id "length 255"
@@ -124,6 +125,7 @@ erDiagram
     instant occurred_at "not null"
     string priority "length 32"
     string release_request_id
+    string release_request_qualified_id
     string repo_id "not null"
     string repo_name
     instant seen_at "not null"
