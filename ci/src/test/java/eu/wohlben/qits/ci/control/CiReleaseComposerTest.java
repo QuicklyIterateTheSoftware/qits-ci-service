@@ -1200,6 +1200,35 @@ public class CiReleaseComposerTest {
   }
 
   /**
+   * qits-bootstrap-cli (qits-1149): the packaged cli archetype publishes nothing but its consumer
+   * pacts, so its release slot is one step that builds nothing, and the pacts are packed after it.
+   */
+  @Test
+  public void aCliWithPactsPublishesThemFromThePackagedReleaseSlot() throws IOException {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            CiRepoRef.of("55555555-6666-7777-8888-999999999999", "qits", "qits-bootstrap-cli"),
+            slots(
+                """
+                archetype: cli
+                contracts:
+                  application: qits-bootstrap-cli
+                  pacts:
+                    qits-projects-service: { packages: [maven] }
+                """),
+            packaged("cli"));
+
+    golden("packaged-cli-pacts-release.yml", composed.releaseDocument());
+    assertTrue(
+        composed
+            .releaseDocument()
+            .contains(
+                "qits artifacts publish contract --kind 'pacts' --ecosystem 'maven' --name"
+                    + " 'eu.wohlben.qits:qits-bootstrap-cli-pacts-qits-projects-service'"),
+        composed.releaseDocument());
+  }
+
+  /**
    * qits-landing-app: an app, a docker image and two consumer pacts, keyed by the providers'
    * repository names and packed from the one flat {@code pacts/}.
    */
