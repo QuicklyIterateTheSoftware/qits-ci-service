@@ -1340,6 +1340,9 @@ everything downstream reads it rather than the slot file:
 event: ReleaseRequestChanged
 when:
   - repoName: { exact: qits-ci-service }
+    preRun: { exists: false }    # a qits-projects with no pre-run
+  - repoName: { exact: qits-ci-service }
+    preRun: { exact: DONE }      # the request's automations are done on this fold
 checkout:
   branch: backingBranch          # release/<id>
   sha: mergedSha                 # the fold this run is about
@@ -1349,6 +1352,15 @@ steps:
   - image: qits/build-images/maven-base:latest
     script: ./publish-userflows.sh
 ```
+
+**A fold announced with `preRun: PENDING` builds nothing** (qits-1133). A release request's
+automations — qits-maintenance's dependency bump and regenerations, `ReleaseRequestAutomation` runs
+below — run BEFORE its QA; their commits re-fold the request, so QA of a fold whose automations are
+still to come would be a verdict about a fold that is about to be replaced. The selection is two
+groups of the existing vocabulary rather than a negation: an absent field builds (the rollout arm,
+and every event from before the field), `DONE` builds, and every other value — `PENDING`, or a word
+this qits-ci does not know — builds nothing. The event is settled either way; the fold that is done
+is announced on its own. `CiReleaseComposer.RELEASE_REQUEST_PRE_RUN_PATH` argues the shape.
 
 **It used to be committed by hand, one `ci-event-release-request.yml` per repository, and there was
 a `docs/` template to copy it from.** Both are gone: the template was a copy-paste macro pretending
@@ -1742,7 +1754,7 @@ the format above, and *those* are what land in `trigger_config`:
 | | phase one — QA (`release-request:`) | phase two — publish (`release:`) |
 |---|---|---|
 | `event:` | `ReleaseRequestChanged` | `SCMRelease` |
-| `when:` | `repoName: { exact: <this repository> }` | `repository: { exact: <this repository> }` |
+| `when:` | `repoName: { exact: <this repository> }`, with `preRun` absent or `DONE` | `repository: { exact: <this repository> }` |
 | `checkout:` | `{ branch: backingBranch, sha: mergedSha }` | `{ branch: version, sha: commitSha }` |
 
 Neither half declares `optional:`, and the release half stopped doing so on 2026-09-22. The
@@ -1933,8 +1945,8 @@ more. A `ScreenshotBaselines` event today matches no trigger file and starts no 
 `ci/src/main/resources/platform-pipelines/automations/<kind>.yml` declares only `image`, `timeout-seconds`,
 the regeneration `script` and, optionally, `qits-cli: true` (the pinned qits CLI on `PATH`, fetched
 by the same emitter as the release prelude and the QA report hook, but hard: a failed fetch ends the
-step with `the qits CLI could not be fetched`); any other key, or any other `qits-cli` value, fails
-the boot naming the file.
+step with `the qits CLI could not be fetched`) and, optionally, `commit-type: <word>` (below); any
+other key, or any other `qits-cli` or `commit-type` value, fails the boot naming the file.
 `CiAutomationComposer` turns it into a trigger on `event: ReleaseRequestAutomation` with `when:
 [{kind: {exact: <kind>}}]` — the kind is the file's name — and one step: a prelude that refuses an
 implausible payload (`kind`, `branch` under `maintenance/automations/<kind>/`, `baseRef` under
@@ -1943,14 +1955,28 @@ optionally `:(glob)`-prefixed paths), fetches `refs/heads/<baseRef>` and ends `s
 start` unless it is still `foldSha`; the kind's script, run as data; and a postlude that stages only
 `commitPaths`, prints `unchanged` and exits 0 when the `--ignore-submodules=none` guard finds
 nothing, else commits `chore(<item>): update <kind words>` and pushes plainly to `branch`, ending
-`pushed <sha> to <branch>`. No `checkout:`: the run is recorded at the target's `main` head, so its
-verdict is never the fold's. Two kinds today: `screenshot-baselines` (`node-browser-base`, 1800 s)
+`pushed <sha> to <branch>`. A kind declaring `commit-type: <word>` writes its own message instead:
+the step exports `$QITS_AUTOMATION_MESSAGE`, the script writes the description on its first line
+and an optional body after it, and the postlude commits `<word>(<item>): <description>` with that
+body — the type stays the kind file's and the scope the prelude's; a changed tree with no
+description fails the step. No `checkout:`: the run is recorded at the target's `main` head, so its
+verdict is never the fold's. Three kinds today: `screenshot-baselines` (`node-browser-base`, 1800 s)
 and `entity-diagram` (`maven-base`, 1800 s, `qits-cli: true`), which runs `test-compile` on the fold
 (`-Dmaven.test.skip=true`, so a sibling module's test-jar resolves in the reactor and no test is
 compiled or run), lists its runtime classpath (`dependency:build-classpath -DincludeScope=runtime`)
 and runs `qits database diagram --root . --out docs/database` (qits-760). Its
 committed path, `docs/database/**`, is never its own input, so the re-fold its commit causes is
-carried without a second run.
+carried without a second run. And `dependency-bump` (`node-browser-base`, 1800 s, `commit-type:
+bump`, qits-1133): the request's dependency pin moves, applied in ONE step on its own automation
+branch. Its payload adds `changes`, entries in exactly `maintenance-bump.yml`'s shape (`ecosystem`
+maven|npm|docker|gitlink, `manifestPath`, `name`, `from`, `to`, `location`), and `commitPaths` is
+their manifests; it commits `bump(<item>): <N> dependencies` with one body line per change. The
+apply logic is `maintenance-bump.yml`'s two steps lifted into one script — maven and docker are awk,
+gitlink an index write, npm `npm install --package-lock-only` — so it needs node, npm, jq, git and
+awk and no maven at all, which is `node-browser-base` (no platform image carries node and maven
+together, and none has to). It is the one kind that reads `$QITS_EVENT_PAYLOAD` itself (for
+`changes` alone) and the one that fetches (a gitlink's sibling tag); `maintenance-bump.yml` keeps
+working beside it until it is retired.
 
 Until 2026-10-02 they were `ci-platform-event-*.yml` files in the wrapper, read at its `main` head
 per event: a fix shipped only with a wrapper release, which needs a person's approval. No repository

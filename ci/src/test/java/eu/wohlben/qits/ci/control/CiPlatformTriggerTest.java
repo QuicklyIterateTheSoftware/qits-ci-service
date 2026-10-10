@@ -255,6 +255,7 @@ public class CiPlatformTriggerTest extends CiTestSupport {
     assertEquals(
         List.of(
             "ci/src/main/resources/platform-pipelines/maintenance-bump.yml",
+            "ci/src/main/resources/platform-pipelines/automations/dependency-bump.yml",
             "ci/src/main/resources/platform-pipelines/automations/entity-diagram.yml",
             "ci/src/main/resources/platform-pipelines/automations/screenshot-baselines.yml"),
         platformPipelines.files().stream().map(EventTriggerFile::path).toList());

@@ -3,6 +3,9 @@
 event: ReleaseRequestChanged
 when:
   - repoName: { exact: 'qits-observability-frontend' }
+    preRun: { exists: false }
+  - repoName: { exact: 'qits-observability-frontend' }
+    preRun: { exact: 'DONE' }
 checkout:
   branch: backingBranch
   sha: mergedSha

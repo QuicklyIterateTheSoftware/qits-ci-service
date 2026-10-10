@@ -3,6 +3,9 @@
 event: ReleaseRequestChanged
 when:
   - repoName: { exact: 'qits-maven-library-example' }
+    preRun: { exists: false }
+  - repoName: { exact: 'qits-maven-library-example' }
+    preRun: { exact: 'DONE' }
 checkout:
   branch: backingBranch
   sha: mergedSha

@@ -50,9 +50,11 @@ import java.util.Set;
  * repository restates them.
  *
  * <ul>
- *   <li>QA — {@code event: ReleaseRequestChanged}, {@code when: [{repoName: {exact: …}}]}, {@code
- *       checkout: {branch: backingBranch, sha: mergedSha}}. No {@code optional:}: a request naming
- *       no fold has nothing to gate.
+ *   <li>QA — {@code event: ReleaseRequestChanged}, {@code when: [{repoName: {exact: …}}]} once with
+ *       {@code preRun} absent and once with it {@code DONE} ({@link #RELEASE_REQUEST_PRE_RUN_PATH}:
+ *       a fold whose automations are still to come builds nothing), {@code checkout: {branch:
+ *       backingBranch, sha: mergedSha}}. No {@code optional:}: a request naming no fold has nothing
+ *       to gate.
  *   <li>release — {@code event: SCMRelease}, {@code when: [{repository: {exact: …}}]}, {@code
  *       checkout: {branch: version, sha: commitSha}}. No {@code optional:} either, and the removal
  *       is the paragraph below.
@@ -236,6 +238,51 @@ public final class CiReleaseComposer {
   /** @see #RELEASE_REQUEST_BRANCH_PATH */
   public static final String RELEASE_SHA_PATH = "commitSha";
 
+  /**
+   * The QA half's <b>pre-run</b> field: whether the release request's automations have finished on
+   * this fold (qits-1133). qits-maintenance runs a request's automations — the dependency bump, the
+   * regenerations — BEFORE its QA, so a fold announced while they are still to come is announced
+   * with {@value #PRE_RUN_PENDING} and must build nothing: the automations' own commits re-fold the
+   * request, and that fold (or the one announced once they are done) is the one QA is about.
+   *
+   * <p><b>The composed {@code when:} is two groups of the EXISTING vocabulary, and both halves of
+   * that are deliberate.</b> It reads "the field is absent, or it is {@value #PRE_RUN_DONE}":
+   *
+   * <pre>{@code
+   * when:
+   *   - repoName: { exact: <repo> }
+   *     preRun: { exists: false }
+   *   - repoName: { exact: <repo> }
+   *     preRun: { exact: DONE }
+   * }</pre>
+   *
+   * <ul>
+   *   <li><b>Absent builds</b>, exactly as every fold did before the field existed — the rollout
+   *       arm: a qits-projects that has not shipped the field is a qits-projects with no pre-run, and
+   *       its QA must not stop.
+   *   <li><b>A value is an allow-list of one, not "anything but PENDING".</b> An unknown word is a
+   *       pre-run state this qits-ci does not know to be finished, and building on it is the QA of a
+   *       fold that is about to be replaced; a missed build of a request whose next announcement
+   *       says {@value #PRE_RUN_DONE} costs a moment, a premature verdict costs a gate read against
+   *       the wrong fold.
+   *   <li><b>No new matcher.</b> A negation would have been a parser, an evaluator arm and a word in
+   *       the DSL; worse, the composed text is the run's stored snapshot, reparsed at a restart and
+   *       on a fallback retry — so a word an older qits-ci cannot parse would turn a rollback into
+   *       {@code TRIGGER_UNREADABLE} cancellations. {@code exists} and {@code exact} parse
+   *       everywhere this text could be read back.
+   * </ul>
+   *
+   * <p>The repository condition is restated in each group because groups OR and conditions within a
+   * group AND; there is no way to factor it out, and there should not be one.
+   */
+  public static final String RELEASE_REQUEST_PRE_RUN_PATH = "preRun";
+
+  /** @see #RELEASE_REQUEST_PRE_RUN_PATH */
+  public static final String PRE_RUN_DONE = "DONE";
+
+  /** @see #RELEASE_REQUEST_PRE_RUN_PATH */
+  public static final String PRE_RUN_PENDING = "PENDING";
+
   /** Where a composed step writes the repository's own script before running it. */
   static final String SLOT_SCRIPT = "/tmp/qits-slot.sh";
 
@@ -414,7 +461,15 @@ public final class CiReleaseComposer {
     header(out, slots, archetype);
     out.append("event: ").append(RELEASE_REQUEST_EVENT).append('\n');
     out.append("when:\n");
+    // Absent (a qits-projects with no pre-run) or DONE: see RELEASE_REQUEST_PRE_RUN_PATH.
     out.append("  - repoName: { exact: ").append(scalar(selector)).append(" }\n");
+    out.append("    ").append(RELEASE_REQUEST_PRE_RUN_PATH).append(": { exists: false }\n");
+    out.append("  - repoName: { exact: ").append(scalar(selector)).append(" }\n");
+    out.append("    ")
+        .append(RELEASE_REQUEST_PRE_RUN_PATH)
+        .append(": { exact: ")
+        .append(scalar(PRE_RUN_DONE))
+        .append(" }\n");
     out.append("checkout:\n");
     out.append("  branch: ").append(RELEASE_REQUEST_BRANCH_PATH).append('\n');
     out.append("  sha: ").append(RELEASE_REQUEST_SHA_PATH).append('\n');

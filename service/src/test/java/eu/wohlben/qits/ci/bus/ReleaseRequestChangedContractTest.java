@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import eu.wohlben.qits.ci.control.CiReleaseComposer;
 import eu.wohlben.qits.ci.control.CiRunOrdering;
 import eu.wohlben.qits.ci.control.CiRunService;
 import eu.wohlben.qits.eventstream.QitsEvent;
@@ -30,19 +31,25 @@ import org.junit.jupiter.api.Test;
  * event: ReleaseRequestChanged
  * when:
  *   - repoName: { exact: <this repository> }
+ *     preRun: { exists: false }
+ *   - repoName: { exact: <this repository> }
+ *     preRun: { exact: DONE }
  * checkout:
  *   branch: backingBranch
  *   sha: mergedSha
  * }</pre>
  *
- * <p><b>Six literals</b> therefore have to agree with a record in another repository: the event NAME
- * ({@link CiRunService#RELEASE_REQUEST_EVENT_NAME}), the two checkout dot-paths, the field the run's
- * {@code release_request_id} column is read out of ({@link CiRunService#RELEASE_REQUEST_ID_FIELD}),
- * and — since the ordering campaign — the two fields the run QUEUE is ordered by ({@link
- * CiRunService#PRIORITY_FIELD} and {@link CiRunService#RELEASE_REQUEST_DOWNSTREAM_FIELD}, read onto
- * {@code ci_run.priority} and {@code ci_run.downstream_repos} and consumed by {@link
- * CiRunOrdering}). Nothing in this service binds the payload — the trigger engine subscribes to
- * {@code "*"} and walks a {@code JsonNode} — so nothing but this file would notice a rename.
+ * <p><b>Seven literals</b> therefore have to agree with a record in another repository: the event
+ * NAME ({@link CiRunService#RELEASE_REQUEST_EVENT_NAME}), the two checkout dot-paths, the field the
+ * run's {@code release_request_id} column is read out of ({@link
+ * CiRunService#RELEASE_REQUEST_ID_FIELD}), the two fields the run QUEUE is ordered by since the
+ * ordering campaign ({@link CiRunService#PRIORITY_FIELD} and {@link
+ * CiRunService#RELEASE_REQUEST_DOWNSTREAM_FIELD}, read onto {@code ci_run.priority} and {@code
+ * ci_run.downstream_repos} and consumed by {@link CiRunOrdering}), and — since qits-1133 — the
+ * pre-run state the QA selection itself reads ({@link
+ * CiReleaseComposer#RELEASE_REQUEST_PRE_RUN_PATH}). Nothing in this service binds the payload — the
+ * trigger engine subscribes to {@code "*"} and walks a {@code JsonNode} — so nothing but this file
+ * would notice a rename.
  *
  * <p><b>The two halves fail differently and both matter.</b> A rename of the event or the checkout
  * paths costs a repository its QA run outright, loudly. A rename of the two ordering fields costs
@@ -102,7 +109,8 @@ public class ReleaseRequestChangedContractTest {
       String mergedSha,
       Instant changedAt,
       String priority,
-      List<String> downstreamTechnicalComponents)
+      List<String> downstreamTechnicalComponents,
+      String preRun)
       implements QitsEvent {
 
     @Override
@@ -130,6 +138,17 @@ public class ReleaseRequestChangedContractTest {
       String mergedSha,
       String priority,
       List<String> downstream) {
+    return changed(repoId, requestId, mergedSha, priority, downstream, null);
+  }
+
+  /** And with the fold's pre-run state, {@code PENDING} or {@code DONE} (qits-1133). */
+  static ReleaseRequestChanged changed(
+      String repoId,
+      String requestId,
+      String mergedSha,
+      String priority,
+      List<String> downstream,
+      String preRun) {
     return new ReleaseRequestChanged(
         UUID.randomUUID(),
         "qits",
@@ -140,7 +159,8 @@ public class ReleaseRequestChangedContractTest {
         mergedSha,
         Instant.parse("2026-09-03T09:07:06Z"),
         priority,
-        downstream);
+        downstream,
+        preRun);
   }
 
   /** The canonical payload of one re-fold — the bytes a frame carries. */
@@ -330,6 +350,49 @@ public class ReleaseRequestChangedContractTest {
           without.get(field),
           field + " moved with the new components, so they were not additive after all");
     }
+  }
+
+  /**
+   * <b>The eleventh component, and the one the QA trigger itself selects on</b> (qits-1133).
+   *
+   * <p>{@code preRun} says whether the release request's automations — qits-maintenance's, run
+   * BEFORE QA — are done on this fold: {@code PENDING} while they are still to come, {@code DONE}
+   * once they are. The composed QA document builds on {@code DONE} and on an absent key, and on
+   * nothing else ({@link CiReleaseComposer#RELEASE_REQUEST_PRE_RUN_PATH}). So this rename is of the
+   * loud kind in one direction and the silent kind in the other: renamed here and not there, a
+   * {@code PENDING} fold reads as "absent" and builds — QA of a fold that is about to be replaced.
+   *
+   * <p>Appended LAST, after the closure, for the closure's own reason: a canonical payload is a
+   * function of the component list.
+   */
+  @Test
+  public void thePreRunStateIsInTheCanonicalPayloadUnderTheNameTheQaTriggerSelectsOn()
+      throws Exception {
+    JsonNode pending =
+        MAPPER.readTree(
+            CanonicalJson.payload(
+                changed(
+                    "r-1",
+                    "rr-42",
+                    "c".repeat(40),
+                    null,
+                    null,
+                    CiReleaseComposer.PRE_RUN_PENDING)));
+    JsonNode unstated = MAPPER.readTree(canonicalPayload("r-1", "rr-42", "c".repeat(40)));
+
+    assertEquals(
+        "preRun",
+        CiReleaseComposer.RELEASE_REQUEST_PRE_RUN_PATH,
+        "the field the composed QA when: selects on is spelled by this constant");
+    assertEquals("PENDING", CiReleaseComposer.PRE_RUN_PENDING);
+    assertEquals("DONE", CiReleaseComposer.PRE_RUN_DONE);
+    assertEquals(
+        "PENDING", pending.get(CiReleaseComposer.RELEASE_REQUEST_PRE_RUN_PATH).asText());
+    // The rollout arm: NON_NULL makes an unstated pre-run an absent KEY, which the composed
+    // `exists: false` group matches — so a qits-projects without the field keeps its QA.
+    assertFalse(
+        unstated.has(CiReleaseComposer.RELEASE_REQUEST_PRE_RUN_PATH),
+        "an unstated pre-run is an absent key, never a null value");
   }
 
   /**
