@@ -101,6 +101,7 @@ sequenceDiagram
         Ci-->>Step: RunStep{script, timeoutSeconds} — the reply IS the step<br/>← host-stamped started_at
         Step-->>Ci: Output{chunk} … many, streamed as the script prints
         Ci->>Ci: each chunk feeds the bounded relay that GET /ci/api/runs/{runId}<br/>exposes as `live` — poll it; there is no SSE and no push
+        Step->>Step: flush telemetry (≤ qits.ci.telemetry-flush-ms)<br/>OTLP/HTTP to qits-observability, Bearer $QITS_TOKEN
         Step-->>Ci: Finished{exitCode, timedOut} ← host-stamped finished_at
         Ci->>Ci: write the step row ONCE, already terminal
         Ci-->>Runner: Reap{containerName} — on every path, including the bad ones
@@ -129,6 +130,13 @@ Three things the diagram is deliberately precise about:
   anything live. `BuildSuccessful` is a verdict about a commit now, and its consumer is
   qits-projects' release-request quality gate.
 
+**The reap waits on the flush.** The terminal frame is what triggers `Reap`, and the daemon holds that
+frame back until its own telemetry flush ends — submitted inside `qits.ci.telemetry-flush-ms`, or the
+bound simply runs out — so a step's last logs and spans are either on their way to qits-observability
+or the window has closed before `docker rm -f` can touch the container. An unreachable collector costs
+at most the bound and never changes the step's result. The daemon's last stdout line, visible in
+`Reaped{log tail}`, says which one happened.
+
 ## The runner socket, on its own
 
 Every run is a runner's — there is no in-process executor (deleted in qits-506). The runner socket
@@ -152,6 +160,7 @@ sequenceDiagram
         Runner-->>Ci: Launched{containerId} | LaunchFailed{docker's words}
         Step-->>Ci: dials the CONTROL WebSocket through the edge, as every step does
         Ci-->>Step: RunStep … Finished
+        Note over Step: Finished waits out the telemetry flush<br/>(≤ qits.ci.telemetry-flush-ms) first
         Ci-->>Runner: Reap{containerName}
         Runner->>Step: docker rm
         Runner-->>Ci: Reaped{log tail}
