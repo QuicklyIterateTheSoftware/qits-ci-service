@@ -67,12 +67,19 @@ release-request:
       # demanded. The registry is what the contract tests read: a provider's golden masters jar
       # (qits-1149) is served by the platform's Maven alone. Exported because
       # .qits-maven-settings.xml reads both as ${env.QITS_MAVEN_CENTRAL_URL} and
-      # ${env.QITS_MAVEN_REPOSITORY_URL}; passed as a property too, for a pom that declares the
-      # `qits-maven` repository by ${qits.maven.repository.url}. A pom with no qits dependency
-      # never dials it.
+      # ${env.QITS_MAVEN_REPOSITORY_URL}. A pom with no qits dependency never dials it.
       qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
       export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
+
+      # Passed as a property ONLY when a pom reads ${qits.maven.repository.url} — the pom that
+      # declares the `qits-maven` repository by it. Maven forwards a user property into surefire's
+      # test JVM, and a CLI with a strict `qits` ConfigMapping refuses one it does not map
+      # (SRCFG00050), so its tests would not boot.
+      maven_repository_property=""
+      if grep -rqs --include=pom.xml 'qits.maven.repository.url' .; then
+        maven_repository_property="-Dqits.maven.repository.url=$QITS_MAVEN_REPOSITORY_URL"
+      fi
 
       # THE COVERAGE AGENT (qits-754) — java-service.yml's QA verify block, byte for byte; read the
       # rationale there. In short: JaCoCo's runtime agent writes `.qits-reports/jacoco.exec` for the
@@ -113,7 +120,7 @@ release-request:
 
       env "JAVA_TOOL_OPTIONS=${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }${jacoco_options:+$jacoco_options }$pact_options" \
         ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
-        -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL"
+        ${maven_repository_property:+"$maven_repository_property"}
 
 # THE RELEASE SLOT, FOR THE CONTRACTS ONLY (qits-1149). A CLI ships no artifact, but it may declare
 # `contracts:` — its consumer pacts, committed in `pacts/` — and the platform publishes contract
