@@ -1346,6 +1346,7 @@ paths:
   /ci/api/runs:
     get:
       summary: "List a repository's CI runs, newest first"
+      operationId: listRuns
       parameters:
       - description: Return only the newest n runs; omit for all of them
         schema:
@@ -1683,6 +1684,7 @@ paths:
   /ci/api/runs/{runId}/reports:
     get:
       summary: "A run's release reports, without payloads, and its baseline"
+      operationId: listRunReports
       parameters:
       - name: runId
         in: path
@@ -1714,6 +1716,7 @@ paths:
   /ci/api/runs/{runId}/reports/{reportId}:
     get:
       summary: "One release report of a run, with its payload"
+      operationId: getRunReport
       parameters:
       - name: reportId
         in: path
@@ -1829,4 +1832,4 @@ paths:
         - qits:ci-run
 info:
   title: qits-ci API
-  version: 2026.1007.60229
+  version: 2026.1009.190249
