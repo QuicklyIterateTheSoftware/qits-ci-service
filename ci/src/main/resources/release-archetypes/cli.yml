@@ -85,8 +85,9 @@ release-request:
       # rationale there. In short: JaCoCo's runtime agent writes `.qits-reports/jacoco.exec` for the
       # composed report hook; it rides JAVA_TOOL_OPTIONS rather than `-DargLine`, because a pom
       # with a literal surefire `<argLine>` silently drops an agent added through the property;
-      # `env` scopes it to this one mvnw; and a failed fetch is one line and a verify without
-      # coverage, never a red step.
+      # `env` scopes it to this one mvnw; a failed fetch is one line and a verify without
+      # coverage, never a red step; and `inclnolocationclasses` with `classdumpdir` let it measure
+      # what a @QuarkusTest runs (qits-1171).
       jacoco_version=0.8.14
       jacoco_agent=/tmp/qits-jacoco/org.jacoco.agent-$jacoco_version-runtime.jar
       jacoco_url="$QITS_MAVEN_CENTRAL_URL/org/jacoco/org.jacoco.agent/$jacoco_version/org.jacoco.agent-$jacoco_version-runtime.jar"
@@ -98,7 +99,7 @@ release-request:
       mkdir -p /tmp/qits-jacoco .qits-reports/pact-verification
       if curl -fsSL --retry 2 ${1:+-H} "$@" -o "$jacoco_agent" "$jacoco_url" 2>/dev/null \
         || wget -q ${1:+--header} "$@" -O "$jacoco_agent" "$jacoco_url" 2>/dev/null; then
-        jacoco_options="-javaagent:$jacoco_agent=destfile=$PWD/.qits-reports/jacoco.exec,append=true,includes=eu.wohlben.*"
+        jacoco_options="-javaagent:$jacoco_agent=destfile=$PWD/.qits-reports/jacoco.exec,append=true,includes=eu.wohlben.*,inclnolocationclasses=true,classdumpdir=$PWD/.qits-reports/jacoco-classes"
       else
         echo "coverage: could not fetch the JaCoCo $jacoco_version agent; this verify runs without coverage"
       fi

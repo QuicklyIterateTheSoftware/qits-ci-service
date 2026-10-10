@@ -526,6 +526,22 @@ public class StepContainerSettingsTest {
   }
 
   @Test
+  public void everyStepsMavenRetriesAFailedDownloadWithOrWithoutAToken() {
+    // qits-1169: the retry flags are appended to MAVEN_ARGS after the token block closes and
+    // before the daemon becomes PID 1, so every step gets them, a step with no token included.
+    String bootstrap = StepContainerSettings.BOOTSTRAP;
+    String line =
+        "MAVEN_ARGS=\"${MAVEN_ARGS:+$MAVEN_ARGS }" + StepContainerSettings.MAVEN_RETRY_ARGS + "\"\n";
+    int at = bootstrap.indexOf(line);
+    assertTrue(at >= 0, bootstrap);
+    assertTrue(at > bootstrap.lastIndexOf("\nfi\n"), "outside every if block");
+    assertTrue(at < bootstrap.indexOf("exec /tmp/qits-ci-daemon"), bootstrap);
+    assertTrue(
+        bootstrap.indexOf("export MAVEN_ARGS", at) < bootstrap.indexOf("exec /tmp/qits-ci-daemon"),
+        bootstrap);
+  }
+
+  @Test
   public void theBootstrapHandsTheTokenOverAndHoldsNoExchangeAtAll() {
     // The mechanism, as a property of BOOTSTRAP alone: an executable script under /tmp, chmod 0700,
     // an exported variable holding the token — under the token's guard, and before the daemon
