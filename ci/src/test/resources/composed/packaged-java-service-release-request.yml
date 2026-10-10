@@ -256,11 +256,16 @@ steps:
       # 2026-10-06 against qits-ci-service's and qits-projects-service's whole verify: no test failed
       # on that line, and the wall time stayed inside the run-to-run noise.
       #
-      # WHAT IT CANNOT SEE: a class Quarkus rewrites at runtime (Panache entities and repositories,
-      # many CDI beans) does not match its `target/classes` bytes, so JaCoCo drops its data and it
-      # reads as uncovered — measured on the same two suites, where it hid 23 classes and 3,040 of
-      # qits-ci-service's 7,719 lines (CiRunService among them) and every Panache repository of
-      # qits-projects-service. Reading those classes is the CLI's problem to solve, not this flag's.
+      # THE TWO OPTIONS QUARKUS NEEDS (qits-1171). Without them qits-projects-service read 35.6%.
+      # - `inclnolocationclasses=true`: a @QuarkusTest runs the application from Quarkus's own class
+      #   loader, which defines its classes with no code source location. The agent skips such
+      #   classes by default, so nothing a @QuarkusTest ran was recorded at all.
+      # - `classdumpdir`: Quarkus also rewrites many classes as it loads them (CDI beans, Panache
+      #   entities and repositories). JaCoCo keys its data by the CRC of the loaded bytes, so that
+      #   data matches no class in `target/classes`. The agent writes each class as a JVM loaded it
+      #   to `.qits-reports/jacoco-classes/` (one file per variant, its id in the name, tens of MB at
+      #   most), and the CLI reads each variant against its own data and credits the covered lines
+      #   to the original.
       #
       # SCOPED TO THE ONE INVOCATION: `env` hands it to this mvnw and to nothing after it, so the
       # bundle and the publish below run without the agent.
@@ -282,7 +287,7 @@ steps:
       mkdir -p /tmp/qits-jacoco .qits-reports/pact-verification
       if curl -fsSL --retry 2 ${1:+-H} "$@" -o "$jacoco_agent" "$jacoco_url" 2>/dev/null \
         || wget -q ${1:+--header} "$@" -O "$jacoco_agent" "$jacoco_url" 2>/dev/null; then
-        jacoco_options="-javaagent:$jacoco_agent=destfile=$PWD/.qits-reports/jacoco.exec,append=true,includes=eu.wohlben.*"
+        jacoco_options="-javaagent:$jacoco_agent=destfile=$PWD/.qits-reports/jacoco.exec,append=true,includes=eu.wohlben.*,inclnolocationclasses=true,classdumpdir=$PWD/.qits-reports/jacoco-classes"
       else
         echo "coverage: could not fetch the JaCoCo $jacoco_version agent; this verify runs without coverage"
       fi

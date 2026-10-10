@@ -271,6 +271,30 @@ public class PackagedReleaseArchetypesTest {
    *       curl} behind a helper fails here rather than passing on nothing.
    * </ol>
    */
+  /**
+   * qits-1171: a @QuarkusTest's classes have no code source location, so the agent records them
+   * only with {@code inclnolocationclasses}, and the CLI reads the classes Quarkus rewrote as it
+   * loaded them only from the agent's class dump. Without either, they count as never run.
+   */
+  @Test
+  public void everyCoverageAgentDumpsTheClassesItLoadedBesideTheExecFile() throws Exception {
+    int agents = 0;
+    for (String name : names()) {
+      String recipe = packaged(name);
+      for (String line : recipe.split("\n")) {
+        if (line.contains("-javaagent:$jacoco_agent=")) {
+          agents++;
+          assertTrue(
+              line.contains("destfile=$PWD/.qits-reports/jacoco.exec")
+                  && line.contains("inclnolocationclasses=true")
+                  && line.contains("classdumpdir=$PWD/.qits-reports/jacoco-classes"),
+              name + " runs the coverage agent without its class dump: " + line.strip());
+        }
+      }
+    }
+    assertTrue(agents >= 3, "expected the coverage agent in java-service, maven-library and cli");
+  }
+
   @Test
   public void everyDeclaredStepPresentsTheRunsCredentialOnTheEdgePlane() throws Exception {
     int fetches = 0;
