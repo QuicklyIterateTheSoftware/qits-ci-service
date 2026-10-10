@@ -40,9 +40,9 @@ public class PackagedPlatformPipelinesTest {
   /** This module's own copy, relative to the {@code ci} module surefire runs in. */
   private static final Path SOURCE = Path.of("src", "main", "resources", "platform-pipelines");
 
-  /** The release archetypes, which did not move and stay under {@code .config/qits/}. */
+  /** The release archetypes, this module's own resources too since qits-1155. */
   private static final Path RELEASE_ARCHETYPES =
-      Path.of("..", ".config", "qits", "release-archetypes");
+      Path.of("src", "main", "resources", "release-archetypes");
 
   private final CiEventTriggerParser triggerParser = new CiEventTriggerParser();
 

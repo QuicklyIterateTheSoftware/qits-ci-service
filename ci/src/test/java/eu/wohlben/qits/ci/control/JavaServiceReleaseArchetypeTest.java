@@ -72,7 +72,7 @@ public class JavaServiceReleaseArchetypeTest {
     try (InputStream in = getClass().getClassLoader().getResourceAsStream(resource)) {
       assertNotNull(in, resource + " is not on the classpath");
       return parser.parseArchetype(
-          CiReleaseSlotParser.archetypePath("java-service"),
+          CiReleaseArchetypes.sourcePath("java-service"),
           new String(in.readAllBytes(), StandardCharsets.UTF_8));
     }
   }

@@ -2060,11 +2060,20 @@ phase.
 - **An archetype is resolved in two steps and no other repository is read for one.** First
   `.config/qits/release-archetypes/<name>.yml` in the repository the run is for, through
   `CiConfigSource.readFile` at the revision its `release.yml` was read at; otherwise the classpath
-  resource `release-archetypes/<name>.yml`, which `ci/pom.xml` packages into this jar from this
-  repository's own `.config/qits/release-archetypes/`. Platform pipelines are packaged too, but not
-  the same way: they are this module's own `ci/src/main/resources/platform-pipelines/*.yml`, carried
-  onto the classpath by `src/main/resources`'s ordinary declaration rather than copied out of
-  `.config/qits/` (`CiPlatformPipelines`) — so, as with the archetype, no repository is read for one.
+  resource `release-archetypes/<name>.yml`, this module's own
+  `ci/src/main/resources/release-archetypes/` — recorded on a run under that path. The platform
+  pipelines are packaged the same way (`ci/src/main/resources/platform-pipelines/`,
+  `CiPlatformPipelines`), and no repository is read for one.
+  <br>**The defaults are not under `.config/qits/`, on purpose (qits-1155).** qits-projects holds
+  every change under `.config/qits/` for a person's approval, because that directory is a
+  repository's own configuration. The defaults are the platform's templates, so editing one is an
+  ordinary source change here. A shadow in another repository is still a `.config/qits/` file, so a
+  repository's deviation from a default still needs that approval.
+  <br>**This repository reads its branch copy instead** (`qits.ci.release-archetypes.source-repository`
+  AND `source-project`; never the name alone, because a repository of that name in another project
+  must not run a recipe from outside `.config/qits/`): for qits-ci-service the local step reads
+  `ci/src/main/resources/release-archetypes/<name>.yml` at the run's revision, not the `.config/qits/`
+  path. A revision without that file (from before the move) composes from the packaged copy.
   Until qits-583 the recipe was read from that repository at its newest released tag, which made a
   recipe fix ship only with a wrapper release — the last step of a ticket — and meant no CI run ever
   executed a changed recipe before it shipped.
@@ -2080,7 +2089,7 @@ phase.
   shadow silently becoming the platform recipe is a pipeline its author replaced running green, and
   a blip must not decide which of two pipelines a commit gets.
   <br>**This repository's own release request gates one recipe of eight.** qits-ci-service is a
-  `java-service`, so its QA run reads `java-service.yml` locally at its fold and executes it.
+  `java-service`, so its QA run reads `java-service.yml`'s source file at its fold and executes it.
   `PackagedReleaseArchetypesTest` is the cover for the other seven: each is on the classpath
   byte-for-byte (not filtered), parses, declares a `release-request:` slot (qits-projects arms the
   CI gate on the mere presence of `archetype:`), composes, and every script passes a shell `-n`.
@@ -2092,7 +2101,7 @@ phase.
   included), reads and parses the eight names in `REQUIRED_PACKAGED` and throws naming the missing
   ones, which fails the health gate and keeps the previous container. That set is what this build
   must carry and never an allow-list for `read`; `PackagedReleaseArchetypesTest` holds it equal to
-  the files in `.config/qits/release-archetypes/`.
+  the files in `ci/src/main/resources/release-archetypes/`.
 - **The pipeline that gates a revision is read FROM that revision.** A candidate's `release.yml`
   is read at the commit the arriving release event is about — the request's fold (`payload.mergedSha`) for a `ReleaseRequestChanged`, the released
   tag's commit (`payload.commitSha`) for an `SCMRelease` — which is the same commit the composed run

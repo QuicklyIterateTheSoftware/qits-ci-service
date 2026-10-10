@@ -1,4 +1,4 @@
-# Composed by qits-ci from .config/qits/release.yml and .config/qits/release-archetypes/npm-library.yml.
+# Composed by qits-ci from .config/qits/release.yml and ci/src/main/resources/release-archetypes/npm-library.yml.
 # Generated: this text is never committed. Edit the slot file or the archetype recipe.
 event: SCMRelease
 when:

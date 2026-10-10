@@ -19,12 +19,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * The packaged archetype set, as a set: every recipe this repository keeps under {@code
- * .config/qits/release-archetypes/} is in this jar, is a recipe, and composes.
+ * The packaged archetype set, as a set: every recipe this module keeps under {@code
+ * src/main/resources/release-archetypes/} is in this jar, is a recipe, and composes.
  *
  * <p><b>This is the cover for the recipes no CI run of this repository executes.</b> qits-ci-service
- * is a {@code java-service}, so its own release request reads {@code java-service.yml} locally at
- * its fold and really runs it; the other seven ship to the estate inside the jar with nothing having
+ * is a {@code java-service}, so its own release request reads {@code java-service.yml}'s source
+ * file at its fold and really runs it; the other seven ship to the estate inside the jar with nothing having
  * run them. Until qits-583 that was true of all eight — they lived in the wrapper, whose own {@code
  * release.yml} names no archetype — so a recipe that did not parse was found out by the first
  * repository to release on it.
@@ -69,8 +69,8 @@ import org.junit.jupiter.api.io.TempDir;
  */
 public class PackagedReleaseArchetypesTest {
 
-  /** This repository's own copy, relative to the {@code ci} module surefire runs in. */
-  private static final Path SOURCE = Path.of("..", ".config", "qits", "release-archetypes");
+  /** This module's own copy, relative to the {@code ci} module surefire runs in. */
+  private static final Path SOURCE = Path.of("src", "main", "resources", "release-archetypes");
 
   private static final CiRepoRef REPO = CiRepoRef.of("repo-1", "qits", "qits-target");
 
@@ -98,13 +98,13 @@ public class PackagedReleaseArchetypesTest {
     String resource = CiReleaseArchetypes.PACKAGED_DIR + name + CiEventTriggerParser.CONFIG_SUFFIX;
     try (InputStream in =
         PackagedReleaseArchetypesTest.class.getClassLoader().getResourceAsStream(resource)) {
-      assertNotNull(in, resource + " is not on the classpath — ci/pom.xml's <resource> is broken");
+      assertNotNull(in, resource + " is not on the classpath — check ci/pom.xml's resources");
       return new String(in.readAllBytes(), StandardCharsets.UTF_8);
     }
   }
 
   private CiReleaseSlots recipe(String name) throws Exception {
-    return slotParser.parseArchetype(CiReleaseSlotParser.archetypePath(name), packaged(name));
+    return slotParser.parseArchetype(CiReleaseArchetypes.sourcePath(name), packaged(name));
   }
 
   @Test
@@ -114,7 +114,7 @@ public class PackagedReleaseArchetypesTest {
     assertEquals(
         new java.util.TreeSet<>(names()),
         new java.util.TreeSet<>(CiReleaseArchetypes.REQUIRED_PACKAGED),
-        "CiReleaseArchetypes.REQUIRED_PACKAGED and .config/qits/release-archetypes/ disagree");
+        "CiReleaseArchetypes.REQUIRED_PACKAGED and src/main/resources/release-archetypes/ disagree");
   }
 
   @Test

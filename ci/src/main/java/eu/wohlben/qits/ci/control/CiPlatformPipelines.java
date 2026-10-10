@@ -21,8 +21,8 @@ import java.util.regex.Pattern;
  *
  * <p><b>qits-ci owns them, like the release archetypes.</b> They are ordinary files of this module
  * at {@code ci/src/main/resources/platform-pipelines/*.yml}, carried onto the jar's classpath by
- * {@code src/main/resources}'s own unfiltered declaration in {@code ci/pom.xml} — no copying out of
- * another directory, no {@code targetPath} — and {@link CiEventTriggerService} evaluates them for
+ * Maven's default, unfiltered {@code src/main/resources} — no copying out of another directory, no
+ * {@code targetPath} — and {@link CiEventTriggerService} evaluates them for
  * every arriving event. Until 2026-10-02 they were {@code ci-platform-event-*.yml} files in the
  * wrapper, read at its {@code main} head per event: a pipeline fix then shipped only with a wrapper
  * release, which needs a person's approval, and no repository's release ever exercised it. Packaged,

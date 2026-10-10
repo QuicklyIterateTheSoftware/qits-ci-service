@@ -85,8 +85,10 @@ public class CiReleaseSlotParser {
   public static final String CONFIG_PATH = CiEventTriggerParser.CONFIG_DIR + "release.yml";
 
   /**
-   * Where a repository keeps recipes of its own, one file per archetype — and where qits-ci-service
-   * keeps the ones it packages, which is why a packaged recipe is recorded under this path too.
+   * Where a repository keeps recipes of its own, one file per archetype. The ones qits-ci packages
+   * are not here: they are {@code ci/src/main/resources/release-archetypes/} in qits-ci-service
+   * ({@link CiReleaseArchetypes#SOURCE_DIR}), because a change under {@code .config/qits/} needs a
+   * person's approval and a default recipe is not that repository's own configuration.
    */
   public static final String ARCHETYPE_DIR =
       CiEventTriggerParser.CONFIG_DIR + "release-archetypes/";

@@ -1806,10 +1806,15 @@ reparses the composed text off the row exactly as it reparses a committed file.
 **An archetype recipe is resolved in two steps.** First
 `.config/qits/release-archetypes/<name>.yml` **in the repository the run is for**, read at the same
 revision its `release.yml` was — the fold, or the released tag's commit. Otherwise the recipe
-**packaged into the running qits-ci**: this repository's own `.config/qits/release-archetypes/` is
-built into the `qits-ci-domain` jar, eight recipes today (`app`, `cli`, `daemon`, `java-service`,
+**packaged into the running qits-ci**: `ci/src/main/resources/release-archetypes/` in this repository
+is built into the `qits-ci-domain` jar, eight recipes today (`app`, `cli`, `daemon`, `java-service`,
 `maven-library`, `npm-library`, `oci`, `spa-frontend`). No other repository is read for a recipe.
 (Until qits-583 the recipes lived in the wrapper and were read at its newest released tag.) A recipe is this same document minus `archetype:` — recipes do not chain.
+
+**The defaults are not under `.config/qits/`** (qits-1155). A change there needs a person's
+approval, because that directory is a repository's own configuration; the defaults are the
+platform's templates, so editing one is an ordinary source change. A shadow in any other repository
+is still a `.config/qits/` file, and still needs that approval.
 
 **Shadowing is the design.** Any repository may carry its own copy of a packaged archetype, or one
 of its own invention. That hands a branch nothing it did not have: the platform's share of a
@@ -1818,7 +1823,8 @@ reach, and everything a recipe does contribute — slot steps, `artifacts:`, `us
 repository could already replace in its own `release.yml`.
 
 **So a change to a packaged recipe is one commit here and a qits-ci release.** This repository is a
-`java-service` and carries the recipes at the local path, so its own release request reads
+`java-service`, and for this repository alone the local step reads the packaged set's source file
+(`qits.ci.release-archetypes.source-repository` in `source-project`), so its own release request reads
 `java-service.yml` from its fold and runs the changed recipe before it ships; the other seven are
 covered by `PackagedReleaseArchetypesTest` (on the classpath byte-for-byte, parse, declare a QA
 slot, compose, every script passes a shell syntax check).

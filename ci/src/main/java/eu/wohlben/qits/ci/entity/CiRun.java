@@ -341,17 +341,21 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
    * — or all four null.
    *
    * <p>{@code archetypeName} is what the repository's {@code release.yml} asked for and {@code
-   * archetypeConfigPath} is {@code .config/qits/release-archetypes/<name>.yml}. The other two say
+   * archetypeConfigPath} is the path the recipe was read at. The other two say
    * which of the two places the recipe came from, and exactly one of them is set:
    *
    * <ul>
    *   <li><b>{@code archetypeRev} non-null — shadowed locally.</b> The repository the run is for
-   *       carries its own recipe at that path, and this is the revision it was read at: the same
+   *       carries its own recipe at {@code .config/qits/release-archetypes/<name>.yml} (qits-ci-service:
+   *       at its packaged set's source, {@code ci/src/main/resources/release-archetypes/<name>.yml}),
+   *       and this is the revision it was read at: the same
    *       revision its {@code release.yml} was, so it equals {@code commitSha}. {@code
    *       archetypeVersion} is null.
    *   <li><b>{@code archetypeVersion} non-null — packaged.</b> The repository carries none, so the
    *       recipe built into qits-ci composed the run, and this is <b>that qits-ci-service's own
-   *       version</b>. The path is then the file's path in qits-ci-service. {@code archetypeRev} is
+   *       version</b>. The path is then the file's path in qits-ci-service, {@code
+   *       ci/src/main/resources/release-archetypes/<name>.yml} (until qits-1155 it was under {@code
+   *       .config/qits/}). {@code archetypeRev} is
    *       null: the recipe was read from no revision of any repository.
    * </ul>
    *
