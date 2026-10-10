@@ -31,8 +31,10 @@ import java.util.regex.Pattern;
  *       string (the JSON text of an audit snapshot) is frozen in place, and that string's path goes
  *       in {@link #stringPaths}.
  *   <li><b>Unique tokens.</b> A random token a state had to put into a name to keep it unique (a
- *       project slug is unique service-wide) becomes the same-length hex counter {@code 0…0N},
- *       numbered by first appearance.
+ *       project slug is unique service-wide) becomes {@code frozen-token-N}, numbered by first
+ *       appearance. The placeholder does not depend on the token's length: the daemon and runner
+ *       versions this recorder freezes grow by a character now and then, and that must not change
+ *       a recording.
  *   <li><b>Keys.</b> A member name holding a unique token — a map keyed by qualified id, as {@code
  *       POST /work/transition} answers — is frozen through the same token mapping, so it reads as
  *       the frozen param does. The object's path goes in {@link #keyPaths} (the index's {@code
@@ -48,6 +50,9 @@ import java.util.regex.Pattern;
  * frozen.ids}, {@code frozen.instants} and {@code frozen.strings}.
  */
 public final class Freezer {
+
+  /** What the Nth unique token freezes to: this prefix and N. */
+  static final String FROZEN_TOKEN_PREFIX = "frozen-token-";
 
   static final Pattern UUID =
       Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
@@ -220,7 +225,9 @@ public final class Freezer {
       }
       String frozen = tokens.get(earliest);
       if (frozen == null) {
-        frozen = String.format("%0" + earliest.length() + "x", ++tokenCount);
+        // A fixed placeholder, never one sized to the token: a version that grows by a character
+        // must not change the recording.
+        frozen = FROZEN_TOKEN_PREFIX + ++tokenCount;
         tokens.put(earliest, frozen);
       }
       out.append(value, from, at).append(frozen);

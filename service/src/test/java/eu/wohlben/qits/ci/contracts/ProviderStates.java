@@ -159,7 +159,7 @@ public class ProviderStates {
    * What a state hands back.
    *
    * @param params the state's parameters, keys sorted — what a pact {@code @State} method returns
-   * @param uniqueTokens strings the answer holds that differ per build — frozen to a counter (the
+   * @param uniqueTokens strings the answer holds that differ per build — frozen to {@code frozen-token-N} (the
    *     daemon pin's version and the runner version a runner view targets, which every
    *     dependency bump moves)
    */

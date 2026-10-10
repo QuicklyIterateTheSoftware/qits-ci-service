@@ -97,7 +97,7 @@
       "held": 1,
       "connected": true,
       "runnerVersion": null,
-      "targetVersion": "000000000000001",
+      "targetVersion": "frozen-token-1",
       "updating": false,
       "quarantined": false,
       "quarantineReason": null,

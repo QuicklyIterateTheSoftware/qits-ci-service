@@ -14,7 +14,7 @@
       "lastSeenAt": null,
       "createdAt": "2026-01-01T00:00:00Z",
       "runnerVersion": null,
-      "targetVersion": "000000000000001",
+      "targetVersion": "frozen-token-1",
       "updating": false,
       "quarantined": false,
       "quarantineReason": null,
