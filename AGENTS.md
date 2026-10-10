@@ -1982,7 +1982,11 @@ is about*.
   `automations/` subdirectory explicitly, because a `*` does not reach into it. `qits-cli: true`
   spends `CiReleaseComposer.cliFetch` in its `AUTOMATION` form — one download text for the release
   prelude, the QA report hook and the automations, never a copy — and that form is hard: a kind that
-  asked for the CLI cannot run without it.
+  asked for the CLI cannot run without it. A packaged pipeline may say the same with a top-level
+  `qits-cli: true` (qits-893, `maintenance-bump.yml`, whose commit message is `qits changelog
+  bump-message`'s): `CiPlatformPipelines.withQitsCli` strips the line before the strict trigger
+  parser sees it and prepends the same `AUTOMATION` fetch to every `script: |` block, then checks
+  every parsed step starts with it, failing the boot otherwise.
 - **Two files are two runs, deliberately.** A repository carrying both a local and a platform trigger
   for one event gets two rows: the dedupe is `(trigger_event_id, repo_id, config_path)` and the paths
   differ. That is also how a run says which kind it was — `config_path` already travels to the API,

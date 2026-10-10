@@ -74,7 +74,21 @@
 # and force-pushed `maintenance/frontend`. The same move is an ordinary pin here - one
 # entry in `.gitmodules`, one row in the inventory, one commit on the shared branch,
 # released through the same door as everything else.
+#
+# THE COMMIT MESSAGE IS THE CHANGELOG'S (qits-893). Both steps record what they applied in
+# /tmp/bump-applied.tsv - `<ecosystem>\t<name>` per line - beside the human body in
+# /tmp/bump-body.txt, and hand both to `qits changelog bump-message`, which writes the
+# whole message: the `bump(<group>): ...` subject, and the changelog sections of every
+# applied dependency's released versions, `# <version>` headings included. So the commit
+# is `--cleanup=verbatim`: git's default cleanup strips every line starting with `#`, and
+# would take those headings with it. A CLI that fails fails the step - a bump never
+# commits a message it could not compose.
+#
+# `qits-cli: true` is what puts that CLI on PATH: CiPlatformPipelines strips the key and
+# prepends the pinned, hard AUTOMATION fetch (CiReleaseComposer.cliFetch) to both step
+# scripts, so a step whose CLI cannot be fetched fails before it touches the branch.
 event: MaintenanceBump
+qits-cli: true
 steps:
   - image: qits/build-images/maven-base:latest
     timeout-seconds: 900
@@ -233,7 +247,7 @@ steps:
 
       # --- apply -------------------------------------------------------------------
       : > /tmp/bump-body.txt
-      applied=0
+      : > /tmp/bump-applied.tsv
       tab=$(printf '\t')
       while IFS="$tab" read -r name from to manifest location <&3; do
         case "$to" in ''|*[!0-9A-Za-z._+-]*) echo "refusing an implausible version: $to" >&2; exit 1 ;; esac
@@ -269,8 +283,8 @@ steps:
         esac
         mv /tmp/bump-edited "$manifest"
         git add -- "$manifest"
-        applied=$((applied + 1))
         echo "- maven $name $from -> $to ($manifest)" >> /tmp/bump-body.txt
+        printf '%s\t%s\n' "maven" "$name" >> /tmp/bump-applied.tsv
         echo "bumped $name to $to in $manifest"
       done 3< /tmp/bump-maven.tsv
 
@@ -284,12 +298,12 @@ steps:
         echo "every maven change in this bump is already the pin - nothing to commit"
         exit 0
       fi
-      {
-        printf 'bump(%s): %d dependencies\n\n' "$group" "$applied"
-        cat /tmp/bump-body.txt
-      } > /tmp/bump-message.txt
+      # The message is the changelog CLI's - see the header. `>` into a file and then -F,
+      # so a failing CLI stops the step under `set -e` before anything is committed.
+      qits changelog bump-message --group "$group" --applied /tmp/bump-applied.tsv \
+          --body /tmp/bump-body.txt > /tmp/bump-message.txt
       git -c user.name="qits maintenance" -c user.email="maintenance@qits.local" \
-          commit -q -F /tmp/bump-message.txt
+          commit -q --cleanup=verbatim -F /tmp/bump-message.txt
       # NEVER a bare --force. A rejection means somebody rewrote the branch by hand; it
       # is theirs now, and the maintenance service marks it STALE. A rebuild is the one
       # non-ff push, and it carries a lease on replaceHead: if the branch moved after
@@ -471,7 +485,7 @@ steps:
 
       # --- apply -------------------------------------------------------------------
       : > /tmp/bump-body.txt
-      applied=0
+      : > /tmp/bump-applied.tsv
       tab=$(printf '\t')
       while IFS="$tab" read -r ecosystem name from to manifest location <&3; do
         case "$to" in ''|*[!0-9A-Za-z._+-]*) echo "refusing an implausible version: $to" >&2; exit 1 ;; esac
@@ -603,8 +617,8 @@ steps:
           echo "unknown ecosystem for this step: $ecosystem" >&2
           exit 1
         fi
-        applied=$((applied + 1))
         echo "- $ecosystem $name $from -> $to ($manifest)" >> /tmp/bump-body.txt
+        printf '%s\t%s\n' "$ecosystem" "$name" >> /tmp/bump-applied.tsv
         echo "bumped $name to $to in $manifest"
       done 3< /tmp/bump-node.tsv
 
@@ -644,12 +658,11 @@ steps:
         echo "every npm, docker and gitlink change in this bump is already the pin - nothing to commit"
         exit 0
       fi
-      {
-        printf 'bump(%s): %d dependencies\n\n' "$group" "$applied"
-        cat /tmp/bump-body.txt
-      } > /tmp/bump-message.txt
+      # The changelog CLI's message, committed verbatim, for the reasons the header gives.
+      qits changelog bump-message --group "$group" --applied /tmp/bump-applied.tsv \
+          --body /tmp/bump-body.txt > /tmp/bump-message.txt
       git -c user.name="qits maintenance" -c user.email="maintenance@qits.local" \
-          commit -q -F /tmp/bump-message.txt
+          commit -q --cleanup=verbatim -F /tmp/bump-message.txt
       # NEVER a bare --force, and a rebuild under its lease, for the reasons the maven
       # step states.
       if ! git push ${lease:+"$lease"} "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
