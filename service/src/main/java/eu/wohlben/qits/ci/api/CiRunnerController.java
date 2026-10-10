@@ -252,7 +252,9 @@ public class CiRunnerController {
   @POST
   @Consumes(MediaType.APPLICATION_JSON)
   @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE})
-  @Operation(summary = "Declare a runner; answers its install line, once")
+  @Operation(
+      operationId = "createRunner",
+      summary = "Declare a runner; answers its install line, once")
   @APIResponse(
       responseCode = "201",
       description = "The runner and the install line carrying its registration token",
@@ -310,7 +312,9 @@ public class CiRunnerController {
 
   @GET
   @RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system", "qits:agent"})
-  @Operation(summary = "Every runner, with whether it is connected and how many runs it holds")
+  @Operation(
+      operationId = "listRunners",
+      summary = "Every runner, with whether it is connected and how many runs it holds")
   @APIResponse(responseCode = "200", description = "Every runner, by name")
   public ListRunnersResponse list() {
     return new ListRunnersResponse(runners.views());
@@ -398,7 +402,9 @@ public class CiRunnerController {
   @POST
   @Path("/{id}/registration-token")
   @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE})
-  @Operation(summary = "Replace a runner's registration token; answers a new install line, once")
+  @Operation(
+      operationId = "rotateRegistrationToken",
+      summary = "Replace a runner's registration token; answers a new install line, once")
   @APIResponse(
       responseCode = "200",
       description = "The runner and the install line carrying its new registration token",
@@ -473,7 +479,9 @@ public class CiRunnerController {
   // qits:admin-agent is admitted too (qits-628 follow-up); remove it here if this door must stay
   // human-only.
   @RolesAllowed({"qits:admin", "qits:admin-agent"})
-  @Operation(summary = "Lift a runner's quarantine")
+  @Operation(
+      operationId = "greenlightRunner",
+      summary = "Lift a runner's quarantine")
   @APIResponse(responseCode = "200", description = "The runner as it now is")
   @APIResponse(responseCode = "404", description = "No such runner")
   public CiRunnerDto greenlight(@PathParam("id") String id) {
@@ -575,7 +583,9 @@ public class CiRunnerController {
   @Path("/{id}/register")
   @Consumes(MediaType.APPLICATION_JSON)
   @RolesAllowed(REGISTRATION_ROLE)
-  @Operation(summary = "Register a runner with its registration token; answers its client, once")
+  @Operation(
+      operationId = "registerRunner",
+      summary = "Register a runner with its registration token; answers its client, once")
   @APIResponse(
       responseCode = "200",
       description = "The runner's own client and where to use it",

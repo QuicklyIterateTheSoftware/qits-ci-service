@@ -78,7 +78,9 @@ public class CiDaemonController {
       String daemonName, String daemonVersion, String previousDaemonVersion, String source) {}
 
   @GET
-  @Operation(summary = "The daemon binary this instance is configured to launch")
+  @Operation(
+      operationId = "getDaemonPin",
+      summary = "The daemon binary this instance is configured to launch")
   @APIResponse(
       responseCode = "200",
       description =

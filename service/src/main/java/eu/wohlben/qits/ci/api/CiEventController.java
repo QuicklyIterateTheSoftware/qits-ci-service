@@ -213,7 +213,9 @@ public class CiEventController {
   @POST
   @Path("/trigger")
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system"})
-  @Operation(summary = "Run every event pipeline that selects a caller-supplied domain event")
+  @Operation(
+      operationId = "triggerEvent",
+      summary = "Run every event pipeline that selects a caller-supplied domain event")
   @APIResponse(
       responseCode = "200",
       description = "Evaluated, with the runs it recorded and which repositories it could ask",

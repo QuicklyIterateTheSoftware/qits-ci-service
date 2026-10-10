@@ -808,6 +808,7 @@ paths:
   /ci/api/daemon:
     get:
       summary: The daemon binary this instance is configured to launch
+      operationId: getDaemonPin
       responses:
         "200":
           description: "The pinned daemon binary. daemonVersion is the version of\
@@ -831,6 +832,7 @@ paths:
   /ci/api/events/trigger:
     post:
       summary: Run every event pipeline that selects a caller-supplied domain event
+      operationId: triggerEvent
       requestBody:
         content:
           application/json:
@@ -913,6 +915,7 @@ paths:
   /ci/api/repositories/{repoId}/release-phase:
     get:
       summary: Whether a rev's composed release cycle declares a release phase
+      operationId: getReleasePhase
       parameters:
       - name: repoId
         in: path
@@ -952,6 +955,7 @@ paths:
   /ci/api/repositories/{repoId}/releases/{version}/artifacts:
     get:
       summary: What was decided about each artifact of one release
+      operationId: listReleaseArtifacts
       parameters:
       - name: repoId
         in: path
@@ -988,6 +992,7 @@ paths:
   /ci/api/runners:
     get:
       summary: "Every runner, with whether it is connected and how many runs it holds"
+      operationId: listRunners
       responses:
         "200":
           description: "Every runner, by name"
@@ -1009,6 +1014,7 @@ paths:
         - qits:agent
     post:
       summary: "Declare a runner; answers its install line, once"
+      operationId: createRunner
       requestBody:
         content:
           application/json:
@@ -1168,6 +1174,7 @@ paths:
   /ci/api/runners/{id}/greenlight:
     post:
       summary: Lift a runner's quarantine
+      operationId: greenlightRunner
       parameters:
       - name: id
         in: path
@@ -1266,6 +1273,7 @@ paths:
     post:
       summary: "Register a runner with its registration token; answers its client,\
         \ once"
+      operationId: registerRunner
       parameters:
       - name: id
         in: path
@@ -1309,6 +1317,7 @@ paths:
     post:
       summary: "Replace a runner's registration token; answers a new install line,\
         \ once"
+      operationId: rotateRegistrationToken
       parameters:
       - name: id
         in: path
@@ -1386,6 +1395,7 @@ paths:
   /ci/api/runs/active:
     get:
       summary: "Every queued or running CI run, all repositories, newest first"
+      operationId: listActiveRuns
       responses:
         "200":
           description: "The active runs with their step boundaries and queue position,\
@@ -1409,6 +1419,7 @@ paths:
   /ci/api/runs/cancellations:
     post:
       summary: Cancel every unfinished run a repository has for one release request
+      operationId: cancelReleaseRequestRuns
       requestBody:
         content:
           application/json:
@@ -1473,6 +1484,7 @@ paths:
   /ci/api/runs/queue:
     get:
       summary: "The run queue in claim order, with each run's expected start and finish"
+      operationId: getRunQueue
       responses:
         "200":
           description: The queue at one instant
@@ -1510,6 +1522,7 @@ paths:
         \ as the first one did, and the gate between the two phases goes on holding\
         \ the release where it is until that verdict arrives — a gate delays, it does\
         \ not fail."
+      operationId: rerunReleaseRequestPhase
       requestBody:
         content:
           application/json:
@@ -1547,6 +1560,7 @@ paths:
   /ci/api/runs/{runId}:
     get:
       summary: "One CI run with its steps, output and — while it runs — its live step"
+      operationId: getRun
       parameters:
       - name: runId
         in: path
@@ -1578,6 +1592,7 @@ paths:
     get:
       summary: "A run's baseline: the gating run of its repository's newest released\
         \ version, or null"
+      operationId: getRunBaseline
       parameters:
       - name: runId
         in: path
@@ -1609,6 +1624,7 @@ paths:
   /ci/api/runs/{runId}/baseline/reports/{kind}:
     get:
       summary: "The baseline run's release reports of one kind, with payloads"
+      operationId: listRunBaselineReports
       parameters:
       - name: kind
         in: path
@@ -1753,6 +1769,7 @@ paths:
   /ci/api/runs/{runId}/retry:
     post:
       summary: "Run a finished CI run's pipeline again, at the same commit"
+      operationId: retryRun
       parameters:
       - name: runId
         in: path
@@ -1787,6 +1804,7 @@ paths:
     put:
       summary: Submit a step's release report of one kind (a run's own ci-run token
         only)
+      operationId: putRunStepReport
       parameters:
       - name: kind
         in: path
@@ -1832,4 +1850,4 @@ paths:
         - qits:ci-run
 info:
   title: qits-ci API
-  version: 2026.1009.190249
+  version: 2026.1010.81424
