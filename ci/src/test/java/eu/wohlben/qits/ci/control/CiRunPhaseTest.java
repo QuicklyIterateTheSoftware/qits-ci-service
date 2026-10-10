@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -401,6 +402,65 @@ public class CiRunPhaseTest extends CiTestSupport {
                 "no-such-repo", REQUEST_ID, CiRunPhase.RELEASE_REQUEST));
   }
 
+  // --- the logical id (qits-1158) ----------------------------------------------------------------
+
+  private static final String UUID_ID = "9f2c1a7e-4b31-4c8e-9a11-6d0f5c2e8b44";
+  private static final String QUALIFIED_ID = "qits-phase-target-rr-7";
+
+  @Test
+  public void aNewRequestsLogicalIdRidesBesideItsUuidOnBothPhasesAndEveryAnnouncement()
+      throws Exception {
+    deliver(releaseRequest(UUID_ID, QUALIFIED_ID, MERGED));
+
+    CiRun qa = runService.runsFor(repoId).get(0);
+    assertEquals(UUID_ID, qa.releaseRequestId, "the UUID stays the key");
+    assertEquals(QUALIFIED_ID, qa.releaseRequestQualifiedId);
+    assertEquals(
+        "release/" + QUALIFIED_ID, qa.branch, "the branch is the event's, never derived from an id");
+    assertEquals(QUALIFIED_ID, announcer.announced().get(0).releaseRequestQualifiedId());
+    assertTrue(
+        announcer.statuses().stream()
+            .filter(status -> status.runId().equals(qa.id))
+            .allMatch(status -> QUALIFIED_ID.equals(status.releaseRequestQualifiedId())),
+        "every transition names it");
+
+    deliver(release(UUID_ID, QUALIFIED_ID, VERSION, RELEASED));
+
+    CiRun publish = newestOf(runService.runsFor(repoId), PUBLISH_PATH);
+    assertEquals(UUID_ID, publish.releaseRequestId);
+    assertEquals(QUALIFIED_ID, publish.releaseRequestQualifiedId);
+  }
+
+  @Test
+  public void anOlderEventCarriesNoLogicalIdAndTheRowKeepsNone() throws Exception {
+    deliver(releaseRequest(REQUEST_ID, MERGED));
+
+    CiRun qa = runService.runsFor(repoId).get(0);
+    assertEquals(REQUEST_ID, qa.releaseRequestId);
+    assertNull(qa.releaseRequestQualifiedId);
+    assertNull(announcer.announced().get(0).releaseRequestQualifiedId());
+  }
+
+  @Test
+  public void aRetryKeepsTheLogicalIdAndARefusalNamesIt() throws Exception {
+    fakeRunner.scriptSequence(
+        0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
+    deliver(releaseRequest(UUID_ID, QUALIFIED_ID, MERGED));
+
+    CiRun refired =
+        runService.retryReleaseRequestPhase(repoId, UUID_ID, CiRunPhase.RELEASE_REQUEST);
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    assertEquals(QUALIFIED_ID, runService.requireRun(refired.id).releaseRequestQualifiedId);
+
+    ConflictException refused =
+        assertThrows(
+            ConflictException.class,
+            () -> runService.retryReleaseRequestPhase(repoId, UUID_ID, CiRunPhase.RELEASE_REQUEST));
+    assertTrue(refused.getMessage().contains(QUALIFIED_ID), refused.getMessage());
+    assertFalse(refused.getMessage().contains(UUID_ID), refused.getMessage());
+  }
+
   // --- fixture -------------------------------------------------------------------------------------
 
   /** The {@code BuildFailed} announced for one run — {@code CiRunCancelAndRetryTest}'s helper. */
@@ -429,6 +489,41 @@ public class CiRunPhaseTest extends CiTestSupport {
             + requestId
             + "\",\"mergedSha\":\""
             + mergedSha
+            + "\"}");
+  }
+
+  /** A request folded after qits-1158: a UUID key, a logical id, and a branch named by it. */
+  private CiEventTriggerService.Arrival releaseRequest(
+      String requestId, String qualifiedId, String mergedSha) {
+    return new CiEventTriggerService.Arrival(
+        UUID.randomUUID().toString(),
+        CiRunService.RELEASE_REQUEST_EVENT_NAME,
+        Instant.parse("2026-09-16T09:00:00Z"),
+        "{\"repoName\":\"qits-phase-target\",\"releaseRequestId\":\""
+            + requestId
+            + "\",\"releaseRequestQualifiedId\":\""
+            + qualifiedId
+            + "\",\"backingBranch\":\"release/"
+            + qualifiedId
+            + "\",\"mergedSha\":\""
+            + mergedSha
+            + "\"}");
+  }
+
+  private CiEventTriggerService.Arrival release(
+      String requestId, String qualifiedId, String version, String commitSha) {
+    return new CiEventTriggerService.Arrival(
+        UUID.randomUUID().toString(),
+        ReleaseJoin.RELEASE_EVENT_NAME,
+        Instant.parse("2026-09-16T10:00:00Z"),
+        "{\"repository\":\"qits-phase-target\",\"version\":\""
+            + version
+            + "\",\"commitSha\":\""
+            + commitSha
+            + "\",\"releaseRequestId\":\""
+            + requestId
+            + "\",\"releaseRequestQualifiedId\":\""
+            + qualifiedId
             + "\"}");
   }
 

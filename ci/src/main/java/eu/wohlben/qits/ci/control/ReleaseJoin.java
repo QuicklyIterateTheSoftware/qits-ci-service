@@ -387,6 +387,24 @@ public class ReleaseJoin {
       String priority,
       String releaseRequestId,
       String commitSha) {
+    onScmRelease(
+        repoId, repoName, version, eventId, occurredAt, priority, releaseRequestId, null, commitSha);
+  }
+
+  /**
+   * The same, with the request's logical id ({@code <repository>-rr-<n>}, qits-1158) recorded beside
+   * its UUID, for people to read. Null when the event named none.
+   */
+  public void onScmRelease(
+      String repoId,
+      String repoName,
+      String version,
+      String eventId,
+      Instant occurredAt,
+      String priority,
+      String releaseRequestId,
+      String releaseRequestQualifiedId,
+      String commitSha) {
     QuarkusTransaction.requiringNew()
         .run(
             () ->
@@ -398,6 +416,7 @@ public class ReleaseJoin {
                     occurredAt,
                     priority,
                     releaseRequestId,
+                    releaseRequestQualifiedId,
                     commitSha));
     announceOwed(repoId, repoName, version);
     if (repoName != null && !repoName.isBlank() && !repoName.equals(repoId)) {
@@ -414,6 +433,7 @@ public class ReleaseJoin {
       Instant occurredAt,
       String priority,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       String commitSha) {
     if (releases.findRelease(repoId, version).isPresent()) {
       return;
@@ -428,6 +448,7 @@ public class ReleaseJoin {
     release.seenAt = Instant.now();
     release.priority = priorityToRecord(repoId, version, priority);
     release.releaseRequestId = withinColumn(releaseRequestId);
+    release.releaseRequestQualifiedId = withinColumn(releaseRequestQualifiedId);
     release.commitSha = withinColumn(commitSha);
     releases.persist(release);
   }

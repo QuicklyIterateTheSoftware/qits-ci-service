@@ -127,6 +127,7 @@ public class BuildAnnouncerRetryLineageTest {
         "0123456789abcdef0123456789abcdef01234567",
         null,
         null,
+        null,
         Instant.parse("2026-09-20T09:00:00Z"),
         null);
   }
@@ -140,6 +141,7 @@ public class BuildAnnouncerRetryLineageTest {
         null,
         "main",
         "0123456789abcdef0123456789abcdef01234567",
+        null,
         null,
         null,
         "FAILED",

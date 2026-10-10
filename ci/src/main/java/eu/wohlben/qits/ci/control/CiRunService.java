@@ -344,6 +344,14 @@ public class CiRunService {
   public static final String RELEASE_REQUEST_ID_FIELD = "releaseRequestId";
 
   /**
+   * The payload field naming the release request's logical id, {@code <repository>-rr-<n>}
+   * (qits-1158), on the same two events as {@link #RELEASE_REQUEST_ID_FIELD} and read under the same
+   * gate. It lands on {@link CiRun#releaseRequestQualifiedId}, for people to read; the UUID stays the
+   * key. Absent on every event published before qits-projects shipped it.
+   */
+  public static final String RELEASE_REQUEST_QUALIFIED_ID_FIELD = "releaseRequestQualifiedId";
+
+  /**
    * The payload field naming what a piece of release work is worth, on <b>both</b> events that carry
    * one: {@code ReleaseRequestChanged} (the request's effective priority, folded in qits-projects
    * from its participating branches) and {@code SCMRelease} (the same value, carried down to the
@@ -1527,6 +1535,7 @@ public class CiRunService {
             run.commitSha,
             phaseWord(run),
             run.releaseRequestId,
+            run.releaseRequestQualifiedId,
             finishedAt,
             causingEventId(run));
       } catch (RuntimeException e) {
@@ -1600,6 +1609,7 @@ public class CiRunService {
             run.commitSha,
             phaseWord(run),
             run.releaseRequestId,
+            run.releaseRequestQualifiedId,
             outcome.name(),
             finishedAt,
             causingEventId(run));
@@ -1661,6 +1671,7 @@ public class CiRunService {
             run.commitSha,
             phaseWord(run),
             run.releaseRequestId,
+            run.releaseRequestQualifiedId,
             status.name(),
             previous == null ? null : previous.name(),
             occurredAt,
@@ -2337,6 +2348,12 @@ public class CiRunService {
     // environment moved under them.
     archetypeOnto(run, request.archetype());
     run.releaseRequestId = releaseRequestOf(request);
+    // The readable id beside it, under the same gate, and only when the UUID is there: a qualified id
+    // with no key would be a name for nothing this service can address.
+    run.releaseRequestQualifiedId =
+        run.releaseRequestId == null
+            ? null
+            : releaseRequestField(request, RELEASE_REQUEST_QUALIFIED_ID_FIELD);
     // Which half of that release this is, read off the same gate that just read the id — see
     // phaseOf. Null whenever the id is null, which is every run that is no part of a release.
     run.phase = phaseOf(request, run.releaseRequestId);
@@ -2397,11 +2414,11 @@ public class CiRunService {
           "Run %s for release request %s in %s supersedes %s %s of release request %s — one"
               + " release build per repository",
           accepted.id,
-          accepted.releaseRequestId,
+          requestName(accepted, accepted.releaseRequestId),
           accepted.repoId,
           other.status,
           other.id,
-          other.releaseRequestId);
+          requestName(other, other.releaseRequestId));
       if (other.status == CiRunStatus.QUEUED) {
         supersede(other, accepted, SUPERSEDED_BY_RELEASE_REQUEST);
         superseded.add(other);
@@ -2618,12 +2635,20 @@ public class CiRunService {
    * within 255 characters is not naming one this platform issued.
    */
   private static String releaseRequestOf(EventRun request) {
+    return releaseRequestField(request, RELEASE_REQUEST_ID_FIELD);
+  }
+
+  /**
+   * One string field of a release-request event's payload, under {@link #releaseRequestOf}'s gate
+   * and rules: blank or too long is none.
+   */
+  private static String releaseRequestField(EventRun request, String field) {
     if (!namesAReleaseRequest(request)) {
       return null;
     }
     JsonNode id =
         CiEventSelectionEvaluator.resolve(
-            CiEventSelectionEvaluator.parsePayload(request.payload()), RELEASE_REQUEST_ID_FIELD);
+            CiEventSelectionEvaluator.parsePayload(request.payload()), field);
     if (id == null) {
       return null;
     }
@@ -2634,7 +2659,7 @@ public class CiRunService {
     if (text.length() > MAX_RELEASE_REQUEST_ID_LENGTH) {
       LOG.warnf(
           "Event %s (%s) names a '%s' of %d characters — too long to record, the run keeps none",
-          request.eventId(), request.eventName(), RELEASE_REQUEST_ID_FIELD, text.length());
+          request.eventId(), request.eventName(), field, text.length());
       return null;
     }
     return text;
@@ -3145,7 +3170,10 @@ public class CiRunService {
     }
     LOG.infof(
         "Release request %s in %s: cancelled %d of %d unfinished run(s)",
-        releaseRequestId, repoId, stopped.size(), unfinished.size());
+        unfinished.isEmpty() ? releaseRequestId : requestName(unfinished.get(0), releaseRequestId),
+        repoId,
+        stopped.size(),
+        unfinished.size());
     return stopped;
   }
 
@@ -3472,7 +3500,7 @@ public class CiRunService {
           "The "
               + phase
               + " phase of release request "
-              + releaseRequestId
+              + requestName(newest, releaseRequestId)
               + " is already running as CI run "
               + newest.id
               + " ("
@@ -3486,6 +3514,17 @@ public class CiRunService {
   }
 
   /**
+   * The name a person reads for a run's release request: its logical id ({@code <repository>-rr-<n>},
+   * qits-1158) when the triggering event carried one, else {@code fallback} — the UUID the caller
+   * addressed it by.
+   */
+  static String requestName(CiRun run, String fallback) {
+    return run != null && run.releaseRequestQualifiedId != null
+        ? run.releaseRequestQualifiedId
+        : fallback;
+  }
+
+  /**
    * Why a phase that went green cannot be re-asked, said in words rather than as a status code.
    *
    * <p>The QA arm names the mechanism on purpose: that verdict was <b>spent on cutting the tag</b>,
@@ -3495,9 +3534,10 @@ public class CiRunService {
    */
   private static String spentPhaseMessage(
       CiRun succeeded, String releaseRequestId, CiRunPhase phase) {
+    String request = requestName(succeeded, releaseRequestId);
     if (phase == CiRunPhase.RELEASE_REQUEST) {
       return "The QA phase of release request "
-          + releaseRequestId
+          + request
           + " succeeded (CI run "
           + succeeded.id
           + "), so there is nothing to ask again: that verdict was spent on cutting the tag, and the"
@@ -3506,7 +3546,7 @@ public class CiRunService {
           + ") no longer exists.";
     }
     return "The publish phase of release request "
-        + releaseRequestId
+        + request
         + " succeeded (CI run "
         + succeeded.id
         + "), so there is nothing to ask again: that phase published what the release names.";
@@ -3613,6 +3653,7 @@ public class CiRunService {
     retry.status = CiRunStatus.QUEUED;
     retry.createdAt = Instant.now();
     retry.releaseRequestId = source.releaseRequestId;
+    retry.releaseRequestQualifiedId = source.releaseRequestQualifiedId;
     // Copied beside it, and for the same reason the id is: a retry asks for the SAME work, so it is
     // the same half of the same release. Re-deriving it from the stored payload would answer
     // identically and be a second place the rule lives.

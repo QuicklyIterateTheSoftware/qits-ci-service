@@ -97,6 +97,12 @@ public class ScmReleaseListener implements QitsDurableEventListener {
    */
   static final String RELEASE_REQUEST_ID_FIELD = "releaseRequestId";
 
+  /**
+   * The request's logical id, {@code <repository>-rr-<n>} (qits-1158), read and recorded beside
+   * {@link #RELEASE_REQUEST_ID_FIELD} for people to read, and optional the same way.
+   */
+  static final String RELEASE_REQUEST_QUALIFIED_ID_FIELD = "releaseRequestQualifiedId";
+
   /** What the release's tag points at, read and recorded beside {@link #RELEASE_REQUEST_ID_FIELD}. */
   static final String COMMIT_SHA_FIELD = "commitSha";
 
@@ -146,6 +152,7 @@ public class ScmReleaseListener implements QitsDurableEventListener {
         // Both optional the same way: absent on every older release, recorded as nothing, and never
         // poison — the baseline lookup falls back to the release run for such a row.
         text(payload, RELEASE_REQUEST_ID_FIELD),
+        text(payload, RELEASE_REQUEST_QUALIFIED_ID_FIELD),
         text(payload, COMMIT_SHA_FIELD));
   }
 

@@ -162,7 +162,7 @@ public class CiRunController {
    */
   public record CancelReleaseRequestRunsRequest(
       @Schema(description = "The repository whose runs to stop", required = true) String repoId,
-      @Schema(description = "The release request whose work is withdrawn", required = true)
+      @Schema(description = "The release request whose work is withdrawn, by its UUID", required = true)
           String releaseRequestId) {}
 
   /** Which runs the cancellation actually reached — empty when there was nothing left in flight. */
@@ -178,7 +178,7 @@ public class CiRunController {
    */
   public record RerunReleaseRequestPhaseRequest(
       @Schema(description = "The repository whose run to re-fire", required = true) String repoId,
-      @Schema(description = "The release request the run serves", required = true)
+      @Schema(description = "The release request the run serves, by its UUID", required = true)
           String releaseRequestId,
       @Schema(
               description =
@@ -936,7 +936,7 @@ public class CiRunController {
       description =
           "A release is one pipeline of three phases and a PHASE is a unit of work with a state and"
               + " a rerun. Two of them are runs here — RELEASE_REQUEST is phase one, the QA run at"
-              + " release/<id>@mergedSha, and RELEASE is phase two, the publish run at"
+              + " backingBranch@mergedSha, and RELEASE is phase two, the publish run at"
               + " <version>@commitSha. Phase three is the deploy and is qits-deployments' own"
               + " release request, so it is not a word this door takes. A step inside a run is not a"
               + " phase, so it cannot be re-fired separately. Which phase a run is was decided by"

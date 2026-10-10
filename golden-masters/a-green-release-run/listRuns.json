@@ -18,6 +18,7 @@
       "triggerEventId": "contract-event-7",
       "triggerEventName": "SCMRelease",
       "releaseRequestId": null,
+      "releaseRequestQualifiedId": null,
       "retryOfRunId": null,
       "configPath": ".config/qits/release.yml",
       "archetypeName": null,

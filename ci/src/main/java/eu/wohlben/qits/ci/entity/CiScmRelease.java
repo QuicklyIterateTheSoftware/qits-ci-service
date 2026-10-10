@@ -88,6 +88,13 @@ public class CiScmRelease extends PanacheEntityBase {
   public String releaseRequestId;
 
   /**
+   * The request's logical id, {@code <repository>-rr-<n>}, verbatim from {@code SCMRelease}'s {@code
+   * releaseRequestQualifiedId} (qits-1158). Read by people only; nullable, no backfill.
+   */
+  @Column(name = "release_request_qualified_id")
+  public String releaseRequestQualifiedId;
+
+  /**
    * What the release's tag points at, verbatim from {@code SCMRelease} — the baseline's {@code
    * tagSha} when {@link #releaseRequestId} is set. Nullable, no backfill, for the same reasons.
    */

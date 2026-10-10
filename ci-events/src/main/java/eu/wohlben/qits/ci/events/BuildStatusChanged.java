@@ -64,6 +64,9 @@ import java.util.UUID;
  * consumer may key a pipeline read model on the pair without a second lookup. Both are omitted from
  * the canonical payload when null, so an ordinary run's transitions stay byte-identical on the wire.
  *
+ * <p>{@code releaseRequestQualifiedId} is {@link BuildSuccessful}'s too: the request's logical id
+ * (qits-1158), for people to read, null whenever {@code releaseRequestId} is.
+ *
  * <p>The remaining field conventions are {@link BuildSuccessful}'s, argued there at length and only
  * named here: {@code eventId} is generated when absent, final once set, and travels in the envelope
  * rather than the payload; {@code repoId} is the storage id and is always set, while {@code
@@ -82,6 +85,7 @@ public record BuildStatusChanged(
     String commitSha,
     String phase,
     String releaseRequestId,
+    String releaseRequestQualifiedId,
     String status,
     String previousStatus,
     Instant occurredAt)
@@ -103,11 +107,30 @@ public record BuildStatusChanged(
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       String status,
       String previousStatus,
       Instant occurredAt) {
     this(
         null, runId, repoId, projectId, repoName, branch, commitSha, phase, releaseRequestId,
+        releaseRequestQualifiedId, status, previousStatus, occurredAt);
+  }
+
+  /** The publisher's constructor before qits-1158: no logical id. */
+  public BuildStatusChanged(
+      String runId,
+      String repoId,
+      String projectId,
+      String repoName,
+      String branch,
+      String commitSha,
+      String phase,
+      String releaseRequestId,
+      String status,
+      String previousStatus,
+      Instant occurredAt) {
+    this(
+        runId, repoId, projectId, repoName, branch, commitSha, phase, releaseRequestId, null,
         status, previousStatus, occurredAt);
   }
 }

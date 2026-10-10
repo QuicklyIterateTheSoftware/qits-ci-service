@@ -359,7 +359,8 @@ public class ProviderStates {
    *   <li>its first QA run, failed.
    * </ol>
    *
-   * <p>Every request run names the request by {@code releaseRequestId}. Together they show every
+   * <p>Every request run names the request by {@code releaseRequestId} and by its logical id,
+   * {@code releaseRequestQualifiedId}. Together they show every
    * status the release request page draws: running, succeeded, failed and cancelled.
    */
   private Setup aRepositoryWithTheRunsOfARequest() {
@@ -403,6 +404,12 @@ public class ProviderStates {
     automation.triggerEventName = "ReleaseRequestAutomation";
     automation.configPath = ".config/qits/ci-event-automation-dependencies.yml";
     seeded.add(automation);
+
+    // The request's logical id (qits-1158), on every run that names the request. Its branch stays
+    // release/<uuid>: a request opened before the logical id existed keeps the branch it had.
+    seeded.stream()
+        .filter(r -> request.equals(r.releaseRequestId))
+        .forEach(r -> r.releaseRequestQualifiedId = "qits-ci-service-rr-5");
 
     List<String> ids = seeded.stream().map(r -> r.id).toList();
     QuarkusTransaction.requiringNew()

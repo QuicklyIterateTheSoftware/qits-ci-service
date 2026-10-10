@@ -26,6 +26,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       Instant finishedAt,
       String triggerEventId) {}
 
@@ -39,6 +40,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       String outcome,
       Instant finishedAt,
       String triggerEventId) {}
@@ -57,6 +59,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       String status,
       String previousStatus,
       Instant occurredAt,
@@ -123,6 +126,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       Instant finishedAt,
       String triggerEventId) {
     announced.add(
@@ -136,6 +140,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
             commitSha,
             phase,
             releaseRequestId,
+            releaseRequestQualifiedId,
             finishedAt,
             triggerEventId));
   }
@@ -151,6 +156,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       String outcome,
       Instant finishedAt,
       String triggerEventId) {
@@ -165,6 +171,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
             commitSha,
             phase,
             releaseRequestId,
+            releaseRequestQualifiedId,
             outcome,
             finishedAt,
             triggerEventId));
@@ -180,6 +187,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       String status,
       String previousStatus,
       Instant occurredAt,
@@ -194,6 +202,7 @@ public class FakeRunAnnouncer implements RunAnnouncer {
             commitSha,
             phase,
             releaseRequestId,
+            releaseRequestQualifiedId,
             status,
             previousStatus,
             occurredAt,

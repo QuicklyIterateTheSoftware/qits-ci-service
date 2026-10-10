@@ -87,12 +87,13 @@ public class BuildAnnouncer implements RunAnnouncer {
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       Instant finishedAt,
       String triggerEventId) {
     bus.publish(
         new BuildSuccessful(
             runId, retryOfRunId, repoId, projectId, repoName, branch, commitSha, null, phase,
-            releaseRequestId, finishedAt),
+            releaseRequestId, releaseRequestQualifiedId, finishedAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 
@@ -107,13 +108,14 @@ public class BuildAnnouncer implements RunAnnouncer {
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       String outcome,
       Instant finishedAt,
       String triggerEventId) {
     bus.publish(
         new BuildFailed(
             runId, retryOfRunId, repoId, projectId, repoName, branch, commitSha, phase,
-            releaseRequestId, outcome, finishedAt),
+            releaseRequestId, releaseRequestQualifiedId, outcome, finishedAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 
@@ -127,14 +129,15 @@ public class BuildAnnouncer implements RunAnnouncer {
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       String status,
       String previousStatus,
       Instant occurredAt,
       String triggerEventId) {
     bus.publish(
         new BuildStatusChanged(
-            runId, repoId, projectId, repoName, branch, commitSha, phase, releaseRequestId, status,
-            previousStatus, occurredAt),
+            runId, repoId, projectId, repoName, branch, commitSha, phase, releaseRequestId,
+            releaseRequestQualifiedId, status, previousStatus, occurredAt),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 }

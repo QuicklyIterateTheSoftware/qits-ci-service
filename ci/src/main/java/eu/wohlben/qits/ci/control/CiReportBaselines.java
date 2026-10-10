@@ -51,8 +51,16 @@ import java.util.Optional;
 @ApplicationScoped
 public class CiReportBaselines {
 
-  /** A run's baseline: the version, its gating QA run, that run's request, and the version's sha. */
-  public record Baseline(String version, String runId, String releaseRequestId, String tagSha) {}
+  /**
+   * A run's baseline: the version, its gating QA run, that run's request (UUID and logical id), and
+   * the version's sha.
+   */
+  public record Baseline(
+      String version,
+      String runId,
+      String releaseRequestId,
+      String releaseRequestQualifiedId,
+      String tagSha) {}
 
   @Inject CiScmReleaseRepository scmReleases;
 
@@ -98,7 +106,16 @@ public class CiReportBaselines {
               CiRunPhase.RELEASE_REQUEST,
               CiRunStatus.SUCCESS,
               requestId);
-      return gate.map(qa -> new Baseline(release.version, qa.id, requestId, tagSha));
+      return gate.map(
+          qa ->
+              new Baseline(
+                  release.version,
+                  qa.id,
+                  requestId,
+                  qa.releaseRequestQualifiedId != null
+                      ? qa.releaseRequestQualifiedId
+                      : release.releaseRequestQualifiedId,
+                  tagSha));
     }
     return Optional.empty();
   }

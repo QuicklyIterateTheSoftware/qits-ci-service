@@ -16,6 +16,7 @@
   "triggerEventId": "contract-event-3",
   "triggerEventName": "SoftwareRelease",
   "releaseRequestId": null,
+  "releaseRequestQualifiedId": null,
   "retryOfRunId": null,
   "configPath": ".config/qits/ci-event-build.yml",
   "archetypeName": null,

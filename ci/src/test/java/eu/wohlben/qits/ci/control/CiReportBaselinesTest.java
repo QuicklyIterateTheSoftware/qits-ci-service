@@ -75,7 +75,7 @@ public class CiReportBaselinesTest extends CiTestSupport {
     CiRun releaseRun = run(CiRunPhase.RELEASE, V_OLD, "rr-1", CiRunStatus.SUCCESS, 3);
 
     assertEquals(
-        Optional.of(new Baseline(V_OLD, gate.id, "rr-1", releaseRun.commitSha)),
+        Optional.of(new Baseline(V_OLD, gate.id, "rr-1", null, releaseRun.commitSha)),
         baselines.forRun(asking));
   }
 
@@ -90,7 +90,7 @@ public class CiReportBaselinesTest extends CiTestSupport {
 
     assertTrue(V_OLD.compareTo(V_NEW) > 0, "the fixture is the case string order gets wrong");
     assertEquals(
-        Optional.of(new Baseline(V_NEW, gate.id, "rr-new", releaseRun.commitSha)),
+        Optional.of(new Baseline(V_NEW, gate.id, "rr-new", null, releaseRun.commitSha)),
         baselines.forRun(asking));
   }
 
@@ -107,7 +107,7 @@ public class CiReportBaselinesTest extends CiTestSupport {
     run(CiRunPhase.RELEASE, V_NEW, "rr-own", CiRunStatus.SUCCESS, 4);
 
     assertEquals(
-        Optional.of(new Baseline(V_OLD, olderGate.id, "rr-old", olderRelease.commitSha)),
+        Optional.of(new Baseline(V_OLD, olderGate.id, "rr-old", null, olderRelease.commitSha)),
         baselines.forRun(ownGate));
 
     // And with nothing older to fall back on, there is none at all.
@@ -130,7 +130,7 @@ public class CiReportBaselinesTest extends CiTestSupport {
     CiRun gate = run(CiRunPhase.RELEASE_REQUEST, "release/rr-spa", "rr-spa", CiRunStatus.SUCCESS, 1);
 
     assertEquals(
-        Optional.of(new Baseline(V_OLD, gate.id, "rr-spa", TAG_SHA)), baselines.forRun(asking));
+        Optional.of(new Baseline(V_OLD, gate.id, "rr-spa", null, TAG_SHA)), baselines.forRun(asking));
   }
 
   /** The row's own commit wins over a release run's when both exist. */
@@ -141,7 +141,7 @@ public class CiReportBaselinesTest extends CiTestSupport {
     run(CiRunPhase.RELEASE, V_OLD, "rr-1", CiRunStatus.SUCCESS, 2);
 
     assertEquals(
-        Optional.of(new Baseline(V_OLD, gate.id, "rr-1", TAG_SHA)), baselines.forRun(asking));
+        Optional.of(new Baseline(V_OLD, gate.id, "rr-1", null, TAG_SHA)), baselines.forRun(asking));
   }
 
   /** A row naming its request but no commit borrows the release run's, or has none. */
@@ -151,11 +151,11 @@ public class CiReportBaselinesTest extends CiTestSupport {
     CiRun gate = run(CiRunPhase.RELEASE_REQUEST, "release/rr-1", "rr-1", CiRunStatus.SUCCESS, 1);
 
     assertEquals(
-        Optional.of(new Baseline(V_OLD, gate.id, "rr-1", null)), baselines.forRun(asking));
+        Optional.of(new Baseline(V_OLD, gate.id, "rr-1", null, null)), baselines.forRun(asking));
 
     CiRun releaseRun = run(CiRunPhase.RELEASE, V_OLD, "rr-1", CiRunStatus.SUCCESS, 2);
     assertEquals(
-        Optional.of(new Baseline(V_OLD, gate.id, "rr-1", releaseRun.commitSha)),
+        Optional.of(new Baseline(V_OLD, gate.id, "rr-1", null, releaseRun.commitSha)),
         baselines.forRun(asking));
   }
 
@@ -178,7 +178,7 @@ public class CiReportBaselinesTest extends CiTestSupport {
         run(CiRunPhase.RELEASE_REQUEST, "release/rr-own", "rr-own", CiRunStatus.SUCCESS, 3);
 
     assertEquals(
-        Optional.of(new Baseline(V_OLD, olderGate.id, "rr-old", TAG_SHA)),
+        Optional.of(new Baseline(V_OLD, olderGate.id, "rr-old", null, TAG_SHA)),
         baselines.forRun(ownGate));
 
     QuarkusTransaction.requiringNew()
@@ -198,7 +198,7 @@ public class CiReportBaselinesTest extends CiTestSupport {
         run(CiRunPhase.RELEASE_REQUEST, "release/rr-own", "rr-own", CiRunStatus.SUCCESS, 3);
 
     assertEquals(
-        Optional.of(new Baseline(V_OLD, olderGate.id, "rr-old", olderRelease.commitSha)),
+        Optional.of(new Baseline(V_OLD, olderGate.id, "rr-old", null, olderRelease.commitSha)),
         baselines.forRun(ownGate));
   }
 

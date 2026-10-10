@@ -104,6 +104,15 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   public String releaseRequestId;
 
   /**
+   * The release request's logical id, {@code <repository>-rr-<n>} (qits-1158), verbatim from the
+   * triggering event's {@code releaseRequestQualifiedId} — what a person reads. {@link
+   * #releaseRequestId} stays the key everything matches on. Null whenever that is null, and for every
+   * event published before the field existed; a reader falls back to the UUID.
+   */
+  @Column(name = "release_request_qualified_id", length = 255)
+  public String releaseRequestQualifiedId;
+
+  /**
    * Which phase of that release this run is — {@link CiRunPhase#RELEASE_REQUEST} for the QA half,
    * {@link CiRunPhase#RELEASE} for the publish half — or null for every run that is no part of a
    * release.
