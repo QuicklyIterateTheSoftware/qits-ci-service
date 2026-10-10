@@ -94,7 +94,7 @@
              snapshot nobody published"; qits-githost released the jar on 2026-08-12 and this is that
              release. What kept the snapshot working until then was the bootstrap seed-publishing it
              into the registry, which is not a release and does not survive one being re-seeded. -->
-        <qits.githost-events.version>2026.1010.104051</qits.githost-events.version>
+        <qits.githost-events.version>2026.1010.171927</qits.githost-events.version>
         <qits.auth-core.version>2026.1002.70617</qits.auth-core.version>
         <!-- The platform's datasource resilience, released out of libs/qits-integrations-quarkus
              together with the two above, which is why the strings match: qits-db-core carries
