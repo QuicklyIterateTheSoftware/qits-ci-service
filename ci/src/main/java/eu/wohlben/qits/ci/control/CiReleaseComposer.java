@@ -154,6 +154,23 @@ import java.util.Set;
  * --openapi} per {@code @apidocs} entry naming its file. Each call fails the step on a non-zero
  * exit.
  *
+ * <h2>The changelog (qits-893)</h2>
+ *
+ * <p><b>Every release publishes a changelog, and it closes the publish block.</b> After every
+ * artifact, contract and docs publish comes {@code qits artifacts publish changelog --version
+ * "$QITS_VERSION"} with the same provenance {@code --meta} the docs bundle carries, behind a {@code
+ * command -v qits} guard that names the cause when the step holds no CLI; only the SBOM submits and
+ * presence checks follow it, as they follow every publish. It is required: a red
+ * publish is a red release run and a failed PUBLISH gate. So the publish block is no longer
+ * conditional on what a repository declares — every release phase's last step carries it — and a
+ * composition with <b>no {@code release:} slot</b> at all gets a synthesised one-step release half
+ * ({@link #CHANGELOG_ONLY_IMAGE}, script {@code :}) whose only publish is that changelog. It used to
+ * get no release document, and an SPA frontend or a CLI released without one ever being recorded.
+ *
+ * <p><b>Only composed documents carry it.</b> A repository's own hand-written {@code
+ * ci-event-*.yml} on {@code SCMRelease} is a trigger file this class never sees, so it would run
+ * beside the composed half without publishing one; none exists today.
+ *
  * <h2>The SBOM postlude (qits-621)</h2>
  *
  * <p><b>Every release step submits every declared SBOM it holds, and the last step checks that each
@@ -289,12 +306,32 @@ public final class CiReleaseComposer {
   private CiReleaseComposer() {}
 
   /**
-   * The two composed documents. Either may be null: a phase this repository and its archetype
-   * declare no steps for gets <b>no trigger document and therefore no run</b>, which is the honest
-   * reading of "nothing is declared" — an SPA frontend publishes nothing, so it declares no {@code
-   * release:} slot and no release run of it is ever recorded.
+   * The two composed documents. The QA one may be null: a repository and archetype that declare no
+   * {@code release-request:} steps get <b>no trigger document and therefore no run</b>, which is the
+   * honest reading of "nothing is declared".
+   *
+   * <p><b>The release one is never null any more (qits-893).</b> Every release publishes a
+   * changelog, so a composition with no {@code release:} slot — an SPA frontend or a CLI on its
+   * packaged archetype, a repository whose own file declares only {@code release-request:} — gets
+   * the one-step {@link #changelogOnlySlot} and with it a release run that does nothing but publish
+   * that changelog. It used to be null, and "no release run of it is ever recorded" was the rule.
    */
   public record Composed(String releaseRequestDocument, String releaseDocument) {}
+
+  /**
+   * The image of the release half synthesised for a composition that declares no {@code release:}
+   * slot ({@link #changelogOnlySlot}). It needs exactly what the release prelude needs — a shell,
+   * {@code git} for the tag fetch and {@code curl} for the CLI — and {@code ci-base} carries all
+   * three ({@code apk add bash curl git jq} in qits-build-images-oci), at a fraction of {@code
+   * maven-base}'s pull.
+   */
+  static final String CHANGELOG_ONLY_IMAGE = "qits/build-images/ci-base:latest";
+
+  /**
+   * The synthesised release half's timeout: a tag fetch, a CLI download and one publish call, with
+   * room for a slow registry and none for a hang to hold a runner for the deployment default.
+   */
+  static final int CHANGELOG_ONLY_TIMEOUT_SECONDS = 300;
 
   /**
    * Compiles one repository's release cycle.
@@ -311,13 +348,13 @@ public final class CiReleaseComposer {
     // WHOLE-SLOT OVERRIDE. A repository that declares a slot replaces the archetype's entirely, and
     // the file the steps came from travels with them so an error names the document a person edits.
     Slot qa = choose(slots, archetype, true);
-    Slot release = choose(slots, archetype, false);
+    Slot declaredRelease = choose(slots, archetype, false);
     boolean ownArtifacts = !slots.artifacts().isEmpty() || archetype == null;
     List<SlotArtifact> artifacts = ownArtifacts ? slots.artifacts() : archetype.artifacts();
     String artifactsPath = ownArtifacts ? slots.configPath() : archetype.configPath();
     // Contracts are a repository's own facts: an archetype recipe cannot declare them.
     CiContracts contracts = slots.contracts();
-    if (release == null && !artifacts.isEmpty()) {
+    if (declaredRelease == null && !artifacts.isEmpty()) {
       throw new CiConfigException(
           slots.configPath()
               + ": declares "
@@ -325,17 +362,42 @@ public final class CiReleaseComposer {
               + " artifact(s) but neither it nor its archetype declares any 'release' step — a"
               + " declaration with no pipeline behind it announces a release nothing published");
     }
-    if (release == null && contracts != null) {
+    if (declaredRelease == null && contracts != null) {
       throw new CiConfigException(
           slots.configPath()
               + ": declares contracts but neither it nor its archetype declares any 'release' step —"
               + " the platform publishes contract packages from the release slot's last step, so"
               + " with no release slot nothing would ever publish them");
     }
+    // EVERY RELEASE PUBLISHES A CHANGELOG (qits-893), so a composition with no release slot gets
+    // one that does nothing else. The two refusals above stay: artifacts or contracts with no
+    // declared build behind them are still a declaration nothing builds, and the synthesised step
+    // builds nothing.
+    Slot release = declaredRelease != null ? declaredRelease : changelogOnlySlot(slots);
     Postlude postlude = new Postlude(artifacts, artifactsPath, contracts, selector);
     return new Composed(
         qa == null ? null : qaDocument(slots, archetype, selector, qa),
-        release == null ? null : releaseDocument(slots, archetype, selector, release, postlude));
+        releaseDocument(slots, archetype, selector, release, postlude));
+  }
+
+  /**
+   * The release half of a composition that declares none: one {@value #CHANGELOG_ONLY_IMAGE} step
+   * whose declared script is {@code :}, so the step is the platform's prelude (the tag checkout and
+   * the CLI fetch) and its publish block — whose only publish is the changelog — and nothing else.
+   *
+   * <p>Synthesised here rather than added to the {@code spa-frontend} and {@code cli} recipes,
+   * because the rule is "every release", not "every release on those two archetypes": a repository
+   * whose own {@code release.yml} declares only {@code release-request:} gets it too, and so does
+   * every archetype a repository invents. It is attributed to the slot file, the document a person
+   * would add a real {@code release:} slot to.
+   */
+  private static Slot changelogOnlySlot(CiReleaseSlots slots) {
+    return new Slot(
+        new CiPipeline(
+            List.of(
+                new CiStepDecl(
+                    CHANGELOG_ONLY_IMAGE, ":", CHANGELOG_ONLY_TIMEOUT_SECONDS, false, false, ""))),
+        slots.configPath());
   }
 
   /**
@@ -350,12 +412,6 @@ public final class CiReleaseComposer {
       return contracts == null ? List.of() : contracts.packages(repository);
     }
 
-
-    /** Whether anything is published by the platform, which is what places the publish block. */
-    boolean publishes() {
-      return contracts != null
-          || artifacts.stream().anyMatch(a -> a.uploaded() || a.publishesApidocs());
-    }
 
     /**
      * Every entry the composed {@code artifacts:} block carries, and so every row the join owes:
@@ -497,8 +553,9 @@ public final class CiReleaseComposer {
    */
   private static void steps(StringBuilder out, Slot slot, boolean releasePhase, Postlude postlude) {
     List<CiStepDecl> declared = slot.pipeline().steps();
+    // Every release phase's last step publishes — at the very least its changelog (qits-893) — so
+    // the publish block's place is no longer conditional on what the repository declares.
     int last = releasePhase ? publishStep(declared) : -1;
-    int publishAt = releasePhase && postlude.publishes() ? last : -1;
     out.append("steps:\n");
     for (int i = 0; i < declared.size(); i++) {
       CiStepDecl step = declared.get(i);
@@ -521,7 +578,7 @@ public final class CiReleaseComposer {
           script(
               step,
               releasePhase,
-              i == publishAt ? postlude : null,
+              i == last ? postlude : null,
               releasePhase ? postlude : null,
               i == last,
               slot.sourcePath()),
@@ -1128,9 +1185,23 @@ public final class CiReleaseComposer {
             .append('\n');
       }
     }
+    // THE CHANGELOG, last of every release (qits-893), and required: a release that cannot say what
+    // it changed is a red publish. The prelude's fetch is soft on the package (see cliFetch), so a
+    // step that reached here without a `qits` is told why in so many words rather than dying on
+    // `qits: not found`.
+    out.append(
+        "command -v qits > /dev/null 2>&1 || { echo \"qits-ci: the changelog cannot be published:"
+            + " this release step has no qits CLI (QITS_ARTIFACTS_CLI_PACKAGE unset or the fetch was"
+            + " skipped)\" >&2; exit 1; }\n");
+    out.append("qits artifacts publish changelog --version \"$QITS_VERSION\"")
+        .append(META)
+        .append('\n');
   }
 
-  /** The provenance a docs bundle is published with, read from the step's own environment. */
+  /**
+   * The provenance a docs bundle and the changelog are published with, read from the step's own
+   * environment.
+   */
   private static final String META =
       " --meta git.commit.hash=\"$QITS_CI_SHA\" --meta git.repository.name=\"$QITS_CI_REPO_NAME\"";
 

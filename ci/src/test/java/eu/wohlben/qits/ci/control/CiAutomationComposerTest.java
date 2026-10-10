@@ -247,6 +247,24 @@ public class CiAutomationComposerTest {
   }
 
   @Test
+  public void aMultiIdScopeNamesTheCommitAfterItsFirstId(@TempDir Path dir) throws Exception {
+    Scratch scratch = new Scratch(dir);
+    Files.writeString(scratch.seed.resolve("feature.txt"), "two tickets\n");
+    scratch.git(scratch.seed, "add", "feature.txt");
+    scratch.commit(scratch.seed, "chore(qits-1, qits-2): fold two tickets at once");
+    scratch.git(scratch.seed, "push", "-q", scratch.origin.toString(), "release/abc");
+    scratch.fold = scratch.git(scratch.seed, "rev-parse", "HEAD");
+
+    Result run = scratch.run("bash", WRITES, scratch.payload(BRANCH, scratch.fold, "\"out/file.txt\""));
+
+    assertEquals(0, run.exit, run.output);
+    // Not qits-978 from the older single-id subject below it: the newest subject names the commit.
+    assertEquals(
+        "chore(qits-1): update test kind",
+        scratch.git(scratch.origin, "log", "-1", "--format=%s", "refs/heads/" + BRANCH));
+  }
+
+  @Test
   public void nothingChangedUnderThePathsIsUnchangedAndGreen(@TempDir Path dir) throws Exception {
     Scratch scratch = new Scratch(dir);
     Result run =

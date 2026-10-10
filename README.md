@@ -1710,6 +1710,18 @@ userflows: true                # optional; true, or the site name the bundle pub
 
 An SPA frontend's whole file is `archetype: spa-frontend`.
 
+**Every release publishes a changelog** (qits-893). The last release step's publish block always
+ends with `qits artifacts publish changelog --version "$QITS_VERSION"` and the provenance `--meta`
+the docs bundle carries, and it is required: a red publish is a red release run and a failed PUBLISH
+gate. A file — or file plus archetype — that declares no `release:` slot (`spa-frontend`, `cli`, a
+repository declaring only `release-request:`) still composes a release half: one
+`qits/build-images/ci-base:latest` step, 300 s, script `:`, which is the release prelude plus that
+changelog. `artifacts:` or `contracts:` with no declared `release:` steps are still refused. A
+hand-written `ci-event-*.yml` on `SCMRelease` is not composed and publishes no changelog; none exists.
+The changelog reads the gate's reports through `GET /ci/api/runs/{runId}/gate/reports`, asked with
+the publish run's own id: the newest green QA run of the run's release request, or `runId: null` and
+`[]` when there is none.
+
 **`publish: if-changed`** (qits-620) is the one artifact entry qits-ci checks rather than
 believes. Allowed on `maven` and `npm` only — on `docker`, `daemon` and `docs` the key is a parse
 error naming the entry — it needs an `sbom:`, and `always` is the default. The composed postlude

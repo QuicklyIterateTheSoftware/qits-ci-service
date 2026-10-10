@@ -218,14 +218,11 @@ public class PackagedReleaseArchetypesTest {
       }
       for (CiReleaseComposer.Composed composed : compositions) {
         assertNotNull(composed.releaseRequestDocument(), name + " composes no QA document");
-        assertEquals(
-            recipe.release() != null,
-            composed.releaseDocument() != null,
-            name + ": a release document exists exactly when the recipe has a release: slot");
+        // Every composition has a release half, a recipe with no release: slot included: the
+        // composer synthesises one that publishes the changelog (qits-893).
+        assertNotNull(composed.releaseDocument(), name + " composes no release document");
         for (String document :
-            Stream.of(composed.releaseRequestDocument(), composed.releaseDocument())
-                .filter(text -> text != null)
-                .toList()) {
+            List.of(composed.releaseRequestDocument(), composed.releaseDocument())) {
           CiEventTrigger trigger = triggerParser.parse(CiReleaseSlotParser.CONFIG_PATH, document);
           assertFalse(trigger.pipeline().steps().isEmpty(), name + " composed no steps");
           for (CiStepDecl step : trigger.pipeline().steps()) {

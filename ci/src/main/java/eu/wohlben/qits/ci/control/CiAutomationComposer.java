@@ -295,12 +295,13 @@ public final class CiAutomationComposer {
     // writable HOME. Exported, so the kind's script inherits it.
     out.append("[ -n \"${HOME:-}\" ] && [ -w \"$HOME\" ] || export HOME=/tmp\n");
     // The scope of the commit subject: the caller's work item, else the newest one the fold's own
-    // commits name.
+    // commits name — the FIRST of a multi-id scope (`chore(qits-1, qits-2): x`), which used to match
+    // nothing at all and fall through to an older single-id subject.
     out.append("if [ -z \"$item\" ]; then\n");
     out.append("  item=$(git log -n 200 --format=%s 2>/dev/null \\\n");
     out.append(
-        "    | sed -nE 's/^[A-Za-z][A-Za-z0-9_\\/.-]*\\(([A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18})\\)!?:"
-            + " .*/\\1/p' \\\n");
+        "    | sed -nE 's/^[A-Za-z][A-Za-z0-9_\\/.-]*\\(([A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18})"
+            + "(, *[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18})*\\)!?: .*/\\1/p' \\\n");
     out.append("    | head -n 1)\n");
     out.append("fi\n");
     if (qitsCli) {

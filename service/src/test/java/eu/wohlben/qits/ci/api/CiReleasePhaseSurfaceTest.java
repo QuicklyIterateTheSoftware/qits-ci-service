@@ -74,9 +74,10 @@ public class CiReleasePhaseSurfaceTest {
   }
 
   @Test
-  public void aRepositoryWithNoReleaseSlotIsNotDeclared() throws Exception {
+  public void aRepositoryWithNoReleaseSlotIsDeclaredForItsChangelog() throws Exception {
     // The SPA's shape, spelled without an archetype so the case is about the composition rather than
-    // about the wrapper: no release half, so no release run, so no PUBLISH gate to raise.
+    // about the wrapper. It used to have no release half and so no PUBLISH gate; every release
+    // publishes a changelog now (qits-893), so the composer synthesises one and the gate is real.
     String repoId =
         seedTaggedRepository(
             """
@@ -91,7 +92,7 @@ public class CiReleasePhaseSurfaceTest {
             .get(releasePhase(repoId))
             .then()
             .statusCode(200)
-            .body("declared", equalTo(false))
+            .body("declared", equalTo(true))
             .extract()
             .path("detail");
     assertTrue(detail != null && !detail.isBlank(), "the reason travels with the answer");
@@ -100,8 +101,9 @@ public class CiReleasePhaseSurfaceTest {
   @Test
   public void aPackagedArchetypeAnswersFromTheRecipeThisServiceShips() throws Exception {
     // Nothing in the repository but the one line: the recipe is the packaged one, read off the
-    // qits-ci-domain jar on this module's classpath. spa-frontend has no release slot, so an SPA's
-    // tag is not publish-gated — the read a deployed binary is asked right after it goes ACTIVE.
+    // qits-ci-domain jar on this module's classpath. spa-frontend has no release slot, and an SPA's
+    // tag is publish-gated all the same — on its changelog (qits-893) — the read a deployed binary
+    // is asked right after it goes ACTIVE.
     String repoId = seedTaggedRepository("archetype: spa-frontend\n");
 
     given()
@@ -109,7 +111,7 @@ public class CiReleasePhaseSurfaceTest {
         .get(releasePhase(repoId))
         .then()
         .statusCode(200)
-        .body("declared", equalTo(false));
+        .body("declared", equalTo(true));
   }
 
   @Test
@@ -136,7 +138,7 @@ public class CiReleasePhaseSurfaceTest {
     // The one archetype failure that is about the read rather than about the bytes. Staged with the
     // only unreadable answer a healthy git host gives: HttpGitConfigSource refuses a config file
     // over its size bound as UNREACHABLE, so a recipe that large at the tag is a local read that
-    // did not happen. spa-frontend is packaged, so falling through to it would answer 200 false.
+    // did not happen. spa-frontend is packaged, so falling through to it would answer 200.
     String repoId =
         seedTaggedRepository(
             "archetype: spa-frontend\n",

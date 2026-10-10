@@ -1708,10 +1708,13 @@ public class CiEventTriggerService {
    * same revision: the gate asks about {@code refs/tags/<version>}, the evaluation reads at the
    * commit that tag names ({@link #releaseRevision}), and neither reads any other repository.
    *
-   * <p><b>{@code false} is a real answer and not an absence.</b> {@code spa-frontend} and {@code
-   * cli} declare no {@code release:} slot on purpose, and a rev with no {@code release.yml} at all
-   * composes nothing — at an immutable tag that is honest rather than provisional. Both are {@link
-   * Verdict#NOT_DECLARED}, and neither is ever reached from a read that failed.
+   * <p><b>{@code false} is a real answer and not an absence.</b> A rev with no {@code release.yml}
+   * at all composes nothing — at an immutable tag that is honest rather than provisional — and is
+   * {@link Verdict#NOT_DECLARED}, never reached from a read that failed. {@code spa-frontend} and
+   * {@code cli} used to answer it too, for declaring no {@code release:} slot; since every release
+   * publishes a changelog (qits-893) a composition with no such slot gets a synthesised one and
+   * answers {@link Verdict#DECLARED}, so the composed arm below that says otherwise is kept only as
+   * the honest reading of a composer that one day returns no release half again.
    *
    * <p><b>One edge of that is worth knowing rather than guarding.</b> {@code HttpGitConfigSource}
    * maps every 404 to {@code ABSENT} and nothing else — it reads at revs its callers have already

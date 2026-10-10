@@ -118,6 +118,8 @@ steps:
       qits artifacts publish maven --name 'eu.wohlben.qits:qits-registries-common' --path 'common' --sbom 'common/target/sbom.json' --link 'eu.wohlben.qits:qits-blobstore' --version "$QITS_VERSION"
       qits_published_0=$(qits artifacts publish maven --name 'eu.wohlben.qits:qits-registries-npm' --path 'npm' --sbom 'npm/target/sbom.json' --link 'eu.wohlben.qits:qits-blobstore' --link 'eu.wohlben.qits:qits-registries-common' --if-changed --version "$QITS_VERSION")
       echo "$qits_published_0"
+      command -v qits > /dev/null 2>&1 || { echo "qits-ci: the changelog cannot be published: this release step has no qits CLI (QITS_ARTIFACTS_CLI_PACKAGE unset or the fetch was skipped)" >&2; exit 1; }
+      qits artifacts publish changelog --version "$QITS_VERSION" --meta git.commit.hash="$QITS_CI_SHA" --meta git.repository.name="$QITS_CI_REPO_NAME"
       case "$qits_published_0" in published\ *) qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-registries-npm' --version "$QITS_VERSION" --file 'npm/target/sbom.json' ;; esac
       if [ -f 'blobstore/target/sbom.json' ]; then
         qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-blobstore' \

@@ -174,6 +174,8 @@ steps:
       # --- platform postlude --------------------------------------------------------
       : "${QITS_ARTIFACTS_CLI_PACKAGE:?this release publishes or submits an SBOM, and the qits CLI is not configured on this deployment}"
       qits artifacts publish npm --name '@qits/ui-components' --path 'dist/qits-spa-ui-components' --sbom 'sbom.json' --version "$QITS_VERSION"
+      command -v qits > /dev/null 2>&1 || { echo "qits-ci: the changelog cannot be published: this release step has no qits CLI (QITS_ARTIFACTS_CLI_PACKAGE unset or the fetch was skipped)" >&2; exit 1; }
+      qits artifacts publish changelog --version "$QITS_VERSION" --meta git.commit.hash="$QITS_CI_SHA" --meta git.repository.name="$QITS_CI_REPO_NAME"
       if [ -f 'sbom.json' ]; then
         qits artifacts publish sbom submit --type 'npm' --name '@qits/ui-components' \
           --version "$QITS_VERSION" --file 'sbom.json'

@@ -2260,6 +2260,9 @@ phase.
   lets a repository declare its own `release:` on top of a publish-free archetype. So qits-ci
   answers: `CiEventTriggerService.releasePhaseAt` composes at the rev and reports
   `DECLARED`/`NOT_DECLARED`/`UNKNOWN`, and `CiRepositoryController` maps the third to **503**.
+  **Since qits-893 every composition has a release half** — one with no `release:` slot gets a
+  synthesised changelog-only step (`CiReleaseComposer.changelogOnlySlot`) — so an SPA or a CLI now
+  answers `DECLARED` and `NOT_DECLARED` is left to a rev with no `release.yml` at all.
   <br>**Three answers, because a boolean has to give a failure a side and both sides are wrong.** A
   `false` derived from a read that did not happen publishes a release nothing gated; a `true` derived
   from one hangs a request behind a gate nobody can answer. So `UNKNOWN` is reserved for the question

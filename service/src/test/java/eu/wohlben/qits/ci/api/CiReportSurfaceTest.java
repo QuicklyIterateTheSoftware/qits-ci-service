@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.api;
 
 import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasKey;
 import static org.hamcrest.Matchers.not;
@@ -43,8 +44,8 @@ import org.junit.jupiter.api.Test;
 /**
  * The release-report doors' shapes (qits-983, epic qits-754 Design §5): the four reads — a run's
  * reports with its baseline, one report with its payload, the baseline, the baseline's reports of a
- * kind — and the submit door's own refusals past the binding (413, the highlight count, a bad kind)
- * and its replace. Who may knock is {@code MachineGuardTest}'s; this file runs on its profile rather
+ * kind — the gate's reports a publish run's changelog reads (qits-893), and the submit door's own
+ * refusals past the binding (413, the highlight count, a bad kind) and its replace. Who may knock is {@code MachineGuardTest}'s; this file runs on its profile rather
  * than a new one, so it costs no extra Quarkus start.
  *
  * <p>The fixture is a repository with one released version whose gating QA run holds a coverage and
@@ -265,6 +266,76 @@ class CiReportSurfaceTest {
         .body("size()", equalTo(0));
     given().when().get("/ci/api/runs/" + asking.id + "/baseline/reports/Not_A_Kind").then().statusCode(400);
     given().when().get("/ci/api/runs/no-such-run/baseline/reports/coverage").then().statusCode(404);
+  }
+
+  @Test
+  @TestSecurity(user = "ticket-agent", roles = {AGENT})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void theGateReportsAreTheGreenQaRunsOfTheRunsOwnRequest() {
+    // The publish run asks with its own id and is answered about the QA run that gated rr-base:
+    // the gate's coordinates, both its reports, no baseline.
+    given()
+        .when()
+        .get("/ci/api/runs/" + releaseRun.id + "/gate/reports")
+        .then()
+        .statusCode(200)
+        .body("runId", equalTo(gate.id))
+        .body("commitSha", equalTo(gate.commitSha))
+        .body("releaseRequestId", equalTo("rr-base"))
+        .body("$", hasKey("baseline"))
+        .body("baseline", nullValue())
+        .body("reports.size()", equalTo(2))
+        .body("reports.kind", containsInAnyOrder("coverage", "test-results"))
+        .body("reports[0]", not(hasKey("payload")));
+    given().when().get("/ci/api/runs/no-such-run/gate/reports").then().statusCode(404);
+  }
+
+  @Test
+  @TestSecurity(user = "ticket-agent", roles = {AGENT})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void noGreenQaRunForTheRequestIsANullGateAndNoReports() {
+    // rr-x was gated by nothing green: its only QA run is the lonely one, still RUNNING.
+    given()
+        .when()
+        .get("/ci/api/runs/" + lonely.id + "/gate/reports")
+        .then()
+        .statusCode(200)
+        .body("$", hasKey("runId"))
+        .body("runId", nullValue())
+        .body("commitSha", nullValue())
+        .body("releaseRequestId", equalTo("rr-x"))
+        .body("baseline", nullValue())
+        .body("reports.size()", equalTo(0));
+  }
+
+  @Test
+  @TestSecurity(user = "ticket-agent", roles = {AGENT})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void aRedQaRunIsNeverTheGate() throws Exception {
+    // A request whose only QA run failed has no gate, however many reports that run submitted.
+    CiRun red =
+        run(repo, CiRunPhase.RELEASE_REQUEST, "release/rr-red", "rr-red", CiRunStatus.FAILED, 5);
+    store.submit(red.id, 0, "test-results", submission("{\"totals\":{\"tests\":3}}", null));
+    CiRun publish =
+        run(repo, CiRunPhase.RELEASE, "2026.1003.60000", "rr-red", CiRunStatus.RUNNING, 6);
+    given()
+        .when()
+        .get("/ci/api/runs/" + publish.id + "/gate/reports")
+        .then()
+        .statusCode(200)
+        .body("runId", nullValue())
+        .body("releaseRequestId", equalTo("rr-red"))
+        .body("reports.size()", equalTo(0));
+
+    // And a newer red QA run of a request that WAS gated green does not displace the green one.
+    run(repo, CiRunPhase.RELEASE_REQUEST, "release/rr-base", "rr-base", CiRunStatus.FAILED, 7);
+    given()
+        .when()
+        .get("/ci/api/runs/" + releaseRun.id + "/gate/reports")
+        .then()
+        .statusCode(200)
+        .body("runId", equalTo(gate.id))
+        .body("reports.size()", equalTo(2));
   }
 
   @Test
