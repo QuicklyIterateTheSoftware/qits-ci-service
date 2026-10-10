@@ -3,6 +3,7 @@ package eu.wohlben.qits.ci.control;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.control.CiConfigSource.EventTriggerFile;
@@ -125,6 +126,59 @@ public class PackagedPlatformPipelinesTest {
         packaged().stream()
             .map(file -> triggerParser.parse(file.path(), file.content()).eventName())
             .toList());
+  }
+
+  // --- qits-cli: true on a packaged pipeline (qits-893) -----------------------------------------
+
+  @Test
+  public void theMaintenanceBumpStepStartsWithTheHardCliFetch() throws Exception {
+    EventTriggerFile bump =
+        packaged().stream()
+            .filter(file -> file.path().endsWith("maintenance-bump.yml"))
+            .findFirst()
+            .orElseThrow();
+    assertTrue(
+        Files.readString(SOURCE.resolve("maintenance-bump.yml")).contains("\nqits-cli: true\n"),
+        "the file declares the CLI");
+    assertFalse(bump.content().contains("\nqits-cli:"), "the key never reaches the trigger parser");
+    List<CiStepDecl> steps = triggerParser.parse(bump.path(), bump.content()).pipeline().steps();
+    assertEquals(1, steps.size(), "one step, so one commit");
+    for (CiStepDecl step : steps) {
+      StringBuilder fetch = new StringBuilder();
+      CiReleaseComposer.cliFetch(fetch, step.image(), CiReleaseComposer.CliFetch.AUTOMATION);
+      assertTrue(step.script().startsWith(CiPlatformPipelines.QITS_CLI_HEADER + fetch), step.script());
+      assertTrue(
+          step.script()
+              .contains(
+                  "qits changelog bump-message --group \"$group\" --applied /tmp/bump-applied.tsv"),
+          step.script());
+      assertTrue(step.script().contains("commit -q --cleanup=verbatim -F /tmp/bump-message.txt"));
+      assertFalse(step.script().contains("printf 'bump(%s)"), "the message is the CLI's alone");
+    }
+  }
+
+  @Test
+  public void aPipelineWithoutQitsCliIsUnchangedAndAnyOtherValueOrShapeIsRefused() {
+    String plain = "event: E\nsteps:\n  - image: alpine:3\n    script: |\n      echo hi\n";
+    assertEquals(plain, CiPlatformPipelines.withQitsCli("p.yml", plain));
+    String composed =
+        CiPlatformPipelines.withQitsCli(
+            "p.yml", "event: E\nqits-cli: true\nsteps:\n  - image: alpine:3\n    script: |\n      echo hi\n");
+    assertTrue(
+        composed.endsWith("\n      echo hi\n")
+            && composed.contains("      " + CiPlatformPipelines.QITS_CLI_HEADER),
+        composed);
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            CiPlatformPipelines.withQitsCli(
+                "p.yml", "event: E\nqits-cli: yes-please\nsteps:\n  - image: a\n    script: |\n      x\n"));
+    // An inline scalar has no block to prepend into: a broken build, never a step without its CLI.
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            CiPlatformPipelines.withQitsCli(
+                "p.yml", "event: E\nqits-cli: true\nsteps:\n  - image: a\n    script: echo hi\n"));
   }
 
   // --- the composed screenshot-baselines automation ---------------------------------------------
@@ -380,6 +434,16 @@ public class PackagedPlatformPipelinesTest {
     assertTrue(
         script.indexOf("export " + CiAutomationComposer.MESSAGE_ENV) < body,
         "the message file is named before the script runs");
+    // qits-893: the changelog CLI composes the body and names the tickets heading the subject.
+    StringBuilder fetch = new StringBuilder();
+    CiReleaseComposer.cliFetch(fetch, step.image(), CiReleaseComposer.CliFetch.AUTOMATION);
+    int fetched = script.indexOf(fetch.toString());
+    assertTrue(fetched > 0 && fetched < body, "the pinned CLI is on PATH before the script runs");
+    assertTrue(
+        script.indexOf("export " + CiAutomationComposer.TICKETS_ENV) < body,
+        "the tickets file is named before the script runs");
+    assertTrue(script.indexOf("qits changelog bump-message", body) > body, script);
+    assertTrue(script.contains("commit -q --cleanup=verbatim -F "), "the `# <version>` headings survive");
     String kindScript =
         script.substring(
             script.indexOf('\n', body) + 1,

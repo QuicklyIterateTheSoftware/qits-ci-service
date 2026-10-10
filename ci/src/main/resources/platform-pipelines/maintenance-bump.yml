@@ -74,10 +74,21 @@
 # entry in `.gitmodules`, one row in the inventory, one commit on the shared branch,
 # released through the same door as everything else.
 #
-# GITLINK REPLACES THE `ci-event-upstream-frontend.yml` HOP FILES: one pin, one row in the
-# inventory, one commit on the shared branch, released through the same door as everything
-# else.
+# THE COMMIT MESSAGE IS THE CHANGELOG'S (qits-893). The step records what it applied in
+# /tmp/bump-applied.tsv - `<ecosystem>\t<name>` per line, only for a change that really moved
+# the index, so the file covers exactly the one commit's changes - beside the human body in
+# /tmp/bump-body.txt, and hands both to `qits changelog bump-message`, which writes the
+# whole message: the `bump(<group>): ...` subject, and the changelog sections of every
+# applied dependency's released versions, `# <version>` headings included. So the commit
+# is `--cleanup=verbatim`: git's default cleanup strips every line starting with `#`, and
+# would take those headings with it. A CLI that fails fails the step - a bump never
+# commits a message it could not compose.
+#
+# `qits-cli: true` is what puts that CLI on PATH: CiPlatformPipelines strips the key and
+# prepends the pinned, hard AUTOMATION fetch (CiReleaseComposer.cliFetch) to the step
+# script, so a step whose CLI cannot be fetched fails before it touches the branch.
 event: MaintenanceBump
+qits-cli: true
 steps:
   - image: qits/build-images/node-base:latest
     timeout-seconds: 1800
@@ -345,6 +356,7 @@ steps:
       # only when it moves the index - the start may already carry it - so the subject says
       # what this commit really changes.
       : > /tmp/bump-body.txt
+      : > /tmp/bump-applied.tsv
       applied=0
       tab=$(printf '\t')
       while IFS="$tab" read -r ecosystem name from to manifest location <&3; do
@@ -514,6 +526,7 @@ steps:
         else
           applied=$((applied + 1))
           echo "- $ecosystem $name $from -> $to ($manifest)" >> /tmp/bump-body.txt
+          printf '%s\t%s\n' "$ecosystem" "$name" >> /tmp/bump-applied.tsv
           echo "bumped $name to $to in $manifest"
         fi
       done 3< /tmp/bump-changes.tsv
@@ -559,10 +572,11 @@ steps:
         echo "$branch is already this one commit on $base - nothing to push"
         exit 0
       fi
-      {
-        printf 'bump(%s): %d dependencies\n\n' "$group" "$applied"
-        cat /tmp/bump-body.txt
-      } > /tmp/bump-message.txt
-      git -c user.name="qits maintenance" -c user.email="$bot" commit -q -F /tmp/bump-message.txt
+      # The message is the changelog CLI's - see the header. `>` into a file and then -F,
+      # so a failing CLI stops the step under `set -e` before anything is committed.
+      qits changelog bump-message --group "$group" --applied /tmp/bump-applied.tsv \
+          --body /tmp/bump-body.txt > /tmp/bump-message.txt
+      git -c user.name="qits maintenance" -c user.email="$bot" \
+          commit -q --cleanup=verbatim -F /tmp/bump-message.txt
       push HEAD
       echo "pushed $branch: one commit, $applied dependencies"

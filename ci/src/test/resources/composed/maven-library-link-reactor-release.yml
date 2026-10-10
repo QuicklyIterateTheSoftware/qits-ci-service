@@ -142,6 +142,8 @@ steps:
         qits_published_0=$qits_dry_run_0
       fi
       echo "$qits_published_0"
+      command -v qits > /dev/null 2>&1 || { echo "qits-ci: the changelog cannot be published: this release step has no qits CLI (QITS_ARTIFACTS_CLI_PACKAGE unset or the fetch was skipped)" >&2; exit 1; }
+      qits artifacts publish changelog --version "$QITS_VERSION" --meta git.commit.hash="$QITS_CI_SHA" --meta git.repository.name="$QITS_CI_REPO_NAME"
       case "$qits_published_0" in published\ *) qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-registries-npm' --version "$QITS_VERSION" --file 'npm/target/sbom.json' ;; esac
       case "$qits_published_1" in published\ *) qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-blobstore' --version "$QITS_VERSION" --file 'blobstore/target/sbom.json' ;; esac
       case "$qits_published_2" in published\ *) qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-registries-common' --version "$QITS_VERSION" --file 'common/target/sbom.json' ;; esac

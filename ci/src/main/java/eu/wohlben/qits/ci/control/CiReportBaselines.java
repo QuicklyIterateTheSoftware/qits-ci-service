@@ -33,9 +33,11 @@ import java.util.Optional;
  * </ol>
  *
  * <p><b>Why the release row comes first.</b> A repository with no deployment — an spa-frontend, an
- * npm-library, a maven-library — has no release recipe and therefore no {@code RELEASE}-phase run at
+ * npm-library, a maven-library — had no release recipe and therefore no {@code RELEASE}-phase run at
  * all, so a lookup that went through that run found no baseline for any of them however many times
- * they had released. The request id {@code SCMRelease} carries is the same fact without the detour.
+ * they had released. Every release has a run since the changelog (qits-893), but every version
+ * released before it still has none, and the request id {@code SCMRelease} carries is the same fact
+ * without the detour.
  *
  * <p><b>The run's own release request is excluded.</b> Once a request has released, the newest
  * version is the one it produced, and comparing a run with itself is no baseline; such a version is
@@ -99,6 +101,27 @@ public class CiReportBaselines {
       return gate.map(qa -> new Baseline(release.version, qa.id, requestId, tagSha));
     }
     return Optional.empty();
+  }
+
+  /**
+   * The run that gated {@code run}'s release request: the newest {@code SUCCESS} {@code
+   * RELEASE_REQUEST}-phase run of its repository for the same request (qits-893). A publish run's
+   * changelog reads the reports its gate submitted, and this is the third step above without the
+   * first two — the request is the run's own, so no release row has to be found.
+   *
+   * <p>Empty for a run that names no request, and for a request no green QA run gated: a red one is
+   * not the gate, it is the reason the request had not released yet.
+   */
+  public Optional<CiRun> gateOf(CiRun run) {
+    if (run == null || run.repoId == null || run.releaseRequestId == null) {
+      return Optional.empty();
+    }
+    return newestRun(
+        run,
+        " and phase = ?3 and status = ?4 and releaseRequestId = ?5",
+        CiRunPhase.RELEASE_REQUEST,
+        CiRunStatus.SUCCESS,
+        run.releaseRequestId);
   }
 
   /** The newest {@code RELEASE}-phase run of {@code version} that names its release request. */

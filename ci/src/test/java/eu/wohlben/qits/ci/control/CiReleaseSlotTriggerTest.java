@@ -978,15 +978,23 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
   }
 
   @Test
-  public void aSlotFileDeclaringNothingForThisEventRecordsNothingForIt() throws Exception {
-    // An SPA frontend publishes nothing, so its composed release document does not exist — and "no
-    // document" has to mean "no run" rather than a trivially green release that announces a version.
+  public void aSlotFileDeclaringNoReleaseSlotStillRecordsItsChangelogRelease() throws Exception {
+    // An SPA frontend publishes no artifact, and used to get no release document and so no run.
+    // Every release publishes a changelog now (qits-893): the composer synthesises a one-step
+    // release half for it, and the release event records that run. It announces nothing — the
+    // composed document declares no artifacts: — so no version is offered that was not published.
     seedSlots("archetype: spa-frontend\n");
     seedArchetype("spa-frontend", SPA_FRONTEND);
 
     deliver(release());
 
-    assertEquals(List.of(), runService.runsFor(repoId));
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(1, recorded.size());
+    assertEquals(CiReleaseSlotParser.CONFIG_PATH, recorded.get(0).configPath);
+    assertTrue(
+        recorded.get(0).triggerConfig.contains("qits artifacts publish changelog"),
+        recorded.get(0).triggerConfig);
+    assertFalse(recorded.get(0).triggerConfig.contains("artifacts:"), recorded.get(0).triggerConfig);
   }
 
   // --- retrying a composed run ----------------------------------------------------------------------

@@ -47,12 +47,26 @@
 # busybox's: the four programs below stick to POSIX awk (match/substr/index/sub) so either runs
 # them.
 #
+# THE COMMIT MESSAGE CARRIES THE CHANGELOGS (qits-893), as `../maintenance-bump.yml`'s does: the
+# apply records `<ecosystem>\t<name>` per change in /tmp/bump-applied.tsv beside the human body,
+# and `qits changelog bump-message` (on PATH: `qits-cli: true`) composes the message from both and
+# the payload's `changes[].changelog`. Its subject is NOT used - this kind's type and item are the
+# platform's, so the CLI's `bump(<group>)` is discarded and its group word is a placeholder. What
+# is kept: the tickets its `chore(<id>, <id>): ` prefix names, written space-separated to
+# $QITS_AUTOMATION_TICKETS (the postlude puts them at the head of the subject, ahead of
+# `bump(<item>): `), and everything from its third line on - the body and the changelog sections,
+# `# <version>` headings and all - below this kind's own `<N> dependencies` description. The
+# postlude commits `--cleanup=verbatim`, so those headings survive. A CLI that fails fails the step.
+# A run whose edits changed nothing (every manifest already at its pin - the fold carries an
+# earlier run's commit) never calls the CLI: the postlude prints `unchanged` and reads no message.
+#
 # READING THE PAYLOAD AND FETCHING A SIBLING are the two things this kind does that the others
 # do not, and both are confined: the payload is read for `.changes` alone (`branch`, `baseRef`
 # and the rest stay the prelude's), and the one fetch is a gitlink's sibling tag, which writes
 # no ref of this repository.
 image: qits/build-images/node-browser-base:latest
 timeout-seconds: 1800
+qits-cli: true
 commit-type: bump
 script: |
   # --- the changes, one line each ----------------------------------------------------
@@ -212,6 +226,7 @@ script: |
   # Every value reaches an argv, an awk -v, a URL or an index entry, so the charset is refused
   # rather than quoted. Nothing legitimate needs a character outside these sets.
   : > /tmp/bump-body.txt
+  : > /tmp/bump-applied.tsv
   while IFS="$us" read -r ecosystem name from to manifest location <&3; do
     case "$to" in ''|*[!0-9A-Za-z._+-]*) echo "refusing an implausible version: $to" >&2; exit 1 ;; esac
     # `from` is not checked: it reaches the commit body and nothing else.
@@ -360,12 +375,35 @@ script: |
         ;;
     esac
     echo "- $ecosystem $name $from -> $to ($manifest)" >> /tmp/bump-body.txt
+    printf '%s\t%s\n' "$ecosystem" "$name" >> /tmp/bump-applied.tsv
     echo "bumped $name to $to in $manifest"
   done 3< /tmp/bump-changes.txt
 
   # --- the commit message: the description, then the body ------------------------------
   # The postlude commits it as `bump(<item>): ...`; the type and the item are not ours to write.
+  # The tickets and the changelogs are the CLI's - see the header. Nothing changed, nothing to
+  # compose: the postlude reads no message from a run with nothing staged.
+  if [ -z "$(git status --porcelain --ignore-submodules=none)" ]; then
+    printf '%d dependencies\n' "$count" > "$QITS_AUTOMATION_MESSAGE"
+    exit 0
+  fi
+  # `>` into a file, so a failing CLI stops the step under -e before anything is read from it.
+  qits changelog bump-message --group automation --applied /tmp/bump-applied.tsv \
+      --body /tmp/bump-body.txt > /tmp/bump-cli-message.txt
+  first=$(head -n 1 /tmp/bump-cli-message.txt)
+  case "$first" in
+    'chore('*'): bump('*)
+      ids=${first#chore(}
+      ids=${ids%%): bump(*}
+      printf '%s\n' "$ids" | sed 's/, / /g' > "$QITS_AUTOMATION_TICKETS"
+      ;;
+    'bump('*) ;;
+    *)
+      echo "qits changelog bump-message printed an unexpected subject: $first" >&2
+      exit 1
+      ;;
+  esac
   {
     printf '%d dependencies\n' "$count"
-    cat /tmp/bump-body.txt
+    tail -n +3 /tmp/bump-cli-message.txt
   } > "$QITS_AUTOMATION_MESSAGE"

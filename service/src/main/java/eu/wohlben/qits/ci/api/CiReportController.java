@@ -43,7 +43,8 @@ import org.jboss.logging.Logger;
 
 /**
  * Release reports (epic qits-754, Design §5): the run-bound door a QA step submits its reports
- * through, and the four generic reads the release-request page and the run view draw them from.
+ * through, the four generic reads the release-request page and the run view draw them from, and the
+ * gate's reports a publish run's changelog reads (qits-893).
  *
  * <p><b>Generic over kinds.</b> A report is a kind name, a kind version, opaque highlights and an
  * opaque payload; nothing here knows what {@code test-results} or {@code coverage} mean, so a new
@@ -165,6 +166,41 @@ public class CiReportController {
         run.releaseRequestId,
         baselineOf(run).orElse(null),
         store.forRun(runId).stream().map(store::summary).toList());
+  }
+
+  /**
+   * The reports of the QA run that gated this run's release request (qits-893): what a publish run's
+   * changelog reads, asked with the publish run's own id because that is the one id its step holds
+   * ({@code $QITS_CI_RUN_ID}). The answer is shaped like {@link #reports} for the GATE run — its id,
+   * its commit, its request — with no baseline, since a changelog compares nothing.
+   *
+   * <p>No gate is a 200, not a 404: a run naming no request, or one whose request no green QA run
+   * gated, answers its own request id, a null run and commit, and {@code []}. Only an unknown run is
+   * a 404.
+   */
+  @GET
+  @Path("/{runId}/gate/reports")
+  @Operation(
+      summary =
+          "The release reports of the green QA run that gated this run's release request, without"
+              + " payloads")
+  @APIResponse(
+      responseCode = "200",
+      description = "The gate run's reports; runId null and [] when no green QA run gated the request")
+  @APIResponse(responseCode = "404", description = "No such run")
+  public CiRunReportsDto gateReports(@PathParam("runId") String runId) {
+    CiRun run = runService.requireRun(runId);
+    return baselines
+        .gateOf(run)
+        .map(
+            gate ->
+                new CiRunReportsDto(
+                    gate.id,
+                    gate.commitSha,
+                    gate.releaseRequestId,
+                    null,
+                    store.forRun(gate.id).stream().map(store::summary).toList()))
+        .orElseGet(() -> new CiRunReportsDto(null, null, run.releaseRequestId, null, List.of()));
   }
 
   @GET

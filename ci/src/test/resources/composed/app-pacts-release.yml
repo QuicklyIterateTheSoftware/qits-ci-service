@@ -97,6 +97,8 @@ steps:
       : "${QITS_ARTIFACTS_CLI_PACKAGE:?this release publishes or submits an SBOM, and the qits CLI is not configured on this deployment}"
       qits artifacts publish contract --kind 'pacts' --ecosystem 'maven' --name 'eu.wohlben.qits:qits-landing-app-pacts-qits-projects-service' --application 'qits-landing' --provider 'qits-projects-service' --from 'pacts/' --version "$QITS_VERSION"
       qits artifacts publish contract --kind 'pacts' --ecosystem 'maven' --name 'eu.wohlben.qits:qits-landing-app-pacts-qits-githost-service' --application 'qits-landing' --provider 'qits-githost-service' --from 'pacts/' --version "$QITS_VERSION"
+      command -v qits > /dev/null 2>&1 || { echo "qits-ci: the changelog cannot be published: this release step has no qits CLI (QITS_ARTIFACTS_CLI_PACKAGE unset or the fetch was skipped)" >&2; exit 1; }
+      qits artifacts publish changelog --version "$QITS_VERSION" --meta git.commit.hash="$QITS_CI_SHA" --meta git.repository.name="$QITS_CI_REPO_NAME"
       if [ -f '.sbom/sbom.json' ]; then
         qits artifacts publish sbom submit --type 'docker' --name 'qits/qits-landing' \
           --version "$QITS_VERSION" --file '.sbom/sbom.json'

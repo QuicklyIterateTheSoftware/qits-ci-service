@@ -26,12 +26,61 @@ import org.junit.jupiter.api.io.TempDir;
  * <p>Needs {@code git} and {@code node} on the host, as the step image carries them; a host
  * without them skips rather than fails. The script's {@code /tmp/} scratch paths are rewritten into
  * the test's own directory, so concurrent runs cannot share them.
+ *
+ * <p><b>The qits CLI is a stand-in (qits-893).</b> The pipeline declares {@code qits-cli: true}, so
+ * the step script starts with the pinned CLI fetch; the step is asserted to start with exactly that
+ * text and is run from just after it, with {@link #FAKE_QITS} first on {@code PATH} in place of
+ * what the fetch would have put there. The fake records its arguments and the applied list it was
+ * handed, and composes a message the way the real one does - a subject counting the applied lines,
+ * the body, and changelog sections whose {@code # <version>} headings the commit has to keep.
  */
 public class MaintenanceBumpBranchTest {
 
   private static final String BRANCH = "maintenance/libs";
   private static final String TAG = "2026.1006.62612";
   private static final String BOT = "maintenance@qits.local";
+
+  /**
+   * {@code qits} for the step: {@code changelog bump-message --group <g> --applied <tsv> --body
+   * <file>} records its argv, the applied list and the body under {@code $QITS_FAKE_RECORD}, and
+   * prints {@code bump(<g>): <applied lines> dependencies}, the body and {@link #CHANGELOG};
+   * {@code $QITS_FAKE_FAIL} makes it fail as a real CLI error would.
+   */
+  private static final String FAKE_QITS =
+      """
+      #!/bin/sh
+      set -eu
+      record=${QITS_FAKE_RECORD:?}
+      printf '%s\\n' "$*" >> "$record/calls"
+      [ "$1 $2" = "changelog bump-message" ] || { echo "fake qits: unexpected $*" >&2; exit 64; }
+      shift 2
+      group= applied= body=
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --group) group=$2; shift ;;
+          --applied) applied=$2; shift ;;
+          --body) body=$2; shift ;;
+          *) echo "fake qits: unknown option $1" >&2; exit 64 ;;
+        esac
+        shift
+      done
+      cp "$applied" "$record/applied"
+      cp "$body" "$record/body"
+      if [ -n "${QITS_FAKE_FAIL:-}" ]; then
+        echo "fake qits: no changelog for you" >&2
+        exit 3
+      fi
+      printf 'bump(%s): %d dependencies\\n\\n' "$group" "$(wc -l < "$applied")"
+      cat "$body"
+      printf '\\n# 2026.1010.1\\n\\n## Fixed\\n- a fixed thing\\n\\n#not-a-heading-either\\n'
+      """;
+
+  /** The changelog part {@link #FAKE_QITS} appends after the body. */
+  private static final String CHANGELOG =
+      "\n# 2026.1010.1\n\n## Fixed\n- a fixed thing\n\n#not-a-heading-either\n";
+
+  private Path fakeBin;
+  private Path record;
 
   @TempDir Path dir;
 
@@ -43,6 +92,10 @@ public class MaintenanceBumpBranchTest {
   @BeforeEach
   void anEstateWithAnOldBranchAndANewerRelease() throws Exception {
     assumeTrue(available("node"), "node is needed to run the step");
+    fakeBin = Files.createDirectories(dir.resolve("fake-bin"));
+    Files.writeString(fakeBin.resolve("qits"), FAKE_QITS);
+    assertTrue(fakeBin.resolve("qits").toFile().setExecutable(true));
+    record = Files.createDirectories(dir.resolve("fake-record"));
     remote = dir.resolve("remotes").resolve("target.git");
     Files.createDirectories(remote.getParent());
     git(dir, "init", "-q", "--bare", "--initial-branch=main", remote.toString());
@@ -96,6 +149,26 @@ public class MaintenanceBumpBranchTest {
     assertTrue(message.contains("- maven eu.wohlben:lib 1.0.0 -> 1.1.0 (pom.xml)"), message);
     assertTrue(message.contains("- gitlink qits-sibling "), message);
     assertEquals(BOT, out(remote, "log", "-1", "--format=%ae", branchHead()));
+    // ONE commit, so ONE message from the changelog CLI, told about EVERY change the commit
+    // applies - and kept verbatim, its `#` lines included.
+    assertEquals(
+        "maven\teu.wohlben:lib\ngitlink\tqits-sibling\n", Files.readString(record.resolve("applied")));
+    String body = Files.readString(record.resolve("body"));
+    assertEquals(
+        "bump(libs): 2 dependencies\n\n" + body + CHANGELOG, commitMessage(branchHead()));
+    List<String> calls = Files.readAllLines(record.resolve("calls"));
+    assertEquals(1, calls.size(), calls.toString());
+    assertTrue(calls.getFirst().startsWith("changelog bump-message --group libs --applied "), calls.toString());
+    assertTrue(calls.getFirst().contains("/bump-applied.tsv --body "), calls.toString());
+    assertTrue(calls.getFirst().endsWith("/bump-body.txt"), calls.toString());
+  }
+
+  @Test
+  public void aChangelogCliThatFailsCommitsAndPushesNothing() throws Exception {
+    Run run = step(payload(oldHead, true, true), null, Map.of("QITS_FAKE_FAIL", "1"));
+    assertNotEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains("fake qits: no changelog for you"), run.output);
+    assertEquals(oldHead, branchHead(), "a message the CLI could not compose was committed anyway");
   }
 
   @Test
@@ -126,6 +199,8 @@ public class MaintenanceBumpBranchTest {
     String message = out(remote, "log", "-1", "--format=%B", branchHead());
     assertTrue(message.startsWith("bump(libs): 1 dependencies\n\n"), message);
     assertTrue(!message.contains("maven"), message);
+    // A change the base already carries is not handed to the changelog CLI either.
+    assertEquals("gitlink\tqits-sibling\n", Files.readString(record.resolve("applied")));
   }
 
   @Test
@@ -295,13 +370,23 @@ public class MaintenanceBumpBranchTest {
   }
 
   private Run step(String payload, String prePushHook) throws Exception {
+    return step(payload, prePushHook, Map.of());
+  }
+
+  private Run step(String payload, String prePushHook, Map<String, String> extraEnv)
+      throws Exception {
     EventTriggerFile file =
         new CiPlatformPipelines().files().stream()
             .filter(f -> f.path().endsWith("maintenance-bump.yml"))
             .findFirst()
             .orElseThrow();
-    String script =
-        new CiEventTriggerParser().parse(file.path(), file.content()).pipeline().steps().getFirst().script();
+    CiPipeline.CiStepDecl declared =
+        new CiEventTriggerParser().parse(file.path(), file.content()).pipeline().steps().getFirst();
+    // The pinned CLI fetch qits-cli: true prepends, exactly - and then the step from just after it,
+    // with the fake on PATH where the fetch would have put the real binary.
+    String fetch = CiPlatformPipelines.fetch(declared.image());
+    assertTrue(declared.script().startsWith(fetch), "the CLI fetch leads the step:\n" + declared.script());
+    String script = declared.script().substring(fetch.length());
     Path scratch = Files.createTempDirectory(dir, "scratch");
     Path clone = Files.createTempDirectory(dir, "step");
     Files.delete(clone);
@@ -312,12 +397,23 @@ public class MaintenanceBumpBranchTest {
       Files.writeString(hook, prePushHook);
       assertTrue(hook.toFile().setExecutable(true));
     }
-    Process process =
-        start(clone, Map.of("QITS_EVENT_PAYLOAD", payload, "QITS_CI_REPOSITORY_URL", remote.toString()),
-            "sh", "-c", script.replace("/tmp/", scratch + "/"));
+    Map<String, String> env = new java.util.HashMap<>(extraEnv);
+    env.put("QITS_EVENT_PAYLOAD", payload);
+    env.put("QITS_CI_REPOSITORY_URL", remote.toString());
+    env.put("QITS_FAKE_RECORD", record.toString());
+    env.put("PATH", fakeBin + ":" + System.getenv("PATH"));
+    Process process = start(clone, env, "sh", "-c", script.replace("/tmp/", scratch + "/"));
     String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
     assertTrue(process.waitFor(60, TimeUnit.SECONDS), "a step did not return");
     return new Run(process.exitValue(), output);
+  }
+
+  /** A commit's message exactly as stored: everything after the header's blank line. */
+  private String commitMessage(String commit) throws Exception {
+    Process process = start(remote, Map.of(), "git", "cat-file", "commit", commit);
+    String raw = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    assertTrue(process.waitFor(30, TimeUnit.SECONDS));
+    return raw.substring(raw.indexOf("\n\n") + 2);
   }
 
   private String branchHead() throws Exception {
