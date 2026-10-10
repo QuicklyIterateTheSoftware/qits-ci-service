@@ -174,13 +174,23 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
   }
 
   private CiEventTriggerService.Arrival releaseRequest() {
+    return releaseRequest(null);
+  }
+
+  /**
+   * A re-fold stating its pre-run state, or none when {@code preRun} is null — the shape every
+   * qits-projects before qits-1133 publishes.
+   */
+  private CiEventTriggerService.Arrival releaseRequest(String preRun) {
     return new CiEventTriggerService.Arrival(
         UUID.randomUUID().toString(),
         CiReleaseComposer.RELEASE_REQUEST_EVENT,
         Instant.parse("2026-09-06T09:00:00Z"),
         "{\"repoName\":\"qits-target\",\"backingBranch\":\"release/abc\",\"mergedSha\":\""
             + MERGED_SHA
-            + "\",\"releaseRequestId\":\"a1b2c3\"}");
+            + "\",\"releaseRequestId\":\"a1b2c3\""
+            + (preRun == null ? "" : ",\"preRun\":\"" + preRun + "\"")
+            + "}");
   }
 
   private CiEventTriggerService.Arrival release() {
@@ -401,6 +411,46 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
         recorded.stream().allMatch(run -> CiReleaseSlotParser.CONFIG_PATH.equals(run.configPath)));
     assertEquals(
         2, recorded.stream().map(run -> run.triggerEventName).distinct().count());
+  }
+
+  // --- the pre-run: a fold whose automations are still to come builds nothing (qits-1133) ---------
+
+  @Test
+  public void aFoldAnnouncedWithItsPreRunPendingRecordsNoQaRunAndIsSettled() throws Exception {
+    // The automations run BEFORE QA: their commits re-fold the request, so QA of this fold would be
+    // a verdict about a fold that is about to be replaced. Nothing builds, and the event is SETTLED
+    // rather than owed — the bytes say PENDING forever, and the fold that is DONE is announced on
+    // its own.
+    seedSlots("release-request:\n  - image: alpine:3\n    script: echo qa\n");
+    CiEventTriggerService.Arrival pending = releaseRequest(CiReleaseComposer.PRE_RUN_PENDING);
+
+    deliverThroughTheLedger(pending);
+
+    assertEquals(List.of(), runService.runsFor(repoId), "a PENDING pre-run starts no QA run");
+    assertFalse(stillOwed(pending.eventId()), "and the event is settled, not left owed");
+  }
+
+  @Test
+  public void aFoldWhosePreRunIsDoneOrUnstatedBuildsItsQaRunAsBefore() throws Exception {
+    seedSlots("release-request:\n  - image: alpine:3\n    script: echo qa\n");
+
+    deliver(releaseRequest(CiReleaseComposer.PRE_RUN_DONE));
+    assertEquals(1, runService.runsFor(repoId).size(), "DONE builds");
+
+    // The rollout arm: a qits-projects that has not shipped the field states none, and its QA runs
+    // exactly as it did before the field existed.
+    deliver(releaseRequest());
+    assertEquals(2, runService.runsFor(repoId).size(), "an absent preRun builds too");
+  }
+
+  @Test
+  public void aPreRunStateThisQitsCiDoesNotKnowIsNotTakenForDone() throws Exception {
+    // An allow-list of one, on purpose: an unknown word is not known to be finished.
+    seedSlots("release-request:\n  - image: alpine:3\n    script: echo qa\n");
+
+    deliver(releaseRequest("RUNNING"));
+
+    assertEquals(List.of(), runService.runsFor(repoId));
   }
 
   // --- the revision the pipeline is read from ------------------------------------------------------

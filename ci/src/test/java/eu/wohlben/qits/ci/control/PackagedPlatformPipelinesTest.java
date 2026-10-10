@@ -118,7 +118,11 @@ public class PackagedPlatformPipelinesTest {
   @Test
   public void eachPipelineAnswersItsOwnEvent() {
     assertEquals(
-        List.of("MaintenanceBump", "ReleaseRequestAutomation", "ReleaseRequestAutomation"),
+        List.of(
+            "MaintenanceBump",
+            "ReleaseRequestAutomation",
+            "ReleaseRequestAutomation",
+            "ReleaseRequestAutomation"),
         packaged().stream()
             .map(file -> triggerParser.parse(file.path(), file.content()).eventName())
             .toList());
@@ -225,11 +229,18 @@ public class PackagedPlatformPipelinesTest {
   public void noKindFileCarriesRefHandlingOrCommitCode() throws Exception {
     for (String kind : CiPlatformPipelines.AUTOMATIONS) {
       String kindFile = Files.readString(SOURCE.resolve("automations/" + kind + ".yml"));
-      for (String forbidden :
-          List.of("git fetch", "git checkout", "git add", "git commit", "git push", "QITS_EVENT")) {
+      List<String> forbidden =
+          new java.util.ArrayList<>(
+              List.of("git checkout", "git add", "git commit", "git push", "git reset"));
+      // dependency-bump is the one kind whose payload says what to change, and the one whose
+      // gitlinks are fetched from a sibling: both are allowed it, confined, and asserted below.
+      if (!kind.equals(DEPENDENCY_BUMP)) {
+        forbidden.addAll(List.of("git fetch", "QITS_EVENT"));
+      }
+      for (String word : forbidden) {
         assertFalse(
-            kindFile.contains(forbidden),
-            kind + ": the composer owns refs and commits; the kind file says " + forbidden);
+            kindFile.contains(word),
+            kind + ": the composer owns refs and commits; the kind file says " + word);
       }
     }
   }
@@ -379,6 +390,123 @@ public class PackagedPlatformPipelinesTest {
     int mentions = script.split("docs/database", -1).length - 1;
     assertEquals(1, mentions, script);
     assertTrue(script.contains("--out docs/database"), script);
+  }
+
+  // --- the composed dependency-bump automation (qits-1133) --------------------------------------
+
+  private static final String DEPENDENCY_BUMP = "dependency-bump";
+
+  private static final String BUMP_KIND_PATH =
+      "ci/src/main/resources/platform-pipelines/automations/dependency-bump.yml";
+
+  private static String composedDependencyBump() {
+    return packaged().stream()
+        .filter(file -> file.path().equals(BUMP_KIND_PATH))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError(BUMP_KIND_PATH + " is not in the set"))
+        .content();
+  }
+
+  @Test
+  public void theDependencyBumpKindAppliesEveryEcosystemInOneStepAndCommitsAsABump(
+      @TempDir Path dir) throws Exception {
+    String composed = composedDependencyBump();
+    CiEventTrigger trigger = triggerParser.parse(BUMP_KIND_PATH, composed);
+    assertEquals("ReleaseRequestAutomation", trigger.eventName());
+    assertEquals(null, trigger.checkout(), "recorded at main's head, never at the fold");
+    assertTrue(composed.contains("  - kind: { exact: 'dependency-bump' }\n"), composed);
+    assertEquals(1, trigger.pipeline().steps().size(), "maven, npm, docker and gitlink: ONE step");
+    CiStepDecl step = trigger.pipeline().steps().get(0);
+    // The image with node, npm, jq, git and awk; no ecosystem here runs maven.
+    assertEquals("qits/build-images/node-browser-base:latest", step.image());
+    assertEquals(1800, step.timeoutSeconds());
+
+    String script = step.script();
+    int body = script.indexOf("cat > " + CiAutomationComposer.KIND_SCRIPT);
+    assertTrue(script.indexOf("superseded before start") < body, "the prelude comes first");
+    for (String ecosystem : List.of("maven)", "npm)", "docker)", "gitlink)")) {
+      assertTrue(script.indexOf(ecosystem, body) > body, "the script applies " + ecosystem);
+    }
+    // bump(<item>): N dependencies, never chore(<item>): update dependency bump.
+    assertFalse(script.contains("update dependency bump"), script);
+    assertTrue(script.contains("  subject=\"bump($item): $description\"\n"), script);
+    assertTrue(script.contains("printf '%d dependencies\\n' \"$count\""), script);
+    assertTrue(
+        script.indexOf("export " + CiAutomationComposer.MESSAGE_ENV) < body,
+        "the message file is named before the script runs");
+    String kindScript =
+        script.substring(
+            script.indexOf('\n', body) + 1,
+            script.indexOf("\n" + CiAutomationComposer.HEREDOC_DELIMITER + "\n"));
+    syntax(dir, kindScript, BUMP_KIND_PATH + " (the kind's script)");
+  }
+
+  @Test
+  public void theDependencyBumpKindReadsOnlyItsChangesAndFetchesOnlyASiblingsTag()
+      throws Exception {
+    String kindFile = Files.readString(SOURCE.resolve("automations/dependency-bump.yml"));
+    String script = kindFile.substring(kindFile.indexOf("\nscript: |\n"));
+    // The payload: one read, of `.changes`; branch, baseRef and foldSha stay the prelude's.
+    assertEquals(1, script.split("QITS_EVENT_PAYLOAD", -1).length - 1, script);
+    assertTrue(script.contains("printf '%s' \"$QITS_EVENT_PAYLOAD\" | jq -r '\n    .changes\n"));
+    for (String field : List.of(".branch", ".baseRef", ".foldSha", ".commitPaths", ".workItem")) {
+      assertFalse(script.contains(field), "the kind reads the prelude's " + field);
+    }
+    // The one fetch: a gitlink's sibling, at a tag — never a ref of this repository.
+    Matcher fetches = Pattern.compile("git fetch[^\n]*").matcher(script);
+    List<String> found = new java.util.ArrayList<>();
+    while (fetches.find()) {
+      found.add(fetches.group().strip());
+    }
+    assertEquals(List.of("git fetch -q \"$sibling\" \"refs/tags/$to\"; then"), found);
+  }
+
+  @Test
+  public void theDependencyBumpAutomationStagesOnlyThePayloadsPathsAndNeverForces() {
+    String composed = composedDependencyBump();
+    Matcher adds = Pattern.compile("git add[^\n]*").matcher(composed);
+    List<String> found = new java.util.ArrayList<>();
+    while (adds.find()) {
+      found.add(adds.group().strip());
+    }
+    assertEquals(List.of("git add -A -- \"$@\""), found, "the apply stages nothing itself");
+    assertFalse(composed.contains("--force"), "a forced push in the composed automation");
+    assertFalse(composed.contains("push -f"), "a forced push in the composed automation");
+    Matcher matcher = GUARD.matcher(composed);
+    assertTrue(matcher.find(), "the composed automation has no commit guard");
+    assertTrue(matcher.group().contains("--ignore-submodules=none"), matcher.group());
+  }
+
+  @Test
+  public void theDependencyBumpKindAppliesWhatMaintenanceBumpApplies() throws Exception {
+    // Lifted, not rewritten: the four anchored programs are maintenance-bump.yml's, line for line,
+    // so the retirement of that file moves no edit a bump makes.
+    String bump = Files.readString(SOURCE.resolve("maintenance-bump.yml"));
+    String kindFile = Files.readString(SOURCE.resolve("automations/dependency-bump.yml"));
+    for (String program :
+        List.of("bump-property.awk", "bump-dependency.awk", "bump-from.awk", "bump-arg.awk")) {
+      assertEquals(
+          awkProgram(bump, program, "      "),
+          awkProgram(kindFile, program, "  "),
+          program + " drifted from maintenance-bump.yml");
+    }
+  }
+
+  /** The body of one {@code cat > /tmp/<name> <<'AWK'} heredoc, with its indentation removed. */
+  private static String awkProgram(String file, String name, String indent) {
+    int start = file.indexOf("cat > /tmp/" + name + " <<'AWK'\n");
+    assertTrue(start >= 0, name + " is not in the file");
+    int from = file.indexOf('\n', start) + 1;
+    int end = file.indexOf("\n" + indent + "AWK\n", from);
+    StringBuilder out = new StringBuilder();
+    for (String line : file.substring(from, end).split("\n", -1)) {
+      String bare = line.startsWith(indent) ? line.substring(indent.length()) : line;
+      // A comment is the file's own prose; the code is what has to agree.
+      if (!bare.strip().startsWith("#")) {
+        out.append(bare).append('\n');
+      }
+    }
+    return out.toString();
   }
 
   // --- the commit guard ------------------------------------------------------------------------

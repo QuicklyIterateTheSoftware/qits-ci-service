@@ -26,6 +26,9 @@ import java.util.regex.Pattern;
  *       CLI, so no package, no version, no curl/wget or a failed download ends the step 1 with
  *       {@code the qits CLI could not be fetched}. A kind without the key is composed exactly as
  *       if the key did not exist, and pays nothing.
+ *   <li>{@code commit-type} — optional, a lowercase word ({@code [a-z]+}): the kind writes its
+ *       OWN commit message, under that conventional-commit type. See below; a kind without the key
+ *       is composed exactly as if the key did not exist.
  * </ul>
  *
  * <p>Anything else is a {@link CiConfigException} naming the file, and so a boot error: a kind file
@@ -60,7 +63,8 @@ import java.util.regex.Pattern;
  * cannot reassign {@code branch} or the staged paths the postlude spends.
  *
  * <p>The <b>postlude</b> stages <b>only</b> the payload's {@code commitPaths} ({@code git add -A
- * --}), commits {@code chore(<item>): update <kind words>} unless the {@code
+ * --}), commits {@code chore(<item>): update <kind words>} (or the kind's own message, below)
+ * unless the {@code
  * --ignore-submodules=none} guard finds nothing staged — then it prints {@code unchanged} and exits
  * 0 — and makes a plain push, never forced, to {@code HEAD:refs/heads/<branch>}. A rejected push
  * fetches the branch: a tip whose one parent is the fold and whose tree is this step's is the same
@@ -68,6 +72,26 @@ import java.util.regex.Pattern;
  * already pushed: <branch> at <sha> carries the same content} and is green, the branch having moved
  * as a fresh push would have moved it. Any other rejection means the fold no longer contains the
  * branch, and the step fails saying so. It ends {@code pushed <sha> to <branch>}.
+ *
+ * <h2>A kind that says what it changed: {@code commit-type}</h2>
+ *
+ * <p>{@code update <kind words>} is a true subject for a regeneration — the diagram, the baselines —
+ * because what it changed is the kind. It is not one for a kind whose payload decides what moves:
+ * the {@code dependency-bump} kind (qits-1133) applies N pin moves and its commit has always read
+ * {@code bump(<item>): N dependencies}, the subject qits-maintenance and every reader of a
+ * repository's log already know. A fixed template cannot count, so such a kind declares {@code
+ * commit-type: bump} and writes the rest itself: the step exports {@value #MESSAGE_ENV} naming
+ * {@value #MESSAGE_FILE}, the script writes the DESCRIPTION on its first line and, optionally, a body
+ * after it, and the postlude commits {@code <type>(<item>): <description>} — {@code <type>:
+ * <description>} with no item — with that body below a blank line. <b>The type and the scope stay
+ * the platform's</b>: the type is the kind file's, the item is the prelude's, and a script can no
+ * more pick either than it can pick the branch. A changed tree with no description is a failed
+ * step naming the file, never a commit with an empty subject; the file is only read once the guard
+ * has found something staged, so a run with nothing to commit needs no message at all.
+ *
+ * <p>Both lines of the mechanism are emitted only for a kind declaring the key, which is what keeps
+ * every other kind's composed text byte-identical ({@code
+ * composed/automation-screenshot-baselines.yml} holds that).
  *
  * <p><b>The payload is read with {@code jq}</b>, so a kind's image must carry it; one without it is
  * refused in the prelude with a sentence naming the image. Every platform image a kind runs on
@@ -94,8 +118,23 @@ public final class CiAutomationComposer {
 
   static final String QITS_CLI_KEY = "qits-cli";
 
+  static final String COMMIT_TYPE_KEY = "commit-type";
+
   /** The whole kind-file vocabulary. Anything else is an error naming the file. */
-  static final Set<String> KEYS = Set.of(IMAGE_KEY, TIMEOUT_KEY, SCRIPT_KEY, QITS_CLI_KEY);
+  static final Set<String> KEYS =
+      Set.of(IMAGE_KEY, TIMEOUT_KEY, SCRIPT_KEY, QITS_CLI_KEY, COMMIT_TYPE_KEY);
+
+  /** What a {@code commit-type} may spell: a conventional-commit type, nothing more. */
+  static final Pattern COMMIT_TYPE = Pattern.compile("[a-z]+");
+
+  /** Where a {@code commit-type} kind's script writes its commit description and body. */
+  static final String MESSAGE_FILE = "/tmp/qits-automation-message";
+
+  /** The variable naming {@link #MESSAGE_FILE} to a {@code commit-type} kind's script. */
+  static final String MESSAGE_ENV = "QITS_AUTOMATION_MESSAGE";
+
+  /** Where the postlude composes a {@code commit-type} kind's whole message for {@code -F}. */
+  static final String COMMIT_MESSAGE = "/tmp/qits-automation-commit";
 
   /** Where the composed step writes the kind's script before running it. */
   static final String KIND_SCRIPT = "/tmp/qits-automation.sh";
@@ -161,6 +200,7 @@ public final class CiAutomationComposer {
     int timeout = requireTimeout(root, configPath);
     String script = requireText(root, SCRIPT_KEY, configPath);
     boolean qitsCli = optionalTrue(root, QITS_CLI_KEY, configPath);
+    String commitType = optionalCommitType(root, configPath);
     for (String line : script.split("\n", -1)) {
       if (line.strip().equals(HEREDOC_DELIMITER)) {
         throw new CiConfigException(
@@ -181,12 +221,23 @@ public final class CiAutomationComposer {
     out.append("  - image: ").append(scalar(image)).append('\n');
     out.append("    timeout-seconds: ").append(timeout).append('\n');
     out.append("    script: |\n");
-    block(out, step(kind, image, script, qitsCli), "      ");
+    block(out, step(kind, image, script, qitsCli, commitType), "      ");
     return out.toString();
   }
 
-  /** The one step: prelude, the kind's script as data, postlude. */
+  /** The one step of a kind that declares no {@code commit-type}. */
   static String step(String kind, String image, String script, boolean qitsCli) {
+    return step(kind, image, script, qitsCli, null);
+  }
+
+  /**
+   * The one step: prelude, the kind's script as data, postlude.
+   *
+   * @param commitType the kind file's {@code commit-type}, or null for {@code chore(<item>): update
+   *     <kind words>}
+   */
+  static String step(
+      String kind, String image, String script, boolean qitsCli, String commitType) {
     String words = kind.replace('-', ' ');
     StringBuilder out = new StringBuilder();
     out.append("set -eu\n");
@@ -308,6 +359,11 @@ public final class CiAutomationComposer {
       out.append("# --- the qits CLI, pinned, on PATH: this kind declares qits-cli: true ---\n");
       CiReleaseComposer.cliFetch(out, image, CiReleaseComposer.CliFetch.AUTOMATION);
     }
+    if (commitType != null) {
+      // The kind writes its own description; a stale file from nobody is never read as one.
+      out.append("rm -f ").append(MESSAGE_FILE).append('\n');
+      out.append("export ").append(MESSAGE_ENV).append('=').append(MESSAGE_FILE).append('\n');
+    }
     out.append("# --- the kind's script, run as data ---\n");
     out.append("cat > ").append(KIND_SCRIPT).append(" <<'").append(HEREDOC_DELIMITER).append("'\n");
     out.append(script.endsWith("\n") ? script : script + "\n");
@@ -341,14 +397,45 @@ public final class CiAutomationComposer {
     out.append("  exit 0\n");
     out.append("fi\n");
     out.append("git diff --cached --stat --ignore-submodules=none\n");
-    out.append("subject=").append(quote("update " + words)).append('\n');
-    out.append("if [ -n \"$item\" ]; then\n");
-    out.append("  subject=\"chore($item): $subject\"\n");
-    out.append("else\n");
-    out.append("  subject=\"chore: $subject\"\n");
-    out.append("fi\n");
-    out.append("git -c user.name=\"qits maintenance\" -c user.email=\"maintenance@qits.local\" \\\n");
-    out.append("    commit -q -m \"$subject\"\n");
+    if (commitType == null) {
+      out.append("subject=").append(quote("update " + words)).append('\n');
+      out.append("if [ -n \"$item\" ]; then\n");
+      out.append("  subject=\"chore($item): $subject\"\n");
+      out.append("else\n");
+      out.append("  subject=\"chore: $subject\"\n");
+      out.append("fi\n");
+      out.append(
+          "git -c user.name=\"qits maintenance\" -c user.email=\"maintenance@qits.local\" \\\n");
+      out.append("    commit -q -m \"$subject\"\n");
+    } else {
+      // The description is the script's first line, the body the rest; the type is the kind
+      // file's and the scope the prelude's. Read only now: a run with nothing staged owes none.
+      out.append("description=$(head -n 1 ").append(MESSAGE_FILE).append(" 2>/dev/null || true)\n");
+      out.append("if [ -z \"$description\" ]; then\n");
+      out.append("  echo ")
+          .append(
+              shellQuote(
+                  "the "
+                      + kind
+                      + " script changed the tree but wrote no commit description to "
+                      + MESSAGE_FILE))
+          .append(" >&2\n");
+      out.append("  exit 1\n");
+      out.append("fi\n");
+      out.append("if [ -n \"$item\" ]; then\n");
+      out.append("  subject=\"").append(commitType).append("($item): $description\"\n");
+      out.append("else\n");
+      out.append("  subject=\"").append(commitType).append(": $description\"\n");
+      out.append("fi\n");
+      out.append("body=$(tail -n +2 ").append(MESSAGE_FILE).append(")\n");
+      out.append("{\n");
+      out.append("  printf '%s\\n' \"$subject\"\n");
+      out.append("  if [ -n \"$body\" ]; then printf '\\n%s\\n' \"$body\"; fi\n");
+      out.append("} > ").append(COMMIT_MESSAGE).append('\n');
+      out.append(
+          "git -c user.name=\"qits maintenance\" -c user.email=\"maintenance@qits.local\" \\\n");
+      out.append("    commit -q -F ").append(COMMIT_MESSAGE).append('\n');
+    }
     // Plain, never forced. After the first join the fold contains the branch, so a later run on a
     // newer fold is a fast-forward of it.
     out.append("if ! git push \"$QITS_CI_REPOSITORY_URL\" \"HEAD:refs/heads/$branch\"; then\n");
@@ -416,6 +503,28 @@ public final class CiAutomationComposer {
               + "'");
     }
     return true;
+  }
+
+  /**
+   * The {@code commit-type}, or null when the key is absent. A value that is not a lowercase word is
+   * a boot error naming the file: it reaches a commit subject and the composed shell text both.
+   */
+  private static String optionalCommitType(Map<?, ?> root, String configPath) {
+    if (!root.containsKey(COMMIT_TYPE_KEY)) {
+      return null;
+    }
+    Object value = root.get(COMMIT_TYPE_KEY);
+    if (!(value instanceof String type) || !COMMIT_TYPE.matcher(type).matches()) {
+      throw new CiConfigException(
+          configPath
+              + ": '"
+              + COMMIT_TYPE_KEY
+              + "' must be a conventional-commit type, [a-z]+ (leave it out for 'chore(<item>):"
+              + " update <kind words>'), not '"
+              + value
+              + "'");
+    }
+    return type;
   }
 
   /** A YAML single-quoted scalar. */

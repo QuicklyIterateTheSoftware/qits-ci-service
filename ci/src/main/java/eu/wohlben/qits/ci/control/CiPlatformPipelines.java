@@ -84,7 +84,8 @@ public class CiPlatformPipelines {
    * PackagedPlatformPipelinesTest} holds it equal to the {@code *.yml} files in {@code
    * ci/src/main/resources/platform-pipelines/automations/}.
    */
-  static final Set<String> AUTOMATIONS = Set.of("entity-diagram", "screenshot-baselines");
+  static final Set<String> AUTOMATIONS =
+      Set.of("dependency-bump", "entity-diagram", "screenshot-baselines");
 
   private volatile List<EventTriggerFile> files;
 

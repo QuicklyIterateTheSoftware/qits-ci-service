@@ -3,6 +3,9 @@
 event: ReleaseRequestChanged
 when:
   - repoName: { exact: 'qits-ci-daemon' }
+    preRun: { exists: false }
+  - repoName: { exact: 'qits-ci-daemon' }
+    preRun: { exact: 'DONE' }
 checkout:
   branch: backingBranch
   sha: mergedSha

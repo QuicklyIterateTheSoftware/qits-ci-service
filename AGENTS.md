@@ -1972,8 +1972,10 @@ is about*.
   costs no read at all — and a target the
   evaluation could not read has no head, which is exactly the case that must not become a run.
 - **Automation kind files are the second packaged source.** `platform-pipelines/automations/<kind>.yml`
-  declares `image`, `timeout-seconds`, `script` and optionally `qits-cli: true` (only `true`: any
-  other value fails the boot), nothing else;
+  declares `image`, `timeout-seconds`, `script`, optionally `qits-cli: true` (only `true`: any
+  other value fails the boot) and optionally `commit-type: <[a-z]+>` (the kind writes its own
+  description and body to `$QITS_AUTOMATION_MESSAGE` and the postlude commits `<type>(<item>): …`;
+  `dependency-bump` uses it for `bump(<item>): N dependencies`, qits-1133), nothing else;
   `CiAutomationComposer` composes it into a `ReleaseRequestAutomation` trigger selecting `kind:
   <kind>` with the platform's prelude (payload refusals, fold fetch, `superseded before start`) and
   postlude (stage only `commitPaths`, the `--ignore-submodules=none` guard, plain push). The set is

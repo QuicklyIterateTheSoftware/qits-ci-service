@@ -460,6 +460,253 @@ public class CiAutomationComposerTest {
     assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH), "nothing was pushed");
   }
 
+  // --- commit-type (qits-1133) ------------------------------------------------------------------
+
+  @Test
+  public void anyCommitTypeButALowercaseWordIsABootErrorNamingTheFile() {
+    for (String value : List.of("Bump", "bump!", "''", "true", "[bump]", "bump it", "chore(x)")) {
+      CiConfigException error =
+          assertThrows(
+              CiConfigException.class,
+              () ->
+                  CiAutomationComposer.compose(
+                      "test-kind", PATH, MINIMAL + "commit-type: " + value + "\n"),
+              value);
+      assertTrue(error.getMessage().startsWith(PATH + ": "), error.getMessage());
+      assertTrue(error.getMessage().contains("'commit-type'"), error.getMessage());
+    }
+  }
+
+  @Test
+  public void aCommitTypeChangesTheCommitAndNothingBeforeIt() {
+    String without = CiAutomationComposer.step("test-kind", IMAGE, "echo regenerate\n", false);
+    String with = CiAutomationComposer.step("test-kind", IMAGE, "echo regenerate\n", false, "bump");
+    assertEquals(without, CiAutomationComposer.step("test-kind", IMAGE, "echo regenerate\n", false, null));
+    assertFalse(without.contains(CiAutomationComposer.MESSAGE_FILE), "a kind without the key pays nothing");
+    // The prelude is the same text up to the kind's script; the key adds the file, exported.
+    String announce =
+        "rm -f "
+            + CiAutomationComposer.MESSAGE_FILE
+            + "\nexport "
+            + CiAutomationComposer.MESSAGE_ENV
+            + "="
+            + CiAutomationComposer.MESSAGE_FILE
+            + "\n";
+    int script = without.indexOf("# --- the kind's script, run as data ---");
+    assertEquals(without.substring(0, script) + announce, with.substring(0, script + announce.length()));
+    assertFalse(with.contains("update test kind"), "the template subject is gone");
+    assertTrue(with.contains("  subject=\"bump($item): $description\"\n"), with);
+    assertTrue(with.contains("commit -q -F " + CiAutomationComposer.COMMIT_MESSAGE), with);
+    // Composed through the file, the key reaches the step.
+    String composed =
+        CiAutomationComposer.compose("test-kind", PATH, MINIMAL + "commit-type: bump\n");
+    assertTrue(composed.contains("subject=\"bump($item): $description\""), composed);
+  }
+
+  private static final String WRITES_A_MESSAGE =
+      WRITES + "printf '2 dependencies\\n- one\\n- two\\n' > \"$QITS_AUTOMATION_MESSAGE\"\n";
+
+  @Test
+  public void aCommitTypeKindCommitsItsOwnDescriptionAndBodyUnderTheTypeAndTheItem(
+      @TempDir Path dir) throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell), "test-kind", "bump");
+      Result run =
+          scratch.run(shell, WRITES_A_MESSAGE, scratch.payload(BRANCH, scratch.fold, "\"out/**\""));
+
+      assertEquals(0, run.exit, shell + ":\n" + run.output);
+      String pushed = scratch.originRev("refs/heads/" + BRANCH);
+      assertEquals(
+          "bump(qits-978): 2 dependencies",
+          scratch.git(scratch.origin, "log", "-1", "--format=%s", pushed),
+          "the type is the kind file's, the scope the prelude's, the description the script's");
+      assertEquals("- one\n- two", scratch.git(scratch.origin, "log", "-1", "--format=%b", pushed));
+      assertEquals(
+          "out/file.txt",
+          scratch.git(scratch.origin, "diff-tree", "--no-commit-id", "--name-only", "-r", pushed),
+          "the message file is no commit path");
+    }
+  }
+
+  @Test
+  public void aCommitTypeKindThatChangedTheTreeButWroteNoDescriptionFails(@TempDir Path dir)
+      throws Exception {
+    Scratch scratch = new Scratch(dir, "test-kind", "bump");
+    Result run = scratch.run("bash", WRITES, scratch.payload(BRANCH, scratch.fold, "\"out/**\""));
+
+    assertEquals(1, run.exit, run.output);
+    assertTrue(run.output.contains("wrote no commit description"), run.output);
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH), "nothing was pushed");
+  }
+
+  @Test
+  public void aCommitTypeKindWithNothingToCommitOwesNoDescription(@TempDir Path dir)
+      throws Exception {
+    Scratch scratch = new Scratch(dir, "test-kind", "bump");
+    Result run =
+        scratch.run("bash", "echo stray > stray.txt\n", scratch.payload(BRANCH, scratch.fold, "\"out/**\""));
+
+    assertEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains("unchanged"), run.output);
+  }
+
+  // --- the dependency-bump kind, run (qits-1133) -------------------------------------------------
+
+  private static final String BUMP_PATH =
+      "ci/src/main/resources/platform-pipelines/automations/dependency-bump.yml";
+
+  private static final String BUMP_BRANCH = "maintenance/automations/dependency-bump/abc";
+
+  private static final String POM =
+      """
+      <project>
+        <properties>
+          <quarkus.version>3.1.0</quarkus.version>
+        </properties>
+        <dependencies>
+          <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-eventstream</artifactId>
+            <version>2026.1.1</version>
+          </dependency>
+        </dependencies>
+      </project>
+      """;
+
+  private static final String DOCKERFILE =
+      """
+      ARG BASE=registry.example:5000/qits/workspace:2026.1.1
+      FROM ${BASE}
+      FROM qits/build-images/node-base:1.0 AS build
+      """;
+
+  /** The packaged kind file's own step, composed exactly as the platform composes it. */
+  private static String dependencyBumpStep() throws Exception {
+    String kindFile = Files.readString(Path.of("..").resolve(BUMP_PATH));
+    String composed = CiAutomationComposer.compose("dependency-bump", BUMP_PATH, kindFile);
+    return new CiEventTriggerParser().parse(BUMP_PATH, composed).pipeline().steps().get(0).script();
+  }
+
+  private static String bumpPayload(Scratch scratch, String changes, String paths) {
+    return scratch
+        .payload(BUMP_BRANCH, scratch.fold, paths)
+        .replace("}", ",\"changes\":" + changes + "}");
+  }
+
+  @Test
+  public void everyEcosystemIsAppliedInOneCommitOnTheAutomationBranch(@TempDir Path dir)
+      throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    // The sibling a gitlink names, beside the origin: its url is derived from the run's own.
+    Path sibling = dir.resolve("scratch").resolve("qits-sibling");
+    scratch.git(dir, "init", "-q", "-b", "main", sibling.toString());
+    scratch.git(sibling, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one");
+    String old = scratch.git(sibling, "rev-parse", "HEAD");
+    scratch.git(sibling, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "two");
+    String released = scratch.git(sibling, "rev-parse", "HEAD");
+    // Annotated, so the entry has to be peeled to the commit.
+    scratch.git(sibling, "-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "-m", "r", "2026.2.2");
+    scratch.foldWith(Map.of("pom.xml", POM, "Dockerfile", DOCKERFILE), Map.of("libs/old", old));
+
+    String changes =
+        "["
+            + "{\"ecosystem\":\"maven\",\"manifestPath\":\"pom.xml\",\"name\":\"io.quarkus:quarkus-bom\","
+            + "\"from\":\"3.1.0\",\"to\":\"3.2.0\",\"location\":\"property:quarkus.version\"},"
+            + "{\"ecosystem\":\"maven\",\"manifestPath\":\"pom.xml\","
+            + "\"name\":\"eu.wohlben.qits:qits-eventstream\",\"from\":\"2026.1.1\",\"to\":\"2026.2.2\","
+            + "\"location\":\"dependency:eu.wohlben.qits:qits-eventstream\"},"
+            + "{\"ecosystem\":\"docker\",\"manifestPath\":\"Dockerfile\",\"name\":\"qits/workspace\","
+            + "\"from\":\"2026.1.1\",\"to\":\"2026.2.2\",\"location\":\"arg:BASE\"},"
+            + "{\"ecosystem\":\"docker\",\"manifestPath\":\"Dockerfile\","
+            + "\"name\":\"qits/build-images/node-base\",\"from\":\"1.0\",\"to\":\"1.1\","
+            + "\"location\":\"line:3\"},"
+            + "{\"ecosystem\":\"gitlink\",\"manifestPath\":\"libs/old\",\"name\":\"qits-sibling\","
+            + "\"from\":\""
+            + old
+            + "\",\"to\":\"2026.2.2\",\"location\":\"gitlink:libs/old\"},"
+            // No `from` and no `location`: two empty fields, one mid-record, which a tab-separated
+            // read would collapse and shift.
+            + "{\"ecosystem\":\"gitlink\",\"manifestPath\":\"libs/new\",\"name\":\"qits-sibling\","
+            + "\"to\":\"2026.2.2\"}"
+            + "]";
+    String paths = "\"pom.xml\",\"Dockerfile\",\"libs/old\",\"libs/new\"";
+    Result run =
+        scratch.runStep("bash", dependencyBumpStep(), bumpPayload(scratch, changes, paths), Map.of());
+
+    assertEquals(0, run.exit, run.output);
+    String pushed = scratch.originRev("refs/heads/" + BUMP_BRANCH);
+    assertEquals(scratch.fold, scratch.git(scratch.origin, "rev-parse", pushed + "^"), "one commit");
+    assertEquals(
+        "bump(qits-978): 6 dependencies",
+        scratch.git(scratch.origin, "log", "-1", "--format=%s", pushed));
+    String body = scratch.git(scratch.origin, "log", "-1", "--format=%b", pushed);
+    assertEquals(6, body.lines().count(), body);
+    assertTrue(body.contains("- maven io.quarkus:quarkus-bom 3.1.0 -> 3.2.0 (pom.xml)"), body);
+    assertTrue(body.contains("- gitlink qits-sibling  -> 2026.2.2 (libs/new)"), body);
+    assertEquals(
+        "Dockerfile\nlibs/new\nlibs/old\npom.xml",
+        scratch.git(scratch.origin, "diff-tree", "--no-commit-id", "--name-only", "-r", pushed),
+        "exactly the manifests, nothing the run wrote under /tmp or elsewhere");
+
+    String pom = scratch.git(scratch.origin, "show", pushed + ":pom.xml");
+    assertTrue(pom.contains("<quarkus.version>3.2.0</quarkus.version>"), pom);
+    assertTrue(pom.contains("<version>2026.2.2</version>"), pom);
+    String dockerfile = scratch.git(scratch.origin, "show", pushed + ":Dockerfile");
+    assertTrue(
+        dockerfile.contains("ARG BASE=registry.example:5000/qits/workspace:2026.2.2\n"), dockerfile);
+    assertTrue(dockerfile.contains("FROM qits/build-images/node-base:1.1 AS build"), dockerfile);
+    assertTrue(dockerfile.contains("FROM ${BASE}\n"), dockerfile);
+    // Both gitlinks at the tag's COMMIT: the moved one, and the new one that only kept its entry
+    // through the postlude's `git add -A` because the script gave it a directory.
+    assertEquals(
+        "160000 commit " + released + "\tlibs/new\n160000 commit " + released + "\tlibs/old",
+        scratch.git(scratch.origin, "ls-tree", pushed, "libs/"));
+  }
+
+  @Test
+  public void aChangeThatCannotBeAppliedFailsTheStepAndPushesNothing(@TempDir Path dir)
+      throws Exception {
+    Scratch scratch = new Scratch(dir, "dependency-bump", "bump");
+    scratch.foldWith(
+        Map.of(
+            "pom.xml", POM,
+            "web/package.json", "{\"dependencies\":{\"left-pad\":\"latest\"}}\n",
+            "web/package-lock.json", "{}\n"),
+        Map.of());
+    String step = dependencyBumpStep();
+    Map<String, String> refusals =
+        Map.of(
+            "a property the pom does not hold",
+            "[{\"ecosystem\":\"maven\",\"manifestPath\":\"pom.xml\",\"name\":\"x:y\",\"to\":\"1\","
+                + "\"location\":\"property:nope.version\"}]",
+            "an npm specifier a bump cannot move",
+            "[{\"ecosystem\":\"npm\",\"manifestPath\":\"web/package.json\",\"name\":\"left-pad\","
+                + "\"to\":\"1.3.0\"}]",
+            "an unknown ecosystem",
+            "[{\"ecosystem\":\"cargo\",\"manifestPath\":\"pom.xml\",\"name\":\"x\",\"to\":\"1\"}]",
+            "an implausible version",
+            "[{\"ecosystem\":\"maven\",\"manifestPath\":\"pom.xml\",\"name\":\"x:y\",\"to\":\"1;rm\","
+                + "\"location\":\"property:quarkus.version\"}]",
+            "a climbing manifest",
+            "[{\"ecosystem\":\"docker\",\"manifestPath\":\"../Dockerfile\",\"name\":\"x\",\"to\":\"1\"}]",
+            "no changes",
+            "[]",
+            "a change missing its version",
+            "[{\"ecosystem\":\"maven\",\"manifestPath\":\"pom.xml\",\"name\":\"x:y\"}]");
+    for (Map.Entry<String, String> refusal : refusals.entrySet()) {
+      Result run =
+          scratch.runStep(
+              "bash",
+              step,
+              bumpPayload(scratch, refusal.getValue(), "\"pom.xml\",\"web/package.json\""),
+              Map.of());
+      // Non-zero rather than 1: a refusal jq raises exits with jq's own status.
+      assertTrue(run.exit != 0, refusal.getKey() + ":\n" + run.output);
+      assertFalse(run.output.contains("pushed "), refusal.getKey() + ":\n" + run.output);
+    }
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BUMP_BRANCH), "nothing was pushed");
+  }
+
   // --- the scratch origin ------------------------------------------------------------------------
 
   private record Result(int exit, String output) {}
@@ -471,11 +718,20 @@ public class CiAutomationComposerTest {
     final Path seed;
     final Path work;
     final Path home;
+    final String kind;
+    final String commitType;
     String fold;
 
     Scratch(Path root) throws Exception {
+      this(root, "test-kind", null);
+    }
+
+    /** The same origin, for a step composed as {@code kind} with this {@code commit-type}. */
+    Scratch(Path root, String kind, String commitType) throws Exception {
       assumeTrue(available("jq"), "jq is not installed on this host");
       this.root = root;
+      this.kind = kind;
+      this.commitType = commitType;
       Files.createDirectories(root);
       origin = root.resolve("origin.git");
       seed = root.resolve("seed");
@@ -506,8 +762,27 @@ public class CiAutomationComposerTest {
       fold = git(seed, "rev-parse", "HEAD");
     }
 
+    /**
+     * One more commit on the fold, writing {@code files} and pointing {@code gitlinks} (path to
+     * commit sha) — a gitlink is an index entry, so the seed needs none of the sibling's objects.
+     */
+    void foldWith(Map<String, String> files, Map<String, String> gitlinks) throws Exception {
+      for (Map.Entry<String, String> file : files.entrySet()) {
+        Path target = seed.resolve(file.getKey());
+        Files.createDirectories(target.getParent());
+        Files.writeString(target, file.getValue());
+        git(seed, "add", file.getKey());
+      }
+      for (Map.Entry<String, String> link : gitlinks.entrySet()) {
+        git(seed, "update-index", "--add", "--cacheinfo", "160000," + link.getValue() + "," + link.getKey());
+      }
+      commit(seed, "feat(qits-978): fold the manifests");
+      git(seed, "push", "-q", origin.toString(), "release/abc");
+      fold = git(seed, "rev-parse", "HEAD");
+    }
+
     String payload(String branch, String foldSha, String paths) {
-      return "{\"kind\":\"test-kind\",\"repository\":\"qits-target\",\"requestId\":\"abc\","
+      return "{\"kind\":\"" + kind + "\",\"repository\":\"qits-target\",\"requestId\":\"abc\","
           + "\"foldSha\":\""
           + foldSha
           + "\",\"baseRef\":\"release/abc\",\"branch\":\""
@@ -533,11 +808,18 @@ public class CiAutomationComposerTest {
         String store,
         Map<String, String> extraEnv)
         throws Exception {
-      Path script = Files.createTempFile(root, "step", ".sh");
-      String step = CiAutomationComposer.step("test-kind", "test-image", kindScript, qitsCli);
+      String step =
+          CiAutomationComposer.step(kind, "test-image", kindScript, qitsCli, commitType);
       if (store != null) {
         step = step.replace(CiReleaseComposer.CLI_DOWNLOAD_BASE, store);
       }
+      return runStep(shell, step, payload, extraEnv);
+    }
+
+    /** Runs a step's whole text, composed elsewhere — a packaged kind file's, say. */
+    Result runStep(String shell, String step, String payload, Map<String, String> extraEnv)
+        throws Exception {
+      Path script = Files.createTempFile(root, "step", ".sh");
       Files.writeString(script, step, StandardCharsets.UTF_8);
       ProcessBuilder builder =
           new ProcessBuilder(shell, script.toString()).directory(work.toFile()).redirectErrorStream(true);

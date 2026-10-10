@@ -1,0 +1,371 @@
+# Apply a release request's dependency pin moves on its own automation branch: the
+# `dependency-bump` kind of qits-maintenance's release-request automations (qits-1133).
+#
+# A KIND FILE, not a pipeline. qits-ci's CiAutomationComposer composes it into a platform
+# trigger on `ReleaseRequestAutomation` selected by `kind: dependency-bump` (this file's name),
+# and wraps the script below in the platform's own prelude and postlude:
+#
+#   prelude   validates the payload, fetches the fold (`baseRef`) and refuses with
+#             "superseded before start" unless it is still `foldSha`; checks it out, gives the
+#             step a writable HOME and works out the commit subject's work item
+#   script    this file's, run as data in a child shell
+#   postlude  stages only the payload's `commitPaths`, commits `bump(<item>): <N> dependencies`
+#             (this file says `commit-type: bump`, and the script writes the description and the
+#             body to $QITS_AUTOMATION_MESSAGE) or prints `unchanged` and exits 0, and makes a
+#             plain push to the payload's `branch`
+#
+# So nothing here decides a ref, makes a commit or pushes: the branch continue/rebuild dance of
+# `../maintenance-bump.yml` is not this kind's. The automation branch is the request's own, the
+# fold is fetched by the prelude, and the request's next fold carries the commit.
+#
+# THE PAYLOAD, on top of the common automation fields: `changes`, a non-empty array of entries in
+# EXACTLY the shape `../maintenance-bump.yml` reads, and with its semantics - read that file's
+# header. In short:
+#   ecosystem     maven | npm | docker | gitlink
+#   manifestPath  the file to edit, repository-relative - EXCEPT for gitlink, where it is the
+#                 DIRECTORY the submodule sits at and no file exists
+#   name          npm/docker: the thing to install or the image to re-tag
+#                 maven: the commit message only - `location` carries the coordinates
+#                 gitlink: the SIBLING REPOSITORY, which the fetch url is derived from
+#   to            the new version, refused unless [0-9A-Za-z._+-]+
+#   from          the commit message only, never a precondition: a manifest already holding
+#                 `to` is a no-op
+#   location      maven: `property:<name>` or `dependency:<groupId>:<artifactId>`
+#                 docker: `arg:<name>` anchors on an ARG default; anything else is a FROM line
+#                 npm, gitlink: ignored
+# `commitPaths` is the manifests those changes touch - pom.xml files, package.json AND
+# package-lock.json, Dockerfiles, gitlink paths - and is all the postlude stages.
+#
+# ALL FOUR ECOSYSTEMS IN ONE STEP, where `../maintenance-bump.yml` needs two (a maven-base step
+# and a node-base step, each committing and pushing its own half). The apply logic below is
+# lifted from those two steps, and what each ecosystem needs is small: maven and docker are awk
+# over a text file, gitlink is git, and npm is node + npm. No ecosystem runs `mvn`, so the image
+# needs no maven at all - and it does need jq, which the composed prelude reads the payload
+# with. node-browser-base is the one platform image carrying node, npm, jq, git and awk
+# together (node-base has no jq; maven-base and userflows-base have no node), and it is the
+# image the `screenshot-baselines` kind already runs on. Its awk is Debian's mawk, not
+# busybox's: the four programs below stick to POSIX awk (match/substr/index/sub) so either runs
+# them.
+#
+# READING THE PAYLOAD AND FETCHING A SIBLING are the two things this kind does that the others
+# do not, and both are confined: the payload is read for `.changes` alone (`branch`, `baseRef`
+# and the rest stay the prelude's), and the one fetch is a gitlink's sibling tag, which writes
+# no ref of this repository.
+image: qits/build-images/node-browser-base:latest
+timeout-seconds: 1800
+commit-type: bump
+script: |
+  # --- the changes, one line each ----------------------------------------------------
+  # Separated by US (\037) rather than a tab: a tab is IFS WHITESPACE, so `read` would collapse
+  # the two tabs around an empty `from` or `location` and shift every field after it.
+  us=$(printf '\037')
+  printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r '
+    .changes
+    | if type == "array" and length > 0 then .[]
+      else error("refusing a payload whose changes is not a non-empty array") end
+    | if type == "object"
+         and all(.ecosystem, .manifestPath, .name, .to; type == "string")
+         and all(.from, .location; . == null or type == "string")
+      then [.ecosystem, .name, (.from // ""), .to, .manifestPath, (.location // "")]
+           | join("\u001f")
+      else error("refusing a change that is not {ecosystem, manifestPath, name, from, to, location} strings") end
+  ' > /tmp/bump-changes.txt
+  count=$(grep -c '' /tmp/bump-changes.txt)
+
+  # --- the four edits, anchored and counted --------------------------------------------
+  # Not a global sed: a bump must change the one element it names or fail loudly. Every
+  # program exits non-zero unless it matched EXACTLY once.
+  cat > /tmp/bump-property.awk <<'AWK'
+  # <name>...</name> inside a <properties> block, and nowhere else.
+  BEGIN { n = 0; inprops = 0; open = "<" prop ">"; shut = "</" prop ">" }
+  {
+    if (index($0, "<properties>") > 0) inprops = 1
+    if (inprops == 1) {
+      s = index($0, open)
+      if (s > 0) {
+        e = index($0, shut)
+        if (e > s) {
+          $0 = substr($0, 1, s + length(open) - 1) to substr($0, e)
+          n++
+        }
+      }
+    }
+    if (index($0, "</properties>") > 0) inprops = 0
+    print
+  }
+  END {
+    if (n != 1) {
+      printf("matched %d <%s> properties, expected 1\n", n, prop) > "/dev/stderr"
+      exit 3
+    }
+  }
+  AWK
+
+  cat > /tmp/bump-dependency.awk <<'AWK'
+  # The <version> of the one <dependency> or <parent> block carrying this g:a.
+  function strip(text, tag) { sub("<" tag ">", "", text); sub("</" tag ">", "", text); return text }
+  BEGIN { n = 0; nb = 0; inblock = 0; bad = 0 }
+  {
+    if (inblock == 0 && ($0 ~ /<dependency>/ || $0 ~ /<parent>/)) { inblock = 1; nb = 0; g = ""; a = "" }
+    if (inblock == 0) { print; next }
+    nb++
+    buf[nb] = $0
+    if (match($0, /<groupId>[^<]*<\/groupId>/)) g = strip(substr($0, RSTART, RLENGTH), "groupId")
+    if (match($0, /<artifactId>[^<]*<\/artifactId>/)) a = strip(substr($0, RSTART, RLENGTH), "artifactId")
+    if ($0 ~ /<\/dependency>/ || $0 ~ /<\/parent>/) {
+      if (g == gid && a == aid) {
+        hits = 0
+        for (i = 1; i <= nb; i++) {
+          if (buf[i] ~ /<version>[^<]*<\/version>/) {
+            sub(/<version>[^<]*<\/version>/, "<version>" to "</version>", buf[i])
+            hits++
+          }
+        }
+        if (hits == 1) n++
+        else {
+          printf("%s:%s carries %d <version> elements, expected 1\n", gid, aid, hits) > "/dev/stderr"
+          bad = 1
+        }
+      }
+      for (i = 1; i <= nb; i++) print buf[i]
+      inblock = 0
+      nb = 0
+    }
+  }
+  END {
+    for (i = 1; i <= nb; i++) print buf[i]
+    if (bad) exit 4
+    if (n != 1) {
+      printf("matched %d dependencies for %s:%s, expected 1\n", n, gid, aid) > "/dev/stderr"
+      exit 3
+    }
+  }
+  AWK
+
+  # A docker pin sits on one of two kinds of line and `location` says which. A `line:<n>` is
+  # not used: a line number goes stale the moment an earlier edit lands, and the image name is
+  # the thing that is actually true about the line.
+  cat > /tmp/bump-from.awk <<'AWK'
+  BEGIN { n = 0; pfx = img ":" }
+  {
+    if (match($0, /^[ \t]*[Ff][Rr][Oo][Mm][ \t]+/)) {
+      # Both halves are cut BEFORE the next match(), which overwrites RSTART.
+      head = substr($0, 1, RSTART + RLENGTH - 1)
+      rest = substr($0, RSTART + RLENGTH)
+      if (index(rest, pfx) == 1) {
+        tail = substr(rest, length(pfx) + 1)
+        after = ""
+        if (match(tail, /[ \t]/)) after = substr(tail, RSTART)
+        $0 = head pfx to after
+        n++
+      }
+    }
+    print
+  }
+  END {
+    if (n != 1) {
+      printf("matched %d FROM lines for %s, expected 1\n", n, img) > "/dev/stderr"
+      exit 3
+    }
+  }
+  AWK
+
+  # An `arg:<name>` location IS the anchor: `ARG <name>=[<host>/]<image>:<tag>` with a
+  # `FROM ${<name>}` below it. A leading registry host is stepped over and written back
+  # untouched (the inventory records the portable name), and the image name is checked as well
+  # as the argument's, so a payload naming the wrong one edits nothing rather than the wrong thing.
+  cat > /tmp/bump-arg.awk <<'AWK'
+  BEGIN { n = 0; pfx = img ":" }
+  {
+    if (match($0, "^[ \t]*[Aa][Rr][Gg][ \t]+" arg "=")) {
+      # Both halves are cut BEFORE the next match(), which overwrites RSTART.
+      head = substr($0, 1, RSTART + RLENGTH - 1)
+      rest = substr($0, RSTART + RLENGTH)
+      host = ""
+      slash = index(rest, "/")
+      if (slash > 1) {
+        first = substr(rest, 1, slash - 1)
+        if (first ~ /[.:]/ || first == "localhost") {
+          host = substr(rest, 1, slash)
+          rest = substr(rest, slash + 1)
+        }
+      }
+      if (index(rest, pfx) == 1) {
+        tail = substr(rest, length(pfx) + 1)
+        after = ""
+        if (match(tail, /[ \t]/)) after = substr(tail, RSTART)
+        $0 = head host pfx to after
+        n++
+      }
+    }
+    print
+  }
+  END {
+    if (n != 1) {
+      printf("matched %d ARG %s lines for %s, expected 1\n", n, arg, img) > "/dev/stderr"
+      exit 3
+    }
+  }
+  AWK
+
+  # --- apply, every ecosystem in turn -------------------------------------------------
+  # Every value reaches an argv, an awk -v, a URL or an index entry, so the charset is refused
+  # rather than quoted. Nothing legitimate needs a character outside these sets.
+  : > /tmp/bump-body.txt
+  while IFS="$us" read -r ecosystem name from to manifest location <&3; do
+    case "$to" in ''|*[!0-9A-Za-z._+-]*) echo "refusing an implausible version: $to" >&2; exit 1 ;; esac
+    # `from` is not checked: it reaches the commit body and nothing else.
+    case "$manifest" in
+      ''|/*|-*|*..*|*[!0-9A-Za-z._/-]*) echo "refusing an implausible manifest: $manifest" >&2; exit 1 ;;
+    esac
+    # A gitlink's path is a DIRECTORY, and in this clone an empty one - the submodule is never
+    # initialised here, because the whole edit is an index entry. So the file test guards the
+    # three ecosystems that edit a file, and no more.
+    if [ "$ecosystem" != "gitlink" ] && [ ! -f "$manifest" ]; then
+      echo "no such manifest: $manifest" >&2
+      exit 1
+    fi
+
+    case "$ecosystem" in
+      maven)
+        case "$name" in ''|*[!0-9A-Za-z._:-]*) echo "refusing an implausible dependency: $name" >&2; exit 1 ;; esac
+        case "$location" in
+          property:*)
+            prop=${location#property:}
+            case "$prop" in
+              ''|*[!0-9A-Za-z._-]*) echo "refusing an implausible property: $prop" >&2; exit 1 ;;
+            esac
+            awk -v prop="$prop" -v to="$to" -f /tmp/bump-property.awk "$manifest" > /tmp/bump-edited
+            ;;
+          dependency:*:*)
+            coords=${location#dependency:}
+            gid=${coords%%:*}
+            aid=${coords#*:}
+            for part in "$gid" "$aid"; do
+              case "$part" in
+                ''|*[!0-9A-Za-z._-]*) echo "refusing implausible coordinates: $location" >&2; exit 1 ;;
+              esac
+            done
+            awk -v gid="$gid" -v aid="$aid" -v to="$to" -f /tmp/bump-dependency.awk "$manifest" > /tmp/bump-edited
+            ;;
+          *)
+            echo "unknown maven location: $location" >&2
+            exit 1
+            ;;
+        esac
+        mv /tmp/bump-edited "$manifest"
+        ;;
+      npm)
+        case "$name" in ''|*[!@A-Za-z0-9._/-]*) echo "refusing an implausible dependency: $name" >&2; exit 1 ;; esac
+        # THE TWO NPM ROOTS ARE CODE (qits-731): the hosted @qits scope and the npmjs cache are
+        # constant paths under registry.qits.<domain> and mirror.qits.<domain>, and the
+        # platform's public domain is the one input. The composed prelude has demanded it.
+        registry_origin="https://registry.qits.$QITS_DOMAIN"
+        mirror_origin="https://mirror.qits.$QITS_DOMAIN"
+        dir=$(dirname "$manifest")
+        lock="$dir/package-lock.json"
+        [ -f "$lock" ] || { echo "no package-lock.json beside $manifest" >&2; exit 1; }
+        # THE SPECIFIER KEEPS ITS SHAPE. Read from whichever section holds the entry: an exact
+        # pin stays exact, a `^`/`~` range keeps its operator around the new version. Anything
+        # else - a wider range, a tag, a file: or git: source - is not a version a bump can move
+        # without changing what it means, so it is refused rather than rewritten to `^<to>`,
+        # which is what npm would do. Both flags are always passed, so a repository's own .npmrc
+        # `save-exact` cannot turn a `^` into a pin or a pin into a `^`.
+        current=$(BUMP_MANIFEST="$manifest" BUMP_NAME="$name" node -p '
+          const m = JSON.parse(require("fs").readFileSync(process.env.BUMP_MANIFEST, "utf8"));
+          const hit = ["dependencies", "devDependencies", "optionalDependencies"]
+            .map((s) => (m[s] || {})[process.env.BUMP_NAME])
+            .find((v) => typeof v === "string");
+          hit === undefined ? "" : hit')
+        case "$current" in
+          '') echo "$manifest declares no dependency on $name" >&2; exit 1 ;;
+          [0-9]*) exact=true; prefix= ;;
+          '^'[0-9]*) exact=false; prefix='^' ;;
+          '~'[0-9]*) exact=false; prefix='~' ;;
+          *) echo "refusing to bump $name: $manifest pins it as '$current', which is not an exact version, ^ or ~" >&2; exit 1 ;;
+        esac
+        # NO LOCKFILE REWRITE, in either direction. The install resolves against the platform's
+        # own public names and writes them into `resolved` as it finds them; environment rather
+        # than a file, because a committed project .npmrc outranks ~/.npmrc and `npm_config_*`
+        # outranks both.
+        ( cd "$dir" \
+          && env npm_config_registry="$mirror_origin/npm/npmjs/" \
+                 "npm_config_@qits:registry=$registry_origin/artifacts/npm/npm/" \
+                 npm install --package-lock-only --no-audit --no-fund \
+                   "--save-exact=$exact" "--save-prefix=$prefix" "$name@$to" )
+        # EVERY ORIGIN IN THE LOCK IS THE PLATFORM'S, OR THE BUMP FAILS: a lock naming any other
+        # host keeps those entries across the install, and committing it would push a lockfile
+        # no step can install from. It is a migration the repository owes, said here with the
+        # entries named, rather than papered over by a rewrite.
+        foreign=$(grep -o '"resolved": *"[^"]*"' "$lock" \
+          | sed -e 's/^"resolved": *"//' -e 's/"$//' \
+          | awk -v r="$registry_origin/" -v m="$mirror_origin/" \
+              'index($0, r) != 1 && index($0, m) != 1' \
+          | head -n 5)
+        if [ -n "$foreign" ]; then
+          echo "$lock resolves packages outside $registry_origin and $mirror_origin, for example:" >&2
+          printf '  %s\n' $foreign >&2
+          echo "regenerate the lockfile against those two registries before this dependency can be bumped" >&2
+          exit 1
+        fi
+        ;;
+      docker)
+        case "$name" in ''|*[!@A-Za-z0-9._/-]*) echo "refusing an implausible image: $name" >&2; exit 1 ;; esac
+        case "$location" in
+          arg:*)
+            # The argument's name reaches an awk -v AND is interpolated into that program's
+            # own regex, so it is held to what docker allows a build argument to be called.
+            argument=${location#arg:}
+            case "$argument" in
+              ''|[0-9]*|*[!0-9A-Za-z_]*)
+                echo "refusing an implausible build argument: $argument" >&2
+                exit 1
+                ;;
+            esac
+            awk -v arg="$argument" -v img="$name" -v to="$to" \
+                -f /tmp/bump-arg.awk "$manifest" > /tmp/bump-edited
+            ;;
+          *)
+            awk -v img="$name" -v to="$to" -f /tmp/bump-from.awk "$manifest" > /tmp/bump-edited
+            ;;
+        esac
+        mv /tmp/bump-edited "$manifest"
+        ;;
+      gitlink)
+        # The submodule move is an INDEX write rather than a file edit: a gitlink is a 160000
+        # entry in the tree and no text anywhere holds the sha. The name reaches a URL, so it is
+        # held to a repository name - a slash would point the fetch somewhere else on the host.
+        case "$name" in
+          ''|*[!0-9A-Za-z._-]*) echo "refusing an implausible submodule: $name" >&2; exit 1 ;;
+        esac
+        # Every repository of a project is a sibling path under one host, and the url this run
+        # was given is the only address that is certainly reachable from here.
+        sibling="${QITS_CI_REPOSITORY_URL%/*}/$name"
+        if ! git fetch -q "$sibling" "refs/tags/$to"; then
+          echo "no tag $to in $sibling" >&2
+          exit 1
+        fi
+        # Peeled: a release tag may be annotated, and the entry is the commit it points at.
+        sha=$(git rev-parse --verify "FETCH_HEAD^{commit}")
+        git update-index --add --cacheinfo "160000,$sha,$manifest"
+        # THE EMPTY DIRECTORY IS LOAD-BEARING. The postlude stages each commit path with -A,
+        # which reads an unpopulated submodule's empty directory as "unchanged" and keeps this
+        # entry - but reads a MISSING directory as a deletion and drops it. A gitlink new to the
+        # tree has no directory in this clone, so it gets the one every other gitlink has.
+        mkdir -p "$manifest"
+        ;;
+      *)
+        echo "unknown ecosystem: $ecosystem" >&2
+        exit 1
+        ;;
+    esac
+    echo "- $ecosystem $name $from -> $to ($manifest)" >> /tmp/bump-body.txt
+    echo "bumped $name to $to in $manifest"
+  done 3< /tmp/bump-changes.txt
+
+  # --- the commit message: the description, then the body ------------------------------
+  # The postlude commits it as `bump(<item>): ...`; the type and the item are not ours to write.
+  {
+    printf '%d dependencies\n' "$count"
+    cat /tmp/bump-body.txt
+  } > "$QITS_AUTOMATION_MESSAGE"
