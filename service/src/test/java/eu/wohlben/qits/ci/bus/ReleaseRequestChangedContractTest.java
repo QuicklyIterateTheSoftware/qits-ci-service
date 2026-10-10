@@ -107,6 +107,7 @@ public class ReleaseRequestChangedContractTest {
       String repoId,
       String repoName,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       String backingBranch,
       String mergedSha,
       Instant changedAt,
@@ -157,6 +158,7 @@ public class ReleaseRequestChangedContractTest {
         repoId,
         "qits-ci-service",
         requestId,
+        null,
         "release/" + requestId,
         mergedSha,
         Instant.parse("2026-09-03T09:07:06Z"),
@@ -407,6 +409,40 @@ public class ReleaseRequestChangedContractTest {
    * Note {@code changedAt} IS in the payload and is also the envelope's {@code occurredAt}: the
    * record's own component keeps its name.
    */
+  @Test
+  public void theRequestsLogicalIdIsInTheCanonicalPayloadUnderTheNameTheEngineReads()
+      throws Exception {
+    // qits-1158: a new request carries its logical id beside the UUID, and its branch is named by
+    // the logical id. The engine records the id for people and takes the branch off the event.
+    ReleaseRequestChanged fresh =
+        changed("r-1", "9f2c1a7e-4b31-4c8e-9a11-6d0f5c2e8b44", "c".repeat(40));
+    JsonNode payload =
+        MAPPER.readTree(
+            CanonicalJson.payload(
+                new ReleaseRequestChanged(
+                    fresh.eventId(),
+                    fresh.projectId(),
+                    fresh.repoId(),
+                    fresh.repoName(),
+                    fresh.releaseRequestId(),
+                    "qits-ci-service-rr-7",
+                    "release/qits-ci-service-rr-7",
+                    fresh.mergedSha(),
+                    fresh.changedAt(),
+                    null,
+                    null,
+                    null)));
+
+    assertEquals(
+        "qits-ci-service-rr-7",
+        payload.path(CiRunService.RELEASE_REQUEST_QUALIFIED_ID_FIELD).asText(null));
+    assertEquals("release/qits-ci-service-rr-7", payload.get(BACKING_BRANCH_FIELD).asText());
+    assertFalse(
+        MAPPER.readTree(canonicalPayload("r-1", "rr-42", "c".repeat(40)))
+            .has(CiRunService.RELEASE_REQUEST_QUALIFIED_ID_FIELD),
+        "NON_NULL: an older request carries no such key");
+  }
+
   @Test
   public void theEnvelopesOwnFieldsAreNotInThePayload() throws Exception {
     JsonNode payload = MAPPER.readTree(canonicalPayload("r-1", "rr-42", "c".repeat(40)));

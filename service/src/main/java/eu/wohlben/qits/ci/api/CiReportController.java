@@ -164,6 +164,7 @@ public class CiReportController {
         run.id,
         run.commitSha,
         run.releaseRequestId,
+        run.releaseRequestQualifiedId,
         baselineOf(run).orElse(null),
         store.forRun(runId).stream().map(store::summary).toList());
   }
@@ -199,9 +200,16 @@ public class CiReportController {
                     gate.id,
                     gate.commitSha,
                     gate.releaseRequestId,
+                    gate.releaseRequestQualifiedId,
                     null,
                     store.forRun(gate.id).stream().map(store::summary).toList()))
-        .orElseGet(() -> new CiRunReportsDto(null, null, run.releaseRequestId, null, List.of()));
+        .orElseGet(() -> new CiRunReportsDto(
+                    null,
+                    null,
+                    run.releaseRequestId,
+                    run.releaseRequestQualifiedId,
+                    null,
+                    List.of()));
   }
 
   @GET
@@ -252,7 +260,14 @@ public class CiReportController {
   private Optional<CiReportBaselineDto> baselineOf(CiRun run) {
     return baselines
         .forRun(run)
-        .map(b -> new CiReportBaselineDto(b.version(), b.runId(), b.releaseRequestId(), b.tagSha()));
+        .map(
+            b ->
+                new CiReportBaselineDto(
+                    b.version(),
+                    b.runId(),
+                    b.releaseRequestId(),
+                    b.releaseRequestQualifiedId(),
+                    b.tagSha()));
   }
 
   private static void requireKind(String kind) {

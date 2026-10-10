@@ -138,6 +138,7 @@ public class ScmReleaseContractTest {
       String version,
       String commitSha,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       Instant occurredAt,
       String priority)
       implements QitsEvent {}
@@ -196,6 +197,19 @@ public class ScmReleaseContractTest {
       String commitSha,
       String priority,
       String releaseRequestId) {
+    return release(
+        repository, repositoryName, version, branch, commitSha, priority, releaseRequestId, null);
+  }
+
+  static SCMRelease release(
+      String repository,
+      String repositoryName,
+      String version,
+      String branch,
+      String commitSha,
+      String priority,
+      String releaseRequestId,
+      String releaseRequestQualifiedId) {
     return new SCMRelease(
         UUID.randomUUID(),
         "p-1",
@@ -205,6 +219,7 @@ public class ScmReleaseContractTest {
         version,
         commitSha,
         releaseRequestId,
+        releaseRequestQualifiedId,
         Instant.parse("2026-08-12T15:34:38Z"),
         priority);
   }
@@ -216,6 +231,8 @@ public class ScmReleaseContractTest {
    * What the tag points at: the version-bump commit qits-projects made on the backing branch, which
    * is the coordinate the release pipeline's {@code checkout:} anchors on.
    */
+  static final String RELEASE_REQUEST_QUALIFIED_ID = "qits-ci-service-rr-7";
+
   static final String RELEASED_SHA = "71663ccdceb65ce46f4cf44c8cb3a016de5ff6af";
 
   /**
@@ -259,7 +276,8 @@ public class ScmReleaseContractTest {
             BACKING_BRANCH,
             RELEASED_SHA,
             priority,
-            withRequest ? RELEASE_REQUEST_ID : null));
+            withRequest ? RELEASE_REQUEST_ID : null,
+            withRequest ? RELEASE_REQUEST_QUALIFIED_ID : null));
   }
 
   @Test
@@ -568,6 +586,21 @@ public class ScmReleaseContractTest {
         payload.has(ScmReleaseListener.COMMIT_SHA_FIELD),
         "the canonical payload carries no " + ScmReleaseListener.COMMIT_SHA_FIELD);
     assertEquals(RELEASED_SHA, payload.get(ScmReleaseListener.COMMIT_SHA_FIELD).asText());
+  }
+
+  @Test
+  public void theRequestsLogicalIdIsInTheCanonicalPayloadUnderTheNameTheListenerReads()
+      throws Exception {
+    JsonNode payload =
+        MAPPER.readTree(canonicalPayload("qits-ci", "qits-ci", "2026.812.153438", null, true));
+
+    assertEquals(
+        RELEASE_REQUEST_QUALIFIED_ID,
+        payload.path(ScmReleaseListener.RELEASE_REQUEST_QUALIFIED_ID_FIELD).asText(null));
+    assertFalse(
+        MAPPER.readTree(canonicalPayload("qits-ci", "qits-ci", "2026.812.153438"))
+            .has(ScmReleaseListener.RELEASE_REQUEST_QUALIFIED_ID_FIELD),
+        "NON_NULL: an older release carries no such key");
   }
 
   @Test

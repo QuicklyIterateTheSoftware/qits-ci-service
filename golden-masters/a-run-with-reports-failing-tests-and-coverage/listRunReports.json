@@ -2,10 +2,12 @@
   "runId": "00000000-0000-4000-8000-000000000008",
   "commitSha": "0000000000000000000000000000000000000003",
   "releaseRequestId": "00000000-0000-4000-8000-000000000005",
+  "releaseRequestQualifiedId": null,
   "baseline": {
     "version": "2026.101.120000",
     "runId": "00000000-0000-4000-8000-000000000002",
     "releaseRequestId": "00000000-0000-4000-8000-000000000001",
+    "releaseRequestQualifiedId": null,
     "tagSha": "0000000000000000000000000000000000000002"
   },
   "reports": [

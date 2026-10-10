@@ -57,6 +57,10 @@ public interface RunAnnouncer {
    * of {@code branch} — a second spelling of one fact, on the half of the release qits-projects
    * deletes at tag time, and one a publish run does not carry at all since its branch is the version.
    *
+   * <p><b>{@code releaseRequestQualifiedId} is the same request's logical id</b>, {@code
+   * <repository>-rr-<n>} (qits-1158), for people to read. Null whenever {@code releaseRequestId} is,
+   * and for a run whose triggering event predates the field.
+   *
    * <p><b>The two are null together or set together, and a caller must keep them that way.</b> The
    * engine reads the id off the triggering event and derives the phase from it, returning null
    * whenever the id is null, so no row can hold one without the other — and the published events say
@@ -107,6 +111,7 @@ public interface RunAnnouncer {
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       Instant finishedAt,
       String triggerEventId);
 
@@ -129,6 +134,7 @@ public interface RunAnnouncer {
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       String outcome,
       Instant finishedAt,
       String triggerEventId);
@@ -174,6 +180,7 @@ public interface RunAnnouncer {
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       String status,
       String previousStatus,
       Instant occurredAt,

@@ -34,7 +34,7 @@
          and the mandatory -Dqits.variant=oauth|forwardauth|local auth profiles. -->
     <groupId>eu.wohlben.qits</groupId>
     <artifactId>qits-ci</artifactId>
-    <version>2026.1010.154650</version>
+    <version>2026.1010.180940</version>
     <packaging>pom</packaging>
     <name>qits-ci</name>
 
@@ -84,7 +84,7 @@
              replaces this line through the ordinary bump. Do not ship a release request of this
              repository with the snapshot still in it. -->
         <qits.ci-runner-protocol.version>2026.1010.143616</qits.ci-runner-protocol.version>
-        <qits.eventstream.version>2026.1003.44717</qits.eventstream.version>
+        <qits.eventstream.version>2026.1010.165955</qits.eventstream.version>
         <!-- qits-githost's event vocabulary: the SCM records a push announces. qits-ci consumes
              SCMPublishCommit and nothing else, but the jar is the whole vocabulary — it is a data
              module with one dependency (qits-eventstream) and no container.
@@ -94,7 +94,7 @@
              snapshot nobody published"; qits-githost released the jar on 2026-08-12 and this is that
              release. What kept the snapshot working until then was the bootstrap seed-publishing it
              into the registry, which is not a release and does not survive one being re-seeded. -->
-        <qits.githost-events.version>2026.1010.104051</qits.githost-events.version>
+        <qits.githost-events.version>2026.1010.171927</qits.githost-events.version>
         <qits.auth-core.version>2026.1002.70617</qits.auth-core.version>
         <!-- The platform's datasource resilience, released out of libs/qits-integrations-quarkus
              together with the two above, which is why the strings match: qits-db-core carries

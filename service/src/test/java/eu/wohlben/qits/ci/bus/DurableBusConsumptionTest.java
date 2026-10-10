@@ -322,6 +322,8 @@ public class DurableBusConsumptionTest {
         QuarkusTransaction.requiringNew()
             .call(() -> releases.findRelease(repository, "2026.906.140000").orElseThrow());
     assertEquals(ScmReleaseContractTest.RELEASE_REQUEST_ID, row.releaseRequestId);
+    assertEquals(
+        ScmReleaseContractTest.RELEASE_REQUEST_QUALIFIED_ID, row.releaseRequestQualifiedId);
     assertEquals(ScmReleaseContractTest.RELEASED_SHA, row.commitSha);
   }
 

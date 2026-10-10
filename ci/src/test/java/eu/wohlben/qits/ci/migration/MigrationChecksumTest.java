@@ -151,6 +151,9 @@ public class MigrationChecksumTest {
     PINS.put(
         "V35__runner_node_health.sql",
         "34252dc2ec7ec06575209de27c6fe1a720d893b70dbf30b29b05a42454c32772");
+    PINS.put(
+        "V36__release_request_qualified_id.sql",
+        "2374124acab391a6ff54823ed871f911b6f38366b3b98ac8cde7fa3cb4c376ea");
   }
 
   @Test

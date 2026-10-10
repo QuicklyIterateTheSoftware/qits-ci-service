@@ -45,6 +45,8 @@ import java.util.UUID;
  * release request whose backing branch this run built, null for every run that serves none. The
  * {@code commitSha} beside it is a fold nobody pushed and is replaced by the next re-fold, so this
  * is the handle that says which piece of work the run belongs to.
+ * {@code releaseRequestQualifiedId} is the same request's logical id, {@code <repository>-rr-<n>}
+ * (qits-1158): what a client shows, falling back to the UUID when it is null.
  *
  * <p>{@code retryOfRunId} is the sixth, and it is the only one that names another run: the run this
  * one was fired to re-do, null on everything a trigger produced. A client renders it as a link back
@@ -217,6 +219,7 @@ public record CiRunDto(
     String triggerEventId,
     String triggerEventName,
     String releaseRequestId,
+    String releaseRequestQualifiedId,
     String retryOfRunId,
     String configPath,
     String archetypeName,
@@ -264,6 +267,7 @@ public record CiRunDto(
         triggerEventId,
         triggerEventName,
         releaseRequestId,
+        releaseRequestQualifiedId,
         retryOfRunId,
         configPath,
         archetypeName,
@@ -321,6 +325,7 @@ public record CiRunDto(
         triggerEventId,
         triggerEventName,
         releaseRequestId,
+        releaseRequestQualifiedId,
         retryOfRunId,
         configPath,
         archetypeName,
@@ -368,6 +373,7 @@ public record CiRunDto(
         triggerEventId,
         triggerEventName,
         releaseRequestId,
+        releaseRequestQualifiedId,
         retryOfRunId,
         configPath,
         archetypeName,

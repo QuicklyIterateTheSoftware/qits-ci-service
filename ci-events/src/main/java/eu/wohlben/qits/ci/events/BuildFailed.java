@@ -33,6 +33,9 @@ import java.util.UUID;
  * payload when null, so such a build's bytes are identical to what they were before either component
  * existed.
  *
+ * <p>{@code releaseRequestQualifiedId} is {@link BuildSuccessful}'s too: the request's logical id
+ * (qits-1158), for people to read, null whenever {@code releaseRequestId} is.
+ *
  * <p><b>{@code retryOfRunId} is {@link BuildSuccessful}'s too, and it matters most here</b>: the id
  * of the earlier run a {@code qits ci retry} re-asked the question of, null for every run that is
  * not a retry, and carried so a consumer can <b>supersede the verdict that earlier run left</b>
@@ -56,6 +59,7 @@ public record BuildFailed(
     String commitSha,
     String phase,
     String releaseRequestId,
+    String releaseRequestQualifiedId,
     String outcome,
     Instant finishedAt)
     implements QitsEvent {
@@ -77,11 +81,30 @@ public record BuildFailed(
       String commitSha,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       String outcome,
       Instant finishedAt) {
     this(
         null, runId, retryOfRunId, repoId, projectId, repoName, branch, commitSha, phase,
-        releaseRequestId, outcome, finishedAt);
+        releaseRequestId, releaseRequestQualifiedId, outcome, finishedAt);
+  }
+
+  /** The publisher's constructor before qits-1158: no logical id. */
+  public BuildFailed(
+      String runId,
+      String retryOfRunId,
+      String repoId,
+      String projectId,
+      String repoName,
+      String branch,
+      String commitSha,
+      String phase,
+      String releaseRequestId,
+      String outcome,
+      Instant finishedAt) {
+    this(
+        runId, retryOfRunId, repoId, projectId, repoName, branch, commitSha, phase,
+        releaseRequestId, null, outcome, finishedAt);
   }
 
   @Override

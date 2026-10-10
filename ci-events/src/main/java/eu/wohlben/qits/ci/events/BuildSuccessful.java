@@ -59,6 +59,12 @@ import java.util.UUID;
  * Both are null for a run that is no part of a release, both omitted from the canonical payload when
  * null, so such a build's bytes are identical to what they were before either component existed.
  *
+ * <p><b>{@code releaseRequestQualifiedId} is the same request's logical id</b>, {@code
+ * <repository>-rr-<n>} (qits-1158), for people to read; {@code releaseRequestId} stays the key a
+ * consumer correlates on. Null whenever {@code releaseRequestId} is, and for a run whose triggering
+ * event predates the field; omitted from the canonical payload when null, so such a build's bytes are
+ * what they were before.
+ *
  * <p><b>It does not make this event a pipeline verdict, and that line is the contract.</b> This is
  * still a statement about a <em>commit</em>: this repository, at this sha, finished green. A green
  * P1 says the fold passed QA — not that the release succeeded, not that anything was published, not
@@ -107,6 +113,7 @@ public record BuildSuccessful(
     String imageDigest,
     String phase,
     String releaseRequestId,
+    String releaseRequestQualifiedId,
     Instant finishedAt)
     implements QitsEvent {
 
@@ -128,10 +135,29 @@ public record BuildSuccessful(
       String imageDigest,
       String phase,
       String releaseRequestId,
+      String releaseRequestQualifiedId,
       Instant finishedAt) {
     this(
         null, runId, retryOfRunId, repoId, projectId, repoName, branch, commitSha, imageDigest,
-        phase, releaseRequestId, finishedAt);
+        phase, releaseRequestId, releaseRequestQualifiedId, finishedAt);
+  }
+
+  /** The publisher's constructor before qits-1158: no logical id. */
+  public BuildSuccessful(
+      String runId,
+      String retryOfRunId,
+      String repoId,
+      String projectId,
+      String repoName,
+      String branch,
+      String commitSha,
+      String imageDigest,
+      String phase,
+      String releaseRequestId,
+      Instant finishedAt) {
+    this(
+        runId, retryOfRunId, repoId, projectId, repoName, branch, commitSha, imageDigest, phase,
+        releaseRequestId, null, finishedAt);
   }
 
   @Override
