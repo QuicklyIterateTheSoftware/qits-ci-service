@@ -1,0 +1,91 @@
+{
+  "runId": "00000000-0000-4000-8000-000000000008",
+  "commitSha": "0000000000000000000000000000000000000003",
+  "releaseRequestId": "00000000-0000-4000-8000-000000000005",
+  "baseline": {
+    "version": "2026.101.120000",
+    "runId": "00000000-0000-4000-8000-000000000002",
+    "releaseRequestId": "00000000-0000-4000-8000-000000000001",
+    "tagSha": "0000000000000000000000000000000000000002"
+  },
+  "reports": [
+    {
+      "id": "00000000-0000-4000-8000-000000000003",
+      "kind": "coverage",
+      "kindVersion": 1,
+      "stepIndex": 1,
+      "highlights": [
+        {
+          "severity": "warn",
+          "text": "diff coverage 60.0% (6/10 changed lines)",
+          "metric": "coverage.diff",
+          "value": 60.0,
+          "delta": null
+        },
+        {
+          "severity": "info",
+          "text": "coverage 81.3% (-1.2)",
+          "metric": "coverage.total",
+          "value": 81.3,
+          "delta": -1.2
+        }
+      ],
+      "baselineRunId": "00000000-0000-4000-8000-000000000002",
+      "baselineVersion": "2026.101.120000",
+      "payloadBytes": 508,
+      "submittedAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000004",
+      "kind": "entity-changes",
+      "kindVersion": 1,
+      "stepIndex": 1,
+      "highlights": [
+        {
+          "severity": "warn",
+          "text": "Entities changed since 2026.101.120000: +0 ~1 −0 tables",
+          "metric": "entities.tables.changed",
+          "value": 1.0,
+          "delta": null
+        },
+        {
+          "severity": "warn",
+          "text": "Columns removed or narrowed: 1",
+          "metric": "entities.columns.narrowed",
+          "value": 1.0,
+          "delta": null
+        }
+      ],
+      "baselineRunId": "00000000-0000-4000-8000-000000000002",
+      "baselineVersion": "2026.101.120000",
+      "payloadBytes": 497,
+      "submittedAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000006",
+      "kind": "test-results",
+      "kindVersion": 1,
+      "stepIndex": 1,
+      "highlights": [
+        {
+          "severity": "bad",
+          "text": "1 test failed",
+          "metric": "tests.failed",
+          "value": 1.0,
+          "delta": null
+        },
+        {
+          "severity": "info",
+          "text": "+3 tests vs 2026.101.120000",
+          "metric": "tests.total",
+          "value": 128.0,
+          "delta": 3.0
+        }
+      ],
+      "baselineRunId": "00000000-0000-4000-8000-000000000002",
+      "baselineVersion": "2026.101.120000",
+      "payloadBytes": 960,
+      "submittedAt": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

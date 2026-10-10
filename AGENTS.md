@@ -1979,7 +1979,10 @@ is about*.
   declares `image`, `timeout-seconds`, `script`, optionally `qits-cli: true` (only `true`: any
   other value fails the boot) and optionally `commit-type: <[a-z]+>` (the kind writes its own
   description and body to `$QITS_AUTOMATION_MESSAGE` and the postlude commits `<type>(<item>): …`;
-  `dependency-bump` uses it for `bump(<item>): N dependencies`, qits-1133), nothing else;
+  `dependency-bump` uses it for `bump(<item>): N dependencies`, qits-1133; a script may also write
+  work items, single-space separated, to `$QITS_AUTOMATION_TICKETS` and the subject becomes
+  `chore(<ids>): <type>(<item>): …`, committed `--cleanup=verbatim` — `dependency-bump` takes the
+  ids and the changelog body from `qits changelog bump-message`, qits-893), nothing else;
   `CiAutomationComposer` composes it into a `ReleaseRequestAutomation` trigger selecting `kind:
   <kind>` with the platform's prelude (payload refusals, fold fetch, `superseded before start`) and
   postlude (stage only `commitPaths`, the `--ignore-submodules=none` guard, plain push). The set is
@@ -1988,7 +1991,11 @@ is about*.
   `automations/` subdirectory explicitly, because a `*` does not reach into it. `qits-cli: true`
   spends `CiReleaseComposer.cliFetch` in its `AUTOMATION` form — one download text for the release
   prelude, the QA report hook and the automations, never a copy — and that form is hard: a kind that
-  asked for the CLI cannot run without it.
+  asked for the CLI cannot run without it. A packaged pipeline may say the same with a top-level
+  `qits-cli: true` (qits-893, `maintenance-bump.yml`, whose commit message is `qits changelog
+  bump-message`'s): `CiPlatformPipelines.withQitsCli` strips the line before the strict trigger
+  parser sees it and prepends the same `AUTOMATION` fetch to every `script: |` block, then checks
+  every parsed step starts with it, failing the boot otherwise.
 - **Two files are two runs, deliberately.** A repository carrying both a local and a platform trigger
   for one event gets two rows: the dedupe is `(trigger_event_id, repo_id, config_path)` and the paths
   differ. That is also how a run says which kind it was — `config_path` already travels to the API,
@@ -2266,6 +2273,9 @@ phase.
   lets a repository declare its own `release:` on top of a publish-free archetype. So qits-ci
   answers: `CiEventTriggerService.releasePhaseAt` composes at the rev and reports
   `DECLARED`/`NOT_DECLARED`/`UNKNOWN`, and `CiRepositoryController` maps the third to **503**.
+  **Since qits-893 every composition has a release half** — one with no `release:` slot gets a
+  synthesised changelog-only step (`CiReleaseComposer.changelogOnlySlot`) — so an SPA or a CLI now
+  answers `DECLARED` and `NOT_DECLARED` is left to a rev with no `release.yml` at all.
   <br>**Three answers, because a boolean has to give a failure a side and both sides are wrong.** A
   `false` derived from a read that did not happen publishes a release nothing gated; a `true` derived
   from one hangs a request behind a gate nobody can answer. So `UNKNOWN` is reserved for the question

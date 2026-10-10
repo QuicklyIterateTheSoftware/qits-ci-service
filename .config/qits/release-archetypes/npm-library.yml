@@ -18,7 +18,8 @@
 # `path:` IS THE BUILT PACKAGE DIRECTORY, ng-packagr's `dest` — `dist/<project>`, not the repository
 # root, whose package.json is the workspace's and not the library's. The platform publishes what is
 # there. `publish: if-changed` (with its required `sbom:`) uploads only when the package's content or
-# its SBOM's dependency graph changed since the newest published version; `always` is the default.
+# its SBOM's dependency graph changed since the newest published version. It is the default;
+# `publish: always` opts out.
 #
 # The name is quoted because `@` is a reserved YAML indicator. `artifacts:` belongs in the
 # repository's own file and never here: qits-projects reads it at the tag, and it is what qits-ci

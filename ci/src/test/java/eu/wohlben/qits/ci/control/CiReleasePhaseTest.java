@@ -123,7 +123,7 @@ public class CiReleasePhaseTest extends CiTestSupport {
     assertTrue(answer.detail().contains("does-not-exist"), answer.detail());
 
     // And the same arm for a local recipe that does not parse — never the packaged one instead,
-    // which for spa-frontend would answer NOT_DECLARED and wave the release through.
+    // whose composition is a different pipeline from the one the repository wrote.
     seedSlots("archetype: spa-frontend\n");
     seedArchetype("spa-frontend", "archetype: another\n");
 
@@ -180,26 +180,29 @@ public class CiReleasePhaseTest extends CiTestSupport {
     assertTrue(answer.detail().contains("could not be composed"), answer.detail());
   }
 
-  // --- not declared --------------------------------------------------------------------------------
-
   @Test
-  public void aPublishFreeArchetypeIsNotDeclared() {
-    // spa-frontend and cli: no release slot, on purpose. A PUBLISH gate here is one nobody will ever
-    // answer, which is the release request that hung RELEASED forever.
+  public void anArchetypeWithNoReleaseSlotIsDeclaredForItsChangelog() {
+    // spa-frontend and cli declare no release slot, and used to answer NOT_DECLARED. Every release
+    // publishes a changelog now (qits-893), so the composer synthesises a release half for them and
+    // the PUBLISH gate has a run to wait for.
     seedSlots("archetype: spa-frontend\n");
     seedArchetype("spa-frontend", SPA_FRONTEND);
 
-    assertEquals(CiEventTriggerService.Verdict.NOT_DECLARED, phase().verdict());
+    assertEquals(CiEventTriggerService.Verdict.DECLARED, phase().verdict());
   }
 
   @Test
-  public void aPackagedPublishFreeArchetypeIsNotDeclared() {
+  public void aPackagedSpaFrontendIsDeclaredForItsChangelog() {
     // The same answer from the recipe this qits-ci really ships, which is the verification the
-    // deployed binary is asked for: an spa-frontend tag is NOT publish-gated.
+    // deployed binary is asked for: an spa-frontend tag IS publish-gated, on its changelog.
     seedSlots("archetype: spa-frontend\n");
 
-    assertEquals(CiEventTriggerService.Verdict.NOT_DECLARED, phase().verdict());
+    CiEventTriggerService.ReleasePhase answer = phase();
+    assertEquals(CiEventTriggerService.Verdict.DECLARED, answer.verdict());
+    assertTrue(answer.detail().contains("composes a release pipeline"), answer.detail());
   }
+
+  // --- not declared --------------------------------------------------------------------------------
 
   @Test
   public void noSlotFileAtTheRevIsNotDeclared() {
@@ -223,9 +226,8 @@ public class CiReleasePhaseTest extends CiTestSupport {
 
   @Test
   public void aLocalArchetypeThatCannotBeLookedForIsUnknownAndNotAnsweredFromThePackagedCopy() {
-    // The repository could not be asked whether it carries its own spa-frontend. The packaged one
-    // is publish-free and would answer NOT_DECLARED — waving a release through on a blip, when the
-    // repository's own recipe may well publish.
+    // The repository could not be asked whether it carries its own spa-frontend. Answering from the
+    // packaged one would decide on a blip which of two pipelines gates the release.
     seedSlots("archetype: spa-frontend\n");
     fakeConfig.putFileUnreachable(repoId, REV, CiReleaseSlotParser.archetypePath("spa-frontend"));
 
@@ -248,8 +250,8 @@ public class CiReleasePhaseTest extends CiTestSupport {
   public void theSlotFileAndALocalArchetypeAreReadAtTheRevAndTheWrapperIsNeverRead() {
     // Both of the repository's reads are the tag's immutable bytes, and nothing is read from the
     // platform-pipelines repository — which carries a readable, publish-FREE decoy under the same
-    // name at every revision the old read used, so an engine that still went there would answer
-    // NOT_DECLARED with a straight face.
+    // name at every revision the old read used. Since every composition has a release half
+    // (qits-893) the decoy would answer DECLARED too, so the reads below are what tell them apart.
     seedSlots("archetype: java-service\n");
     seedArchetype("java-service", JAVA_SERVICE);
     for (String rev : java.util.List.of("main", WRAPPER_HEAD, "a".repeat(40))) {

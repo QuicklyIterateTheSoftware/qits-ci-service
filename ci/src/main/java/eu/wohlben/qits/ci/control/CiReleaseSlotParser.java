@@ -376,9 +376,15 @@ public class CiReleaseSlotParser {
             type,
             name,
             CiArtifact.requirePublish(
-                map.get(CiArtifact.PUBLISH_KEY), type, name, configPath, index));
+                map.get(CiArtifact.PUBLISH_KEY),
+                type.releaseDefault() == null ? CiArtifact.Publish.ALWAYS : type.releaseDefault(),
+                type,
+                name,
+                configPath,
+                index));
     String sbomPath = parseSbomPath(map.get(SBOM_KEY), configPath, index);
-    if (artifact.publishIfChanged() && sbomPath.isEmpty()) {
+    // Only a DECLARED if-changed gets this message; a defaulted one is the generic rule below.
+    if (map.get(CiArtifact.PUBLISH_KEY) != null && artifact.publishIfChanged() && sbomPath.isEmpty()) {
       throw new CiConfigException(
           CiArtifact.entry(configPath, index, type, name)
               + " declares "
@@ -550,8 +556,8 @@ public class CiReleaseSlotParser {
   }
 
   /**
-   * Every {@code link:} names <b>another maven entry of this file</b> by its artifactId, and the
-   * links form no cycle. The postlude decides a linked sibling before the entries linking it, so a
+   * Every {@code link:} names <b>another maven entry of this file</b> by its artifactId, with the
+   * same {@code publish:}, and the links form no cycle. The postlude decides a linked sibling before the entries linking it, so a
    * target that is not published here would be a pom dependency on nothing, and a cycle would be an
    * order that does not exist.
    */
@@ -587,6 +593,15 @@ public class CiReleaseSlotParser {
                   + link
                   + "', which is the artifactId of more than one maven entry of this release.yml —"
                   + " a link has to name exactly one sibling");
+        }
+        // A link group publishes together (the composer's publishBlock), so it has one policy.
+        if (artifacts.get(byArtifactId.get(link)).artifact().publish() != artifact.publish()) {
+          throw new CiConfigException(
+              entry
+                  + " links '"
+                  + link
+                  + "' with another publish: — linked entries publish together, so give them the"
+                  + " same publish:");
         }
       }
     }

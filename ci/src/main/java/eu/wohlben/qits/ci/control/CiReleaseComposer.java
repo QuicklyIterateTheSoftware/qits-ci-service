@@ -151,10 +151,28 @@ import java.util.Set;
  * <p><b>The platform uploads every maven and npm artifact, packs every contract and publishes every
  * {@code @apidocs} document; a recipe only builds.</b> On the LAST step of the release slot, after the
  * declared script, the postlude calls the qits CLI: one {@code qits artifacts publish maven|npm} per
- * maven or npm entry in {@code link:} dependency order, then one {@code contract} per contract
+ * maven or npm entry in {@code link:} dependency order (an {@code if-changed} link group asked with
+ * {@code --dry-run} first, so it publishes together or not at all), then one {@code contract} per contract
  * package, then {@code contract-docs} when golden masters are declared, then one {@code docs submit
  * --openapi} per {@code @apidocs} entry naming its file. Each call fails the step on a non-zero
  * exit.
+ *
+ * <h2>The changelog (qits-893)</h2>
+ *
+ * <p><b>Every release publishes a changelog, and it closes the publish block.</b> After every
+ * artifact, contract and docs publish comes {@code qits artifacts publish changelog --version
+ * "$QITS_VERSION"} with the same provenance {@code --meta} the docs bundle carries, behind a {@code
+ * command -v qits} guard that names the cause when the step holds no CLI; only the SBOM submits and
+ * presence checks follow it, as they follow every publish. It is required: a red
+ * publish is a red release run and a failed PUBLISH gate. So the publish block is no longer
+ * conditional on what a repository declares — every release phase's last step carries it — and a
+ * composition with <b>no {@code release:} slot</b> at all gets a synthesised one-step release half
+ * ({@link #CHANGELOG_ONLY_IMAGE}, script {@code :}) whose only publish is that changelog. It used to
+ * get no release document, and an SPA frontend or a CLI released without one ever being recorded.
+ *
+ * <p><b>Only composed documents carry it.</b> A repository's own hand-written {@code
+ * ci-event-*.yml} on {@code SCMRelease} is a trigger file this class never sees, so it would run
+ * beside the composed half without publishing one; none exists today.
  *
  * <h2>The SBOM postlude (qits-621)</h2>
  *
@@ -336,12 +354,32 @@ public final class CiReleaseComposer {
   private CiReleaseComposer() {}
 
   /**
-   * The two composed documents. Either may be null: a phase this repository and its archetype
-   * declare no steps for gets <b>no trigger document and therefore no run</b>, which is the honest
-   * reading of "nothing is declared" — an SPA frontend publishes nothing, so it declares no {@code
-   * release:} slot and no release run of it is ever recorded.
+   * The two composed documents. The QA one may be null: a repository and archetype that declare no
+   * {@code release-request:} steps get <b>no trigger document and therefore no run</b>, which is the
+   * honest reading of "nothing is declared".
+   *
+   * <p><b>The release one is never null any more (qits-893).</b> Every release publishes a
+   * changelog, so a composition with no {@code release:} slot — an SPA frontend or a CLI on its
+   * packaged archetype, a repository whose own file declares only {@code release-request:} — gets
+   * the one-step {@link #changelogOnlySlot} and with it a release run that does nothing but publish
+   * that changelog. It used to be null, and "no release run of it is ever recorded" was the rule.
    */
   public record Composed(String releaseRequestDocument, String releaseDocument) {}
+
+  /**
+   * The image of the release half synthesised for a composition that declares no {@code release:}
+   * slot ({@link #changelogOnlySlot}). It needs exactly what the release prelude needs — a shell,
+   * {@code git} for the tag fetch and {@code curl} for the CLI — and {@code ci-base} carries all
+   * three ({@code apk add bash curl git jq} in qits-build-images-oci), at a fraction of {@code
+   * maven-base}'s pull.
+   */
+  static final String CHANGELOG_ONLY_IMAGE = "qits/build-images/ci-base:latest";
+
+  /**
+   * The synthesised release half's timeout: a tag fetch, a CLI download and one publish call, with
+   * room for a slow registry and none for a hang to hold a runner for the deployment default.
+   */
+  static final int CHANGELOG_ONLY_TIMEOUT_SECONDS = 300;
 
   /**
    * Compiles one repository's release cycle.
@@ -358,13 +396,13 @@ public final class CiReleaseComposer {
     // WHOLE-SLOT OVERRIDE. A repository that declares a slot replaces the archetype's entirely, and
     // the file the steps came from travels with them so an error names the document a person edits.
     Slot qa = choose(slots, archetype, true);
-    Slot release = choose(slots, archetype, false);
+    Slot declaredRelease = choose(slots, archetype, false);
     boolean ownArtifacts = !slots.artifacts().isEmpty() || archetype == null;
     List<SlotArtifact> artifacts = ownArtifacts ? slots.artifacts() : archetype.artifacts();
     String artifactsPath = ownArtifacts ? slots.configPath() : archetype.configPath();
     // Contracts are a repository's own facts: an archetype recipe cannot declare them.
     CiContracts contracts = slots.contracts();
-    if (release == null && !artifacts.isEmpty()) {
+    if (declaredRelease == null && !artifacts.isEmpty()) {
       throw new CiConfigException(
           slots.configPath()
               + ": declares "
@@ -372,17 +410,42 @@ public final class CiReleaseComposer {
               + " artifact(s) but neither it nor its archetype declares any 'release' step — a"
               + " declaration with no pipeline behind it announces a release nothing published");
     }
-    if (release == null && contracts != null) {
+    if (declaredRelease == null && contracts != null) {
       throw new CiConfigException(
           slots.configPath()
               + ": declares contracts but neither it nor its archetype declares any 'release' step —"
               + " the platform publishes contract packages from the release slot's last step, so"
               + " with no release slot nothing would ever publish them");
     }
+    // EVERY RELEASE PUBLISHES A CHANGELOG (qits-893), so a composition with no release slot gets
+    // one that does nothing else. The two refusals above stay: artifacts or contracts with no
+    // declared build behind them are still a declaration nothing builds, and the synthesised step
+    // builds nothing.
+    Slot release = declaredRelease != null ? declaredRelease : changelogOnlySlot(slots);
     Postlude postlude = new Postlude(artifacts, artifactsPath, contracts, selector);
     return new Composed(
         qa == null ? null : qaDocument(slots, archetype, selector, qa),
-        release == null ? null : releaseDocument(slots, archetype, selector, release, postlude));
+        releaseDocument(slots, archetype, selector, release, postlude));
+  }
+
+  /**
+   * The release half of a composition that declares none: one {@value #CHANGELOG_ONLY_IMAGE} step
+   * whose declared script is {@code :}, so the step is the platform's prelude (the tag checkout and
+   * the CLI fetch) and its publish block — whose only publish is the changelog — and nothing else.
+   *
+   * <p>Synthesised here rather than added to the {@code spa-frontend} and {@code cli} recipes,
+   * because the rule is "every release", not "every release on those two archetypes": a repository
+   * whose own {@code release.yml} declares only {@code release-request:} gets it too, and so does
+   * every archetype a repository invents. It is attributed to the slot file, the document a person
+   * would add a real {@code release:} slot to.
+   */
+  private static Slot changelogOnlySlot(CiReleaseSlots slots) {
+    return new Slot(
+        new CiPipeline(
+            List.of(
+                new CiStepDecl(
+                    CHANGELOG_ONLY_IMAGE, ":", CHANGELOG_ONLY_TIMEOUT_SECONDS, false, false, ""))),
+        slots.configPath());
   }
 
   /**
@@ -397,12 +460,6 @@ public final class CiReleaseComposer {
       return contracts == null ? List.of() : contracts.packages(repository);
     }
 
-
-    /** Whether anything is published by the platform, which is what places the publish block. */
-    boolean publishes() {
-      return contracts != null
-          || artifacts.stream().anyMatch(a -> a.uploaded() || a.publishesApidocs());
-    }
 
     /**
      * Every entry the composed {@code artifacts:} block carries, and so every row the join owes:
@@ -552,8 +609,9 @@ public final class CiReleaseComposer {
    */
   private static void steps(StringBuilder out, Slot slot, boolean releasePhase, Postlude postlude) {
     List<CiStepDecl> declared = slot.pipeline().steps();
+    // Every release phase's last step publishes — at the very least its changelog (qits-893) — so
+    // the publish block's place is no longer conditional on what the repository declares.
     int last = releasePhase ? publishStep(declared) : -1;
-    int publishAt = releasePhase && postlude.publishes() ? last : -1;
     out.append("steps:\n");
     for (int i = 0; i < declared.size(); i++) {
       CiStepDecl step = declared.get(i);
@@ -576,7 +634,7 @@ public final class CiReleaseComposer {
           script(
               step,
               releasePhase,
-              i == publishAt ? postlude : null,
+              i == last ? postlude : null,
               releasePhase ? postlude : null,
               i == last,
               slot.sourcePath()),
@@ -1100,10 +1158,70 @@ public final class CiReleaseComposer {
     return "qits_published_" + index;
   }
 
+  /** The shell variable a link-group member's dry-run answer is kept in. */
+  private static String dryRunVariable(int index) {
+    return "qits_dry_run_" + index;
+  }
+
+  /** The shell variable saying whether a link group publishes: {@code changed} or {@code unchanged}. */
+  private static String groupVariable(int group) {
+    return "qits_link_group_" + group;
+  }
+
+  /**
+   * Each entry's {@code if-changed} link group, or {@code -1}. A group is the entries {@code link:}
+   * joins, directly or through each other, when there are two or more of them; the parser holds them
+   * to one {@code publish:}, so a group is if-changed as a whole or not at all. An {@code always}
+   * group needs nothing: every member publishes at every release anyway.
+   */
+  static int[] ifChangedLinkGroups(List<SlotArtifact> artifacts) {
+    int[] parent = new int[artifacts.size()];
+    Map<String, Integer> byArtifactId = new HashMap<>();
+    for (int i = 0; i < artifacts.size(); i++) {
+      parent[i] = i;
+      if (artifacts.get(i).artifact().type() == CiArtifact.Type.MAVEN) {
+        byArtifactId.put(CiReleaseSlotParser.artifactId(artifacts.get(i).artifact().name()), i);
+      }
+    }
+    for (int i = 0; i < artifacts.size(); i++) {
+      for (String link : artifacts.get(i).link()) {
+        Integer target = byArtifactId.get(link);
+        if (target != null) {
+          parent[root(parent, i)] = root(parent, target);
+        }
+      }
+    }
+    Map<Integer, Integer> size = new HashMap<>();
+    for (int i = 0; i < artifacts.size(); i++) {
+      size.merge(root(parent, i), 1, Integer::sum);
+    }
+    int[] group = new int[artifacts.size()];
+    for (int i = 0; i < artifacts.size(); i++) {
+      int r = root(parent, i);
+      group[i] = size.get(r) > 1 && artifacts.get(i).artifact().publishIfChanged() ? r : -1;
+    }
+    return group;
+  }
+
+  private static int root(int[] parent, int at) {
+    while (parent[at] != at) {
+      at = parent[at];
+    }
+    return at;
+  }
+
   /**
    * The publish calls, in the order the class javadoc states. An {@code if-changed} entry's answer
    * is captured — {@code var=$(…)} on its own line still fails the step under {@code set -e} on a
    * non-zero exit — echoed, and read by its SBOM submit; every other call simply runs.
+   *
+   * <p><b>An {@code if-changed} link group publishes together or not at all.</b> Linked jars are the
+   * ones consumers take together, often through one version property, so one member published at
+   * the release version and another left at an older one would point that property at a version
+   * that does not exist. Every member is first asked with {@code --dry-run}; when any answers other
+   * than {@code unchanged since <v>}, every member publishes unconditionally (a linked sibling then
+   * sits at the release version), and otherwise each keeps its dry-run answer and nothing is
+   * uploaded.
    */
   private static void publishBlock(StringBuilder out, Postlude postlude) {
     List<SlotArtifact> artifacts = postlude.artifacts();
@@ -1114,27 +1232,50 @@ public final class CiReleaseComposer {
             CiReleaseSlotParser.artifactId(artifact.artifact().name()), artifact.artifact().name());
       }
     }
-    for (int i : publishOrder(artifacts)) {
+    List<Integer> order = publishOrder(artifacts);
+    int[] group = ifChangedLinkGroups(artifacts);
+    // THE LINK GROUP'S DRY RUN: every member is asked first, uploading nothing. One `changed` (or
+    // a re-run's `published <v>`) makes the whole group publish below; all `unchanged since` makes
+    // it publish nothing. So linked jars that consumers pin through one property never part ways.
+    Set<Integer> grouped = new HashSet<>();
+    for (int i : order) {
+      if (group[i] < 0) {
+        continue;
+      }
+      if (grouped.add(group[i])) {
+        out.append(groupVariable(group[i])).append("=unchanged\n");
+      }
+      out.append(dryRunVariable(i))
+          .append("=$(")
+          .append(publishCall(artifacts.get(i), mavenByArtifactId, true, true))
+          .append(")\n");
+      out.append("echo \"dry run: $").append(dryRunVariable(i)).append("\"\n");
+      out.append("case \"$")
+          .append(dryRunVariable(i))
+          .append("\" in unchanged\\ since\\ *) ;; *) ")
+          .append(groupVariable(group[i]))
+          .append("=changed ;; esac\n");
+    }
+    for (int i : order) {
       SlotArtifact artifact = artifacts.get(i);
-      StringBuilder call = new StringBuilder("qits artifacts publish ");
-      call.append(artifact.artifact().type().declared())
-          .append(" --name ")
-          .append(quote(artifact.artifact().name()))
-          .append(" --path ")
-          .append(quote(artifact.path()));
-      if (artifact.hasSbom()) {
-        call.append(" --sbom ").append(quote(artifact.sbomPath()));
+      if (group[i] >= 0) {
+        out.append("if [ \"$").append(groupVariable(group[i])).append("\" = changed ]; then\n");
+        out.append("  ")
+            .append(publishedVariable(i))
+            .append("=$(")
+            .append(publishCall(artifact, mavenByArtifactId, false, false))
+            .append(")\n");
+        out.append("else\n");
+        out.append("  ")
+            .append(publishedVariable(i))
+            .append("=$")
+            .append(dryRunVariable(i))
+            .append("\n");
+        out.append("fi\n");
+        out.append("echo \"$").append(publishedVariable(i)).append("\"\n");
+        continue;
       }
-      for (String glob : artifact.include()) {
-        call.append(" --include ").append(quote(glob));
-      }
-      for (String link : artifact.link()) {
-        call.append(" --link ").append(quote(mavenByArtifactId.get(link)));
-      }
-      if (artifact.artifact().publishIfChanged()) {
-        call.append(" --if-changed");
-      }
-      call.append(" --version \"$QITS_VERSION\"");
+      String call = publishCall(artifact, mavenByArtifactId, artifact.artifact().publishIfChanged(), false);
       if (artifact.artifact().publishIfChanged()) {
         out.append(publishedVariable(i)).append("=$(").append(call).append(")\n");
         out.append("echo \"$").append(publishedVariable(i)).append("\"\n");
@@ -1142,6 +1283,40 @@ public final class CiReleaseComposer {
         out.append(call).append('\n');
       }
     }
+    publishContractsAndDocs(out, postlude);
+  }
+
+  /** One {@code qits artifacts publish maven|npm} call for an entry. */
+  private static String publishCall(
+      SlotArtifact artifact, Map<String, String> mavenByArtifactId, boolean ifChanged, boolean dryRun) {
+    StringBuilder call = new StringBuilder("qits artifacts publish ");
+    call.append(artifact.artifact().type().declared())
+        .append(" --name ")
+        .append(quote(artifact.artifact().name()))
+        .append(" --path ")
+        .append(quote(artifact.path()));
+    if (artifact.hasSbom()) {
+      call.append(" --sbom ").append(quote(artifact.sbomPath()));
+    }
+    for (String glob : artifact.include()) {
+      call.append(" --include ").append(quote(glob));
+    }
+    for (String link : artifact.link()) {
+      call.append(" --link ").append(quote(mavenByArtifactId.get(link)));
+    }
+    if (ifChanged) {
+      call.append(" --if-changed");
+    }
+    if (dryRun) {
+      call.append(" --dry-run");
+    }
+    call.append(" --version \"$QITS_VERSION\"");
+    return call.toString();
+  }
+
+  /** The contract packages, the golden-master docs and the {@code @apidocs} documents. */
+  private static void publishContractsAndDocs(StringBuilder out, Postlude postlude) {
+    List<SlotArtifact> artifacts = postlude.artifacts();
     CiContracts contracts = postlude.contracts();
     if (contracts != null) {
       for (CiContracts.Package contract : postlude.contractPackages()) {
@@ -1183,9 +1358,23 @@ public final class CiReleaseComposer {
             .append('\n');
       }
     }
+    // THE CHANGELOG, last of every release (qits-893), and required: a release that cannot say what
+    // it changed is a red publish. The prelude's fetch is soft on the package (see cliFetch), so a
+    // step that reached here without a `qits` is told why in so many words rather than dying on
+    // `qits: not found`.
+    out.append(
+        "command -v qits > /dev/null 2>&1 || { echo \"qits-ci: the changelog cannot be published:"
+            + " this release step has no qits CLI (QITS_ARTIFACTS_CLI_PACKAGE unset or the fetch was"
+            + " skipped)\" >&2; exit 1; }\n");
+    out.append("qits artifacts publish changelog --version \"$QITS_VERSION\"")
+        .append(META)
+        .append('\n');
   }
 
-  /** The provenance a docs bundle is published with, read from the step's own environment. */
+  /**
+   * The provenance a docs bundle and the changelog are published with, read from the step's own
+   * environment.
+   */
   private static final String META =
       " --meta git.commit.hash=\"$QITS_CI_SHA\" --meta git.repository.name=\"$QITS_CI_REPO_NAME\"";
 

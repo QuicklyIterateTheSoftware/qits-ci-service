@@ -932,7 +932,7 @@ public class CiEventTriggerParserTest {
                     "event: SCMRelease\nartifacts:\n  - { type: maven, name: \"a:b\", publish:"
                         + " sometimes }\nsteps: []\n"));
     assertTrue(
-        unknown.getMessage().contains("publish 'sometimes' — it is 'always' (the default) or"
+        unknown.getMessage().contains("publish 'sometimes' — it is 'always' or"
             + " 'if-changed'"),
         unknown.getMessage());
   }

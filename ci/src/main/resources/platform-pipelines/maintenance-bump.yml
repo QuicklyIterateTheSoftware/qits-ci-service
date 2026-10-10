@@ -9,15 +9,13 @@
 # automation: it writes a wrapper's gitlinks onto a release request's OWN source branch - the
 # branch the payload names - so that the fold CI gates and a person approves names what every
 # member has released. `EstatePinsAutomation.TARGETED_GROUP` is the sentinel it always sends, kept
-# as a label for the history (the commit still reads `bump(targeted): N dependencies`) rather than
-# a key anything branches on.
+# as a label for the history (the commit subject still names it) rather than a key anything
+# branches on.
 #
 # A PLATFORM pipeline: this module's own classpath resource at qits-ci-service's
 # `ci/src/main/resources/platform-pipelines/` (until 2026-10-02 it lived in the wrapper as
 # `ci-platform-event-maintenance-bump.yml`), and run against the repository the payload
-# names. No `when:` - every MaintenanceBump is for us, and the payload's changes decide
-# what the step does. `PackagedPlatformPipelinesTest` holds the commit guard below to
-# `--ignore-submodules=none`.
+# names. No `when:` - every MaintenanceBump is for us.
 #
 # ONE STEP, not two. This file used to run a maven step first and a node/docker/gitlink step
 # second, because no build image carries both toolchains and estate pins share the pipeline with
@@ -38,13 +36,13 @@
 # own source branch, already carrying real work by the time estate-pins writes a pin onto it, so
 # every real run takes the "continue" arm.
 #
-# What is GONE is the REBUILD the retired GROUP arm needed: a `maintenance/<group>` branch, cut
-# from an unmerged release's tag, could be found stale against a newer one, and the payload then
-# carried `replaceHead` - the branch head as the maintenance service last read it - so this step
-# could throw the branch away and start over on the new tag under a `--force-with-lease` on
-# exactly that head. `AutomationService.dispatchSourceBranch` never sets `replaceHead` on a
-# targeted payload, so that case was dead weight for the one caller left; removing it is what
-# makes this step read exactly what a targeted payload sends:
+# What is GONE is the REBUILD a retired arm needed: a `maintenance/<group>` branch, cut from an
+# unmerged release's tag, could be found stale against a newer one, or could carry more than one
+# of this service's own commits and need squashing onto its base under a `--force-with-lease` - an
+# ownership walk, a lease and a `replaceHead` the payload carried all existed to make that safe.
+# `AutomationService.dispatchSourceBranch` never sets `replaceHead` on a targeted payload and never
+# names a tag as `baseRef`, so none of that machinery was ever exercised by the one caller left;
+# removing it is what makes this step read exactly what a targeted payload sends:
 #   no branch        start it from baseRef, plain push
 #   branch exists    continue it, plain push
 # A failed fetch is read as "no such branch", which is safe in the only direction that matters: it
@@ -65,8 +63,8 @@
 #                 commit sha the tree holds now, which is what makes the body readable.
 #   location      npm: IGNORED - npm updates the entry in whichever section holds it
 #                 docker: it says WHICH KIND OF LINE holds the pin, and there are two.
-#                 `line:<n>` is IGNORED - a line number goes stale the moment the step
-#                 commits, so a FROM is anchored on the image name instead.
+#                 `line:<n>` is IGNORED - a line number is an address that does not survive
+#                 an edit above it, so a FROM is anchored on the image name instead.
 #                 `arg:<name>` is NOT ignored and is the anchor itself: the pin sits in
 #                 an `ARG <name>=<image>:<tag>` default that a later `FROM ${<name>}`
 #                 resolves, and the argument's name is a stable address where a line
@@ -78,7 +76,22 @@
 # and force-pushed `maintenance/frontend`. The same move is an ordinary pin here - one
 # entry in `.gitmodules`, one row in the inventory, one commit on the shared branch,
 # released through the same door as everything else.
+#
+# THE COMMIT MESSAGE IS THE CHANGELOG'S (qits-893). The step records what it applied in
+# /tmp/bump-applied.tsv - `<ecosystem>\t<name>` per line, only for a change that really moved
+# the index, so the file covers exactly the one commit's changes - beside the human body in
+# /tmp/bump-body.txt, and hands both to `qits changelog bump-message`, which writes the
+# whole message: the `bump(targeted): ...` subject, and the changelog sections of every
+# applied dependency's released versions, `# <version>` headings included. So the commit
+# is `--cleanup=verbatim`: git's default cleanup strips every line starting with `#`, and
+# would take those headings with it. A CLI that fails fails the step - a bump never
+# commits a message it could not compose.
+#
+# `qits-cli: true` is what puts that CLI on PATH: CiPlatformPipelines strips the key and
+# prepends the pinned, hard AUTOMATION fetch (CiReleaseComposer.cliFetch) to the step
+# script, so a step whose CLI cannot be fetched fails before it touches the branch.
 event: MaintenanceBump
+qits-cli: true
 steps:
   - image: qits/build-images/node-base:latest
     timeout-seconds: 1800
@@ -102,21 +115,14 @@ steps:
         exit 1
       fi
 
-      # --- what this step has to do, if anything -----------------------------------
-      # npm, docker and gitlink changes. node-base carries node, npm, git and curl - and
-      # NO jq, so the payload is read with `node -p`/`node -e`, exactly as the angular
-      # hop file this replaces does. gitlink needs only the git that is already here.
+      # --- the payload ---------------------------------------------------------------
+      # node-base carries node, npm, git, awk and curl - and NO jq, so the payload is read
+      # with `node -p`/`node -e`.
       node -e '
         const payload = JSON.parse(process.env.QITS_EVENT_PAYLOAD || "{}");
-        const mine = (payload.changes || []).filter(c =>
-          c.ecosystem === "npm" || c.ecosystem === "docker" || c.ecosystem === "gitlink");
-        process.stdout.write(mine.map(c =>
+        process.stdout.write((payload.changes || []).map(c =>
           [c.ecosystem, c.name, c.from || "", c.to, c.manifestPath, c.location || ""].join("\t") + "\n").join(""));
-      ' > /tmp/bump-node.tsv
-      if [ ! -s /tmp/bump-node.tsv ]; then
-        echo "no npm, docker or gitlink changes in this bump"
-        exit 0
-      fi
+      ' > /tmp/bump-changes.tsv
 
       branch=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).branch')
       base=$(node -p 'JSON.parse(process.env.QITS_EVENT_PAYLOAD).baseRef || "main"')
@@ -140,9 +146,9 @@ steps:
       # TWO PROGRAMS, because a base image is pinned in one of two places and the
       # payload's `location` says which.
       #
-      # A `line:<n>` location is not used: a line number goes stale the moment this
-      # step commits, and the image name is the thing that is actually true about the
-      # line. Exactly one FROM must match, or the step fails.
+      # A `line:<n>` location is not used: a line number does not survive an edit above
+      # it, and the image name is the thing that is actually true about the line.
+      # Exactly one FROM must match, or the step fails.
       cat > /tmp/bump-from.awk <<'AWK'
       BEGIN { n = 0; pfx = img ":" }
       {
@@ -219,8 +225,8 @@ steps:
       # carrying real work by the time estate-pins writes a pin onto it, so every real run takes
       # the "continue" arm below. "start fresh" is kept as the honest answer to a branch this step
       # cannot find - nothing here can prove the branch exists before asking - rather than a case a
-      # targeted payload ever really takes. See the header for what is gone: the REBUILD the
-      # retired GROUP arm needed, and the `--force-with-lease` on a `replaceHead` that carried it.
+      # targeted payload ever really takes. See the header for what is gone: the REBUILD a retired
+      # arm needed, and the ownership walk, lease and `replaceHead` that carried it.
       #
       # A failed fetch is read as "no such branch". That is safe in the only direction that
       # matters: this then builds on baseRef and the push is refused as a non-ff rather than
@@ -241,7 +247,11 @@ steps:
       git checkout -q --detach "$start"
 
       # --- apply -------------------------------------------------------------------
+      # Every change, on the start (the existing branch's head, or baseRef). A change counts
+      # only when it moves the index - the start may already carry it - so the subject says
+      # what this commit really changes.
       : > /tmp/bump-body.txt
+      : > /tmp/bump-applied.tsv
       applied=0
       tab=$(printf '\t')
       while IFS="$tab" read -r ecosystem name from to manifest location <&3; do
@@ -252,11 +262,11 @@ steps:
         esac
         # A gitlink's path is a DIRECTORY, and in this clone it is an empty one - the
         # submodule is never initialised here, because the whole edit is an index entry.
-        # So the file test guards the two ecosystems that edit a file, and no more.
         if [ "$ecosystem" != "gitlink" ] && [ ! -f "$manifest" ]; then
           echo "no such manifest: $manifest" >&2
           exit 1
         fi
+        before=$(git write-tree)
 
         if [ "$ecosystem" = "npm" ]; then
           # THE TWO NPM ROOTS ARE CODE (qits-731): the hosted @qits scope and the npmjs
@@ -371,39 +381,34 @@ steps:
           # --cacheinfo because there is nothing on disk to add: the mode says gitlink.
           git update-index --add --cacheinfo "160000,$sha,$manifest"
         else
-          echo "unknown ecosystem for this step: $ecosystem" >&2
+          echo "unknown ecosystem: $ecosystem" >&2
           exit 1
         fi
-        applied=$((applied + 1))
-        echo "- $ecosystem $name $from -> $to ($manifest)" >> /tmp/bump-body.txt
-        echo "bumped $name to $to in $manifest"
-      done 3< /tmp/bump-node.tsv
+
+        if [ "$(git write-tree)" = "$before" ]; then
+          echo "$name is already $to in $manifest"
+        else
+          applied=$((applied + 1))
+          echo "- $ecosystem $name $from -> $to ($manifest)" >> /tmp/bump-body.txt
+          printf '%s\t%s\n' "$ecosystem" "$name" >> /tmp/bump-applied.tsv
+          echo "bumped $name to $to in $manifest"
+        fi
+      done 3< /tmp/bump-changes.tsv
 
       # --- commit and push ---------------------------------------------------------
-      # --ignore-submodules=none IS LOAD-BEARING, and leaving it out is how the gitlink arm
-      # shipped dead on 2026-09-01 and stayed dead. Every service's `.gitmodules` carries
-      # `ignore = all` on its webui submodule so that the expected drift between a pin and
-      # the branch it follows stays out of `git status` and `git diff` - and that suppression
-      # reaches `git diff --cached` too. So this guard compared an index holding a freshly
-      # staged 160000 entry against HEAD, was told there was nothing there, and exited 0:
-      # the step reported success, the branch never moved, and this service read that as
-      # NOTHING_TO_DO. Fifteen services' SPAs stopped being picked up with no error anywhere.
-      #
-      # The flag re-enables submodule comparison FOR THIS ONE COMMAND and nothing else.
-      # Ordinary files are unaffected, and because the comparison is `--cached` - index
-      # against HEAD, never the working tree - a submodule checked out at some other commit
-      # still counts for nothing. Only a gitlink this step deliberately staged is seen,
-      # which is exactly the change it is trying not to lose.
-      if git diff --cached --quiet --ignore-submodules=none; then
-        echo "every npm, docker and gitlink change in this bump is already the pin - nothing to commit"
+      # Trees, not `git diff`: every service's `.gitmodules` says `ignore = all`, which
+      # blinds `git diff --cached` to a staged gitlink. A tree is a tree.
+      tree=$(git write-tree)
+      if [ "$tree" = "$(git rev-parse "$start^{tree}")" ]; then
+        echo "$branch already carries every change in this bump - nothing to commit"
         exit 0
       fi
-      {
-        printf 'bump(%s): %d dependencies\n\n' "$group" "$applied"
-        cat /tmp/bump-body.txt
-      } > /tmp/bump-message.txt
+      # The message is the changelog CLI's - see the header. `>` into a file and then -F,
+      # so a failing CLI stops the step under `set -e` before anything is committed.
+      qits changelog bump-message --group "$group" --applied /tmp/bump-applied.tsv \
+          --body /tmp/bump-body.txt > /tmp/bump-message.txt
       git -c user.name="qits maintenance" -c user.email="maintenance@qits.local" \
-          commit -q -F /tmp/bump-message.txt
+          commit -q --cleanup=verbatim -F /tmp/bump-message.txt
       # NEVER a bare --force. A rejection means somebody rewrote the branch by hand, or
       # pushed to it since this step read it: either way it is theirs now, and nothing
       # here overwrites it.
@@ -411,3 +416,4 @@ steps:
         echo "push to $branch was rejected - the branch is not what we built on" >&2
         exit 1
       fi
+      echo "pushed $branch: $applied dependencies"

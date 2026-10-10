@@ -1346,6 +1346,7 @@ paths:
   /ci/api/runs:
     get:
       summary: "List a repository's CI runs, newest first"
+      operationId: listRuns
       parameters:
       - description: Return only the newest n runs; omit for all of them
         schema:
@@ -1680,9 +1681,43 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+  /ci/api/runs/{runId}/gate/reports:
+    get:
+      summary: "The release reports of the green QA run that gated this run's release\
+        \ request, without payloads"
+      parameters:
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: "The gate run's reports; runId null and [] when no green QA\
+            \ run gated the request"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CiRunReportsDto"
+        "404":
+          description: No such run
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Ci Report Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:system
+        - qits:agent
+        - qits:ci-run
   /ci/api/runs/{runId}/reports:
     get:
       summary: "A run's release reports, without payloads, and its baseline"
+      operationId: listRunReports
       parameters:
       - name: runId
         in: path
@@ -1714,6 +1749,7 @@ paths:
   /ci/api/runs/{runId}/reports/{reportId}:
     get:
       summary: "One release report of a run, with its payload"
+      operationId: getRunReport
       parameters:
       - name: reportId
         in: path
@@ -1829,4 +1865,4 @@ paths:
         - qits:ci-run
 info:
   title: qits-ci API
-  version: 2026.1007.60229
+  version: 2026.1009.190249

@@ -220,7 +220,7 @@ public class CiRunController {
   // Every read also takes qits:agent. It sits on each read rather than on the class, because the
   // class list also guards the cancellations write, and agents do not write here.
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system", "qits:agent"})
-  @Operation(summary = "List a repository's CI runs, newest first")
+  @Operation(operationId = "listRuns", summary = "List a repository's CI runs, newest first")
   @APIResponse(
       responseCode = "200",
       description =

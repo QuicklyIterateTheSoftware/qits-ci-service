@@ -590,6 +590,17 @@ public class CiEventTriggerService {
       // than about the git host — so it is a refusal and not an unanswered evaluation.
       throw new NoRepositoriesInProject(projectScope);
     }
+    if (preRunPending(arrival, payload)) {
+      // The pre-run gate (qits-1133): the request's automations have not settled on this fold, so
+      // no QA run starts. qits-projects announces the same fold again with `preRun: DONE` when they
+      // have. Read before any trigger file, so a composed archetype and a hand-written
+      // ci-event-release-request.yml both obey it. Every candidate counts as read: the event was
+      // evaluated, and held is its answer — never the "nothing could be read" of a 503.
+      LOG.infof(
+          "Event %s (%s) starts no run: its pre-run is still PENDING",
+          arrival.eventId(), arrival.eventName());
+      return new Evaluation(List.of(), candidates.size(), List.of(), List.of());
+    }
     List<String> runIds = new ArrayList<>();
     List<String> skipped = new ArrayList<>();
     // The candidates whose release.yml could not be read, which is the one entry on the skipped list
@@ -657,6 +668,22 @@ public class CiEventTriggerService {
           arrival.eventId(), arrival.eventName());
     }
     return new Evaluation(runIds, candidates.size() - skipped.size(), skipped, unreadable);
+  }
+
+  /**
+   * Whether a {@code ReleaseRequestChanged} says its pre-run is not done: {@code preRun} is the
+   * string {@code PENDING}. Absent, {@code DONE}, any other word and any other type all mean "start
+   * QA as before", so a qits-projects that sends no field behaves as it always did. Every other
+   * event name is never held.
+   */
+  static boolean preRunPending(Arrival arrival, JsonNode payload) {
+    if (!CiRunService.RELEASE_REQUEST_EVENT_NAME.equals(arrival.eventName()) || payload == null) {
+      return false;
+    }
+    JsonNode preRun = payload.get(CiRunService.PRE_RUN_FIELD);
+    return preRun != null
+        && preRun.isTextual()
+        && CiRunService.PRE_RUN_PENDING.equals(preRun.asText());
   }
 
   /**
@@ -1708,10 +1735,13 @@ public class CiEventTriggerService {
    * same revision: the gate asks about {@code refs/tags/<version>}, the evaluation reads at the
    * commit that tag names ({@link #releaseRevision}), and neither reads any other repository.
    *
-   * <p><b>{@code false} is a real answer and not an absence.</b> {@code spa-frontend} and {@code
-   * cli} declare no {@code release:} slot on purpose, and a rev with no {@code release.yml} at all
-   * composes nothing — at an immutable tag that is honest rather than provisional. Both are {@link
-   * Verdict#NOT_DECLARED}, and neither is ever reached from a read that failed.
+   * <p><b>{@code false} is a real answer and not an absence.</b> A rev with no {@code release.yml}
+   * at all composes nothing — at an immutable tag that is honest rather than provisional — and is
+   * {@link Verdict#NOT_DECLARED}, never reached from a read that failed. {@code spa-frontend} and
+   * {@code cli} used to answer it too, for declaring no {@code release:} slot; since every release
+   * publishes a changelog (qits-893) a composition with no such slot gets a synthesised one and
+   * answers {@link Verdict#DECLARED}, so the composed arm below that says otherwise is kept only as
+   * the honest reading of a composer that one day returns no release half again.
    *
    * <p><b>One edge of that is worth knowing rather than guarding.</b> {@code HttpGitConfigSource}
    * maps every 404 to {@code ABSENT} and nothing else — it reads at revs its callers have already

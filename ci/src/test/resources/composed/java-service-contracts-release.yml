@@ -102,6 +102,8 @@ steps:
       qits artifacts publish contract --kind 'golden-masters' --ecosystem 'npm' --name '@qits/projects-golden-masters' --application 'qits-projects' --from 'golden-masters/' --version "$QITS_VERSION"
       qits artifacts publish contract-docs --application 'qits-projects' --from 'golden-masters/' --package 'maven=eu.wohlben.qits:qits-projects-golden-masters' --package 'npm=@qits/projects-golden-masters' --version "$QITS_VERSION" --meta git.commit.hash="$QITS_CI_SHA" --meta git.repository.name="$QITS_CI_REPO_NAME"
       qits artifacts publish docs submit --site '@apidocs/qits-projects' --openapi 'docs/openapi.yml' --version "$QITS_VERSION" --meta git.commit.hash="$QITS_CI_SHA" --meta git.repository.name="$QITS_CI_REPO_NAME"
+      command -v qits > /dev/null 2>&1 || { echo "qits-ci: the changelog cannot be published: this release step has no qits CLI (QITS_ARTIFACTS_CLI_PACKAGE unset or the fetch was skipped)" >&2; exit 1; }
+      qits artifacts publish changelog --version "$QITS_VERSION" --meta git.commit.hash="$QITS_CI_SHA" --meta git.repository.name="$QITS_CI_REPO_NAME"
       if [ -f '.sbom/sbom.json' ]; then
         qits artifacts publish sbom submit --type 'docker' --name 'qits/qits-projects' \
           --version "$QITS_VERSION" --file '.sbom/sbom.json'

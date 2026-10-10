@@ -117,6 +117,11 @@ public class QitsCliPinIT {
   /** A version that is a release's shape and is no release: nothing is published under it. */
   private static final String RELEASE_VERSION = "2026.101.10101";
 
+  /** The provenance a step is sent and the changelog is published with (qits-893). */
+  private static final String RELEASE_SHA = "e".repeat(40);
+
+  private static final String RELEASE_REPOSITORY = "qits-ci-service";
+
   /** What the composed postlude submits, and the coordinate the stub must be asked for. */
   private static final String SBOM_TYPE = "docker";
 
@@ -161,6 +166,8 @@ public class QitsCliPinIT {
           cp "$file" "$record/submitted" ;;
         "artifacts publish exists sbom "*)
           [ -f "$record/submitted" ] ;;
+        "artifacts publish changelog "*)
+          ;;
         *)
           echo "the pin test's qits stand-in was asked something nobody asserted: $*" >&2
           exit 64 ;;
@@ -236,11 +243,18 @@ public class QitsCliPinIT {
               + result.output());
 
       // 4. WHAT THE POSTLUDE ASKED THE CLI TO DO. An exit code says the script did not stop; the
-      // recorded calls say it submitted the declared coordinate and then asked for it back, in
-      // that order, with exactly the arguments the pinned binary's own usage names (step 2).
+      // recorded calls say it published the changelog, submitted the declared coordinate and then
+      // asked for it back, in that order, with exactly the arguments the pinned binary's own
+      // usage names (step 2).
       Path record = work.resolve("cli-record");
       assertEquals(
           List.of(
+              "artifacts publish changelog --version "
+                  + RELEASE_VERSION
+                  + " --meta git.commit.hash="
+                  + RELEASE_SHA
+                  + " --meta git.repository.name="
+                  + RELEASE_REPOSITORY,
               "artifacts publish sbom submit --type "
                   + SBOM_TYPE
                   + " --name "
@@ -325,8 +339,9 @@ public class QitsCliPinIT {
   }
 
   /**
-   * The pinned binary's own usage for the two commands the composed postlude calls, asserted to
-   * name each command and every option the postlude passes it.
+   * The pinned binary's own usage for the three commands the composed postlude calls — the SBOM
+   * submit, the changelog publish (qits-893) and the presence check — asserted to name each command
+   * and every option the postlude passes it.
    *
    * <p><b>Why it is asked rather than made to publish (qits-731).</b> This test used to run the
    * pinned binary's real {@code sbom submit} against a stub store it found through
@@ -357,6 +372,19 @@ public class QitsCliPinIT {
           submit.contains(option + "="),
           "the pinned CLI's `sbom submit` takes " + option + ", which the postlude passes:\n"
               + submit);
+    }
+
+    // The changelog every composed release publishes last (qits-893). A pin to a CLI older than the
+    // command is a red build here rather than every release on the platform going red at once.
+    String changelog = usage(cli, dir, "artifacts", "publish", "changelog", "--help");
+    assertTrue(
+        changelog.startsWith("Usage: qits artifacts publish changelog"),
+        "the pinned CLI carries `artifacts publish changelog`:\n" + changelog);
+    for (String option : List.of("--version", "--meta")) {
+      assertTrue(
+          changelog.contains(option + "="),
+          "the pinned CLI's `changelog` takes " + option + ", which the postlude passes:\n"
+              + changelog);
     }
 
     String exists = usage(cli, dir, "artifacts", "publish", "exists", "--help");
@@ -462,6 +490,9 @@ public class QitsCliPinIT {
     env.put("QITS_ARTIFACTS_CLI_PACKAGE", PlatformAccessCliBinary.DAEMON_NAME);
     env.put("QITS_ARTIFACTS_CLI_VERSION", PlatformAccessCliBinary.VERSION);
     env.put("QITS_VERSION", RELEASE_VERSION);
+    // The provenance the changelog is published with (qits-893), as StepWorkloadSpecs sends it.
+    env.put("QITS_CI_SHA", RELEASE_SHA);
+    env.put("QITS_CI_REPO_NAME", RELEASE_REPOSITORY);
     env.put("QITS_CI_REPOSITORY_URL", origin.toAbsolutePath().toString());
     env.put("GIT_CONFIG_GLOBAL", work.resolve("gitconfig").toAbsolutePath().toString());
     env.put("HOME", work.toAbsolutePath().toString());

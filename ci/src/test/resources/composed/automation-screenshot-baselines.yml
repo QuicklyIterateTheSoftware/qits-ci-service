@@ -70,7 +70,7 @@ steps:
       [ -n "${HOME:-}" ] && [ -w "$HOME" ] || export HOME=/tmp
       if [ -z "$item" ]; then
         item=$(git log -n 200 --format=%s 2>/dev/null \
-          | sed -nE 's/^[A-Za-z][A-Za-z0-9_\/.-]*\(([A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18})\)!?: .*/\1/p' \
+          | sed -nE 's/^[A-Za-z][A-Za-z0-9_\/.-]*\(([A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18})(, *[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18})*\)!?: .*/\1/p' \
           | head -n 1)
       fi
       # --- the kind's script, run as data ---

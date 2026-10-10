@@ -1552,8 +1552,11 @@ already happened rather than a second mechanism.
   stands at.
   A Maven name is an unqualified `groupId:artifactId` GAV prefix; the event's `version` supplies
   the third coordinate and the consumer supplies the repository URL.
-- **`publish`** is `always` (the default) or `if-changed`, on `maven` and `npm` entries only; on any
-  other type the key itself is a parse error naming the entry. See "`publish: if-changed`" under the
+- **`publish`** is `always` or `if-changed`, on `maven` and `npm` entries only; on any other type
+  the key itself is a parse error naming the entry. In a trigger file `always` is the default; in
+  `release.yml` the default is the type's own (`CiArtifact.Type.releaseDefault`), which is
+  `if-changed` for `maven` and `npm` (USER RULE 2026-10-09: a release whose content did not change
+  publishes nothing). `publish: always` is the opt-out. See "`publish: if-changed`" under the
   fourth file below — a composed release document carries it because the release join reads it
   there. (`announce:` was the key before it; qits-648 deleted it, and it is an unknown key now,
   refused with a message naming `publish:` as its replacement.)
@@ -1722,9 +1725,23 @@ userflows: true                # optional; true, or the site name the bundle pub
 
 An SPA frontend's whole file is `archetype: spa-frontend`.
 
+**Every release publishes a changelog** (qits-893). The last release step's publish block always
+ends with `qits artifacts publish changelog --version "$QITS_VERSION"` and the provenance `--meta`
+the docs bundle carries, and it is required: a red publish is a red release run and a failed PUBLISH
+gate. A file — or file plus archetype — that declares no `release:` slot (`spa-frontend`, `cli`, a
+repository declaring only `release-request:`) still composes a release half: one
+`qits/build-images/ci-base:latest` step, 300 s, script `:`, which is the release prelude plus that
+changelog. `artifacts:` or `contracts:` with no declared `release:` steps are still refused. A
+hand-written `ci-event-*.yml` on `SCMRelease` is not composed and publishes no changelog; none exists.
+The changelog reads the gate's reports through `GET /ci/api/runs/{runId}/gate/reports`, asked with
+the publish run's own id: the newest green QA run of the run's release request, or `runId: null` and
+`[]` when there is none.
+
 **`publish: if-changed`** (qits-620) is the one artifact entry qits-ci checks rather than
 believes. Allowed on `maven` and `npm` only — on `docker`, `daemon` and `docs` the key is a parse
-error naming the entry — it needs an `sbom:`, and `always` is the default. The composed postlude
+error naming the entry — it needs an `sbom:`, and in `release.yml` it is the default for `maven`
+and `npm`. Entries joined by `link:` share one `publish:` and publish together: each is asked with
+`--dry-run` first, and if any changed, all publish. The composed postlude
 uploads such an entry only when its content differs from the newest published version, so before the
 release join announces it, it asks qits-artifacts which way that went: whether the artifact exists
 at the release version — `GET <maven root>/<group path>/<artifactId>/<version>/<artifactId>-<version>.pom`

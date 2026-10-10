@@ -3,7 +3,6 @@ package eu.wohlben.qits.ci.control;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -89,7 +88,7 @@ public class CiReleaseComposerTest {
       """;
 
   @Test
-  public void anArchetypeAloneComposesTheQaPipelineAndNoRelease() {
+  public void anArchetypeAloneComposesTheQaPipelineAndAChangelogOnlyRelease() {
     CiReleaseComposer.Composed composed =
         CiReleaseComposer.compose(
             CiRepoRef.of("11111111-2222-3333-4444-555555555555", "qits", "qits-observability-frontend"),
@@ -97,10 +96,133 @@ public class CiReleaseComposerTest {
             archetype("spa-frontend", SPA_FRONTEND));
 
     golden("spa-frontend-release-request.yml", composed.releaseRequestDocument());
-    // AND NO RELEASE DOCUMENT. An SPA frontend publishes nothing — it is built into the consuming
-    // service's image — so it has no ci-event-release.yml today, and "no steps declared for a phase"
-    // must mean "no run" rather than a trivially green one.
-    assertNull(composed.releaseDocument());
+    // An SPA frontend publishes no artifact — it is built into the consuming service's image — and
+    // used to get no release document at all. Every release publishes a changelog now (qits-893),
+    // so it gets the synthesised one-step release half whose only publish is that changelog.
+    golden("spa-frontend-release.yml", composed.releaseDocument());
+  }
+
+  /** The cli archetype's shape: a QA slot and no release slot, like spa-frontend. */
+  private static final String CLI =
+      """
+      release-request:
+        - image: qits/build-images/maven-base:latest
+          timeout-seconds: 1800
+          script: |
+            ./mvnw -B -ntp verify
+      """;
+
+  @Test
+  public void aCliArchetypeGetsTheChangelogOnlyReleaseToo() {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            CiRepoRef.of("22222222-3333-4444-5555-666666666666", "qits", "qits-platform-access-cli"),
+            slots("archetype: cli\n"),
+            archetype("cli", CLI));
+
+    golden("cli-release.yml", composed.releaseDocument());
+  }
+
+  @Test
+  public void aCompositionWithNoReleaseSlotStillPublishesItsChangelog() {
+    // No archetype and a release.yml with only release-request: — the rule is "every release", not
+    // "every release on the two publish-free archetypes".
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO,
+            slots(
+                """
+                release-request:
+                  - image: alpine:3
+                    script: echo qa
+                """),
+            null);
+
+    golden("release-request-only-release.yml", composed.releaseDocument());
+    CiEventTrigger release =
+        new CiEventTriggerParser()
+            .parse(CiReleaseSlotParser.CONFIG_PATH, composed.releaseDocument());
+    assertEquals(CiReleaseComposer.RELEASE_EVENT, release.eventName());
+    assertEquals("version", release.checkout().branchPath());
+    assertEquals("commitSha", release.checkout().shaPath());
+    assertTrue(release.artifacts().isEmpty(), "a changelog is not an announced artifact");
+    assertEquals(1, release.pipeline().steps().size());
+    CiPipeline.CiStepDecl step = release.pipeline().steps().get(0);
+    assertEquals(CiReleaseComposer.CHANGELOG_ONLY_IMAGE, step.image());
+    assertEquals(CiReleaseComposer.CHANGELOG_ONLY_TIMEOUT_SECONDS, step.timeoutSeconds());
+    String script = step.script();
+    // The ordinary release prelude — the tag checkout and the CLI fetch — then `:`, then the
+    // changelog and nothing else published.
+    assertTrue(script.contains("git checkout --detach \"$QITS_VERSION\""), script);
+    assertTrue(script.contains("PATH=\"/tmp/qits-bin:$PATH\""), script);
+    assertTrue(script.contains("QITS_SLOT_EOF'\n:\nQITS_SLOT_EOF\n"), script);
+    assertEquals(1, occurrences(script, "qits artifacts publish "), script);
+    assertTrue(
+        script.trim().endsWith(
+            "qits artifacts publish changelog --version \"$QITS_VERSION\" --meta"
+                + " git.commit.hash=\"$QITS_CI_SHA\" --meta"
+                + " git.repository.name=\"$QITS_CI_REPO_NAME\""),
+        script);
+  }
+
+  @Test
+  public void everyReleaseHalfEndsWithTheChangelog() {
+    // Whatever else a release publishes, the changelog closes the publish block of its last step,
+    // behind a guard naming the cause when the step holds no CLI — after every artifact, contract
+    // and docs publish, before only the SBOM submits and checks that follow every publish block —
+    // and it is on no other step, and never in QA.
+    String guard =
+        "command -v qits > /dev/null 2>&1 || { echo \"qits-ci: the changelog cannot be published:"
+            + " this release step has no qits CLI (QITS_ARTIFACTS_CLI_PACKAGE unset or the fetch"
+            + " was skipped)\" >&2; exit 1; }\n";
+    String changelog =
+        "qits artifacts publish changelog --version \"$QITS_VERSION\" --meta"
+            + " git.commit.hash=\"$QITS_CI_SHA\" --meta git.repository.name=\"$QITS_CI_REPO_NAME\"\n";
+    List<CiReleaseComposer.Composed> compositions =
+        List.of(
+            CiReleaseComposer.compose(
+                REPO, slots("archetype: java-service\n"), archetype("java-service", JAVA_SERVICE)),
+            CiReleaseComposer.compose(
+                REPO, slots("archetype: spa-frontend\n"), archetype("spa-frontend", SPA_FRONTEND)),
+            CiReleaseComposer.compose(
+                REPO,
+                slots(
+                    """
+                    release:
+                      - image: qits/build-images/ci-base:latest
+                        build: true
+                        script: buildctl build --opt target=image
+                      - image: qits/build-images/maven-base:latest
+                        script: ./mvnw -B -ntp package
+                    artifacts:
+                      - { type: docker, name: qits/qits-thing, sbom: out/sbom.json }
+                      - { type: maven, name: "g:a", path: core, sbom: core/target/sbom.json, publish: if-changed }
+                      - { type: docs, name: "@apidocs/qits-thing", path: docs/openapi.yml }
+                    """),
+                null));
+    CiEventTriggerParser triggers = new CiEventTriggerParser();
+    for (CiReleaseComposer.Composed composed : compositions) {
+      List<CiPipeline.CiStepDecl> steps =
+          triggers
+              .parse(CiReleaseSlotParser.CONFIG_PATH, composed.releaseDocument())
+              .pipeline()
+              .steps();
+      for (int i = 0; i < steps.size(); i++) {
+        String script = steps.get(i).script();
+        if (i == steps.size() - 1) {
+          assertEquals(1, occurrences(script, guard + changelog), script);
+          String after = script.substring(script.indexOf(guard + changelog));
+          for (String publish : List.of("maven", "npm", "docker", "contract", "docs")) {
+            assertFalse(after.contains("qits artifacts publish " + publish + " "), script);
+          }
+        } else {
+          assertFalse(script.contains("publish changelog"), script);
+        }
+      }
+      if (composed.releaseRequestDocument() != null) {
+        assertFalse(composed.releaseRequestDocument().contains("changelog"));
+      }
+    }
   }
 
   @Test
@@ -995,7 +1117,9 @@ public class CiReleaseComposerTest {
   /**
    * qits-registries-javalib's shape, declared OUT of dependency order on purpose: the entry that
    * links both siblings comes first. The postlude decides each linked sibling before anything
-   * linking it, keeps declared order otherwise, and resolves each artifactId to its full GAV.
+   * linking it, keeps declared order otherwise, and resolves each artifactId to its full GAV. All
+   * three are if-changed, so they are one link group: asked with --dry-run first, and published
+   * together or not at all.
    */
   @Test
   public void aLinkedReactorOnMavenLibraryPublishesInLinkOrder() throws Exception {
@@ -1007,8 +1131,8 @@ public class CiReleaseComposerTest {
                 archetype: maven-library
                 artifacts:
                   - { type: maven, name: "eu.wohlben.qits:qits-registries-npm", path: npm, sbom: npm/target/sbom.json, link: [qits-blobstore, qits-registries-common], publish: if-changed }
-                  - { type: maven, name: "eu.wohlben.qits:qits-blobstore", path: blobstore, sbom: blobstore/target/sbom.json }
-                  - { type: maven, name: "eu.wohlben.qits:qits-registries-common", path: common, sbom: common/target/sbom.json, link: [qits-blobstore] }
+                  - { type: maven, name: "eu.wohlben.qits:qits-blobstore", path: blobstore, sbom: blobstore/target/sbom.json, publish: if-changed }
+                  - { type: maven, name: "eu.wohlben.qits:qits-registries-common", path: common, sbom: common/target/sbom.json, link: [qits-blobstore], publish: if-changed }
                 """),
             packaged("maven-library"));
 
@@ -1022,12 +1146,44 @@ public class CiReleaseComposerTest {
     assertTrue(
         document.contains(
             "--link 'eu.wohlben.qits:qits-blobstore' --link 'eu.wohlben.qits:qits-registries-common'"
-                + " --if-changed --version \"$QITS_VERSION\")"),
+                + " --if-changed --dry-run --version \"$QITS_VERSION\")"),
         document);
+    // Every dry run comes before the first real publish, and a changed group publishes
+    // unconditionally, so a linked sibling sits at the release version.
+    int lastDryRun = document.lastIndexOf("--dry-run");
+    int firstGate = document.indexOf("= changed ]; then");
+    assertTrue(lastDryRun > 0 && firstGate > lastDryRun, document);
+    assertTrue(
+        document.contains(
+            "  qits_published_0=$(qits artifacts publish maven --name 'eu.wohlben.qits:qits-registries-npm'"
+                + " --path 'npm' --sbom 'npm/target/sbom.json'"
+                + " --link 'eu.wohlben.qits:qits-blobstore' --link 'eu.wohlben.qits:qits-registries-common'"
+                + " --version \"$QITS_VERSION\")"),
+        document);
+    assertTrue(document.contains("  qits_published_0=$qits_dry_run_0\n"), document);
     // The archetype only builds now: no deploy, no bearer of its own, no pom probe.
     assertFalse(document.contains("deploy -DskipTests"), document);
     assertFalse(document.contains("altDeploymentRepository"), document);
     assertFalse(document.contains("qits-recipe-deploy-settings"), document);
+  }
+
+  @Test
+  public void anIfChangedEntryNobodyLinksIsDecidedAlone() throws Exception {
+    CiReleaseSlots slots =
+        slots(
+            """
+            artifacts:
+              - { type: maven, name: "g:a", sbom: a/sbom.json, publish: if-changed }
+              - { type: maven, name: "g:b", sbom: b/sbom.json, link: [c], publish: always }
+              - { type: maven, name: "g:c", sbom: c/sbom.json, publish: always }
+              - { type: maven, name: "g:d", sbom: d/sbom.json, link: [e], publish: if-changed }
+              - { type: maven, name: "g:e", sbom: e/sbom.json, publish: if-changed }
+            """);
+    int[] groups = CiReleaseComposer.ifChangedLinkGroups(slots.artifacts());
+    assertEquals(-1, groups[0], "a lone if-changed entry is no group");
+    assertEquals(-1, groups[1], "an always group needs no dry run");
+    assertEquals(-1, groups[2]);
+    assertTrue(groups[3] >= 0 && groups[3] == groups[4], java.util.Arrays.toString(groups));
   }
 
   @Test
@@ -1067,7 +1223,8 @@ public class CiReleaseComposerTest {
     assertTrue(
         document.contains(
             "qits artifacts publish npm --name '@qits/ui-components' --path"
-                + " 'dist/qits-spa-ui-components' --sbom 'sbom.json' --version \"$QITS_VERSION\"\n"),
+                + " 'dist/qits-spa-ui-components' --sbom 'sbom.json' --if-changed --version"
+                + " \"$QITS_VERSION\")\n"),
         document);
     assertFalse(document.contains("npm plan"), document);
     assertFalse(document.contains("npm publish \""), document);
@@ -1240,9 +1397,9 @@ public class CiReleaseComposerTest {
                       - image: qits/build-images/maven-base:latest
                         script: ./mvnw -B -ntp package
                     artifacts:
-                      - { type: maven, name: "eu.wohlben.qits:qits-ci-daemon-protocol", path: ci-daemon-protocol, sbom: ci-daemon-protocol/target/sbom.json }
-                      - { type: maven, name: "eu.wohlben.qits:qits-workspace-editor-image", sbom: target/sbom.json }
-                      - { type: npm, name: "@qits/thing", path: dist/thing, sbom: dist/thing/sbom.json }
+                      - { type: maven, name: "eu.wohlben.qits:qits-ci-daemon-protocol", path: ci-daemon-protocol, sbom: ci-daemon-protocol/target/sbom.json, publish: always }
+                      - { type: maven, name: "eu.wohlben.qits:qits-workspace-editor-image", sbom: target/sbom.json, publish: always }
+                      - { type: npm, name: "@qits/thing", path: dist/thing, sbom: dist/thing/sbom.json, publish: always }
                     """),
                 null)
             .releaseDocument();
@@ -1288,7 +1445,7 @@ public class CiReleaseComposerTest {
                     script: ./mvnw -B -ntp package
                 artifacts:
                   - { type: docker, name: qits/qits-thing, sbom: .sbom/sbom.json }
-                  - { type: maven, name: "eu.wohlben.qits:qits-thing-client", path: core, sbom: core/target/sbom.json }
+                  - { type: maven, name: "eu.wohlben.qits:qits-thing-client", path: core, sbom: core/target/sbom.json, publish: always }
                 """),
             null);
 
@@ -1446,7 +1603,7 @@ public class CiReleaseComposerTest {
                     script: echo built
                 artifacts:
                   - { type: maven, name: "g:a", sbom: target/sbom.json, publish: if-changed }
-                  - { type: npm, name: "@qits/b", path: dist/b, sbom: sbom.json }
+                  - { type: npm, name: "@qits/b", path: dist/b, sbom: sbom.json, publish: always }
                 """),
             null);
     String postlude = extractPostlude(composed.releaseDocument());
@@ -1489,12 +1646,20 @@ public class CiReleaseComposerTest {
       assertEquals(0, published, argv);
       assertTrue(argv.contains("sbom submit --type maven --name g:a"), argv);
       assertTrue(argv.contains("exists sbom maven/g:a 2026.1002.1"), argv);
+      // And the changelog, with the step's own provenance (qits-893).
+      assertTrue(
+          argv.contains(
+              "artifacts publish changelog --version 2026.1002.1 --meta git.commit.hash="
+                  + "c".repeat(40)
+                  + " --meta git.repository.name=qits-thing"),
+          argv);
 
       Files.delete(work.resolve("argv.txt"));
       int refusedExit = runPostlude(script, work, bin, "refuse");
       argv = Files.readString(work.resolve("argv.txt"));
       assertTrue(refusedExit != 0, "a refused publish must fail the step");
       assertFalse(argv.contains("sbom submit"), "nothing after the refusal runs: " + argv);
+      assertFalse(argv.contains("publish changelog"), "not even the changelog: " + argv);
     } finally {
       try (var stream = Files.walk(work)) {
         stream.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
@@ -1553,6 +1718,8 @@ public class CiReleaseComposerTest {
       pb.environment().put("PATH", bin + ":" + System.getenv("PATH"));
       pb.environment().put("QITS_ARTIFACTS_CLI_PACKAGE", "qits");
       pb.environment().put("QITS_VERSION", "2026.1002.1");
+      pb.environment().put("QITS_CI_SHA", "c".repeat(40));
+      pb.environment().put("QITS_CI_REPO_NAME", "qits-thing");
       Process absent = pb.start();
       String output = new String(absent.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
       assertTrue(absent.waitFor() != 0, output);
@@ -1593,6 +1760,8 @@ public class CiReleaseComposerTest {
     pb.environment().put("PATH", bin + ":" + System.getenv("PATH"));
     pb.environment().put("QITS_ARTIFACTS_CLI_PACKAGE", "qits");
     pb.environment().put("QITS_VERSION", "2026.1002.1");
+    pb.environment().put("QITS_CI_SHA", "c".repeat(40));
+    pb.environment().put("QITS_CI_REPO_NAME", "qits-thing");
     pb.environment().put("ANSWER", answer);
     Process p = pb.start();
     p.getInputStream().readAllBytes();
@@ -1637,7 +1806,6 @@ public class CiReleaseComposerTest {
                       exit "$QITS_TEST_EXIT"
                 """),
             null);
-    assertNull(composed.releaseDocument());
     Path work = Files.createTempDirectory("qa-report-hook");
     try {
       String script = stepScript(composed.releaseRequestDocument()).replace("/tmp/", work + "/");
