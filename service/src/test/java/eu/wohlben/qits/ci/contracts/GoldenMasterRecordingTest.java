@@ -301,7 +301,11 @@ class GoldenMasterRecordingTest {
               "/ci/api/runs/active",
               Map.of(),
               200,
-              "$.runs"));
+              "$.runs"),
+          read(
+              ProviderStates.A_RELEASE_RUN_WHOSE_GATE_RUN_HAS_REPORTS,
+              "listRunGateReports",
+              "/ci/api/runs/{runId}/gate/reports"));
 
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final Pattern TEMPLATE_PARAM = Pattern.compile("\\{([A-Za-z][A-Za-z0-9]*)}");

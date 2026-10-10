@@ -1701,6 +1701,7 @@ paths:
     get:
       summary: "The release reports of the green QA run that gated this run's release\
         \ request, without payloads"
+      operationId: listRunGateReports
       parameters:
       - name: runId
         in: path

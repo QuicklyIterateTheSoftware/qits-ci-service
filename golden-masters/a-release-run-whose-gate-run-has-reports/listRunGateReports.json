@@ -1,0 +1,46 @@
+{
+  "runId": "00000000-0000-4000-8000-000000000003",
+  "commitSha": "0000000000000000000000000000000000000002",
+  "releaseRequestId": "00000000-0000-4000-8000-000000000004",
+  "baseline": null,
+  "reports": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "kind": "coverage",
+      "kindVersion": 1,
+      "stepIndex": 1,
+      "highlights": [
+        {
+          "severity": "info",
+          "text": "coverage 81.3%",
+          "metric": "coverage.total",
+          "value": 81.3,
+          "delta": null
+        }
+      ],
+      "baselineRunId": null,
+      "baselineVersion": null,
+      "payloadBytes": 500,
+      "submittedAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000005",
+      "kind": "test-results",
+      "kindVersion": 1,
+      "stepIndex": 1,
+      "highlights": [
+        {
+          "severity": "info",
+          "text": "128 tests",
+          "metric": "tests.total",
+          "value": 128.0,
+          "delta": null
+        }
+      ],
+      "baselineRunId": null,
+      "baselineVersion": null,
+      "payloadBytes": 960,
+      "submittedAt": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

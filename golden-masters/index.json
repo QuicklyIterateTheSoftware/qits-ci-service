@@ -326,6 +326,41 @@
       ]
     },
     {
+      "name": "a release run whose gate run has reports",
+      "slug": "a-release-run-whose-gate-run-has-reports",
+      "params": {
+        "coverageReportId": "00000000-0000-4000-8000-000000000001",
+        "failedRunId": "00000000-0000-4000-8000-000000000002",
+        "gateRunId": "00000000-0000-4000-8000-000000000003",
+        "releaseRequestId": "00000000-0000-4000-8000-000000000004",
+        "reportId": "00000000-0000-4000-8000-000000000005",
+        "repositoryId": "00000000-0000-4000-8000-000000000006",
+        "runId": "00000000-0000-4000-8000-000000000007"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listRunGateReports",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}/gate/reports",
+          "status": 200,
+          "file": "a-release-run-whose-gate-run-has-reports/listRunGateReports.json",
+          "frozen": {
+            "ids": [
+              "$.runId",
+              "$.releaseRequestId",
+              "$.reports[*].id"
+            ],
+            "instants": [
+              "$.reports[*].submittedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a released version with artifact decisions",
       "slug": "a-released-version-with-artifact-decisions",
       "params": {

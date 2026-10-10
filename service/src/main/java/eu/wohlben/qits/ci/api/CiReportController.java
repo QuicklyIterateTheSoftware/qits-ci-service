@@ -181,6 +181,7 @@ public class CiReportController {
   @GET
   @Path("/{runId}/gate/reports")
   @Operation(
+      operationId = "listRunGateReports",
       summary =
           "The release reports of the green QA run that gated this run's release request, without"
               + " payloads")

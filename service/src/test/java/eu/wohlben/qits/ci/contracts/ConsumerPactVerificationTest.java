@@ -215,4 +215,9 @@ class ConsumerPactVerificationTest {
   Map<String, String> aCommitWithARunInFlight() {
     return states.params(ProviderStates.A_COMMIT_WITH_A_RUN_IN_FLIGHT);
   }
+
+  @State(ProviderStates.A_RELEASE_RUN_WHOSE_GATE_RUN_HAS_REPORTS)
+  Map<String, String> aReleaseRunWhoseGateRunHasReports() {
+    return states.params(ProviderStates.A_RELEASE_RUN_WHOSE_GATE_RUN_HAS_REPORTS);
+  }
 }

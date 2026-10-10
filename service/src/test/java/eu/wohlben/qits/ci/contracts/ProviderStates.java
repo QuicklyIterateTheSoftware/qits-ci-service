@@ -127,6 +127,9 @@ public class ProviderStates {
 
   public static final String A_COMMIT_WITH_A_RUN_IN_FLIGHT = "a commit with a run in flight";
 
+  public static final String A_RELEASE_RUN_WHOSE_GATE_RUN_HAS_REPORTS =
+      "a release run whose gate run has reports";
+
   /** When the seeded runs were accepted: a fixed base, a minute apart per run. */
   private static final Instant SEEDED_AT = Instant.parse("2026-01-01T00:00:00Z");
 
@@ -234,6 +237,7 @@ public class ProviderStates {
     states.put(
         A_REPOSITORY_THAT_DECLARES_A_RELEASE_PHASE, this::aRepositoryThatDeclaresAReleasePhase);
     states.put(A_COMMIT_WITH_A_RUN_IN_FLIGHT, this::aCommitWithARunInFlight);
+    states.put(A_RELEASE_RUN_WHOSE_GATE_RUN_HAS_REPORTS, this::aReleaseRunWhoseGateRunHasReports);
   }
 
   /** Every state name this provider answers for. */
@@ -789,6 +793,48 @@ public class ProviderStates {
     eventPipeline(running);
     running.finishedAt = null;
     persist(List.of(running), List.of());
+    return setup(params);
+  }
+
+  /**
+   * A release request's publish run in flight ({@code runId}: phase {@code RELEASE}, {@code
+   * RUNNING}) and the green QA run that gated the request ({@code gateRunId}), with two reports
+   * from its step 1: {@code test-results} ({@code reportId}) and {@code coverage} ({@code
+   * coverageReportId}). An earlier QA run of the request failed; it is not the gate. What a publish
+   * run's changelog reads ({@code listRunGateReports}).
+   */
+  private Setup aReleaseRunWhoseGateRunHasReports() {
+    Map<String, String> params =
+        ids(
+            Map.of(),
+            "coverageReportId",
+            "failedRunId",
+            "gateRunId",
+            "releaseRequestId",
+            "reportId",
+            "repositoryId",
+            "runId");
+    String repo = params.get("repositoryId");
+    String request = params.get("releaseRequestId");
+    CiRun failed = run(params.get("failedRunId"), repo, "release/" + request, 1, CiRunStatus.FAILED);
+    qa(failed, request);
+    CiRun gate = run(params.get("gateRunId"), repo, "release/" + request, 2, CiRunStatus.SUCCESS);
+    qa(gate, request);
+    CiRun release = run(params.get("runId"), repo, VERSION, 3, CiRunStatus.RUNNING);
+    release.phase = CiRunPhase.RELEASE;
+    release.releaseRequestId = request;
+    release.triggerEventName = "SCMRelease";
+    release.configPath = ".config/qits/release.yml";
+    release.finishedAt = null;
+    persist(List.of(failed, gate, release), List.of());
+    List<CiReport> seeded =
+        List.of(
+            report(params.get("reportId"), gate.id, "test-results", testResults(gate), null, null,
+                List.of(highlight("info", "128 tests", "tests.total", 128.0, null))),
+            report(params.get("coverageReportId"), gate.id, "coverage", coverage(VERSION), null,
+                null,
+                List.of(highlight("info", "coverage 81.3%", "coverage.total", 81.3, null))));
+    QuarkusTransaction.requiringNew().run(() -> seeded.forEach(reports::persist));
     return setup(params);
   }
 
