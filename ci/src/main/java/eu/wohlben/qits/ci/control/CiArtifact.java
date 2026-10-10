@@ -173,7 +173,7 @@ public record CiArtifact(Type type, String name, Publish publish, Section sectio
               + value
               + "' — it is '"
               + Section.ARTIFACTS.declared()
-              + "' (the default) or '"
+              + "' or '"
               + Section.CONTRACTS.declared()
               + "'");
     }
@@ -192,10 +192,16 @@ public record CiArtifact(Type type, String name, Publish publish, Section sectio
    */
   static Publish requirePublish(
       Object value, Type type, String name, String configPath, int index) {
+    return requirePublish(value, Publish.ALWAYS, type, name, configPath, index);
+  }
+
+  /** As above, with {@code absent} for an entry that names no policy. */
+  static Publish requirePublish(
+      Object value, Publish absent, Type type, String name, String configPath, int index) {
     if (value == null) {
-      return Publish.ALWAYS;
+      return absent;
     }
-    if (type != Type.MAVEN && type != Type.NPM) {
+    if (type.releaseDefault() == null) {
       throw new CiConfigException(
           entry(configPath, index, type, name)
               + " declares "
@@ -215,7 +221,7 @@ public record CiArtifact(Type type, String name, Publish publish, Section sectio
               + value
               + "' — it is '"
               + Publish.ALWAYS.declared()
-              + "' (the default) or '"
+              + "' or '"
               + Publish.IF_CHANGED.declared()
               + "'");
     }
@@ -280,16 +286,29 @@ public record CiArtifact(Type type, String name, Publish publish, Section sectio
    * step in the documented repository's own release pipeline like every other type here.
    */
   public enum Type {
-    NPM("npm"),
-    MAVEN("maven"),
-    DOCKER("docker"),
-    DAEMON("daemon"),
-    DOCS("docs");
+    NPM("npm", Publish.IF_CHANGED),
+    MAVEN("maven", Publish.IF_CHANGED),
+    DOCKER("docker", null),
+    DAEMON("daemon", null),
+    DOCS("docs", null);
 
     private final String declared;
+    private final Publish releaseDefault;
 
-    Type(String declared) {
+    Type(String declared, Publish releaseDefault) {
       this.declared = declared;
+      this.releaseDefault = releaseDefault;
+    }
+
+    /**
+     * The {@code publish:} a {@code release.yml} entry of this type gets when it names none, or
+     * null when the platform does not publish this type (its own step does, so {@code publish:} is
+     * refused on it). A type the platform uploads defaults to {@link Publish#IF_CHANGED} (USER RULE
+     * 2026-10-09: a release whose content did not change publishes nothing); {@code publish:
+     * always} is the opt-out. A new platform-published type names its default here.
+     */
+    public Publish releaseDefault() {
+      return releaseDefault;
     }
 
     /** How a trigger file spells it, and how the wire spells it. */

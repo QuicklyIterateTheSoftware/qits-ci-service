@@ -7,7 +7,7 @@ checkout:
   branch: version
   sha: commitSha
 artifacts:
-  - { type: 'npm', name: '@qits/ui-components' }
+  - { type: 'npm', name: '@qits/ui-components', publish: 'if-changed' }
   - { type: 'docs', name: '@qits/ui-components' }
 steps:
   - image: 'qits/build-images/node-base:latest'
@@ -173,12 +173,13 @@ steps:
       fi
       # --- platform postlude --------------------------------------------------------
       : "${QITS_ARTIFACTS_CLI_PACKAGE:?this release publishes or submits an SBOM, and the qits CLI is not configured on this deployment}"
-      qits artifacts publish npm --name '@qits/ui-components' --path 'dist/qits-spa-ui-components' --sbom 'sbom.json' --version "$QITS_VERSION"
+      qits_published_0=$(qits artifacts publish npm --name '@qits/ui-components' --path 'dist/qits-spa-ui-components' --sbom 'sbom.json' --if-changed --version "$QITS_VERSION")
+      echo "$qits_published_0"
       command -v qits > /dev/null 2>&1 || { echo "qits-ci: the changelog cannot be published: this release step has no qits CLI (QITS_ARTIFACTS_CLI_PACKAGE unset or the fetch was skipped)" >&2; exit 1; }
       qits artifacts publish changelog --version "$QITS_VERSION" --meta git.commit.hash="$QITS_CI_SHA" --meta git.repository.name="$QITS_CI_REPO_NAME"
-      if [ -f 'sbom.json' ]; then
-        qits artifacts publish sbom submit --type 'npm' --name '@qits/ui-components' \
-          --version "$QITS_VERSION" --file 'sbom.json'
-      fi
-      qits artifacts publish exists sbom 'npm/@qits/ui-components' "$QITS_VERSION" \
-        || { echo '.config/qits/release.yml declares sbom: sbom.json for npm @qits/ui-components, and no release step produced it' >&2; exit 1; }
+      case "$qits_published_0" in published\ *) qits artifacts publish sbom submit --type 'npm' --name '@qits/ui-components' --version "$QITS_VERSION" --file 'sbom.json' ;; esac
+      case "$qits_published_0" in published\ *)
+        qits artifacts publish exists sbom 'npm/@qits/ui-components' "$QITS_VERSION" \
+          || { echo '.config/qits/release.yml declares sbom: sbom.json for npm @qits/ui-components, and no release step produced it' >&2; exit 1; }
+        ;;
+      esac

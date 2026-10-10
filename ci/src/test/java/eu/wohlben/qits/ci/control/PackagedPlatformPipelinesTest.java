@@ -131,7 +131,7 @@ public class PackagedPlatformPipelinesTest {
   // --- qits-cli: true on a packaged pipeline (qits-893) -----------------------------------------
 
   @Test
-  public void theMaintenanceBumpStepsEachStartWithTheHardCliFetch() throws Exception {
+  public void theMaintenanceBumpStepStartsWithTheHardCliFetch() throws Exception {
     EventTriggerFile bump =
         packaged().stream()
             .filter(file -> file.path().endsWith("maintenance-bump.yml"))
@@ -142,7 +142,7 @@ public class PackagedPlatformPipelinesTest {
         "the file declares the CLI");
     assertFalse(bump.content().contains("\nqits-cli:"), "the key never reaches the trigger parser");
     List<CiStepDecl> steps = triggerParser.parse(bump.path(), bump.content()).pipeline().steps();
-    assertEquals(2, steps.size());
+    assertEquals(1, steps.size(), "one step, so one commit");
     for (CiStepDecl step : steps) {
       StringBuilder fetch = new StringBuilder();
       CiReleaseComposer.cliFetch(fetch, step.image(), CiReleaseComposer.CliFetch.AUTOMATION);

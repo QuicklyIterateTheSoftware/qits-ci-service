@@ -377,9 +377,12 @@ public class CiReleaseSlotParserTest {
     assertEquals(".", slots.artifacts().get(2).path(), "a maven entry naming no path is the root");
     assertEquals("dist/qits-spa-ui-components", slots.artifacts().get(3).path());
     assertEquals("", slots.artifacts().get(4).path(), "a docker entry has nothing to upload from");
-    for (SlotArtifact artifact : slots.artifacts()) {
-      assertEquals(CiArtifact.Publish.ALWAYS, artifact.artifact().publish());
+    // USER RULE 2026-10-09: a maven or npm entry publishes only when its content changed, unless
+    // it says publish: always; a docker entry is published by its own step and keeps ALWAYS.
+    for (SlotArtifact artifact : slots.artifacts().subList(0, 4)) {
+      assertEquals(CiArtifact.Publish.IF_CHANGED, artifact.artifact().publish());
     }
+    assertEquals(CiArtifact.Publish.ALWAYS, slots.artifacts().get(4).artifact().publish());
   }
 
   @Test
@@ -497,6 +500,22 @@ public class CiReleaseSlotParserTest {
   }
 
   @Test
+  public void linkedEntriesWithDifferentPublishPoliciesAreRefused() {
+    // A link group publishes together, so it has one policy: an always sibling would publish at
+    // every release and drag an if-changed one along, or leave it behind at an older version.
+    String message =
+        refused(
+                """
+                artifacts:
+                  - { type: maven, name: "eu.wohlben.qits:qits-runner-protocol", sbom: p/sbom.json, publish: always }
+                  - { type: maven, name: "eu.wohlben.qits:qits-runner-toolkit", sbom: t/sbom.json, link: [qits-runner-protocol], publish: if-changed }
+                """)
+            .getMessage();
+    assertTrue(message.contains("eu.wohlben.qits:qits-runner-toolkit"), message);
+    assertTrue(message.contains("same publish:"), message);
+  }
+
+  @Test
   public void anEntryLinkingItselfIsRefused() {
     String message =
         refused(
@@ -595,7 +614,7 @@ public class CiReleaseSlotParserTest {
             .getMessage();
     assertTrue(message.startsWith(PATH + ": artifact 0 ({ type: maven, name: a:b })"), message);
     assertTrue(
-        message.contains("declares publish 'sometimes' — it is 'always' (the default) or 'if-changed'"),
+        message.contains("declares publish 'sometimes' — it is 'always' or 'if-changed'"),
         message);
   }
 
@@ -672,8 +691,8 @@ public class CiReleaseSlotParserTest {
     assertTrue(onDocker.contains("declares include — only a maven or npm entry is hashed"), onDocker);
     String onAlways =
         refused(
-                "artifacts:\n  - { type: npm, name: \"@qits/x\", sbom: sbom.json, include:"
-                    + " [\"dist/**\"] }\n")
+                "artifacts:\n  - { type: npm, name: \"@qits/x\", sbom: sbom.json, publish: always,"
+                    + " include: [\"dist/**\"] }\n")
             .getMessage();
     assertTrue(onAlways.contains("@qits/x"), onAlways);
     assertTrue(
