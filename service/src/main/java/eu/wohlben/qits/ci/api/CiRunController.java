@@ -220,7 +220,9 @@ public class CiRunController {
   // Every read also takes qits:agent. It sits on each read rather than on the class, because the
   // class list also guards the cancellations write, and agents do not write here.
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system", "qits:agent"})
-  @Operation(operationId = "listRuns", summary = "List a repository's CI runs, newest first")
+  @Operation(
+      operationId = "listRuns",
+      summary = "List a repository's CI runs, newest first")
   @APIResponse(
       responseCode = "200",
       description =
@@ -339,7 +341,9 @@ public class CiRunController {
   @GET
   @Path("/active")
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system", "qits:agent"})
-  @Operation(summary = "Every queued or running CI run, all repositories, newest first")
+  @Operation(
+      operationId = "listActiveRuns",
+      summary = "Every queued or running CI run, all repositories, newest first")
   @APIResponse(
       responseCode = "200",
       description =
@@ -398,7 +402,9 @@ public class CiRunController {
   @GET
   @Path("/queue")
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system", "qits:agent"})
-  @Operation(summary = "The run queue in claim order, with each run's expected start and finish")
+  @Operation(
+      operationId = "getRunQueue",
+      summary = "The run queue in claim order, with each run's expected start and finish")
   @APIResponse(
       responseCode = "200",
       description = "The queue at one instant",
@@ -586,7 +592,9 @@ public class CiRunController {
   @GET
   @Path("/{runId}")
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system", "qits:agent"})
-  @Operation(summary = "One CI run with its steps, output and — while it runs — its live step")
+  @Operation(
+      operationId = "getRun",
+      summary = "One CI run with its steps, output and — while it runs — its live step")
   @APIResponse(responseCode = "200", description = "The run")
   @APIResponse(responseCode = "404", description = "No such run")
   public CiRunDto getRun(@PathParam("runId") String runId) {
@@ -677,7 +685,9 @@ public class CiRunController {
   @POST
   @Path("/cancellations")
   @Consumes(MediaType.APPLICATION_JSON)
-  @Operation(summary = "Cancel every unfinished run a repository has for one release request")
+  @Operation(
+      operationId = "cancelReleaseRequestRuns",
+      summary = "Cancel every unfinished run a repository has for one release request")
   @APIResponse(
       responseCode = "202",
       description = "The request's runs have been stopped or asked to stop",
@@ -864,7 +874,9 @@ public class CiRunController {
   @Path("/{runId}/retry")
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:agent"})
   @Consumes(MediaType.WILDCARD)
-  @Operation(summary = "Run a finished CI run's pipeline again, at the same commit")
+  @Operation(
+      operationId = "retryRun",
+      summary = "Run a finished CI run's pipeline again, at the same commit")
   @APIResponse(
       responseCode = "202",
       description = "A new run has been accepted and queued",
@@ -919,6 +931,7 @@ public class CiRunController {
   @Consumes(MediaType.APPLICATION_JSON)
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system"})
   @Operation(
+      operationId = "rerunReleaseRequestPhase",
       summary = "Run one phase of a release request's CI again",
       description =
           "A release is one pipeline of three phases and a PHASE is a unit of work with a state and"

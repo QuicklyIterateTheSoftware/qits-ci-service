@@ -7,14 +7,14 @@
 #     # .config/qits/release.yml
 #     archetype: cli
 #
-# One line. No `artifacts:`, no `userflows:`, and NO `release:` SLOT ANYWHERE — which is the
-# statement rather than an omission. This repository publishes nothing: it ships a program a person
-# runs, it declares no `deployments.yml` because there is no application for a deployer to move, and
-# there is no phase two (Publish) to wait on. Publish is a phase this repository does not have, not
-# an empty phase — see java-service.yml's header for the full three-phase model. The released tag
-# merges to main at the release and the request is done the moment the step below, the one step of
-# phase one (QA), is green. A phase nobody declares steps for gets no trigger document and therefore
-# no run.
+# One line, plus `contracts:` when the CLI holds consumer pacts. No `artifacts:` and no `userflows:`:
+# this repository ships a program a person runs, and it declares no `deployments.yml` because there
+# is no application for a deployer to move.
+#
+# Phase two (Publish) exists for one reason only: the contracts (qits-1149). The platform publishes a
+# repository's contract packages — its consumer pacts — from the release slot's last step, so the
+# archetype declares a release slot whose one step builds nothing. See java-service.yml's header for
+# the full three-phase model.
 #
 # ---------------------------------------------------------------------------------------------
 # WHY THERE IS A GATE AT ALL
@@ -39,15 +39,15 @@
 # repository's own documented contract. The gate runs the command the repository already holds itself
 # to rather than inventing a second one — so no `-DskipITs`, no `-Dit.test`, no `-Dquarkus.quinoa`.
 #
-# NO `QITS_MAVEN_REPOSITORY_URL` EITHER, and that is the difference from maven-library: this pom is
-# parentless and has no qits dependency, so the platform registry is never consulted. Exporting it
-# would name an address the build has no reason to dial.
+# `QITS_MAVEN_REPOSITORY_URL` IS EXPORTED, as maven-library's QA step does: a CLI's contract tests
+# read its providers' golden masters jars, which only the platform registry serves (qits-1149). A pom
+# with no qits dependency never dials it.
 #
 # ---------------------------------------------------------------------------------------------
 # WHEN TO OVERRIDE
 #
 # A CLI that grows a published artifact stops being this archetype: it declares `artifacts:` and a
-# `release:` slot of its own, or moves to `daemon` if what it ships is a static binary the platform
+# `release:` slot that builds it, or moves to `daemon` if what it ships is a static binary the platform
 # downloads. A CLI whose suite needs a wider phase declares its own `release-request:` — declaring
 # the slot replaces this one entirely.
 
@@ -62,9 +62,17 @@ release-request:
     user: build
     timeout-seconds: 1800
     script: |
-      # Maven Central through the platform mirror's public name — code under the platform's public
-      # domain (qits-731), which the composed prelude has already demanded.
-      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.${QITS_DOMAIN:?this step was told no QITS_DOMAIN}/mirror/maven/central"
+      # Maven Central through the platform mirror's public name, and the platform registry — code
+      # under the platform's public domain (qits-731), which the composed prelude has already
+      # demanded. The registry is what the contract tests read: a provider's golden masters jar
+      # (qits-1149) is served by the platform's Maven alone. Exported because
+      # .qits-maven-settings.xml reads both as ${env.QITS_MAVEN_CENTRAL_URL} and
+      # ${env.QITS_MAVEN_REPOSITORY_URL}; passed as a property too, for a pom that declares the
+      # `qits-maven` repository by ${qits.maven.repository.url}. A pom with no qits dependency
+      # never dials it.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
+      export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
 
       # THE COVERAGE AGENT (qits-754) — java-service.yml's QA verify block, byte for byte; read the
       # rationale there. In short: JaCoCo's runtime agent writes `.qits-reports/jacoco.exec` for the
@@ -104,4 +112,23 @@ release-request:
       pact_options="-Dpact.verification.reports=json -Dpact.verification.reportDir=$PWD/.qits-reports/pact-verification"
 
       env "JAVA_TOOL_OPTIONS=${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }${jacoco_options:+$jacoco_options }$pact_options" \
-        ./mvnw -B -ntp -s .qits-maven-settings.xml verify
+        ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
+        -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL"
+
+# THE RELEASE SLOT, FOR THE CONTRACTS ONLY (qits-1149). A CLI ships no artifact, but it may declare
+# `contracts:` — its consumer pacts, committed in `pacts/` — and the platform publishes contract
+# packages from the release slot's last step. So every CLI gets this one step. It builds nothing: the
+# QA step already proved the committed files, and the composed postlude packs them from the checkout
+# at the tag. A CLI that declares no `contracts:` publishes nothing here.
+release:
+
+  - image: qits/build-images/maven-base:latest
+    user: build
+    timeout-seconds: 600
+    script: |
+      if [ -d pacts ]; then
+        echo "contracts: the pacts at this tag"
+        ls pacts/
+      else
+        echo "contracts: this CLI holds no pacts/; nothing to publish"
+      fi

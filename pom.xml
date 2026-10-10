@@ -138,6 +138,10 @@
         <!-- pact-jvm's JUnit 5 provider, for contracts/ConsumerPactVerificationTest: the version every
              provider on the estate verifies with, so a consumer's pact is read the same way. -->
         <pact.version>4.6.21</pact.version>
+        <!-- qits-events' golden masters, test scope (qits-1149): the recorded answers this
+             repository's consumer pact against qits-events-service is built from. Moved by the
+             bump train like every internal pin; do not hand-edit it to chase a release. -->
+        <qits.events-golden-masters.version>2026.1002.210125</qits.events-golden-masters.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

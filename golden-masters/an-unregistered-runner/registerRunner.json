@@ -1,0 +1,7 @@
+{
+  "clientId": "run-client-1",
+  "secret": "run-s3cr3t-1",
+  "tokenUrl": "https://idp.qits.suite.example/idp/token",
+  "audience": "qits-platform",
+  "socketUrl": "wss://ci.qits.suite.example/ci/runners/socket"
+}

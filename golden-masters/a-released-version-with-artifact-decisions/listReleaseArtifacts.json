@@ -1,0 +1,42 @@
+{
+  "repository": "00000000-0000-4000-8000-000000000001",
+  "version": "2026.1001.1",
+  "artifacts": [
+    {
+      "type": "docker",
+      "name": "qits/contract-service",
+      "publish": "always",
+      "decision": "published",
+      "unchangedSince": null,
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "decidedAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "type": "maven",
+      "name": "eu.wohlben.qits:contract-service-golden-masters",
+      "publish": "if-changed",
+      "decision": "unchanged",
+      "unchangedSince": "2026.901.1",
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "decidedAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "type": "npm",
+      "name": "@qits/contract-service-golden-masters",
+      "publish": "if-changed",
+      "decision": "published",
+      "unchangedSince": null,
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "decidedAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "type": "docs",
+      "name": "@apidocs/contract-service",
+      "publish": "always",
+      "decision": "pending",
+      "unchangedSince": null,
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "decidedAt": null
+    }
+  ]
+}

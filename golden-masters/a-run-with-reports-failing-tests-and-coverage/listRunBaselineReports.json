@@ -1,0 +1,67 @@
+[
+  {
+    "id": "00000000-0000-4000-8000-000000000009",
+    "kind": "test-results",
+    "kindVersion": 1,
+    "stepIndex": 1,
+    "highlights": [
+      {
+        "severity": "info",
+        "text": "128 tests",
+        "metric": "tests.total",
+        "value": 128.0,
+        "delta": null
+      }
+    ],
+    "baselineRunId": null,
+    "baselineVersion": null,
+    "payloadBytes": 960,
+    "submittedAt": "2026-01-01T00:00:00Z",
+    "payload": {
+      "totals": {
+        "tests": 128,
+        "passed": 125,
+        "failed": 1,
+        "errored": 0,
+        "skipped": 2,
+        "durationMs": 44400
+      },
+      "suites": [
+        {
+          "language": "java",
+          "tool": "surefire",
+          "module": "service",
+          "tests": 128,
+          "failed": 1,
+          "errored": 0,
+          "skipped": 2,
+          "durationMs": 44400
+        }
+      ],
+      "failures": [
+        {
+          "coordinates": {
+            "language": "java",
+            "tool": "surefire",
+            "repository": {
+              "projectId": "contract-project",
+              "name": "contract-service"
+            },
+            "commitSha": "0000000000000000000000000000000000000001",
+            "file": "service/src/test/java/eu/wohlben/qits/contract/BillingServiceTest.java",
+            "className": "eu.wohlben.qits.contract.BillingServiceTest",
+            "testName": "refundsTheFullAmount",
+            "lineStart": 42,
+            "lineEnd": 58
+          },
+          "shape": "ASSERTION",
+          "failureType": "org.opentest4j.AssertionFailedError",
+          "message": "expected: <100.00> but was: <90.00>",
+          "stackTrace": "org.opentest4j.AssertionFailedError: expected: <100.00> but was: <90.00>\n\tat eu.wohlben.qits.contract.BillingServiceTest.refundsTheFullAmount(BillingServiceTest.java:51)",
+          "durationMs": 37
+        }
+      ],
+      "truncated": false
+    }
+  }
+]

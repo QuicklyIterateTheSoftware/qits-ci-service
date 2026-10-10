@@ -1,0 +1,43 @@
+{
+  "runs": [
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "repoId": "00000000-0000-4000-8000-000000000001",
+      "projectId": "contract-project",
+      "repoName": "contract-service",
+      "branch": "2026.1001.1",
+      "commitSha": "0000000000000000000000000000000000000007",
+      "status": "SUCCESS",
+      "createdAt": "2026-01-01T00:00:00Z",
+      "startedAt": "2026-01-01T00:00:00Z",
+      "finishedAt": "2026-01-01T00:00:00Z",
+      "cancellationReason": null,
+      "supersededByRunId": null,
+      "daemonVersion": null,
+      "triggerType": "EVENT",
+      "triggerEventId": "contract-event-7",
+      "triggerEventName": "SCMRelease",
+      "releaseRequestId": null,
+      "retryOfRunId": null,
+      "configPath": ".config/qits/release.yml",
+      "archetypeName": null,
+      "archetypeConfigPath": null,
+      "archetypeRev": null,
+      "archetypeVersion": null,
+      "priority": null,
+      "expectedStepDurationsMillis": null,
+      "steps": [],
+      "live": null,
+      "phase": "RELEASE",
+      "queuePosition": null,
+      "expectedStartInMillis": null,
+      "expectedFinishInMillis": null,
+      "predictionUnavailable": null,
+      "ordering": null,
+      "runnerId": null,
+      "runnerName": null,
+      "retryReason": null,
+      "autoRetry": false
+    }
+  ]
+}

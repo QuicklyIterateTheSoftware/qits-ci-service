@@ -1,0 +1,6 @@
+{
+  "repositoryId": "00000000-0000-4000-8000-000000000001",
+  "rev": "refs/tags/2026.1001.1",
+  "declared": true,
+  "detail": "00000000-0000-4000-8000-000000000001: .config/qits/release.yml at refs/tags/2026.1001.1 composes a release pipeline"
+}

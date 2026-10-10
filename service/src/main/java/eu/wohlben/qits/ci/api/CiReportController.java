@@ -103,7 +103,9 @@ public class CiReportController {
   @Path("/{runId}/steps/{stepIndex}/reports/{kind}")
   @RolesAllowed("qits:ci-run")
   @Consumes(MediaType.WILDCARD)
-  @Operation(summary = "Submit a step's release report of one kind (a run's own ci-run token only)")
+  @Operation(
+      operationId = "putRunStepReport",
+      summary = "Submit a step's release report of one kind (a run's own ci-run token only)")
   @RequestBody(
       required = true,
       content = @Content(schema = @Schema(implementation = CiReportSubmission.class)))
@@ -179,6 +181,7 @@ public class CiReportController {
   @GET
   @Path("/{runId}/gate/reports")
   @Operation(
+      operationId = "listRunGateReports",
       summary =
           "The release reports of the green QA run that gated this run's release request, without"
               + " payloads")
@@ -220,6 +223,7 @@ public class CiReportController {
   @GET
   @Path("/{runId}/baseline")
   @Operation(
+      operationId = "getRunBaseline",
       summary =
           "A run's baseline: the gating run of its repository's newest released version, or null")
   @APIResponse(responseCode = "200", description = "The baseline, or {\"baseline\":null}")
@@ -230,7 +234,9 @@ public class CiReportController {
 
   @GET
   @Path("/{runId}/baseline/reports/{kind}")
-  @Operation(summary = "The baseline run's release reports of one kind, with payloads")
+  @Operation(
+      operationId = "listRunBaselineReports",
+      summary = "The baseline run's release reports of one kind, with payloads")
   @APIResponse(responseCode = "200", description = "The reports; [] when there is no baseline or none")
   @APIResponse(responseCode = "400", description = "A bad kind name")
   @APIResponse(responseCode = "404", description = "No such run")

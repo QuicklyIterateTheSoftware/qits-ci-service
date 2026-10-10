@@ -48,9 +48,17 @@ steps:
       sh /tmp/qits-lockfile-origins.sh
       # --- the declared step, run as data -------------------------------------------
       cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
-      # Maven Central through the platform mirror's public name — code under the platform's public
-      # domain (qits-731), which the composed prelude has already demanded.
-      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.${QITS_DOMAIN:?this step was told no QITS_DOMAIN}/mirror/maven/central"
+      # Maven Central through the platform mirror's public name, and the platform registry — code
+      # under the platform's public domain (qits-731), which the composed prelude has already
+      # demanded. The registry is what the contract tests read: a provider's golden masters jar
+      # (qits-1149) is served by the platform's Maven alone. Exported because
+      # .qits-maven-settings.xml reads both as ${env.QITS_MAVEN_CENTRAL_URL} and
+      # ${env.QITS_MAVEN_REPOSITORY_URL}; passed as a property too, for a pom that declares the
+      # `qits-maven` repository by ${qits.maven.repository.url}. A pom with no qits dependency
+      # never dials it.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
+      export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
 
       # THE COVERAGE AGENT (qits-754) — java-service.yml's QA verify block, byte for byte; read the
       # rationale there. In short: JaCoCo's runtime agent writes `.qits-reports/jacoco.exec` for the
@@ -90,7 +98,8 @@ steps:
       pact_options="-Dpact.verification.reports=json -Dpact.verification.reportDir=$PWD/.qits-reports/pact-verification"
 
       env "JAVA_TOOL_OPTIONS=${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }${jacoco_options:+$jacoco_options }$pact_options" \
-        ./mvnw -B -ntp -s .qits-maven-settings.xml verify
+        ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
+        -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL"
       QITS_SLOT_EOF
       set +e
       if command -v bash > /dev/null 2>&1; then

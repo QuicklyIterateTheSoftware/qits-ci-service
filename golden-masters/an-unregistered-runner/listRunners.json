@@ -1,0 +1,25 @@
+{
+  "runners": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "name": "localhost",
+      "description": "the workstation's own runner",
+      "slots": 1,
+      "plane": "EDGE",
+      "stepMemoryLimit": null,
+      "capabilities": null,
+      "registered": false,
+      "connected": false,
+      "heldRuns": 0,
+      "lastSeenAt": null,
+      "createdAt": "2026-01-01T00:00:00Z",
+      "runnerVersion": null,
+      "targetVersion": "000000000000001",
+      "updating": false,
+      "quarantined": false,
+      "quarantineReason": null,
+      "quarantinedAt": null,
+      "lastHealthcheck": null
+    }
+  ]
+}

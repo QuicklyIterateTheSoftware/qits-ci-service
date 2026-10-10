@@ -221,7 +221,9 @@ public class CiRepositoryController {
    */
   @GET
   @Path("/{repoId}/release-phase")
-  @Operation(summary = "Whether a rev's composed release cycle declares a release phase")
+  @Operation(
+      operationId = "getReleasePhase",
+      summary = "Whether a rev's composed release cycle declares a release phase")
   @APIResponse(
       responseCode = "200",
       description = "Answered — declared true or false, with the reason",
@@ -282,7 +284,9 @@ public class CiRepositoryController {
    */
   @GET
   @Path("/{repoId}/releases/{version}/artifacts")
-  @Operation(summary = "What was decided about each artifact of one release")
+  @Operation(
+      operationId = "listReleaseArtifacts",
+      summary = "What was decided about each artifact of one release")
   @APIResponse(
       responseCode = "200",
       description = "The decision record, one entry per artifact; empty when nothing was owed",
