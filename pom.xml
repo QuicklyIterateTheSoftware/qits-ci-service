@@ -75,7 +75,7 @@
              into a release request and gated by this repository's own CI like any other content.
              Do NOT hand-edit it to chase a release you just made: a hand-written pin asserts a
              pairing nobody gated, and the next bump overwrites it regardless. -->
-        <qits.ci-daemon-protocol.version>2026.1003.84955</qits.ci-daemon-protocol.version>
+        <qits.ci-daemon-protocol.version>2026.1010.125039</qits.ci-daemon-protocol.version>
         <!-- The runner control-socket wire contract (qits-ci-runner-daemon's ci-runner-protocol) and
              the runner binary's version with it (CiRunnerBinary) — this pin's twin for the other
              socket, and a released-calver pin in the same sense once qits-ci-runner-daemon has cut
@@ -141,7 +141,7 @@
         <!-- qits-events' golden masters, test scope (qits-1149): the recorded answers this
              repository's consumer pact against qits-events-service is built from. Moved by the
              bump train like every internal pin; do not hand-edit it to chase a release. -->
-        <qits.events-golden-masters.version>2026.1002.210125</qits.events-golden-masters.version>
+        <qits.events-golden-masters.version>2026.1010.121628</qits.events-golden-masters.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
