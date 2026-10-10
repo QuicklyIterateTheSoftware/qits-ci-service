@@ -109,13 +109,15 @@ public class RunCommissionsWiringTest {
   }
 
   @Test
-  public void aGroupBumpRunMayPushItsMaintenanceBranch() throws Exception {
+  public void aNonTargetedGroupBumpRunMayPushNothing() throws Exception {
+    // The GROUP arm is retired (qits-1133): the pipeline refuses any group but "targeted" before
+    // it ever reads a branch, so such a run's scope is empty rather than a ref it will never push.
     List<String> scope =
         scopeOf(
             "wiring-group-bump",
             eventEnv("MaintenanceBump", bumpPayload("dependencies", "maintenance/dependencies")));
 
-    assertEquals(List.of("refs/heads/maintenance/dependencies"), scope);
+    assertEquals(List.of(), scope);
   }
 
   @Test

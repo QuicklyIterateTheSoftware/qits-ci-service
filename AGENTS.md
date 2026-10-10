@@ -259,8 +259,12 @@ Three rules for that scope:
   which force-pushed `maintenance/<payload.repository>`) were deleted on 2026-09-02/03, so that
   event is in `PUSH_NOTHING` too. Copies of them under a service's `src/main/webui` or in the
   bootstrap's `.qits-bootstrap-src` are stale working trees, not recipes.
-- **The bump scope is the payload's `branch`**, because that is the one ref
-  `ci/src/main/resources/platform-pipelines/maintenance-bump.yml` pushes. `ScreenshotBaselines` is
+- **The bump scope is the payload's `branch`, and only when `group` is `targeted`** (qits-1133),
+  because that is the one ref `ci/src/main/resources/platform-pipelines/maintenance-bump.yml` still
+  pushes. The GROUP arm — a `maintenance/<group>` branch of the pipeline's own, sometimes rebuilt
+  from an unmerged release's tag — is retired: the pipeline refuses any other `group` before it
+  reads a branch at all, so such a run states an empty scope rather than a scope for a push that
+  will never happen. `ScreenshotBaselines` is
   retired (qits-1007): `screenshot-baselines.yml`, the one ref it pushed
   under `maintenance/baselines/`, and its `RunGitRefs` arm are gone, and the event states nothing
   now — the unknown-event answer. `ReleaseRequestAutomation` is one generic arm: the payload's

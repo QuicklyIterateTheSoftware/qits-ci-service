@@ -1049,7 +1049,7 @@ push to any other ref.
 
 | trigger | `gitRefs` |
 |---|---|
-| `MaintenanceBump` | `["refs/heads/<payload.branch>"]`: `maintenance/<group>`, or the one source branch of a targeted bump. `[]` if the payload names no usable branch. |
+| `MaintenanceBump` | `["refs/heads/<payload.branch>"]`, the one source branch of a TARGETED bump — the only kind this pipeline still applies (qits-1133). `[]` if `group` is not `targeted`, or the payload names no usable branch. |
 | `ReleaseRequestAutomation` | `["refs/heads/<payload.branch>"]` only when it is a plain branch under `maintenance/automations/<payload.kind>/` and the kind is `[a-z0-9-]+`; `[]` otherwise. One arm for every automation kind. |
 | `ReleaseRequestChanged`, `SCMRelease` | `[]`. No recipe on these events pushes. |
 | `SoftwareRelease` | `[]`. No recipe selects it. The hop files (`ci-event-upstream-*.yml`) that force-pushed `maintenance/<payload.repository>` were deleted on 2026-09-02/03; qits-platform-maintenance follows releases through a `MaintenanceBump` run now. |
@@ -1949,8 +1949,12 @@ Pipelines for **every** repository live in this repository, as ordinary classpat
 (`CiPlatformPipelines`). They are evaluated against every arriving event, on top of each candidate's
 own trigger files. One today:
 
-- `maintenance-bump.yml` (`event: MaintenanceBump`): applies a qits-maintenance bump and pushes its
-  branch.
+- `maintenance-bump.yml` (`event: MaintenanceBump`): applies a TARGETED bump — qits-maintenance's
+  `estate-pins` automation, writing a wrapper's gitlinks onto a release request's own source
+  branch, is the only caller left — and pushes it. One step: the GROUP arm, naming its own
+  `maintenance/<group>` branch and sometimes rebuilding it from an unmerged release's tag, is
+  retired (qits-1133), and with it the maven step that arm needed; a non-`targeted` `group`, or a
+  `maven` change in the payload, is refused rather than silently skipped.
 
 `screenshot-baselines.yml` (`event: ScreenshotBaselines`) was its sibling — rendering a release
 request's screenshot tests on `node-browser-base`, pruning references the way the kind file below
@@ -1988,12 +1992,17 @@ bump`, qits-1133): the request's dependency pin moves, applied in ONE step on it
 branch. Its payload adds `changes`, entries in exactly `maintenance-bump.yml`'s shape (`ecosystem`
 maven|npm|docker|gitlink, `manifestPath`, `name`, `from`, `to`, `location`), and `commitPaths` is
 their manifests; it commits `bump(<item>): <N> dependencies` with one body line per change. The
-apply logic is `maintenance-bump.yml`'s, lifted into the kind's one script — maven and docker are awk,
+apply logic is `maintenance-bump.yml`'s own, lifted into one script — maven and docker are awk,
 gitlink an index write, npm `npm install --package-lock-only` — so it needs node, npm, jq, git and
 awk and no maven at all, which is `node-browser-base` (no platform image carries node and maven
 together, and none has to). It is the one kind that reads `$QITS_EVENT_PAYLOAD` itself (for
-`changes` alone) and the one that fetches (a gitlink's sibling tag); `maintenance-bump.yml` keeps
-working beside it until it is retired.
+`changes` alone) and the one that fetches (a gitlink's sibling tag). The maven programs
+(`bump-property.awk`, `bump-dependency.awk`) are this file's own copy now rather than a lift kept
+in step with a twin: `maintenance-bump.yml`'s maven step retired with the GROUP arm (qits-1133),
+since its one remaining caller, `estate-pins`, never bumps a `pom.xml`. The two docker programs
+(`bump-from.awk`, `bump-arg.awk`) still are a lift — `maintenance-bump.yml` keeps applying docker
+and gitlink changes for that caller — and `PackagedPlatformPipelinesTest` holds the two files equal
+on those two programs so they cannot drift.
 
 Until 2026-10-02 they were `ci-platform-event-*.yml` files in the wrapper, read at its `main` head
 per event: a fix shipped only with a wrapper release, which needs a person's approval. No repository

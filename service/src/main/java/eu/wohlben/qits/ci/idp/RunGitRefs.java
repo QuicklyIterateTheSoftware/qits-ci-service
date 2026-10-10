@@ -18,16 +18,17 @@ import java.util.regex.Pattern;
  * <p>Five answers:
  *
  * <ul>
- *   <li><b>{@code MaintenanceBump}</b>: the one branch the payload names in {@code branch}. For a
- *       group bump that is {@code maintenance/<group>}; for a targeted bump it is the source branch
- *       the caller asked to bump. It is the only ref the bump pipeline ({@code
+ *   <li><b>{@code MaintenanceBump}</b>: the one branch the payload names in {@code branch}, and only
+ *       when {@code group} reads exactly {@code targeted} - a release request's own source branch,
+ *       the one bump qits-maintenance's {@code estate-pins} automation sends. (The GROUP arm this
+ *       pipeline used to also serve, naming a {@code maintenance/<group>} branch of its own and
+ *       sometimes rebuilding it from an unmerged release's tag under a {@code --force-with-lease},
+ *       is retired (qits-1133): the pipeline refuses any other {@code group} outright before it
+ *       reads a branch at all, so a run triggered by one states an empty scope rather than a scope
+ *       for a push that will never happen.) The branch is the only ref the bump pipeline ({@code
  *       ci/src/main/resources/platform-pipelines/maintenance-bump.yml}, this module's own classpath
- *       resource) pushes. A payload with no usable branch gives an empty list: the pipeline refuses
- *       such a payload before it pushes anything. A rebuild (the payload's {@code replaceHead}) is a
- *       non-fast-forward update of that same ref under a {@code --force-with-lease}, so it needs no
- *       wider scope: qits-githost checks a push's ref NAMES against the list and admits any update
- *       kind of a ref inside it. The {@code refs/tags/<version>} a rebuild starts from is fetched,
- *       never pushed, and the list does not narrow a fetch.
+ *       resource) pushes. A payload with no usable branch, or whose {@code group} is not {@code
+ *       targeted}, gives an empty list: the pipeline refuses both before it pushes anything.
  *   <li><b>{@code ReleaseRequestAutomation}</b>: one generic arm for every automation kind. The
  *       payload's {@code branch}, and only when it is a plain branch under {@code
  *       maintenance/automations/<kind>/}, where {@code <kind>} is the payload's own {@code kind}
@@ -72,6 +73,16 @@ public final class RunGitRefs {
 
   /** The payload field that names the branch the bump pipeline pushes. */
   static final String BRANCH_FIELD = "branch";
+
+  /** The payload field naming a {@link #MAINTENANCE_BUMP} run's group. */
+  static final String GROUP_FIELD = "group";
+
+  /**
+   * The one group the bump pipeline still applies - {@code EstatePinsAutomation.TARGETED_GROUP}'s
+   * sentinel. Any other value is the retired GROUP arm (qits-1133): the pipeline refuses it before
+   * it reads a branch, so such a run's scope is empty rather than a ref it will never push.
+   */
+  static final String TARGETED_GROUP = "targeted";
 
   /**
    * Events whose recipes are known to push nothing. Add an event here only after checking every
@@ -118,7 +129,8 @@ public final class RunGitRefs {
    */
   public static Optional<List<String>> of(String eventName, String payload, ObjectMapper json) {
     if (MAINTENANCE_BUMP.equals(eventName)) {
-      String branch = branchOf(payload, json);
+      boolean targeted = TARGETED_GROUP.equals(textOf(payload, json, GROUP_FIELD));
+      String branch = targeted ? branchOf(payload, json) : null;
       return Optional.of(branch == null ? List.of() : List.of(HEADS + branch));
     }
     if (RELEASE_REQUEST_AUTOMATION.equals(eventName)) {
