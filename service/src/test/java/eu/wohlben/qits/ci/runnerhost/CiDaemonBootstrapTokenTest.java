@@ -156,7 +156,7 @@ public class CiDaemonBootstrapTokenTest {
     assertEquals(List.of("qits", "qits-maven-network", "qits-central-proxy"), ids);
     assertEquals(1, settings.getElementsByTagName("mirror").getLength(), "the blocker, re-declared");
     assertEquals(
-        "-gs " + path(SETTINGS_PATH) + "\n",
+        "-gs " + path(SETTINGS_PATH) + " " + StepContainerSettings.MAVEN_RETRY_ARGS + "\n",
         Files.readString(work.resolve("inherited-maven-args")));
 
     // 4. npm: one _authToken per npm host derived from $QITS_DOMAIN, appended to ~/.npmrc.
@@ -213,7 +213,11 @@ public class CiDaemonBootstrapTokenTest {
 
     assertEquals(0, result.exitCode, result.diagnosis());
     assertEquals(
-        "-Dstyle.color=never -Dfoo=bar -gs " + path(SETTINGS_PATH) + "\n",
+        "-Dstyle.color=never -Dfoo=bar -gs "
+            + path(SETTINGS_PATH)
+            + " "
+            + StepContainerSettings.MAVEN_RETRY_ARGS
+            + "\n",
         Files.readString(work.resolve("inherited-maven-args")));
   }
 

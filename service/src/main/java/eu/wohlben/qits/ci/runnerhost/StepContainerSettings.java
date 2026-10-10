@@ -310,8 +310,38 @@ public class StepContainerSettings {
           echo "qits-ci: the home directory is not writable, so npm holds no platform credential" >&2
         fi
       fi
+      # Every maven call in every step retries a failed download, a connect timeout included
+      # (qits-1169): an edge or mirror redeploy must not fail a build. Maven 3.9 reads MAVEN_ARGS on
+      # every invocation, so this one line covers builds, releases and automations. Measured on
+      # Maven 3.9.12 / resolver 1.9.25: the default transport never retries a connect timeout or a
+      # refused connection, so the transport is wagon. In wagon-http 3.5.3, `nonRetryableClasses`
+      # counts only with handler class `default`, and an EMPTY list falls back to the stock list
+      # (connect timeouts and refusals included), so it names UnknownHostException alone. The 503
+      # strategy is off unless its class is named. Wagon's connect timeout is
+      # max(connectTimeout, requestTimeout), so both are set. Wagon sends server credentials and
+      # httpHeaders as the default transport does. APPENDED, so an image's own MAVEN_ARGS is kept;
+      # outside the token block, because a step with no token downloads too.
+      MAVEN_ARGS="${MAVEN_ARGS:+$MAVEN_ARGS }-Dmaven.resolver.transport=wagon -Dmaven.wagon.http.retryHandler.class=default -Dmaven.wagon.http.retryHandler.count=5 -Dmaven.wagon.http.retryHandler.nonRetryableClasses=java.net.UnknownHostException -Dmaven.wagon.http.serviceUnavailableRetryStrategy.class=standard -Dmaven.wagon.http.serviceUnavailableRetryStrategy.maxRetries=5 -Dmaven.wagon.http.serviceUnavailableRetryStrategy.retryInterval=5000 -Daether.connector.connectTimeout=60000 -Daether.connector.requestTimeout=60000"
+      export MAVEN_ARGS
       exec /tmp/qits-ci-daemon
       """;
+
+  /**
+   * The flags {@link #BOOTSTRAP} appends to {@code MAVEN_ARGS} in every step, so every maven call
+   * retries a failed download, a connect timeout included (qits-1169). The text is typed into
+   * {@code BOOTSTRAP} too, because that text interpolates nothing; {@code StepContainerSettingsTest}
+   * asserts the two agree. Why each flag is there is told beside the line in {@code BOOTSTRAP}.
+   */
+  static final String MAVEN_RETRY_ARGS =
+      "-Dmaven.resolver.transport=wagon"
+          + " -Dmaven.wagon.http.retryHandler.class=default"
+          + " -Dmaven.wagon.http.retryHandler.count=5"
+          + " -Dmaven.wagon.http.retryHandler.nonRetryableClasses=java.net.UnknownHostException"
+          + " -Dmaven.wagon.http.serviceUnavailableRetryStrategy.class=standard"
+          + " -Dmaven.wagon.http.serviceUnavailableRetryStrategy.maxRetries=5"
+          + " -Dmaven.wagon.http.serviceUnavailableRetryStrategy.retryInterval=5000"
+          + " -Daether.connector.connectTimeout=60000"
+          + " -Daether.connector.requestTimeout=60000";
 
   /**
    * Where the registry push credential lands inside a step container, and the whole reason it can
