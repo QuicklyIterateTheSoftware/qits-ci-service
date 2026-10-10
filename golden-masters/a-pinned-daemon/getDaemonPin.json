@@ -1,6 +1,6 @@
 {
   "daemonName": "qits-ci-daemon",
-  "daemonVersion": "000000000000001",
+  "daemonVersion": "frozen-token-1",
   "previousDaemonVersion": "",
   "source": "pinned"
 }
