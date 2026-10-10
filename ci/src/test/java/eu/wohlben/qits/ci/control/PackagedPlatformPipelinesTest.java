@@ -434,6 +434,16 @@ public class PackagedPlatformPipelinesTest {
     assertTrue(
         script.indexOf("export " + CiAutomationComposer.MESSAGE_ENV) < body,
         "the message file is named before the script runs");
+    // qits-893: the changelog CLI composes the body and names the tickets heading the subject.
+    StringBuilder fetch = new StringBuilder();
+    CiReleaseComposer.cliFetch(fetch, step.image(), CiReleaseComposer.CliFetch.AUTOMATION);
+    int fetched = script.indexOf(fetch.toString());
+    assertTrue(fetched > 0 && fetched < body, "the pinned CLI is on PATH before the script runs");
+    assertTrue(
+        script.indexOf("export " + CiAutomationComposer.TICKETS_ENV) < body,
+        "the tickets file is named before the script runs");
+    assertTrue(script.indexOf("qits changelog bump-message", body) > body, script);
+    assertTrue(script.contains("commit -q --cleanup=verbatim -F "), "the `# <version>` headings survive");
     String kindScript =
         script.substring(
             script.indexOf('\n', body) + 1,

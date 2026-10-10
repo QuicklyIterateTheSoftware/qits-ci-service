@@ -89,7 +89,21 @@ import java.util.regex.Pattern;
  * step naming the file, never a commit with an empty subject; the file is only read once the guard
  * has found something staged, so a run with nothing to commit needs no message at all.
  *
- * <p>Both lines of the mechanism are emitted only for a kind declaring the key, which is what keeps
+ * <p><b>The tickets a commit carries head its subject</b> (qits-893). A dependency bump pulls in
+ * internal releases, and their changelogs name the tickets that shipped in them: the bump commit
+ * should be found by those tickets the way the work itself is. So the step also exports {@value
+ * #TICKETS_ENV} naming {@value #TICKETS_FILE}, and a script that knows the tickets — {@code
+ * dependency-bump} reads them off {@code qits changelog bump-message} — writes them there, separated
+ * by single spaces. The postlude then commits {@code chore(<id>, <id>): <type>(<item>):
+ * <description>} ({@code chore(<ids>): <type>: <description>} with no item): the tickets head the
+ * subject, and <b>the type and the item stay the platform's</b>, untouched behind them. The file is
+ * optional — absent or empty is the plain subject — but what it says is refused rather than
+ * quoted: anything but work items ({@code [A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18}}) separated by
+ * single spaces fails the step with a sentence naming the file. The commit is {@code
+ * --cleanup=verbatim}, because a changelog body carries {@code # <version>} headings that git's
+ * default cleanup would strip as comments.
+ *
+ * <p>Every line of the mechanism is emitted only for a kind declaring the key, which is what keeps
  * every other kind's composed text byte-identical ({@code
  * composed/automation-screenshot-baselines.yml} holds that).
  *
@@ -132,6 +146,16 @@ public final class CiAutomationComposer {
 
   /** The variable naming {@link #MESSAGE_FILE} to a {@code commit-type} kind's script. */
   static final String MESSAGE_ENV = "QITS_AUTOMATION_MESSAGE";
+
+  /** Where a {@code commit-type} kind's script may write the tickets heading its subject. */
+  static final String TICKETS_FILE = "/tmp/qits-automation-tickets";
+
+  /** The variable naming {@link #TICKETS_FILE} to a {@code commit-type} kind's script. */
+  static final String TICKETS_ENV = "QITS_AUTOMATION_TICKETS";
+
+  /** What {@link #TICKETS_FILE} may hold: work items, separated by single spaces. */
+  static final String TICKETS_ERE =
+      "[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18}( [A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18})*";
 
   /** Where the postlude composes a {@code commit-type} kind's whole message for {@code -F}. */
   static final String COMMIT_MESSAGE = "/tmp/qits-automation-commit";
@@ -363,6 +387,8 @@ public final class CiAutomationComposer {
       // The kind writes its own description; a stale file from nobody is never read as one.
       out.append("rm -f ").append(MESSAGE_FILE).append('\n');
       out.append("export ").append(MESSAGE_ENV).append('=').append(MESSAGE_FILE).append('\n');
+      out.append("rm -f ").append(TICKETS_FILE).append('\n');
+      out.append("export ").append(TICKETS_ENV).append('=').append(TICKETS_FILE).append('\n');
     }
     out.append("# --- the kind's script, run as data ---\n");
     out.append("cat > ").append(KIND_SCRIPT).append(" <<'").append(HEREDOC_DELIMITER).append("'\n");
@@ -427,6 +453,32 @@ public final class CiAutomationComposer {
       out.append("else\n");
       out.append("  subject=\"").append(commitType).append(": $description\"\n");
       out.append("fi\n");
+      // The tickets head the subject; the type and the item behind them stay the platform's. One
+      // line of work items and single spaces, or the step fails: they reach the commit subject.
+      out.append("tickets=$(cat ").append(TICKETS_FILE).append(" 2>/dev/null || true)\n");
+      out.append("if [ -n \"$tickets\" ]; then\n");
+      out.append("  newline=$(printf '\\nx')\n");
+      out.append("  newline=${newline%x}\n");
+      out.append("  case \"$tickets\" in\n");
+      out.append("    *\"$newline\"*) tickets_ok=no ;;\n");
+      out.append("    *) if printf '%s\\n' \"$tickets\" | grep -Eqx '")
+          .append(TICKETS_ERE)
+          .append("'; then tickets_ok=yes; else tickets_ok=no; fi ;;\n");
+      out.append("  esac\n");
+      out.append("  if [ \"$tickets_ok\" != yes ]; then\n");
+      out.append("    echo ")
+          .append(
+              shellQuote(
+                  "the "
+                      + kind
+                      + " script wrote tickets to "
+                      + TICKETS_FILE
+                      + " that are not work items separated by single spaces"))
+          .append(" >&2\n");
+      out.append("    exit 1\n");
+      out.append("  fi\n");
+      out.append("  subject=\"chore($(printf '%s' \"$tickets\" | sed 's/ /, /g')): $subject\"\n");
+      out.append("fi\n");
       out.append("body=$(tail -n +2 ").append(MESSAGE_FILE).append(")\n");
       out.append("{\n");
       out.append("  printf '%s\\n' \"$subject\"\n");
@@ -434,7 +486,7 @@ public final class CiAutomationComposer {
       out.append("} > ").append(COMMIT_MESSAGE).append('\n');
       out.append(
           "git -c user.name=\"qits maintenance\" -c user.email=\"maintenance@qits.local\" \\\n");
-      out.append("    commit -q -F ").append(COMMIT_MESSAGE).append('\n');
+      out.append("    commit -q --cleanup=verbatim -F ").append(COMMIT_MESSAGE).append('\n');
     }
     // Plain, never forced. After the first join the fold contains the branch, so a later run on a
     // newer fold is a fast-forward of it.

@@ -1975,7 +1975,10 @@ is about*.
   declares `image`, `timeout-seconds`, `script`, optionally `qits-cli: true` (only `true`: any
   other value fails the boot) and optionally `commit-type: <[a-z]+>` (the kind writes its own
   description and body to `$QITS_AUTOMATION_MESSAGE` and the postlude commits `<type>(<item>): …`;
-  `dependency-bump` uses it for `bump(<item>): N dependencies`, qits-1133), nothing else;
+  `dependency-bump` uses it for `bump(<item>): N dependencies`, qits-1133; a script may also write
+  work items, single-space separated, to `$QITS_AUTOMATION_TICKETS` and the subject becomes
+  `chore(<ids>): <type>(<item>): …`, committed `--cleanup=verbatim` — `dependency-bump` takes the
+  ids and the changelog body from `qits changelog bump-message`, qits-893), nothing else;
   `CiAutomationComposer` composes it into a `ReleaseRequestAutomation` trigger selecting `kind:
   <kind>` with the platform's prelude (payload refusals, fold fetch, `superseded before start`) and
   postlude (stage only `commitPaths`, the `--ignore-submodules=none` guard, plain push). The set is

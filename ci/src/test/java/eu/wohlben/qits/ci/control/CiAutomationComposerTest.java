@@ -491,12 +491,22 @@ public class CiAutomationComposerTest {
             + CiAutomationComposer.MESSAGE_ENV
             + "="
             + CiAutomationComposer.MESSAGE_FILE
+            + "\nrm -f "
+            + CiAutomationComposer.TICKETS_FILE
+            + "\nexport "
+            + CiAutomationComposer.TICKETS_ENV
+            + "="
+            + CiAutomationComposer.TICKETS_FILE
             + "\n";
     int script = without.indexOf("# --- the kind's script, run as data ---");
     assertEquals(without.substring(0, script) + announce, with.substring(0, script + announce.length()));
     assertFalse(with.contains("update test kind"), "the template subject is gone");
     assertTrue(with.contains("  subject=\"bump($item): $description\"\n"), with);
-    assertTrue(with.contains("commit -q -F " + CiAutomationComposer.COMMIT_MESSAGE), with);
+    assertTrue(
+        with.contains("commit -q --cleanup=verbatim -F " + CiAutomationComposer.COMMIT_MESSAGE),
+        with);
+    assertFalse(without.contains(CiAutomationComposer.TICKETS_FILE), "nor for the tickets");
+    assertFalse(without.contains("--cleanup=verbatim"), "nor a verbatim commit");
     // Composed through the file, the key reaches the step.
     String composed =
         CiAutomationComposer.compose("test-kind", PATH, MINIMAL + "commit-type: bump\n");
@@ -525,6 +535,88 @@ public class CiAutomationComposerTest {
           "out/file.txt",
           scratch.git(scratch.origin, "diff-tree", "--no-commit-id", "--name-only", "-r", pushed),
           "the message file is no commit path");
+    }
+  }
+
+  /** A message whose body carries a changelog heading, and the tickets it names. */
+  private static String writesTickets(String tickets) {
+    return WRITES
+        + "printf '2 dependencies\\n- one\\n\\n## qits-sibling\\n# 2026.1010.1\\n- shipped\\n'"
+        + " > \"$QITS_AUTOMATION_MESSAGE\"\n"
+        // Through %b, so an escaped newline in them is a real one.
+        + "printf '%b\\n' '"
+        + tickets
+        + "' > \"$QITS_AUTOMATION_TICKETS\"\n";
+  }
+
+  @Test
+  public void aCommitTypeKindsTicketsHeadTheSubjectAndTheBodyIsKeptVerbatim(@TempDir Path dir)
+      throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell), "test-kind", "bump");
+      Result run =
+          scratch.run(
+              shell, writesTickets("qits-1 qits-2"), scratch.payload(BRANCH, scratch.fold, "\"out/**\""));
+
+      assertEquals(0, run.exit, shell + ":\n" + run.output);
+      String pushed = scratch.originRev("refs/heads/" + BRANCH);
+      assertEquals(
+          "chore(qits-1, qits-2): bump(qits-978): 2 dependencies",
+          scratch.git(scratch.origin, "log", "-1", "--format=%s", pushed),
+          "the tickets head the subject; the type and the item behind them stay the platform's");
+      assertEquals(
+          "- one\n\n## qits-sibling\n# 2026.1010.1\n- shipped",
+          scratch.git(scratch.origin, "log", "-1", "--format=%b", pushed),
+          "verbatim: git's default cleanup would strip the `# <version>` heading");
+    }
+  }
+
+  @Test
+  public void anEmptyTicketsFileIsThePlainSubject(@TempDir Path dir) throws Exception {
+    Scratch scratch = new Scratch(dir, "test-kind", "bump");
+    Result run =
+        scratch.run(
+            "bash",
+            WRITES_A_MESSAGE + ": > \"$QITS_AUTOMATION_TICKETS\"\n",
+            scratch.payload(BRANCH, scratch.fold, "\"out/**\""));
+
+    assertEquals(0, run.exit, run.output);
+    assertEquals(
+        "bump(qits-978): 2 dependencies",
+        scratch.git(
+            scratch.origin, "log", "-1", "--format=%s", scratch.originRev("refs/heads/" + BRANCH)));
+  }
+
+  @Test
+  public void aTicketsFileThatIsNotWorkItemsSeparatedBySingleSpacesFailsTheStep(@TempDir Path dir)
+      throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell), "test-kind", "bump");
+      for (String tickets :
+          List.of(
+              "qits-1,qits-2",
+              "qits-1, qits-2",
+              "qits-1  qits-2",
+              " qits-1",
+              "qits-1 ",
+              "qits-1\\nqits-2",
+              "qits",
+              "qits-1); rm -rf (x",
+              "-1",
+              "qits-1234567890123456789")) {
+        Result run =
+            scratch.run(
+                shell, writesTickets(tickets), scratch.payload(BRANCH, scratch.fold, "\"out/**\""));
+
+        assertEquals(1, run.exit, shell + " " + tickets + ":\n" + run.output);
+        assertTrue(
+            run.output.contains(
+                "wrote tickets to "
+                    + CiAutomationComposer.TICKETS_FILE
+                    + " that are not work items separated by single spaces"),
+            shell + " " + tickets + ":\n" + run.output);
+      }
+      assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH), "nothing was pushed");
     }
   }
 
@@ -580,11 +672,67 @@ public class CiAutomationComposerTest {
       FROM qits/build-images/node-base:1.0 AS build
       """;
 
-  /** The packaged kind file's own step, composed exactly as the platform composes it. */
-  private static String dependencyBumpStep() throws Exception {
+  /**
+   * The packaged kind file's own step, composed exactly as the platform composes it — with its CLI
+   * download pointed at {@code store}, the seam {@link #aQitsCliKindRunsTheScriptWithThePinnedCliOnPath}
+   * uses.
+   */
+  private static String dependencyBumpStep(Path store) throws Exception {
     String kindFile = Files.readString(Path.of("..").resolve(BUMP_PATH));
     String composed = CiAutomationComposer.compose("dependency-bump", BUMP_PATH, kindFile);
-    return new CiEventTriggerParser().parse(BUMP_PATH, composed).pipeline().steps().get(0).script();
+    return new CiEventTriggerParser()
+        .parse(BUMP_PATH, composed)
+        .pipeline()
+        .steps()
+        .get(0)
+        .script()
+        .replace(CiReleaseComposer.CLI_DOWNLOAD_BASE, "file://" + store + "/");
+  }
+
+  /** What the step needs to fetch the fake CLI {@link #fakeChangelogCli} put in a store. */
+  private static final Map<String, String> FAKE_CLI_ENV =
+      Map.of("QITS_ARTIFACTS_CLI_PACKAGE", "qits", "QITS_ARTIFACTS_CLI_VERSION", "9.9.9");
+
+  /**
+   * A store holding a fake {@code qits} that answers {@code changelog bump-message} the way the
+   * released CLI does: {@code <subject>}, a blank line, the body file verbatim, then a changelog
+   * section with a {@code # <version>} heading. {@code scope} is the subject's leading {@code
+   * chore(<ids>): }, or empty for none; {@code exit} non-zero makes it fail instead. It copies the
+   * applied file it was handed to {@code $FAKE_QITS_APPLIED}.
+   */
+  private static Path fakeChangelogCli(Path store, String scope, int exit) throws Exception {
+    Files.createDirectories(store.resolve("qits"));
+    Files.writeString(
+        store.resolve("qits/9.9.9"),
+        "#!/bin/sh\n"
+            + "[ \"$1 $2\" = 'changelog bump-message' ] || { echo \"fake qits: $*\" >&2; exit 9; }\n"
+            + "shift 2\n"
+            + "while [ $# -gt 0 ]; do\n"
+            + "  case \"$1\" in\n"
+            + "    --group) group=$2 ;;\n"
+            + "    --applied) applied=$2 ;;\n"
+            + "    --body) body=$2 ;;\n"
+            + "  esac\n"
+            + "  shift 2\n"
+            + "done\n"
+            + "if [ "
+            + exit
+            + " -ne 0 ]; then echo 'fake qits: no changelog for qits-sibling 2026.2.2' >&2; exit "
+            + exit
+            + "; fi\n"
+            + "[ -z \"${FAKE_QITS_APPLIED:-}\" ] || cp \"$applied\" \"$FAKE_QITS_APPLIED\"\n"
+            + "printf '%sbump(%s): %d dependencies\\n\\n' '"
+            + scope
+            + "' \"$group\" \"$(grep -c '' \"$applied\")\"\n"
+            + "cat \"$body\"\n"
+            + "printf '\\n## qits-sibling\\n# 2026.1010.1\\nshipped qits-1 and qits-2\\n'\n");
+    return store;
+  }
+
+  private static Map<String, String> fakeCliEnv(Path applied) {
+    Map<String, String> env = new java.util.HashMap<>(FAKE_CLI_ENV);
+    env.put("FAKE_QITS_APPLIED", applied.toString());
+    return env;
   }
 
   private static String bumpPayload(Scratch scratch, String changes, String paths) {
@@ -630,19 +778,44 @@ public class CiAutomationComposerTest {
             + "\"to\":\"2026.2.2\"}"
             + "]";
     String paths = "\"pom.xml\",\"Dockerfile\",\"libs/old\",\"libs/new\"";
+    Path store = fakeChangelogCli(dir.resolve("store"), "chore(qits-1, qits-2): ", 0);
+    Path applied = dir.resolve("applied.tsv");
     Result run =
-        scratch.runStep("bash", dependencyBumpStep(), bumpPayload(scratch, changes, paths), Map.of());
+        scratch.runStep(
+            "bash", dependencyBumpStep(store), bumpPayload(scratch, changes, paths), fakeCliEnv(applied));
 
     assertEquals(0, run.exit, run.output);
     String pushed = scratch.originRev("refs/heads/" + BUMP_BRANCH);
     assertEquals(scratch.fold, scratch.git(scratch.origin, "rev-parse", pushed + "^"), "one commit");
+    // The changelogs' tickets head the subject; bump(<item>) behind them is the platform's, never
+    // the CLI's bump(<group>).
     assertEquals(
-        "bump(qits-978): 6 dependencies",
+        "chore(qits-1, qits-2): bump(qits-978): 6 dependencies",
         scratch.git(scratch.origin, "log", "-1", "--format=%s", pushed));
-    String body = scratch.git(scratch.origin, "log", "-1", "--format=%b", pushed);
-    assertEquals(6, body.lines().count(), body);
-    assertTrue(body.contains("- maven io.quarkus:quarkus-bom 3.1.0 -> 3.2.0 (pom.xml)"), body);
-    assertTrue(body.contains("- gitlink qits-sibling  -> 2026.2.2 (libs/new)"), body);
+    // The CLI's output from its third line on, byte for byte - the `# <version>` heading included.
+    assertEquals(
+        "- maven io.quarkus:quarkus-bom 3.1.0 -> 3.2.0 (pom.xml)\n"
+            + "- maven eu.wohlben.qits:qits-eventstream 2026.1.1 -> 2026.2.2 (pom.xml)\n"
+            + "- docker qits/workspace 2026.1.1 -> 2026.2.2 (Dockerfile)\n"
+            + "- docker qits/build-images/node-base 1.0 -> 1.1 (Dockerfile)\n"
+            + "- gitlink qits-sibling "
+            + old
+            + " -> 2026.2.2 (libs/old)\n"
+            + "- gitlink qits-sibling  -> 2026.2.2 (libs/new)\n"
+            + "\n"
+            + "## qits-sibling\n"
+            + "# 2026.1010.1\n"
+            + "shipped qits-1 and qits-2",
+        scratch.git(scratch.origin, "log", "-1", "--format=%b", pushed));
+    // What the CLI was handed: `<ecosystem>\t<name>`, one line per applied change.
+    assertEquals(
+        "maven\tio.quarkus:quarkus-bom\n"
+            + "maven\teu.wohlben.qits:qits-eventstream\n"
+            + "docker\tqits/workspace\n"
+            + "docker\tqits/build-images/node-base\n"
+            + "gitlink\tqits-sibling\n"
+            + "gitlink\tqits-sibling\n",
+        Files.readString(applied));
     assertEquals(
         "Dockerfile\nlibs/new\nlibs/old\npom.xml",
         scratch.git(scratch.origin, "diff-tree", "--no-commit-id", "--name-only", "-r", pushed),
@@ -673,7 +846,7 @@ public class CiAutomationComposerTest {
             "web/package.json", "{\"dependencies\":{\"left-pad\":\"latest\"}}\n",
             "web/package-lock.json", "{}\n"),
         Map.of());
-    String step = dependencyBumpStep();
+    String step = dependencyBumpStep(fakeChangelogCli(dir.resolve("store"), "", 0));
     Map<String, String> refusals =
         Map.of(
             "a property the pom does not hold",
@@ -699,12 +872,88 @@ public class CiAutomationComposerTest {
               "bash",
               step,
               bumpPayload(scratch, refusal.getValue(), "\"pom.xml\",\"web/package.json\""),
-              Map.of());
+              FAKE_CLI_ENV);
       // Non-zero rather than 1: a refusal jq raises exits with jq's own status.
       assertTrue(run.exit != 0, refusal.getKey() + ":\n" + run.output);
       assertFalse(run.output.contains("pushed "), refusal.getKey() + ":\n" + run.output);
     }
     assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BUMP_BRANCH), "nothing was pushed");
+  }
+
+  private static final String ONE_PROPERTY =
+      "[{\"ecosystem\":\"maven\",\"manifestPath\":\"pom.xml\",\"name\":\"io.quarkus:quarkus-bom\","
+          + "\"from\":\"3.1.0\",\"to\":\"3.2.0\",\"location\":\"property:quarkus.version\"}]";
+
+  @Test
+  public void aChangelogNamingNoTicketsLeavesTheBumpSubjectAlone(@TempDir Path dir)
+      throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell), "dependency-bump", "bump");
+      scratch.foldWith(Map.of("pom.xml", POM), Map.of());
+      Path store = fakeChangelogCli(dir.resolve(shell + "-store"), "", 0);
+      Result run =
+          scratch.runStep(
+              shell,
+              dependencyBumpStep(store),
+              bumpPayload(scratch, ONE_PROPERTY, "\"pom.xml\""),
+              FAKE_CLI_ENV);
+
+      assertEquals(0, run.exit, shell + ":\n" + run.output);
+      String pushed = scratch.originRev("refs/heads/" + BUMP_BRANCH);
+      assertEquals(
+          "bump(qits-978): 1 dependencies",
+          scratch.git(scratch.origin, "log", "-1", "--format=%s", pushed));
+      assertEquals(
+          "- maven io.quarkus:quarkus-bom 3.1.0 -> 3.2.0 (pom.xml)\n\n"
+              + "## qits-sibling\n# 2026.1010.1\nshipped qits-1 and qits-2",
+          scratch.git(scratch.origin, "log", "-1", "--format=%b", pushed));
+    }
+  }
+
+  @Test
+  public void aChangelogCliThatFailsOrNamesImplausibleTicketsFailsTheBump(@TempDir Path dir)
+      throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    scratch.foldWith(Map.of("pom.xml", POM), Map.of());
+    Map<String, Path> failures =
+        Map.of(
+            "fake qits: no changelog for qits-sibling",
+            fakeChangelogCli(dir.resolve("failing"), "", 1),
+            "that are not work items separated by single spaces",
+            fakeChangelogCli(dir.resolve("implausible"), "chore(qits-1,qits-2): ", 0),
+            "printed an unexpected subject",
+            fakeChangelogCli(dir.resolve("unexpected"), "feat: ", 0));
+    for (Map.Entry<String, Path> failure : failures.entrySet()) {
+      Result run =
+          scratch.runStep(
+              "bash",
+              dependencyBumpStep(failure.getValue()),
+              bumpPayload(scratch, ONE_PROPERTY, "\"pom.xml\""),
+              FAKE_CLI_ENV);
+
+      assertEquals(1, run.exit, failure.getKey() + ":\n" + run.output);
+      assertTrue(run.output.contains(failure.getKey()), run.output);
+      assertFalse(run.output.contains("pushed "), run.output);
+    }
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BUMP_BRANCH), "nothing was pushed");
+  }
+
+  @Test
+  public void aBumpThatChangesNothingNeverCallsTheChangelogCli(@TempDir Path dir) throws Exception {
+    // The fold already carries the pin - an earlier run's commit joined it - so the run is a no-op,
+    // and a CLI that would fail (a changelog missing) is never asked.
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    scratch.foldWith(Map.of("pom.xml", POM.replace("3.1.0", "3.2.0")), Map.of());
+    Result run =
+        scratch.runStep(
+            "bash",
+            dependencyBumpStep(fakeChangelogCli(dir.resolve("failing"), "", 1)),
+            bumpPayload(scratch, ONE_PROPERTY, "\"pom.xml\""),
+            FAKE_CLI_ENV);
+
+    assertEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains("unchanged"), run.output);
+    assertFalse(run.output.contains("fake qits"), run.output);
   }
 
   // --- the scratch origin ------------------------------------------------------------------------
@@ -837,7 +1086,8 @@ public class CiAutomationComposerTest {
       String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
       assertTrue(process.waitFor(60, TimeUnit.SECONDS), "the step did not return");
       // Every run starts again from the clone's main, as a fresh step container would.
-      git(work, "checkout", "-q", "--detach", "origin/main");
+      // Forced: a step that failed mid-apply leaves its edits behind, as a dead container would.
+      git(work, "checkout", "-q", "-f", "--detach", "origin/main");
       git(work, "reset", "-q", "--hard");
       git(work, "clean", "-qfdx");
       return new Result(process.exitValue(), output);
