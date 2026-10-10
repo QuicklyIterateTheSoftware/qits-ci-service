@@ -1,0 +1,6 @@
+{
+  "daemonName": "qits-ci-daemon",
+  "daemonVersion": "000000000000001",
+  "previousDaemonVersion": "",
+  "source": "pinned"
+}

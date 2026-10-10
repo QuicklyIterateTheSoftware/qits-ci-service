@@ -38,7 +38,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
  *
  * <p>Each interaction runs against this {@code @QuarkusTest} application over real HTTP,
  * unauthenticated — the {@code %test} dev user, exactly as {@link GoldenMasterRecordingTest}'s
- * REST-assured calls run. Every {@code @State} method delegates to {@link ProviderStates}; {@link
+ * REST-assured calls run. A door that judges the caller's token (register a runner, submit a step's
+ * report, the machine gate) reads the {@code Authorization} header the pact sends: the state's
+ * {@code authorization} param, which {@link ContractBearers} turns into that token's identity. Every {@code @State} method delegates to {@link ProviderStates}; {@link
  * #target} fails an unknown state, and an interaction without {@code comments.references.qits-call}
  * or {@code qits-trigger}.
  *
@@ -120,7 +122,97 @@ class ConsumerPactVerificationTest {
   // --- the states: each one line into the registry -------------------------------------------
 
   @State(ProviderStates.A_REPOSITORY_WITH_THE_RUNS_OF_A_RELEASE_REQUEST)
-  Map<String, String> aRepositoryWithTheRunsOfARequest() {
+  Map<String, String> aRepositoryWithTheRunsOfAReleaseRequest() {
     return states.params(ProviderStates.A_REPOSITORY_WITH_THE_RUNS_OF_A_RELEASE_REQUEST);
+  }
+
+  @State(ProviderStates.A_RUN_WITH_REPORTS_FAILING_TESTS_AND_COVERAGE)
+  Map<String, String> aRunWithReportsFailingTestsAndCoverage() {
+    return states.params(ProviderStates.A_RUN_WITH_REPORTS_FAILING_TESTS_AND_COVERAGE);
+  }
+
+  @State(ProviderStates.A_GREEN_RELEASE_RUN)
+  Map<String, String> aGreenReleaseRun() {
+    return states.params(ProviderStates.A_GREEN_RELEASE_RUN);
+  }
+
+  @State(ProviderStates.A_FAILED_RUN_THAT_RETRIES_ANOTHER)
+  Map<String, String> aFailedRunThatRetriesAnother() {
+    return states.params(ProviderStates.A_FAILED_RUN_THAT_RETRIES_ANOTHER);
+  }
+
+  @State(ProviderStates.A_RUNNING_RUN)
+  Map<String, String> aRunningRun() {
+    return states.params(ProviderStates.A_RUNNING_RUN);
+  }
+
+  @State(ProviderStates.A_REPOSITORY_WHOSE_RELEASE_RECIPE_SELECTS_SCM_RELEASE)
+  Map<String, String> aRepositoryWhoseReleaseRecipeSelectsScmRelease() {
+    return states.params(ProviderStates.A_REPOSITORY_WHOSE_RELEASE_RECIPE_SELECTS_SCM_RELEASE);
+  }
+
+  @State(ProviderStates.THE_MACHINE_GATE_IS_ON)
+  Map<String, String> theMachineGateIsOn() {
+    return states.params(ProviderStates.THE_MACHINE_GATE_IS_ON);
+  }
+
+  @State(ProviderStates.NO_RUNNERS)
+  Map<String, String> noRunners() {
+    return states.params(ProviderStates.NO_RUNNERS);
+  }
+
+  @State(ProviderStates.AN_UNREGISTERED_RUNNER)
+  Map<String, String> anUnregisteredRunner() {
+    return states.params(ProviderStates.AN_UNREGISTERED_RUNNER);
+  }
+
+  @State(ProviderStates.A_REGISTERED_RUNNER)
+  Map<String, String> aRegisteredRunner() {
+    return states.params(ProviderStates.A_REGISTERED_RUNNER);
+  }
+
+  @State(ProviderStates.A_CONNECTED_RUNNER)
+  Map<String, String> aConnectedRunner() {
+    return states.params(ProviderStates.A_CONNECTED_RUNNER);
+  }
+
+  @State(ProviderStates.A_QUARANTINED_RUNNER)
+  Map<String, String> aQuarantinedRunner() {
+    return states.params(ProviderStates.A_QUARANTINED_RUNNER);
+  }
+
+  @State(ProviderStates.RUNNERS_WITH_FREE_SLOTS)
+  Map<String, String> runnersWithFreeSlots() {
+    return states.params(ProviderStates.RUNNERS_WITH_FREE_SLOTS);
+  }
+
+  @State(ProviderStates.A_PINNED_DAEMON)
+  Map<String, String> aPinnedDaemon() {
+    return states.params(ProviderStates.A_PINNED_DAEMON);
+  }
+
+  @State(ProviderStates.A_RELEASED_VERSION_WITH_ARTIFACT_DECISIONS)
+  Map<String, String> aReleasedVersionWithArtifactDecisions() {
+    return states.params(ProviderStates.A_RELEASED_VERSION_WITH_ARTIFACT_DECISIONS);
+  }
+
+  @State(ProviderStates.A_RELEASE_REQUEST_WITH_RUNS_IN_FLIGHT)
+  Map<String, String> aReleaseRequestWithRunsInFlight() {
+    return states.params(ProviderStates.A_RELEASE_REQUEST_WITH_RUNS_IN_FLIGHT);
+  }
+
+  @State(ProviderStates.A_RELEASE_REQUEST_WHOSE_QA_RUN_FAILED)
+  Map<String, String> aReleaseRequestWhoseQaRunFailed() {
+    return states.params(ProviderStates.A_RELEASE_REQUEST_WHOSE_QA_RUN_FAILED);
+  }
+
+  @State(ProviderStates.A_REPOSITORY_THAT_DECLARES_A_RELEASE_PHASE)
+  Map<String, String> aRepositoryThatDeclaresAReleasePhase() {
+    return states.params(ProviderStates.A_REPOSITORY_THAT_DECLARES_A_RELEASE_PHASE);
+  }
+
+  @State(ProviderStates.A_COMMIT_WITH_A_RUN_IN_FLIGHT)
+  Map<String, String> aCommitWithARunInFlight() {
+    return states.params(ProviderStates.A_COMMIT_WITH_A_RUN_IN_FLIGHT);
   }
 }

@@ -3,6 +3,432 @@
   "provider": "qits-ci",
   "states": [
     {
+      "name": "a commit with a run in flight",
+      "slug": "a-commit-with-a-run-in-flight",
+      "params": {
+        "commitSha": "0000000000000000000000000000000000000005",
+        "repositoryId": "00000000-0000-4000-8000-000000000001",
+        "runId": "00000000-0000-4000-8000-000000000002"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listActiveRuns",
+          "method": "GET",
+          "path": "/ci/api/runs/active",
+          "status": 200,
+          "file": "a-commit-with-a-run-in-flight/listActiveRuns.json",
+          "frozen": {
+            "ids": [
+              "$.runs[*].id",
+              "$.runs[*].repoId"
+            ],
+            "instants": [
+              "$.runs[*].createdAt",
+              "$.runs[*].startedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": "$.runs"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a connected runner",
+      "slug": "a-connected-runner",
+      "params": {
+        "runnerId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listRunners",
+          "method": "GET",
+          "path": "/ci/api/runners",
+          "status": 200,
+          "file": "a-connected-runner/listRunners.json",
+          "frozen": {
+            "ids": [
+              "$.runners[*].id"
+            ],
+            "instants": [
+              "$.runners[*].lastSeenAt",
+              "$.runners[*].createdAt"
+            ],
+            "strings": [
+              "$.runners[*].targetVersion"
+            ],
+            "listFilteredTo": "$.runners"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a failed run that retries another",
+      "slug": "a-failed-run-that-retries-another",
+      "params": {
+        "repositoryId": "00000000-0000-4000-8000-000000000001",
+        "retryOfRunId": "00000000-0000-4000-8000-000000000002",
+        "runId": "00000000-0000-4000-8000-000000000003"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getRun",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}",
+          "status": 200,
+          "file": "a-failed-run-that-retries-another/getRun.json",
+          "frozen": {
+            "ids": [
+              "$.id",
+              "$.repoId",
+              "$.retryOfRunId"
+            ],
+            "instants": [
+              "$.createdAt",
+              "$.startedAt",
+              "$.finishedAt",
+              "$.steps[*].startedAt",
+              "$.steps[*].finishedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "listRuns",
+          "method": "GET",
+          "path": "/ci/api/runs",
+          "query": {
+            "limit": "100",
+            "repositoryId": "00000000-0000-4000-8000-000000000001"
+          },
+          "status": 200,
+          "file": "a-failed-run-that-retries-another/listRuns.json",
+          "frozen": {
+            "ids": [
+              "$.runs[*].id",
+              "$.runs[*].repoId",
+              "$.runs[*].retryOfRunId"
+            ],
+            "instants": [
+              "$.runs[*].createdAt",
+              "$.runs[*].startedAt",
+              "$.runs[*].finishedAt",
+              "$.runs[*].steps[*].startedAt",
+              "$.runs[*].steps[*].finishedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": "$.runs"
+          }
+        },
+        {
+          "operationId": "retryRun",
+          "method": "POST",
+          "path": "/ci/api/runs/{runId}/retry",
+          "status": 202,
+          "file": "a-failed-run-that-retries-another/retryRun.json",
+          "frozen": {
+            "ids": [
+              "$.runId"
+            ],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a green release run",
+      "slug": "a-green-release-run",
+      "params": {
+        "commitSha": "0000000000000000000000000000000000000007",
+        "repositoryId": "00000000-0000-4000-8000-000000000001",
+        "runId": "00000000-0000-4000-8000-000000000002"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listRuns",
+          "method": "GET",
+          "path": "/ci/api/runs",
+          "query": {
+            "limit": "20",
+            "repositoryId": "00000000-0000-4000-8000-000000000001"
+          },
+          "status": 200,
+          "file": "a-green-release-run/listRuns.json",
+          "frozen": {
+            "ids": [
+              "$.runs[*].id",
+              "$.runs[*].repoId"
+            ],
+            "instants": [
+              "$.runs[*].createdAt",
+              "$.runs[*].startedAt",
+              "$.runs[*].finishedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": "$.runs"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a pinned daemon",
+      "slug": "a-pinned-daemon",
+      "params": {},
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getDaemonPin",
+          "method": "GET",
+          "path": "/ci/api/daemon",
+          "status": 200,
+          "file": "a-pinned-daemon/getDaemonPin.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [
+              "$.daemonVersion"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a quarantined runner",
+      "slug": "a-quarantined-runner",
+      "params": {
+        "runnerId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "greenlightRunner",
+          "method": "POST",
+          "path": "/ci/api/runners/{runnerId}/greenlight",
+          "status": 200,
+          "file": "a-quarantined-runner/greenlightRunner.json",
+          "frozen": {
+            "ids": [
+              "$.id"
+            ],
+            "instants": [
+              "$.lastSeenAt",
+              "$.createdAt"
+            ],
+            "strings": [
+              "$.targetVersion"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a registered runner",
+      "slug": "a-registered-runner",
+      "params": {
+        "authorization": "Bearer qits_tok_contract-registration",
+        "runnerId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "registerRunner",
+          "method": "POST",
+          "path": "/ci/api/runners/{runnerId}/register",
+          "headers": {
+            "Authorization": "{authorization}"
+          },
+          "body": {
+            "capabilities": {
+              "arch": "amd64",
+              "docker": true
+            }
+          },
+          "status": 409,
+          "file": "a-registered-runner/registerRunner.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a release request whose QA run failed",
+      "slug": "a-release-request-whose-qa-run-failed",
+      "params": {
+        "releaseRequestId": "00000000-0000-4000-8000-000000000001",
+        "repositoryId": "00000000-0000-4000-8000-000000000002",
+        "runId": "00000000-0000-4000-8000-000000000003"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "rerunReleaseRequestPhase",
+          "method": "POST",
+          "path": "/ci/api/runs/rerun",
+          "body": {
+            "repoId": "{repositoryId}",
+            "releaseRequestId": "{releaseRequestId}",
+            "phase": "RELEASE_REQUEST"
+          },
+          "status": 202,
+          "file": "a-release-request-whose-qa-run-failed/rerunReleaseRequestPhase.json",
+          "frozen": {
+            "ids": [
+              "$.runId"
+            ],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a release request with runs in flight",
+      "slug": "a-release-request-with-runs-in-flight",
+      "params": {
+        "queuedRunId": "00000000-0000-4000-8000-000000000001",
+        "releaseRequestId": "00000000-0000-4000-8000-000000000002",
+        "repositoryId": "00000000-0000-4000-8000-000000000003"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "cancelReleaseRequestRuns",
+          "method": "POST",
+          "path": "/ci/api/runs/cancellations",
+          "body": {
+            "repoId": "{repositoryId}",
+            "releaseRequestId": "{releaseRequestId}"
+          },
+          "status": 202,
+          "file": "a-release-request-with-runs-in-flight/cancelReleaseRequestRuns.json",
+          "frozen": {
+            "ids": [
+              "$.runIds[*]"
+            ],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a released version with artifact decisions",
+      "slug": "a-released-version-with-artifact-decisions",
+      "params": {
+        "repositoryId": "00000000-0000-4000-8000-000000000001",
+        "repositoryName": "contract-service",
+        "runId": "00000000-0000-4000-8000-000000000002",
+        "version": "2026.1001.1"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listReleaseArtifacts",
+          "method": "GET",
+          "path": "/ci/api/repositories/{repositoryId}/releases/{version}/artifacts",
+          "status": 200,
+          "file": "a-released-version-with-artifact-decisions/listReleaseArtifacts.json",
+          "frozen": {
+            "ids": [
+              "$.repository",
+              "$.artifacts[*].runId"
+            ],
+            "instants": [
+              "$.artifacts[*].decidedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a repository that declares a release phase",
+      "slug": "a-repository-that-declares-a-release-phase",
+      "params": {
+        "repositoryId": "00000000-0000-4000-8000-000000000001",
+        "rev": "refs/tags/2026.1001.1"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getReleasePhase",
+          "method": "GET",
+          "path": "/ci/api/repositories/{repositoryId}/release-phase",
+          "query": {
+            "rev": "refs/tags/2026.1001.1"
+          },
+          "status": 200,
+          "file": "a-repository-that-declares-a-release-phase/getReleasePhase.json",
+          "frozen": {
+            "ids": [
+              "$.repositoryId"
+            ],
+            "instants": [],
+            "strings": [
+              "$.detail"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a repository whose release recipe selects SCMRelease",
+      "slug": "a-repository-whose-release-recipe-selects-scmrelease",
+      "params": {
+        "commitSha": "6b93a3149f666c1bc4eaba652b4b264f46a80d8f",
+        "projectId": "00000000-0000-4000-8000-000000000001",
+        "repositoryId": "00000000-0000-4000-8000-000000000002",
+        "repositoryName": "contract-service",
+        "version": "2026.1001.1"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "triggerEvent",
+          "method": "POST",
+          "path": "/ci/api/events/trigger",
+          "body": {
+            "name": "SCMRelease",
+            "payload": {
+              "branch": "{version}",
+              "commitSha": "{commitSha}",
+              "projectId": "{projectId}",
+              "repository": "{repositoryId}",
+              "repositoryName": "{repositoryName}",
+              "version": "{version}"
+            }
+          },
+          "status": 200,
+          "file": "a-repository-whose-release-recipe-selects-scmrelease/triggerEvent.json",
+          "frozen": {
+            "ids": [
+              "$.eventId",
+              "$.runIds[*]"
+            ],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a repository with the runs of a release request",
       "slug": "a-repository-with-the-runs-of-a-release-request",
       "params": {
@@ -61,6 +487,22 @@
       "dependsOn": [],
       "operations": [
         {
+          "operationId": "getRunBaseline",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}/baseline",
+          "status": 200,
+          "file": "a-run-with-reports-failing-tests-and-coverage/getRunBaseline.json",
+          "frozen": {
+            "ids": [
+              "$.baseline.runId",
+              "$.baseline.releaseRequestId"
+            ],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        },
+        {
           "operationId": "getRunReport",
           "method": "GET",
           "path": "/ci/api/runs/{runId}/reports/{reportId}",
@@ -73,6 +515,23 @@
             ],
             "instants": [
               "$.submittedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "listRunBaselineReports",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}/baseline/reports/test-results",
+          "status": 200,
+          "file": "a-run-with-reports-failing-tests-and-coverage/listRunBaselineReports.json",
+          "frozen": {
+            "ids": [
+              "$[*].id"
+            ],
+            "instants": [
+              "$[*].submittedAt"
             ],
             "strings": [],
             "listFilteredTo": null
@@ -96,6 +555,250 @@
             "instants": [
               "$.reports[*].submittedAt"
             ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a running run",
+      "slug": "a-running-run",
+      "params": {
+        "authorization": "Bearer qits_tok_contract-ci-run",
+        "repositoryId": "00000000-0000-4000-8000-000000000001",
+        "runId": "00000000-0000-4000-8000-000000000002"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getRun",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}",
+          "status": 200,
+          "file": "a-running-run/getRun.json",
+          "frozen": {
+            "ids": [
+              "$.id",
+              "$.repoId"
+            ],
+            "instants": [
+              "$.createdAt",
+              "$.startedAt",
+              "$.steps[*].startedAt",
+              "$.steps[*].finishedAt",
+              "$.live.startedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "putRunStepReport",
+          "method": "PUT",
+          "path": "/ci/api/runs/{runId}/steps/1/reports/test-results",
+          "headers": {
+            "Authorization": "{authorization}"
+          },
+          "body": {
+            "kindVersion": 1,
+            "highlights": [
+              {
+                "severity": "bad",
+                "text": "1 test failed",
+                "metric": "tests.failed",
+                "value": 1.0,
+                "delta": null
+              }
+            ],
+            "payload": {
+              "totals": {
+                "tests": 128,
+                "passed": 127,
+                "failed": 1,
+                "errored": 0,
+                "skipped": 0,
+                "durationMs": 44400
+              }
+            }
+          },
+          "status": 204,
+          "file": "a-running-run/putRunStepReport.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "an unregistered runner",
+      "slug": "an-unregistered-runner",
+      "params": {
+        "authorization": "Bearer qits_tok_contract-registration",
+        "runnerId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listRunners",
+          "method": "GET",
+          "path": "/ci/api/runners",
+          "status": 200,
+          "file": "an-unregistered-runner/listRunners.json",
+          "frozen": {
+            "ids": [
+              "$.runners[*].id"
+            ],
+            "instants": [
+              "$.runners[*].createdAt"
+            ],
+            "strings": [
+              "$.runners[*].targetVersion"
+            ],
+            "listFilteredTo": "$.runners"
+          }
+        },
+        {
+          "operationId": "registerRunner",
+          "method": "POST",
+          "path": "/ci/api/runners/{runnerId}/register",
+          "headers": {
+            "Authorization": "{authorization}"
+          },
+          "body": {
+            "capabilities": {
+              "arch": "amd64",
+              "docker": true
+            }
+          },
+          "status": 200,
+          "file": "an-unregistered-runner/registerRunner.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "rotateRegistrationToken",
+          "method": "POST",
+          "path": "/ci/api/runners/{runnerId}/registration-token",
+          "status": 200,
+          "file": "an-unregistered-runner/rotateRegistrationToken.json",
+          "frozen": {
+            "ids": [
+              "$.id"
+            ],
+            "instants": [
+              "$.createdAt"
+            ],
+            "strings": [
+              "$.targetVersion",
+              "$.installScript"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "no runners",
+      "slug": "no-runners",
+      "params": {},
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "createRunner",
+          "method": "POST",
+          "path": "/ci/api/runners",
+          "body": {
+            "name": "localhost",
+            "description": "the workstation's own runner",
+            "slots": 2
+          },
+          "status": 201,
+          "file": "no-runners/createRunner.json",
+          "frozen": {
+            "ids": [
+              "$.id"
+            ],
+            "instants": [
+              "$.createdAt"
+            ],
+            "strings": [
+              "$.targetVersion",
+              "$.installScript"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "runners with free slots",
+      "slug": "runners-with-free-slots",
+      "params": {
+        "queuedRunId": "00000000-0000-4000-8000-000000000001",
+        "repositoryId": "00000000-0000-4000-8000-000000000002",
+        "runnerId": "00000000-0000-4000-8000-000000000003",
+        "runningRunId": "00000000-0000-4000-8000-000000000004"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getRunQueue",
+          "method": "GET",
+          "path": "/ci/api/runs/queue",
+          "status": 200,
+          "file": "runners-with-free-slots/getRunQueue.json",
+          "frozen": {
+            "ids": [
+              "$.running[*].id",
+              "$.running[*].repoId",
+              "$.running[*].runnerId",
+              "$.queued[*].id",
+              "$.queued[*].repoId",
+              "$.runners[*].id"
+            ],
+            "instants": [
+              "$.generatedAt",
+              "$.running[*].createdAt",
+              "$.running[*].startedAt",
+              "$.queued[*].createdAt"
+            ],
+            "strings": [
+              "$.runners[*].targetVersion"
+            ],
+            "listFilteredTo": "$.running,$.queued,$.runners"
+          }
+        }
+      ]
+    },
+    {
+      "name": "the machine gate is on",
+      "slug": "the-machine-gate-is-on",
+      "params": {
+        "authorization": "Bearer not-a-token-any-idp-issued"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "triggerEvent",
+          "method": "POST",
+          "path": "/ci/api/events/trigger",
+          "headers": {
+            "Authorization": "{authorization}"
+          },
+          "body": {},
+          "status": 401,
+          "file": "the-machine-gate-is-on/triggerEvent.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
             "strings": [],
             "listFilteredTo": null
           }
