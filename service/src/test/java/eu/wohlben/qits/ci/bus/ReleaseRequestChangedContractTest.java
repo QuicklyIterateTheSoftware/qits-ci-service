@@ -49,7 +49,9 @@ import org.junit.jupiter.api.Test;
  * pre-run state the QA selection itself reads ({@link
  * CiReleaseComposer#RELEASE_REQUEST_PRE_RUN_PATH}). Nothing in this service binds the payload — the
  * trigger engine subscribes to {@code "*"} and walks a {@code JsonNode} — so nothing but this file
- * would notice a rename.
+ * would notice a rename. {@link CiRunService#PRE_RUN_FIELD} is the same field, read by the
+ * platform-level hold in {@code CiEventTriggerService}, which starts no run for {@code PENDING}
+ * before any trigger is matched.
  *
  * <p><b>The two halves fail differently and both matter.</b> A rename of the event or the checkout
  * paths costs a repository its QA run outright, loudly. A rename of the two ordering fields costs
@@ -393,6 +395,9 @@ public class ReleaseRequestChangedContractTest {
     assertFalse(
         unstated.has(CiReleaseComposer.RELEASE_REQUEST_PRE_RUN_PATH),
         "an unstated pre-run is an absent key, never a null value");
+    // The platform-level hold reads the same field and word.
+    assertEquals(CiReleaseComposer.RELEASE_REQUEST_PRE_RUN_PATH, CiRunService.PRE_RUN_FIELD);
+    assertEquals(CiReleaseComposer.PRE_RUN_PENDING, CiRunService.PRE_RUN_PENDING);
   }
 
   /**

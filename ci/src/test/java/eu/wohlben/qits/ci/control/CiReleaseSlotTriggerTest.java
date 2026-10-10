@@ -309,6 +309,26 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
   }
 
   @Test
+  public void aComposedQaRunWaitsForThePreRun() throws Exception {
+    // qits-1133: the hold sits before trigger matching, so a composed archetype obeys it exactly
+    // as a hand-written ci-event-release-request.yml does. The DONE announce of the same fold runs.
+    seedSlots("archetype: spa-frontend\n");
+    CiEventTriggerService.Arrival plain = releaseRequest();
+    String pending = plain.payload().replace("}", ",\"preRun\":\"PENDING\"}");
+    String done = plain.payload().replace("}", ",\"preRun\":\"DONE\"}");
+
+    deliver(new CiEventTriggerService.Arrival(
+        plain.eventId(), plain.eventName(), plain.occurredAt(), pending));
+    assertEquals(List.of(), runService.runsFor(repoId), "no QA run while the pre-run is PENDING");
+
+    deliver(new CiEventTriggerService.Arrival(
+        UUID.randomUUID().toString(), plain.eventName(), plain.occurredAt(), done));
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(1, recorded.size());
+    assertEquals(MERGED_SHA, recorded.get(0).commitSha);
+  }
+
+  @Test
   public void aSlotFileNamingAnArchetypeTheRepositoryCarriesRecordsAComposedQaRunFromItsOwnCopy()
       throws Exception {
     seedSlots("archetype: spa-frontend\n");
