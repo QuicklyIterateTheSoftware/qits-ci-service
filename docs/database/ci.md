@@ -66,6 +66,10 @@ erDiagram
     text downstream_repos
     text expected_step_durations
     instant finished_at
+    string inflight_daemon_id "length 64"
+    instant inflight_started_at
+    int inflight_step_index
+    string inflight_token_subject "length 255"
     enum phase
     string priority "length 32"
     string project_id "length 255"
