@@ -230,6 +230,12 @@ public class QitsCliPinIT {
           "the composed prelude downloads from the registry's public name on both arms:\n"
               + script);
       String stubbed = script.replace(download, store.base() + "/artifacts/daemons/");
+      // AND WHERE IT IS INSTALLED (qits-1178). The composed text puts the CLI in /tmp/qits-bin, the
+      // same directory the QA step running this test fetched the real CLI into for its output
+      // check. A stand-in written there replaced that CLI, and the check then called the stand-in.
+      stubbed =
+          stubbed.replace(
+              CiReleaseComposer.CLI_DIR, work.resolve("qits-bin").toAbsolutePath().toString());
 
       Path scriptFile = work.resolve("step.sh");
       Files.writeString(scriptFile, stubbed, StandardCharsets.UTF_8);

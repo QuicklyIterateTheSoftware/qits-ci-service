@@ -148,18 +148,10 @@ steps:
       npm run --if-present test -- --reporters=junit --reporters=default \
         --output-file=.qits-reports/vitest-unit.xml $coverage_flags
 
-      # Browser screenshot tests, by the same opt-in: a repository turns them on by having the
-      # script. They run in real Chromium from this image and compare against the committed
-      # reference screenshots. THIS STEP ONLY COMPARES: `CI=true` makes a missing reference a
-      # failure instead of a new file, and nothing here writes one. Regenerating references is a
-      # separate job (run in this same image with UPDATE_SNAPSHOT=all), never part of the gate.
-      #
-      # NO REPORTER FLAGS HERE, deliberately (qits-754). `test:browser` is not one `ng test`: on
-      # qits-landing-app, the one repository on this recipe, it is `node scripts/check-renderer.mjs
-      # && ng run …:test-browser && qits-angular screenshots --check`, so arguments appended after
-      # `--` would land on the screenshot check rather than on vitest and break the gate. Its
-      # failures stay in the log; the unit suite above is what reports.
-      CI=true npm run --if-present test:browser
+      # Browser screenshot tests: NOT here. The composed output check runs them after this script,
+      # in update mode, and fails on any reference they would change (see the step's header above).
+      # A compare-only run here would fail first on the same stale reference, with a test failure in
+      # place of the one line that says how to regenerate.
 
       # The same `npm run build` the Dockerfile runs, on the same tree — which is the point of the
       # step rather than a duplication of it. This one is the GATE on the fold and exports nothing;
@@ -175,6 +167,64 @@ steps:
       fi
       qits_step_exit=$?
       set -e
+      # --- platform output check: the generators run, then git status on their paths ---
+      qits_stale=
+      qits_regenerate=
+      cat > /tmp/qits-check-screenshot-baselines.sh <<'QITS_CHECK_EOF'
+      if ! jq -e '.scripts["test:browser"]' package.json >/dev/null 2>&1; then
+        echo "this repository has no test:browser script - there are no screenshot tests to render" >&2
+        exit 1
+      fi
+
+      # The same install the `app` QA step runs: the lockfile as committed, resolving against the
+      # platform's two public registries, and nothing rewritten (qits-731). An entry naming any
+      # other host fails `npm ci` itself.
+      # THE ADDRESSES ARE CODE: the platform's public domain is the one input, and the hosts and
+      # paths are constants under it. A step is always told the domain; the `:?` stops one that
+      # is not, here, rather than at a host named `registry.qits.`.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+      npm_hosted_origin="https://registry.qits.$qits_domain"
+      npm_proxy_origin="https://mirror.qits.$qits_domain"
+      npm_hosted_path=/artifacts/npm/npm/
+      env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
+          "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
+          npm ci --no-audit --no-fund
+
+      # Writes every reference that is missing or differs. A spec that fails for any
+      # other reason fails the run, and nothing is committed.
+      UPDATE_SNAPSHOT=all npm run test:browser
+
+      # Deletes the references no test asked for in the run above (a deleted spec, a renamed
+      # screenshot). The postlude stages the deletions with the new images. A repository without
+      # the script keeps its orphans.
+      npm run --if-present screenshots:prune
+      QITS_CHECK_EOF
+      if [ "$qits_step_exit" -eq 0 ]; then
+        echo "qits-ci: checking screenshot-baselines" >&2
+        set +e
+        if command -v bash > /dev/null 2>&1; then
+          bash -eu /tmp/qits-check-screenshot-baselines.sh
+        else
+          sh -eu /tmp/qits-check-screenshot-baselines.sh
+        fi
+        qits_check_exit=$?
+        set -e
+        if [ "$qits_check_exit" -ne 0 ]; then
+          echo "qits-ci: the screenshot-baselines generator failed (exit $qits_check_exit), so its outputs were not checked" >&2
+          qits_step_exit=$qits_check_exit
+        elif ! qits_changed=$(git status --porcelain --untracked-files=all -- ':(glob)**/__screenshots__/**' ':(glob)**/testing/browser/renderer.txt'); then
+          echo "qits-ci: git status failed, so the screenshot-baselines outputs were not checked" >&2
+          qits_step_exit=1
+        elif [ -n "$qits_changed" ]; then
+          printf '%s\n' "$qits_changed" >&2
+          qits_stale="${qits_stale:+$qits_stale, }screenshot-baselines"
+          qits_regenerate="${qits_regenerate:+$qits_regenerate; }qits release-request regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository ${QITS_CI_REPO_NAME:-<repository>} --kind screenshot-baselines"
+        fi
+      fi
+      if [ -n "$qits_stale" ]; then
+        echo "qits-ci: stale outputs: $qits_stale — regenerate with: $qits_regenerate" >&2
+        qits_step_exit=1
+      fi
       # --- platform report hook: always runs, never changes the step's verdict ---
       cat > /tmp/qits-report-hook.sh <<'QITS_REPORT_HOOK'
       # qits-ci report hook (qits-754). $1 is the declared script's exit code.
