@@ -309,7 +309,8 @@ public class BuildSuccessfulPublishTest {
               .extract()
               .jsonPath()
               .getList("runs");
-      if (runs.size() == 1 && !"RUNNING".equals(runs.get(0).get("status"))) {
+      Object status = runs.size() == 1 ? runs.get(0).get("status") : null;
+      if (status != null && !"QUEUED".equals(status) && !"RUNNING".equals(status)) {
         return runs.get(0);
       }
       Thread.sleep(100);
