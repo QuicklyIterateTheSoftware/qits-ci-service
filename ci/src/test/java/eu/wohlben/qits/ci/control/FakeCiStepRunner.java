@@ -73,6 +73,65 @@ public class FakeCiStepRunner implements CiRunnerStepRunner {
    */
   private RuntimeException pinFailure;
 
+  /** One {@link #inherit} this fake was asked for, held for the test to answer — see {@link #captureInheritance}. */
+  public record Inheritance(InheritedRun run, Runnable adopted, Runnable lost) {}
+
+  private final List<Inheritance> inheritances =
+      java.util.Collections.synchronizedList(new ArrayList<>());
+  private final List<StepSpec> reattached = java.util.Collections.synchronizedList(new ArrayList<>());
+  private volatile boolean captureInheritance;
+  private volatile StepResult reattachResult;
+  private volatile String launchDaemonId;
+  private volatile String launchSubject;
+
+  /**
+   * Hold every {@link #inherit} for the test to answer, instead of answering "lost" at once as the
+   * seam's default does — which is what every other suite gets, and what keeps their restarts
+   * restarting.
+   */
+  public void captureInheritance() {
+    captureInheritance = true;
+  }
+
+  public List<Inheritance> inheritances() {
+    return inheritances;
+  }
+
+  /** Every step {@link #reattach} took back, in order. */
+  public List<StepSpec> reattached() {
+    return reattached;
+  }
+
+  /** What a taken-back step answers; null is green. */
+  public void reattachAnswers(StepResult result) {
+    reattachResult = result;
+  }
+
+  /** Report every launch to the listener, as the real seam does: {@code <daemonId>-<step>}. */
+  public void launchAs(String daemonId, String subject) {
+    launchDaemonId = daemonId;
+    launchSubject = subject;
+  }
+
+  @Override
+  public void inherit(InheritedRun run, Runnable adopted, Runnable lost) {
+    if (captureInheritance) {
+      inheritances.add(new Inheritance(run, adopted, lost));
+    } else {
+      lost.run();
+    }
+  }
+
+  @Override
+  public StepResult reattach(StepSpec spec, StepListener listener) {
+    reattached.add(spec);
+    listener.onFinished();
+    StepResult result = reattachResult;
+    return result != null
+        ? result
+        : new StepResult(0, false, StepOutcome.OK, "taken back step " + spec.stepIndex());
+  }
+
   public List<StepSpec> executed() {
     return executed;
   }
@@ -168,6 +227,12 @@ public class FakeCiStepRunner implements CiRunnerStepRunner {
     answer = null;
     daemonVersion = "fake-daemon";
     pinFailure = null;
+    inheritances.clear();
+    reattached.clear();
+    captureInheritance = false;
+    reattachResult = null;
+    launchDaemonId = null;
+    launchSubject = null;
   }
 
   @Override
@@ -190,6 +255,9 @@ public class FakeCiStepRunner implements CiRunnerStepRunner {
 
   private StepResult runStep(StepSpec spec, StepListener listener) {
     executed.add(spec);
+    if (launchDaemonId != null) {
+      listener.onLaunched(launchDaemonId + "-" + spec.stepIndex(), launchSubject);
+    }
     RuntimeException failure = failures.get(spec.stepIndex());
     if (failure != null) {
       throw failure;

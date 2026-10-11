@@ -526,11 +526,30 @@ load-bearing one seam over: an unreadable candidate is skipped, never a run.
 the commit, and discarding a run over that would erase a verdict on evidence nobody has.
 
 **`QUEUED` survives a restart.** `sweepInterrupted` leaves those rows queued and announces the
-backlog once, so a redeploy landing between acceptance and execution no longer eats a build. A
-`RUNNING` event row — a runner's, or one with no `runner_id` left by the in-process executor — is
-reset to `QUEUED` and re-run from its snapshot by whichever runner reserves it next (naming itself);
-event-trigger scripts are therefore an at-least-once boundary and must be idempotent. Nothing here
-adds durability beyond the row.
+backlog once, so a redeploy landing between acceptance and execution no longer eats a build.
+
+**A `RUNNING` run survives a restart too, and its running step is never started twice** (qits-1192).
+On 2026-10-11 two release publishes were mid-step when qits-ci redeployed itself: the dying process
+cancelled the steps, the successor re-queued the runs at step 0, and the rebuilt binaries were refused
+as different bytes under a version already published. Now:
+
+- A stopping process leaves a step that has not ended alone. `RunnerStepRunner` sees the shutdown
+  (`ShutdownEvent`, then the driver's interrupt) and throws `CiStepRunner.ProcessStopping`; nothing
+  sends a `Cancel`, a `Reap` or a `Released`, writes a verdict, or gives the run's token back.
+- Each launch is recorded on the run row (`ci_run.inflight_*`, V37) before the runner is asked for the
+  container: step index, launch id, token subject, and the `RunStep` instant.
+- The boot sweep inherits every `RUNNING` event run with a `runner_id`: it stays `RUNNING`, steps and
+  all. The in-flight launch is registered again under its old id, so the re-dialling daemon is
+  admitted; the runner's `Hello` claims the run (`heldRuns` → `Ack.adoptedRuns`), and a driver
+  continues it at the first step without a row — the in-flight step taken back with
+  `CiStepRunner.reattach`, every later step launched as usual.
+- A run whose runner does not claim it within `qits.ci.runner.reconnect-grace-seconds` is settled by
+  `settleUninherited`: a publishing run (phase `RELEASE`, or a trigger file that declares artifacts)
+  is `FAILED` with the reason in its step output, never run again; any other run is re-queued and
+  starts over from its snapshot, so event scripts that publish nothing stay an at-least-once boundary.
+- The automatic infra retry no longer re-fires a publishing run whose step lost its connection.
+
+A `RUNNING` event row with no `runner_id` (the deleted in-process executor's) is re-queued as before.
 
 **What a predecessor's leftovers get is decided by the sweep and the reservation, and it is not
 "nothing".** A `POST_RECEIVE` row is work this engine has nothing to run with: a `RUNNING` one is

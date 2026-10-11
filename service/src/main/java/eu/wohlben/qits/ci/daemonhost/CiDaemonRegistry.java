@@ -149,7 +149,8 @@ public class CiDaemonRegistry {
     this.reconnectGrace = grace;
   }
 
-  Duration reconnectGrace() {
+  /** How long a launch whose socket dropped waits for its daemon to dial again. */
+  public Duration reconnectGrace() {
     Duration set = reconnectGrace;
     return set != null ? set : Duration.ofSeconds(reconnectGraceSeconds);
   }
@@ -274,6 +275,89 @@ public class CiDaemonRegistry {
     launches.put(daemonId, new Launch(daemonId, runId, stepIndex, tokenSubject, listener));
     LOG.debugf("Minted ci-daemon %s for run %s step %d", daemonId, runId, stepIndex);
     return daemonId;
+  }
+
+  /**
+   * Record a launch a <b>previous process</b> of this service made, so that its daemon — still
+   * running on the runner, re-dialling through its reconnect budget — is admitted when it comes back
+   * (qits-1192). The id, the run, the step and the token subject are the ones that process recorded
+   * on the run row; nothing is minted. The launch counts as admitted once already, so the daemon's
+   * dial is a reconnect, and it waits {@link #reconnectGrace()} for it from now, as a dropped socket
+   * does.
+   *
+   * <p>{@code runStep} is the step the daemon was sent, when it was sent one: it is sent again after
+   * the re-admission's {@code Ack}, and a daemon that already has it ignores it. Null for a step that
+   * was not started — the daemon then says {@code Initialized} again, and the caller sends the step.
+   */
+  public void reattachLaunch(
+      String daemonId,
+      String runId,
+      int stepIndex,
+      String tokenSubject,
+      String script,
+      int timeoutSeconds,
+      StepListener listener) {
+    Objects.requireNonNull(daemonId, "a re-attached launch names its daemon");
+    Objects.requireNonNull(tokenSubject, "a launch is bound to its run's token subject");
+    Launch launch = new Launch(daemonId, runId, stepIndex, tokenSubject, listener);
+    Duration grace = reconnectGrace();
+    synchronized (launch) {
+      launch.admissions = 1;
+      if (script != null) {
+        // The correlation id is the launch id: the old one died with the previous process, and one
+        // step per container keeps either unambiguous.
+        launch.correlationId = daemonId;
+        launch.runStep = new RunStep(daemonId, script, timeoutSeconds);
+        launch.phase = Phase.RUNNING;
+      }
+      if (!grace.isZero() && !grace.isNegative()) {
+        Object token = new Object();
+        launch.expiryToken = token;
+        launch.expiry =
+            graces.schedule(() -> expire(launch, token), grace.toMillis(), TimeUnit.MILLISECONDS);
+      }
+    }
+    if (launches.putIfAbsent(daemonId, launch) != null) {
+      synchronized (launch) {
+        cancelExpiry(launch);
+      }
+      return;
+    }
+    LOG.infof(
+        "Waiting %ss for ci-daemon %s of run %s step %d, launched by the previous process, to come"
+            + " back",
+        grace.toSeconds(), daemonId, runId, stepIndex);
+  }
+
+  /**
+   * For a re-attached launch whose step was not started: block until the daemon says {@code
+   * Initialized} (it is still owed its step), or its terminal frame arrives first (it had the step
+   * after all), or the deadline expires. Null means the terminal frame came first.
+   */
+  public Initialization awaitInitializedUnlessFinished(String daemonId, Duration timeout) {
+    Launch launch = launches.get(daemonId);
+    if (launch == null) {
+      return Initialization.of(Initialization.Status.CONNECTION_LOST);
+    }
+    await(
+        CompletableFuture.anyOf(launch.initialized, launch.finished),
+        timeout,
+        null);
+    Initialization initialized = launch.initialized.getNow(null);
+    Completion finished = launch.finished.getNow(null);
+    if (finished != null && finished.status() == Completion.Status.FINISHED) {
+      return null;
+    }
+    return initialized != null
+        ? initialized
+        : Initialization.of(Initialization.Status.NEVER_INITIALIZED);
+  }
+
+  /** Whether a terminal frame arrived for this launch — its step ended, whatever the host did. */
+  public boolean finished(String daemonId) {
+    Launch launch = launches.get(daemonId);
+    Completion finished = launch == null ? null : launch.finished.getNow(null);
+    return finished != null && finished.status() == Completion.Status.FINISHED;
   }
 
   /**

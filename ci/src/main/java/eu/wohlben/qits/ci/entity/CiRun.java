@@ -456,6 +456,29 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   public UUID runnerId;
 
   /**
+   * The step launch this run has in flight on its runner, so that a restarted qits-ci can take the
+   * running container back instead of starting the run again (qits-1192, {@code
+   * V37__run_inflight_launch.sql}). Written when a step's launch is recorded, before the runner is
+   * asked for the container. A value is current only while no step row exists for {@link
+   * #inflightStepIndex}: step rows are written when a step ends, so a stale value names a step that
+   * already has its row. None of it is a secret.
+   */
+  @Column(name = "inflight_step_index")
+  public Integer inflightStepIndex;
+
+  /** The launch id the step's ci-daemon names in its {@code Hello}. */
+  @Column(name = "inflight_daemon_id", length = 64)
+  public String inflightDaemonId;
+
+  /** The {@code sub} of the run's ci-run token, which the daemon dials back as. */
+  @Column(name = "inflight_token_subject", length = 255)
+  public String inflightTokenSubject;
+
+  /** When the host sent the step's {@code RunStep}; null while the step was not started. */
+  @Column(name = "inflight_started_at")
+  public Instant inflightStartedAt;
+
+  /**
    * What this run is for — {@link CiRunPurpose#BUILD} on every row but a runner's health check, and
    * on every row written before {@code V24__runner_quarantine.sql}, whose default wrote it.
    *

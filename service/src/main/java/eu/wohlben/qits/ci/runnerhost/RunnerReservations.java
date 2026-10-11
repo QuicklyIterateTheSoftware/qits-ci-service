@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.runnerhost;
 
 import eu.wohlben.qits.ci.control.CiRunService;
+import eu.wohlben.qits.ci.control.CiStepRunner;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.cirunner.protocol.Nothing;
 import eu.wohlben.qits.cirunner.protocol.Take;
@@ -38,6 +39,12 @@ import org.jboss.logging.Logger;
  * like any other: the session is gone, so its first step ends {@code CONNECTION_LOST} at once and
  * the run is a failed, retryable run naming the runner. Handing the row back to {@code QUEUED}
  * instead would be a backwards transition written on a guess about what the runner received.
+ *
+ * <p><b>A driver this process's shutdown stops releases nothing</b> (qits-1192). The shutdown
+ * interrupts every driver; a step that has not ended then comes back as {@link
+ * CiStepRunner.ProcessStopping}, and its run is left exactly as it is — the runner keeps the
+ * container and the run, and the successor takes both back ({@link #driveInherited}). A {@code
+ * Released} here would have told the runner to give up a step that is still running.
  */
 @ApplicationScoped
 public class RunnerReservations {
@@ -94,17 +101,35 @@ public class RunnerReservations {
 
   private void drive(CiRunService.Reservation reservation) {
     String runId = reservation.run().id;
+    driver(runId, () -> runService.executeReserved(reservation));
+  }
+
+  /**
+   * Drive a run a previous process left on a runner, now that the runner came back holding it
+   * ({@link CiRunnerRegistry#inherit}): {@code body} continues the run, on a driver thread like any
+   * reserved run's, and the run is released when it ends.
+   */
+  public void driveInherited(String runId, Runnable body) {
+    driver(runId, body);
+  }
+
+  private void driver(String runId, Runnable body) {
     drivers.execute(
         () -> {
           Thread.currentThread().setName("ci-runner-run-" + runId);
+          boolean leftRunning = false;
           try {
-            runService.executeReserved(reservation);
+            body.run();
+          } catch (CiStepRunner.ProcessStopping stopping) {
+            leftRunning = true;
           } catch (Throwable fatal) {
             // executeReserved settles the row itself and rethrows only an Error; the thread is
             // this run's alone, so there is nothing left to protect but the log line.
             LOG.errorf(fatal, "The driver of runner run %s ended on %s", runId, fatal);
           } finally {
-            registry.release(runId);
+            if (!leftRunning) {
+              registry.release(runId);
+            }
             Thread.currentThread().setName("ci-runner-run");
           }
         });

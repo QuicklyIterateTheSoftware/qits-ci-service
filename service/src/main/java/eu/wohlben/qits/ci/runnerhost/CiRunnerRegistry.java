@@ -241,6 +241,17 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
   private record Orphan(UUID runnerId, CompletableFuture<Session> resolved) {}
 
   /**
+   * A run a <b>previous process</b> of this service left on a runner (qits-1192): no session of this
+   * process ever held it, so only its runner's claim can bind it — any connection of that runner,
+   * whatever its version. {@code adopted} starts the run's driver; {@code lost} settles it. Exactly
+   * one of them runs: whichever of the claim and the grace's end removes the entry first.
+   */
+  private record Inherited(UUID runnerId, Runnable adopted, Runnable lost) {}
+
+  /** Runs inherited from a previous process, waiting for their runner's claim. */
+  private final ConcurrentHashMap<String, Inherited> inherited = new ConcurrentHashMap<>();
+
+  /**
    * Package-private for one reason: a suite proving that a heartbeat reaches the row cannot wait a
    * minute. A method rather than a field write because this bean is normal-scoped, and a field set
    * through the client proxy lands on the proxy.
@@ -443,7 +454,8 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
     session.seenWrittenAt = Instant.now();
     session.runnerVersion = hello.runnerVersion();
     session.draining = !current;
-    List<String> adopted = adopt(session, hello.heldRuns());
+    List<Runnable> inheritedStarts = new ArrayList<>();
+    List<String> adopted = adopt(session, hello.heldRuns(), inheritedStarts);
     List<Session> retiring = settle(session);
     announceConnected(session, hello, pin, current, speaks);
     if (!current) {
@@ -459,6 +471,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
         if (speaks) {
           send(session, ack(0, adopted));
         }
+        startInherited(inheritedStarts);
         return Greeting.GREETED;
       }
       LOG.infof(
@@ -479,6 +492,7 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
       if (speaks) {
         send(session, ack(0, adopted));
       }
+      startInherited(inheritedStarts);
       return Greeting.GREETED;
     }
     if (hello.slots() != row.slots) {
@@ -492,6 +506,8 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
         row.name, hello.runnerVersion(), hello.capabilityVersion(), slots,
         row.quarantined() ? " — quarantined: " + row.quarantineReason : "");
     send(session, ack(slots, adopted));
+    // After the Ack: the runner must know it holds a run before that run's driver sends it frames.
+    startInherited(inheritedStarts);
     if (row.quarantined()) {
       send(session, quarantinedFrame(row.quarantineReason, row.quarantinedAt));
     }
@@ -532,6 +548,12 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
       }
     }
     return Greeting.GREETED;
+  }
+
+  private static void startInherited(List<Runnable> starts) {
+    for (Runnable start : starts) {
+      runQuietly(start, "the start of an inherited run");
+    }
   }
 
   /**
@@ -578,8 +600,23 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
    * that connection. A claim this host does not recognise is simply not adopted — the runner cancels
    * it on reading the {@code Ack}.
    */
-  private List<String> adopt(Session session, List<String> claimed) {
+  private List<String> adopt(Session session, List<String> claimed, List<Runnable> starts) {
     List<String> adopted = new ArrayList<>();
+    for (String runId : claimed == null ? List.<String>of() : claimed) {
+      Inherited entry = inherited.get(runId);
+      if (entry == null
+          || !entry.runnerId().equals(session.runnerId)
+          || !inherited.remove(runId, entry)) {
+        continue;
+      }
+      heldRuns.put(runId, session);
+      adopted.add(runId);
+      starts.add(entry.adopted());
+      LOG.infof(
+          "Runner %s came back holding run %s, which the previous process of qits-ci left running;"
+              + " connection %s carries it on",
+          session.runnerName, runId, session.connection.id());
+    }
     for (Map.Entry<String, Session> held : List.copyOf(heldRuns.entrySet())) {
       String runId = held.getKey();
       Session holder = held.getValue();
@@ -805,6 +842,45 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
 
   // --- the driver side --------------------------------------------------------------------------
 
+  /**
+   * Wait for a run a previous process left on {@code runnerId} (qits-1192). The runner keeps the
+   * containers of a run whose socket dropped and claims the run in its next {@code Hello}; the claim
+   * binds the run to that connection, answers it in the {@code Ack} and only then runs {@code
+   * adopted} — the run's driver, which may send the runner frames at once. A runner that does not
+   * claim it within {@link #reconnectGrace()} gets {@code lost} run instead, on the grace's thread.
+   * A {@code Hello} that does not claim the run is not read as a refusal: a self-updating runner's
+   * second connection carries nothing, and the grace is the one answer every case shares.
+   */
+  public void inherit(String runId, UUID runnerId, Runnable adopted, Runnable lost) {
+    Inherited entry = new Inherited(runnerId, adopted, lost);
+    inherited.put(runId, entry);
+    Duration grace = reconnectGrace();
+    graces.schedule(
+        () -> {
+          if (inherited.remove(runId, entry)) {
+            LOG.warnf(
+                "Runner %s did not come back holding run %s within %ss of this process starting",
+                runnerId, runId, grace.toSeconds());
+            runQuietly(lost, "the settlement of run " + runId);
+          }
+        },
+        Math.max(0, grace.toMillis()),
+        TimeUnit.MILLISECONDS);
+  }
+
+  /** Whether a run inherited from a previous process is still waiting for its runner. */
+  public boolean inheriting(String runId) {
+    return inherited.containsKey(runId);
+  }
+
+  private static void runQuietly(Runnable action, String what) {
+    try {
+      action.run();
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "%s failed", what);
+    }
+  }
+
   /** Bind a run to the session its {@code Take} went out on — see the class javadoc. */
   public void hold(Session session, String runId) {
     heldRuns.put(runId, session);
@@ -1023,6 +1099,12 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
   public void deleted(UUID runnerId) {
     nodeHealth.forget(runnerId);
     // A deleted runner is not waited for.
+    inherited.forEach(
+        (runId, entry) -> {
+          if (entry.runnerId().equals(runnerId) && inherited.remove(runId, entry)) {
+            runQuietly(entry.lost(), "the settlement of run " + runId);
+          }
+        });
     orphans.forEach(
         (runId, orphan) -> {
           if (orphan.runnerId().equals(runnerId)) {

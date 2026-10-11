@@ -13,7 +13,9 @@ import eu.wohlben.qits.cirunner.protocol.Launch;
 import eu.wohlben.qits.cirunner.protocol.Reap;
 import eu.wohlben.qits.cirunner.protocol.Reaped;
 import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
+import io.quarkus.runtime.ShutdownEvent;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Typed;
 import jakarta.inject.Inject;
 import java.time.Duration;
@@ -70,6 +72,16 @@ import org.jboss.logging.Logger;
  * has already returned — the {@code Reaped} this waits on is the teardown's, not the verdict's — so
  * the bound above still holds: a tail arriving inside it is folded in, one arriving after it is
  * exactly as if none arrived, and nothing here waits any longer for it.
+ *
+ * <p><b>A restart of this process ends no step</b> (qits-1192). Once the process is stopping, a step
+ * that has not ended is left alone — no {@code Cancel} to its daemon, no {@code Reap} to its runner
+ * — and the step comes back as {@link ProcessStopping}, which every caller lets pass. The launch was
+ * recorded on the run row ({@link StepListener#onLaunched}) before the runner was asked for the
+ * container, so the successor's boot sweep hands the run to {@link #inherit}: the launch is recorded
+ * again under its old id, so the daemon's re-dial is admitted, and once the runner claims the run
+ * the run continues and {@link #reattach} collects the step's result. Before this, the dying process
+ * cancelled every running step and the successor started the run again at step 0 — on 2026-10-11
+ * that rebuilt two release publishes, whose second binaries were refused as different bytes.
  */
 @ApplicationScoped
 @Typed({RunnerStepRunner.class, CiRunnerStepRunner.class})
@@ -137,14 +149,41 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
 
   @Inject CiRunners runnerRows;
 
+  /** Where an inherited run's driver runs once its runner claims it. */
+  @Inject RunnerReservations reservations;
+
   /** The step each runner run has in flight, for a cancellation arriving on another thread. */
   private final ConcurrentHashMap<String, InFlight> inFlight = new ConcurrentHashMap<>();
+
+  /** The launch id of each inherited run's in-flight step, until its driver takes it back. */
+  private final ConcurrentHashMap<String, String> inheritedLaunches = new ConcurrentHashMap<>();
+
+  /**
+   * Raised once this process is stopping — {@code ShutdownEvent}, which Quarkus fires before it
+   * destroys any bean, so it is up before the drivers are interrupted. From then on a step that has
+   * not ended is left running for the successor ({@link ProcessStopping}).
+   */
+  private volatile boolean stopping;
+
+  void onShutdown(@Observes ShutdownEvent event) {
+    stopping = true;
+  }
+
+  /** {@link #onShutdown}'s flag, for a suite; a real process only ever raises it. */
+  void stopping(boolean stopping) {
+    this.stopping = stopping;
+  }
 
   private record InFlight(String daemonId, String containerName, int stepIndex) {}
 
   @Override
   public DaemonPin pinDaemon() {
     String version = launcher.daemonVersion();
+    return new DaemonPin(version, launcher.resolveBinaryUrl(version));
+  }
+
+  @Override
+  public DaemonPin pinDaemon(String version) {
     return new DaemonPin(version, launcher.resolveBinaryUrl(version));
   }
 
@@ -156,6 +195,10 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     CiIdentifiers.requireBranch(spec.branch());
     CiIdentifiers.requireSha(spec.sha());
     CiIdentifiers.requireImage(spec.image());
+    if (stopping) {
+      // Nothing of this step exists yet: the successor launches it when it continues the run.
+      throw new ProcessStopping(spec.runId(), spec.stepIndex());
+    }
 
     CiRunnerRegistry.Session session = runners.awaitHolding(spec.runId());
     if (session == null) {
@@ -204,6 +247,9 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
               relay.append(spec.runId(), text);
               listener.onChunk(text);
             });
+    // Recorded before the runner is asked for the container, so a container this process may die
+    // holding is always one its successor can take back.
+    listener.onLaunched(daemonId, token.subject());
     String containerName = StepContainerSettings.containerName(spec.runId(), spec.stepIndex());
     inFlight.put(spec.runId(), new InFlight(daemonId, containerName, spec.stepIndex()));
 
@@ -217,20 +263,41 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
             () ->
                 java.util.concurrent.CompletableFuture.runAsync(
                     () -> daemons.reap(daemonId)));
-    StepResult result;
-    Reaped reaped;
+    StepResult result = null;
+    Reaped reaped = null;
     try {
       result = execute(spec, listener, session, daemonId, containerName, plane, token);
     } finally {
       closeQuietly(lossWatch);
       inFlight.remove(spec.runId());
-      daemons.reap(daemonId);
-      // Whichever connection holds the run now: one that came back for it after a blip, or none.
-      reaped =
-          reapOnRunner(
-              runners.awaitHolding(spec.runId()), spec.runId(), spec.stepIndex(), containerName);
+      if (!leftForSuccessor(daemonId, result)) {
+        daemons.reap(daemonId);
+        // Whichever connection holds the run now: one that came back for it after a blip, or none.
+        reaped =
+            reapOnRunner(
+                runners.awaitHolding(spec.runId()), spec.runId(), spec.stepIndex(), containerName);
+      }
+    }
+    if (leftForSuccessor(daemonId, result)) {
+      throw new ProcessStopping(spec.runId(), spec.stepIndex());
     }
     return withContainerLog(result, reaped, session, containerName);
+  }
+
+  /**
+   * Whether a step is left running for this process's successor: the process is stopping and the
+   * step reached no result — its waits were cut short ({@link #abandonIfStopping}). A step that did
+   * reach one, a terminal frame above all, is torn down and recorded as usual.
+   */
+  private boolean leftForSuccessor(String daemonId, StepResult result) {
+    return stopping && result == null && !daemons.finished(daemonId);
+  }
+
+  /** {@link ProcessStopping}, thrown from the step's own waits once the process is stopping. */
+  private void abandonIfStopping(String daemonId, StepSpec spec) {
+    if (stopping && !daemons.finished(daemonId)) {
+      throw new ProcessStopping(spec.runId(), spec.stepIndex());
+    }
   }
 
   private StepResult execute(
@@ -263,6 +330,10 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     Duration launchTimeout = Duration.ofSeconds(launchTimeoutSeconds);
     CiRunnerRegistry.LaunchAnswer answer =
         runners.launch(session, new Launch(spec.runId(), spec.stepIndex(), workload), launchTimeout);
+    if (answer.status() != CiRunnerRegistry.LaunchAnswer.Status.LAUNCHED
+        && answer.status() != CiRunnerRegistry.LaunchAnswer.Status.LAUNCH_FAILED) {
+      abandonIfStopping(daemonId, spec);
+    }
     switch (answer.status()) {
       case LAUNCHED ->
           LOG.debugf(
@@ -288,6 +359,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
     }
 
     if (!daemons.awaitRegistered(daemonId, Duration.ofSeconds(registerTimeoutSeconds))) {
+      abandonIfStopping(daemonId, spec);
       if (runners.lost(spec.runId())) {
         return lost(session, "");
       }
@@ -304,6 +376,10 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
 
     CiDaemonRegistry.Initialization initialization =
         daemons.awaitInitialized(daemonId, Duration.ofSeconds(initTimeoutSeconds));
+    if (initialization.status() != CiDaemonRegistry.Initialization.Status.INITIALIZED
+        && initialization.status() != CiDaemonRegistry.Initialization.Status.INIT_FAILED) {
+      abandonIfStopping(daemonId, spec);
+    }
     if (runners.lost(spec.runId())
         && initialization.status() != CiDaemonRegistry.Initialization.Status.INITIALIZED) {
       return lost(session, "");
@@ -325,12 +401,31 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
       }
     }
 
+    abandonIfStopping(daemonId, spec);
     listener.onStarted();
     relay.started(spec.runId(), Instant.now());
     daemons.sendRunStep(daemonId, spec.script(), spec.timeoutSeconds());
 
     Duration backstop = Duration.ofSeconds(spec.timeoutSeconds() + stepTimeoutGraceSeconds);
+    return finish(spec, listener, session, daemonId, backstop);
+  }
+
+  /**
+   * The step's end, from its terminal frame or the backstop. Shared by a step this process started
+   * and one it took back from its predecessor ({@link #reattach}).
+   */
+  private StepResult finish(
+      StepSpec spec,
+      StepListener listener,
+      CiRunnerRegistry.Session session,
+      String daemonId,
+      Duration backstop) {
     CiDaemonRegistry.Completion completion = daemons.awaitFinished(daemonId, backstop);
+    if (completion.status() != CiDaemonRegistry.Completion.Status.FINISHED) {
+      // Before the NO_ANSWER branch below cancels anything: an await the shutdown cut short is not
+      // a step that stopped answering (qits-1192).
+      abandonIfStopping(daemonId, spec);
+    }
     listener.onFinished();
 
     if (completion.status() != CiDaemonRegistry.Completion.Status.FINISHED
@@ -352,6 +447,148 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
       case CONNECTION_LOST ->
           new StepResult(-1, false, StepOutcome.CONNECTION_LOST, tail(spec.runId()));
     };
+  }
+
+  /**
+   * A run the previous process left on a runner (qits-1192). Its in-flight step's launch is recorded
+   * again under its old id at once — the daemon is re-dialling within its reconnect budget, and must
+   * be admitted when it does — with its output going to the relay, so the live surface shows it.
+   * Then the runner is waited for: its claim starts {@code adopted} on a driver thread, and a grace
+   * without one runs {@code lost} after the launch record is dropped.
+   */
+  @Override
+  public void inherit(InheritedRun run, Runnable adopted, Runnable lost) {
+    String runId = run.runId();
+    InFlightStep step = run.inFlight();
+    if (step != null) {
+      relay.begin(runId, step.stepIndex());
+      if (step.startedAt() != null) {
+        relay.started(runId, step.startedAt());
+      }
+      daemons.reattachLaunch(
+          step.daemonId(),
+          runId,
+          step.stepIndex(),
+          step.tokenSubject(),
+          step.startedAt() != null ? step.script() : null,
+          step.timeoutSeconds(),
+          (stream, seq, text) -> relay.append(runId, text));
+      inheritedLaunches.put(runId, step.daemonId());
+    }
+    runners.inherit(
+        runId,
+        run.runnerId(),
+        () -> reservations.driveInherited(runId, adopted),
+        () -> {
+          String daemonId = inheritedLaunches.remove(runId);
+          if (daemonId != null) {
+            daemons.reap(daemonId);
+          }
+          relay.drop(runId);
+          lost.run();
+        });
+  }
+
+  /**
+   * Take back an inherited run's in-flight step ({@link #inherit}): wait for its daemon to dial
+   * back, send it its step if it is still owed it, and collect the result as {@link #run} would.
+   * Nothing is launched. A daemon that does not come back within its reconnect grace ends the step
+   * {@code CONNECTION_LOST}, saying why; the teardown — the launch reaped here, the container on
+   * the runner — is {@link #run}'s.
+   */
+  @Override
+  public StepResult reattach(StepSpec spec, StepListener listener) {
+    String daemonId = inheritedLaunches.remove(spec.runId());
+    String containerName = StepContainerSettings.containerName(spec.runId(), spec.stepIndex());
+    CiRunnerRegistry.Session session = runners.holding(spec.runId());
+    if (daemonId == null || daemons.phaseOf(daemonId) == null) {
+      Reaped reaped = reapOnRunner(session, spec.runId(), spec.stepIndex(), containerName);
+      return withContainerLog(
+          failed(StepOutcome.CONNECTION_LOST, NOT_TAKEN_BACK + " (its launch record is gone)]"),
+          reaped,
+          session,
+          containerName);
+    }
+    inFlight.put(spec.runId(), new InFlight(daemonId, containerName, spec.stepIndex()));
+    AutoCloseable lossWatch =
+        runners.onRunLost(
+            spec.runId(),
+            () ->
+                java.util.concurrent.CompletableFuture.runAsync(() -> daemons.reap(daemonId)));
+    StepResult result = null;
+    Reaped reaped = null;
+    try {
+      result = resume(spec, listener, session, daemonId);
+    } finally {
+      closeQuietly(lossWatch);
+      inFlight.remove(spec.runId());
+      if (!leftForSuccessor(daemonId, result)) {
+        daemons.reap(daemonId);
+        reaped =
+            reapOnRunner(
+                runners.awaitHolding(spec.runId()), spec.runId(), spec.stepIndex(), containerName);
+      }
+    }
+    if (leftForSuccessor(daemonId, result)) {
+      throw new ProcessStopping(spec.runId(), spec.stepIndex());
+    }
+    return withContainerLog(result, reaped, session, containerName);
+  }
+
+  /** What a taken-back step that could not be collected says, before why. */
+  static final String NOT_TAKEN_BACK =
+      "[qits-ci restarted while this step was running, and the step could not be taken back";
+
+  private StepResult resume(
+      StepSpec spec, StepListener listener, CiRunnerRegistry.Session session, String daemonId) {
+    String runner = session == null ? "its runner" : "runner " + session.runnerName();
+    if (!daemons.awaitRegistered(daemonId, daemons.reconnectGrace().plusSeconds(5))) {
+      abandonIfStopping(daemonId, spec);
+      return failed(
+          StepOutcome.CONNECTION_LOST,
+          NOT_TAKEN_BACK
+              + ": its ci-daemon on "
+              + runner
+              + " did not dial back. The step is not started again.]");
+    }
+    if (daemons.phaseOf(daemonId) != CiDaemonRegistry.Phase.RUNNING) {
+      // Not started when the previous process stopped: the daemon says Initialized again and is
+      // owed its step — unless it ends first, having had it after all.
+      CiDaemonRegistry.Initialization initialization =
+          daemons.awaitInitializedUnlessFinished(daemonId, Duration.ofSeconds(initTimeoutSeconds));
+      if (initialization != null) {
+        switch (initialization.status()) {
+          case INITIALIZED -> {
+            abandonIfStopping(daemonId, spec);
+            listener.onStarted();
+            relay.started(spec.runId(), Instant.now());
+            daemons.sendRunStep(daemonId, spec.script(), spec.timeoutSeconds());
+          }
+          case INIT_FAILED -> {
+            return failed(outcomeOf(initialization.reason()), detailOf(initialization));
+          }
+          case NEVER_INITIALIZED -> {
+            abandonIfStopping(daemonId, spec);
+            return failed(
+                StepOutcome.NEVER_INITIALIZED,
+                "the step container on " + runner + " never finished its checkout");
+          }
+          case CONNECTION_LOST -> {
+            abandonIfStopping(daemonId, spec);
+            return failed(
+                StepOutcome.CONNECTION_LOST,
+                NOT_TAKEN_BACK + ": its ci-daemon on " + runner + " went away again.]");
+          }
+        }
+      }
+    }
+    // The whole backstop again: the daemon enforces the step's own deadline from the step's real
+    // start, so this is only the host's guard against a daemon that stops answering.
+    Duration backstop = Duration.ofSeconds(spec.timeoutSeconds() + stepTimeoutGraceSeconds);
+    StepResult result = finish(spec, listener, session, daemonId, backstop);
+    String note = "[qits-ci restarted while this step was running; it was taken back on " + runner + "]";
+    String output = result.output() == null || result.output().isEmpty() ? note : note + "\n" + result.output();
+    return new StepResult(result.exitCode(), result.timedOut(), result.outcome(), output);
   }
 
   /**

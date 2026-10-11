@@ -1,6 +1,8 @@
 package eu.wohlben.qits.ci.control;
 
+import java.time.Instant;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Executes one pipeline step. The contract {@link CiRunnerStepRunner} extends, and that is the one
@@ -134,6 +136,81 @@ public interface CiStepRunner {
 
     /** A terminal frame arrived or a deadline fired — the step's {@code finished_at}. */
     void onFinished();
+
+    /**
+     * The step's launch is recorded and the runner is about to be asked for its container: the
+     * launch id its daemon will name and the token subject it will dial back as. What a restarted
+     * process needs to take the container back (qits-1192), so the caller records it before the
+     * container can exist. Must not throw.
+     */
+    default void onLaunched(String daemonId, String tokenSubject) {}
+  }
+
+  /**
+   * Thrown out of {@link #run} and {@link #reattach} when this process is stopping and the step has
+   * not ended (qits-1192). The step's container keeps running on its runner and the successor takes
+   * it back, so <b>nothing may settle the run on the way out</b>: no verdict, no step row, no {@code
+   * Released}, no credential given back. Every caller up to the driver lets it pass.
+   */
+  final class ProcessStopping extends RuntimeException {
+
+    public ProcessStopping(String runId, int stepIndex) {
+      super(
+          "this qits-ci is stopping; run "
+              + runId
+              + " step "
+              + stepIndex
+              + " is left running on its runner for the successor to take back",
+          null,
+          false,
+          false);
+    }
+  }
+
+  /**
+   * The step a previous process of this service had in flight when it stopped: its launch as the
+   * run row recorded it, and the step itself, so that a daemon still owed its {@code RunStep} can be
+   * sent it. {@code startedAt} is null when the step was not started; {@code script} is null when the
+   * run's pipeline could not be read back.
+   */
+  record InFlightStep(
+      int stepIndex,
+      String daemonId,
+      String tokenSubject,
+      Instant startedAt,
+      String script,
+      int timeoutSeconds) {}
+
+  /**
+   * A run a previous process of this service left {@code RUNNING} on a runner. {@code inFlight} is
+   * null when no step was in flight — between two steps, or before the first.
+   */
+  record InheritedRun(String runId, UUID runnerId, InFlightStep inFlight) {}
+
+  /**
+   * Wait for the runner of a run a previous process left {@code RUNNING} to come back holding it
+   * (qits-1192). When it does, {@code adopted} runs on a driver thread of its own and is the rest of
+   * the run's life: it continues the run, taking the in-flight step back with {@link #reattach}.
+   * When the runner does not claim the run within its reconnect grace, {@code lost} runs instead.
+   * Exactly one of the two runs, once.
+   *
+   * <p>The default re-attaches nothing: a seam that cannot take a container back says so at once.
+   */
+  default void inherit(InheritedRun run, Runnable adopted, Runnable lost) {
+    lost.run();
+  }
+
+  /**
+   * Take back the in-flight step of an inherited run ({@link #inherit}) and wait for its end, as
+   * {@link #run} would for a step it started. It never starts the step's container: a step whose
+   * container does not come back ends {@code CONNECTION_LOST}.
+   */
+  default StepResult reattach(StepSpec spec, StepListener listener) {
+    return new StepResult(
+        -1,
+        false,
+        StepOutcome.CONNECTION_LOST,
+        "[this step runner cannot take back a step a previous qits-ci started]");
   }
 
   /**
@@ -145,6 +222,14 @@ public interface CiStepRunner {
 
   /** Resolve the daemon pin for a new run. */
   DaemonPin pinDaemon();
+
+  /**
+   * The pin a run already recorded, for an inherited run that continues: its next containers must
+   * download the build its first ones did. The default answers a fresh pin.
+   */
+  default DaemonPin pinDaemon(String version) {
+    return pinDaemon();
+  }
 
   /** Run one step to completion, feeding {@code listener} as it goes. Blocks. */
   StepResult run(StepSpec spec, StepListener listener);

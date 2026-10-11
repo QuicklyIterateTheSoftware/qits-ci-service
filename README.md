@@ -405,7 +405,15 @@ them (`heldRuns`) and is answered with those qits-ci kept (`Ack.adoptedRuns`) â€
 if nothing happened (qits-545). A run nobody comes back for inside the grace, or that the returning
 runner does not claim (a restarted process, a runner older than the claim), ends its step
 `CONNECTION_LOST`, its output naming the runner (`[runner <name> disconnected]`); the run is an
-ordinary failed run and retries like one. A deleted or retired runner's runs get no grace.
+ordinary failed run and retries like one â€” unless it publishes, which is not retried automatically.
+A deleted or retired runner's runs get no grace.
+
+**A qits-ci restart ends no step** (qits-1192). A stopping qits-ci leaves running steps alone, and the
+run row records each launch (`ci_run.inflight_*`). The successor keeps the runs `RUNNING`, waits the
+same grace for each runner to claim its runs, and continues them: the in-flight step's daemon is
+admitted under its old launch id and its result collected, never started a second time. A run whose
+runner does not claim it is `FAILED` when it publishes (phase `RELEASE` or declared artifacts) and
+re-queued otherwise.
 
 **The step's daemon socket has a grace of its own** (qits-748). It crosses the same edge, so an edge
 redeploy drops it together with the runner's while the container keeps running. A dropped daemon

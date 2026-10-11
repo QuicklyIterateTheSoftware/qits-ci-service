@@ -11,11 +11,13 @@ import eu.wohlben.qits.ci.api.MachineGuardTest;
 import eu.wohlben.qits.ci.control.CiEventTriggerParser;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiRunService;
+import eu.wohlben.qits.ci.control.CiStepRunner;
 import eu.wohlben.qits.ci.control.CiStepRunner.StepListener;
 import eu.wohlben.qits.ci.control.CiStepRunner.StepOutcome;
 import eu.wohlben.qits.ci.control.CiStepRunner.StepResult;
 import eu.wohlben.qits.ci.control.CiStepRunner.StepSpec;
 import eu.wohlben.qits.ci.control.FakeCiStepRunner;
+import eu.wohlben.qits.ci.daemonhost.CiDaemonRegistry;
 import eu.wohlben.qits.ci.daemonhost.FakeCiDaemon;
 import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.ci.idp.ScriptedRunTokens;
@@ -29,6 +31,7 @@ import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
 import eu.wohlben.qits.ci.persistence.CiStepRepository;
 import eu.wohlben.qits.cidaemon.protocol.Ack;
+import eu.wohlben.qits.cidaemon.protocol.Cancel;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonProtocol;
 import eu.wohlben.qits.cidaemon.protocol.Initialized;
 import eu.wohlben.qits.cidaemon.protocol.RunStep;
@@ -43,6 +46,7 @@ import eu.wohlben.qits.cirunner.protocol.LaunchFailed;
 import eu.wohlben.qits.cirunner.protocol.Launched;
 import eu.wohlben.qits.cirunner.protocol.Reap;
 import eu.wohlben.qits.cirunner.protocol.Reaped;
+import eu.wohlben.qits.cirunner.protocol.Released;
 import eu.wohlben.qits.cirunner.protocol.Reserve;
 import eu.wohlben.qits.cirunner.protocol.Take;
 import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
@@ -134,6 +138,8 @@ class RunnerStepRunnerTest {
   @Inject CiEventTriggerParser triggerParser;
 
   @Inject FakeCiStepRunner localSteps;
+
+  @Inject CiDaemonRegistry daemons;
 
   private UUID runnerId;
 
@@ -248,7 +254,13 @@ class RunnerStepRunnerTest {
         assertEquals(StepOutcome.OK, green.outcome());
         assertEquals(0, green.exitCode());
         assertTrue(green.output().contains("on the runner"));
-        assertEquals(List.of("started", "chunk:on the runner\n", "finished"), listener.events);
+        assertEquals(
+            List.of(
+                "launched:" + workload.env().get("QITS_CI_DAEMON_ID") + "@" + CLIENT,
+                "started",
+                "chunk:on the runner\n",
+                "finished"),
+            listener.events);
       }
     } finally {
       steps.runClosed(runId);
@@ -862,6 +874,183 @@ class RunnerStepRunnerTest {
     }
   }
 
+
+  // --- a restart of this process (qits-1192) ------------------------------------------------------
+
+  /**
+   * The process is stopping while a step runs: its driver is interrupted, and the step must be left
+   * exactly as it is — no Cancel to its daemon, no Reap to its runner — for the successor to take
+   * back. Before qits-1192 the interrupted await read as "the daemon stopped answering", and the
+   * dying process cancelled the step and removed its container.
+   */
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aStoppingProcessLeavesARunningStepAloneForItsSuccessor() throws Exception {
+    String runId = "runner-stopping-" + UUID.randomUUID();
+    Recorder listener = new Recorder();
+    CompletableFuture<StepResult> result = new CompletableFuture<>();
+    String daemonId = null;
+    try (FakeCiRunner runner = greeted()) {
+      registry.hold(registry.current(runnerId), runId);
+      Thread driver =
+          new Thread(
+              () -> {
+                try {
+                  result.complete(steps.run(step(runId), listener));
+                } catch (Throwable t) {
+                  result.completeExceptionally(t);
+                }
+              },
+              "stopping-driver");
+      driver.start();
+      Launch launch = runner.next(Launch.class, SOON);
+      assertNotNull(launch);
+      daemonId = launch.workloadSpec().env().get("QITS_CI_DAEMON_ID");
+      assertEquals(
+          "launched:" + daemonId + "@" + CLIENT,
+          listener.events.get(0),
+          "the launch is reported before the runner is asked for the container");
+      runner.send(new Launched(runId, 0, "c0ffee"));
+
+      try (FakeCiDaemon daemon = dialAsTheContainer(launch.workloadSpec())) {
+        daemon.send(
+            new eu.wohlben.qits.cidaemon.protocol.Hello(daemonId, CiDaemonProtocol.CAPABILITY_VERSION));
+        assertInstanceOf(Ack.class, daemon.next(SOON));
+        daemon.send(new Initialized());
+        assertInstanceOf(RunStep.class, daemon.next(SOON));
+
+        // What a shutdown does: ShutdownEvent raises the flag, then the drivers are interrupted.
+        steps.stopping(true);
+        driver.interrupt();
+
+        Throwable thrown =
+            org.junit.jupiter.api.Assertions.assertThrows(
+                java.util.concurrent.ExecutionException.class,
+                () -> result.get(SOON.toSeconds(), TimeUnit.SECONDS));
+        assertInstanceOf(CiStepRunner.ProcessStopping.class, thrown.getCause());
+        assertNull(
+            runner.nextMatching(m -> m instanceof Reap || m instanceof Released, Duration.ofMillis(500)),
+            "the container and the run stay the runner's");
+        assertFalse(
+            daemon.next(Duration.ofMillis(300)) instanceof Cancel, "the step is not cancelled");
+        assertEquals(
+            CiDaemonRegistry.Phase.RUNNING,
+            daemons.phaseOf(daemonId),
+            "the launch is not reaped: the step is still running");
+      }
+    } finally {
+      steps.stopping(false);
+      if (daemonId != null) {
+        daemons.reap(daemonId);
+      }
+      steps.runClosed(runId);
+    }
+  }
+
+  /**
+   * The successor's half: a run the previous process left on a runner is inherited, the runner
+   * claims it in its Hello, and the step's daemon — still running, re-dialling — is admitted under
+   * its old launch id and sent its step again. The result is collected; nothing is launched.
+   */
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void anInheritedStepIsTakenBackWhenItsRunnerClaimsTheRun() throws Exception {
+    String runId = "runner-inherited-" + UUID.randomUUID();
+    String daemonId = UUID.randomUUID().toString();
+    Recorder listener = new Recorder();
+    CompletableFuture<StepResult> result = new CompletableFuture<>();
+    CountDownLatch lost = new CountDownLatch(1);
+    try {
+      steps.inherit(
+          new CiStepRunner.InheritedRun(
+              runId,
+              runnerId,
+              new CiStepRunner.InFlightStep(
+                  0, daemonId, CLIENT, Instant.now().minusSeconds(30), "echo on the runner", 60)),
+          () -> {
+            try {
+              result.complete(steps.reattach(step(runId), listener));
+            } catch (Throwable t) {
+              result.completeExceptionally(t);
+            }
+          },
+          lost::countDown);
+
+      // The daemon re-dials before its runner is back, and is admitted as the launch it names.
+      try (FakeCiDaemon daemon = FakeCiDaemon.dial(daemonEndpoint, Map.of())) {
+        daemon.send(
+            new eu.wohlben.qits.cidaemon.protocol.Hello(daemonId, CiDaemonProtocol.CAPABILITY_VERSION));
+        assertInstanceOf(Ack.class, daemon.next(SOON));
+        RunStep again = assertInstanceOf(RunStep.class, daemon.next(SOON));
+        assertEquals("echo on the runner", again.script(), "sent again; a daemon that has it ignores it");
+
+        try (FakeCiRunner back = FakeCiRunner.dial(runnerEndpoint)) {
+          back.send(
+              new Hello(
+                  pins.version(),
+                  CiRunnerProtocol.CAPABILITY_VERSION,
+                  1,
+                  new Capabilities(true, "amd64", "linux", Map.of()),
+                  List.of(runId)));
+          eu.wohlben.qits.cirunner.protocol.Ack ack =
+              back.next(eu.wohlben.qits.cirunner.protocol.Ack.class, SOON);
+          assertEquals(List.of(runId), ack.adoptedRuns(), "the run the previous process left");
+
+          daemon.send(new StepChunk(again.correlationId(), 7, Stream.OUT, "published\n"));
+          daemon.send(new StepFinished(again.correlationId(), 0, false));
+
+          Reap reap = back.next(Reap.class, SOON);
+          assertNotNull(reap, "the taken-back container is reaped as any step's is");
+          back.send(new Reaped(runId, 0));
+          StepResult green = result.get(SOON.toSeconds(), TimeUnit.SECONDS);
+          assertEquals(StepOutcome.OK, green.outcome(), green.output());
+          assertEquals(0, green.exitCode());
+          assertTrue(green.output().contains("published"), green.output());
+          assertTrue(green.output().contains("taken back"), green.output());
+          assertFalse(listener.events.contains("started"), "the step was started by the predecessor");
+          assertFalse(back.holds(Launch.class), "nothing is launched again");
+          assertNotNull(back.next(Released.class, SOON), "the driver's end releases the run");
+          assertEquals(1, lost.getCount(), "adopted, so never lost");
+        }
+      }
+    } finally {
+      steps.runClosed(runId);
+    }
+  }
+
+  /** A runner that does not claim an inherited run within the grace: the run is settled, once. */
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void anInheritedRunNobodyClaimsIsLostWhenTheGraceEnds() throws Exception {
+    String runId = "runner-inherited-lost-" + UUID.randomUUID();
+    String daemonId = UUID.randomUUID().toString();
+    CountDownLatch lost = new CountDownLatch(1);
+    CountDownLatch adopted = new CountDownLatch(1);
+    registry.reconnectGrace(Duration.ofMillis(300));
+    try {
+      steps.inherit(
+          new CiStepRunner.InheritedRun(
+              runId,
+              runnerId,
+              new CiStepRunner.InFlightStep(0, daemonId, CLIENT, null, "echo on the runner", 60)),
+          adopted::countDown,
+          lost::countDown);
+      assertNotNull(daemons.phaseOf(daemonId), "the launch waits for its daemon");
+      // A Hello that does not claim the run does not adopt it.
+      try (FakeCiRunner other = greeted()) {
+        assertTrue(lost.await(SOON.toSeconds(), TimeUnit.SECONDS), "lost when the grace ends");
+        assertEquals(1, adopted.getCount());
+        assertNull(daemons.phaseOf(daemonId), "and its launch record is dropped with it");
+      }
+    } finally {
+      registry.reconnectGrace(null);
+      steps.runClosed(runId);
+    }
+  }
+
   /** Until the host has seen the close: the run's connection is gone and its grace is running. */
   private void awaitRunOrphaned(String runId) throws InterruptedException {
     Instant deadline = Instant.now().plus(SOON);
@@ -977,6 +1166,11 @@ class RunnerStepRunnerTest {
     @Override
     public void onFinished() {
       events.add("finished");
+    }
+
+    @Override
+    public void onLaunched(String daemonId, String tokenSubject) {
+      events.add("launched:" + daemonId + "@" + tokenSubject);
     }
   }
 }
