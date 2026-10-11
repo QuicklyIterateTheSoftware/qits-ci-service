@@ -48,7 +48,10 @@ import org.jboss.logging.Logger;
  * <p>The seam asks a durable listener to narrow with a <b>pure, cheap predicate</b>, and to store
  * only what it selects. This engine's selection is neither: deciding whether an event matches
  * anything means listing {@code .config/qits/} in every candidate repository and parsing each trigger
- * file — an HTTP fan-out at the git host, on results that change with every push. Answering it here
+ * file — an HTTP fan-out at the git host, on results that change with every push. (Since qits-168 the
+ * listings are remembered by {@code CiTriggerListingCache} until a push names the repository, so the
+ * fan-out is paid per push rather than per event — but a miss is still that fan-out, and the cache
+ * belongs behind the claim, not in front of it.) Answering it here
  * would put that fan-out in front of the claim, on the dispatch thread, and a {@code selects} that
  * throws leaves the event owed, so one unreachable git host would wedge the watermark.
  *
@@ -61,8 +64,11 @@ import org.jboss.logging.Logger;
  *
  * <h2>What {@link #onFrame} does, and the window that used to be open</h2>
  *
- * <p>It enqueues and returns. The caller is the bus's websocket worker (or the catch-up sweeper),
- * and evaluation reads the git host once per candidate repository — doing that here would stall the
+ * <p>It enqueues and returns — after one cheap thing: for a ref-move event ({@code SCMPublishCommit}
+ * and its three siblings) the engine forgets that repository's cached trigger listings on this
+ * thread, so the evaluation queued behind it reads the new head (qits-168). The caller is the bus's
+ * websocket worker (or the catch-up sweeper), and evaluation reads the git host once per candidate
+ * repository whose listing is not cached — doing that here would stall the
  * whole subscription behind it, and it would hold the claiming transaction open across an HTTP
  * fan-out.
  *

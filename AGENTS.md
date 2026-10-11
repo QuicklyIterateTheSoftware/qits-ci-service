@@ -460,8 +460,9 @@ name. Four things follow, and each of them replaced something:
 - **`ci/` stays free of `java.net.http`.** The port is `CiConfigSource` in `ci/control`, the client
   is in `service/`, exactly as `GitHostRepoListing` and `CiRepositoryListing` are. That split is also why the
   logging differs by path: the push path WARNs (a repository and a branch existed a moment ago),
-  the trigger listing stays at DEBUG (it asks every known repository on every frame, and a deleted
-  one is simply not a candidate — a warning per green build forever is how a log stops being read).
+  the trigger listing stays at DEBUG (it asks every known repository whose listing is not cached,
+  an unreachable answer is never cached, and a deleted one is simply not a candidate — a warning per
+  green build forever is how a log stops being read).
 
 The host's side of the contract, including the 8 MiB blob cap and why a slashy branch is written
 `feature%2Fx`, is qits-artifacts' `README.md` under "Reading one file without cloning". **qits-ci
@@ -1654,7 +1655,20 @@ names"), and what follows is what biting it feels like.
   with every push. Putting that in front of the claim would fan out on the dispatch thread — and a
   `selects` that throws leaves the event *owed*, so one unreachable git host would wedge the
   watermark. So this consumer selects everything, and **every event on the bus leaves it a claim
-  row**. Bounded rather than unbounded: the sweeper prunes claims the watermark has passed by more
+  row**.
+
+  **The fan-out is paid per push now, not per event (qits-168).** Each name-addressed listing made
+  qits-githost resolve the name at qits-projects (`…/repositories/by-name/{repoName}`), so sixty
+  candidates times every frame on the bus was ten lookups a second on an idle platform.
+  `ci/control/CiTriggerListingCache` keeps each candidate's `FOUND` listing, keyed `(repoId, branch,
+  scope)`, until a ref-move event — `SCMPublishCommit`, `SCMDeleteBranch`, `SCMPublishTag`,
+  `SCMDeleteTag`, each carrying the storage `repoId` — names it. The forgetting happens at
+  **arrival**, on the listener's thread before the enqueue (and on the caller's thread at the manual
+  door), so the push's own evaluation reads the new head; a per-repository generation keeps a listing
+  that was in flight across the invalidation from ever being served. An unattributable ref move
+  forgets everything, `UNREACHABLE` is never cached, `qits.ci.trigger-listing-cache.ttl` (5m) is the
+  backstop for a lost announcement, and `0` turns it off — which both suites do, arming it per test.
+  `CiRunnerHealth`'s head read does not go through it: a probe of the git host must ask the git host. Bounded rather than unbounded: the sweeper prunes claims the watermark has passed by more
   than `qits.eventstream.prune-horizon`, so the table is the stream/catch-up overlap window and not a
   second copy of the log.
 - **Three threads, and each boundary is deliberate.** `onFrame` runs on the bus's websocket worker

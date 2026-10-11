@@ -334,9 +334,12 @@ public final class CiReleaseComposer {
   /**
    * Where the platform prelude installs the qits CLI on a release-phase step — the binary as {@code
    * qits}, plus a {@code qits-publish} symlink for compatibility with a script written against the
-   * old name.
+   * old name. A QA step that needs the CLI gets it here too.
+   *
+   * <p>Public for one reader: {@code QitsCliPinIT} moves exactly this text into its scratch
+   * directory, so the stand-in CLI it installs never lands where a real step keeps its CLI.
    */
-  static final String CLI_DIR = "/tmp/qits-bin";
+  public static final String CLI_DIR = "/tmp/qits-bin";
 
   /**
    * Where a QA step's report hook is written before it runs (qits-754) — a file, like {@link

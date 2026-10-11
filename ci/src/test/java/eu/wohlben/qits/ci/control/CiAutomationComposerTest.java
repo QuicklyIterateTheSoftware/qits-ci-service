@@ -1089,7 +1089,11 @@ public class CiAutomationComposerTest {
     Result runStep(String shell, String step, String payload, Map<String, String> extraEnv)
         throws Exception {
       Path script = Files.createTempFile(root, "step", ".sh");
-      Files.writeString(script, step, StandardCharsets.UTF_8);
+      // The CLI goes into the scratch directory, never the host's /tmp/qits-bin (qits-1178): a QA
+      // step running these tests keeps the real CLI there for its output check.
+      String hermetic =
+          step.replace(CiReleaseComposer.CLI_DIR, root.resolve("qits-bin").toAbsolutePath().toString());
+      Files.writeString(script, hermetic, StandardCharsets.UTF_8);
       ProcessBuilder builder =
           new ProcessBuilder(shell, script.toString()).directory(work.toFile()).redirectErrorStream(true);
       Map<String, String> env = builder.environment();
