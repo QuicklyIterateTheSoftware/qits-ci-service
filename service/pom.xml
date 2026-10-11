@@ -225,6 +225,15 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- The platform's shared ArchUnit rules; ArchRulesTest points HttpClientRules at this
+                 module's packages, where every hand-rolled java.net.http client in this repo lives.
+                 Declared here (and not taken transitively through qits-http-core, which does not
+                 carry it) because this is the module ci/'s own ArchRulesTest cannot reach. -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-arch-rules</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>io.rest-assured</groupId>
             <artifactId>rest-assured</artifactId>
             <scope>test</scope>
