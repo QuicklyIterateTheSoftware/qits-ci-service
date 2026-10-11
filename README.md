@@ -1755,8 +1755,11 @@ its steps run as written, so nothing would act on them.
   `qits-ci: stale outputs: <kinds> — regenerate with: qits release-request regenerate --project <p>
   --repository <r> --kind <kind>`. A generator that fails (a failing spec) fails the step with its
   own code and is not called stale. Nothing is regenerated or committed, and the report hook still
-  runs. A kind that needs the CLI gets it with the key. The packaged recipes do not set it yet; a
-  repository opts in through its own recipe copy.
+  runs. A kind that needs the CLI gets it with the key. The packaged recipes set it where the kind
+  applies (qits-1178): `java-service` checks `entity-diagram`, `app` checks `screenshot-baselines`.
+  The others do not, and their repositories keep qits-maintenance's pre-run. qits-maintenance reads
+  the key from the recipe a repository's QA is composed from, so a repository's own `release-request:`
+  slot or recipe copy without it also keeps the pre-run.
 
 **Every release publishes a changelog** (qits-893). The last release step's publish block always
 ends with `qits artifacts publish changelog --version "$QITS_VERSION"` and the provenance `--meta`
