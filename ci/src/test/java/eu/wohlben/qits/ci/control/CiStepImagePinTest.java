@@ -222,6 +222,42 @@ public class CiStepImagePinTest extends CiTestSupport {
         evaluation.repositoriesUnreadable().contains(repoId),
         "nothing was learned about which tool this build would use, so the event is owed and a"
             + " sweep asks a registry that has probably come back: " + evaluation);
+    assertEquals(
+        3,
+        fakeImagePins.timesAsked(registryReference),
+        "asked once and then once per configured retry delay before the run is refused");
+  }
+
+  /**
+   * <b>A registry that misses a lookup and answers the next one costs nothing</b> (qits-1183). On
+   * 2026-10-11 one missed lookup dropped a dependency bump's run, while the same image resolved for
+   * other repositories seconds before and after. The accept now asks again after a short wait.
+   */
+  @Test
+  public void aBriefRegistryBlipIsAskedAgainAndTheRunStarts() throws Exception {
+    fakeImagePins.unresolvableThenPins(registryReference, 2, DIGEST);
+    fakeConfig.putTriggers(
+        repoId,
+        "main",
+        HEAD,
+        new EventTriggerFile(
+            TRIGGER_PATH,
+            """
+            event: SCMPublishCommit
+            steps:
+              - image: qits/build-images/ci-base:latest
+                script: "true"
+            """));
+
+    CiEventTriggerService.Evaluation evaluation = engine.evaluate(push());
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+
+    assertEquals(1, evaluation.runIds().size(), "the third lookup answered: " + evaluation);
+    assertEquals(List.of(), evaluation.repositoriesUnreadable(), "nothing is owed: " + evaluation);
+    assertEquals(3, fakeImagePins.timesAsked(registryReference));
+    assertEquals(
+        REGISTRY + "/qits/build-images/ci-base@" + DIGEST, fakeRunner.executed().get(0).image());
   }
 
   // --- fixture ---------------------------------------------------------------------------------

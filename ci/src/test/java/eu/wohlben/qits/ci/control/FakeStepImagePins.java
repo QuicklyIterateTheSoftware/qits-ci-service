@@ -27,11 +27,13 @@ public class FakeStepImagePins implements CiStepImagePins {
   // Read and written through methods: a field read on an injected CDI client proxy sees the proxy's.
   private final Map<String, Pin> answers = new LinkedHashMap<>();
   private final List<String> asked = new ArrayList<>();
+  private final Map<String, Integer> blips = new LinkedHashMap<>();
 
   /** Forgets both the staged answers and the record of what was asked. */
   public void reset() {
     answers.clear();
     asked.clear();
+    blips.clear();
   }
 
   /** {@code reference} resolves to {@code digest} — the ordinary platform-image arm. */
@@ -42,6 +44,15 @@ public class FakeStepImagePins implements CiStepImagePins {
   /** {@code reference} is ours and the registry said nothing — the arm that refuses a run. */
   public void unresolvable(String reference) {
     answers.put(reference, Pin.unresolved(reference, "staged by " + FakeStepImagePins.class.getSimpleName()));
+  }
+
+  /**
+   * {@code reference} is ours, the registry says nothing to the first {@code failures} asks, and
+   * then answers {@code digest} — a brief registry blip (qits-1183).
+   */
+  public void unresolvableThenPins(String reference, int failures, String digest) {
+    pins(reference, digest);
+    blips.put(reference, failures);
   }
 
   /** Every reference this fake was asked about, in order, repeats included. */
@@ -57,6 +68,11 @@ public class FakeStepImagePins implements CiStepImagePins {
   @Override
   public Pin pin(String reference) {
     asked.add(reference);
+    Integer failuresLeft = blips.get(reference);
+    if (failuresLeft != null && failuresLeft > 0) {
+      blips.put(reference, failuresLeft - 1);
+      return Pin.unresolved(reference, "a blip staged by " + FakeStepImagePins.class.getSimpleName());
+    }
     Pin staged = answers.get(reference);
     if (staged != null) {
       return staged;

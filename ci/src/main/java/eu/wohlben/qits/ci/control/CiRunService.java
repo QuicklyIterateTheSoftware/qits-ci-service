@@ -554,6 +554,16 @@ public class CiRunService {
   boolean resolvePlatformStepImages;
 
   /**
+   * The waits between digest lookups of one step image that did not answer (qits-1183). One
+   * registry blip used to refuse the run on the first try, and a caller with no ledger behind it —
+   * qits-maintenance's trigger — then ended its automation FAILED. Each entry is one more try after
+   * that wait, so the shipped {@code 2S,5S} is three tries over about seven seconds plus the
+   * lookups' own timeouts: short enough to stay well inside a caller's request timeout.
+   */
+  @ConfigProperty(name = "qits.ci.step-image-pin-retry-delays", defaultValue = "2S,5S")
+  List<Duration> pinRetryDelays;
+
+  /**
    * Runs a user asked to stop. In memory and deliberately so: a cancellation is only meaningful
    * while the run it addresses is executing in <em>this</em> process, and a restart fails every
    * in-flight run anyway.
@@ -1235,7 +1245,7 @@ public class CiRunService {
         // one pinned asks nothing of any registry and gets the first one's answer.
         continue;
       }
-      CiStepImagePins.Pin pin = imagePins.pin(reference);
+      CiStepImagePins.Pin pin = pinWithRetries(reference);
       switch (pin.status()) {
         case PINNED, ALREADY_PINNED -> pins.put(reference, pin.reference());
         case FOREIGN -> LOG.debugf(
@@ -1244,6 +1254,32 @@ public class CiRunService {
       }
     }
     return pins;
+  }
+
+  /**
+   * One reference's pin, asked again after each of {@link #pinRetryDelays} while the registry does
+   * not answer (qits-1183). Only {@code UNRESOLVED} is asked again: the other three answers are
+   * final. The last answer is returned as it is, so a registry that stays down still refuses the
+   * run.
+   */
+  private CiStepImagePins.Pin pinWithRetries(String reference) {
+    CiStepImagePins.Pin pin = imagePins.pin(reference);
+    for (Duration delay : pinRetryDelays) {
+      if (pin.status() != CiStepImagePins.Status.UNRESOLVED) {
+        return pin;
+      }
+      LOG.infof(
+          "The digest of %s could not be resolved (%s); asking again in %s",
+          reference, pin.detail(), delay);
+      try {
+        Thread.sleep(delay.toMillis());
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        return pin;
+      }
+      pin = imagePins.pin(reference);
+    }
+    return pin;
   }
 
   /**
