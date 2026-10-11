@@ -7,6 +7,8 @@ import eu.wohlben.qits.ci.control.CiEventTriggerParser;
 import eu.wohlben.qits.ci.control.CiIdentifiers;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiTriggerScope;
+import eu.wohlben.qits.http.QitsHttpClients;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URI;
@@ -74,7 +76,9 @@ import org.jboss.logging.Logger;
  * {@code /}, and a rev is one path segment, so it is percent-encoded on the way in.
  *
  * <p>An <b>instance</b> {@code HttpClient}, never a static one — a static client is built at
- * image-build time and native-image refuses the heap it lands in.
+ * image-build time and native-image refuses the heap it lands in. Wrapped through {@link
+ * QitsHttpClients}, like every hand-rolled client in this deployable, so a config read opens a
+ * CLIENT span and carries {@code X-Qits-Caller} the way the REST client already does.
  */
 @ApplicationScoped
 public class HttpGitConfigSource implements CiConfigSource {
@@ -100,13 +104,24 @@ public class HttpGitConfigSource implements CiConfigSource {
    */
   static final int MAX_TRIGGER_FILES = 32;
 
-  private final HttpClient client = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
+  private HttpClient client;
 
   @ConfigProperty(name = "qits.ci.git-host-url")
   String gitHostUrl;
 
   @Inject ObjectMapper objectMapper;
   @Inject GitHostBearer gitHostBearer;
+  @Inject QitsHttpClients clients;
+
+  /**
+   * Built here rather than at the field, because {@link #clients} is itself injected and a field
+   * initializer runs before CDI populates one — see every other hand-rolled client in this
+   * deployable for the same shape.
+   */
+  @PostConstruct
+  void buildClient() {
+    client = clients.wrap(HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build());
+  }
 
   /** One answered request: the status, the body, and the commit the host resolved. */
   private record Answer(int status, byte[] body, String commitSha) {

@@ -2,6 +2,8 @@ package eu.wohlben.qits.ci.idp;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import eu.wohlben.qits.http.QitsHttpClients;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URI;
@@ -39,7 +41,9 @@ import org.jboss.logging.Logger;
  * library — and the reading side is {@code readTree} plus a walk, so nothing here needs a reflection
  * registration either. The {@code HttpClient} is an instance field rather than a static one, for the
  * reason {@code HttpGitHostRepoListing} writes down: a static one is created at image-build time and
- * native-image refuses the heap it lands in.
+ * native-image refuses the heap it lands in. Wrapped through {@link QitsHttpClients}, like every
+ * other hand-rolled client here, so a commission or a decommission opens a CLIENT span and carries
+ * {@code X-Qits-Caller}.
  *
  * <p><b>The address is derived, never configured.</b> {@code quarkus.oidc-client.qits.auth-server-url}
  * is already the idp base this service asks for its own machine token, and {@code /api/clients} is
@@ -154,8 +158,18 @@ public class IdpCommissioner {
   Duration patience;
 
   @Inject ObjectMapper objectMapper;
+  @Inject QitsHttpClients clients;
 
-  private final HttpClient http = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
+  private HttpClient http;
+
+  /**
+   * Built here rather than at the field — see {@code HttpGitConfigSource#buildClient} for why a
+   * field initializer cannot reach an injected collaborator.
+   */
+  @PostConstruct
+  void buildClient() {
+    http = clients.wrap(HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build());
+  }
 
   /**
    * Whether this process can commission at all: the oidc client is on and both halves of its own

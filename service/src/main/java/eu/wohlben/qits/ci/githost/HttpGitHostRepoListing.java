@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.ci.control.CiIdentifiers;
 import eu.wohlben.qits.ci.control.GitHostRepoListing;
+import eu.wohlben.qits.http.QitsHttpClients;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URI;
@@ -51,8 +53,9 @@ import org.jboss.logging.Logger;
  * written down, since the class that used to hold it ({@code notify/PdBuildNotifier}) went with the
  * direct deploy POST. A static client is created at image-build time and native-image refuses the
  * heap it lands in; {@code @ApplicationScoped} keeps it one client per process either way. Every
- * hand-rolled client here follows it. Reading the body is {@code readTree} and a walk, so nothing
- * here needs reflection registering either.
+ * hand-rolled client here follows it, wrapped through {@link QitsHttpClients} so the listing opens
+ * a CLIENT span and carries {@code X-Qits-Caller}. Reading the body is {@code readTree} and a walk,
+ * so nothing here needs reflection registering either.
  */
 @ApplicationScoped
 public class HttpGitHostRepoListing implements GitHostRepoListing {
@@ -68,13 +71,22 @@ public class HttpGitHostRepoListing implements GitHostRepoListing {
   /** How long one successful listing stands in for the next read. */
   static final Duration CACHE_TTL = Duration.ofSeconds(5);
 
-  private final HttpClient client =
-      HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
+  private HttpClient client;
 
   @ConfigProperty(name = "qits.ci.git-host-url")
   String gitHostUrl;
 
   @Inject ObjectMapper objectMapper;
+  @Inject QitsHttpClients clients;
+
+  /**
+   * Built here rather than at the field — see {@code HttpGitConfigSource#buildClient} for why a
+   * field initializer cannot reach an injected collaborator.
+   */
+  @PostConstruct
+  void buildClient() {
+    client = clients.wrap(HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build());
+  }
 
   /** One successful read and when it stops standing in. Volatile, not locked: a duplicate read
    *  under a race costs one HTTP call, and this whole class is called from one thread anyway. */

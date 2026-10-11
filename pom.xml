@@ -96,6 +96,13 @@
              into the registry, which is not a release and does not survive one being re-seeded. -->
         <qits.githost-events.version>2026.1010.171927</qits.githost-events.version>
         <qits.auth-core.version>2026.1002.70617</qits.auth-core.version>
+        <!-- qits-http-core's QitsHttpClients: every hand-rolled java.net.http client under
+             service/…/{githost,projects,registry,idp}/ is wrapped through it, so the CLIENT span and
+             X-Qits-Caller travel with an internal call the same way the REST client already carries
+             them. Its own property, separate from qits.integrations-quarkus.version, because this
+             reactor pins each library released out of that reactor independently (qits.auth-core.version
+             beside it is the precedent). -->
+        <qits.http-core.version>0-qits-1198-local</qits.http-core.version>
         <!-- The platform's datasource resilience, released out of libs/qits-integrations-quarkus
              together with the two above, which is why the strings match: qits-db-core carries
              PatientPgDriver — the pool opens its connections through it, and a request is HELD
@@ -276,6 +283,16 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-auth-core</artifactId>
                 <version>${qits.auth-core.version}</version>
+            </dependency>
+            <dependency>
+                <!-- QitsHttpClients: wraps every hand-rolled java.net.http client service/ builds, so
+                     an internal call opens a CLIENT span and carries X-Qits-Caller like the REST
+                     client already does. Compile scope wherever a client is built, and in the
+                     Quarkus application module too, so CallerServerFilter/CallerClientFilter are on
+                     the classpath and active. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-http-core</artifactId>
+                <version>${qits.http-core.version}</version>
             </dependency>
             <dependency>
                 <!-- The platform's shared ArchUnit rules, test scope wherever entities live. -->

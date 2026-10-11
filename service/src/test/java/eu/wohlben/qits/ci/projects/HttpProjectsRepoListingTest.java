@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.ci.control.CiRepoRef;
+import eu.wohlben.qits.http.QitsHttpClients;
+import io.opentelemetry.api.OpenTelemetry;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServer;
 import java.net.ServerSocket;
@@ -131,6 +133,8 @@ public class HttpProjectsRepoListingTest {
     HttpProjectsRepoListing unset = new HttpProjectsRepoListing();
     unset.projectsUrl = Optional.empty();
     unset.objectMapper = new ObjectMapper();
+    unset.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    unset.buildClient();
 
     assertFalse(unset.configured(), "an unset key is the fallback arm, not a broken deployment");
     assertTrue(unset.repositories().isEmpty());
@@ -211,6 +215,8 @@ public class HttpProjectsRepoListingTest {
     HttpProjectsRepoListing listing = new HttpProjectsRepoListing();
     listing.projectsUrl = Optional.of(projectsUrl);
     listing.objectMapper = new ObjectMapper();
+    listing.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    listing.buildClient();
     return listing;
   }
 }

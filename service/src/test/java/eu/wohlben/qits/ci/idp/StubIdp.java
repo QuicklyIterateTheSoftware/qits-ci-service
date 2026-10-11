@@ -1,6 +1,8 @@
 package eu.wohlben.qits.ci.idp;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import eu.wohlben.qits.http.QitsHttpClients;
+import io.opentelemetry.api.OpenTelemetry;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
@@ -257,6 +259,8 @@ public final class StubIdp implements AutoCloseable {
     idp.clientSecret = Optional.of(SERVICE_SECRET);
     idp.patience = patience;
     idp.objectMapper = new ObjectMapper();
+    idp.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    idp.buildClient();
     return idp;
   }
 
@@ -281,6 +285,8 @@ public final class StubIdp implements AutoCloseable {
     idp.clientSecret = Optional.empty();
     idp.patience = Duration.ZERO;
     idp.objectMapper = new ObjectMapper();
+    idp.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    idp.buildClient();
     RunCommissions commissions = new RunCommissions();
     commissions.idp = idp;
     commissions.objectMapper = new ObjectMapper();

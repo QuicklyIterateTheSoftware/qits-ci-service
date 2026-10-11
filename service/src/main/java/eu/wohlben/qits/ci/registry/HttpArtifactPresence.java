@@ -4,7 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.ci.control.CiArtifact;
 import eu.wohlben.qits.ci.control.CiArtifactPresence;
+import eu.wohlben.qits.http.QitsHttpClients;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -53,8 +56,9 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * where the store asks for none.
  *
  * <p>An instance {@code HttpClient}, not a static one — a static client is created at image-build
- * time and native-image refuses the heap it lands in. The packument is walked with {@code readTree},
- * which binds nothing, so no reflection registration is owed.
+ * time and native-image refuses the heap it lands in. Wrapped through {@link QitsHttpClients}, like
+ * every hand-rolled client in this deployable. The packument is walked with {@code readTree}, which
+ * binds nothing, so no reflection registration is owed.
  */
 @ApplicationScoped
 public class HttpArtifactPresence implements CiArtifactPresence {
@@ -77,7 +81,7 @@ public class HttpArtifactPresence implements CiArtifactPresence {
   /** What a declared coordinate may be — the slot parser's {@code SCRIPT_SAFE}, no {@code ..}. */
   private static final String COORDINATE = "[A-Za-z0-9._:/@+-]+";
 
-  private final HttpClient client = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
+  private HttpClient client;
 
   private final ObjectMapper json = new ObjectMapper();
 
@@ -86,6 +90,17 @@ public class HttpArtifactPresence implements CiArtifactPresence {
 
   @ConfigProperty(name = "qits.artifacts.maven.registry-url")
   String artifactsMavenRegistryUrl;
+
+  @Inject QitsHttpClients clients;
+
+  /**
+   * Built here rather than at the field — see {@code HttpGitConfigSource#buildClient} for why a
+   * field initializer cannot reach an injected collaborator.
+   */
+  @PostConstruct
+  void buildClient() {
+    client = clients.wrap(HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build());
+  }
 
   @Override
   public Probe probe(CiArtifact.Type type, String name, String version) {

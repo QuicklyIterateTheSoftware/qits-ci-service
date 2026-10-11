@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.ci.control.CiIdentifiers;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiRepositoryListing;
+import eu.wohlben.qits.http.QitsHttpClients;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URI;
@@ -70,7 +72,8 @@ import org.jboss.logging.Logger;
  * <b>successful</b> read is cached, so a service that came back up is not invisible for a window.
  *
  * <p><b>An instance {@code HttpClient}, never a static one</b> — a static client is created at
- * image-build time and native-image refuses the heap it lands in. Reading the body is {@code
+ * image-build time and native-image refuses the heap it lands in. Wrapped through {@link
+ * QitsHttpClients}, like every hand-rolled client in this deployable. Reading the body is {@code
  * readTree} and a walk, so nothing here needs reflection registering either.
  */
 @ApplicationScoped
@@ -90,7 +93,7 @@ public class HttpProjectsRepoListing implements CiRepositoryListing {
   /** The path qits-projects serves its repository catalogue under. */
   static final String LISTING_PATH = "/projects/api/repositories";
 
-  private final HttpClient client = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
+  private HttpClient client;
 
   /**
    * Where qits-projects answers. <b>Optional and unset by default</b> — see the class javadoc: an
@@ -101,6 +104,16 @@ public class HttpProjectsRepoListing implements CiRepositoryListing {
   Optional<String> projectsUrl;
 
   @Inject ObjectMapper objectMapper;
+  @Inject QitsHttpClients clients;
+
+  /**
+   * Built here rather than at the field — see {@code HttpGitConfigSource#buildClient} for why a
+   * field initializer cannot reach an injected collaborator.
+   */
+  @PostConstruct
+  void buildClient() {
+    client = clients.wrap(HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build());
+  }
 
   /**
    * One successful read and when it stops standing in. Volatile, not locked: a duplicate read under

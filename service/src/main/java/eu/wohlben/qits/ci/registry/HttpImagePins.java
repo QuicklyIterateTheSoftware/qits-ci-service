@@ -1,7 +1,10 @@
 package eu.wohlben.qits.ci.registry;
 
 import eu.wohlben.qits.ci.control.CiStepImagePins;
+import eu.wohlben.qits.http.QitsHttpClients;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -75,7 +78,8 @@ import org.jboss.logging.Logger;
  *
  * <p>An instance {@code HttpClient} rather than a static one, {@code HttpGitHostRepoListing}'s
  * constraint: a static client is created at image-build time and native-image refuses the heap it
- * lands in. Nothing here binds a record, so no reflection is owed either.
+ * lands in. Wrapped through {@link QitsHttpClients}, like every hand-rolled client in this
+ * deployable. Nothing here binds a record, so no reflection is owed either.
  */
 @ApplicationScoped
 public class HttpImagePins implements CiStepImagePins {
@@ -107,7 +111,7 @@ public class HttpImagePins implements CiStepImagePins {
           "application/vnd.oci.image.manifest.v1+json",
           "application/vnd.docker.distribution.manifest.v2+json");
 
-  private final HttpClient client = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
+  private HttpClient client;
 
   /**
    * The registry as a pinned reference names it, and therefore what a pinned
@@ -122,6 +126,17 @@ public class HttpImagePins implements CiStepImagePins {
 
   @ConfigProperty(name = "qits.artifacts.maven.registry-url")
   String artifactsMavenRegistryUrl;
+
+  @Inject QitsHttpClients clients;
+
+  /**
+   * Built here rather than at the field — see {@code HttpGitConfigSource#buildClient} for why a
+   * field initializer cannot reach an injected collaborator.
+   */
+  @PostConstruct
+  void buildClient() {
+    client = clients.wrap(HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build());
+  }
 
   @Override
   public Pin pin(String reference) {

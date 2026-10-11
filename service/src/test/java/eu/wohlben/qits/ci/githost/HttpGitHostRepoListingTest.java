@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import eu.wohlben.qits.http.QitsHttpClients;
+import io.opentelemetry.api.OpenTelemetry;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServer;
 import java.net.ServerSocket;
@@ -166,6 +168,8 @@ public class HttpGitHostRepoListingTest {
     HttpGitHostRepoListing listing = new HttpGitHostRepoListing();
     listing.gitHostUrl = gitHostUrl;
     listing.objectMapper = new ObjectMapper();
+    listing.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    listing.buildClient();
     return listing;
   }
 }

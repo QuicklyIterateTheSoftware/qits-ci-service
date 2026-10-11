@@ -14,6 +14,8 @@ import eu.wohlben.qits.ci.control.CiConfigSource.CommitHeld;
 import eu.wohlben.qits.ci.control.CiConfigSource.EventTriggerFile;
 import eu.wohlben.qits.ci.control.CiConfigSource.EventTriggerLookup;
 import eu.wohlben.qits.ci.error.BadRequestException;
+import eu.wohlben.qits.http.QitsHttpClients;
+import io.opentelemetry.api.OpenTelemetry;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -54,6 +56,8 @@ public class HttpGitConfigSourceTest {
     source.gitHostUrl = host.gitHostUrl();
     source.objectMapper = new ObjectMapper();
     source.gitHostBearer = () -> java.util.Optional.of("machine-token");
+    source.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    source.buildClient();
   }
 
   @AfterEach
@@ -260,6 +264,8 @@ public class HttpGitConfigSourceTest {
     pinned.gitHostUrl = host.gitHostUrl();
     pinned.objectMapper = new ObjectMapper();
     pinned.gitHostBearer = () -> java.util.Optional.of("machine-token");
+    pinned.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    pinned.buildClient();
 
     EventTriggerLookup lookup = pinned.readEventTriggers(id(repoId), BRANCH);
     assertEquals(head, lookup.headSha());

@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.control.CiStepImagePins.Pin;
 import eu.wohlben.qits.ci.control.CiStepImagePins.Status;
+import eu.wohlben.qits.http.QitsHttpClients;
+import io.opentelemetry.api.OpenTelemetry;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServer;
 import java.net.ServerSocket;
@@ -165,6 +167,8 @@ public class HttpImagePinsTest {
     pins.artifactsRegistryHost = REGISTRY;
     pins.artifactsUrl = Optional.empty();
     pins.artifactsMavenRegistryUrl = "";
+    pins.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    pins.buildClient();
 
     Pin pin = pins.pin(REGISTRY + "/qits/build-images/ci-base:latest");
     assertEquals(
@@ -213,6 +217,8 @@ public class HttpImagePinsTest {
     pins.artifactsRegistryHost = REGISTRY;
     pins.artifactsUrl = Optional.empty();
     pins.artifactsMavenRegistryUrl = origin + "/artifacts/maven/maven";
+    pins.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    pins.buildClient();
     return pins;
   }
 }

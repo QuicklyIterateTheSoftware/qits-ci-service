@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import eu.wohlben.qits.ci.control.CiArtifact;
 import eu.wohlben.qits.ci.control.CiArtifactPresence.Probe;
 import eu.wohlben.qits.ci.control.CiArtifactPresence.Verdict;
+import eu.wohlben.qits.http.QitsHttpClients;
+import io.opentelemetry.api.OpenTelemetry;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServer;
 import java.net.ServerSocket;
@@ -128,6 +130,8 @@ public class HttpArtifactPresenceTest {
     HttpArtifactPresence presence = new HttpArtifactPresence();
     presence.artifactsUrl = Optional.empty();
     presence.artifactsMavenRegistryUrl = "http://127.0.0.1:" + closed + "/artifacts/maven/maven";
+    presence.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    presence.buildClient();
 
     assertEquals(
         Verdict.INCONCLUSIVE,
@@ -140,6 +144,8 @@ public class HttpArtifactPresenceTest {
     HttpArtifactPresence presence = new HttpArtifactPresence();
     presence.artifactsUrl = Optional.of("http://127.0.0.1:" + port + "/");
     presence.artifactsMavenRegistryUrl = "http://elsewhere.invalid:1/artifacts/maven/maven";
+    presence.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    presence.buildClient();
     body = "{\"versions\":{\"" + VERSION + "\":{}}}";
 
     assertEquals(
@@ -218,6 +224,8 @@ public class HttpArtifactPresenceTest {
     HttpArtifactPresence presence = new HttpArtifactPresence();
     presence.artifactsUrl = Optional.empty();
     presence.artifactsMavenRegistryUrl = "http://127.0.0.1:" + port + "/artifacts/maven/maven";
+    presence.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    presence.buildClient();
     return presence;
   }
 }
