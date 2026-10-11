@@ -141,7 +141,8 @@ public interface CiStepRunner {
      * The step's launch is recorded and the runner is about to be asked for its container: the
      * launch id its daemon will name and the token subject it will dial back as. What a restarted
      * process needs to take the container back (qits-1192), so the caller records it before the
-     * container can exist. Must not throw.
+     * container can exist. A throw means it could not be recorded: the seam then does not make
+     * the launch, and the step fails without a container.
      */
     default void onLaunched(String daemonId, String tokenSubject) {}
   }
@@ -199,6 +200,14 @@ public interface CiStepRunner {
   default void inherit(InheritedRun run, Runnable adopted, Runnable lost) {
     lost.run();
   }
+
+  /**
+   * Revoke the credentials a previous process commissioned for an inherited run — every {@code
+   * ci-run} token of the run this process does not hold (qits-1192). Called on every path where
+   * that old credential stops being needed: the taken-back step ended, the run continued without
+   * one, or the run was settled instead of taken back. Never throws.
+   */
+  default void revokeInherited(String runId) {}
 
   /**
    * Take back the in-flight step of an inherited run ({@link #inherit}) and wait for its end, as

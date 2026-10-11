@@ -113,6 +113,18 @@ public class FakeCiStepRunner implements CiRunnerStepRunner {
     launchSubject = subject;
   }
 
+  private final List<String> revoked = java.util.Collections.synchronizedList(new ArrayList<>());
+
+  /** Every run whose previous process's credentials were revoked, in order. */
+  public List<String> revoked() {
+    return revoked;
+  }
+
+  @Override
+  public void revokeInherited(String runId) {
+    revoked.add(runId);
+  }
+
   @Override
   public void inherit(InheritedRun run, Runnable adopted, Runnable lost) {
     if (captureInheritance) {
@@ -229,6 +241,7 @@ public class FakeCiStepRunner implements CiRunnerStepRunner {
     pinFailure = null;
     inheritances.clear();
     reattached.clear();
+    revoked.clear();
     captureInheritance = false;
     reattachResult = null;
     launchDaemonId = null;

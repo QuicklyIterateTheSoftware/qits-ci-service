@@ -680,7 +680,8 @@ public class CiRunService {
       int requeued,
       List<FailedOrphan> failed,
       List<CiRun> restarted,
-      List<CiStepRunner.InheritedRun> inherited) {}
+      List<CiStepRunner.InheritedRun> inherited,
+      Map<String, String> unsound) {}
 
   /** One orphaned run the sweep marked FAILED, with the instant the row was stamped with. */
   private record FailedOrphan(CiRun run, Instant finishedAt) {}
@@ -732,6 +733,8 @@ public class CiRunService {
       // for itself, so what a sweep owes the runners is "there is work", once.
       announceBacklog();
     }
+    // Fail closed: what these rows say about their launch does not add up, so nothing is taken back.
+    sweep.unsound().forEach(this::settleUninherited);
     for (CiStepRunner.InheritedRun inherited : sweep.inherited()) {
       inherit(inherited);
     }
@@ -764,6 +767,7 @@ public class CiRunService {
     List<FailedOrphan> failed = new ArrayList<>();
     List<CiRun> restarted = new ArrayList<>();
     List<CiStepRunner.InheritedRun> inherited = new ArrayList<>();
+    Map<String, String> unsound = new java.util.LinkedHashMap<>();
     for (CiRun orphan : orphans) {
       // The run a runner holds, and after qits-506 the only one a live deployment produces: its
       // containers outlive this process on the runner's host, so it is waited for, never restarted
@@ -771,8 +775,16 @@ public class CiRunService {
       if (orphan.triggerType == CiTriggerType.EVENT
           && orphan.triggerConfig != null
           && orphan.runnerId != null) {
-        inherited.add(
-            new CiStepRunner.InheritedRun(orphan.id, orphan.runnerId, inFlightStepOf(orphan)));
+        Inheritance inheritance = inheritanceOf(orphan);
+        if (inheritance.sound()) {
+          inherited.add(
+              new CiStepRunner.InheritedRun(orphan.id, orphan.runnerId, inheritance.inFlight()));
+        } else {
+          LOG.warnf(
+              "CI run %s cannot be taken back: %s — it is settled instead",
+              orphan.id, inheritance.unsound());
+          unsound.put(orphan.id, inheritance.unsound());
+        }
         continue;
       }
       // The restartable case: an event run no runner held. The `else` covers what a predecessor
@@ -800,42 +812,101 @@ public class CiRunService {
     // successor that will make the same discovery. The count includes the rows this method just
     // moved back to QUEUED — the query flushes them first, which is what makes an interrupted event
     // run restart on this boot rather than on the next one.
-    return new Sweep(runs.listQueuedOldestFirst().size(), failed, restarted, inherited);
+    return new Sweep(runs.listQueuedOldestFirst().size(), failed, restarted, inherited, unsound);
   }
 
   /**
-   * The step a run has in flight, as its row recorded the launch — or null when it has none. The
-   * record is current only while that step has no row yet: step rows are written when a step ends,
-   * so a launch whose step already has its row names a step that is over.
+   * Whether a run a previous process left can be taken back, and with which in-flight step: {@code
+   * unsound} names why not, and is null when it can. {@code inFlight} is null for a sound run with
+   * no step in flight.
    */
-  private CiStepRunner.InFlightStep inFlightStepOf(CiRun run) {
-    if (run.inflightDaemonId == null
-        || run.inflightStepIndex == null
+  record Inheritance(CiStepRunner.InFlightStep inFlight, String unsound) {
+    boolean sound() {
+      return unsound == null;
+    }
+
+    static Inheritance refused(String why) {
+      return new Inheritance(null, why);
+    }
+  }
+
+  /**
+   * Reads what a run's row says about its launch and <b>fails closed</b> (qits-1192): anything that
+   * does not add up refuses the run, which is then settled — failed when it publishes, re-queued
+   * otherwise — and its old credentials revoked. Nothing is ever taken back on partial data. Sound
+   * is exactly one of:
+   *
+   * <ul>
+   *   <li><b>A step in flight</b>: the launch is complete (index, a launch id that is a UUID, a
+   *       token subject) and names the first step without a row.
+   *   <li><b>Between two steps</b>: the launch names the last step with a row.
+   *   <li><b>Before the first launch</b>: no launch, no step row and no daemon pinned yet.
+   * </ul>
+   *
+   * <p>The runner must still exist, the pipeline must read back, the run must have a step left,
+   * and every step row must be green — a run whose rows hold a red one had stopped, and continuing
+   * it would announce a verdict its steps never reached.
+   */
+  Inheritance inheritanceOf(CiRun run) {
+    if (runnerRows.findById(run.runnerId) == null) {
+      return Inheritance.refused("its runner " + run.runnerId + " no longer exists");
+    }
+    List<CiPipeline.CiStepDecl> declared;
+    try {
+      declared = reconstructEventRun(run).trigger().pipeline().steps();
+    } catch (RuntimeException unreadable) {
+      return Inheritance.refused("its pipeline could not be read back: " + unreadable.getMessage());
+    }
+    List<CiStep> recorded = steps.listByRunIdOrdered(run.id);
+    int done = recorded.size();
+    for (int i = 0; i < done; i++) {
+      if (recorded.get(i).stepIndex != i || recorded.get(i).status != CiStepStatus.SUCCESS) {
+        return Inheritance.refused("its step rows are not an unbroken green prefix");
+      }
+    }
+    if (done >= declared.size()) {
+      return Inheritance.refused("every step already has a row");
+    }
+    boolean noLaunch =
+        run.inflightStepIndex == null
+            && run.inflightDaemonId == null
+            && run.inflightTokenSubject == null
+            && run.inflightStartedAt == null;
+    if (noLaunch) {
+      return done == 0 && run.daemonVersion == null
+          ? new Inheritance(null, null)
+          : Inheritance.refused("a step may have been launched and none is recorded");
+    }
+    if (run.inflightStepIndex == null
+        || run.inflightDaemonId == null
         || run.inflightTokenSubject == null
-        || steps.count("runId = ?1", run.id) != run.inflightStepIndex) {
-      return null;
+        || run.inflightTokenSubject.isBlank()) {
+      return Inheritance.refused("its recorded launch is incomplete");
+    }
+    try {
+      UUID.fromString(run.inflightDaemonId);
+    } catch (IllegalArgumentException notAnId) {
+      return Inheritance.refused("its recorded launch id is not one this service mints");
     }
     int index = run.inflightStepIndex;
-    String script = null;
-    int timeoutSeconds = stepTimeoutSeconds;
-    try {
-      List<CiPipeline.CiStepDecl> declared = reconstructEventRun(run).trigger().pipeline().steps();
-      if (index < declared.size()) {
-        CiPipeline.CiStepDecl decl = declared.get(index);
-        script = decl.script();
-        timeoutSeconds = decl.timeoutSeconds() == null ? stepTimeoutSeconds : decl.timeoutSeconds();
-      }
-    } catch (RuntimeException unreadable) {
-      // The launch is still worth taking back; only a daemon still owed its step cannot be sent it.
-      LOG.warnf("CI run %s: its pipeline could not be read back: %s", run.id, unreadable.getMessage());
+    if (index == done - 1) {
+      // The launch of the step that already has its row: between two steps, nothing in flight.
+      return new Inheritance(null, null);
     }
-    return new CiStepRunner.InFlightStep(
-        index,
-        run.inflightDaemonId,
-        run.inflightTokenSubject,
-        run.inflightStartedAt,
-        script,
-        timeoutSeconds);
+    if (index != done) {
+      return Inheritance.refused(
+          "its recorded launch names step " + index + " and " + done + " step(s) have rows");
+    }
+    CiPipeline.CiStepDecl decl = declared.get(index);
+    return new Inheritance(
+        new CiStepRunner.InFlightStep(
+            index,
+            run.inflightDaemonId,
+            run.inflightTokenSubject,
+            run.inflightStartedAt,
+            decl.script(),
+            decl.timeoutSeconds() == null ? stepTimeoutSeconds : decl.timeoutSeconds()),
+        null);
   }
 
   /**
@@ -1168,6 +1239,7 @@ public class CiRunService {
     CiRun run = QuarkusTransaction.requiringNew().call(() -> runs.findById(runId));
     if (run == null || run.status != CiRunStatus.RUNNING) {
       LOG.infof("CI run %s was settled before its runner came back; nothing to continue", runId);
+      revokeInherited(runId);
       closeWith(runId);
       return;
     }
@@ -1190,6 +1262,10 @@ public class CiRunService {
     LOG.infof(
         "CI run %s continues at step %d on its runner%s",
         runId, from, reattach ? ", taking the in-flight step's container back" : "");
+    if (!reattach) {
+      // No container of the previous process is running for it, so its old credential is unused.
+      revokeInherited(runId);
+    }
     executeClaimed(
         run, request, new Resume(from, reattach, reattach ? run.inflightStartedAt : null));
   }
@@ -1209,12 +1285,25 @@ public class CiRunService {
    * </ul>
    */
   void settleUninherited(String runId) {
+    settleUninherited(runId, null);
+  }
+
+  /** {@link #settleUninherited(String)}, saying why the run could not be taken back. */
+  void settleUninherited(String runId, String why) {
+    // First, whatever the row says: nothing takes the run's old container back, so nothing may
+    // present its old credential again.
+    revokeInherited(runId);
     CiRun run = QuarkusTransaction.requiringNew().call(() -> runs.findById(runId));
     if (run == null || run.status != CiRunStatus.RUNNING) {
       return;
     }
     if (publishes(run)) {
-      failUninherited(run);
+      failUninherited(
+          run,
+          why != null
+              ? why
+              : (run.runnerId == null ? "its runner" : runnerWordsQuietly(run.runnerId))
+                  + " did not come back holding it");
       return;
     }
     boolean requeued =
@@ -1237,20 +1326,18 @@ public class CiRunService {
       return;
     }
     LOG.infof(
-        "CI run %s: its runner did not come back holding it; it is queued again and starts over",
-        runId);
+        "CI run %s could not be taken back (%s); it is queued again and starts over",
+        runId, why != null ? why : "its runner did not come back holding it");
     announceStatus(run, CiRunStatus.QUEUED, CiRunStatus.RUNNING, run.createdAt);
     announceQueued(runId);
   }
 
   /** What a publishing run that cannot be taken back records — see {@link #settleUninherited}. */
   static final String NOT_RERUN_PUBLISHING =
-      "[qits-ci restarted while this run was in flight and its runner did not come back holding it."
-          + " The run publishes, so it is not run again: a second build would publish different"
+      " The run publishes, so it is not run again: a second build would publish different"
           + " bytes under the same version. Check what was published, then retry the run.]";
 
-  private void failUninherited(CiRun run) {
-    String runner = run.runnerId == null ? "its runner" : runnerWordsQuietly(run.runnerId);
+  private void failUninherited(CiRun run, String why) {
     Instant finishedAt = Instant.now();
     boolean failed =
         QuarkusTransaction.requiringNew()
@@ -1275,7 +1362,11 @@ public class CiRunService {
                       step.status = CiStepStatus.FAILED;
                       step.exitCode = -1;
                       step.output =
-                          NOT_RERUN_PUBLISHING.replace("its runner", runner)
+                          "[qits-ci restarted while this run was in flight, and it could not be"
+                              + " taken back: "
+                              + why
+                              + "."
+                              + NOT_RERUN_PUBLISHING
                               + (inFlight
                                   ? ""
                                   : "\n[no step of it was in flight when qits-ci stopped]");
@@ -1297,9 +1388,9 @@ public class CiRunService {
       return;
     }
     LOG.warnf(
-        "CI run %s publishes and %s did not come back holding it after qits-ci restarted — FAILED,"
+        "CI run %s publishes and could not be taken back after qits-ci restarted (%s) — FAILED,"
             + " not run again",
-        run.id, runner);
+        run.id, why);
     announceBacklog();
     announceStatus(run, CiRunStatus.FAILED, CiRunStatus.RUNNING, finishedAt);
     announceFailedRun(run, finishedAt, CiRunStatus.FAILED);
@@ -1337,6 +1428,15 @@ public class CiRunService {
     }
   }
 
+  /** The seam's {@link CiStepRunner#revokeInherited}, which must never cost the caller anything. */
+  private void revokeInherited(String runId) {
+    try {
+      stepRunnerFor(runId).revokeInherited(runId);
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "CI run %s: the previous process's credentials could not be revoked", runId);
+    }
+  }
+
   private static void clearInFlight(CiRun row) {
     row.inflightStepIndex = null;
     row.inflightDaemonId = null;
@@ -1346,8 +1446,9 @@ public class CiRunService {
 
   /**
    * Records the launch of a run's step on its row, before the runner is asked for the container —
-   * what a successor needs to take the container back. Best effort: a launch that could not be
-   * recorded costs only that, and never the step.
+   * what a successor needs to take the container back. <b>Fails closed</b>: a launch that could not
+   * be recorded throws, and the seam does not make it — a container nobody could take back after a
+   * restart is one a restart would start a second time.
    */
   private void recordLaunch(String runId, int stepIndex, String daemonId, String tokenSubject) {
     try {
@@ -1363,9 +1464,9 @@ public class CiRunService {
                 }
               });
     } catch (RuntimeException e) {
-      LOG.warnf(
-          "CI run %s: could not record step %d's launch; a restart cannot take it back: %s",
-          runId, stepIndex, e.getMessage());
+      throw new IllegalStateException(
+          "the launch of step " + stepIndex + " could not be recorded on the run row: " + e.getMessage(),
+          e);
     }
   }
 
@@ -1753,10 +1854,14 @@ public class CiRunService {
                 decl.build(),
                 decl.user(),
                 env);
-        StepResult result =
-            reattach
-                ? stepRunnerFor(run).reattach(spec, stamps)
-                : stepRunnerFor(run).run(spec, stamps);
+        StepResult result;
+        if (reattach) {
+          result = stepRunnerFor(run).reattach(spec, stamps);
+          // The taken-back container was the old credential's last user.
+          revokeInherited(run.id);
+        } else {
+          result = stepRunnerFor(run).run(spec, stamps);
+        }
 
         // A cancellation completes the await NORMALLY — the daemon answers a Cancel with a terminal
         // frame — so cancelledness is read from the flag rather than inferred from how run() came

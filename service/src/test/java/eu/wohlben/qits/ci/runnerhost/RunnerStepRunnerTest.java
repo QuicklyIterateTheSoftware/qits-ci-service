@@ -911,6 +911,9 @@ class RunnerStepRunnerTest {
           "launched:" + daemonId + "@" + CLIENT,
           listener.events.get(0),
           "the launch is reported before the runner is asked for the container");
+      assertTrue(
+          listener.events.stream().noneMatch(e -> e.contains("qits_tok_")),
+          "what is recorded is the token's subject, never the token");
       runner.send(new Launched(runId, 0, "c0ffee"));
 
       try (FakeCiDaemon daemon = dialAsTheContainer(launch.workloadSpec())) {
@@ -962,6 +965,7 @@ class RunnerStepRunnerTest {
     Recorder listener = new Recorder();
     CompletableFuture<StepResult> result = new CompletableFuture<>();
     CountDownLatch lost = new CountDownLatch(1);
+    runTokens.liveSubjects.put(runId, java.util.Set.of(CLIENT));
     try {
       steps.inherit(
           new CiStepRunner.InheritedRun(
@@ -978,7 +982,9 @@ class RunnerStepRunnerTest {
           },
           lost::countDown);
 
-      // The daemon re-dials before its runner is back, and is admitted as the launch it names.
+      // The daemon re-dials before its runner is back, and is admitted as the launch it names —
+      // once its recorded subject is confirmed as one of the run's live tokens.
+      awaitPhase(daemonId);
       try (FakeCiDaemon daemon = FakeCiDaemon.dial(daemonEndpoint, Map.of())) {
         daemon.send(
             new eu.wohlben.qits.cidaemon.protocol.Hello(daemonId, CiDaemonProtocol.CAPABILITY_VERSION));
@@ -1030,6 +1036,7 @@ class RunnerStepRunnerTest {
     CountDownLatch lost = new CountDownLatch(1);
     CountDownLatch adopted = new CountDownLatch(1);
     registry.reconnectGrace(Duration.ofMillis(300));
+    runTokens.liveSubjects.put(runId, java.util.Set.of(CLIENT));
     try {
       steps.inherit(
           new CiStepRunner.InheritedRun(
@@ -1038,7 +1045,7 @@ class RunnerStepRunnerTest {
               new CiStepRunner.InFlightStep(0, daemonId, CLIENT, null, "echo on the runner", 60)),
           adopted::countDown,
           lost::countDown);
-      assertNotNull(daemons.phaseOf(daemonId), "the launch waits for its daemon");
+      awaitPhase(daemonId);
       // A Hello that does not claim the run does not adopt it.
       try (FakeCiRunner other = greeted()) {
         assertTrue(lost.await(SOON.toSeconds(), TimeUnit.SECONDS), "lost when the grace ends");
@@ -1049,6 +1056,149 @@ class RunnerStepRunnerTest {
       registry.reconnectGrace(null);
       steps.runClosed(runId);
     }
+  }
+
+
+  /** Fail closed: a recorded subject that is not one of the run's live tokens re-admits nothing. */
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void anInheritedLaunchWhoseSubjectIsNotLiveIsGivenUpAtOnce() throws Exception {
+    assertGivenUpAtOnce(false);
+  }
+
+  /** Fail closed: a token listing that cannot be read re-admits nothing either. */
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void anInheritedLaunchIsGivenUpWhenTheTokenListingCannotBeRead() throws Exception {
+    assertGivenUpAtOnce(true);
+  }
+
+  private void assertGivenUpAtOnce(boolean unreadable) throws Exception {
+    String runId = "runner-inherited-untrusted-" + UUID.randomUUID();
+    String daemonId = UUID.randomUUID().toString();
+    CountDownLatch lost = new CountDownLatch(1);
+    CountDownLatch adopted = new CountDownLatch(1);
+    runTokens.liveSubjects.put(runId, java.util.Set.of("another-run's-subject"));
+    runTokens.listingUnreadable = unreadable;
+    try {
+      steps.inherit(
+          new CiStepRunner.InheritedRun(
+              runId,
+              runnerId,
+              new CiStepRunner.InFlightStep(0, daemonId, CLIENT, Instant.now(), "echo x", 60)),
+          adopted::countDown,
+          lost::countDown);
+      assertTrue(
+          lost.await(SOON.toSeconds(), TimeUnit.SECONDS),
+          "given up at once, not a minute's grace later");
+      assertNull(daemons.phaseOf(daemonId), "no launch is registered on an unconfirmed record");
+      try (FakeCiDaemon daemon = FakeCiDaemon.dial(daemonEndpoint, Map.of())) {
+        daemon.send(
+            new eu.wohlben.qits.cidaemon.protocol.Hello(daemonId, CiDaemonProtocol.CAPABILITY_VERSION));
+        assertEquals((Short) (short) CiDaemonRegistry.CLOSE_UNAUTHORIZED, daemon.awaitClose(SOON));
+        assertEquals("UNKNOWN_DAEMON", daemon.closeReason());
+      }
+      // A runner that claims it afterwards adopts nothing.
+      try (FakeCiRunner back = FakeCiRunner.dial(runnerEndpoint)) {
+        back.send(
+            new Hello(
+                pins.version(),
+                CiRunnerProtocol.CAPABILITY_VERSION,
+                1,
+                new Capabilities(true, "amd64", "linux", Map.of()),
+                List.of(runId)));
+        assertEquals(
+            List.of(),
+            back.next(eu.wohlben.qits.cirunner.protocol.Ack.class, SOON).adoptedRuns());
+      }
+      assertEquals(1, adopted.getCount());
+    } finally {
+      runTokens.listingUnreadable = false;
+      steps.runClosed(runId);
+    }
+  }
+
+  /**
+   * The re-admitted daemon is authenticated as its launch: a dial whose token subject is not the
+   * recorded one is refused WRONG_RUN, and a Hello naming another launch id than the one recorded is
+   * an unknown daemon — knowing the run is not enough.
+   */
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void anInheritedLaunchAdmitsOnlyItsOwnSubjectAndLaunchId() throws Exception {
+    String runId = "runner-inherited-auth-" + UUID.randomUUID();
+    String daemonId = UUID.randomUUID().toString();
+    String recordedSubject = "tok-ci-run-" + runId;
+    runTokens.liveSubjects.put(runId, java.util.Set.of(recordedSubject));
+    try {
+      steps.inherit(
+          new CiStepRunner.InheritedRun(
+              runId,
+              runnerId,
+              new CiStepRunner.InFlightStep(
+                  0, daemonId, recordedSubject, Instant.now(), "echo x", 60)),
+          () -> {},
+          () -> {});
+      awaitPhase(daemonId);
+      // This suite's dial arrives as CLIENT, which is not the recorded subject.
+      try (FakeCiDaemon daemon = FakeCiDaemon.dial(daemonEndpoint, Map.of())) {
+        daemon.send(
+            new eu.wohlben.qits.cidaemon.protocol.Hello(daemonId, CiDaemonProtocol.CAPABILITY_VERSION));
+        assertEquals((Short) (short) CiDaemonRegistry.CLOSE_UNAUTHORIZED, daemon.awaitClose(SOON));
+        assertEquals("WRONG_RUN", daemon.closeReason());
+      }
+      try (FakeCiDaemon daemon = FakeCiDaemon.dial(daemonEndpoint, Map.of())) {
+        daemon.send(
+            new eu.wohlben.qits.cidaemon.protocol.Hello(
+                UUID.randomUUID().toString(), CiDaemonProtocol.CAPABILITY_VERSION));
+        assertEquals((Short) (short) CiDaemonRegistry.CLOSE_UNAUTHORIZED, daemon.awaitClose(SOON));
+        assertEquals("UNKNOWN_DAEMON", daemon.closeReason());
+      }
+      assertFalse(daemons.connected(daemonId), "neither dial was bound to the launch");
+    } finally {
+      daemons.reap(daemonId);
+      registry.loseInherited(runId);
+      steps.runClosed(runId);
+    }
+  }
+
+  /** Fail closed at launch: a launch that cannot be recorded is not made. */
+  @Test
+  @TestSecurity(user = "runner", roles = {CiRunnerSocket.RUNNER_ROLE, "qits:ci-run"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = AUDIENCE), @Claim(key = "sub", value = CLIENT)})
+  void aLaunchThatCannotBeRecordedIsNotMade() throws Exception {
+    String runId = "runner-unrecorded-" + UUID.randomUUID();
+    Recorder refusing =
+        new Recorder() {
+          @Override
+          public void onLaunched(String daemonId, String tokenSubject) {
+            throw new IllegalStateException("the database is away");
+          }
+        };
+    int launchesBefore = daemons.size();
+    try (FakeCiRunner runner = greeted()) {
+      registry.hold(registry.current(runnerId), runId);
+      StepResult result =
+          CompletableFuture.supplyAsync(() -> steps.run(step(runId), refusing))
+              .get(SOON.toSeconds(), TimeUnit.SECONDS);
+      assertEquals(StepOutcome.LAUNCH_FAILED, result.outcome());
+      assertTrue(result.output().contains("could not be recorded"), result.output());
+      assertNull(runner.next(Launch.class, Duration.ofMillis(500)), "the runner is asked for nothing");
+      assertEquals(launchesBefore, daemons.size(), "and the minted launch is dropped");
+    } finally {
+      steps.runClosed(runId);
+    }
+  }
+
+  private void awaitPhase(String daemonId) throws InterruptedException {
+    Instant deadline = Instant.now().plus(SOON);
+    while (daemons.phaseOf(daemonId) == null && Instant.now().isBefore(deadline)) {
+      Thread.sleep(20);
+    }
+    assertNotNull(daemons.phaseOf(daemonId), "the launch is registered once its subject is confirmed");
   }
 
   /** Until the host has seen the close: the run's connection is gone and its grace is running. */
@@ -1149,7 +1299,7 @@ class RunnerStepRunnerTest {
   }
 
   /** The step's events, in the order the seam fired them. */
-  private static final class Recorder implements StepListener {
+  private static class Recorder implements StepListener {
 
     final List<String> events = Collections.synchronizedList(new ArrayList<>());
 

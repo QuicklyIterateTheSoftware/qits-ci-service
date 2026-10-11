@@ -69,6 +69,29 @@ public final class ScriptedRunTokens extends RunCommissions {
     }
   }
 
+  /** What {@link #liveSubjectsOf} answers per run: the subjects of its live tokens at "qits-idp". */
+  public final Map<String, java.util.Set<String>> liveSubjects = new ConcurrentHashMap<>();
+
+  /** Makes {@link #liveSubjectsOf} answer "the listing could not be read". */
+  public volatile boolean listingUnreadable;
+
+  /** Every run whose previous tokens were revoked, in order. */
+  public final List<String> revoked = new CopyOnWriteArrayList<>();
+
+  @Override
+  public java.util.Optional<java.util.Set<String>> liveSubjectsOf(String runId) {
+    if (listingUnreadable) {
+      return java.util.Optional.empty();
+    }
+    return java.util.Optional.of(liveSubjects.getOrDefault(runId, java.util.Set.of()));
+  }
+
+  @Override
+  public int revokeOrphaned(String runId) {
+    revoked.add(runId);
+    return 0;
+  }
+
   @Override
   public boolean holdsToken(String tokenId) {
     return held.values().stream().anyMatch(token -> token.tokenId().equals(tokenId));

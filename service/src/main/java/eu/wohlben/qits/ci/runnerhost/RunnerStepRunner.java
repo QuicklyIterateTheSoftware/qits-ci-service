@@ -155,8 +155,19 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
   /** The step each runner run has in flight, for a cancellation arriving on another thread. */
   private final ConcurrentHashMap<String, InFlight> inFlight = new ConcurrentHashMap<>();
 
-  /** The launch id of each inherited run's in-flight step, until its driver takes it back. */
-  private final ConcurrentHashMap<String, String> inheritedLaunches = new ConcurrentHashMap<>();
+  /**
+   * The launch id of each inherited run's in-flight step, until its driver takes it back — a future,
+   * because the launch is registered only once its recorded token subject is confirmed as one of
+   * the run's live tokens; null when it was not.
+   */
+  private final ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<String>>
+      inheritedLaunches = new ConcurrentHashMap<>();
+
+  /** Inherited runs given up — so a launch check finishing late registers nothing that stays. */
+  private final java.util.Set<String> givenUp = ConcurrentHashMap.newKeySet();
+
+  /** How long a driver waits for an inherited launch's check before giving the step up. */
+  static final Duration INHERITED_CHECK_TIMEOUT = Duration.ofSeconds(30);
 
   /**
    * Raised once this process is stopping — {@code ShutdownEvent}, which Quarkus fires before it
@@ -248,8 +259,16 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
               listener.onChunk(text);
             });
     // Recorded before the runner is asked for the container, so a container this process may die
-    // holding is always one its successor can take back.
-    listener.onLaunched(daemonId, token.subject());
+    // holding is always one its successor can take back. A launch that cannot be recorded is not
+    // made (qits-1192): a restart would have no way to take it back, only to start it again.
+    try {
+      listener.onLaunched(daemonId, token.subject());
+    } catch (RuntimeException unrecorded) {
+      daemons.reap(daemonId);
+      return failed(
+          StepOutcome.LAUNCH_FAILED,
+          "the launch was not made, because it could not be recorded: " + unrecorded.getMessage());
+    }
     String containerName = StepContainerSettings.containerName(spec.runId(), spec.stepIndex());
     inFlight.put(spec.runId(), new InFlight(daemonId, containerName, spec.stepIndex()));
 
@@ -460,33 +479,100 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
   public void inherit(InheritedRun run, Runnable adopted, Runnable lost) {
     String runId = run.runId();
     InFlightStep step = run.inFlight();
-    if (step != null) {
-      relay.begin(runId, step.stepIndex());
-      if (step.startedAt() != null) {
-        relay.started(runId, step.startedAt());
-      }
-      daemons.reattachLaunch(
-          step.daemonId(),
-          runId,
-          step.stepIndex(),
-          step.tokenSubject(),
-          step.startedAt() != null ? step.script() : null,
-          step.timeoutSeconds(),
-          (stream, seq, text) -> relay.append(runId, text));
-      inheritedLaunches.put(runId, step.daemonId());
-    }
     runners.inherit(
         runId,
         run.runnerId(),
         () -> reservations.driveInherited(runId, adopted),
         () -> {
-          String daemonId = inheritedLaunches.remove(runId);
+          // Marked first: a check still running registers nothing that survives this.
+          givenUp.add(runId);
+          java.util.concurrent.CompletableFuture<String> launch = inheritedLaunches.remove(runId);
+          String daemonId = launch == null ? null : launch.getNow(null);
           if (daemonId != null) {
             daemons.reap(daemonId);
           }
           relay.drop(runId);
           lost.run();
         });
+    if (step == null) {
+      return;
+    }
+    // The launch is registered only once its recorded subject is confirmed to be one of the run's
+    // live ci-run tokens at qits-idp — off the startup thread, since it asks the network. The daemon
+    // meanwhile re-dials and is refused as unknown, which its reconnect budget is made for. A
+    // subject that is not confirmed, or a listing that cannot be read, takes nothing back: the run
+    // is given up at once (fail closed).
+    java.util.concurrent.CompletableFuture<String> launch =
+        new java.util.concurrent.CompletableFuture<>();
+    inheritedLaunches.put(runId, launch);
+    // A thread of its own rather than the common pool: it inherits this thread's class loader, so
+    // a bean first created on it reads the application's config.
+    Thread check =
+        new Thread(
+            () -> {
+              try {
+                launch.complete(admitInherited(runId, step));
+              } catch (Throwable t) {
+                launch.complete(null);
+              }
+            },
+            "ci-inherit-check-" + runId);
+    check.setDaemon(true);
+    launch.whenComplete(
+        (daemonId, failure) -> {
+          if (daemonId == null) {
+            runners.loseInherited(runId);
+          } else if (givenUp.contains(runId)) {
+            // The run was given up while the check ran: the launch it registered goes too.
+            daemons.reap(daemonId);
+          }
+        });
+    check.start();
+  }
+
+  /**
+   * Register an inherited launch when its recorded token subject is one of the run's live tokens;
+   * the launch id when it was, null when not.
+   */
+  private String admitInherited(String runId, InFlightStep step) {
+    java.util.Optional<java.util.Set<String>> live;
+    try {
+      live = commissions.liveSubjectsOf(runId);
+    } catch (RuntimeException e) {
+      live = java.util.Optional.empty();
+    }
+    if (live.isEmpty()) {
+      LOG.warnf(
+          "Run %s: qits-idp's token listing could not be read, so the recorded launch %s is not"
+              + " trusted and nothing is taken back",
+          runId, step.daemonId());
+      return null;
+    }
+    if (!live.orElseThrow().contains(step.tokenSubject())) {
+      LOG.warnf(
+          "Run %s: the recorded token subject of launch %s is not one of the run's live tokens;"
+              + " nothing is taken back",
+          runId, step.daemonId());
+      return null;
+    }
+    relay.begin(runId, step.stepIndex());
+    if (step.startedAt() != null) {
+      relay.started(runId, step.startedAt());
+    }
+    daemons.reattachLaunch(
+        step.daemonId(),
+        runId,
+        step.stepIndex(),
+        step.tokenSubject(),
+        step.startedAt() != null ? step.script() : null,
+        step.timeoutSeconds(),
+        (stream, seq, text) -> relay.append(runId, text));
+    return step.daemonId();
+  }
+
+  @Override
+  public void revokeInherited(String runId) {
+    commissions.revokeOrphaned(runId);
   }
 
   /**
@@ -498,13 +584,17 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
    */
   @Override
   public StepResult reattach(StepSpec spec, StepListener listener) {
-    String daemonId = inheritedLaunches.remove(spec.runId());
+    java.util.concurrent.CompletableFuture<String> launch = inheritedLaunches.remove(spec.runId());
+    String daemonId =
+        launch == null ? null : CiRunnerRegistry.await(launch, INHERITED_CHECK_TIMEOUT, null);
     String containerName = StepContainerSettings.containerName(spec.runId(), spec.stepIndex());
     CiRunnerRegistry.Session session = runners.holding(spec.runId());
     if (daemonId == null || daemons.phaseOf(daemonId) == null) {
       Reaped reaped = reapOnRunner(session, spec.runId(), spec.stepIndex(), containerName);
       return withContainerLog(
-          failed(StepOutcome.CONNECTION_LOST, NOT_TAKEN_BACK + " (its launch record is gone)]"),
+          failed(StepOutcome.CONNECTION_LOST, NOT_TAKEN_BACK
+                  + ": its recorded launch could not be confirmed against the run's live tokens."
+                  + " The step is not started again.]"),
           reaped,
           session,
           containerName);

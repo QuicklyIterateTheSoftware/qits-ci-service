@@ -548,6 +548,19 @@ as different bytes under a version already published. Now:
   is `FAILED` with the reason in its step output, never run again; any other run is re-queued and
   starts over from its snapshot, so event scripts that publish nothing stay an at-least-once boundary.
 - The automatic infra retry no longer re-fires a publishing run whose step lost its connection.
+- **Fail closed.** The row's launch record holds the token subject, never the token. The sweep
+  takes a run back only when the record adds up (`CiRunService.inheritanceOf`): the runner exists,
+  the step rows are an unbroken green prefix, and the launch is complete with a UUID launch id and
+  names the first step without a row (in flight) or the last one with a row (between steps). A run
+  with no launch recorded is sound only before its first launch. Anything else is settled at once.
+  A launch that cannot be recorded is not made. The launch is registered again only once its
+  subject is confirmed as one of the run's live tokens at qits-idp; an unconfirmed subject or an
+  unreadable listing gives the run up. The re-dialling daemon is admitted only as the recorded
+  launch id and token subject.
+- **Old credentials are revoked.** The predecessor's `ci-run` tokens for an inherited run are
+  revoked (`RunCommissions.revokeOrphaned`) once the taken-back step ends, when the run continues
+  with nothing in flight, and on every settle path. A listing that cannot be read leaves the run
+  owed, and each reconciliation pass retries it.
 
 A `RUNNING` event row with no `runner_id` (the deleted in-process executor's) is re-queued as before.
 

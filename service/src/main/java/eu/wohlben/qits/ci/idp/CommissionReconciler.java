@@ -125,6 +125,9 @@ public class CommissionReconciler {
    * above skip in a suite, so this is what a test calls directly.
    */
   void reconcile() {
+    // The inherited runs whose old tokens could not be revoked when they were given up (qits-1192):
+    // a re-queued one is QUEUED, which the pass below spares.
+    commissions.revokeOwed();
     Optional<List<IdpCommissioner.LiveClient>> live = idp.live();
     // The runner table is read only when there is something of a runner's to judge against it.
     if (live.isPresent()

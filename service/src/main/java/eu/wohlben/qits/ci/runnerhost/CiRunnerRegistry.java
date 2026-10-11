@@ -868,6 +868,17 @@ public class CiRunnerRegistry implements CiRunnerPresence, CiBacklogListener, Ci
         TimeUnit.MILLISECONDS);
   }
 
+  /**
+   * Give up an inherited run now rather than at the grace's end — its launch could not be trusted.
+   * Its {@code lost} runs here, once, unless a claim or the grace got to it first.
+   */
+  public void loseInherited(String runId) {
+    Inherited entry = inherited.remove(runId);
+    if (entry != null) {
+      runQuietly(entry.lost(), "the settlement of run " + runId);
+    }
+  }
+
   /** Whether a run inherited from a previous process is still waiting for its runner. */
   public boolean inheriting(String runId) {
     return inherited.containsKey(runId);

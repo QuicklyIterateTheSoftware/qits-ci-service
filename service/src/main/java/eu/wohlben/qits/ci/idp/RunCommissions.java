@@ -6,6 +6,7 @@ import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.jboss.logging.Logger;
 
@@ -107,6 +108,92 @@ public class RunCommissions {
       // deleteToken never throws and has logged why; the reconciliation reaps a ci-run token whose
       // run is no longer running.
       LOG.debugf("Run %s's ci-run token %s is left to the reconciliation", runId, token.tokenId());
+    }
+  }
+
+  /**
+   * Runs whose predecessor-commissioned tokens could not be revoked yet, because qits-idp's listing
+   * could not be read — retried by {@link #revokeOwed}, which the reconciliation's every pass calls.
+   * A re-queued run is {@code QUEUED}, which the reconciliation spares, so without this a token it
+   * could not list would outlive the decision to give it back.
+   */
+  private final Set<String> owedRevocations = ConcurrentHashMap.newKeySet();
+
+  /**
+   * The subjects of the live {@code ci-run} tokens qits-idp holds for a run, or empty when the
+   * listing could not be read (or nothing is commissioned here) — never "none" for "unknown". What a
+   * restarted process checks a recorded token subject against before it admits a daemon on it
+   * (qits-1192).
+   */
+  public Optional<Set<String>> liveSubjectsOf(String runId) {
+    if (idp == null || !idp.enabled()) {
+      return Optional.empty();
+    }
+    return idp.liveTokens()
+        .map(
+            tokens ->
+                tokens.stream()
+                    .filter(t -> IdpCommissioner.CONTEXT_KIND.equals(t.contextKind()))
+                    .filter(t -> runId.equals(t.contextId()))
+                    .map(IdpCommissioner.LiveToken::subject)
+                    .filter(java.util.Objects::nonNull)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+  }
+
+  /**
+   * Revoke every live {@code ci-run} token of a run that this process does not hold — the tokens a
+   * previous process commissioned for it and died holding (qits-1192). Called wherever an inherited
+   * run's old credential stops being needed: its taken-back step ended, it continued without one,
+   * or it was settled instead of taken back. <b>Never throws.</b> A listing that cannot be read
+   * leaves the run owed, and {@link #revokeOwed} tries again.
+   *
+   * @return how many tokens were deleted
+   */
+  public int revokeOrphaned(String runId) {
+    if (idp == null || !idp.enabled()) {
+      return 0;
+    }
+    Optional<List<IdpCommissioner.LiveToken>> live;
+    try {
+      live = idp.liveTokens();
+    } catch (RuntimeException e) {
+      live = Optional.empty();
+    }
+    if (live.isEmpty()) {
+      owedRevocations.add(runId);
+      LOG.warnf(
+          "Run %s: qits-idp's token listing could not be read; its previous tokens are revoked on"
+              + " the next reconciliation",
+          runId);
+      return 0;
+    }
+    int revoked = 0;
+    boolean allGone = true;
+    for (IdpCommissioner.LiveToken each : live.get()) {
+      if (!IdpCommissioner.CONTEXT_KIND.equals(each.contextKind())
+          || !runId.equals(each.contextId())
+          || holdsToken(each.tokenId())) {
+        continue;
+      }
+      if (idp.deleteToken(each.tokenId())) {
+        revoked++;
+        LOG.infof("Run %s: revoked ci-run token %s of a previous process", runId, each.tokenId());
+      } else {
+        allGone = false;
+      }
+    }
+    if (allGone) {
+      owedRevocations.remove(runId);
+    } else {
+      owedRevocations.add(runId);
+    }
+    return revoked;
+  }
+
+  /** {@link #revokeOrphaned} again for every run still owed it. */
+  public void revokeOwed() {
+    for (String runId : List.copyOf(owedRevocations)) {
+      revokeOrphaned(runId);
     }
   }
 
