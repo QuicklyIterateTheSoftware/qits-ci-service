@@ -364,6 +364,13 @@ release-request:
   # run announces one verdict for both steps. IT MUST STAY LAST anyway: everything after a failing
   # step is SKIPPED, so a red verify costs the release and never the work the step before it did.
   #
+  # THE ENTITY DIAGRAM CHECK, OPT-IN (qits-1179), and off here. A repository turns it on in its own
+  # copy of this recipe (.config/qits/release-archetypes/java-service.yml) by adding
+  # `check-outputs: [entity-diagram]` to this step. After the script below exits 0, qits-ci runs the
+  # entity-diagram automation's own generator (build-classpath, then `qits database diagram`), and
+  # a change under docs/database fails the step as stale, naming the regenerate command. The CLI
+  # comes with the key. No entities, or no classes, is never stale.
+  #
   # `user: build`, and NOT a switch inside the script: a story IT hands the launched artifact an
   # embedded postgres, initdb refuses to run as root and calls getpwuid, so the step needs a
   # passwd-backed non-root user — maven-base carries one (uid 1001). A step container starts

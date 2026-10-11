@@ -62,7 +62,31 @@ public record CiPipeline(List<CiStepDecl> steps) {
       Integer timeoutSeconds,
       boolean docker,
       boolean build,
-      String user) {}
+      String user,
+      boolean qitsCli,
+      List<String> checkOutputs) {
+
+    /**
+     * {@code qitsCli}: the step asked for the pinned qits CLI on {@code PATH} ({@code qits-cli:
+     * true}, release slots only). {@code checkOutputs}: the release outputs a QA step checks after
+     * its script ({@code check-outputs:}, the {@code release-request:} slot only); empty when it
+     * checks none. Both are composed by {@link CiReleaseComposer}; a trigger file refuses them.
+     */
+    public CiStepDecl {
+      checkOutputs = checkOutputs == null ? List.of() : List.copyOf(checkOutputs);
+    }
+
+    /** A step that asks for neither the CLI nor an output check. */
+    public CiStepDecl(
+        String image,
+        String script,
+        Integer timeoutSeconds,
+        boolean docker,
+        boolean build,
+        String user) {
+      this(image, script, timeoutSeconds, docker, build, user, false, List.of());
+    }
+  }
 
   // A step could also declare `branches:` — a list of matchers over the run's branch, entries OR'd,
   // absent meaning "every branch" — and it is GONE with per-push CI (2026-09-05). It was a pipeline

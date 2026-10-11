@@ -1725,6 +1725,23 @@ userflows: true                # optional; true, or the site name the bundle pub
 
 An SPA frontend's whole file is `archetype: spa-frontend`.
 
+**Two step keys exist only in this file and in recipes** (qits-1179). A trigger file refuses both:
+its steps run as written, so nothing would act on them.
+
+- `qits-cli: true` — the pinned qits CLI is fetched onto `PATH` before the step's script, with the
+  automation kinds' hard fetch: no CLI, no step. A release step already gets the CLI from its
+  prelude; there the key also demands the package.
+- `check-outputs: [entity-diagram, screenshot-baselines]` — QA steps only. After the script exits 0,
+  each kind's generator runs (the `script:` of `platform-pipelines/automations/<kind>.yml`, verbatim,
+  so the check and the regeneration cannot disagree), then `git status --porcelain
+  --untracked-files=all` over the kind's paths (`docs/database`; `**/__screenshots__/**` and
+  `**/testing/browser/renderer.txt`). A change there fails the step with one line:
+  `qits-ci: stale outputs: <kinds> — regenerate with: qits release-request regenerate --project <p>
+  --repository <r> --kind <kind>`. A generator that fails (a failing spec) fails the step with its
+  own code and is not called stale. Nothing is regenerated or committed, and the report hook still
+  runs. A kind that needs the CLI gets it with the key. The packaged recipes do not set it yet; a
+  repository opts in through its own recipe copy.
+
 **Every release publishes a changelog** (qits-893). The last release step's publish block always
 ends with `qits artifacts publish changelog --version "$QITS_VERSION"` and the provenance `--meta`
 the docs bundle carries, and it is required: a red publish is a red release run and a failed PUBLISH

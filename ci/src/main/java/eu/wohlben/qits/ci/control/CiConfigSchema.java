@@ -98,6 +98,37 @@ final class CiConfigSchema {
   /** The per-step branch filter — legal in a pipeline file, an error in a trigger file. */
   static final String BRANCHES_KEY = "branches";
 
+  /**
+   * A release-slot step's request for the pinned qits CLI on {@code PATH}: optional, and only ever
+   * {@code true}. The text is {@link CiReleaseComposer#cliFetch}'s {@code AUTOMATION} form, the one a
+   * kind file's own {@code qits-cli: true} spends ({@link CiAutomationComposer#QITS_CLI_KEY}), so it
+   * is hard: no CLI, no step. A trigger file refuses the key — nothing composes its steps, so there
+   * it would be inert.
+   */
+  static final String QITS_CLI_KEY = CiAutomationComposer.QITS_CLI_KEY;
+
+  /**
+   * A QA step's output check (qits-1179): a list of automation kinds ({@link
+   * CiReleaseComposer#OUTPUT_CHECK_PATHS}) whose outputs the step checks after its script. Legal on
+   * a {@code release-request:} step only; see {@link CiReleaseComposer} for what is composed.
+   */
+  static final String CHECK_OUTPUTS_KEY = "check-outputs";
+
+  /**
+   * Which list a step belongs to, and so which of the two composed keys it may carry. A trigger
+   * file's steps run as written, so neither key could mean anything there.
+   */
+  enum StepScope {
+    /** A {@code ci-event-*.yml} step: run as written. Both composed keys are refused. */
+    TRIGGER,
+
+    /** A {@code release:} slot step: {@code qits-cli} is legal, {@code check-outputs} is not. */
+    RELEASE,
+
+    /** A {@code release-request:} slot step: both keys are legal. */
+    RELEASE_REQUEST
+  }
+
   /** Who the step's container runs as. Legal in both file kinds; refused beside {@code docker}. */
   static final String USER_KEY = "user";
 
@@ -192,6 +223,11 @@ final class CiConfigSchema {
    * the one caller that is allowed to find the key and ignore it.
    */
   static CiPipeline steps(Map<?, ?> root, String configPath, Origin origin) {
+    return steps(root, configPath, origin, StepScope.TRIGGER);
+  }
+
+  /** {@link #steps(Map, String, Origin)} for a list in {@code scope}. */
+  static CiPipeline steps(Map<?, ?> root, String configPath, Origin origin, StepScope scope) {
     Object rawSteps = root.get(STEPS_KEY);
     if (rawSteps == null) {
       return new CiPipeline(List.of());
@@ -216,7 +252,9 @@ final class CiConfigSchema {
               optionalTimeoutSeconds(step, i),
               docker,
               build,
-              optionalUser(step, i, docker)));
+              optionalUser(step, i, docker),
+              optionalQitsCli(step, i, scope, origin),
+              optionalCheckOutputs(step, i, scope, origin)));
     }
     return new CiPipeline(List.copyOf(steps));
   }
@@ -382,6 +420,91 @@ final class CiConfigSchema {
               + " repository's. Split the work into two steps.");
     }
     return user;
+  }
+
+  /**
+   * The optional {@code qits-cli}: only ever {@code true}, on a release-slot step. A trigger file
+   * refuses it, because nothing composes a trigger file's steps; a stored snapshot is a composed
+   * document, which never carries it, so there the key is simply not read.
+   */
+  private static boolean optionalQitsCli(
+      Map<?, ?> step, int index, StepScope scope, Origin origin) {
+    Object value = step.get(QITS_CLI_KEY);
+    if (value == null || origin == Origin.STORED_SNAPSHOT) {
+      return false;
+    }
+    if (scope == StepScope.TRIGGER) {
+      throw new CiConfigException(
+          "Step "
+              + index
+              + ": '"
+              + QITS_CLI_KEY
+              + "' is a release-slot key (.config/qits/release.yml) — a trigger file's step runs as"
+              + " written, so nothing would fetch the CLI");
+    }
+    if (!Boolean.TRUE.equals(value)) {
+      throw new CiConfigException(
+          "Step "
+              + index
+              + ": '"
+              + QITS_CLI_KEY
+              + "' is only ever true — omit it for a step that needs no CLI, got: "
+              + value);
+    }
+    return true;
+  }
+
+  /**
+   * The optional {@code check-outputs}: a non-empty list of distinct kinds the platform can check
+   * ({@link CiReleaseComposer#OUTPUT_CHECK_PATHS}), on a {@code release-request:} step only. A
+   * release step publishes a tag that is already cut, so a check there could only fail a release
+   * after the fact; a trigger file's step runs as written.
+   */
+  private static List<String> optionalCheckOutputs(
+      Map<?, ?> step, int index, StepScope scope, Origin origin) {
+    Object value = step.get(CHECK_OUTPUTS_KEY);
+    if (value == null || origin == Origin.STORED_SNAPSHOT) {
+      return List.of();
+    }
+    if (scope != StepScope.RELEASE_REQUEST) {
+      throw new CiConfigException(
+          "Step "
+              + index
+              + ": '"
+              + CHECK_OUTPUTS_KEY
+              + "' belongs on a 'release-request' step — QA is where a stale output can stop a"
+              + " release");
+    }
+    if (!(value instanceof List<?> list) || list.isEmpty()) {
+      throw new CiConfigException(
+          "Step "
+              + index
+              + ": '"
+              + CHECK_OUTPUTS_KEY
+              + "' must be a non-empty list of kinds, got: "
+              + typeOf(value));
+    }
+    List<String> kinds = new ArrayList<>();
+    for (Object entry : list) {
+      if (!(entry instanceof String kind)
+          || !CiReleaseComposer.OUTPUT_CHECK_PATHS.containsKey(kind)) {
+        throw new CiConfigException(
+            "Step "
+                + index
+                + ": '"
+                + CHECK_OUTPUTS_KEY
+                + "' names '"
+                + entry
+                + "'; the kinds QA can check are "
+                + CiReleaseComposer.OUTPUT_CHECK_PATHS.keySet());
+      }
+      if (kinds.contains(kind)) {
+        throw new CiConfigException(
+            "Step " + index + ": '" + CHECK_OUTPUTS_KEY + "' names '" + kind + "' twice");
+      }
+      kinds.add(kind);
+    }
+    return List.copyOf(kinds);
   }
 
   /** A step declaring {@code branches:} is refused — see {@link #steps} for why the key is gone. */

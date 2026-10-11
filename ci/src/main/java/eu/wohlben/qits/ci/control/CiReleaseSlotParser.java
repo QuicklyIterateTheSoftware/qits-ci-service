@@ -308,7 +308,10 @@ public class CiReleaseSlotParser {
           configPath,
           // A slot file is committed bytes a person can fix, so it is held to the strict schema:
           // `gating:` is refused here exactly as it is in a trigger file.
-          CiConfigSchema.Origin.COMMITTED_FILE);
+          CiConfigSchema.Origin.COMMITTED_FILE,
+          RELEASE_REQUEST_KEY.equals(key)
+              ? CiConfigSchema.StepScope.RELEASE_REQUEST
+              : CiConfigSchema.StepScope.RELEASE);
     } catch (CiConfigException e) {
       // Re-thrown naming the file and the slot: the shared schema's messages are per step, and a
       // document with two slots would otherwise say "Step 0" about one of two lists.

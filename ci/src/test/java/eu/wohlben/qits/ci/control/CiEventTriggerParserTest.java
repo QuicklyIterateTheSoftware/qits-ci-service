@@ -936,4 +936,22 @@ public class CiEventTriggerParserTest {
             + " 'if-changed'"),
         unknown.getMessage());
   }
+
+  @Test
+  public void aTriggerFileStepRefusesTheComposedKeys() {
+    // qits-1179: qits-cli and check-outputs are composed into a release slot's steps. A trigger
+    // file's step runs as written, so either key would be inert there.
+    for (String key : List.of("qits-cli: true", "check-outputs: [entity-diagram]")) {
+      CiConfigException refused =
+          assertThrows(
+              CiConfigException.class,
+              () ->
+                  parser.parse(
+                      PATH,
+                      "event: BuildSuccessful\nsteps:\n  - image: alpine:3\n    script: x\n    "
+                          + key
+                          + "\n"));
+      assertTrue(refused.getMessage().contains(key.substring(0, key.indexOf(':'))), refused.getMessage());
+    }
+  }
 }

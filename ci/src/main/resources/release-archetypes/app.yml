@@ -139,6 +139,14 @@ release-request:
   # (Playwright's Chromium and a pinned font stack, described in /etc/qits-renderer-provenance). The
   # workspace image is built FROM the same image, so a reference screenshot an agent makes there
   # matches here. See `test:browser` below.
+  #
+  # THE SCREENSHOT CHECK, OPT-IN (qits-1179), and off here. A repository turns it on in its own copy
+  # of this recipe (.config/qits/release-archetypes/app.yml): add `check-outputs:
+  # [screenshot-baselines]` to this step and delete the `CI=true npm run --if-present test:browser`
+  # line below. After the script exits 0, qits-ci runs the screenshot-baselines automation's own
+  # generator (the install, `UPDATE_SNAPSHOT=all npm run test:browser`, `screenshots:prune`); a
+  # failing spec fails the step as before, and a changed, new or deleted reference fails it as
+  # stale, naming the regenerate command.
   - image: qits/build-images/node-browser-base:latest
     timeout-seconds: 1800
     script: |

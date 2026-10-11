@@ -26,6 +26,12 @@
 # this kind a reason to run it again. Everything else the build writes (target/, the local
 # repository) stays out of the commit.
 #
+# THE SAME SCRIPT IS QA'S CHECK (qits-1179). A release-request step that declares
+# `check-outputs: [entity-diagram]` runs this script, verbatim, after its own script, and then
+# `git status` on docs/database: a change there fails QA as stale, naming this kind. So the check
+# and the regeneration cannot disagree. The script must therefore also run cleanly in a QA
+# checkout after `verify`.
+#
 # What runs is only a build and one CLI call: the mapping is reconstructed from the class files
 # by `qits database diagram` (JPA/Hibernate, Mermaid erDiagram, one file per persistence unit).
 # No tests run, no Quarkus augmentation and no SPA: `test-compile` holds the plain annotated
@@ -69,6 +75,13 @@ script: |
     test-compile dependency:build-classpath \
     -Dmdep.outputFile=target/qits-classpath.txt \
     -DincludeScope=runtime
+
+  # No compiled classes means nothing to draw, not a failure: the CLI would refuse with "compile
+  # first", and QA's output check must never read that as a stale diagram.
+  if [ -z "$(find . -path ./node_modules -prune -o -type d -path '*/target/classes' -print | head -1)" ]; then
+    echo "no compiled classes: there is no entity diagram to draw"
+    exit 0
+  fi
 
   # Writes every unit's file and deletes only the generated ones it did not produce this time.
   qits database diagram --root . --out docs/database

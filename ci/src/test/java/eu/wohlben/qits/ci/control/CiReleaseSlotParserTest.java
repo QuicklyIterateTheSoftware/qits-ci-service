@@ -209,6 +209,54 @@ public class CiReleaseSlotParserTest {
   }
 
   @Test
+  public void aSlotStepMayAskForTheCliAndAQaStepForAnOutputCheck() {
+    // qits-1179. Both keys are composed, so they are slot keys; check-outputs is QA's alone.
+    CiReleaseSlots slots =
+        parser.parse(
+            PATH,
+            """
+            release-request:
+              - image: alpine:3
+                qits-cli: true
+                check-outputs: [entity-diagram, screenshot-baselines]
+                script: x
+            release:
+              - image: alpine:3
+                qits-cli: true
+                script: y
+            """);
+    var qa = slots.releaseRequest().steps().get(0);
+    assertTrue(qa.qitsCli());
+    assertEquals(List.of("entity-diagram", "screenshot-baselines"), qa.checkOutputs());
+    assertTrue(slots.release().steps().get(0).qitsCli());
+    assertEquals(List.of(), slots.release().steps().get(0).checkOutputs());
+
+    // Absent is false and empty, exactly the step every file declared before the keys existed.
+    var plain = parser.parse(PATH, "release:\n  - image: alpine:3\n    script: y\n");
+    assertFalse(plain.release().steps().get(0).qitsCli());
+    assertEquals(List.of(), plain.release().steps().get(0).checkOutputs());
+  }
+
+  @Test
+  public void theCliAndOutputCheckKeysAreHeldToTheirValues() {
+    assertTrue(
+        refused("release:\n  - image: alpine:3\n    script: x\n    qits-cli: false\n")
+            .getMessage()
+            .contains("only ever true"));
+    assertTrue(
+        refused("release:\n  - image: alpine:3\n    script: x\n    check-outputs: [entity-diagram]\n")
+            .getMessage()
+            .contains("'release-request' step"));
+    String qa = "release-request:\n  - image: alpine:3\n    script: x\n    check-outputs: ";
+    assertTrue(refused(qa + "[openapi]\n").getMessage().contains("'openapi'"));
+    assertTrue(refused(qa + "[dependency-bump]\n").getMessage().contains("can check"));
+    assertTrue(refused(qa + "[]\n").getMessage().contains("non-empty list"));
+    assertTrue(refused(qa + "entity-diagram\n").getMessage().contains("non-empty list"));
+    assertTrue(
+        refused(qa + "[entity-diagram, entity-diagram]\n").getMessage().contains("twice"));
+  }
+
+  @Test
   public void theStepSchemaStillRefusesBranches() {
     // Not this parser's rule — CiConfigSchema's, reached verbatim. A per-step filter over the run's
     // branch is inert decoration or a step that can never run, in a slot file exactly as in a

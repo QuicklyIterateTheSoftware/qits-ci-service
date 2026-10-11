@@ -2,8 +2,13 @@ package eu.wohlben.qits.ci.control;
 
 import eu.wohlben.qits.ci.control.CiPipeline.CiStepDecl;
 import eu.wohlben.qits.ci.control.CiReleaseSlots.SlotArtifact;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -213,6 +218,25 @@ import java.util.Set;
  * $QITS_PUBLISH_TOKEN_COMMAND}, all inherited from the step's environment. With no CLI package
  * configured it says reports were skipped and succeeds. Release-phase documents carry no hook and
  * are unchanged: their postlude still runs only after the declared script exited 0.
+ *
+ * <h2>The qits CLI on a slot step, and the QA output check (qits-1179)</h2>
+ *
+ * <p><b>{@code qits-cli: true} on a slot step</b> fetches the pinned CLI onto {@code PATH} before
+ * the declared script, with {@link CliFetch#AUTOMATION}'s text: a step that asked for the CLI cannot
+ * run without it. A release step already gets the CLI from its prelude; there the key makes that
+ * fetch hard on the package too.
+ *
+ * <p><b>{@code check-outputs: [<kind>…]} on a QA step</b> checks release outputs the platform can
+ * regenerate ({@link #OUTPUT_CHECK_PATHS}). After the declared script exits 0, each kind's
+ * <b>generator</b> runs — the {@code script:} of its automation kind file, {@code
+ * platform-pipelines/automations/<kind>.yml}, verbatim, so the check and the regeneration cannot
+ * disagree — and then {@code git status --porcelain --untracked-files=all} over the kind's paths.
+ * Any change there means the committed output is stale: the step prints one line naming the stale
+ * kinds and the {@code qits release-request regenerate} call for each, and exits 1. A generator that
+ * fails (a real test failure, for screenshots) fails the step with its own code and is never called
+ * stale. Nothing is regenerated or committed here. The check runs before the report hook, so the
+ * hook still runs and reports the step's final code. A kind whose kind file declares {@code
+ * qits-cli: true} gets the CLI as if the step had declared it.
  */
 public final class CiReleaseComposer {
 
@@ -351,6 +375,78 @@ public final class CiReleaseComposer {
   /** The quoted heredoc delimiter the check is written through. Platform text, never a script's. */
   static final String LOCKFILE_CHECK_DELIMITER = "QITS_LOCKFILE_EOF";
 
+  /**
+   * The kinds a QA step's {@code check-outputs:} may name, each with the paths its output lives
+   * under: the {@code git status} pathspecs the check reads. They are the paths qits-maintenance
+   * commits for the same kind, so "changed here" means "the regeneration would commit something".
+   */
+  public static final Map<String, List<String>> OUTPUT_CHECK_PATHS = outputCheckPaths();
+
+  private static Map<String, List<String>> outputCheckPaths() {
+    Map<String, List<String>> paths = new LinkedHashMap<>();
+    paths.put("entity-diagram", List.of("docs/database"));
+    paths.put(
+        "screenshot-baselines",
+        List.of(":(glob)**/__screenshots__/**", ":(glob)**/testing/browser/renderer.txt"));
+    return java.util.Collections.unmodifiableMap(paths);
+  }
+
+  /** Where a QA step writes one kind's generator before running it: {@code <prefix><kind>.sh}. */
+  static final String OUTPUT_CHECK_PREFIX = "/tmp/qits-check-";
+
+  /** The quoted heredoc delimiter a generator is written through. */
+  static final String OUTPUT_CHECK_DELIMITER = "QITS_CHECK_EOF";
+
+  /**
+   * One kind's generator: its automation kind file's {@code script:} and whether that file declares
+   * {@code qits-cli: true}.
+   */
+  public record OutputCheck(String kind, String script, boolean qitsCli) {}
+
+  /** The packaged generators, read once from the automation kind files. */
+  private static volatile Map<String, OutputCheck> packagedChecks;
+
+  /**
+   * The generators of every kind in {@link #OUTPUT_CHECK_PATHS}, read from the automation kind files
+   * this build packages ({@code platform-pipelines/automations/<kind>.yml}). A missing or unreadable
+   * file is a broken build, so it throws.
+   */
+  public static Map<String, OutputCheck> packagedOutputChecks() {
+    Map<String, OutputCheck> checks = packagedChecks;
+    if (checks == null) {
+      Map<String, OutputCheck> read = new LinkedHashMap<>();
+      for (String kind : OUTPUT_CHECK_PATHS.keySet()) {
+        String resource =
+            CiPlatformPipelines.PACKAGED_DIR + CiPlatformPipelines.AUTOMATIONS_DIR + kind + ".yml";
+        Map<?, ?> root = CiConfigSchema.load(resource(resource), true);
+        Object script = root == null ? null : root.get(CiAutomationComposer.SCRIPT_KEY);
+        if (!(script instanceof String text) || text.isBlank()) {
+          throw new IllegalStateException(resource + " declares no script");
+        }
+        read.put(
+            kind,
+            new OutputCheck(
+                kind,
+                text,
+                Boolean.TRUE.equals(root.get(CiAutomationComposer.QITS_CLI_KEY))));
+      }
+      checks = java.util.Collections.unmodifiableMap(read);
+      packagedChecks = checks;
+    }
+    return checks;
+  }
+
+  private static String resource(String name) {
+    try (InputStream in = CiReleaseComposer.class.getClassLoader().getResourceAsStream(name)) {
+      if (in == null) {
+        throw new IllegalStateException(name + " is not on the classpath");
+      }
+      return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+    } catch (IOException e) {
+      throw new UncheckedIOException("could not read " + name, e);
+    }
+  }
+
   private CiReleaseComposer() {}
 
   /**
@@ -392,6 +488,19 @@ public final class CiReleaseComposer {
    *     publish them
    */
   public static Composed compose(CiRepoRef repo, CiReleaseSlots slots, CiReleaseSlots archetype) {
+    return compose(repo, slots, archetype, packagedOutputChecks());
+  }
+
+  /**
+   * {@link #compose(CiRepoRef, CiReleaseSlots, CiReleaseSlots)} with the generators a {@code
+   * check-outputs:} step runs given rather than read from the packaged kind files — the seam a test
+   * runs a stub generator through.
+   */
+  static Composed compose(
+      CiRepoRef repo,
+      CiReleaseSlots slots,
+      CiReleaseSlots archetype,
+      Map<String, OutputCheck> outputChecks) {
     String selector = selector(repo);
     // WHOLE-SLOT OVERRIDE. A repository that declares a slot replaces the archetype's entirely, and
     // the file the steps came from travels with them so an error names the document a person edits.
@@ -424,7 +533,7 @@ public final class CiReleaseComposer {
     Slot release = declaredRelease != null ? declaredRelease : changelogOnlySlot(slots);
     Postlude postlude = new Postlude(artifacts, artifactsPath, contracts, selector);
     return new Composed(
-        qa == null ? null : qaDocument(slots, archetype, selector, qa),
+        qa == null ? null : qaDocument(slots, archetype, selector, qa, outputChecks),
         releaseDocument(slots, archetype, selector, release, postlude));
   }
 
@@ -513,7 +622,11 @@ public final class CiReleaseComposer {
   }
 
   private static String qaDocument(
-      CiReleaseSlots slots, CiReleaseSlots archetype, String selector, Slot qa) {
+      CiReleaseSlots slots,
+      CiReleaseSlots archetype,
+      String selector,
+      Slot qa,
+      Map<String, OutputCheck> outputChecks) {
     StringBuilder out = new StringBuilder();
     header(out, slots, archetype);
     out.append("event: ").append(RELEASE_REQUEST_EVENT).append('\n');
@@ -530,7 +643,7 @@ public final class CiReleaseComposer {
     out.append("checkout:\n");
     out.append("  branch: ").append(RELEASE_REQUEST_BRANCH_PATH).append('\n');
     out.append("  sha: ").append(RELEASE_REQUEST_SHA_PATH).append('\n');
-    steps(out, qa, false, null);
+    steps(out, qa, false, null, outputChecks);
     return out.toString();
   }
 
@@ -580,7 +693,7 @@ public final class CiReleaseComposer {
         out.append(" }\n");
       }
     }
-    steps(out, release, true, postlude);
+    steps(out, release, true, postlude, Map.of());
     return out.toString();
   }
 
@@ -607,7 +720,12 @@ public final class CiReleaseComposer {
    * error at both scopes now (ticket 9441bc6e), so emitting it would compose a document this
    * service's own parser refuses.
    */
-  private static void steps(StringBuilder out, Slot slot, boolean releasePhase, Postlude postlude) {
+  private static void steps(
+      StringBuilder out,
+      Slot slot,
+      boolean releasePhase,
+      Postlude postlude,
+      Map<String, OutputCheck> outputChecks) {
     List<CiStepDecl> declared = slot.pipeline().steps();
     // Every release phase's last step publishes — at the very least its changelog (qits-893) — so
     // the publish block's place is no longer conditional on what the repository declares.
@@ -637,7 +755,8 @@ public final class CiReleaseComposer {
               i == last ? postlude : null,
               releasePhase ? postlude : null,
               i == last,
-              slot.sourcePath()),
+              slot.sourcePath(),
+              outputChecks),
           "      ");
     }
   }
@@ -668,7 +787,19 @@ public final class CiReleaseComposer {
       Postlude publish,
       Postlude release,
       boolean last,
-      String sourcePath) {
+      String sourcePath,
+      Map<String, OutputCheck> outputChecks) {
+    List<OutputCheck> checks = new ArrayList<>();
+    for (String kind : step.checkOutputs()) {
+      OutputCheck check = outputChecks.get(kind);
+      if (check == null) {
+        throw new CiConfigException(
+            sourcePath + ": check-outputs names '" + kind + "', and this qits-ci has no generator"
+                + " for it");
+      }
+      checks.add(check);
+    }
+    boolean checkNeedsCli = checks.stream().anyMatch(OutputCheck::qitsCli);
     StringBuilder out = new StringBuilder();
     // The daemon runs a step with `<shell> -c` and no -e — bash where the image has it, sh where it
     // does not — so this line is what makes an early failure a failure. -u is load-bearing too: an
@@ -729,7 +860,19 @@ public final class CiReleaseComposer {
       // Soft on the package: a deployment that has switched it off still runs every recipe that does
       // not call it, and one that does gets `command not found` rather than a silent skip. The
       // postlude below demands the package outright.
+      if (step.qitsCli()) {
+        // The prelude's fetch below is soft on the package; a step that asked for the CLI is not.
+        out.append(
+            ": \"${QITS_ARTIFACTS_CLI_PACKAGE:?this step declares qits-cli: true, and the qits CLI"
+                + " is not configured on this deployment}\"\n");
+      }
       cliFetch(out, step.image(), CliFetch.RELEASE);
+    } else if (step.qitsCli() || checkNeedsCli) {
+      out.append(
+          step.qitsCli()
+              ? "# --- the qits CLI, pinned, on PATH: this step declares qits-cli: true ---\n"
+              : "# --- the qits CLI, pinned, on PATH: this step's output check needs it ---\n");
+      cliFetch(out, step.image(), CliFetch.AUTOMATION);
     }
     if (step.build()) {
       // The platform builder, demanded loudly before anything is built. Unset means a
@@ -790,6 +933,9 @@ public final class CiReleaseComposer {
     if (!releasePhase) {
       out.append("qits_step_exit=$?\n");
       out.append("set -e\n");
+      if (!checks.isEmpty()) {
+        outputCheck(out, checks, sourcePath);
+      }
       out.append(
           "# --- platform report hook: always runs, never changes the step's verdict ---\n");
       // A FILE run by a child `sh`, through a quoted heredoc like the declared script: nothing in
@@ -842,6 +988,72 @@ public final class CiReleaseComposer {
       }
     }
     return out.toString();
+  }
+
+  /**
+   * The QA output check (qits-1179): after a green declared script, each kind's generator, then
+   * {@code git status} over the kind's paths. See the class javadoc. It only ever moves {@code
+   * qits_step_exit}, so the report hook after it still runs and reports the final code.
+   */
+  private static void outputCheck(StringBuilder out, List<OutputCheck> checks, String sourcePath) {
+    out.append("# --- platform output check: the generators run, then git status on their paths ---\n");
+    out.append("qits_stale=\n");
+    out.append("qits_regenerate=\n");
+    for (OutputCheck check : checks) {
+      for (String line : check.script().split("\n", -1)) {
+        if (line.strip().equals(OUTPUT_CHECK_DELIMITER)) {
+          throw new CiConfigException(
+              sourcePath + ": the " + check.kind() + " generator contains the line "
+                  + OUTPUT_CHECK_DELIMITER + ", which would end the heredoc it is written through");
+        }
+      }
+      String file = OUTPUT_CHECK_PREFIX + check.kind() + ".sh";
+      StringBuilder paths = new StringBuilder();
+      for (String path : OUTPUT_CHECK_PATHS.get(check.kind())) {
+        paths.append(' ').append(shellQuote(path));
+      }
+      String status = "git status --porcelain --untracked-files=all --" + paths;
+      // Written at the top level: a heredoc's body and delimiter cannot be indented.
+      out.append("cat > ").append(file).append(" <<'").append(OUTPUT_CHECK_DELIMITER).append("'\n");
+      out.append(check.script().endsWith("\n") ? check.script() : check.script() + "\n");
+      out.append(OUTPUT_CHECK_DELIMITER).append('\n');
+      out.append("if [ \"$qits_step_exit\" -eq 0 ]; then\n");
+      out.append("  echo \"qits-ci: checking ").append(check.kind()).append("\" >&2\n");
+      out.append("  set +e\n");
+      out.append("  if command -v bash > /dev/null 2>&1; then\n");
+      out.append("    bash -eu ").append(file).append('\n');
+      out.append("  else\n");
+      out.append("    sh -eu ").append(file).append('\n');
+      out.append("  fi\n");
+      out.append("  qits_check_exit=$?\n");
+      out.append("  set -e\n");
+      out.append("  if [ \"$qits_check_exit\" -ne 0 ]; then\n");
+      // A failed generator is a failed step, never a stale output: for screenshots it is a real
+      // test failure, and either way nothing was produced to compare.
+      out.append("    echo \"qits-ci: the ")
+          .append(check.kind())
+          .append(" generator failed (exit $qits_check_exit), so its outputs were not checked\" >&2\n");
+      out.append("    qits_step_exit=$qits_check_exit\n");
+      out.append("  elif ! qits_changed=$(").append(status).append("); then\n");
+      out.append("    echo \"qits-ci: git status failed, so the ")
+          .append(check.kind())
+          .append(" outputs were not checked\" >&2\n");
+      out.append("    qits_step_exit=1\n");
+      out.append("  elif [ -n \"$qits_changed\" ]; then\n");
+      out.append("    printf '%s\\n' \"$qits_changed\" >&2\n");
+      out.append("    qits_stale=\"${qits_stale:+$qits_stale, }").append(check.kind()).append("\"\n");
+      out.append("    qits_regenerate=\"${qits_regenerate:+$qits_regenerate; }qits release-request"
+          + " regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository"
+          + " ${QITS_CI_REPO_NAME:-<repository>} --kind ")
+          .append(check.kind())
+          .append("\"\n");
+      out.append("  fi\n");
+      out.append("fi\n");
+    }
+    out.append("if [ -n \"$qits_stale\" ]; then\n");
+    out.append("  echo \"qits-ci: stale outputs: $qits_stale — regenerate with: $qits_regenerate\" >&2\n");
+    out.append("  qits_step_exit=1\n");
+    out.append("fi\n");
   }
 
   /**

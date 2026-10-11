@@ -1959,6 +1959,235 @@ public class CiReleaseComposerTest {
     assertFalse(release.contains("set +e"), release);
   }
 
+  // --- the qits CLI on a slot step, and the QA output check (qits-1179) -----------------------------
+
+  @Test
+  public void aQaStepCheckingTheEntityDiagramRunsTheKindFilesGeneratorWithTheCli() {
+    // The packaged generator: the entity-diagram kind file's own script, which needs the CLI, so
+    // the step gets the CLI without declaring qits-cli itself.
+    String qa =
+        CiReleaseComposer.compose(
+                REPO,
+                slots(
+                    """
+                    release-request:
+                      - image: qits/build-images/maven-base:latest
+                        timeout-seconds: 3600
+                        check-outputs: [entity-diagram]
+                        script: |
+                          ./mvnw -B -ntp verify
+                    """),
+                null)
+            .releaseRequestDocument();
+    golden("check-outputs-entity-diagram-release-request.yml", qa);
+    assertTrue(qa.contains("this step's output check needs it"), qa);
+    assertTrue(qa.contains("qits database diagram --root . --out docs/database"), qa);
+    assertTrue(qa.contains("git status --porcelain --untracked-files=all -- 'docs/database'"), qa);
+    // The check sits between the declared script and the report hook.
+    assertTrue(qa.indexOf("qits_step_exit=$?") < qa.indexOf("platform output check"), qa);
+    assertTrue(qa.indexOf("platform output check") < qa.indexOf("platform report hook"), qa);
+  }
+
+  @Test
+  public void aQaStepCheckingScreenshotsRunsTheKindFilesGenerator() {
+    String qa =
+        CiReleaseComposer.compose(
+                REPO,
+                slots(
+                    """
+                    release-request:
+                      - image: qits/build-images/node-browser-base:latest
+                        timeout-seconds: 3600
+                        qits-cli: true
+                        check-outputs: [screenshot-baselines]
+                        script: |
+                          npm ci --no-audit --no-fund
+                          npm run build
+                    """),
+                null)
+            .releaseRequestDocument();
+    golden("check-outputs-screenshot-baselines-release-request.yml", qa);
+    assertTrue(qa.contains("this step declares qits-cli: true"), qa);
+    assertTrue(qa.contains("UPDATE_SNAPSHOT=all npm run test:browser"), qa);
+    assertTrue(qa.contains("npm run --if-present screenshots:prune"), qa);
+    assertTrue(
+        qa.contains(
+            "git status --porcelain --untracked-files=all -- ':(glob)**/__screenshots__/**'"
+                + " ':(glob)**/testing/browser/renderer.txt'"),
+        qa);
+  }
+
+  @Test
+  public void theCheckedGeneratorsAreTheAutomationKindFilesScripts() {
+    // One text for both: the check cannot disagree with the regeneration.
+    for (var check : CiReleaseComposer.packagedOutputChecks().values()) {
+      String kindFile =
+          read("platform-pipelines/automations/" + check.kind() + ".yml");
+      assertNotNull(kindFile, check.kind());
+      assertEquals(
+          CiConfigSchema.load(kindFile, true).get("script"), check.script(), check.kind());
+    }
+    assertEquals(
+        CiReleaseComposer.OUTPUT_CHECK_PATHS.keySet(),
+        CiReleaseComposer.packagedOutputChecks().keySet());
+  }
+
+  @Test
+  public void aStepWithoutTheKeysComposesExactlyAsBefore() {
+    String qa =
+        CiReleaseComposer.compose(
+                REPO, slots("release-request:\n  - image: alpine:3\n    script: x\n"), null)
+            .releaseRequestDocument();
+    assertFalse(qa.contains("qits-check-"), qa);
+    assertFalse(qa.contains("qits-bin"), qa);
+  }
+
+  @Test
+  public void aReleaseStepAskingForTheCliMakesThePreludesFetchHard() {
+    String release =
+        CiReleaseComposer.compose(
+                REPO,
+                slots("release:\n  - image: alpine:3\n    qits-cli: true\n    script: x\n"),
+                null)
+            .releaseDocument();
+    int demand = release.indexOf("this step declares qits-cli: true");
+    assertTrue(demand > 0, release);
+    assertTrue(demand < release.indexOf("if [ -n \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]"), release);
+    String plain =
+        CiReleaseComposer.compose(
+                REPO, slots("release:\n  - image: alpine:3\n    script: x\n"), null)
+            .releaseDocument();
+    assertFalse(plain.contains("declares qits-cli"), plain);
+  }
+
+  /**
+   * The output check, EXECUTED, with a stub generator through the compose seam and a real git
+   * checkout: clean passes, a change under the kind's paths fails as stale with the one line, a
+   * failing generator fails with its own code and is not called stale, and a red script never
+   * reaches the generator. The report hook is told the final code every time.
+   */
+  @Test
+  public void theOutputCheckFailsOnlyOnStaleOutputsAndTheHookStillRuns() throws Exception {
+    Map<String, CiReleaseComposer.OutputCheck> stub =
+        Map.of(
+            "screenshot-baselines",
+            new CiReleaseComposer.OutputCheck(
+                "screenshot-baselines",
+                """
+                echo generator-ran
+                if [ -n "${QITS_TEST_GEN_FAIL:-}" ]; then exit 4; fi
+                if [ -n "${QITS_TEST_STALE:-}" ]; then
+                  mkdir -p src/__screenshots__
+                  echo png > src/__screenshots__/new.png
+                fi
+                echo unrelated > unrelated.txt
+                """,
+                false));
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO,
+            slots(
+                """
+                release-request:
+                  - image: alpine:3
+                    check-outputs: [screenshot-baselines]
+                    script: |
+                      echo declared-script-ran
+                      exit "$QITS_TEST_EXIT"
+                """),
+            null,
+            stub);
+    Path work = Files.createTempDirectory("qa-output-check");
+    try {
+      String script = stepScript(composed.releaseRequestDocument()).replace("/tmp/", work + "/");
+      Path scriptFile = work.resolve("step.sh");
+      Files.writeString(scriptFile, script);
+      Path checkout = Files.createDirectories(work.resolve("checkout"));
+      Process init =
+          new ProcessBuilder("git", "init", "-q").directory(checkout.toFile()).start();
+      assertEquals(0, init.waitFor());
+      Files.writeString(
+          work.resolve("stub-qits"),
+          "#!/bin/sh\nprintf '%s\\n' \"$*\" > '" + work.resolve("qits-argv.txt") + "'\n");
+      Path bin = Files.createDirectories(work.resolve("bin"));
+      Path curl = bin.resolve("curl");
+      Files.writeString(
+          curl,
+          "#!/bin/sh\n"
+              + "prev=\n"
+              + "for a in \"$@\"; do\n"
+              + "  if [ \"$prev\" = \"-o\" ]; then cp '" + work.resolve("stub-qits") + "' \"$a\"; fi\n"
+              + "  prev=\"$a\"\n"
+              + "done\n");
+      assertTrue(curl.toFile().setExecutable(true));
+      String path = bin + ":" + System.getenv("PATH");
+      Map<String, String> base =
+          Map.of("QITS_CI_PROJECT_ID", "proj-1", "QITS_CI_REPO_NAME", "qits-ci-service");
+
+      // Up to date: green, and a change outside the kind's paths is not the check's business.
+      HookRun clean = runQaStep(scriptFile, checkout, path, with(base, "QITS_TEST_EXIT", "0"));
+      assertEquals(0, clean.exit(), clean.output());
+      assertTrue(clean.output().contains("generator-ran"), clean.output());
+      assertFalse(clean.output().contains("stale"), clean.output());
+      assertEquals("ci report submit --exit-code 0\n", read(work, "qits-argv.txt"));
+
+      // Stale: one line naming the kind and how to regenerate it, exit 1, and the hook told 1.
+      HookRun stale =
+          runQaStep(
+              scriptFile,
+              checkout,
+              path,
+              with(with(base, "QITS_TEST_EXIT", "0"), "QITS_TEST_STALE", "1"));
+      assertEquals(1, stale.exit(), stale.output());
+      assertTrue(
+          stale
+              .output()
+              .contains(
+                  "qits-ci: stale outputs: screenshot-baselines — regenerate with: qits"
+                      + " release-request regenerate --project proj-1 --repository qits-ci-service"
+                      + " --kind screenshot-baselines"),
+          stale.output());
+      assertTrue(stale.output().contains("src/__screenshots__/new.png"), stale.output());
+      assertEquals("ci report submit --exit-code 1\n", read(work, "qits-argv.txt"));
+      deleteTree(checkout.resolve("src"));
+
+      // A failing generator is a failed step with its own code, never a stale output.
+      HookRun failed =
+          runQaStep(
+              scriptFile,
+              checkout,
+              path,
+              with(with(base, "QITS_TEST_EXIT", "0"), "QITS_TEST_GEN_FAIL", "1"));
+      assertEquals(4, failed.exit(), failed.output());
+      assertTrue(failed.output().contains("generator failed (exit 4)"), failed.output());
+      assertFalse(failed.output().contains("stale outputs"), failed.output());
+      assertEquals("ci report submit --exit-code 4\n", read(work, "qits-argv.txt"));
+
+      // A red script stays red, and the generator never runs.
+      HookRun red = runQaStep(scriptFile, checkout, path, with(base, "QITS_TEST_EXIT", "3"));
+      assertEquals(3, red.exit(), red.output());
+      assertFalse(red.output().contains("generator-ran"), red.output());
+      assertEquals("ci report submit --exit-code 3\n", read(work, "qits-argv.txt"));
+    } finally {
+      deleteTree(work);
+    }
+  }
+
+  private static Map<String, String> with(Map<String, String> base, String key, String value) {
+    Map<String, String> out = new java.util.HashMap<>(base);
+    out.put(key, value);
+    return out;
+  }
+
+  private static void deleteTree(Path root) throws IOException {
+    if (!Files.exists(root)) {
+      return;
+    }
+    try (var stream = Files.walk(root)) {
+      stream.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+    }
+  }
+
   private record HookRun(int exit, String output) {}
 
   /** Runs a composed step script the way the daemon would, with the platform's step environment. */

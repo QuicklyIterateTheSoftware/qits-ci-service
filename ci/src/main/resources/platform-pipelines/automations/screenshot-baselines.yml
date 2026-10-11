@@ -24,6 +24,11 @@
 # `qits-angular screenshots --prune` from @qits/angular). Vitest never deletes a reference
 # itself.
 #
+# THE SAME SCRIPT IS QA'S CHECK (qits-1179). A release-request step that declares
+# `check-outputs: [screenshot-baselines]` runs this script, verbatim, after its own script, and then
+# `git status` on the `__screenshots__/` and `testing/browser/renderer.txt` paths: a change there
+# fails QA as stale, naming this kind. A failing spec fails the check like it fails this run.
+#
 # `../screenshot-baselines.yml`, which did the same work for the older `ScreenshotBaselines`
 # event, is retired (qits-1007): this kind file is the only way to render baselines now.
 image: qits/build-images/node-browser-base:latest
