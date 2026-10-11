@@ -29,6 +29,12 @@
 #       ⟂ gate         DeploymentActive for the released version
 #     → FINALIZED
 #
+# QA HAS NO OUTPUTS beyond its reports to the release request and its verdict. Phase one publishes
+# nothing — no image, no package, no SBOM, and no staged copy anywhere outside CI. Everything a
+# release ships is built before any of it leaves CI, and phase two publishes it together (user
+# decision 2026-10-11). The userflow upload at the end of phase one below is the one
+# step that does not follow this yet.
+#
 # Phase three is in no slot file: it is qits-deployments' own deployment request, reached because a
 # green phase two announces `SoftwareRelease`. This archetype declares steps for phases one and two
 # and for nothing else. Nothing below names a phase either — qits-ci records which phase a run

@@ -1330,6 +1330,14 @@ written by qits-githost's merge primitive, which fires no server-side hook and t
 `SCMPublishCommit`: without this event the fold exists and nothing builds it. (And a push would build
 nothing anyway — see the top of this file.)
 
+**QA's only outputs are its reports to the release request and its verdict.** It publishes
+nothing: no image, no package, no jar, no SBOM, and no staged copy of any of them in the registry or
+any other store. Nothing a release ships leaves CI until everything is built, and then the publish
+phase ships all of it together, so a release that fails halfway has published nothing. A QA step
+that wants to keep something for the publish phase keeps it inside CI. (User decision 2026-10-11.)
+One step does not follow this yet: the userflow bundle upload at the end of the
+`java-service` recipe.
+
 So a repository declares **one** QA pipeline, as the `release-request:` slot of
 `.config/qits/release.yml` — see "The fourth file" below for the format. What qits-ci composes out of
 it is an ordinary event trigger, and it is worth having the composed shape in front of you because
