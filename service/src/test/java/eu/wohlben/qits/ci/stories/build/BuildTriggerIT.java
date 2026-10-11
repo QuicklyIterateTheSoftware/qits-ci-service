@@ -51,6 +51,12 @@ import org.junit.jupiter.api.condition.EnabledIf;
  * the interesting one: no repository matched, so no run was recorded, so no runner was handed
  * anything and nothing on this platform started a container. A presence check cannot say that.
  *
+ * <p><b>The second story reads nothing it already read (qits-168).</b> qits-ci remembers each
+ * repository's {@code .config/qits/} listing until that repository's refs move (or the listing's
+ * TTL runs out), so the second event is evaluated against the listing the first one read. No push
+ * happens between the two stories, so the second diagram carries no read of {@code
+ * story-event-build}'s trigger directory — and asserts that it does not.
+ *
  * <p>Both pipelines declare <b>no steps</b>. That is the smallest configuration that still records a
  * run — a commit declaring nothing is discarded, which is what opt-in means — and it takes the whole
  * path through the git host, SnakeYAML, the queue, a runner's reservation and Panache with no
@@ -157,8 +163,9 @@ public class BuildTriggerIT {
       The release train's first hop. A library is released somewhere on the platform and says so
       as a SoftwareRelease event; a repository that committed a trigger file naming that library
       is built because of it. Nobody configured qits-ci to know about either — the interest is a
-      file in the repository, read out of the git host at the moment the event arrives, and the
-      run that comes back names the event that caused it and the commit it was decided at.
+      file in the repository, read out of the git host the first time an event needs it and
+      remembered until the repository's branch moves, and the run that comes back names the event
+      that caused it and the commit it was decided at.
       """)
   @UserflowRunsAfter(TokenValidationBootstrapIT.class)
   @Order(1)
@@ -222,7 +229,8 @@ public class BuildTriggerIT {
         .note("the run exists, at the commit main held, naming the event that caused it")
         .as("run-recorded");
 
-    // End (b), the git host: the interest was READ, not remembered. Both reads are in the diagram.
+    // End (b), the git host: nothing had read this repository yet, so the interest was READ rather
+    // than remembered. Both reads — the listing and the file — are in the diagram.
     StoryGitHost.awaitRead(blobPath());
   }
 
@@ -230,11 +238,13 @@ public class BuildTriggerIT {
   @UserStoryDescription(
       """
       The same door, the same event name, a payload naming a library no repository committed a
-      trigger for. qits-ci still asks every repository it knows — which is the expensive half and
-      the half that must not be skipped — and then records nothing at all: no run, and no step
-      container asked of the orchestrator. An empty answer with nothing skipped is the engine
-      saying "I asked everybody and none of them selected this", which is a different sentence
-      from "I could not ask", and the API says which by answering 200 rather than 503.
+      trigger for. qits-ci still evaluates every repository it knows — the half that must not be
+      skipped — but it does not ask the git host again for a repository whose branch has not
+      moved: the trigger listing read for the previous event is remembered until a push. Then it
+      records nothing at all: no run, and no step container asked for. An empty answer with
+      nothing skipped is the engine saying "I asked everybody and none of them selected this",
+      which is a different sentence from "I could not ask", and the API says which by answering
+      200 rather than 503.
       """)
   @Order(2)
   void anEventNobodySelectedBuildsNothing(Interactions story) {
@@ -262,9 +272,11 @@ public class BuildTriggerIT {
         "…and every candidate was read, so the empty answer is a verdict rather than an outage");
     assertTrue(
         answered.getInt("repositoriesRead") >= 1,
-        "the repository that declares a DIFFERENT interest was still asked");
+        "the repository that declares a DIFFERENT interest was still evaluated");
     story
-        .note("every candidate repository was read, and none of them selected this release")
+        .note(
+            "every candidate repository was evaluated — the one the last event read, from the"
+                + " listing qits-ci remembered — and none of them selected this release")
         .as("nothing-selected");
 
     // The repository from the first story is still there with exactly its one run: an event nobody
@@ -273,8 +285,6 @@ public class BuildTriggerIT {
     List<Map<String, Object>> runs = runsFor(REPO_ID);
     assertEquals(1, runs.size(), "the neighbouring repository's history is untouched");
     story.note("and no run was recorded anywhere").as("nothing-recorded");
-
-    StoryGitHost.awaitRead(triggerDirPath());
   }
 
   @AfterAll
@@ -337,15 +347,23 @@ public class BuildTriggerIT {
         PLATFORM,
         StoryTarget.SERVICE,
         "POST " + StoryTarget.TRIGGER_PATH + " -> 200");
-    ReportAssertions.assertEdge(
-        CATEGORY,
-        UNSELECTED_SLUG,
-        NetworkEdge.HTTP,
-        StoryTarget.SERVICE,
-        StoryGitHost.SERVICE_NAME,
-        StoryGitHost.label("GET", triggerDirPath(), 200));
-    // The whole point of the story, and only a negative claim can make it: the evaluation cost a
-    // read of every repository and NOT ONE run. No runner was handed anything.
+    // The listing the first story read is remembered until this repository's refs move (qits-168),
+    // and nothing pushed in between: the second event cost no read of it. Only this label is
+    // claimed absent, not every git-host edge — an UNREACHABLE candidate is never cached and a
+    // repository another story class published can be listed for the first time here.
+    String cachedListing = StoryGitHost.label("GET", triggerDirPath(), 200);
+    List<UserflowReport.NetworkEdge> unselectedEdges =
+        ReportAssertions.read(CATEGORY, UNSELECTED_SLUG).network();
+    assertTrue(
+        unselectedEdges == null
+            || unselectedEdges.stream()
+                .noneMatch(
+                    edge ->
+                        StoryGitHost.SERVICE_NAME.equals(edge.to())
+                            && cachedListing.equals(edge.label())),
+        () -> "the listing should have been served from memory; recorded: " + unselectedEdges);
+    // The whole point of the story, and only a negative claim can make it: the evaluation asked
+    // every repository and recorded NOT ONE run. No runner was handed anything.
     ReportAssertions.assertNoEdgesTo(CATEGORY, UNSELECTED_SLUG, StoryRunner.ACTOR);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY, UNSELECTED_SLUG, List.of(PLATFORM, OPERATOR, StoryTarget.SERVICE));
