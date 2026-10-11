@@ -13,7 +13,7 @@
 # is. This recipe is therefore a COMPOSITION of the two that already exist, and every half below
 # names the file it came from so that a fix lands in both:
 #
-#     release-request:   spa-frontend.yml's one step, on node-browser-base and with test:browser.
+#     release-request:   spa-frontend.yml's step, on node-browser-base, plus the screenshot check.
 #     release:           java-service.yml's release step, IMAGE HALF ONLY.
 #
 # A migrating repository's `.config/qits/release.yml` is therefore:
@@ -131,24 +131,27 @@
 
 release-request:
 
-  # --- phase one (QA): spa-frontend.yml's step, plus test:browser ----------------------------
+  # --- phase one (QA): spa-frontend.yml's step, plus the screenshot check --------------------
   # NO `docker:` AND NO `build:`. Nothing here needs a builder, a socket or a credential — the image
   # is phase two's business — so this step keeps the ordinary sandbox a publishing step gives up.
   #
   # node-browser-base, NOT node-base: it is Node 24 plus the platform's one screenshot renderer
   # (Playwright's Chromium and a pinned font stack, described in /etc/qits-renderer-provenance). The
   # workspace image is built FROM the same image, so a reference screenshot an agent makes there
-  # matches here. See `test:browser` below.
+  # matches here. See the screenshot check below.
   #
-  # THE SCREENSHOT CHECK, OPT-IN (qits-1179), and off here. A repository turns it on in its own copy
-  # of this recipe (.config/qits/release-archetypes/app.yml): add `check-outputs:
-  # [screenshot-baselines]` to this step and delete the `CI=true npm run --if-present test:browser`
-  # line below. After the script exits 0, qits-ci runs the screenshot-baselines automation's own
-  # generator (the install, `UPDATE_SNAPSHOT=all npm run test:browser`, `screenshots:prune`); a
-  # failing spec fails the step as before, and a changed, new or deleted reference fails it as
-  # stale, naming the regenerate command.
+  # THE SCREENSHOT CHECK, ON (qits-1178). After the script exits 0, qits-ci runs the
+  # screenshot-baselines automation's own generator (the install, `UPDATE_SNAPSHOT=all npm run
+  # test:browser`, `screenshots:prune`); a failing spec fails the step as before, and a changed, new
+  # or deleted reference fails it as stale, naming the regenerate command
+  # (`qits release-request regenerate --kind screenshot-baselines`). Nothing is committed here.
+  # qits-maintenance reads this key to know that QA checks the screenshots, and then does not
+  # regenerate them before QA: removing the key here puts its pre-run back. The check needs a
+  # `test:browser` script: without one its generator fails the step and says so (qits-landing-app,
+  # the one repository on this recipe, has it).
   - image: qits/build-images/node-browser-base:latest
     timeout-seconds: 1800
+    check-outputs: [screenshot-baselines]
     script: |
       # THE LOCKFILE IS INSTALLED AS COMMITTED (qits-731). npm fetches every tarball by the full
       # `resolved` URL its lockfile pins and never asks the configured registry for it, so the
@@ -251,18 +254,10 @@ release-request:
       npm run --if-present test -- --reporters=junit --reporters=default \
         --output-file=.qits-reports/vitest-unit.xml $coverage_flags
 
-      # Browser screenshot tests, by the same opt-in: a repository turns them on by having the
-      # script. They run in real Chromium from this image and compare against the committed
-      # reference screenshots. THIS STEP ONLY COMPARES: `CI=true` makes a missing reference a
-      # failure instead of a new file, and nothing here writes one. Regenerating references is a
-      # separate job (run in this same image with UPDATE_SNAPSHOT=all), never part of the gate.
-      #
-      # NO REPORTER FLAGS HERE, deliberately (qits-754). `test:browser` is not one `ng test`: on
-      # qits-landing-app, the one repository on this recipe, it is `node scripts/check-renderer.mjs
-      # && ng run …:test-browser && qits-angular screenshots --check`, so arguments appended after
-      # `--` would land on the screenshot check rather than on vitest and break the gate. Its
-      # failures stay in the log; the unit suite above is what reports.
-      CI=true npm run --if-present test:browser
+      # Browser screenshot tests: NOT here. The composed output check runs them after this script,
+      # in update mode, and fails on any reference they would change (see the step's header above).
+      # A compare-only run here would fail first on the same stale reference, with a test failure in
+      # place of the one line that says how to regenerate.
 
       # The same `npm run build` the Dockerfile runs, on the same tree — which is the point of the
       # step rather than a duplication of it. This one is the GATE on the fold and exports nothing;

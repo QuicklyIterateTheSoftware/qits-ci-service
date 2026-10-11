@@ -220,6 +220,32 @@ steps:
       }
       QITS_LOCKFILE_EOF
       sh /tmp/qits-lockfile-origins.sh
+      # --- the qits CLI, pinned, on PATH: this step's output check needs it ---
+      if [ -z "${QITS_ARTIFACTS_CLI_PACKAGE:-}" ]; then
+        echo "qits-ci: the qits CLI could not be fetched: no qits CLI package is configured for this deployment" >&2
+        exit 1
+      fi
+      if [ -z "${QITS_ARTIFACTS_CLI_VERSION:-}" ]; then
+        echo "qits-ci: the qits CLI could not be fetched: the qits CLI package is configured but no version was injected; the qits-ci that launched this step predates the CLI pin" >&2
+        exit 1
+      fi
+      mkdir -p /tmp/qits-bin || { echo "qits-ci: the qits CLI could not be fetched: could not create /tmp/qits-bin" >&2; exit 1; }
+      qits_cli_bearer=
+      if [ -n "${QITS_TOKEN:-}" ]; then
+        qits_cli_bearer="Authorization: Bearer $QITS_TOKEN"
+      fi
+      if command -v curl > /dev/null 2>&1; then
+        curl -fsSL --retry 2 --retry-delay 2 ${qits_cli_bearer:+--header} ${qits_cli_bearer:+"$qits_cli_bearer"} -o /tmp/qits-bin/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION" || { echo "qits-ci: the qits CLI could not be fetched: the download of $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION failed" >&2; exit 1; }
+      elif command -v wget > /dev/null 2>&1; then
+        wget -q ${qits_cli_bearer:+--header} ${qits_cli_bearer:+"$qits_cli_bearer"} -O /tmp/qits-bin/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION" || { echo "qits-ci: the qits CLI could not be fetched: the download of $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION failed" >&2; exit 1; }
+      else
+        echo 'qits-ci: the qits CLI could not be fetched: the image for this step (qits/build-images/maven-base:latest) has neither curl nor wget — add one to the image' >&2
+        exit 1
+      fi
+      chmod +x /tmp/qits-bin/qits || { echo "qits-ci: the qits CLI could not be fetched: could not make /tmp/qits-bin/qits executable" >&2; exit 1; }
+      echo "qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+      PATH="/tmp/qits-bin:$PATH"
+      export PATH
       # --- the declared step, run as data -------------------------------------------
       cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
       # The platform registry: the poms' default names a host-published address unreachable from a
@@ -391,6 +417,79 @@ steps:
       fi
       qits_step_exit=$?
       set -e
+      # --- platform output check: the generators run, then git status on their paths ---
+      qits_stale=
+      qits_regenerate=
+      cat > /tmp/qits-check-entity-diagram.sh <<'QITS_CHECK_EOF'
+      if [ ! -f pom.xml ]; then
+        echo "no pom.xml: only JPA/Hibernate entity diagrams are generated today" >&2
+        exit 1
+      fi
+
+      # The platform registry and the Central mirror, composed exactly as java-service's QA step
+      # composes them: both are code under the platform's public domain (qits-731), which the
+      # composed prelude has already demanded.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+      export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
+      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
+
+      # The repository's own settings when it keeps them: the exact-id mirror there is what passes
+      # Maven's HTTP blocker, and its servers read the run's credential from the step environment.
+      settings=""
+      if [ -f .qits-maven-settings.xml ]; then
+        settings="-s .qits-maven-settings.xml"
+      fi
+
+      # The classes and the runtime classpath the generator reads. Quinoa off: the SPA is no input,
+      # and the clone does not recurse, so a webui submodule is an empty directory here.
+      # test-compile, not compile: a sibling module's test-jar only resolves in the reactor from
+      # test-compile on, and `compile` fails there (qits-projects-service). -Dmaven.test.skip=true
+      # keeps that phase from compiling or running any tests, so this still runs no tests. And
+      # -DincludeScope, not -Dmdep.includeScope: that is dependency:build-classpath's actual user
+      # property, so the Dmdep spelling was silently ignored.
+      ./mvnw -B -ntp ${settings} \
+        -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
+        -Dmaven.test.skip=true -Dquarkus.quinoa=false \
+        test-compile dependency:build-classpath \
+        -Dmdep.outputFile=target/qits-classpath.txt \
+        -DincludeScope=runtime
+
+      # No compiled classes means nothing to draw, not a failure: the CLI would refuse with "compile
+      # first", and QA's output check must never read that as a stale diagram.
+      if [ -z "$(find . -path ./node_modules -prune -o -type d -path '*/target/classes' -print | head -1)" ]; then
+        echo "no compiled classes: there is no entity diagram to draw"
+        exit 0
+      fi
+
+      # Writes every unit's file and deletes only the generated ones it did not produce this time.
+      qits database diagram --root . --out docs/database
+      QITS_CHECK_EOF
+      if [ "$qits_step_exit" -eq 0 ]; then
+        echo "qits-ci: checking entity-diagram" >&2
+        set +e
+        if command -v bash > /dev/null 2>&1; then
+          bash -eu /tmp/qits-check-entity-diagram.sh
+        else
+          sh -eu /tmp/qits-check-entity-diagram.sh
+        fi
+        qits_check_exit=$?
+        set -e
+        if [ "$qits_check_exit" -ne 0 ]; then
+          echo "qits-ci: the entity-diagram generator failed (exit $qits_check_exit), so its outputs were not checked" >&2
+          qits_step_exit=$qits_check_exit
+        elif ! qits_changed=$(git status --porcelain --untracked-files=all -- 'docs/database'); then
+          echo "qits-ci: git status failed, so the entity-diagram outputs were not checked" >&2
+          qits_step_exit=1
+        elif [ -n "$qits_changed" ]; then
+          printf '%s\n' "$qits_changed" >&2
+          qits_stale="${qits_stale:+$qits_stale, }entity-diagram"
+          qits_regenerate="${qits_regenerate:+$qits_regenerate; }qits release-request regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository ${QITS_CI_REPO_NAME:-<repository>} --kind entity-diagram"
+        fi
+      fi
+      if [ -n "$qits_stale" ]; then
+        echo "qits-ci: stale outputs: $qits_stale — regenerate with: $qits_regenerate" >&2
+        qits_step_exit=1
+      fi
       # --- platform report hook: always runs, never changes the step's verdict ---
       cat > /tmp/qits-report-hook.sh <<'QITS_REPORT_HOOK'
       # qits-ci report hook (qits-754). $1 is the declared script's exit code.
