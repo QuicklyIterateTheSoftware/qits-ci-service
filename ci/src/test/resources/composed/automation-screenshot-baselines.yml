@@ -60,7 +60,10 @@ steps:
           ''|/*|-*|*..*|*[!0-9A-Za-z._/*-]*) echo "refusing an implausible commit path: $path" >&2; exit 1 ;;
         esac
       done < /tmp/qits-automation-paths
-      git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$base"
+      if ! git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$base"; then
+        echo "the fold's branch is missing: $base is not on the git host, so the fold $fold cannot be fetched. Something deleted the release request's backing branch after it was folded; re-run this automation once the request has folded again" >&2
+        exit 1
+      fi
       head=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
       if [ "$head" != "$fold" ]; then
         echo "superseded before start: $base is at $head, not at the fold $fold this run was sent for" >&2

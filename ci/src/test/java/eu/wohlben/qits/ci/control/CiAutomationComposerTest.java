@@ -289,6 +289,26 @@ public class CiAutomationComposerTest {
   }
 
   @Test
+  public void aMissingBackingBranchFailsNamingTheBranchAndTheFold(@TempDir Path dir)
+      throws Exception {
+    // qits-1167: a fold that equals main's head leaves its backing branch "fully merged", and a
+    // merged-branch sweep deleted it. Git's own words name no cause; the prelude's must.
+    Scratch scratch = new Scratch(dir);
+    scratch.git(scratch.origin, "update-ref", "-d", "refs/heads/release/abc");
+    Result run = scratch.run("bash", WRITES, scratch.payload(BRANCH, scratch.fold, "\"out/**\""));
+
+    assertEquals(1, run.exit, run.output);
+    assertTrue(
+        run.output.contains(
+            "the fold's branch is missing: release/abc is not on the git host, so the fold "
+                + scratch.fold
+                + " cannot be fetched"),
+        run.output);
+    assertFalse(run.output.contains("generated"), "the kind's script never ran");
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH));
+  }
+
+  @Test
   public void aBranchTheFoldNoLongerContainsIsARejectedPush(@TempDir Path dir) throws Exception {
     Scratch scratch = new Scratch(dir);
     // The branch exists already and is not an ancestor of the fold: a plain push cannot move it.
