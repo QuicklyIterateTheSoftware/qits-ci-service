@@ -939,20 +939,40 @@ public class CiRunService {
    * run for one trigger file when both are tag events, keeping the newest tag of a multi-tag push
    * and no other. Distinct events, distinct rows, one build.
    *
-   * @return the id of the run this recorded, or {@code null} when the dedupe dropped it. The manual
-   *     trigger endpoint answers with these ids, which is what lets a 2xx there mean "these rows
-   *     exist" rather than "something was handed to a queue".
+   * <p><b>A repeated event id answers with the run it already started</b> (qits-1183). Before, the
+   * dedupe answered null, so a caller that sent the same id again — qits-maintenance after a lost
+   * answer, a redelivery, a sweep — read "no run recorded" for an event that had one. The look comes
+   * first, before the step images are pinned, so a registry blip cannot refuse an event that already
+   * has its run.
+   *
+   * @return the id of the run this recorded, or of the run this event already had for this
+   *     repository and trigger file. The manual trigger endpoint answers with these ids, which is
+   *     what lets a 2xx there mean "these rows exist" rather than "something was handed to a queue".
    */
   public String onEventTrigger(EventRun request) {
     CiIdentifiers.requireRepo(request.repo());
     CiIdentifiers.requireBranch(request.branch());
     CiIdentifiers.requireSha(request.sha());
+    String existing = triggeredRunId(request);
+    if (existing != null) {
+      return existing;
+    }
     CiRun run = acceptEventRun(request);
     if (run == null) {
-      return null;
+      // Another accept of the same event won the race to the insert: its run is the answer.
+      return triggeredRunId(request);
     }
     announceQueued(run.id);
     return run.id;
+  }
+
+  /** The run this event already produced for this repository and trigger file, or null. */
+  private String triggeredRunId(EventRun request) {
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () ->
+                runs.triggeredRunId(
+                    request.eventId(), request.repo().repoId(), request.trigger().configPath()));
   }
 
   /**

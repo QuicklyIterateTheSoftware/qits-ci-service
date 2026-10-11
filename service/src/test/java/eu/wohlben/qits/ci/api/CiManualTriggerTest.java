@@ -139,12 +139,16 @@ public class CiManualTriggerTest {
         """
         {"name":"SoftwareRelease","eventId":"%s","payload":%s}"""
             .formatted(eventId, payload(upstream));
-    assertEquals(eventId, trigger(body), "an explicit id is used verbatim");
+    JsonPath first = triggerResult(body);
+    assertEquals(eventId, first.getString("eventId"), "an explicit id is used verbatim");
     awaitEventRun(repoId);
 
-    // The dedupe constraint is (trigger_event_id, repo_id, config_path), so the second call is
-    // dropped as already-triggered. That is what makes an explicit id safe in a bootstrap script.
-    assertEquals(eventId, trigger(body));
+    // The dedupe constraint is (trigger_event_id, repo_id, config_path), so the second call records
+    // no run. That is what makes an explicit id safe in a bootstrap script. It answers with the run
+    // the first call started (qits-1183), so a caller that lost the first answer finds it.
+    JsonPath again = triggerResult(body);
+    assertEquals(eventId, again.getString("eventId"));
+    assertEquals(first.getList("runIds"), again.getList("runIds"), "the repeat names the first run");
     Thread.sleep(1_500);
     assertEquals(1, eventRunsOf(repoId).size(), "a replayed id records no second run");
   }

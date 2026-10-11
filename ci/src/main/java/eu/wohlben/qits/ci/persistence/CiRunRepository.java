@@ -409,6 +409,21 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   }
 
   /**
+   * The id of the run this (event, repository, trigger file) already produced, or null. What a
+   * repeated event id is answered with, so the caller finds the run it started (qits-1183).
+   */
+  public String triggeredRunId(String triggerEventId, String repoId, String configPath) {
+    return find(
+            "triggerEventId = ?1 and repoId = ?2 and configPath = ?3",
+            triggerEventId,
+            repoId,
+            configPath)
+        .firstResultOptional()
+        .map(run -> run.id)
+        .orElse(null);
+  }
+
+  /**
    * Rewrites the public coordinate of every run recorded for one repository — what {@code
    * RepositoryRenamed} makes of the rows a rename left stale.
    *

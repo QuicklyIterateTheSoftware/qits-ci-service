@@ -184,10 +184,13 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     assertEquals(CiRunStatus.FAILED, service.requireRun(original).status);
 
     // The same event, offered again, is the replay the constraint refuses — which is exactly why a
-    // retry cannot simply re-accept it, and why this assertion belongs beside the retry.
-    assertNull(
+    // retry cannot simply re-accept it, and why this assertion belongs beside the retry. The answer
+    // is the run that exists (qits-1183), and no second one is recorded.
+    assertEquals(
+        original,
         service.onEventTrigger(eventRun(repo, "rr-a", eventId)),
-        "the dedupe still refuses a second run for one event");
+        "the dedupe still refuses a second run for one event, and names the first");
+    assertEquals(1, service.runsFor(repo).size());
 
     fakeRunner.reset();
     CiRun retry = service.retry(original);

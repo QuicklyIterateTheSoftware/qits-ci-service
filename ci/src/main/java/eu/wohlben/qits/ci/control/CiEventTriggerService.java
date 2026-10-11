@@ -302,7 +302,8 @@ public class CiEventTriggerService {
   /**
    * What one finished evaluation did, which is what a caller who waited for it is owed.
    *
-   * @param runIds the runs this evaluation recorded. Every id is a row that exists now.
+   * @param runIds the runs this event has: the ones this evaluation recorded, and the ones an earlier
+   *     evaluation of the same event id recorded (qits-1183). Every id is a row that exists now.
    * @param repositoriesRead how many candidate repositories answered and were evaluated
    * @param repositoriesSkipped the candidates that did not answer — the git host did not reply, the
    *     repository is gone, it has no {@code main}, or the deadline arrived before its turn. {@code

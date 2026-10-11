@@ -136,7 +136,8 @@ public class CiEventController {
    * What the evaluation did, which is what the caller waited for.
    *
    * @param eventId the id the evaluation ran under, canonical lowercase
-   * @param runIds the runs it recorded. Every id is a row that exists now, findable by
+   * @param runIds the runs this event id has: the ones it recorded, and on a repeated id the ones
+   *     an earlier call recorded. Every id is a row that exists now, findable by
    *     {@code triggerEventId} on {@code GET /ci/api/runs}.
    * @param repositoriesRead how many candidate repositories answered and were evaluated
    * @param repositoriesSkipped the candidates that did not answer — unreachable, gone, no {@code
@@ -181,16 +182,18 @@ public class CiEventController {
    * <h2>The id decides rerun or dedupe, and that is the whole contract</h2>
    *
    * <p>The engine's at-most-once guarantee is the unique constraint {@code (trigger_event_id,
-   * repo_id, config_path)}, so an id that has already triggered runs nothing and says nothing about
-   * it. Both behaviours are therefore reachable and both are wanted:
+   * repo_id, config_path)}, so an id that has already triggered runs nothing new, and its answer
+   * names the runs it already started (qits-1183). Both behaviours are therefore reachable and both
+   * are wanted:
    *
    * <ul>
    *   <li><b>Omit {@code eventId}</b> and a fresh random UUID is minted. The evaluation is a
    *       <em>rerun</em>: it collides with nothing, so the same payload may be replayed as often as
    *       you like. This is the default because a rerun is what a person asks for.
    *   <li><b>Pass {@code eventId}</b> and you opt into the dedupe. Repeating the call is then
-   *       idempotent — the second one records no run — which is what makes this safe to put in a
-   *       bootstrap script that may run twice.
+   *       idempotent — the second one records no run and answers with the first one's — which is
+   *       what makes this safe to put in a bootstrap script that may run twice, and what lets a
+   *       caller that lost the first answer find its run.
    * </ul>
    *
    * <p>The id comes back in the response body in canonical lowercase form, and it is what a caller

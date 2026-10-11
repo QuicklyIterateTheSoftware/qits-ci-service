@@ -260,6 +260,43 @@ public class CiStepImagePinTest extends CiTestSupport {
         REGISTRY + "/qits/build-images/ci-base@" + DIGEST, fakeRunner.executed().get(0).image());
   }
 
+  /**
+   * <b>The same event id again answers with the run it already started</b> (qits-1183). A caller
+   * that sends an event a second time — qits-maintenance after a lost answer, a redelivery, a sweep
+   * — must find that run, not read "no run recorded", and must not get a second one. The look comes
+   * before the pin, so a registry that is down by then cannot refuse it either.
+   */
+  @Test
+  public void aRepeatedEventIdAnswersWithTheRunItAlreadyStarted() throws Exception {
+    fakeImagePins.pins(registryReference, DIGEST);
+    fakeConfig.putTriggers(
+        repoId,
+        "main",
+        HEAD,
+        new EventTriggerFile(
+            TRIGGER_PATH,
+            """
+            event: SCMPublishCommit
+            steps:
+              - image: qits/build-images/ci-base:latest
+                script: "true"
+            """));
+    CiEventTriggerService.Arrival arrival = push();
+
+    CiEventTriggerService.Evaluation first = engine.evaluate(arrival);
+    suiteRunner.awaitIdle();
+    assertEquals(1, first.runIds().size(), "the first send starts the run: " + first);
+
+    fakeImagePins.unresolvable(registryReference);
+    CiEventTriggerService.Evaluation again = engine.evaluate(arrival);
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+
+    assertEquals(first.runIds(), again.runIds(), "the repeat names the run that exists");
+    assertEquals(List.of(), again.repositoriesUnreadable(), "nothing is owed: " + again);
+    assertEquals(1, runService.runsFor(repoId).size(), "a repeated id records no second run");
+  }
+
   // --- fixture ---------------------------------------------------------------------------------
 
   private void deliver(String triggerFile) throws Exception {
