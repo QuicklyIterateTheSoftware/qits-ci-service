@@ -52,7 +52,8 @@ import java.util.regex.Pattern;
  * {@code release/}; {@code foldSha} is 40 or 64 lowercase hex; {@code workItem}, when sent, is
  * {@code [A-Za-z0-9-]+}; {@code commitPaths} is a non-empty array of plain relative paths, each
  * optionally {@code :(glob)}-prefixed, with no {@code ..} and no leading {@code /}. It then fetches
- * {@code refs/heads/<baseRef>} and refuses with {@code superseded before start} unless the fold is
+ * {@code refs/heads/<baseRef>} — a branch that is not there fails saying so — and refuses with
+ * {@code superseded before start} unless the fold is
  * still {@code foldSha} — a newer fold has its own automation coming — checks it out, makes {@code
  * HOME} writable, and settles the commit subject's work item (the payload's, else the newest one the
  * fold's subjects name).
@@ -357,7 +358,16 @@ public final class CiAutomationComposer {
     out.append("done < ").append(COMMIT_PATHS).append('\n');
     // The fold, and only the fold this run was sent for: a newer one has its own automation coming,
     // and a commit built on an older one would be pushed onto a branch the fold no longer is.
-    out.append("git fetch -q \"$QITS_CI_REPOSITORY_URL\" \"refs/heads/$base\"\n");
+    // A missing branch is said in words (qits-1167): git's own "couldn't find remote ref" names no
+    // cause, and the cause is never this run. qits-projects folds the request again when its
+    // backing branch is deleted, so a re-run after that re-fold finds it.
+    out.append("if ! git fetch -q \"$QITS_CI_REPOSITORY_URL\" \"refs/heads/$base\"; then\n");
+    out.append(
+        "  echo \"the fold's branch is missing: $base is not on the git host, so the fold $fold"
+            + " cannot be fetched. Something deleted the release request's backing branch after"
+            + " it was folded; re-run this automation once the request has folded again\" >&2\n");
+    out.append("  exit 1\n");
+    out.append("fi\n");
     out.append("head=$(git rev-parse --verify 'FETCH_HEAD^{commit}')\n");
     out.append("if [ \"$head\" != \"$fold\" ]; then\n");
     out.append(
