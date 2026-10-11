@@ -59,6 +59,16 @@ import org.jboss.logging.Logger;
  * budget: one evaluation reads the git host once per candidate repository, and a thread per arriving
  * frame would point that fan-out at the host all at once. It matches the run worker's own shape.
  *
+ * <p><b>"Per candidate repository" is a cache MISS now, not every event (qits-168).</b> The listing
+ * of {@code .config/qits/} at {@code main} goes through {@link CiTriggerListingCache}, which keeps
+ * each candidate's answer until a ref-move event ({@code SCMPublishCommit}, {@code SCMDeleteBranch},
+ * {@code SCMPublishTag}, {@code SCMDeleteTag}) names that repository, or a TTL backstop passes. Each
+ * name-addressed listing used to cost qits-githost a by-name lookup at qits-projects, so every
+ * event on the bus cost about sixty of them — ten a second on an idle platform. The forgetting
+ * happens at arrival, before the enqueue ({@link #forgetMovedRefs}), so a push's own evaluation
+ * reads its new head. Everything else the fan-out reads — {@code release.yml}, an archetype — is
+ * read at a revision, only for the two release events, and is not cached.
+ *
  * <p>The queue is <b>bounded</b>. An unbounded one turns a burst on the bus into heap; a bounded one
  * turns it into a WARN naming the event that was dropped, which is a thing a person can act on. At
  * {@link #QUEUE_CAPACITY} deep that is a backlog no healthy platform reaches.
@@ -225,6 +235,15 @@ public class CiEventTriggerService {
       Set.of(CiReleaseComposer.RELEASE_REQUEST_EVENT, CiReleaseComposer.RELEASE_EVENT);
 
   @Inject CiConfigSource configSource;
+
+  /**
+   * Where the per-candidate trigger listing is read through (qits-168): {@link #configSource}'s
+   * answer, remembered until the repository's refs move. Every other read this engine makes —
+   * {@code release.yml}, an archetype — is at a sha or a fold and goes to {@link #configSource}
+   * directly.
+   */
+  @Inject CiTriggerListingCache triggerListings;
+
   @Inject CiEventTriggerParser triggerParser;
   @Inject CiReleaseSlotParser slotParser;
   @Inject CiReleaseArchetypes archetypes;
@@ -415,6 +434,9 @@ public class CiEventTriggerService {
     if (arrival == null || arrival.eventId() == null || arrival.eventName() == null) {
       return false;
     }
+    // Before the enqueue, on this thread: the worker is single-threaded and takes events in order,
+    // so a listing forgotten here is re-read by this event's evaluation and every one behind it.
+    forgetMovedRefs(arrival);
     if (!recordOwed(arrival)) {
       return false;
     }
@@ -513,8 +535,40 @@ public class CiEventTriggerService {
    *     read", which stays an unanswered evaluation
    */
   public Evaluation evaluateNow(Arrival arrival, String projectScope) {
+    forgetMovedRefs(arrival);
     return evaluate(
         arrival, System.nanoTime() + SECONDS.toNanos(triggerDeadlineSeconds), projectScope);
+  }
+
+  /**
+   * Forgets the cached trigger listings of the repository a ref-move event names (qits-168), so the
+   * evaluation of this event — and of everything after it — reads that repository's new head.
+   *
+   * <p>Called at <b>arrival</b> by both entry points, never inside {@link #evaluate}: on the bus
+   * path that is the listener's thread before the enqueue, so the forgetting is ordered before every
+   * evaluation the worker has yet to run; on the manual door it is the caller's own thread before its
+   * evaluation. An owed row re-evaluated by {@link #sweepOwed} needs no call — its arrival already
+   * made one, or it belongs to a process whose memory died with it.
+   *
+   * <p>A ref-move event whose payload will not parse or names no {@code repoId} forgets everything:
+   * a push this process cannot attribute is still a push. Never throws — {@link #onEvent} promises
+   * its socket-callback caller that, and {@link CiEventSelectionEvaluator#parsePayload} answers null
+   * rather than throwing.
+   */
+  void forgetMovedRefs(Arrival arrival) {
+    if (arrival == null || !CiTriggerListingCache.REF_MOVE_EVENTS.contains(arrival.eventName())) {
+      return;
+    }
+    JsonNode payload = CiEventSelectionEvaluator.parsePayload(arrival.payload());
+    JsonNode repoId = payload == null ? null : payload.get(CiTriggerListingCache.REPO_ID_FIELD);
+    if (repoId == null || !repoId.isTextual() || repoId.asText().isBlank()) {
+      LOG.debugf(
+          "%s %s names no %s — forgetting every cached trigger listing",
+          arrival.eventName(), arrival.eventId(), CiTriggerListingCache.REPO_ID_FIELD);
+      triggerListings.invalidateAll();
+      return;
+    }
+    triggerListings.invalidate(repoId.asText());
   }
 
   /**
@@ -734,8 +788,10 @@ public class CiEventTriggerService {
       List<String> unreadable,
       boolean owedIfSilent) {
     String repoId = repo.display();
+    // Through the listing cache: unchanged since this repository's last ref move means unchanged,
+    // and asking the host anyway is the per-event fan-out qits-168 removed.
     EventTriggerLookup lookup =
-        configSource.readEventTriggers(repo, TRIGGER_BRANCH, CiTriggerScope.REPOSITORY);
+        triggerListings.readEventTriggers(repo, TRIGGER_BRANCH, CiTriggerScope.REPOSITORY);
     if (lookup.status() != EventTriggerLookup.Status.FOUND) {
       if (owedIfSilent) {
         // The repository this release event is ABOUT: its release.yml was never reached, so this

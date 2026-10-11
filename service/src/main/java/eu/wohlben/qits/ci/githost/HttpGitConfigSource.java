@@ -95,8 +95,9 @@ public class HttpGitConfigSource implements CiConfigSource {
 
   /**
    * How many {@code ci-event-*.yml} files one repository may declare. This listing runs per
-   * repository per arriving event, so the count is work per frame and it belongs to qits-ci to bound
-   * rather than to the repository to choose.
+   * repository whenever {@code CiTriggerListingCache} misses — after every push to it, and once per
+   * TTL otherwise (qits-168; it used to be per arriving event) — so the count is work per read and it
+   * belongs to qits-ci to bound rather than to the repository to choose.
    */
   static final int MAX_TRIGGER_FILES = 32;
 
@@ -207,12 +208,13 @@ public class HttpGitConfigSource implements CiConfigSource {
    * <p><b>Two bounds, both because this walks another repository's tree.</b> A name that is not a
    * plain slug is not a trigger file ({@link CiEventTriggerParser#isTriggerPath}) — it comes back
    * from the host and goes straight into a URL — and a repository may declare at most {@link
-   * #MAX_TRIGGER_FILES} of them, because this runs per repository per arriving event and an
-   * unbounded count is an unbounded amount of work per frame.
+   * #MAX_TRIGGER_FILES} of them, because this runs per repository on every cache miss and an
+   * unbounded count is an unbounded amount of work per read.
    *
    * <p><b>{@code scope} decides which prefix in that one directory is read</b>, and nothing else
-   * about this method changes with it. A platform read is one listing of one configured repository
-   * per arriving event, on top of the per-candidate reads — see {@link CiTriggerScope}.
+   * about this method changes with it. The trigger engine asks for no platform read any more — the
+   * platform pipelines are packaged into qits-ci ({@code CiPlatformPipelines}) — so the scope is the
+   * port's, not a second per-event listing — see {@link CiTriggerScope}.
    */
   @Override
   public EventTriggerLookup readEventTriggers(
@@ -266,8 +268,9 @@ public class HttpGitConfigSource implements CiConfigSource {
    * repository is there and declares nothing, or it could not be asked at all.
    *
    * <p>Both are DEBUG, never WARN, and that is deliberate. This path asks <b>every</b> repository
-   * qits-ci has heard of on <b>every</b> arriving event, so a repository that has since been deleted
-   * or renamed would otherwise cost one warning per green build, platform-wide, forever. A warning
+   * qits-ci has heard of, and an unreachable answer is never cached ({@code CiTriggerListingCache},
+   * qits-168), so a repository that has since been deleted or renamed is asked on <b>every</b>
+   * arriving event and would otherwise cost one warning per green build, platform-wide, forever. A warning
    * that cannot be acted on and never stops is how a log stops being read.
    */
   private EventTriggerLookup noTriggerDirectory(CiRepoRef repo, String branch, Answer listed) {
