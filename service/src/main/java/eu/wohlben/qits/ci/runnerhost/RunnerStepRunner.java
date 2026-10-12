@@ -523,7 +523,9 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
           if (daemonId == null) {
             runners.loseInherited(runId);
           } else if (givenUp.contains(runId)) {
-            // The run was given up while the check ran: the launch it registered goes too.
+            // The run was given up while the check ran: the launch it registered goes too, and
+            // so does the token it adopted.
+            commissions.endAdoption(runId);
             daemons.reap(daemonId);
           }
         });
@@ -555,6 +557,9 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
           runId, step.daemonId());
       return null;
     }
+    // Before the launch is registered, so the step's first report after its daemon re-dials is
+    // accepted: the report door knows a run's token by its subject (qits-1192).
+    commissions.adoptInherited(runId, step.tokenSubject());
     relay.begin(runId, step.stepIndex());
     if (step.startedAt() != null) {
       relay.started(runId, step.startedAt());
@@ -572,6 +577,8 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
 
   @Override
   public void revokeInherited(String runId) {
+    // The old token's last user is gone: the report door stops accepting it first.
+    commissions.endAdoption(runId);
     commissions.revokeOrphaned(runId);
   }
 
@@ -719,6 +726,7 @@ public class RunnerStepRunner implements CiRunnerStepRunner {
   public void runClosed(String runId) {
     relay.drop(runId);
     inFlight.remove(runId);
+    commissions.endAdoption(runId);
     commissions.release(runId);
     runners.release(runId);
   }

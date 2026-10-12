@@ -91,11 +91,41 @@ public class RunCommissions {
 
   /**
    * The subject of this run's {@code ci-run} token — the {@code sub} the edge puts on the JWT it
-   * forwards for it — or null when the run holds none.
+   * forwards for it — or null when the run holds none. A token this process commissioned comes
+   * first; without one, the subject of an inherited step's token ({@link #adoptInherited}) answers
+   * until that step ends.
    */
   public String tokenSubjectOf(String runId) {
     IdpCommissioner.CommissionedToken held = tokenByRun.get(runId);
-    return held == null ? null : held.subject();
+    return held != null ? held.subject() : adoptedSubjectByRun.get(runId);
+  }
+
+  /**
+   * The token subject of each inherited run's in-flight step, from its launch record (qits-1192).
+   * Only the subject: qits-idp gave the value to the previous process alone, so this process can
+   * never present the token, only recognise its caller.
+   */
+  private final Map<String, String> adoptedSubjectByRun = new ConcurrentHashMap<>();
+
+  /**
+   * Recognise the token a previous process commissioned for a run, while the step it launched with
+   * it is taken back (qits-1192). The caller has confirmed {@code subject} as one of the run's live
+   * tokens at qits-idp. It answers {@link #tokenSubjectOf} for the run, so the step's reports are
+   * accepted as they were before the restart: the same run, nothing more. {@link #endAdoption}
+   * drops it when the step ends.
+   */
+  public void adoptInherited(String runId, String subject) {
+    if (runId != null && subject != null) {
+      adoptedSubjectByRun.put(runId, subject);
+    }
+  }
+
+  /**
+   * Stop recognising a previous process's token for this run: its taken-back step ended, or the run
+   * was settled or closed. Revoking the token itself is {@link #revokeOrphaned}.
+   */
+  public void endAdoption(String runId) {
+    adoptedSubjectByRun.remove(runId);
   }
 
   /**
@@ -103,6 +133,7 @@ public class RunCommissions {
    * already over, and a failure here costs a reconciliation rather than a run.
    */
   public void release(String runId) {
+    endAdoption(runId);
     IdpCommissioner.CommissionedToken token = tokenByRun.remove(runId);
     if (token != null && idp != null && !idp.deleteToken(token.tokenId())) {
       // deleteToken never throws and has logged why; the reconciliation reaps a ci-run token whose

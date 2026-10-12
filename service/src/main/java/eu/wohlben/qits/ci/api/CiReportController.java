@@ -54,7 +54,9 @@ import org.jboss.logging.Logger;
  * whose role is {@code qits:ci-run} and whose {@code sub} the edge forwards. Holding the role is not
  * enough — every run's token holds it — so the caller's {@code sub} must equal the subject of the
  * token this process commissioned for <em>this</em> run ({@link RunCommissions#tokenSubjectOf}),
- * the same binding the ci-daemon control socket admits by. The checks are ordered so a caller learns
+ * the same binding the ci-daemon control socket admits by. A step taken back after a restart
+ * presents the token its previous process commissioned; that token's subject answers for the run
+ * until the step ends (qits-1192). The checks are ordered so a caller learns
  * no more than it is entitled to: a bad kind name is a 400 before anything is read, an unknown run
  * a 404, another run's token a 403 before the run's status is told, and only then 409, 413 and the
  * highlight count.

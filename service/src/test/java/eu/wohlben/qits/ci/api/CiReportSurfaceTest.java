@@ -84,6 +84,11 @@ class CiReportSurfaceTest {
 
   private CiRun lonely;
 
+  /** A run taken back after a restart: this process holds no token for it. */
+  private CiRun inherited;
+
+  private ScriptedRunTokens tokens;
+
   private CiReport gateCoverage;
 
   private CiReport askingTests;
@@ -122,7 +127,11 @@ class CiReportSurfaceTest {
                 "{\"totals\":{\"tests\":10,\"failed\":1}}",
                 new CiReportSubmission.Baseline(gate.id, VERSION)));
 
-    ScriptedRunTokens tokens = new ScriptedRunTokens(RUN_SUBJECT);
+    inherited =
+        run("report-inherited-" + UUID.randomUUID(), CiRunPhase.RELEASE, VERSION, "rr-y",
+            CiRunStatus.RUNNING, 5);
+
+    tokens = new ScriptedRunTokens(RUN_SUBJECT);
     tokens.forRun(asking.id, Map.of());
     tokens.forRun(lonely.id, Map.of());
     QuarkusMock.installMockForType(tokens, RunCommissions.class);
@@ -439,6 +448,36 @@ class CiReportSurfaceTest {
         .then()
         .statusCode(404);
     assertEquals(List.of(), store.forRun(lonely.id));
+  }
+
+  /**
+   * qits-1192: a step taken back after a restart still presents the token its previous process
+   * commissioned. Its reports are accepted while the step runs, and only for its own run; once the
+   * step ends, or when this process holds a token of its own for the run, the old token is refused.
+   */
+  @Test
+  @TestSecurity(user = RUN_SUBJECT, roles = {"qits:ci-run"})
+  @OidcSecurity(
+      claims = {@Claim(key = "aud", value = OWN_AUDIENCE), @Claim(key = "sub", value = RUN_SUBJECT)})
+  void aTakenBackStepsTokenReportsUntilTheStepEnds() {
+    String body = "{\"kindVersion\":1,\"payload\":{\"totals\":{\"tests\":3}}}";
+    String door = "/ci/api/runs/" + inherited.id + "/steps/0/reports/test-results";
+
+    // Before the run is taken back, nothing answers for it.
+    given().contentType(MediaType.APPLICATION_JSON).body(body).when().put(door).then().statusCode(403);
+
+    tokens.adoptInherited(inherited.id, RUN_SUBJECT);
+    given().contentType(MediaType.APPLICATION_JSON).body(body).when().put(door).then().statusCode(204);
+    assertEquals(1, store.forRun(inherited.id).size());
+
+    // Nothing wider: only the recorded subject answers, not any ci-run token.
+    tokens.adoptInherited(inherited.id, "tok-ci-run-somebody-else");
+    given().contentType(MediaType.APPLICATION_JSON).body(body).when().put(door).then().statusCode(403);
+
+    // The step ended: the old token is refused again.
+    tokens.adoptInherited(inherited.id, RUN_SUBJECT);
+    tokens.endAdoption(inherited.id);
+    given().contentType(MediaType.APPLICATION_JSON).body(body).when().put(door).then().statusCode(403);
   }
 
   private CiReportSubmission submission(String payload, CiReportSubmission.Baseline baseline)

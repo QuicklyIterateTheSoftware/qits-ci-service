@@ -985,6 +985,13 @@ class RunnerStepRunnerTest {
       // The daemon re-dials before its runner is back, and is admitted as the launch it names —
       // once its recorded subject is confirmed as one of the run's live tokens.
       awaitPhase(daemonId);
+      // The step still presents the token the previous process commissioned, and its reports are
+      // bound to the run by that token's subject (qits-1192). Before the fix this process held no
+      // token for the run, and the report door refused every report as "(none held)".
+      assertEquals(
+          CLIENT,
+          runTokens.tokenSubjectOf(runId),
+          "the taken-back step's token answers for the run while the step runs");
       try (FakeCiDaemon daemon = FakeCiDaemon.dial(daemonEndpoint, Map.of())) {
         daemon.send(
             new eu.wohlben.qits.cidaemon.protocol.Hello(daemonId, CiDaemonProtocol.CAPABILITY_VERSION));
@@ -1019,6 +1026,12 @@ class RunnerStepRunnerTest {
           assertFalse(back.holds(Launch.class), "nothing is launched again");
           assertNotNull(back.next(Released.class, SOON), "the driver's end releases the run");
           assertEquals(1, lost.getCount(), "adopted, so never lost");
+
+          // The taken-back step ended: the driver revokes the old token, and it answers for the
+          // run no longer.
+          steps.revokeInherited(runId);
+          assertNull(runTokens.tokenSubjectOf(runId), "the old token is not accepted after its step");
+          assertEquals(List.of(runId), runTokens.revoked, "and it is revoked at qits-idp, as before");
         }
       }
     } finally {
@@ -1094,6 +1107,7 @@ class RunnerStepRunnerTest {
           lost.await(SOON.toSeconds(), TimeUnit.SECONDS),
           "given up at once, not a minute's grace later");
       assertNull(daemons.phaseOf(daemonId), "no launch is registered on an unconfirmed record");
+      assertNull(runTokens.tokenSubjectOf(runId), "and no unconfirmed subject answers for the run");
       try (FakeCiDaemon daemon = FakeCiDaemon.dial(daemonEndpoint, Map.of())) {
         daemon.send(
             new eu.wohlben.qits.cidaemon.protocol.Hello(daemonId, CiDaemonProtocol.CAPABILITY_VERSION));
