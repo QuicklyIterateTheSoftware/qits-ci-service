@@ -557,6 +557,12 @@ as different bytes under a version already published. Now:
   subject is confirmed as one of the run's live tokens at qits-idp; an unconfirmed subject or an
   unreadable listing gives the run up. The re-dialling daemon is admitted only as the recorded
   launch id and token subject.
+- **The taken-back step keeps its token until it ends.** Once the recorded subject is confirmed live,
+  `RunCommissions.adoptInherited` makes it answer `tokenSubjectOf` for that run, so the report door
+  accepts the step's reports as before the restart. Only the subject is known, never the value, and
+  a token this process commissions for the run comes first. `endAdoption` drops it when the step
+  ends (`revokeInherited`), when the run is given up, and at `runClosed`. Before this, every report
+  of a taken-back step was refused as `(none held)` (2026-10-11 20:23 UTC deploy).
 - **Old credentials are revoked.** The predecessor's `ci-run` tokens for an inherited run are
   revoked (`RunCommissions.revokeOrphaned`) once the taken-back step ends, when the run continues
   with nothing in flight, and on every settle path. A listing that cannot be read leaves the run

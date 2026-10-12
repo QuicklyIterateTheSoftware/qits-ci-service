@@ -59,7 +59,8 @@ public final class ScriptedRunTokens extends RunCommissions {
   @Override
   public String tokenSubjectOf(String runId) {
     IdpCommissioner.CommissionedToken token = held.get(runId);
-    return token == null ? null : token.subject();
+    // Without a token of its own, the real bean's answer: an inherited step's adopted subject.
+    return token == null ? super.tokenSubjectOf(runId) : token.subject();
   }
 
   @Override
