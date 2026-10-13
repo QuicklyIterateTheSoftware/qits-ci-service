@@ -102,7 +102,7 @@
              them. Its own property, separate from qits.integrations-quarkus.version, because this
              reactor pins each library released out of that reactor independently (qits.auth-core.version
              beside it is the precedent). -->
-        <qits.http-core.version>2026.1012.153509</qits.http-core.version>
+        <qits.http-core.version>2026.1013.64811</qits.http-core.version>
         <!-- The platform's datasource resilience, released out of libs/qits-integrations-quarkus
              together with the two above, which is why the strings match: qits-db-core carries
              PatientPgDriver — the pool opens its connections through it, and a request is HELD
