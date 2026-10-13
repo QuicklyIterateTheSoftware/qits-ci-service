@@ -58,6 +58,7 @@ erDiagram
     string archetype_version "length 64"
     string branch "not null"
     string cancellation_reason "length 255"
+    int carried_steps
     uuid causation_id
     string commit_sha "not null, length 64"
     string config_path "not null, length 512"
