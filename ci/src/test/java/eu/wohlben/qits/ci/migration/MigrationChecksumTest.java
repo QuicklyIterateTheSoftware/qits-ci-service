@@ -157,6 +157,9 @@ public class MigrationChecksumTest {
     PINS.put(
         "V37__run_inflight_launch.sql",
         "4e5cf15e09ec60125f6d8a23091674437b0927073c39f7bc6f0270b4e677adcc");
+    PINS.put(
+        "V38__run_carried_steps.sql",
+        "b0ce8e0efb957955de2708de17e2ef19cb40f970ad9ef20df9d5b61d428e11ad");
   }
 
   @Test

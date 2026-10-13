@@ -86,6 +86,23 @@ public class CiQueueForecastTest {
         .toList();
   }
 
+  // --- a retry that carried steps over -----------------------------------------------------------
+
+  @Test
+  public void aStepARetryCarriedOverTakesNoTimeInTheForecast() {
+    // A release retry resumes after its source's green prefix (qits-1222): its prediction still has
+    // one entry per step, and the carried ones are already done, so only the rest is waited for.
+    CiRun resumed = run("resumed", 300 * SECOND, 60 * SECOND);
+    resumed.carriedSteps = 1;
+    CiRun behind = run("behind", 10 * SECOND);
+
+    CiQueueForecast.Forecast forecast =
+        CiQueueForecast.forecast(List.of(), claimOrder(resumed, behind), 1, NOW);
+
+    assertEquals(Arrays.asList(0L, 60 * SECOND), starts(forecast));
+    assertEquals(Arrays.asList(60 * SECOND, 70 * SECOND), finishes(forecast));
+  }
+
   // --- the serial case, which is the one that ships -----------------------------------------------
 
   @Test

@@ -255,6 +255,37 @@ public class CiInheritedRunTest extends CiTestSupport {
   }
 
   @Test
+  public void aResumingRetryThatLaunchedNothingYetIsInheritedAtItsFirstOwnStep() throws Exception {
+    // A release retry carries its source's green prefix as rows written at accept (qits-1222), so
+    // "before the first launch" is "only the carried rows", not "no rows at all". Such a run is taken
+    // back and continues after them; refusing it would fail a release retry that ran nothing.
+    String runId = insertRunning(CiRunPhase.RELEASE, false);
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              CiRun row = runs.findById(runId);
+              row.carriedSteps = 1;
+              row.daemonVersion = null;
+              row.inflightStepIndex = null;
+              row.inflightDaemonId = null;
+              row.inflightTokenSubject = null;
+              row.inflightStartedAt = null;
+            });
+
+    service.sweepInterrupted();
+    assertEquals(1, fakeRunner.inheritances().size(), "it is taken back, not settled");
+    assertNull(fakeRunner.inheritances().get(0).run().inFlight());
+
+    fakeRunner.inheritances().get(0).adopted().run();
+    forgetLoadedEntities();
+
+    assertEquals(
+        List.of(1, 2), fakeRunner.executed().stream().map(CiStepRunner.StepSpec::stepIndex).toList(),
+        "the carried step is never launched");
+    assertEquals(CiRunStatus.SUCCESS, service.requireRun(runId).status);
+  }
+
+  @Test
   public void aRunThatMayHaveLaunchedWithoutARecordIsSettled() throws Exception {
     // What a process older than the record leaves: a pinned daemon, a finished step, no launch.
     assertSettledAtBoot(

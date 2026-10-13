@@ -1893,6 +1893,24 @@ names"), and what follows is what biting it feels like.
   Only a **terminal** run is retryable (409 otherwise): two runs racing for one verdict is not what
   was asked for. Cancelled runs are retryable, which is the point — a re-fire is what a cancellation
   invites.
+
+  **A retry of a `RELEASE`-phase run resumes; every other retry re-runs everything** (qits-1222).
+  Measured 2026-10-11 on qits-artifacts-service: step 0 of its release run built and pushed the
+  released image tag and submitted the SBOM, step 1 failed, and the retry ran step 0 again — a
+  rebuild that is not byte-identical, so it re-pushed the released tag with a different manifest
+  and qits-publish refused the SBOM as different bytes. Such a retry can never succeed. Now
+  `CiRunService.carryOver` takes the source's unbroken green prefix of steps and `insertRetry`
+  writes those as `SUCCESS` rows on the retry (no timestamps, so the duration prediction never
+  samples them; output naming the source run), records the count in `ci_run.carried_steps` (V38),
+  and the runner starts at that index. Carried steps count toward the verdict, so a retry whose
+  remaining steps go green announces like any green release run. It carries only onto a pipeline
+  of the same shape — the same step count, each carried step naming the image the source's row
+  recorded — and otherwise carries nothing with a WARN; scripts are not compared, because a
+  re-composition changes the platform's prelude inside every step by design. `autoRetry` goes
+  through the same `refire`. QA and release-request runs are re-asked whole: their retry asks for a
+  verdict. The boot sweep, the requeue paths and the queue forecast all read the column: carried
+  rows are kept when a run starts over, a run holding only carried rows has launched nothing, and a
+  carried step takes no time in the forecast.
 - **Every step gates, and `gating:` is a parse error at both scopes.** A file and a step could each
   declare it, the run's announced verdict was the two ANDed, and that is what let
   `ci-event-build.yml` and `ci-event-userflows.yml` become one file. The two-files-into-one story

@@ -842,6 +842,13 @@ public class CiRunController {
    * like it does after a trigger. Retrying a run that has not finished is a 409 — the question is
    * still being answered, and two runs racing for one verdict is not what was asked for.
    *
+   * <p><b>A release run's retry resumes rather than starting over</b> (qits-1222). Its steps that
+   * succeeded in the run being retried published under a version that cannot move, so they are
+   * carried onto the new run as succeeded, are never executed again, and the new run starts at the
+   * first step that did not succeed — {@code CiRunService.carryOver}. Before, the retry rebuilt the
+   * released image, re-pushed its tag with different bytes and was then refused by the store, so it
+   * could never succeed. Every other phase's retry still runs the whole pipeline.
+   *
    * <p><b>It is a person's write that an agent may also press, and the widening is scoped rather
    * than blanket.</b> The roles are {@code qits:admin} and {@code qits:agent}. A coding agent is the
    * caller standing in front of the case this endpoint exists for: a release-request gate that went

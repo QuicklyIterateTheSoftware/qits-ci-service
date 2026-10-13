@@ -1,0 +1,17 @@
+-- How many leading steps a retry carried over from the run it retries rather than running them again
+-- (qits-1222).
+--
+-- A retry of a RELEASE-phase run used to run the whole pipeline again from step 0. Its first step had
+-- already built and pushed the released image and submitted its SBOM; the rebuild was not
+-- byte-identical, so it re-pushed the released tag with a different manifest and qits-publish then
+-- refused the SBOM as different bytes under a published version. Such a retry could never succeed.
+-- Now every step that ended SUCCESS in the source (an unbroken prefix) is written onto the retry as a
+-- SUCCESS row at accept, and the retry's runner starts at the first step after them:
+--
+--   ci_run.carried_steps   the length of that prefix; its step rows are copies, not executions.
+--
+-- Nullable, no default, no backfill: every run that is not a carrying retry, and every historical row,
+-- carries none, which reads as zero. What reads it: the runner's start index, the boot sweep's
+-- inheritance check (a run with only carried rows has launched nothing yet), the requeue paths (which
+-- keep the carried rows), and the queue forecast (a carried step takes no time in this run).
+alter table ci_run add column carried_steps integer;

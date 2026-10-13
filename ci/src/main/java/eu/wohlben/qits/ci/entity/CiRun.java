@@ -175,6 +175,27 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   @Column(name = "retry_reason", length = 255)
   public String retryReason;
 
+  /**
+   * How many leading steps this retry <b>carried over</b> from {@link #retryOfRunId} instead of
+   * running them again, or null when it carried none — every run that is not a retry, every retry
+   * of a phase other than {@link CiRunPhase#RELEASE}, and every historical row (qits-1222, {@code
+   * V38__run_carried_steps.sql}).
+   *
+   * <p>A retry of a release run resumes at the first step that did not succeed in the run it
+   * retries: the steps before it already published, and a second build publishes different bytes
+   * under a version that is already out. Their rows are written onto this run at accept as {@code
+   * SUCCESS} copies with no timestamps and an output saying where they came from, and the runner
+   * starts at this index. Read back by {@code CiRunService} (start index, inheritance, requeue) and
+   * {@code CiQueueForecast} (a carried step takes no time in this run).
+   */
+  @Column(name = "carried_steps")
+  public Integer carriedSteps;
+
+  /** {@link #carriedSteps} as a count: zero when the run carried nothing. */
+  public int carriedStepCount() {
+    return carriedSteps == null ? 0 : carriedSteps;
+  }
+
   // DEBT (qits-443): ci_run.avoid_runner_ids (V27__run_avoid_runners.sql) is still in the schema and
   // is deliberately NOT mapped here — nothing reads or writes it. "A retry is kept off the runner
   // that failed it" was removed on the owner's ruling of 2026-09-30 (never specified; with a single

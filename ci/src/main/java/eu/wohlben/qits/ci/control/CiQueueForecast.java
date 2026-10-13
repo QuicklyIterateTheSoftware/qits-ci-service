@@ -361,7 +361,9 @@ public final class CiQueueForecast {
    * What a run is expected to take in total, or null when it predicts nothing.
    *
    * <p>All or nothing, and the sum is of every declared step — see the class javadoc for why a
-   * partial array is not a shape that exists.
+   * partial array is not a shape that exists — except the ones a retry carried over from the run it
+   * retries ({@link CiRun#carriedSteps}, qits-1222): those are already done and take no time in this
+   * run. The array itself stays whole, one entry per step, so a client still draws every segment.
    */
   private static Long expectedTotal(CiRun run) {
     List<Long> steps = ExpectedStepDurations.decode(run.expectedStepDurations);
@@ -369,8 +371,8 @@ public final class CiQueueForecast {
       return null;
     }
     long total = 0L;
-    for (Long step : steps) {
-      total += step;
+    for (int index = run.carriedStepCount(); index < steps.size(); index++) {
+      total += steps.get(index);
     }
     return total;
   }

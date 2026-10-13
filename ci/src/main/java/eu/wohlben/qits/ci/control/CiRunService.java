@@ -791,7 +791,7 @@ public class CiRunService {
       // left: a POST_RECEIVE row whose in-flight step died with its process, which this engine has
       // no worker for and could not safely replay if it had one.
       if (orphan.triggerType == CiTriggerType.EVENT && orphan.triggerConfig != null) {
-        steps.delete("runId = ?1", orphan.id);
+        deleteExecutedSteps(orphan);
         reports.deleteForRun(orphan.id);
         orphan.status = CiRunStatus.QUEUED;
         orphan.finishedAt = null;
@@ -873,7 +873,9 @@ public class CiRunService {
             && run.inflightTokenSubject == null
             && run.inflightStartedAt == null;
     if (noLaunch) {
-      return done == 0 && run.daemonVersion == null
+      // Before the first launch the only rows are the ones a retry carried over (qits-1222): copies
+      // written at accept, never executions of this run.
+      return done == run.carriedStepCount() && run.daemonVersion == null
           ? new Inheritance(null, null)
           : Inheritance.refused("a step may have been launched and none is recorded");
     }
@@ -1176,24 +1178,28 @@ public class CiRunService {
    * that has just thrown an {@code Error}.
    */
   private void executeClaimed(CiRun run, EventRun request) {
-    executeClaimed(run, request, Resume.FRESH);
+    executeClaimed(run, request, Resume.reserved(run));
   }
 
   /**
-   * Where a driver starts in a run: at step 0 for a run it reserved, or — for a run inherited from
-   * a previous process (qits-1192) — at the first step that has no row, taking that step's container
-   * back when {@code reattach} says it was in flight. {@code startedAt} is the in-flight step's
-   * recorded start, null when it was not started.
+   * Where a driver starts in a run. A run it reserved starts at step 0 — or, for a retry of a
+   * release run, at the first step it did not carry over from the run it retries ({@link
+   * CiRun#carriedSteps}, qits-1222). A run {@code inherited} from a previous process (qits-1192)
+   * continues at the first step that has no row, taking that step's container back when {@code
+   * reattach} says it was in flight. {@code startedAt} is the in-flight step's recorded start, null
+   * when it was not started.
    */
-  private record Resume(int from, boolean reattach, Instant startedAt) {
-    static final Resume FRESH = new Resume(0, false, null);
+  private record Resume(int from, boolean inherited, boolean reattach, Instant startedAt) {
+    static Resume reserved(CiRun run) {
+      return new Resume(run.carriedStepCount(), false, false, null);
+    }
   }
 
   private void executeClaimed(CiRun run, EventRun request, Resume resume) {
     boolean leftRunning = false;
     try {
       DaemonPin pin;
-      if (run.daemonVersion != null && resume != Resume.FRESH) {
+      if (run.daemonVersion != null && resume.inherited()) {
         // An inherited run keeps its pin: its next containers download the build its first ones did.
         pin = stepRunnerFor(run).pinDaemon(run.daemonVersion);
       } else {
@@ -1267,7 +1273,7 @@ public class CiRunService {
       revokeInherited(runId);
     }
     executeClaimed(
-        run, request, new Resume(from, reattach, reattach ? run.inflightStartedAt : null));
+        run, request, new Resume(from, true, reattach, reattach ? run.inflightStartedAt : null));
   }
 
   /**
@@ -1314,7 +1320,7 @@ public class CiRunService {
                   if (row == null || row.status != CiRunStatus.RUNNING) {
                     return false;
                   }
-                  steps.delete("runId = ?1", runId);
+                  deleteExecutedSteps(row);
                   reports.deleteForRun(runId);
                   row.status = CiRunStatus.QUEUED;
                   row.finishedAt = null;
@@ -3463,6 +3469,15 @@ public class CiRunService {
   }
 
   /**
+   * Deletes the step rows a run that starts over had written, and keeps the ones it carried over
+   * from the run it retries (qits-1222): those were never this run's executions, and a run that
+   * starts over starts at the first step after them, exactly as its first attempt did.
+   */
+  private void deleteExecutedSteps(CiRun run) {
+    steps.delete("runId = ?1 and stepIndex >= ?2", run.id, run.carriedStepCount());
+  }
+
+  /**
    * Moves a run's non-terminal steps to terminal states (RUNNING ⇒ FAILED, PENDING ⇒ SKIPPED).
    *
    * <p>Nothing this class writes is ever non-terminal any more, so this only ever finds <b>legacy</b>
@@ -3732,6 +3747,17 @@ public class CiRunService {
    * A run from a hand-written {@code ci-event-*.yml} has no platform half and is replayed byte for
    * byte, exactly as it always was.
    *
+   * <p><b>A RELEASE run's retry resumes; every other run's re-runs everything</b> (qits-1222). The
+   * steps a release run's source finished green — an unbroken prefix — are carried onto the retry as
+   * {@code SUCCESS} rows saying where they came from, and its runner starts at the first step that
+   * did not succeed. Those steps published under a version that cannot move, and building them again
+   * re-pushed a released image tag with different bytes and left a retry that the store's
+   * different-bytes refusal made impossible to finish. The carried steps count toward the verdict,
+   * so a retry whose remaining steps go green is a green release run and announces as one. A
+   * pipeline that does not line up with the source's carries nothing — see {@link #carryOver} — and
+   * a QA or release-request run is always re-asked whole, because its retry asks for a verdict.
+   * This holds for {@link #autoRetry} too, which re-fires through the same path.
+   *
    * <p><b>The re-composition happens OUTSIDE the accept transaction</b>, like every other read on
    * this class's write paths: it reads the git host twice and {@link DbRetry#inNewTx} re-runs its
    * whole body, so a read in there would be re-issued per attempt and could poison the session it
@@ -3744,7 +3770,8 @@ public class CiRunService {
   }
 
   /**
-   * {@link #retry}, with the reason an automatic one records on its row — null for a person's.
+   * {@link #retry}, with the reason an automatic one records on its row — null for a person's. Both
+   * resume a RELEASE run at the first step its source did not finish green ({@link #carryOver}).
    */
   private CiRun refire(String runId, String autoRetryReason) {
     CiRun source = requireRun(runId);
@@ -3775,25 +3802,29 @@ public class CiRunService {
     // image would otherwise be re-run by every retry of every run that ever met it. A differing pin
     // beside an identical commit_sha is then the record of the toolchain having moved, exactly as
     // archetype_version is of the recipe. Against the RE-COMPOSED document, since that is what will run.
-    String pins =
-        StepImages.encode(
-            pinStepImages(
-                triggerParser
-                    .parseSnapshot(
-                        source.configPath, pipeline.document(), "The run being retried for " + runId)
-                    .pipeline()));
+    CiPipeline retried =
+        triggerParser
+            .parseSnapshot(source.configPath, pipeline.document(), "The run being retried for " + runId)
+            .pipeline();
+    String pins = StepImages.encode(pinStepImages(retried));
+    // Decided here, outside the accept's bracket, for the re-composition's reason: it reads the
+    // source's step rows, and the source is terminal, so they cannot move between here and the
+    // insert. A RELEASE run resumes where its source stopped (qits-1222) — see carryOver.
+    Carry carry = carryOver(source, retried.steps());
     Accepted accepted =
         DbRetry.inNewTx(
             "run retry accept",
-            () -> insertRetry(source.id, expected, pipeline, pins, autoRetryReason),
+            () -> insertRetry(source.id, expected, pipeline, pins, autoRetryReason, carry),
             retryDeadline());
     if (accepted == null) {
       throw new NotFoundException("No such CI run: " + runId);
     }
     CiRun retry = accepted.run();
     LOG.infof(
-        "CI run %s retried as %s — same %s at %s%s", runId, retry.id, retry.configPath,
-        retry.commitSha, autoRetryReason == null ? "" : " (automatically: " + autoRetryReason + ")");
+        "CI run %s retried as %s — same %s at %s%s%s", runId, retry.id, retry.configPath,
+        retry.commitSha,
+        carry.count() == 0 ? "" : ", resuming at step " + carry.count(),
+        autoRetryReason == null ? "" : " (automatically: " + autoRetryReason + ")");
     // After the insert's transaction and before the wake, the accept path's arrangement exactly: a
     // retry is a new row entering the active listing, and the only thing that separates it from an
     // event-triggered arrival is which method wrote it. `previousStatus` is null for that reason —
@@ -4139,6 +4170,116 @@ public class CiRunService {
       String document, CiReleaseArchetypes.ArchetypeRef archetype) {}
 
   /**
+   * The steps a retry takes over from the run it retries as already done, and never runs (qits-1222)
+   * — empty for every retry that runs its whole pipeline again.
+   */
+  record Carry(List<CarriedStep> steps) {
+    static final Carry NONE = new Carry(List.of());
+
+    /** How many leading steps are carried, which is also the index the retry starts at. */
+    int count() {
+      return steps.size();
+    }
+  }
+
+  /** One carried step: what its row on the retry says, copied from the source's row. */
+  record CarriedStep(int index, String image, Integer exitCode, String output) {}
+
+  /**
+   * <b>A retry of a RELEASE run resumes at the first step that did not succeed in the run it
+   * retries</b> (qits-1222): every step before it is carried over and never executed again.
+   *
+   * <p><b>Why a release run, and only a release run.</b> Its steps publish under a version that
+   * cannot move: the first one of a docker release builds the image, pushes the released tag and
+   * submits its SBOM. Measured on qits-artifacts-service's release run of 2026-10-11: step 0 did
+   * all three, step 1 failed, and the retry ran step 0 again — a rebuild that is not byte-identical,
+   * so it re-pushed the released tag with a different manifest, and qits-publish then refused the
+   * SBOM as "already published with DIFFERENT bytes". That retry could never succeed, and it
+   * overwrote a released tag on the way. Nothing else about publishing changes: a step that did not
+   * succeed is run again, so a retry after a failed publish still publishes, and different bytes
+   * for a published version are still refused by the store. Every other phase re-runs everything —
+   * a QA run's retry re-asks a verdict, and a verdict is the whole pipeline's.
+   *
+   * <p><b>A step can be carried because every step starts from nothing.</b> Each is its own
+   * container, possibly on another runner, with its own clone and checkout of the run's commit; no
+   * workspace, environment or file passes from one step to the next. What a step leaves behind is
+   * what it published — and that is precisely what must not be done twice. Its reports stay on the
+   * source run, which the carried row's output names.
+   *
+   * <p><b>Only an unbroken green prefix, and only onto a pipeline of the same shape.</b> A retry may
+   * be re-composed ({@link #retriedPipeline}), so its steps are not necessarily the source's. Step
+   * {@code i} is carried only when steps {@code 0..i} all succeeded and the retried pipeline has as
+   * many steps as the source's, each carried one naming the image the source's row recorded. The
+   * scripts are deliberately NOT compared: re-composition exists to change the platform's prelude and
+   * postlude inside every step, so a script comparison would refuse exactly the retry a platform fix
+   * is meant to heal — and a step that already published has done its work whatever its script now
+   * says. Anything else that does not line up carries nothing, with a WARN saying why, and the retry
+   * runs everything as it did before this rule.
+   */
+  private Carry carryOver(CiRun source, List<CiPipeline.CiStepDecl> retried) {
+    if (source.phase != CiRunPhase.RELEASE) {
+      return Carry.NONE;
+    }
+    List<CiStep> recorded =
+        QuarkusTransaction.requiringNew().call(() -> steps.listByRunIdOrdered(source.id));
+    int succeeded = 0;
+    while (succeeded < recorded.size()
+        && recorded.get(succeeded).stepIndex == succeeded
+        && recorded.get(succeeded).status == CiStepStatus.SUCCESS) {
+      succeeded++;
+    }
+    if (succeeded == 0) {
+      return Carry.NONE;
+    }
+    List<CiPipeline.CiStepDecl> declared = declaredStepsQuietly(source);
+    if (declared.size() != retried.size()) {
+      LOG.warnf(
+          "Retry of release run %s carries nothing over: its pipeline had %d step(s) and the retry's"
+              + " has %d, so its succeeded steps cannot be matched — every step runs again",
+          source.id, declared.size(), retried.size());
+      return Carry.NONE;
+    }
+    List<CarriedStep> carried = new ArrayList<>(succeeded);
+    for (int i = 0; i < succeeded; i++) {
+      CiStep step = recorded.get(i);
+      String image = stepImage(retried.get(i));
+      if (!Objects.equals(step.image, image)) {
+        LOG.warnf(
+            "Retry of release run %s carries nothing over: its step %d ran %s and the retry's names"
+                + " %s — every step runs again",
+            source.id, i, step.image, image);
+        return Carry.NONE;
+      }
+      carried.add(
+          new CarriedStep(i, step.image, step.exitCode, carriedOutput(source.id, step.output)));
+    }
+    LOG.infof(
+        "Retry of release run %s carries step(s) 0..%d over as succeeded and resumes at step %d%s",
+        source.id,
+        succeeded - 1,
+        succeeded,
+        succeeded == retried.size() ? " — every step succeeded there, so none runs" : "");
+    return new Carry(List.copyOf(carried));
+  }
+
+  /**
+   * A carried step's output: one bracketed line saying it was not run here and where it was, then
+   * the tail of what it said there, so {@code qits ci run --logs} on the retry reads both.
+   */
+  private String carriedOutput(String sourceRunId, String sourceOutput) {
+    String note =
+        "[carried over from CI run "
+            + sourceRunId
+            + ", where this step succeeded; it is not run again (qits-1222): a release run"
+            + " publishes, and a second build would publish different bytes under the same"
+            + " version. Its output there follows.]";
+    if (sourceOutput == null || sourceOutput.isEmpty()) {
+      return note;
+    }
+    return note + "\n" + tail(sourceOutput, Math.max(0, outputMaxChars - note.length() - 1));
+  }
+
+  /**
    * The fallback: the pipeline stored on the run being re-fired, <b>with that run's own archetype
    * values</b>.
    *
@@ -4180,7 +4321,8 @@ public class CiRunService {
       String expectedStepDurations,
       RetriedPipeline pipeline,
       String stepImages,
-      String autoRetryReason) {
+      String autoRetryReason,
+      Carry carry) {
     CiRun source = runs.findById(sourceRunId);
     if (source == null) {
       return null;
@@ -4237,7 +4379,26 @@ public class CiRunService {
     // moved. The one arm that does copy is the fallback to the stored document — see
     // storedPipelineOf, where the source's values are what will really run.
     archetypeOnto(retry, pipeline.archetype());
+    // Null rather than zero when nothing is carried, so the column says something only on the rows
+    // it is about (qits-1222).
+    retry.carriedSteps = carry.count() == 0 ? null : carry.count();
     runs.persist(retry);
+    // In the same transaction as the row: a retry that exists resumes where it says it does, and a
+    // rolled-back attempt leaves no orphaned copies behind.
+    for (CarriedStep carried : carry.steps()) {
+      CiStep step = new CiStep();
+      step.id = UUID.randomUUID().toString();
+      step.runId = retry.id;
+      step.stepIndex = carried.index();
+      step.image = carried.image();
+      step.status = CiStepStatus.SUCCESS;
+      step.exitCode = carried.exitCode();
+      step.output = carried.output();
+      // No timestamps, on purpose: the step did not run in this run, and the duration prediction
+      // samples only rows that carry both (CiStepRepository), so a copy never counts as a second
+      // measurement of the source's execution.
+      steps.persist(step);
+    }
     runs.flush();
     // A retry of a gating build is as new as a fresh fold, so it supersedes the other requests'
     // builds of this repository exactly as an event arrival would. Fresh lists per attempt, for
