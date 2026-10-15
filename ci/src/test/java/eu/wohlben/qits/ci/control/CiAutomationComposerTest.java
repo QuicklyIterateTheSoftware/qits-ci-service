@@ -1101,6 +1101,105 @@ public class CiAutomationComposerTest {
     assertFalse(run.output.contains("fake qits"), run.output);
   }
 
+  // --- the estate-pins kind, run (qits-1258) -------------------------------------------------------
+
+  private static final String ESTATE_PINS_PATH =
+      "ci/src/main/resources/platform-pipelines/automations/estate-pins.yml";
+
+  private static final String ESTATE_PINS_BRANCH = "maintenance/automations/estate-pins/abc";
+
+  /**
+   * The packaged kind file's own step, composed exactly as the platform composes it — with its CLI
+   * download pointed at {@code store}, the seam {@link #aQitsCliKindRunsTheScriptWithThePinnedCliOnPath}
+   * uses.
+   */
+  private static String estatePinsStep(Path store) throws Exception {
+    String kindFile = Files.readString(Path.of("..").resolve(ESTATE_PINS_PATH));
+    String composed = CiAutomationComposer.compose("estate-pins", ESTATE_PINS_PATH, kindFile);
+    return new CiEventTriggerParser()
+        .parse(ESTATE_PINS_PATH, composed)
+        .pipeline()
+        .steps()
+        .get(0)
+        .script()
+        .replace(CiReleaseComposer.CLI_DOWNLOAD_BASE, "file://" + store + "/");
+  }
+
+  private static String estatePinsPayload(Scratch scratch, String changes, String paths) {
+    return scratch
+        .payload(ESTATE_PINS_BRANCH, scratch.fold, paths)
+        .replace("}", ",\"changes\":" + changes + "}");
+  }
+
+  @Test
+  public void aGitlinkChangeIsAppliedAndCommittedAsABump(@TempDir Path dir) throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "estate-pins", "bump");
+    // The sibling a gitlink names, beside the origin: its url is derived from the run's own.
+    Path sibling = dir.resolve("scratch").resolve("qits-sibling");
+    scratch.git(dir, "init", "-q", "-b", "main", sibling.toString());
+    scratch.git(
+        sibling, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one");
+    // Annotated, so the entry has to be peeled to the commit.
+    scratch.git(sibling, "-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "-m", "r", "2026.2.2");
+    String released = scratch.git(sibling, "rev-parse", "2026.2.2^{commit}");
+
+    String changes =
+        "[{\"ecosystem\":\"gitlink\",\"manifestPath\":\"components/qits-sibling\","
+            + "\"name\":\"qits-sibling\",\"to\":\"2026.2.2\",\"location\":\"gitlink:components/qits-sibling\"}]";
+    Path store = fakeChangelogCli(dir.resolve("store"), "chore(qits-1): ", 0);
+    Path applied = dir.resolve("applied.tsv");
+    Result run =
+        scratch.runStep(
+            "bash",
+            estatePinsStep(store),
+            estatePinsPayload(scratch, changes, "\"components/qits-sibling\""),
+            fakeCliEnv(applied));
+
+    assertEquals(0, run.exit, run.output);
+    String pushed = scratch.originRev("refs/heads/" + ESTATE_PINS_BRANCH);
+    assertEquals(scratch.fold, scratch.git(scratch.origin, "rev-parse", pushed + "^"), "one commit");
+    // The tickets head the subject; bump(<item>) behind them is the platform's, never the CLI's
+    // bump(<group>).
+    assertEquals(
+        "chore(qits-1): bump(qits-978): 1 dependencies",
+        scratch.git(scratch.origin, "log", "-1", "--format=%s", pushed));
+    // The gitlink entry, at the tag's COMMIT, created with no prior entry at that path.
+    assertEquals(
+        "160000 commit " + released + "\tcomponents/qits-sibling",
+        scratch.git(scratch.origin, "ls-tree", pushed, "components/qits-sibling"));
+    assertEquals("gitlink\tqits-sibling\n", Files.readString(applied));
+  }
+
+  @Test
+  public void aMavenOrNpmOrDockerChangeIsRefusedAndNothingIsPushed(@TempDir Path dir)
+      throws Exception {
+    Scratch scratch = new Scratch(dir, "estate-pins", "bump");
+    scratch.foldWith(Map.of("pom.xml", POM), Map.of());
+    String step = estatePinsStep(fakeChangelogCli(dir.resolve("store"), "", 0));
+    Map<String, String> refusals =
+        Map.of(
+            "a maven change",
+            "[{\"ecosystem\":\"maven\",\"manifestPath\":\"pom.xml\",\"name\":\"x:y\",\"to\":\"1\","
+                + "\"location\":\"property:quarkus.version\"}]",
+            "an npm change",
+            "[{\"ecosystem\":\"npm\",\"manifestPath\":\"package.json\",\"name\":\"left-pad\","
+                + "\"to\":\"1.3.0\"}]",
+            "a docker change",
+            "[{\"ecosystem\":\"docker\",\"manifestPath\":\"Dockerfile\",\"name\":\"x\",\"to\":\"1\"}]");
+    for (Map.Entry<String, String> refusal : refusals.entrySet()) {
+      Result run =
+          scratch.runStep(
+              "bash", step, estatePinsPayload(scratch, refusal.getValue(), "\"pom.xml\""), FAKE_CLI_ENV);
+      assertEquals(1, run.exit, refusal.getKey() + ":\n" + run.output);
+      assertTrue(
+          run.output.contains("estate-pins writes gitlink pins only"),
+          refusal.getKey() + ":\n" + run.output);
+      assertFalse(run.output.contains("pushed "), refusal.getKey() + ":\n" + run.output);
+    }
+    assertEquals(
+        "", scratch.originRevOrEmpty("refs/heads/" + ESTATE_PINS_BRANCH), "nothing was pushed");
+  }
+
   // --- the scratch origin ------------------------------------------------------------------------
 
   private record Result(int exit, String output) {}

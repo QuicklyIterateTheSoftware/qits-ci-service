@@ -122,6 +122,7 @@ public class PackagedPlatformPipelinesTest {
             "MaintenanceBump",
             "ReleaseRequestAutomation",
             "ReleaseRequestAutomation",
+            "ReleaseRequestAutomation",
             "ReleaseRequestAutomation"),
         packaged().stream()
             .map(file -> triggerParser.parse(file.path(), file.content()).eventName())
@@ -232,9 +233,10 @@ public class PackagedPlatformPipelinesTest {
       List<String> forbidden =
           new java.util.ArrayList<>(
               List.of("git checkout", "git add", "git commit", "git push", "git reset"));
-      // dependency-bump is the one kind whose payload says what to change, and the one whose
-      // gitlinks are fetched from a sibling: both are allowed it, confined, and asserted below.
-      if (!kind.equals(DEPENDENCY_BUMP)) {
+      // dependency-bump and estate-pins are the two kinds whose payload says what to change, and
+      // whose gitlinks are fetched from a sibling: both are allowed it, confined, and asserted
+      // below.
+      if (!kind.equals(DEPENDENCY_BUMP) && !kind.equals(ESTATE_PINS)) {
         forbidden.addAll(List.of("git fetch", "QITS_EVENT"));
       }
       for (String word : forbidden) {
@@ -531,6 +533,151 @@ public class PackagedPlatformPipelinesTest {
       String bare = line.startsWith(indent) ? line.substring(indent.length()) : line;
       // A comment is the file's own prose; the code is what has to agree.
       if (!bare.strip().startsWith("#")) {
+        out.append(bare).append('\n');
+      }
+    }
+    return out.toString();
+  }
+
+  // --- the composed estate-pins automation (qits-1258) -------------------------------------------
+
+  private static final String ESTATE_PINS = "estate-pins";
+
+  private static final String ESTATE_PINS_PATH =
+      "ci/src/main/resources/platform-pipelines/automations/estate-pins.yml";
+
+  private static String composedEstatePins() {
+    return packaged().stream()
+        .filter(file -> file.path().equals(ESTATE_PINS_PATH))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError(ESTATE_PINS_PATH + " is not in the set"))
+        .content();
+  }
+
+  @Test
+  public void theEstatePinsKindComposesOneStepOnNodeBrowserBaseAndCommitsAsABump(
+      @TempDir Path dir) throws Exception {
+    String composed = composedEstatePins();
+    CiEventTrigger trigger = triggerParser.parse(ESTATE_PINS_PATH, composed);
+    assertEquals("ReleaseRequestAutomation", trigger.eventName());
+    assertEquals(null, trigger.checkout(), "recorded at main's head, never at the fold");
+    assertTrue(composed.contains("  - kind: { exact: 'estate-pins' }\n"), composed);
+    assertEquals(1, trigger.pipeline().steps().size(), "gitlink only: ONE step");
+    CiStepDecl step = trigger.pipeline().steps().get(0);
+    assertEquals("qits/build-images/node-browser-base:latest", step.image());
+    assertEquals(600, step.timeoutSeconds());
+
+    String script = step.script();
+    int body = script.indexOf("cat > " + CiAutomationComposer.KIND_SCRIPT);
+    assertTrue(script.indexOf("superseded before start") < body, "the prelude comes first");
+    assertTrue(script.indexOf("gitlink", body) > body, "the script applies gitlink pins");
+    // bump(<item>): N dependencies, never chore(<item>): update estate pins.
+    assertFalse(script.contains("update estate pins"), script);
+    assertTrue(script.contains("  subject=\"bump($item): $description\"\n"), script);
+    assertTrue(script.contains("printf '%d dependencies\\n' \"$count\""), script);
+    assertTrue(
+        script.indexOf("export " + CiAutomationComposer.MESSAGE_ENV) < body,
+        "the message file is named before the script runs");
+    StringBuilder fetch = new StringBuilder();
+    CiReleaseComposer.cliFetch(fetch, step.image(), CiReleaseComposer.CliFetch.AUTOMATION);
+    int fetched = script.indexOf(fetch.toString());
+    assertTrue(fetched > 0 && fetched < body, "the pinned CLI is on PATH before the script runs");
+    assertTrue(
+        script.indexOf("export " + CiAutomationComposer.TICKETS_ENV) < body,
+        "the tickets file is named before the script runs");
+    assertTrue(script.indexOf("qits changelog bump-message", body) > body, script);
+    assertTrue(
+        script.contains("commit -q --cleanup=verbatim -F "), "the `# <version>` headings survive");
+    String kindScript =
+        script.substring(
+            script.indexOf('\n', body) + 1,
+            script.indexOf("\n" + CiAutomationComposer.HEREDOC_DELIMITER + "\n"));
+    syntax(dir, kindScript, ESTATE_PINS_PATH + " (the kind's script)");
+  }
+
+  @Test
+  public void theEstatePinsKindRefusesAnythingButAGitlinkChange() throws Exception {
+    String kindFile = Files.readString(SOURCE.resolve("automations/estate-pins.yml"));
+    String script = kindFile.substring(kindFile.indexOf("\nscript: |\n"));
+    assertTrue(
+        script.contains(
+            "if [ \"$ecosystem\" != \"gitlink\" ]; then\n"
+                + "      echo \"refusing a $ecosystem change: estate-pins writes gitlink pins only\""
+                + " >&2\n"
+                + "      exit 1\n"
+                + "    fi\n"),
+        script);
+    // No ecosystem but gitlink is ever applied: unlike dependency-bump.yml, there is no
+    // maven/npm/docker branch to drift out of sync.
+    for (String word : List.of("maven", "npm", "docker", ".awk", "package.json", "<dependency>")) {
+      assertFalse(script.contains(word), "estate-pins applies gitlinks only, found: " + word);
+    }
+  }
+
+  @Test
+  public void theEstatePinsKindReadsOnlyItsChangesAndFetchesOnlyASiblingsTag() throws Exception {
+    String kindFile = Files.readString(SOURCE.resolve("automations/estate-pins.yml"));
+    String script = kindFile.substring(kindFile.indexOf("\nscript: |\n"));
+    // The payload: one read, of `.changes`; branch, baseRef and foldSha stay the prelude's.
+    assertEquals(1, script.split("QITS_EVENT_PAYLOAD", -1).length - 1, script);
+    assertTrue(script.contains("printf '%s' \"$QITS_EVENT_PAYLOAD\" | jq -r '\n    .changes\n"));
+    for (String field : List.of(".branch", ".baseRef", ".foldSha", ".commitPaths", ".workItem")) {
+      assertFalse(script.contains(field), "the kind reads the prelude's " + field);
+    }
+    // The one fetch: a gitlink's sibling, at a tag - never a ref of this repository.
+    Matcher fetches = Pattern.compile("git fetch[^\n]*").matcher(script);
+    List<String> found = new java.util.ArrayList<>();
+    while (fetches.find()) {
+      found.add(fetches.group().strip());
+    }
+    assertEquals(List.of("git fetch -q \"$sibling\" \"refs/tags/$to\"; then"), found);
+  }
+
+  @Test
+  public void theEstatePinsAutomationStagesOnlyThePayloadsPathsAndNeverForces() {
+    String composed = composedEstatePins();
+    Matcher adds = Pattern.compile("git add[^\n]*").matcher(composed);
+    List<String> found = new java.util.ArrayList<>();
+    while (adds.find()) {
+      found.add(adds.group().strip());
+    }
+    assertEquals(List.of("git add -A -- \"$@\""), found, "the apply stages nothing itself");
+    assertFalse(composed.contains("--force"), "a forced push in the composed automation");
+    assertFalse(composed.contains("push -f"), "a forced push in the composed automation");
+    assertFalse(composed.contains("+HEAD:"), "a forced refspec in the composed automation");
+    Matcher matcher = GUARD.matcher(composed);
+    assertTrue(matcher.find(), "the composed automation has no commit guard");
+    assertTrue(matcher.group().contains("--ignore-submodules=none"), matcher.group());
+  }
+
+  @Test
+  public void theEstatePinsKindSharesTheGitlinkMechanismOfDependencyBump() throws Exception {
+    // qits-1258: the name charset check, the sibling fetch, the peel and the load-bearing
+    // mkdir -p are lifted from dependency-bump.yml's gitlink arm rather than shared code - two
+    // YAML kind files cannot `import` one Java string - so this is the drift guard.
+    String dependencyBump = Files.readString(SOURCE.resolve("automations/dependency-bump.yml"));
+    String estatePins = Files.readString(SOURCE.resolve("automations/estate-pins.yml"));
+    assertEquals(
+        gitlinkMechanism(dependencyBump, "        "),
+        gitlinkMechanism(estatePins, "    "),
+        "the gitlink mechanism drifted between dependency-bump.yml and estate-pins.yml");
+  }
+
+  /**
+   * The gitlink mechanism of a kind file: from the submodule name's charset check through the
+   * load-bearing {@code mkdir -p}, comments stripped and {@code indent} removed.
+   */
+  private static String gitlinkMechanism(String file, String indent) {
+    int start = file.indexOf("case \"$name\" in\n");
+    assertTrue(start >= 0, "no multi-line gitlink name check in the file");
+    String marker = "mkdir -p \"$manifest\"\n";
+    int from = file.indexOf(marker, start);
+    assertTrue(from >= 0, "no load-bearing mkdir -p in the file");
+    int end = from + marker.length();
+    StringBuilder out = new StringBuilder();
+    for (String line : file.substring(start, end).split("\n", -1)) {
+      String bare = line.startsWith(indent) ? line.substring(indent.length()) : line;
+      if (!bare.strip().startsWith("#") && !bare.isBlank()) {
         out.append(bare).append('\n');
       }
     }

@@ -1,0 +1,168 @@
+# Apply a release request's wrapper gitlink pins onto the kind's own automation branch: the
+# `estate-pins` kind of qits-maintenance's release-request automations (qits-1258).
+#
+# A KIND FILE, not a pipeline. qits-ci's CiAutomationComposer composes it into a platform
+# trigger on `ReleaseRequestAutomation` selected by `kind: estate-pins` (this file's name), and
+# wraps the script below in the platform's own prelude and postlude:
+#
+#   prelude   validates the payload, fetches the fold (`baseRef`) and refuses with
+#             "superseded before start" unless it is still `foldSha`; checks it out, gives the
+#             step a writable HOME and works out the commit subject's work item
+#   script    this file's, run as data in a child shell
+#   postlude  stages only the payload's `commitPaths`, commits `bump(<item>): <N> dependencies`
+#             (this file says `commit-type: bump`, and the script writes the description and the
+#             body to $QITS_AUTOMATION_MESSAGE) or prints `unchanged` and exits 0, and makes a
+#             plain push to the payload's `branch`
+#
+# qits-1258: THIS REPLACES THE TARGETED RUNS `../maintenance-bump.yml` USED TO SERVE. Before this
+# kind existed, qits-maintenance's estate-pins automation sent a `MaintenanceBump` event with
+# `group: targeted` for EVERY source branch a release request folds, and
+# `../maintenance-bump.yml` committed the wrapper's gitlink moves directly onto that branch - one
+# commit per source branch, gated by whatever CI that branch happened to carry, and with no run
+# of its own ever joined to the request as a first-class change. Now it is one
+# `ReleaseRequestAutomation` event per request, composed the way every other automation kind is:
+# ONE commit on this kind's own branch, `maintenance/automations/estate-pins/<request>`, joined
+# to the release request exactly as `dependency-bump`'s and `entity-diagram`'s commits already
+# are - gated by its own CI and folded in like any other automation's work, rather than landing
+# on a source branch nobody asked qits-ci to gate. `../maintenance-bump.yml` is untouched by this
+# move: it still exists on disk and in `CiPlatformPipelines.PACKAGED`, because a targeted
+# `MaintenanceBump` run is still how it is invoked - whatever still sends one keeps working - and
+# retiring the file is a change of its own, for whoever still calls it.
+#
+# THE GITLINK HALF IS `../dependency-bump.yml`'S, LIFTED (qits-1133's own mechanism, carried
+# forward unchanged in substance): the submodule name's charset check, the fetch of
+# `refs/tags/$to` from the sibling `${QITS_CI_REPOSITORY_URL%/*}/$name`, the peel to a commit,
+# `git update-index --add --cacheinfo 160000,...` and the load-bearing `mkdir -p` are copied
+# rather than shared - the same reason `bump-from.awk`/`bump-arg.awk` are copied onto
+# `../maintenance-bump.yml` rather than extracted: two YAML kind files cannot `import` one Java
+# string, and the composer emits plain text.
+#
+# ONLY `ecosystem: gitlink` IS ACCEPTED, and that is the one way this kind's payload differs from
+# `dependency-bump`'s rather than merely narrows it: `EstatePinsAutomation` never sends anything
+# else - a wrapper's own gitlink moves are the only thing this caller ever writes - so a maven,
+# npm or docker entry is REFUSED outright, with a sentence naming the ecosystem, rather than
+# silently skipped or applied by code that has no business running here.
+#
+# What this reads of a `changes[]` entry, and what it does not - `dependency-bump.yml`'s table,
+# narrowed to the one ecosystem this kind accepts:
+#   ecosystem     gitlink, and nothing else - anything else is refused
+#   manifestPath  the DIRECTORY the submodule sits at - no file exists there
+#   name          the SIBLING REPOSITORY, which the fetch url is derived from
+#   to            the new version (a released tag), refused unless [0-9A-Za-z._+-]+
+#   from          the commit message only, never a precondition: a tree already holding `to`
+#                 is a no-op
+#   location      ignored
+# `commitPaths` is the gitlink paths this run may touch, and is all the postlude stages.
+#
+# THE COMMIT MESSAGE CARRIES THE CHANGELOGS (qits-893), exactly as `dependency-bump.yml`'s does:
+# the apply records `gitlink\t<name>` per change in /tmp/bump-applied.tsv beside the human body
+# in /tmp/bump-body.txt, and `qits changelog bump-message` (on PATH: `qits-cli: true`) composes
+# the message from both and the changelogs of the versions applied. Its subject is NOT used -
+# this kind's type and item are the platform's, so the CLI's `bump(<group>)` is discarded and its
+# group word (`automation`) is a placeholder. What is kept: the tickets its
+# `chore(<id>, <id>): ` prefix names, written space-separated to $QITS_AUTOMATION_TICKETS (the
+# postlude puts them at the head of the subject, ahead of `bump(<item>): `), and everything from
+# its third line on - the body and the changelog sections, `# <version>` headings and all - below
+# this kind's own `<N> dependencies` description. The postlude commits `--cleanup=verbatim`, so
+# those headings survive. A CLI that fails fails the step. A run whose edits changed nothing
+# (every gitlink already at its pin - the fold carries an earlier run's commit) never calls the
+# CLI: the postlude prints `unchanged` and reads no message.
+#
+# READING THE PAYLOAD AND FETCHING A SIBLING are the two things this kind does that most others
+# do not, and both are confined exactly as `dependency-bump.yml`'s are: the payload is read for
+# `.changes` alone (`branch`, `baseRef` and the rest stay the prelude's), and the one fetch is a
+# gitlink's sibling tag, which writes no ref of this repository.
+image: qits/build-images/node-browser-base:latest
+timeout-seconds: 600
+qits-cli: true
+commit-type: bump
+script: |
+  # --- the changes, one line each ----------------------------------------------------
+  # Separated by US (\037) rather than a tab: a tab is IFS WHITESPACE, so `read` would collapse
+  # the two tabs around an empty `from` or `location` and shift every field after it.
+  us=$(printf '\037')
+  printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r '
+    .changes
+    | if type == "array" and length > 0 then .[]
+      else error("refusing a payload whose changes is not a non-empty array") end
+    | if type == "object"
+         and all(.ecosystem, .manifestPath, .name, .to; type == "string")
+         and all(.from, .location; . == null or type == "string")
+      then [.ecosystem, .name, (.from // ""), .to, .manifestPath, (.location // "")]
+           | join("\u001f")
+      else error("refusing a change that is not {ecosystem, manifestPath, name, from, to, location} strings") end
+  ' > /tmp/bump-changes.txt
+  count=$(grep -c '' /tmp/bump-changes.txt)
+
+  # --- apply, gitlink only ---------------------------------------------------------------
+  # Not a dispatch over ecosystems: estate-pins writes gitlinks and nothing else, so anything
+  # else in the payload is refused outright rather than silently skipped or routed to code that
+  # has no business running here.
+  : > /tmp/bump-body.txt
+  : > /tmp/bump-applied.tsv
+  while IFS="$us" read -r ecosystem name from to manifest location <&3; do
+    if [ "$ecosystem" != "gitlink" ]; then
+      echo "refusing a $ecosystem change: estate-pins writes gitlink pins only" >&2
+      exit 1
+    fi
+    case "$to" in ''|*[!0-9A-Za-z._+-]*) echo "refusing an implausible version: $to" >&2; exit 1 ;; esac
+    # `from` is not checked: it reaches the commit body and nothing else.
+    case "$manifest" in
+      ''|/*|-*|*..*|*[!0-9A-Za-z._/-]*) echo "refusing an implausible manifest: $manifest" >&2; exit 1 ;;
+    esac
+
+    # The submodule move is an INDEX write rather than a file edit: a gitlink is a 160000 entry
+    # in the tree and no text anywhere holds the sha. The name reaches a URL, so it is held to a
+    # repository name - a slash would point the fetch somewhere else on the host.
+    case "$name" in
+      ''|*[!0-9A-Za-z._-]*) echo "refusing an implausible submodule: $name" >&2; exit 1 ;;
+    esac
+    # Every repository of a project is a sibling path under one host, and the url this run was
+    # given is the only address that is certainly reachable from here.
+    sibling="${QITS_CI_REPOSITORY_URL%/*}/$name"
+    if ! git fetch -q "$sibling" "refs/tags/$to"; then
+      echo "no tag $to in $sibling" >&2
+      exit 1
+    fi
+    # Peeled: a release tag may be annotated, and the entry is the commit it points at.
+    sha=$(git rev-parse --verify "FETCH_HEAD^{commit}")
+    git update-index --add --cacheinfo "160000,$sha,$manifest"
+    # THE EMPTY DIRECTORY IS LOAD-BEARING. The postlude stages each commit path with -A, which
+    # reads an unpopulated submodule's empty directory as "unchanged" and keeps this entry - but
+    # reads a MISSING directory as a deletion and drops it. A gitlink new to the tree has no
+    # directory in this clone, so it gets the one every other gitlink has.
+    mkdir -p "$manifest"
+
+    echo "- $ecosystem $name $from -> $to ($manifest)" >> /tmp/bump-body.txt
+    printf '%s\t%s\n' "$ecosystem" "$name" >> /tmp/bump-applied.tsv
+    echo "bumped $name to $to in $manifest"
+  done 3< /tmp/bump-changes.txt
+
+  # --- the commit message: the description, then the body ------------------------------
+  # The postlude commits it as `bump(<item>): ...`; the type and the item are not ours to write.
+  # The tickets and the changelogs are the CLI's - see the header. Nothing changed, nothing to
+  # compose: the postlude reads no message from a run with nothing staged.
+  if [ -z "$(git status --porcelain --ignore-submodules=none)" ]; then
+    printf '%d dependencies\n' "$count" > "$QITS_AUTOMATION_MESSAGE"
+    exit 0
+  fi
+  # `>` into a file, so a failing CLI stops the step under -e before anything is read from it.
+  qits changelog bump-message --group automation --applied /tmp/bump-applied.tsv \
+      --body /tmp/bump-body.txt > /tmp/bump-cli-message.txt
+  first=$(head -n 1 /tmp/bump-cli-message.txt)
+  case "$first" in
+    'chore('*'): bump('*)
+      ids=${first#chore(}
+      ids=${ids%%): bump(*}
+      printf '%s\n' "$ids" | sed 's/, / /g' > "$QITS_AUTOMATION_TICKETS"
+      ;;
+    'bump('*) ;;
+    *)
+      echo "qits changelog bump-message printed an unexpected subject: $first" >&2
+      exit 1
+      ;;
+  esac
+  {
+    printf '%d dependencies\n' "$count"
+    tail -n +3 /tmp/bump-cli-message.txt
+  } > "$QITS_AUTOMATION_MESSAGE"

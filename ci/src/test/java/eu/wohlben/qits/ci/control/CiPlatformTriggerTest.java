@@ -257,6 +257,7 @@ public class CiPlatformTriggerTest extends CiTestSupport {
             "ci/src/main/resources/platform-pipelines/maintenance-bump.yml",
             "ci/src/main/resources/platform-pipelines/automations/dependency-bump.yml",
             "ci/src/main/resources/platform-pipelines/automations/entity-diagram.yml",
+            "ci/src/main/resources/platform-pipelines/automations/estate-pins.yml",
             "ci/src/main/resources/platform-pipelines/automations/screenshot-baselines.yml"),
         platformPipelines.files().stream().map(EventTriggerFile::path).toList());
   }
@@ -346,6 +347,31 @@ public class CiPlatformTriggerTest extends CiTestSupport {
     assertNull(run.phase);
     String image = fakeRunner.executed().get(0).image();
     assertTrue(image.contains("qits/build-images/maven-base"), image);
+    assertEquals(TARGET_HEAD, fakeRunner.executed().get(0).sha(), "the step clones main's head");
+  }
+
+  @Test
+  public void anEstatePinsAutomationStartsExactlyOneRunOnNodeBrowserBase() throws Exception {
+    // qits-1258: estate-pins is a kind file like any other now, composed off the packaged set
+    // rather than committing onto a source branch through ../maintenance-bump.yml.
+    platformPipelines.override(null);
+    CiEventTriggerService.Arrival arrival = automation("estate-pins");
+
+    deliver(arrival);
+
+    List<CiRun> recorded = runService.runsFor(targetId);
+    assertEquals(1, recorded.size(), "one kind file, one run");
+    CiRun run = recorded.get(0);
+    assertEquals(
+        "ci/src/main/resources/platform-pipelines/automations/estate-pins.yml", run.configPath);
+    assertEquals("ReleaseRequestAutomation", run.triggerEventName);
+    assertEquals(arrival.eventId(), run.triggerEventId);
+    assertEquals("main", run.branch);
+    assertEquals(TARGET_HEAD, run.commitSha, "recorded at main's head, never at the fold");
+    assertNull(run.releaseRequestId, "an automation run is no part of a release's CI");
+    assertNull(run.phase);
+    String image = fakeRunner.executed().get(0).image();
+    assertTrue(image.contains("qits/build-images/node-browser-base"), image);
     assertEquals(TARGET_HEAD, fakeRunner.executed().get(0).sha(), "the step clones main's head");
   }
 

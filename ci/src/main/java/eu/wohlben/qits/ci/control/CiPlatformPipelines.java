@@ -85,7 +85,7 @@ public class CiPlatformPipelines {
    * ci/src/main/resources/platform-pipelines/automations/}.
    */
   static final Set<String> AUTOMATIONS =
-      Set.of("dependency-bump", "entity-diagram", "screenshot-baselines");
+      Set.of("dependency-bump", "entity-diagram", "estate-pins", "screenshot-baselines");
 
   private volatile List<EventTriggerFile> files;
 
