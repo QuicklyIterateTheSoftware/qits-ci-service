@@ -785,7 +785,9 @@ components:
           description: "ISO-8601 instant. Absent: now."
         eventId:
           type: string
-          description: "UUID. Absent: a fresh random one — see the dedupe note."
+          description: "UUID. Absent: a fresh random one, so the call is a rerun —\
+            \ except that a ReleaseRequestChanged for a fold that already has a non-cancelled\
+            \ gating run answers that run; building it again is POST /ci/api/runs/rerun."
     TriggerEventResult:
       type: object
       properties:

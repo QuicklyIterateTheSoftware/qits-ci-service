@@ -671,8 +671,14 @@ public class CiEventTriggerServiceTest extends CiTestSupport {
             releaseRequestPayload("\"RUNNING\""),
             releaseRequestPayload("null"),
             releaseRequestPayload("{\"state\":\"PENDING\"}"));
-    for (String payload : payloads) {
-      deliver(arrival(UUID.randomUUID().toString(), "ReleaseRequestChanged", payload));
+    // Each under a request of its own: one fold has one gating run whatever the event id
+    // (qits-1250), so five arrivals of the same fold would count one row however many built.
+    for (int i = 0; i < payloads.size(); i++) {
+      deliver(
+          arrival(
+              UUID.randomUUID().toString(),
+              "ReleaseRequestChanged",
+              payloads.get(i).replace("r-1", "r-" + (i + 1))));
     }
 
     assertEquals(payloads.size(), runService.runsFor(repoId).size());

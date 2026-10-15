@@ -1101,8 +1101,16 @@ public class CiRunService {
    * first, before the step images are pinned, so a registry blip cannot refuse an event that already
    * has its run.
    *
+   * <p><b>A repeated fold answers with its gating run, whatever the event id</b> (qits-1250). A
+   * {@code ReleaseRequestChanged} posted without an id gets a fresh one, so the constraint cannot
+   * see it is the question already asked; a second gating run at the same fold could only add a
+   * lineage-less verdict, and qits-projects rejects a request on any red one at its merged sha. So
+   * a run of the same repository, request, sha and trigger file in the {@code RELEASE_REQUEST}
+   * phase that was not cancelled — running or finished — is the answer. Asking again is {@link
+   * #retryReleaseRequestPhase}'s, which never comes through here.
+   *
    * @return the id of the run this recorded, or of the run this event already had for this
-   *     repository and trigger file. The manual trigger endpoint answers with these ids, which is
+   *     repository and trigger file, or of the gating run this fold already had. The manual trigger endpoint answers with these ids, which is
    *     what lets a 2xx there mean "these rows exist" rather than "something was handed to a queue".
    */
   public String onEventTrigger(EventRun request) {
@@ -1113,6 +1121,10 @@ public class CiRunService {
     if (existing != null) {
       return existing;
     }
+    String gating = gatingRunIdForFold(request);
+    if (gating != null) {
+      return gating;
+    }
     CiRun run = acceptEventRun(request);
     if (run == null) {
       // Another accept of the same event won the race to the insert: its run is the answer.
@@ -1120,6 +1132,42 @@ public class CiRunService {
     }
     announceQueued(run.id);
     return run.id;
+  }
+
+  /**
+   * The gating run this fold already has, or null — only ever non-null for an event {@link
+   * #phaseOf} reads as {@link CiRunPhase#RELEASE_REQUEST}. See {@link
+   * CiRunRepository#findGatingRunForFold} for what counts; logged because answering an event with a
+   * run another event started is a decision, where a repeated id is not.
+   */
+  private String gatingRunIdForFold(EventRun request) {
+    String releaseRequestId = releaseRequestOf(request);
+    if (phaseOf(request, releaseRequestId) != CiRunPhase.RELEASE_REQUEST) {
+      return null;
+    }
+    CiRun existing =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    runs.findGatingRunForFold(
+                            request.repo().repoId(),
+                            releaseRequestId,
+                            request.sha(),
+                            request.trigger().configPath())
+                        .orElse(null));
+    if (existing == null) {
+      return null;
+    }
+    LOG.infof(
+        "Event %s asks release request %s's fold %s in %s again — answering run %s, started by"
+            + " event %s, rather than building it twice",
+        request.eventId(),
+        releaseRequestId,
+        request.sha(),
+        request.repo().display(),
+        existing.id,
+        existing.triggerEventId);
+    return existing.id;
   }
 
   /** The run this event already produced for this repository and trigger file, or null. */

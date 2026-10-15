@@ -331,6 +331,32 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   }
 
   /**
+   * The gating run one fold already has, or empty — the newest run one repository has for one
+   * release request in {@link CiRunPhase#RELEASE_REQUEST} at one sha and one trigger file whose
+   * status is anything but {@link CiRunStatus#CANCELLED} (qits-1250).
+   *
+   * <p>What a repeated {@code ReleaseRequestChanged} is answered with when it arrives under a new
+   * event id, so the unique constraint on the event cannot tell it is the same question. Finished
+   * runs count, green or red: the fold has its verdict, and a second build of it could only add a
+   * lineage-less one beside it. A cancelled run is the one status that answers nothing, so it does
+   * not stand in the way. Served by {@code idx_ci_run_release_request_id}.
+   */
+  public Optional<CiRun> findGatingRunForFold(
+      String repoId, String releaseRequestId, String commitSha, String configPath) {
+    return find(
+            "repoId = ?1 and releaseRequestId = ?2 and phase = ?3 and commitSha = ?4"
+                + " and configPath = ?5 and status <> ?6 order by createdAt desc, id desc",
+            repoId,
+            releaseRequestId,
+            CiRunPhase.RELEASE_REQUEST,
+            commitSha,
+            configPath,
+            CiRunStatus.CANCELLED)
+        .range(0, 0)
+        .firstResultOptional();
+  }
+
+  /**
    * Whether this instance has ever recorded a run for a repository — what tells a repository the
    * rerun door has never heard of from one whose phase simply has not run.
    *
