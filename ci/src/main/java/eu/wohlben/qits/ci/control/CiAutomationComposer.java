@@ -74,6 +74,12 @@ import java.util.regex.Pattern;
  * as a fresh push would have moved it. Any other rejection means the fold no longer contains the
  * branch, and the step fails saying so. It ends {@code pushed <sha> to <branch>}.
  *
+ * <p><b>The git host is allowed a bad moment</b> (qits-1253). The fold fetch, the push and the
+ * already-pushed fetch go through {@link #GIT_NET}: a 5xx or a dropped connection is tried three
+ * times, 2s then 5s apart, and one that outlasts them is said as the host's — {@code the git host
+ * is unavailable} in the prelude, {@code the git host did not answer the push} in the postlude, each
+ * asking for a re-run — never as a missing branch or a fold that dropped the branch.
+ *
  * <h2>A kind that says what it changed: {@code commit-type}</h2>
  *
  * <p>{@code update <kind words>} is a true subject for a regeneration — the diagram, the baselines —
@@ -169,6 +175,56 @@ public final class CiAutomationComposer {
 
   /** Where the prelude writes the validated {@code commitPaths}, one per line, for the postlude. */
   static final String COMMIT_PATHS = "/tmp/qits-automation-paths";
+
+  /**
+   * The step's one way to reach the git host (qits-1253): {@code git_net <git args>} runs git, prints
+   * what it said to stderr, and tries again — three attempts, 2s then 5s apart — only when git
+   * failed AND said something a flaky host says (a 5xx, an unresolved host, a refused, reset or
+   * timed-out connection, an early EOF, a failed RPC). A rejection, a missing ref and a 4xx
+   * are answers, never retried. It returns git's last status and leaves its last words in {@code
+   * $git_net_out}, so {@code git_net_transient} tells a caller which kind of failure it got and
+   * {@code git_net_last} quotes it.
+   *
+   * <p>Run 135af4fc's dependency-bump push met a 503; the postlude's already-pushed fetch met it too
+   * with its stderr thrown away, and the step blamed the fold ("rejected - the fold no longer
+   * contains it") for a host that had not answered. Nothing re-runs an automation by itself, so the
+   * release request sat held until a person did. POSIX sh, every call inside an {@code if}: the step
+   * runs under {@code sh -eu} on images with no bash.
+   */
+  static final String GIT_NET =
+      """
+      # qits-1253: a git host answering 5xx, refusing or dropping a connection is a moment, not a
+      # verdict - three attempts, 2s then 5s apart. A rejection, a missing ref or a 4xx is an
+      # answer and is never retried. Callers read git_net_transient and git_net_last afterwards.
+      git_net_out=
+      git_net() {
+        git_net_attempt=1
+        while :; do
+          git_net_status=0
+          git_net_out=$(git "$@" 2>&1) || git_net_status=$?
+          if [ -n "$git_net_out" ]; then printf '%s\\n' "$git_net_out" >&2; fi
+          if [ "$git_net_status" -eq 0 ] || ! git_net_transient || [ "$git_net_attempt" -ge 3 ]; then
+            return "$git_net_status"
+          fi
+          if [ "$git_net_attempt" -eq 1 ]; then git_net_delay=2; else git_net_delay=5; fi
+          echo "git $1: the git host failed (attempt $git_net_attempt of 3); retrying in ${git_net_delay}s" >&2
+          sleep "$git_net_delay"
+          git_net_attempt=$((git_net_attempt + 1))
+        done
+      }
+      git_net_transient() {
+        # An answer first: a push refused with a 4xx says "RPC failed" too.
+        if printf '%s\\n' "$git_net_out" \\
+            | grep -Eqi '\\[rejected\\]|non-fast-forward|fetch first|couldn.t find remote ref|returned error: 4[0-9][0-9]|HTTP 4[0-9][0-9]'; then
+          return 1
+        fi
+        printf '%s\\n' "$git_net_out" \\
+          | grep -Eqi 'The requested URL returned error: 5[0-9][0-9]|Could not resolve host|Connection refused|Connection reset|Connection timed out|Operation timed out|early EOF|RPC failed|unexpected disconnect'
+      }
+      git_net_last() {
+        printf '%s\\n' "$git_net_out" | sed '/^[[:space:]]*$/d' | tail -n 1
+      }
+      """;
 
   private CiAutomationComposer() {}
 
@@ -360,8 +416,17 @@ public final class CiAutomationComposer {
     // and a commit built on an older one would be pushed onto a branch the fold no longer is.
     // A missing branch is said in words (qits-1167): git's own "couldn't find remote ref" names no
     // cause, and the cause is never this run. qits-projects folds the request again when its
-    // backing branch is deleted, so a re-run after that re-fold finds it.
-    out.append("if ! git fetch -q \"$QITS_CI_REPOSITORY_URL\" \"refs/heads/$base\"; then\n");
+    // backing branch is deleted, so a re-run after that re-fold finds it. A git host that did not
+    // answer is not a missing branch (qits-1253): git_net retries it, and what is left is said as
+    // the host's, since the same re-run then finds the branch where it always was.
+    out.append(GIT_NET);
+    out.append("if ! git_net fetch -q \"$QITS_CI_REPOSITORY_URL\" \"refs/heads/$base\"; then\n");
+    out.append("  if git_net_transient; then\n");
+    out.append(
+        "    echo \"the git host is unavailable: $base could not be fetched for the fold $fold"
+            + " ($(git_net_last)); re-run this automation\" >&2\n");
+    out.append("    exit 1\n");
+    out.append("  fi\n");
     out.append(
         "  echo \"the fold's branch is missing: $base is not on the git host, so the fold $fold"
             + " cannot be fetched. Something deleted the release request's backing branch after"
@@ -500,14 +565,22 @@ public final class CiAutomationComposer {
     }
     // Plain, never forced. After the first join the fold contains the branch, so a later run on a
     // newer fold is a fast-forward of it.
-    out.append("if ! git push \"$QITS_CI_REPOSITORY_URL\" \"HEAD:refs/heads/$branch\"; then\n");
+    out.append("if ! git_net push \"$QITS_CI_REPOSITORY_URL\" \"HEAD:refs/heads/$branch\"; then\n");
+    // Which kind of failure the push was, kept before the fetch below overwrites git_net's words.
+    out.append("  push_transient=no\n");
+    out.append("  push_last=\n");
+    out.append("  if git_net_transient; then\n");
+    out.append("    push_transient=yes\n");
+    out.append("    push_last=$(git_net_last)\n");
+    out.append("  fi\n");
     // A step executed again after its first execution pushed - a runner re-dispatch - commits the
     // same content under another sha, and that push is rejected. The branch's tip with the fold as
     // its one parent and our tree is exactly what this step produced: already pushed, and green -
     // the branch moved, which is what qits-maintenance reads as COMMITTED.
     out.append("  remote=\n");
-    out.append(
-        "  if git fetch -q \"$QITS_CI_REPOSITORY_URL\" \"refs/heads/$branch\" 2>/dev/null; then\n");
+    // A push the host did not answer may still have landed, so the same check runs for it - and
+    // its own words are shown now (qits-1253): a 503 here used to vanish into /dev/null.
+    out.append("  if git_net fetch -q \"$QITS_CI_REPOSITORY_URL\" \"refs/heads/$branch\"; then\n");
     out.append("    remote=$(git rev-parse --verify -q 'FETCH_HEAD^{commit}' || true)\n");
     out.append("  fi\n");
     out.append("  if [ -n \"$remote\" ] \\\n");
@@ -518,6 +591,13 @@ public final class CiAutomationComposer {
     out.append("    echo \"already pushed: $branch at $remote carries the same content\"\n");
     out.append("    echo \"pushed $remote to $branch\"\n");
     out.append("    exit 0\n");
+    out.append("  fi\n");
+    // A host that never answered has said nothing about the fold (qits-1253, run 135af4fc).
+    out.append("  if [ \"$push_transient\" = yes ]; then\n");
+    out.append(
+        "    echo \"the git host did not answer the push to $branch ($push_last); re-run this"
+            + " automation\" >&2\n");
+    out.append("    exit 1\n");
     out.append("  fi\n");
     out.append(
         "  echo \"push to $branch was rejected - the fold no longer contains it; remove the branch"

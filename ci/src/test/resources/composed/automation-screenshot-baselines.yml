@@ -60,7 +60,42 @@ steps:
           ''|/*|-*|*..*|*[!0-9A-Za-z._/*-]*) echo "refusing an implausible commit path: $path" >&2; exit 1 ;;
         esac
       done < /tmp/qits-automation-paths
-      if ! git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$base"; then
+      # qits-1253: a git host answering 5xx, refusing or dropping a connection is a moment, not a
+      # verdict - three attempts, 2s then 5s apart. A rejection, a missing ref or a 4xx is an
+      # answer and is never retried. Callers read git_net_transient and git_net_last afterwards.
+      git_net_out=
+      git_net() {
+        git_net_attempt=1
+        while :; do
+          git_net_status=0
+          git_net_out=$(git "$@" 2>&1) || git_net_status=$?
+          if [ -n "$git_net_out" ]; then printf '%s\n' "$git_net_out" >&2; fi
+          if [ "$git_net_status" -eq 0 ] || ! git_net_transient || [ "$git_net_attempt" -ge 3 ]; then
+            return "$git_net_status"
+          fi
+          if [ "$git_net_attempt" -eq 1 ]; then git_net_delay=2; else git_net_delay=5; fi
+          echo "git $1: the git host failed (attempt $git_net_attempt of 3); retrying in ${git_net_delay}s" >&2
+          sleep "$git_net_delay"
+          git_net_attempt=$((git_net_attempt + 1))
+        done
+      }
+      git_net_transient() {
+        # An answer first: a push refused with a 4xx says "RPC failed" too.
+        if printf '%s\n' "$git_net_out" \
+            | grep -Eqi '\[rejected\]|non-fast-forward|fetch first|couldn.t find remote ref|returned error: 4[0-9][0-9]|HTTP 4[0-9][0-9]'; then
+          return 1
+        fi
+        printf '%s\n' "$git_net_out" \
+          | grep -Eqi 'The requested URL returned error: 5[0-9][0-9]|Could not resolve host|Connection refused|Connection reset|Connection timed out|Operation timed out|early EOF|RPC failed|unexpected disconnect'
+      }
+      git_net_last() {
+        printf '%s\n' "$git_net_out" | sed '/^[[:space:]]*$/d' | tail -n 1
+      }
+      if ! git_net fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$base"; then
+        if git_net_transient; then
+          echo "the git host is unavailable: $base could not be fetched for the fold $fold ($(git_net_last)); re-run this automation" >&2
+          exit 1
+        fi
         echo "the fold's branch is missing: $base is not on the git host, so the fold $fold cannot be fetched. Something deleted the release request's backing branch after it was folded; re-run this automation once the request has folded again" >&2
         exit 1
       fi
@@ -134,9 +169,15 @@ steps:
       fi
       git -c user.name="qits maintenance" -c user.email="maintenance@qits.local" \
           commit -q -m "$subject"
-      if ! git push "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
+      if ! git_net push "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
+        push_transient=no
+        push_last=
+        if git_net_transient; then
+          push_transient=yes
+          push_last=$(git_net_last)
+        fi
         remote=
-        if git fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$branch" 2>/dev/null; then
+        if git_net fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$branch"; then
           remote=$(git rev-parse --verify -q 'FETCH_HEAD^{commit}' || true)
         fi
         if [ -n "$remote" ] \
@@ -145,6 +186,10 @@ steps:
           echo "already pushed: $branch at $remote carries the same content"
           echo "pushed $remote to $branch"
           exit 0
+        fi
+        if [ "$push_transient" = yes ]; then
+          echo "the git host did not answer the push to $branch ($push_last); re-run this automation" >&2
+          exit 1
         fi
         echo "push to $branch was rejected - the fold no longer contains it; remove the branch or join it again" >&2
         exit 1

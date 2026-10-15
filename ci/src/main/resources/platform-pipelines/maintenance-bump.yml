@@ -412,8 +412,37 @@ steps:
       # NEVER a bare --force. A rejection means somebody rewrote the branch by hand, or
       # pushed to it since this step read it: either way it is theirs now, and nothing
       # here overwrites it.
-      if ! git push "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
-        echo "push to $branch was rejected - the branch is not what we built on" >&2
-        exit 1
-      fi
+      #
+      # A git host that did not ANSWER is not a rejection (qits-1253): a 5xx, an
+      # unresolved host, a refused, reset or timed-out connection, an early EOF or a
+      # failed RPC is tried three times, 2s then 5s apart - the composed automations'
+      # git_net, written out here because this file is not composed. A rejection or a 4xx
+      # is an answer and is never retried; a host that outlasts the attempts is named as
+      # the host, so nobody goes looking for who rewrote a branch nobody touched.
+      push_attempt=1
+      while :; do
+        push_status=0
+        push_out=$(git push "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch" 2>&1) || push_status=$?
+        if [ -n "$push_out" ]; then printf '%s\n' "$push_out" >&2; fi
+        if [ "$push_status" -eq 0 ]; then
+          break
+        fi
+        if printf '%s\n' "$push_out" \
+              | grep -Eqi '\[rejected\]|non-fast-forward|fetch first|returned error: 4[0-9][0-9]|HTTP 4[0-9][0-9]' \
+            || ! printf '%s\n' "$push_out" \
+              | grep -Eqi 'The requested URL returned error: 5[0-9][0-9]|Could not resolve host|Connection refused|Connection reset|Connection timed out|Operation timed out|early EOF|RPC failed|unexpected disconnect'; then
+          echo "push to $branch was rejected - the branch is not what we built on" >&2
+          exit 1
+        fi
+        if [ "$push_attempt" -ge 3 ]; then
+          echo "the git host did not answer the push to $branch" \
+               "($(printf '%s\n' "$push_out" | sed '/^[[:space:]]*$/d' | tail -n 1));" \
+               "re-run this bump" >&2
+          exit 1
+        fi
+        if [ "$push_attempt" -eq 1 ]; then push_delay=2; else push_delay=5; fi
+        echo "git push: the git host failed (attempt $push_attempt of 3); retrying in ${push_delay}s" >&2
+        sleep "$push_delay"
+        push_attempt=$((push_attempt + 1))
+      done
       echo "pushed $branch: $applied dependencies"

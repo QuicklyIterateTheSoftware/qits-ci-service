@@ -258,11 +258,15 @@ public class PackagedPlatformPipelinesTest {
     assertFalse(composed.contains("--force"), "a forced push in the composed automation");
     assertFalse(composed.contains("push -f"), "a forced push in the composed automation");
     assertFalse(composed.contains("+HEAD:"), "a forced refspec in the composed automation");
-    assertTrue(composed.contains("git push \"$QITS_CI_REPOSITORY_URL\" \"HEAD:refs/heads/$branch\""));
+    // Through git_net since qits-1253: retried on a git host's bad moment, still plain.
+    assertTrue(
+        composed.contains("git_net push \"$QITS_CI_REPOSITORY_URL\" \"HEAD:refs/heads/$branch\""));
     // A rejection is checked for a re-executed step's own push before it is called a failure.
     int already = composed.indexOf("already pushed: $branch at $remote carries the same content");
     assertTrue(already > 0, "the composed automation is not idempotent under re-execution");
     assertTrue(already < composed.indexOf("the fold no longer contains it"), composed);
+    // A push the host never answered may still have landed, so it is checked the same way first.
+    assertTrue(already < composed.indexOf("the git host did not answer the push"), composed);
   }
 
   @Test
