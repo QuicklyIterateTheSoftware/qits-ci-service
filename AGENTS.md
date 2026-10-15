@@ -2055,7 +2055,11 @@ is about*.
   ids and the changelog body from `qits changelog bump-message`, qits-893), nothing else;
   `CiAutomationComposer` composes it into a `ReleaseRequestAutomation` trigger selecting `kind:
   <kind>` with the platform's prelude (payload refusals, fold fetch, `superseded before start`) and
-  postlude (stage only `commitPaths`, the `--ignore-submodules=none` guard, plain push). The set is
+  postlude (stage only `commitPaths`, the `--ignore-submodules=none` guard, plain push). The fold
+  fetch, the push and the already-pushed fetch go through the emitted `git_net` (qits-1253): a
+  git host's 5xx or dropped connection is tried three times, 2s then 5s apart, and one that outlasts
+  them is reported as the host's rather than as a missing branch or a rejected push;
+  `maintenance-bump.yml` carries the same loop around its push, written out. The set is
   `CiPlatformPipelines.AUTOMATIONS`, held to the files by `PackagedPlatformPipelinesTest`; a refused
   kind file fails the boot. `quarkus.native.resources.includes` names the
   `automations/` subdirectory explicitly, because a `*` does not reach into it. `qits-cli: true`

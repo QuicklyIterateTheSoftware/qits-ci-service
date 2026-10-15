@@ -192,7 +192,8 @@ public class CiAutomationComposerTest {
   @Test
   public void theScreenshotBaselinesKindIsComposedByteIdenticallyToBefore() throws Exception {
     // composed/automation-screenshot-baselines.yml is the composition from before qits-cli: the
-    // key is additive, so a kind that does not set it must not move by a byte.
+    // key is additive, so a kind that does not set it must not move by a byte. It moved once since,
+    // on purpose: qits-1253 put git_net into every kind's platform prelude and postlude.
     String path = "ci/src/main/resources/platform-pipelines/automations/screenshot-baselines.yml";
     String kindFile = Files.readString(Path.of("..").resolve(path));
     try (var in =
@@ -379,6 +380,130 @@ public class CiAutomationComposerTest {
       assertTrue(run.output.contains("the fold no longer contains it"), run.output);
       assertFalse(run.output.contains("already pushed"), run.output);
       assertEquals(before, scratch.originRev("refs/heads/" + BRANCH), "never forced");
+    }
+  }
+
+  // --- a git host having a bad moment (qits-1253) -----------------------------------------------
+
+  @Test
+  public void aPushTheGitHostFailedOnceIsRetriedAndPushed(@TempDir Path dir) throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell));
+      FlakyGit host = new FlakyGit(scratch.root).fail("push", "1");
+      Result run =
+          scratch.run(
+              shell, WRITES, scratch.payload(BRANCH, scratch.fold, "\"out/**\""), false, null,
+              host.env());
+
+      assertEquals(0, run.exit, shell + ":\n" + run.output);
+      String pushed = scratch.originRev("refs/heads/" + BRANCH);
+      assertTrue(run.output.contains("pushed " + pushed + " to " + BRANCH), run.output);
+      assertTrue(run.output.contains(FlakyGit.FAILURE), "git's own words are shown:\n" + run.output);
+      assertTrue(run.output.contains("git push: the git host failed (attempt 1 of 3)"), run.output);
+      assertEquals(2, host.calls("push"), run.output);
+      assertEquals(List.of("2"), host.sleeps());
+    }
+  }
+
+  @Test
+  public void aGitHostThatNeverAnswersThePushIsNamedAndNotARejection(@TempDir Path dir)
+      throws Exception {
+    // Run 135af4fc: the push met a 503, the already-pushed fetch met it too, and the step blamed the
+    // fold. The prelude's fetch is the first; every one after it, and every push, fails.
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell));
+      FlakyGit host = new FlakyGit(scratch.root).fail("push", "all").fail("fetch", "2 3 4");
+      Result run =
+          scratch.run(
+              shell, WRITES, scratch.payload(BRANCH, scratch.fold, "\"out/**\""), false, null,
+              host.env());
+
+      assertEquals(1, run.exit, shell + ":\n" + run.output);
+      assertTrue(
+          run.output.contains(
+              "the git host did not answer the push to "
+                  + BRANCH
+                  + " ("
+                  + FlakyGit.FAILURE
+                  + "); re-run this automation"),
+          run.output);
+      assertFalse(run.output.contains("the fold no longer contains it"), run.output);
+      assertEquals(3, host.calls("push"), run.output);
+      assertEquals(4, host.calls("fetch"), "the fold, then the already-pushed check three times");
+      assertEquals(List.of("2", "5", "2", "5"), host.sleeps(), "2s then 5s, for each of the two");
+      assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH));
+    }
+  }
+
+  @Test
+  public void aRejectedPushIsAnAnswerAndIsNeverRetried(@TempDir Path dir) throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell));
+      String stranger =
+          scratch.git(
+              scratch.seed,
+              "-c", "user.name=t", "-c", "user.email=t@t",
+              "commit-tree", "HEAD^{tree}", "-m", "a branch the fold dropped");
+      scratch.git(
+          scratch.seed, "push", "-q", scratch.origin.toString(), stranger + ":refs/heads/" + BRANCH);
+      FlakyGit host = new FlakyGit(scratch.root);
+      Result run =
+          scratch.run(
+              shell, WRITES, scratch.payload(BRANCH, scratch.fold, "\"out/**\""), false, null,
+              host.env());
+
+      assertEquals(1, run.exit, shell + ":\n" + run.output);
+      assertTrue(run.output.contains("the fold no longer contains it"), run.output);
+      assertFalse(run.output.contains("the git host"), run.output);
+      assertEquals(1, host.calls("push"), run.output);
+      assertEquals(List.of(), host.sleeps());
+      assertEquals(stranger, scratch.originRev("refs/heads/" + BRANCH), "never forced");
+    }
+  }
+
+  @Test
+  public void aFoldFetchTheGitHostFailedOnceIsRetriedAndTheRunProceeds(@TempDir Path dir)
+      throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell));
+      FlakyGit host = new FlakyGit(scratch.root).fail("fetch", "1");
+      Result run =
+          scratch.run(
+              shell, WRITES, scratch.payload(BRANCH, scratch.fold, "\"out/**\""), false, null,
+              host.env());
+
+      assertEquals(0, run.exit, shell + ":\n" + run.output);
+      assertTrue(run.output.contains("git fetch: the git host failed (attempt 1 of 3)"), run.output);
+      String pushed = scratch.originRev("refs/heads/" + BRANCH);
+      assertEquals(scratch.fold, scratch.git(scratch.origin, "rev-parse", pushed + "^"));
+      assertEquals(2, host.calls("fetch"), run.output);
+    }
+  }
+
+  @Test
+  public void aFoldFetchTheGitHostNeverAnswersIsNotAMissingBranch(@TempDir Path dir)
+      throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell));
+      FlakyGit host = new FlakyGit(scratch.root).fail("fetch", "all");
+      Result run =
+          scratch.run(
+              shell, WRITES, scratch.payload(BRANCH, scratch.fold, "\"out/**\""), false, null,
+              host.env());
+
+      assertEquals(1, run.exit, shell + ":\n" + run.output);
+      assertTrue(
+          run.output.contains(
+              "the git host is unavailable: release/abc could not be fetched for the fold "
+                  + scratch.fold
+                  + " ("
+                  + FlakyGit.FAILURE
+                  + "); re-run this automation"),
+          run.output);
+      assertFalse(run.output.contains("the fold's branch is missing"), run.output);
+      assertFalse(run.output.contains("generated"), "the kind's script never ran");
+      assertEquals(3, host.calls("fetch"), run.output);
+      assertEquals(List.of("2", "5"), host.sleeps());
     }
   }
 

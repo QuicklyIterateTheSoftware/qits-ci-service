@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -10,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
@@ -176,6 +178,50 @@ public class MaintenanceBumpBranchTest {
   }
 
   @Test
+  public void aPushTheGitHostFailedOnceIsRetriedAndPushed() throws Exception {
+    // qits-1253: a 503 is the host's bad moment, not somebody's rewrite of the branch.
+    FlakyGit host = new FlakyGit(dir).fail("push", "1");
+    Run run = step(payload("targeted", BRANCH, true), null, host.env());
+    assertEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains(FlakyGit.FAILURE), run.output);
+    assertTrue(run.output.contains("git push: the git host failed (attempt 1 of 3)"), run.output);
+    assertTrue(run.output.contains("pushed " + BRANCH), run.output);
+    assertEquals(oldHead, rev(branchHead() + "^"));
+    assertEquals(2, host.calls("push"));
+    assertEquals(List.of("2"), host.sleeps());
+  }
+
+  @Test
+  public void aGitHostThatNeverAnswersThePushIsNamedAndNotARejection() throws Exception {
+    FlakyGit host = new FlakyGit(dir).fail("push", "all");
+    Run run = step(payload("targeted", BRANCH, true), null, host.env());
+    assertNotEquals(0, run.exit, run.output);
+    assertTrue(
+        run.output.contains(
+            "the git host did not answer the push to " + BRANCH + " (" + FlakyGit.FAILURE + ");"
+                + " re-run this bump"),
+        run.output);
+    assertFalse(run.output.contains("was rejected"), run.output);
+    assertEquals(3, host.calls("push"));
+    assertEquals(List.of("2", "5"), host.sleeps());
+    assertEquals(oldHead, branchHead());
+  }
+
+  @Test
+  public void aRejectedPushIsAnAnswerAndIsNeverRetried() throws Exception {
+    String hook =
+        "#!/bin/sh\ngit --git-dir='" + remote + "' update-ref refs/heads/" + BRANCH + " " + mainHead + "\n";
+    FlakyGit host = new FlakyGit(dir);
+    Run run = step(payload("targeted", BRANCH, true), hook, host.env());
+    assertNotEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains("push to " + BRANCH + " was rejected"), run.output);
+    assertFalse(run.output.contains("the git host"), run.output);
+    assertEquals(1, host.calls("push"));
+    assertEquals(List.of(), host.sleeps());
+    assertEquals(mainHead, branchHead());
+  }
+
+  @Test
   public void aNonTargetedGroupIsRefusedBeforeAnyBranchIsRead() throws Exception {
     Run run = step(payload("libs", BRANCH, true));
     assertNotEquals(0, run.exit, run.output);
@@ -266,7 +312,7 @@ public class MaintenanceBumpBranchTest {
     env.put("QITS_EVENT_PAYLOAD", payload);
     env.put("QITS_CI_REPOSITORY_URL", remote.toString());
     env.put("QITS_FAKE_RECORD", record.toString());
-    env.put("PATH", fakeBin + ":" + System.getenv("PATH"));
+    env.put("PATH", fakeBin + ":" + extraEnv.getOrDefault("PATH", System.getenv("PATH")));
     Process process = start(clone, env, "sh", "-c", script.replace("/tmp/", scratch + "/"));
     String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
     assertTrue(process.waitFor(60, TimeUnit.SECONDS), "the step did not return");
