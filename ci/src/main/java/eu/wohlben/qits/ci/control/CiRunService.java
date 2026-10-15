@@ -1110,8 +1110,9 @@ public class CiRunService {
    * #retryReleaseRequestPhase}'s, which never comes through here.
    *
    * @return the id of the run this recorded, or of the run this event already had for this
-   *     repository and trigger file, or of the gating run this fold already had. The manual trigger endpoint answers with these ids, which is
-   *     what lets a 2xx there mean "these rows exist" rather than "something was handed to a queue".
+   *     repository and trigger file, or of the gating run this fold already had. The manual trigger
+   *     endpoint answers with these ids, which is what lets a 2xx there mean "these rows exist"
+   *     rather than "something was handed to a queue".
    */
   public String onEventTrigger(EventRun request) {
     CiIdentifiers.requireRepo(request.repo());
