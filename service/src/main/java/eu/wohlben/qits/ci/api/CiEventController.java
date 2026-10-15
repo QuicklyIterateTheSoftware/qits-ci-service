@@ -129,16 +129,21 @@ public class CiEventController {
           JsonNode payload,
       @Schema(description = "ISO-8601 instant. Absent: now.", example = "2026-08-04T09:00:00Z")
           String occurredAt,
-      @Schema(description = "UUID. Absent: a fresh random one — see the dedupe note.")
+      @Schema(
+              description =
+                  "UUID. Absent: a fresh random one, so the call is a rerun — except that a"
+                      + " ReleaseRequestChanged for a fold that already has a non-cancelled gating"
+                      + " run answers that run; building it again is POST /ci/api/runs/rerun.")
           String eventId) {}
 
   /**
    * What the evaluation did, which is what the caller waited for.
    *
    * @param eventId the id the evaluation ran under, canonical lowercase
-   * @param runIds the runs this event id has: the ones it recorded, and on a repeated id the ones
-   *     an earlier call recorded. Every id is a row that exists now, findable by
-   *     {@code triggerEventId} on {@code GET /ci/api/runs}.
+   * @param runIds the runs this event id has: the ones it recorded, on a repeated id the ones an
+   *     earlier call recorded, and on a repeated release-request fold the gating run it already had
+   *     — which carries the {@code triggerEventId} of the event that started it, not this one. Every
+   *     id is a row that exists now.
    * @param repositoriesRead how many candidate repositories answered and were evaluated
    * @param repositoriesSkipped the candidates that did not answer — unreachable, gone, no {@code
    *     main}, not reached before the deadline, or (on a release event) unable to have their {@code
@@ -190,6 +195,11 @@ public class CiEventController {
    *   <li><b>Omit {@code eventId}</b> and a fresh random UUID is minted. The evaluation is a
    *       <em>rerun</em>: it collides with nothing, so the same payload may be replayed as often as
    *       you like. This is the default because a rerun is what a person asks for.
+   *       <b>Except for a release request's fold</b> (qits-1250): a {@code ReleaseRequestChanged}
+   *       whose repository, request, sha and trigger file already have a gating run that was not
+   *       cancelled — running or finished, green or red — answers that run and records none. A
+   *       second, lineage-less verdict at a merged sha is what qits-projects rejects a request on,
+   *       so building that fold again is {@code POST /ci/api/runs/rerun}'s, never this door's.
    *   <li><b>Pass {@code eventId}</b> and you opt into the dedupe. Repeating the call is then
    *       idempotent — the second one records no run and answers with the first one's — which is
    *       what makes this safe to put in a bootstrap script that may run twice, and what lets a

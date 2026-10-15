@@ -1,13 +1,16 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.control.CiConfigSource.EventTriggerFile;
 import eu.wohlben.qits.ci.entity.CiRun;
+import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.time.Instant;
@@ -227,6 +230,120 @@ public class CiReleaseRequestRunTest extends CiTestSupport {
     assertEquals(List.of(), announcer.failed());
   }
 
+  // --- one fold, one gating run, whatever the event id (qits-1250) -----------------------------
+
+  @Test
+  public void aRepeatedFoldUnderANewEventIdAnswersItsRunningGatingRun() throws Exception {
+    // The trigger door mints a fresh id for a call that names none, so the event constraint cannot
+    // see this is the question already asked. The fold can: same repository, request, sha and file.
+    String first = deliverFold(REQUEST_ID, MERGED);
+    settle(first, CiRunStatus.RUNNING);
+
+    assertEquals(
+        first,
+        triggerDirectly(REQUEST_ID, MERGED),
+        "the second event is answered with the first run");
+    assertEquals(1, runService.runsFor(repoId).size(), "and nothing is recorded");
+  }
+
+  @Test
+  public void aRepeatedFoldAnswersItsGatingRunOnceThatRunIsGreen() throws Exception {
+    String first = deliverFold(REQUEST_ID, MERGED);
+    assertEquals(CiRunStatus.SUCCESS, runService.requireRun(first).status);
+
+    assertEquals(first, triggerDirectly(REQUEST_ID, MERGED));
+    assertEquals(1, runService.runsFor(repoId).size());
+  }
+
+  @Test
+  public void aRepeatedFoldAnswersItsGatingRunOnceThatRunIsRed() throws Exception {
+    // The harm this guards: a lineage-less duplicate beside a verdict is a second verdict, and
+    // qits-projects rejects on any red one at the merged sha. A red fold is asked again by the rerun
+    // door, which records lineage — not by firing the event again.
+    fakeRunner.script(0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
+    String first = deliverFold(REQUEST_ID, MERGED);
+    assertEquals(CiRunStatus.FAILED, runService.requireRun(first).status);
+
+    assertEquals(first, triggerDirectly(REQUEST_ID, MERGED));
+    assertEquals(1, runService.runsFor(repoId).size());
+  }
+
+  @Test
+  public void aCancelledGatingRunDoesNotStandInTheWayOfTheFold() throws Exception {
+    String first = deliverFold(REQUEST_ID, MERGED);
+    settle(first, CiRunStatus.CANCELLED);
+
+    assertNotEquals(
+        first, triggerDirectly(REQUEST_ID, MERGED), "a withdrawn question answers nothing");
+    assertEquals(2, runService.runsFor(repoId).size());
+  }
+
+  @Test
+  public void aReFoldAtANewShaIsANewGatingRun() throws Exception {
+    String first = deliverFold(REQUEST_ID, MERGED);
+
+    assertNotEquals(first, triggerDirectly(REQUEST_ID, "c".repeat(40)));
+    assertEquals(2, runService.runsFor(repoId).size());
+  }
+
+  @Test
+  public void anotherRequestAtTheSameShaIsItsOwnGatingRun() throws Exception {
+    String first = deliverFold(REQUEST_ID, MERGED);
+
+    String other = triggerDirectly("rr-43", MERGED);
+
+    assertNotEquals(first, other);
+    assertEquals("rr-43", runService.requireRun(other).releaseRequestId);
+  }
+
+  @Test
+  public void anEventOfAnotherKindUnderANewIdIsStillARerun() throws Exception {
+    // The fold rule reads the phase, so an event that is no RELEASE_REQUEST run keeps the door's
+    // ordinary meaning: no id, no dedupe — even when its payload names a request.
+    fakeConfig.putTriggers(
+        repoId,
+        "main",
+        HEAD,
+        new EventTriggerFile(
+            ".config/qits/ci-event-other.yml",
+            """
+            event: SCMPublishCommit
+            steps:
+              - image: alpine:3
+                script: "true"
+            """));
+    String payload = "{\"releaseRequestId\":\"" + REQUEST_ID + "\"}";
+
+    for (int i = 0; i < 2; i++) {
+      deliver(
+          new CiEventTriggerService.Arrival(
+              UUID.randomUUID().toString(),
+              "SCMPublishCommit",
+              Instant.parse("2026-09-03T09:07:06Z"),
+              payload));
+    }
+
+    assertEquals(2, runService.runsFor(repoId).size());
+  }
+
+  @Test
+  public void theRerunDoorStillBuildsARedFoldAgain() throws Exception {
+    // retryReleaseRequestPhase goes through insertRetry, never onEventTrigger, so the fold rule
+    // cannot reach it — pinned here beside the rule rather than trusted.
+    fakeRunner.script(0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
+    String first = deliverFold(REQUEST_ID, MERGED);
+    assertEquals(CiRunStatus.FAILED, runService.requireRun(first).status);
+
+    CiRun refired =
+        runService.retryReleaseRequestPhase(repoId, REQUEST_ID, CiRunPhase.RELEASE_REQUEST);
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+
+    assertNotEquals(first, refired.id);
+    assertEquals(first, runService.requireRun(refired.id).retryOfRunId);
+    assertEquals(2, runService.runsFor(repoId).size());
+  }
+
   // --- fixture -----------------------------------------------------------------------------------
 
   private void seedQa() {
@@ -247,6 +364,46 @@ public class CiReleaseRequestRunTest extends CiTestSupport {
   private CiEventTriggerService.Arrival arrival(String eventId, String payload) {
     return new CiEventTriggerService.Arrival(
         eventId, "ReleaseRequestChanged", Instant.parse("2026-09-03T09:07:06Z"), payload);
+  }
+
+  /** Seeds the QA file, builds one fold through the engine and answers the run it recorded. */
+  private String deliverFold(String requestId, String mergedSha) throws Exception {
+    seedQa();
+    deliver(arrival(UUID.randomUUID().toString(), payload(requestId, mergedSha)));
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(1, recorded.size());
+    return recorded.get(0).id;
+  }
+
+  /**
+   * The same fold offered again under a fresh event id, straight at the accept seam — what the
+   * trigger door does with a call that names no id — answering the run id it was given.
+   */
+  private String triggerDirectly(String requestId, String mergedSha) throws Exception {
+    String eventId = UUID.randomUUID().toString();
+    String payload = payload(requestId, mergedSha);
+    CiRunService.EventRun request =
+        new CiRunService.EventRun(
+            CiRepoRef.of(repoId, "qits", "qits-ci-service"),
+            "release/" + requestId,
+            mergedSha,
+            triggerParser.parse(QA_PATH, QA_TRIGGER),
+            eventId,
+            "ReleaseRequestChanged",
+            Instant.parse("2026-09-03T09:07:06Z"),
+            payload,
+            QA_TRIGGER,
+            null);
+    String runId = runService.onEventTrigger(request);
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    return runId;
+  }
+
+  /** Puts a run in a status directly — the fold rule reads nothing but the row. */
+  private void settle(String runId, CiRunStatus status) {
+    QuarkusTransaction.requiringNew().run(() -> runs.findById(runId).status = status);
+    forgetLoadedEntities();
   }
 
   private void deliver(CiEventTriggerService.Arrival arrival) throws Exception {

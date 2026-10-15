@@ -182,13 +182,20 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
    * qits-projects before qits-1133 publishes.
    */
   private CiEventTriggerService.Arrival releaseRequest(String preRun) {
+    return releaseRequest(preRun, "a1b2c3");
+  }
+
+  /** The same, for a request of another id — a fold of its own at the same sha. */
+  private CiEventTriggerService.Arrival releaseRequest(String preRun, String releaseRequestId) {
     return new CiEventTriggerService.Arrival(
         UUID.randomUUID().toString(),
         CiReleaseComposer.RELEASE_REQUEST_EVENT,
         Instant.parse("2026-09-06T09:00:00Z"),
         "{\"repoName\":\"qits-target\",\"backingBranch\":\"release/abc\",\"mergedSha\":\""
             + MERGED_SHA
-            + "\",\"releaseRequestId\":\"a1b2c3\""
+            + "\",\"releaseRequestId\":\""
+            + releaseRequestId
+            + "\""
             + (preRun == null ? "" : ",\"preRun\":\"" + preRun + "\"")
             + "}");
   }
@@ -458,8 +465,9 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     assertEquals(1, runService.runsFor(repoId).size(), "DONE builds");
 
     // The rollout arm: a qits-projects that has not shipped the field states none, and its QA runs
-    // exactly as it did before the field existed.
-    deliver(releaseRequest());
+    // exactly as it did before the field existed. Another request, because the same fold has one
+    // gating run whatever the event id (qits-1250) and would answer the DONE one.
+    deliver(releaseRequest(null, "d4e5f6"));
     assertEquals(2, runService.runsFor(repoId).size(), "an absent preRun builds too");
   }
 
