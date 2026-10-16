@@ -158,12 +158,20 @@ public class CiRunController {
 
   /**
    * What qits-projects sends to withdraw a release request's CI: the repository, and the request
-   * whose work is no longer wanted. Both are required — see {@link #cancelReleaseRequestRuns}.
+   * whose work is no longer wanted. Both are required — see {@link #cancelReleaseRequestRuns}. The
+   * phase is optional and narrows the cancellation to that phase's runs; absent, every phase's runs
+   * stop, which is what a sender that predates it still means (qits-1264).
    */
   public record CancelReleaseRequestRunsRequest(
       @Schema(description = "The repository whose runs to stop", required = true) String repoId,
       @Schema(description = "The release request whose work is withdrawn, by its UUID", required = true)
-          String releaseRequestId) {}
+          String releaseRequestId,
+      @Schema(
+              description =
+                  "Stop only this phase's runs: RELEASE_REQUEST (QA) or RELEASE (publish). Omit to"
+                      + " stop every unfinished run of the request",
+              enumeration = {"RELEASE_REQUEST", "RELEASE"})
+          String phase) {}
 
   /** Which runs the cancellation actually reached — empty when there was nothing left in flight. */
   public record CancelReleaseRequestRunsResponse(List<String> runIds) {}
@@ -681,18 +689,26 @@ public class CiRunController {
    * by the class-level roles, which is the forwarded {@code X-Qits-User}/{@code X-Qits-Roles} session
    * an operator arrives on. Both callers are real for this route, which is why the check is on the
    * machine arm rather than over the whole method.
+   *
+   * <p><b>An optional {@code phase} narrows it to that phase's runs</b> (qits-1264). A release
+   * request's publish run carries its id exactly as its QA runs do, so the pair alone reaches both —
+   * right for a withdrawal, wrong for RELEASED, whose own publish run the tag push may already have
+   * queued. qits-projects names {@code RELEASE_REQUEST} there; absent, the answer is the old one,
+   * every phase. A word that names no phase is a 400 through {@link #requirePhase}, as on {@link
+   * #rerunReleaseRequestPhase}, rather than read as absent: a misspelt narrowing silently widened to
+   * everything is exactly the cancellation this field exists to prevent.
    */
   @POST
   @Path("/cancellations")
   @Consumes(MediaType.APPLICATION_JSON)
   @Operation(
       operationId = "cancelReleaseRequestRuns",
-      summary = "Cancel every unfinished run a repository has for one release request")
+      summary = "Cancel every unfinished run a repository has for one release request, or one phase's")
   @APIResponse(
       responseCode = "202",
       description = "The request's runs have been stopped or asked to stop",
       content = @Content(schema = @Schema(implementation = CancelReleaseRequestRunsResponse.class)))
-  @APIResponse(responseCode = "400", description = "The repository id or the release request id is missing or invalid")
+  @APIResponse(responseCode = "400", description = "The repository id or the release request id is missing or invalid, or the phase names no phase")
   @APIResponse(
       responseCode = "403",
       description =
@@ -704,6 +720,7 @@ public class CiRunController {
     }
     CiIdentifiers.requireRepoId(request.repoId());
     String releaseRequestId = requireReleaseRequestId(request.releaseRequestId());
+    CiRunPhase phase = request.phase() == null ? null : requirePhase(request.phase());
     String projectScope = cancellationScope();
     if (projectScope != null) {
       requireRepositoryInProject(request.repoId(), projectScope);
@@ -711,7 +728,7 @@ public class CiRunController {
     return Response.accepted()
         .entity(
             new CancelReleaseRequestRunsResponse(
-                runService.cancelReleaseRequestRuns(request.repoId(), releaseRequestId)))
+                runService.cancelReleaseRequestRuns(request.repoId(), releaseRequestId, phase)))
         .build();
   }
 

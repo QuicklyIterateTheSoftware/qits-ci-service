@@ -30,6 +30,13 @@ components:
         releaseRequestId:
           type: string
           description: "The release request whose work is withdrawn, by its UUID"
+        phase:
+          type: string
+          description: "Stop only this phase's runs: RELEASE_REQUEST (QA) or RELEASE\
+            \ (publish). Omit to stop every unfinished run of the request"
+          enum:
+          - RELEASE_REQUEST
+          - RELEASE
     CancelReleaseRequestRunsResponse:
       type: object
       properties:
@@ -1426,7 +1433,8 @@ paths:
         - qits:agent
   /ci/api/runs/cancellations:
     post:
-      summary: Cancel every unfinished run a repository has for one release request
+      summary: "Cancel every unfinished run a repository has for one release request,\
+        \ or one phase's"
       operationId: cancelReleaseRequestRuns
       requestBody:
         content:
@@ -1442,7 +1450,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/CancelReleaseRequestRunsResponse"
         "400":
-          description: The repository id or the release request id is missing or invalid
+          description: "The repository id or the release request id is missing or\
+            \ invalid, or the phase names no phase"
         "403":
           description: "The token covers this repository for nobody — no project claim\
             \ and no platform-wide role, or a project claim this instance cannot place\

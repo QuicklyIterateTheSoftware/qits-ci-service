@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.entity.CiRun;
+import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.error.ConflictException;
 import eu.wohlben.qits.ci.error.NotFoundException;
@@ -107,7 +108,7 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     String otherRequest = service.onEventTrigger(publishRun(repo, "rr-b"));
     String otherRepo = accept(sibling, "rr-a");
 
-    List<String> stopped = service.cancelReleaseRequestRuns(repo, "rr-a");
+    List<String> stopped = service.cancelReleaseRequestRuns(repo, "rr-a", null);
 
     assertEquals(List.of(withdrawn), stopped, "only this repository's runs for this request");
     forgetLoadedEntities();
@@ -134,7 +135,7 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     String repo = "consumer-" + UUID.randomUUID();
     String withdrawn = accept(repo, "rr-a");
 
-    service.cancelReleaseRequestRuns(repo, "rr-a");
+    service.cancelReleaseRequestRuns(repo, "rr-a", null);
     release.countDown();
     suiteRunner.awaitIdle();
     forgetLoadedEntities();
@@ -166,9 +167,51 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
 
     // The caller asked for a state — this request's work is not running — and that state holds. So
     // repeating the call is safe, which is what makes it usable from a retried outbound hop.
-    assertEquals(List.of(), service.cancelReleaseRequestRuns(repo, "rr-a"));
-    assertEquals(List.of(), service.cancelReleaseRequestRuns(repo, "never-existed"));
+    assertEquals(List.of(), service.cancelReleaseRequestRuns(repo, "rr-a", null));
+    assertEquals(List.of(), service.cancelReleaseRequestRuns(repo, "never-existed", null));
     assertEquals(CiRunStatus.SUCCESS, service.requireRun(finished).status, "and it changed nothing");
+  }
+
+  @Test
+  public void releasedCancelsTheRequestsQaRunsAndLeavesItsOwnPublishRunStanding()
+      throws Exception {
+    // THE ORDER IN qits-1264: the tag push lands first, so the request's publish run is already
+    // queued when RELEASED arrives and asks for the QA runs to stop. Both carry the request id, so
+    // the pair alone reached the publish run too and cancelled the release it was announcing.
+    occupyTheWorker();
+    String repo = "consumer-" + UUID.randomUUID();
+    String publish = service.onEventTrigger(publishRun(repo, "rr-a"));
+    String qa = accept(repo, "rr-a");
+
+    List<String> stopped =
+        service.cancelReleaseRequestRuns(repo, "rr-a", CiRunPhase.RELEASE_REQUEST);
+
+    assertEquals(List.of(qa), stopped, "only the named phase's run");
+    forgetLoadedEntities();
+    CiRun cancelled = service.requireRun(qa);
+    assertEquals(CiRunStatus.CANCELLED, cancelled.status);
+    assertEquals(CiRunService.RELEASE_REQUEST_CANCELLED, cancelled.cancellationReason);
+    CiRun untouched = service.requireRun(publish);
+    assertEquals(CiRunPhase.RELEASE, untouched.phase);
+    assertEquals(CiRunStatus.QUEUED, untouched.status, "the release's own publish run goes on");
+    assertNull(untouched.cancellationReason);
+  }
+
+  @Test
+  public void withNoPhaseEveryPhaseOfTheRequestIsCancelled() throws Exception {
+    // A withdrawal or a supersession: the whole release is no longer wanted, and a sender that
+    // predates the field names no phase. Both phases stop, exactly as before qits-1264.
+    occupyTheWorker();
+    String repo = "consumer-" + UUID.randomUUID();
+    String publish = service.onEventTrigger(publishRun(repo, "rr-a"));
+    String qa = accept(repo, "rr-a");
+
+    List<String> stopped = service.cancelReleaseRequestRuns(repo, "rr-a", null);
+
+    assertEquals(List.of(publish, qa), stopped, "oldest first, both phases");
+    forgetLoadedEntities();
+    assertEquals(CiRunStatus.CANCELLED, service.requireRun(publish).status);
+    assertEquals(CiRunStatus.CANCELLED, service.requireRun(qa).status);
   }
 
   // --- re-asking the same question ---------------------------------------------------------------
@@ -349,7 +392,7 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     occupyTheWorker();
     String repo = "consumer-" + UUID.randomUUID();
     String original = accept(repo, "rr-a");
-    service.cancelReleaseRequestRuns(repo, "rr-a");
+    service.cancelReleaseRequestRuns(repo, "rr-a", null);
     release.countDown();
     suiteRunner.awaitIdle();
     forgetLoadedEntities();

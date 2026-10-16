@@ -662,6 +662,34 @@ public class MachineGuardTest {
   }
 
   @Test
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void aCancellationMayNameAPhaseAndAWordThatNamesNoneIsABadRequest() {
+    // qits-1264: RELEASED narrows the cancellation to RELEASE_REQUEST so the request's own publish
+    // run survives. The field is optional (CANCELLATIONS_BODY above omits it and is still a 202),
+    // but a present one is validated as the rerun door validates its phase: a misspelt narrowing
+    // read as absent would cancel exactly the run it was sent to spare.
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(
+            """
+            {"repoId":"guarded-repo","releaseRequestId":"rr-guarded","phase":"RELEASE_REQUEST"}""")
+        .when()
+        .post(CANCELLATIONS)
+        .then()
+        .statusCode(202);
+    given()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(
+            """
+            {"repoId":"guarded-repo","releaseRequestId":"rr-guarded","phase":"DEPLOY"}""")
+        .when()
+        .post(CANCELLATIONS)
+        .then()
+        .statusCode(400);
+  }
+
+  @Test
   @TestSecurity(user = ARTIFACTS, roles = {"qits:agent"})
   @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
   void aCommissionedAgentTokenMayNotCancelReleaseRequestRuns() {

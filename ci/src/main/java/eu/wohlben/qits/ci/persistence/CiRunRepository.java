@@ -287,22 +287,6 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   }
 
   /**
-   * Every unfinished run one repository has for one release request — {@code QUEUED} or {@code
-   * RUNNING} — oldest first. What {@code POST /ci/api/runs/cancellations} cancels.
-   *
-   * <p><b>The pair is the scope, and both halves are load-bearing.</b> A release request is
-   * qits-projects' aggregate and one request folds N repositories, so the id alone would reach
-   * another repository's run; a repository alone would reach the runs of every OTHER request open
-   * against it, which is exactly the sibling a withdrawn request must not take down with it. The
-   * predicate is the complement of the terminal statuses for {@link #listFinishedNewestFirst}'s
-   * reason: a status added later is finished by default rather than silently cancellable.
-   *
-   * <p>Oldest first rather than newest, unlike every other listing here, because this one is not
-   * read — it is <em>acted on</em>, run by run, and settling the oldest first is what makes a
-   * partial pass (a caller that died halfway) leave the newest work standing rather than the
-   * staleest.
-   */
-  /**
    * The newest run one repository has for one release request in one phase, or empty when that
    * phase has never run there.
    *
@@ -371,11 +355,47 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
     return count("repoId = ?1", repoId) > 0;
   }
 
-  public List<CiRun> listUnfinishedForReleaseRequest(String repoId, String releaseRequestId) {
+  /**
+   * Every unfinished run one repository has for one release request — {@code QUEUED} or {@code
+   * RUNNING} — oldest first. What {@code POST /ci/api/runs/cancellations} cancels.
+   *
+   * <p><b>The pair is the scope, and both halves are load-bearing.</b> A release request is
+   * qits-projects' aggregate and one request folds N repositories, so the id alone would reach
+   * another repository's run; a repository alone would reach the runs of every OTHER request open
+   * against it, which is exactly the sibling a withdrawn request must not take down with it. The
+   * predicate is the complement of the terminal statuses for {@link #listFinishedNewestFirst}'s
+   * reason: a status added later is finished by default rather than silently cancellable.
+   *
+   * <p>Oldest first rather than newest, unlike every other listing here, because this one is not
+   * read — it is <em>acted on</em>, run by run, and settling the oldest first is what makes a
+   * partial pass (a caller that died halfway) leave the newest work standing rather than the
+   * staleest.
+   *
+   * <p><b>{@code phase} narrows it to one phase of the release, and {@code null} does not
+   * narrow.</b> The two phases share the request id — the publish run a tag push creates carries it
+   * exactly as the QA runs do — so the pair alone reaches both. That is right for a withdrawal or a
+   * supersession, where the whole release is no longer wanted, and wrong for RELEASED: there the
+   * request's QA runs are done with but its publish run is the release happening, and when the tag
+   * push queued it before the status change arrived, the unnarrowed pair cancelled it (qits-1264).
+   * So the caller names {@link CiRunPhase#RELEASE_REQUEST} there, and a sender that names nothing
+   * keeps the old answer.
+   */
+  public List<CiRun> listUnfinishedForReleaseRequest(
+      String repoId, String releaseRequestId, CiRunPhase phase) {
+    if (phase == null) {
+      return list(
+          "repoId = ?1 and releaseRequestId = ?2 and status in (?3, ?4) order by createdAt, id",
+          repoId,
+          releaseRequestId,
+          CiRunStatus.QUEUED,
+          CiRunStatus.RUNNING);
+    }
     return list(
-        "repoId = ?1 and releaseRequestId = ?2 and status in (?3, ?4) order by createdAt, id",
+        "repoId = ?1 and releaseRequestId = ?2 and phase = ?3 and status in (?4, ?5)"
+            + " order by createdAt, id",
         repoId,
         releaseRequestId,
+        phase,
         CiRunStatus.QUEUED,
         CiRunStatus.RUNNING);
   }

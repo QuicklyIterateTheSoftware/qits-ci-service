@@ -3736,14 +3736,23 @@ public class CiRunService {
    * care about: it is skipped rather than reported, since the outcome asked for — that run is not
    * still going — is the outcome that happened. So this is <b>idempotent</b>: calling it twice
    * cancels nothing the second time and still answers 202.
+   *
+   * <p><b>{@code phase}, when given, stops only that phase's runs.</b> RELEASED is the caller's one
+   * reason to name it: the request's QA runs ({@link CiRunPhase#RELEASE_REQUEST}) have nothing left
+   * to answer, but its publish run ({@link CiRunPhase#RELEASE}) carries the same request id and IS
+   * the release — and the tag push may well have queued it before the status change got here, which
+   * is the order that used to cancel it (qits-1264). {@code null} is every phase, which is what a
+   * withdrawal and a supersession mean and what a sender that predates the field still gets.
    */
-  public List<String> cancelReleaseRequestRuns(String repoId, String releaseRequestId) {
+  public List<String> cancelReleaseRequestRuns(
+      String repoId, String releaseRequestId, CiRunPhase phase) {
     List<CiRun> unfinished =
         DbRetry.call(
             "release request run listing",
             () ->
                 QuarkusTransaction.requiringNew()
-                    .call(() -> runs.listUnfinishedForReleaseRequest(repoId, releaseRequestId)),
+                    .call(
+                        () -> runs.listUnfinishedForReleaseRequest(repoId, releaseRequestId, phase)),
             retryDeadline());
     List<String> stopped = new ArrayList<>();
     for (CiRun run : unfinished) {
