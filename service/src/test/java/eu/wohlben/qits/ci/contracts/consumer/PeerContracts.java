@@ -93,11 +93,32 @@ final class PeerContracts {
   /**
    * One row, the client method that makes its call, and that call.
    *
+   * @param with the rows the same call makes after {@code row}, answered by the same mock server —
+   *     a method whose one call is two requests (a listing, then the files it names); each is in the
+   *     pact file like any row, and the call is pending while any of them is
    * @param client the class whose method makes the request
    * @param method that method's name
    */
   record Bound(
-      GoldenMasters provider, GoldenInteraction row, Class<?> client, String method, Call call) {}
+      GoldenMasters provider,
+      GoldenInteraction row,
+      List<GoldenInteraction> with,
+      Class<?> client,
+      String method,
+      Call call) {
+
+    Bound(GoldenMasters provider, GoldenInteraction row, Class<?> client, String method, Call call) {
+      this(provider, row, List.of(), client, method, call);
+    }
+
+    /** {@code row} and then {@link #with}, in the order the call makes them. */
+    List<GoldenInteraction> rows() {
+      List<GoldenInteraction> all = new ArrayList<>();
+      all.add(row);
+      all.addAll(with);
+      return List.copyOf(all);
+    }
+  }
 
   private static final Trigger CANDIDATES =
       Trigger.event("* (CiEventTriggerListener: the candidate repositories for an event)");
@@ -114,7 +135,10 @@ final class PeerContracts {
     return ConsumerPact.of(
         CONSUMER,
         provider,
-        ROWS.stream().filter(b -> b.provider() == provider).map(Bound::row).toList());
+        ROWS.stream()
+            .filter(b -> b.provider() == provider)
+            .flatMap(b -> b.rows().stream())
+            .toList());
   }
 
   static ConsumerPact pactOf(Bound bound) {
@@ -229,23 +253,106 @@ final class PeerContracts {
                             recorded.params().get("rev"),
                             recorded.params().get("path"))
                         .status())));
-    // PENDING: a trigger file's own read, at the listing's head sha. No recording names a
-    // .config/qits/ci-event-*.yml file.
+    Trigger eventTriggers =
+        Trigger.event("* (CiTriggerListingCache: which triggers does the repository declare?)");
+    // PENDING until the next qits-githost pin (rr-81 records both states): the listing of
+    // .config/qits naming a ci-event-*.yml, then that file's read at the listing's head sha; and a
+    // repository with no .config/qits, whose listing 404s and whose root tree then answers the head.
+    rows.add(
+        new Bound(
+            GITHOST,
+            GoldenInteraction.of(eventTriggers, "a repository declaring an event trigger", "getTree")
+                .consumes("entries[].name")
+                .readsHeader("Git-Commit-Sha"),
+            List.of(
+                GoldenInteraction.of(
+                    Trigger.event("* (CiTriggerListingCache: a declared ci-event trigger file)"),
+                    "a repository declaring an event trigger",
+                    "getBlob")),
+            HttpGitConfigSource.class,
+            "readEventTriggers",
+            (url, recorded) -> {
+              EventTriggerLookup lookup =
+                  gitConfig(url)
+                      .readEventTriggers(
+                          repo(recorded), recorded.params().get("rev"), CiTriggerScope.REPOSITORY);
+              assertEquals(EventTriggerLookup.Status.FOUND, lookup.status());
+              assertEquals(recorded.responseHeader("Git-Commit-Sha"), lookup.headSha());
+              assertEquals(
+                  List.of(recorded.params().get("path")),
+                  lookup.files().stream().map(f -> f.path()).toList());
+            }));
     rows.add(
         new Bound(
             GITHOST,
             GoldenInteraction.of(
-                Trigger.event("* (CiTriggerListingCache: a declared ci-event trigger file)"),
-                "a repository declaring an event trigger",
-                "getBlob"),
+                eventTriggers, "a repository without a config directory", "getTree"),
+            List.of(
+                GoldenInteraction.of(
+                        eventTriggers, "a repository without a config directory", "getRootTree")
+                    .readsHeader("Git-Commit-Sha")),
             HttpGitConfigSource.class,
             "readEventTriggers",
+            (url, recorded) -> {
+              EventTriggerLookup lookup =
+                  gitConfig(url)
+                      .readEventTriggers(
+                          repo(recorded), recorded.params().get("rev"), CiTriggerScope.REPOSITORY);
+              assertEquals(EventTriggerLookup.Status.FOUND, lookup.status());
+              assertFalse(lookup.headSha() == null || lookup.headSha().isBlank(), "the head");
+              assertTrue(lookup.files().isEmpty(), "a repository with no .config/qits declares none");
+            }));
+    // The id-addressed arm: a candidate qits-ci knows by its storage id alone (the git host's own
+    // listing, an id-addressed push) is read at /git/<repoId>/…, the same two reads.
+    rows.add(
+        new Bound(
+            GITHOST,
+            GoldenInteraction.of(stillHeld, "a repository with files on main", "getRootTreeById"),
+            HttpGitConfigSource.class,
+            "commitHeld",
+            (url, recorded) ->
+                assertEquals(
+                    CommitHeld.HELD,
+                    gitConfig(url).commitHeld(repoById(recorded), recorded.params().get("sha")))));
+    rows.add(
+        new Bound(
+            GITHOST,
+            GoldenInteraction.of(
+                stillHeld, "a repository missing the requested commit", "getRootTreeById"),
+            HttpGitConfigSource.class,
+            "commitHeld",
+            (url, recorded) ->
+                assertEquals(
+                    CommitHeld.GONE,
+                    gitConfig(url).commitHeld(repoById(recorded), recorded.params().get("sha")))));
+    rows.add(
+        new Bound(
+            GITHOST,
+            GoldenInteraction.of(releaseSlot, "a repository with files on main", "getBlobById"),
+            HttpGitConfigSource.class,
+            "readFile",
             (url, recorded) ->
                 assertEquals(
                     FileLookup.Status.FOUND,
                     gitConfig(url)
                         .readFile(
-                            repo(recorded),
+                            repoById(recorded),
+                            recorded.params().get("rev"),
+                            recorded.params().get("path"))
+                        .status())));
+    rows.add(
+        new Bound(
+            GITHOST,
+            GoldenInteraction.of(
+                releaseSlot, "a repository missing the requested path", "getBlobById"),
+            HttpGitConfigSource.class,
+            "readFile",
+            (url, recorded) ->
+                assertEquals(
+                    FileLookup.Status.ABSENT,
+                    gitConfig(url)
+                        .readFile(
+                            repoById(recorded),
                             recorded.params().get("rev"),
                             recorded.params().get("path"))
                         .status())));
@@ -269,11 +376,10 @@ final class PeerContracts {
               assertEquals(Verdict.PRESENT, probe.verdict(), probe.detail());
               assertEquals(recorded.params().get("version"), probe.version());
             }));
-    // PENDING: qits-artifacts records none of its maven, npm or registry routes.
     rows.add(
         new Bound(
             ARTIFACTS,
-            GoldenInteraction.of(releaseJoin, "a maven artifact published at a version", "getMavenPom"),
+            GoldenInteraction.of(releaseJoin, "a maven artifact published at a version", "getMavenFile"),
             HttpArtifactPresence.class,
             "probe",
             (url, recorded) ->
@@ -298,7 +404,37 @@ final class PeerContracts {
                     RegistryClients.presence(url)
                         .probe(
                             CiArtifact.Type.NPM,
+                            recorded.params().get("package"),
+                            recorded.params().get("version"))
+                        .verdict())));
+    rows.add(
+        new Bound(
+            ARTIFACTS,
+            GoldenInteraction.of(releaseJoin, "no maven artifact published at the version", "getMavenFile"),
+            HttpArtifactPresence.class,
+            "probe",
+            (url, recorded) ->
+                assertEquals(
+                    Verdict.ABSENT,
+                    RegistryClients.presence(url)
+                        .probe(
+                            CiArtifact.Type.MAVEN,
                             recorded.params().get("name"),
+                            recorded.params().get("version"))
+                        .verdict())));
+    rows.add(
+        new Bound(
+            ARTIFACTS,
+            GoldenInteraction.of(releaseJoin, "no npm package with the given name", "getNpmPackument"),
+            HttpArtifactPresence.class,
+            "probe",
+            (url, recorded) ->
+                assertEquals(
+                    Verdict.ABSENT,
+                    RegistryClients.presence(url)
+                        .probe(
+                            CiArtifact.Type.NPM,
+                            recorded.params().get("package"),
                             recorded.params().get("version"))
                         .verdict())));
     rows.add(
@@ -406,16 +542,15 @@ final class PeerContracts {
             "deleteToken",
             (url, recorded) ->
                 assertTrue(commissioner(url).deleteToken(recorded.params().get("tokenId")))));
-    // PENDING: the client-credentials mint of the `qits` client, as quarkus-oidc-client sends it —
-    // Basic auth and `grant_type=client_credentials&audience=qits-platform`. The idp's recorded
-    // client-credentials grant carries no audience. Run by IdpTokenMintPactTest, which needs the
-    // Quarkus runtime the OIDC client lives in.
+    // The client-credentials mint of the `qits` client, as quarkus-oidc-client sends it — Basic auth
+    // and `grant_type=client_credentials&audience=qits-platform`. Run by IdpTokenMintPactTest, which
+    // needs the Quarkus runtime the OIDC client lives in.
     rows.add(
         new Bound(
             IDP,
             GoldenInteraction.of(
                     Trigger.schedule("IdpGitHostBearer.token (every git host read)"),
-                    "a service client minting a platform-audience token",
+                    "a service client calling its peers",
                     "issueToken")
                 .header("Authorization", "{authorization}")
                 .consumes("access_token"),
@@ -431,6 +566,11 @@ final class PeerContracts {
 
   private static IdpCommissioner commissioner(String url) {
     return IdpClients.commissioner(url + "/idp", IDP_CLIENT_ID, IDP_CLIENT_SECRET);
+  }
+
+  /** The recorded repository by its storage id alone, as an id-addressed candidate is read. */
+  private static CiRepoRef repoById(Operation recorded) {
+    return CiRepoRef.of(recorded.params().get("repositoryId"));
   }
 
   /** The recorded repository, addressed by its public coordinate as the content routes are. */

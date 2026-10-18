@@ -19,7 +19,6 @@ import java.io.UncheckedIOException;
 import java.net.ServerSocket;
 import java.util.List;
 import java.util.Map;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -31,22 +30,24 @@ import org.junit.jupiter.api.Test;
  * config.
  *
  * <p>What the client sends is Basic auth as {@code test-broad} and {@code
- * grant_type=client_credentials&audience=qits-platform}; the idp's recorded client-credentials grant
- * carries no audience, so the row waits on a state that does.
+ * grant_type=client_credentials&audience=qits-platform}, which qits-idp records under {@code a
+ * service client calling its peers}.
+ *
+ * <p><b>The port is a system property, not a static field.</b> Quarkus loads the test profile in
+ * its own classloader, so a static field initialised there and the one this test instance reads are
+ * two fields with two free ports: the client dialled one while the mock listened on the other. The
+ * first to ask picks the port and parks it in {@link #PORT_PROPERTY}; both classloaders read it back.
  */
 @QuarkusTest
 @TestProfile(IdpTokenMintPactTest.MockIdp.class)
-@Disabled(
-    "needs provider state 'a service client minting a platform-audience token' for issueToken in"
-        + " qits-idp-service")
 class IdpTokenMintPactTest {
 
   static {
     System.setProperty("pact_do_not_track", "true");
   }
 
-  /** The port the pact mock server listens on, chosen free once per JVM. */
-  static final int PORT = freePort();
+  /** Where the mock server's port is parked, shared by both classloaders. */
+  static final String PORT_PROPERTY = "qits.ci.contract.idp-mock-port";
 
   /** The `qits` client on, as `test-broad`, against the mock server. */
   public static class MockIdp implements QuarkusTestProfile {
@@ -54,7 +55,7 @@ class IdpTokenMintPactTest {
     public Map<String, String> getConfigOverrides() {
       return Map.of(
           "quarkus.oidc-client.qits.client-enabled", "true",
-          "quarkus.oidc-client.qits.auth-server-url", "http://127.0.0.1:" + PORT + "/idp",
+          "quarkus.oidc-client.qits.auth-server-url", "http://127.0.0.1:" + port() + "/idp",
           "quarkus.oidc-client.qits.client-id", PeerContracts.IDP_CLIENT_ID,
           "quarkus.oidc-client.qits.credentials.secret", PeerContracts.IDP_CLIENT_SECRET);
     }
@@ -74,7 +75,7 @@ class IdpTokenMintPactTest {
     PactVerificationResult result =
         ConsumerPactRunnerKt.runConsumerTest(
             pact.pact(List.of(row)),
-            MockProviderConfig.httpConfig("127.0.0.1", PORT, PactSpecVersion.V4),
+            MockProviderConfig.httpConfig("127.0.0.1", port(), PactSpecVersion.V4),
             (mockServer, context) -> {
               assertTrue(bearer.token().isPresent(), "the idp's access_token is the bearer");
               return null;
@@ -84,9 +85,16 @@ class IdpTokenMintPactTest {
     }
   }
 
-  private static int freePort() {
+  /** The port the pact mock server listens on: chosen free once per JVM, whichever loader asks. */
+  static synchronized int port() {
+    String parked = System.getProperty(PORT_PROPERTY);
+    if (parked != null) {
+      return Integer.parseInt(parked);
+    }
     try (ServerSocket socket = new ServerSocket(0)) {
-      return socket.getLocalPort();
+      int port = socket.getLocalPort();
+      System.setProperty(PORT_PROPERTY, String.valueOf(port));
+      return port;
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }

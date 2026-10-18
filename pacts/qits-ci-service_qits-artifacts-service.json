@@ -8,6 +8,156 @@
         "references": {
           "qits-call": {
             "app": "qits-artifacts-service",
+            "operationId": "headImageManifest"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "kind": "schedule",
+            "schedule": "CiRunService.pinStepImages (a step image's digest)"
+          }
+        }
+      },
+      "description": "CiRunService.pinStepImages (a step image's digest): headImageManifest",
+      "key": "eb1d156b",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "an image pushed under a tag",
+          "params": {
+            "name": "qits/contract-image",
+            "tag": "2100.1.0"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/v2/${name}/manifests/${tag}",
+            "type": "ProviderState"
+          }
+        },
+        "method": "HEAD",
+        "path": "/v2/qits/contract-image/manifests/2100.1.0"
+      },
+      "response": {
+        "headers": {
+          "Docker-Content-Digest": [
+            "sha256:1b91a3dfff59dad5c1d9c7e557ca94e67e96aabad34050385263cffe926ed7a2"
+          ]
+        },
+        "matchingRules": {
+          "header": {
+            "Docker-Content-Digest": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": ".+"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-artifacts-service",
+            "operationId": "getMavenFile"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "kind": "schedule",
+            "schedule": "ReleaseJoin (is a release's artifact in the store?)"
+          }
+        }
+      },
+      "description": "ReleaseJoin (is a release's artifact in the store?): getMavenFile",
+      "key": "643766b5",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a maven artifact published at a version",
+          "params": {
+            "artifact": "contract-maven",
+            "groupPath": "eu/wohlben/qits",
+            "name": "eu.wohlben.qits:contract-maven",
+            "type": "maven",
+            "version": "2100.1.0"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/artifacts/maven/maven/${groupPath}/${artifact}/${version}/${artifact}-${version}.pom",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/artifacts/maven/maven/eu/wohlben/qits/contract-maven/2100.1.0/contract-maven-2100.1.0.pom"
+      },
+      "response": {
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-artifacts-service",
+            "operationId": "getMavenFile"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "kind": "schedule",
+            "schedule": "ReleaseJoin (is a release's artifact in the store?)"
+          }
+        }
+      },
+      "description": "ReleaseJoin (is a release's artifact in the store?): getMavenFile",
+      "key": "899b1531",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "no maven artifact published at the version",
+          "params": {
+            "artifact": "contract-absent",
+            "groupPath": "eu/wohlben/qits",
+            "name": "eu.wohlben.qits:contract-absent",
+            "type": "maven",
+            "version": "2100.1.0"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/artifacts/maven/maven/${groupPath}/${artifact}/${version}/${artifact}-${version}.pom",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/artifacts/maven/maven/eu/wohlben/qits/contract-absent/2100.1.0/contract-absent-2100.1.0.pom"
+      },
+      "response": {
+        "status": 404
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-artifacts-service",
             "operationId": "getNewestContentHash"
           },
           "qits-trigger": {
@@ -78,6 +228,198 @@
           }
         },
         "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-artifacts-service",
+            "operationId": "getNpmPackument"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "kind": "schedule",
+            "schedule": "ReleaseJoin (is a release's artifact in the store?)"
+          }
+        }
+      },
+      "description": "ReleaseJoin (is a release's artifact in the store?): getNpmPackument",
+      "key": "30d9962a",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "an npm package published at a version",
+          "params": {
+            "package": "contract-package",
+            "tag": "main",
+            "tarball": "contract-package-2100.1.0.tgz",
+            "version": "2100.1.0"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/artifacts/npm/npm/${package}",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/artifacts/npm/npm/contract-package"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "versions": {
+              "2100.1.0": {
+                "_id": "contract-package@2100.1.0",
+                "description": "a contract package",
+                "dist": {
+                  "integrity": "sha512-nLg9gmADv09Ex/pGJNEuVqAD4kxOnnPbJQ5SaoXj6W9OwVvux9HxNxEV/FiTC3QFdMFmrZ8OdUyDEbP1V23mMA==",
+                  "shasum": "0be49e285beabad5e2e218d1b358c2736fbe229b",
+                  "tarball": ""
+                },
+                "license": "MIT",
+                "name": "contract-package",
+                "version": "2100.1.0"
+              }
+            }
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.versions['2100.1.0']._id": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.versions['2100.1.0'].description": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.versions['2100.1.0'].dist.integrity": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.versions['2100.1.0'].dist.shasum": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.versions['2100.1.0'].dist.tarball": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.versions['2100.1.0'].license": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.versions['2100.1.0'].name": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.versions['2100.1.0'].version": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-artifacts-service",
+            "operationId": "getNpmPackument"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "kind": "schedule",
+            "schedule": "ReleaseJoin (is a release's artifact in the store?)"
+          }
+        }
+      },
+      "description": "ReleaseJoin (is a release's artifact in the store?): getNpmPackument",
+      "key": "1060ff1d",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "no npm package with the given name",
+          "params": {
+            "package": "contract-absent-package",
+            "tag": "main",
+            "tarball": "contract-absent-package-2100.1.0.tgz",
+            "version": "2100.1.0"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/artifacts/npm/npm/${package}",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/artifacts/npm/npm/contract-absent-package"
+      },
+      "response": {
+        "status": 404
       },
       "type": "Synchronous/HTTP"
     }

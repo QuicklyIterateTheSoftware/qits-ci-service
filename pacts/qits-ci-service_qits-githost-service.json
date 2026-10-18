@@ -184,6 +184,99 @@
         "references": {
           "qits-call": {
             "app": "qits-githost-service",
+            "operationId": "getBlobById"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "event": "* (CiEventTriggerService: the release slot, .config/qits/release.yml)",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "* (CiEventTriggerService: the release slot, .config/qits/release.yml): getBlobById",
+      "key": "59e4206b",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a repository missing the requested path",
+          "params": {
+            "directory": ".config/absent",
+            "path": ".config/qits/absent.yml",
+            "projectId": "00000000-0000-4000-8000-000000000001",
+            "repoName": "contract-service",
+            "repositoryId": "00000000-0000-4000-8000-000000000002",
+            "rev": "main"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/git/${repositoryId}/blob/${rev}/${path}",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/git/00000000-0000-4000-8000-000000000002/blob/main/.config/qits/absent.yml"
+      },
+      "response": {
+        "status": 404
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-githost-service",
+            "operationId": "getBlobById"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "event": "* (CiEventTriggerService: the release slot, .config/qits/release.yml)",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "* (CiEventTriggerService: the release slot, .config/qits/release.yml): getBlobById",
+      "key": "6c2ec36b",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a repository with files on main",
+          "params": {
+            "directory": ".config/qits",
+            "path": ".config/qits/release.yml",
+            "projectId": "00000000-0000-4000-8000-000000000001",
+            "repoName": "contract-service",
+            "repositoryId": "00000000-0000-4000-8000-000000000002",
+            "rev": "main",
+            "sha": "0000000000000000000000000000000000000001"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/git/${repositoryId}/blob/${rev}/${path}",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/git/00000000-0000-4000-8000-000000000002/blob/main/.config/qits/release.yml"
+      },
+      "response": {
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-githost-service",
             "operationId": "getTree"
           },
           "qits-trigger": {
@@ -375,6 +468,97 @@
         },
         "method": "GET",
         "path": "/git/00000000-0000-4000-8000-000000000001/contract-service/tree/0000000000000000000000000000000000000001"
+      },
+      "response": {
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-githost-service",
+            "operationId": "getRootTreeById"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "kind": "schedule",
+            "schedule": "CiRunService.runSteps (is the run's commit still on the host?)"
+          }
+        }
+      },
+      "description": "CiRunService.runSteps (is the run's commit still on the host?): getRootTreeById",
+      "key": "396ef096",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a repository missing the requested commit",
+          "params": {
+            "projectId": "00000000-0000-4000-8000-000000000001",
+            "repoName": "contract-service",
+            "repositoryId": "00000000-0000-4000-8000-000000000002",
+            "sha": "0000000000000000000000000000000000000001"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/git/${repositoryId}/tree/${sha}",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/git/00000000-0000-4000-8000-000000000002/tree/0000000000000000000000000000000000000001"
+      },
+      "response": {
+        "status": 404
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-githost-service",
+            "operationId": "getRootTreeById"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "kind": "schedule",
+            "schedule": "CiRunService.runSteps (is the run's commit still on the host?)"
+          }
+        }
+      },
+      "description": "CiRunService.runSteps (is the run's commit still on the host?): getRootTreeById",
+      "key": "ad1c9883",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a repository with files on main",
+          "params": {
+            "directory": ".config/qits",
+            "path": ".config/qits/release.yml",
+            "projectId": "00000000-0000-4000-8000-000000000001",
+            "repoName": "contract-service",
+            "repositoryId": "00000000-0000-4000-8000-000000000002",
+            "rev": "main",
+            "sha": "0000000000000000000000000000000000000001"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/git/${repositoryId}/tree/${sha}",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/git/00000000-0000-4000-8000-000000000002/tree/0000000000000000000000000000000000000001"
       },
       "response": {
         "status": 200

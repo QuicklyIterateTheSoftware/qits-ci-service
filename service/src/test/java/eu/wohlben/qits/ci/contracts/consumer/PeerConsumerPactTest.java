@@ -1,8 +1,15 @@
 package eu.wohlben.qits.ci.contracts.consumer;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.fail;
 
+import au.com.dius.pact.consumer.ConsumerPactRunnerKt;
+import au.com.dius.pact.consumer.PactVerificationResult;
+import au.com.dius.pact.consumer.model.MockProviderConfig;
+import au.com.dius.pact.core.model.PactSpecVersion;
 import eu.wohlben.qits.pact.consumer.ConsumerPact;
+import eu.wohlben.qits.pact.consumer.GoldenInteraction;
+import eu.wohlben.qits.pact.consumer.GoldenMasters;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DynamicTest;
@@ -39,13 +46,44 @@ class PeerConsumerPactTest {
                         + "]",
                     () -> {
                       ConsumerPact pact = PeerContracts.pactOf(bound);
-                      if (!bound.provider().recorded(bound.row().state(), bound.row().operationId())) {
-                        Assumptions.abort(pact.needs(bound.row()));
+                      for (GoldenInteraction row : bound.rows()) {
+                        if (!bound.provider().recorded(row.state(), row.operationId())) {
+                          Assumptions.abort(pact.needs(row));
+                        }
                       }
                       Assumptions.assumeTrue(
                           bound.call() != null, "run by IdpTokenMintPactTest, inside the application");
-                      pact.run(bound.row(), (url, recorded) -> bound.call().run(url, recorded));
+                      if (bound.with().isEmpty()) {
+                        pact.run(bound.row(), (url, recorded) -> bound.call().run(url, recorded));
+                      } else {
+                        runTogether(pact, bound);
+                      }
                     }));
+  }
+
+  /**
+   * A call that is several requests: one mock server answering every row of the bound, and the
+   * call handed the first row's recording. pact-jvm fails the run on a request no row answers and
+   * on a row no request reached, as {@link ConsumerPact#run} does for one.
+   */
+  private static void runTogether(ConsumerPact pact, PeerContracts.Bound bound) {
+    GoldenMasters.Operation recorded =
+        bound.provider().operation(bound.row().state(), bound.row().operationId());
+    PactVerificationResult result =
+        ConsumerPactRunnerKt.runConsumerTest(
+            pact.pact(bound.rows()),
+            MockProviderConfig.createDefault(PactSpecVersion.V4),
+            (mockServer, context) -> {
+              bound.call().run(mockServer.getUrl(), recorded);
+              return null;
+            });
+    if (result instanceof PactVerificationResult.Error error
+        && error.getError() instanceof AssertionError assertion) {
+      throw assertion;
+    }
+    if (!(result instanceof PactVerificationResult.Ok)) {
+      fail(bound.row().description() + ": " + result);
+    }
   }
 
   @TestFactory
