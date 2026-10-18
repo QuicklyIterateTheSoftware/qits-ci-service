@@ -460,20 +460,25 @@ final class PeerContracts {
             }));
 
     // --- qits-idp -----------------------------------------------------------------------------
+    // PENDING until qits-idp publishes rr-73's states: each commission sends the body qits-ci's own
+    // callers send, so each needs the state recording exactly that body.
     rows.add(
         new Bound(
             IDP,
             GoldenInteraction.of(
                     Trigger.operation("CiRunnerController.register"),
-                    "a service client with the system role",
+                    "a ci runner being commissioned",
                     "commissionClient")
                 .header("Authorization", "{authorization}")
                 .consumes("clientId", "secret"),
             IdpCommissioner.class,
             "commission",
             (url, recorded) -> {
+              // As the register door asks: the runner's client, which may push nothing.
               IdpCommissioner.Commission commission =
-                  commissioner(url).commission("contract", "run-1", null);
+                  commissioner(url)
+                      .commission(
+                          IdpCommissioner.RUNNER_KIND, recorded.params().get("runnerId"), List.of());
               assertFalse(commission.clientId().isBlank());
               assertFalse(commission.secret().isBlank());
             }));
@@ -481,20 +486,52 @@ final class PeerContracts {
         new Bound(
             IDP,
             GoldenInteraction.of(
-                    Trigger.schedule("RunCommissions.forRun (a step's run token)"),
-                    "a service client with the system role",
+                    Trigger.operation("CiRunnerController.create (the runner's registration token)"),
+                    "a ci runner's registration token being commissioned",
                     "commissionToken")
                 .header("Authorization", "{authorization}")
                 .consumes("tokenId", "token", "subject"),
             IdpCommissioner.class,
             "commissionToken",
-            (url, recorded) -> {
-              IdpCommissioner.CommissionedToken token =
-                  commissioner(url).commissionToken("contract", "run-1", null);
-              assertFalse(token.tokenId().isBlank());
-              assertFalse(token.token().isBlank());
-              assertFalse(token.subject().isBlank());
-            }));
+            (url, recorded) ->
+                assertToken(
+                    commissioner(url)
+                        .commissionToken(
+                            IdpCommissioner.RUNNER_REGISTRATION_KIND,
+                            recorded.params().get("runnerId"),
+                            List.of()))));
+    Trigger runToken = Trigger.schedule("RunCommissions.forRun (a step's run token)");
+    rows.add(
+        new Bound(
+            IDP,
+            GoldenInteraction.of(runToken, "a ci run's token being commissioned", "commissionToken")
+                .header("Authorization", "{authorization}")
+                .consumes("tokenId", "token", "subject"),
+            IdpCommissioner.class,
+            "commissionToken",
+            (url, recorded) ->
+                // A run whose trigger states a Git scope (RunGitRefs): the one ref it may push.
+                assertToken(
+                    commissioner(url)
+                        .commissionToken(
+                            IdpCommissioner.CONTEXT_KIND,
+                            recorded.params().get("runId"),
+                            List.of(recorded.params().get("gitRef"))))));
+    rows.add(
+        new Bound(
+            IDP,
+            GoldenInteraction.of(
+                    runToken, "a ci run's token being commissioned without a Git scope", "commissionToken")
+                .header("Authorization", "{authorization}")
+                .consumes("tokenId", "token", "subject"),
+            IdpCommissioner.class,
+            "commissionToken",
+            (url, recorded) ->
+                // A run whose trigger states nothing: no gitRefs member at all.
+                assertToken(
+                    commissioner(url)
+                        .commissionToken(
+                            IdpCommissioner.CONTEXT_KIND, recorded.params().get("runId"), null))));
     Trigger reconcile = Trigger.schedule("CommissionReconciler.tick");
     rows.add(
         new Bound(
@@ -558,6 +595,12 @@ final class PeerContracts {
             "token",
             null));
     return List.copyOf(rows);
+  }
+
+  private static void assertToken(IdpCommissioner.CommissionedToken token) {
+    assertFalse(token.tokenId().isBlank());
+    assertFalse(token.token().isBlank());
+    assertFalse(token.subject().isBlank());
   }
 
   private static HttpGitConfigSource gitConfig(String url) {

@@ -49,11 +49,17 @@ class IdpTokenMintPactTest {
   /** Where the mock server's port is parked, shared by both classloaders. */
   static final String PORT_PROPERTY = "qits.ci.contract.idp-mock-port";
 
-  /** The `qits` client on, as `test-broad`, against the mock server. */
+  /**
+   * The `qits` client on, as `test-broad`, against the mock server — and the scheduler off: with the
+   * client on, {@code CommissionReconciler}'s scheduled tick lists the idp's clients and tokens
+   * through the same address, and a tick landing inside the mock's window is two requests the mint
+   * row does not answer.
+   */
   public static class MockIdp implements QuarkusTestProfile {
     @Override
     public Map<String, String> getConfigOverrides() {
       return Map.of(
+          "quarkus.scheduler.enabled", "false",
           "quarkus.oidc-client.qits.client-enabled", "true",
           "quarkus.oidc-client.qits.auth-server-url", "http://127.0.0.1:" + port() + "/idp",
           "quarkus.oidc-client.qits.client-id", PeerContracts.IDP_CLIENT_ID,
