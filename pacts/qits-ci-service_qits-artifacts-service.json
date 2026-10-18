@@ -1,0 +1,94 @@
+{
+  "consumer": {
+    "name": "qits-ci-service"
+  },
+  "interactions": [
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-artifacts-service",
+            "operationId": "getNewestContentHash"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "kind": "schedule",
+            "schedule": "ReleaseJoin (is a release's artifact in the store?)"
+          }
+        }
+      },
+      "description": "ReleaseJoin (is a release's artifact in the store?): getNewestContentHash",
+      "key": "dc41964",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a content hash recorded for the coordinate",
+          "params": {
+            "name": "eu.wohlben.qits:contract-artifact",
+            "type": "maven",
+            "version": "2100.1.0"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/artifacts/content-hashes/${type}/${name}/-/newest",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/artifacts/content-hashes/maven/eu.wohlben.qits:contract-artifact/-/newest"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "version": "2100.1.0"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.version": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "4.0"
+    },
+    "plugins": []
+  },
+  "provider": {
+    "name": "qits-artifacts-service"
+  }
+}
