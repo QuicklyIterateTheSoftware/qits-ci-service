@@ -149,12 +149,12 @@
              consumer pacts against qits-projects, qits-githost, qits-artifacts and qits-idp are
              built from (contracts/consumer/). Bumped like every internal pin. -->
         <qits.projects-golden-masters.version>2026.1016.112931</qits.projects-golden-masters.version>
-        <qits.githost-golden-masters.version>2026.1010.133955</qits.githost-golden-masters.version>
+        <qits.githost-golden-masters.version>2026.1018.135253</qits.githost-golden-masters.version>
         <qits.artifacts-golden-masters.version>2026.1018.73956</qits.artifacts-golden-masters.version>
-        <qits.idp-golden-masters.version>2026.1012.180836</qits.idp-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1018.142635</qits.idp-golden-masters.version>
         <!-- The shared consumer-pact helper (golden-master reader, row builder, pact file) the rows
              above are written with. Released out of the qits-integrations-quarkus reactor. -->
-        <qits.pact-consumer.version>2026.1010.141817</qits.pact-consumer.version>
+        <qits.pact-consumer.version>2026.1018.142240</qits.pact-consumer.version>
         <!-- The consumer pacts contracts/ConsumerPactVerificationTest verifies (qits-1149): each
              consumer publishes `pacts/<consumer>_qits-ci-service.json` as a jar, pinned here in test
              scope and bumped by qits-maintenance when the consumer releases a changed pact. -->
