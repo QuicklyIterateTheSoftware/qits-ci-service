@@ -155,6 +155,7 @@ release-request:
           --opt filename=Dockerfile.musl-builder \
           --opt build-arg:MUSL_URL="$musl_url" \
           --opt build-arg:ZLIB_URL="$zlib_url" \
+          --opt build-arg:QITS_DOMAIN="$qits_domain" \
           $tarball_auth \
           --output "type=image,name=$builder,push=true"
       fi
@@ -236,6 +237,7 @@ release:
           --opt filename=Dockerfile.musl-builder \
           --opt build-arg:MUSL_URL="$musl_url" \
           --opt build-arg:ZLIB_URL="$zlib_url" \
+          --opt build-arg:QITS_DOMAIN="$qits_domain" \
           $tarball_auth \
           --output "type=image,name=$builder,push=true"
       fi
