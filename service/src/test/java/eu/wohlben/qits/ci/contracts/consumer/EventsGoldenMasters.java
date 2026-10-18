@@ -67,6 +67,9 @@ public final class EventsGoldenMasters {
 
   private static volatile JsonNode index;
 
+  /** The URL of qits-events' {@code golden-masters/} directory, set with {@link #index}. */
+  private static volatile String base;
+
   private EventsGoldenMasters() {}
 
   /** One recorded (state, operation), as the index describes it. */
@@ -475,24 +478,48 @@ public final class EventsGoldenMasters {
   private static JsonNode index() {
     JsonNode loaded = index;
     if (loaded == null) {
-      try {
-        loaded = MAPPER.readTree(resource(ROOT + "index.json"));
-      } catch (IOException e) {
-        throw new UncheckedIOException(e);
-      }
+      loaded = locate();
       if (loaded.path("formatVersion").asInt() != 1) {
         throw new IllegalStateException(
             "golden-masters/index.json is formatVersion " + loaded.path("formatVersion")
                 + "; EventsGoldenMasters reads formatVersion 1");
       }
-      if (!INDEX_PROVIDER.equals(loaded.path("provider").asText())) {
-        throw new IllegalStateException(
-            "golden-masters/index.json is " + loaded.path("provider") + "'s, not "
-                + INDEX_PROVIDER + "'s");
-      }
       index = loaded;
     }
     return loaded;
+  }
+
+  /**
+   * qits-events' index among every {@code golden-masters/index.json} on the classpath: the other
+   * providers' golden-master jars (qits-1149) put their trees at the same path, so the index is
+   * told apart by its {@code provider}, and every recording is read beside its own index.
+   */
+  private static JsonNode locate() {
+    List<String> seen = new ArrayList<>();
+    try {
+      ClassLoader loader = EventsGoldenMasters.class.getClassLoader();
+      var found = loader.getResources(ROOT + "index.json");
+      while (found.hasMoreElements()) {
+        java.net.URL url = found.nextElement();
+        JsonNode candidate;
+        try (InputStream in = url.openStream()) {
+          candidate = MAPPER.readTree(in);
+        }
+        String provider = candidate.path("provider").asText();
+        seen.add(provider);
+        if (INDEX_PROVIDER.equals(provider)) {
+          String text = url.toString();
+          base = text.substring(0, text.length() - "index.json".length());
+          return candidate;
+        }
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+    throw new IllegalStateException(
+        "no golden-masters/index.json of " + INDEX_PROVIDER + " on the test classpath (found "
+            + seen + ") — is eu.wohlben.qits:qits-events-golden-masters a test dependency of this"
+            + " module?");
   }
 
   private static JsonNode stateNode(String state) {
@@ -510,15 +537,10 @@ public final class EventsGoldenMasters {
     return Set.copyOf(out);
   }
 
+  /** A file of qits-events' tree, {@code name} relative to {@code golden-masters/}. */
   private static String resource(String name) {
-    ClassLoader loader = EventsGoldenMasters.class.getClassLoader();
-    InputStream found = loader == null ? null : loader.getResourceAsStream(name);
-    try (InputStream in = found) {
-      if (in == null) {
-        throw new IllegalStateException(
-            name + " is not on the test classpath — is eu.wohlben.qits:qits-events-golden-masters"
-                + " a test dependency of this module?");
-      }
+    index();
+    try (InputStream in = java.net.URI.create(base + name.substring(ROOT.length())).toURL().openStream()) {
       return new String(in.readAllBytes(), StandardCharsets.UTF_8);
     } catch (IOException e) {
       throw new UncheckedIOException(e);

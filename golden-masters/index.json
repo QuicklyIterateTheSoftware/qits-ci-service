@@ -64,6 +64,42 @@
       ]
     },
     {
+      "name": "a failed run retried automatically",
+      "slug": "a-failed-run-retried-automatically",
+      "params": {
+        "repositoryId": "00000000-0000-4000-8000-000000000001",
+        "retryRunId": "00000000-0000-4000-8000-000000000002",
+        "runId": "00000000-0000-4000-8000-000000000003"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getRun",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}",
+          "status": 200,
+          "file": "a-failed-run-retried-automatically/getRun.json",
+          "frozen": {
+            "ids": [
+              "$.id",
+              "$.repoId"
+            ],
+            "instants": [
+              "$.createdAt",
+              "$.startedAt",
+              "$.finishedAt",
+              "$.steps[*].startedAt",
+              "$.steps[*].finishedAt"
+            ],
+            "strings": [
+              "$.steps[*].output"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a failed run that retries another",
       "slug": "a-failed-run-that-retries-another",
       "params": {
@@ -226,6 +262,27 @@
             ],
             "listFilteredTo": null
           }
+        },
+        {
+          "operationId": "listRunners",
+          "method": "GET",
+          "path": "/ci/api/runners",
+          "status": 200,
+          "file": "a-quarantined-runner/listRunners.json",
+          "frozen": {
+            "ids": [
+              "$.runners[*].id"
+            ],
+            "instants": [
+              "$.runners[*].lastSeenAt",
+              "$.runners[*].createdAt",
+              "$.runners[*].quarantinedAt"
+            ],
+            "strings": [
+              "$.runners[*].targetVersion"
+            ],
+            "listFilteredTo": "$.runners"
+          }
         }
       ]
     },
@@ -286,6 +343,38 @@
           "frozen": {
             "ids": [
               "$.runId"
+            ],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a release request with QA runs in flight",
+      "slug": "a-release-request-with-qa-runs-in-flight",
+      "params": {
+        "queuedRunId": "00000000-0000-4000-8000-000000000001",
+        "releaseRequestId": "00000000-0000-4000-8000-000000000002",
+        "repositoryId": "00000000-0000-4000-8000-000000000003"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "cancelReleaseRequestRuns",
+          "method": "POST",
+          "path": "/ci/api/runs/cancellations",
+          "body": {
+            "repoId": "{repositoryId}",
+            "releaseRequestId": "{releaseRequestId}",
+            "phase": "RELEASE_REQUEST"
+          },
+          "status": 202,
+          "file": "a-release-request-with-qa-runs-in-flight/cancelReleaseRequestRuns.json",
+          "frozen": {
+            "ids": [
+              "$.runIds[*]"
             ],
             "instants": [],
             "strings": [],
@@ -392,6 +481,47 @@
       ]
     },
     {
+      "name": "a repository a maintenance bump targets",
+      "slug": "a-repository-a-maintenance-bump-targets",
+      "params": {
+        "branch": "maintenance/contract-bump",
+        "eventId": "00000000-0000-4000-8000-000000000001",
+        "projectId": "00000000-0000-4000-8000-000000000002",
+        "repositoryId": "00000000-0000-4000-8000-000000000003",
+        "repositoryName": "contract-service"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "triggerEvent",
+          "method": "POST",
+          "path": "/ci/api/events/trigger",
+          "body": {
+            "name": "MaintenanceBump",
+            "eventId": "{eventId}",
+            "payload": {
+              "repository": "{repositoryName}",
+              "group": "targeted",
+              "branch": "{branch}",
+              "baseRef": "main",
+              "changes": []
+            }
+          },
+          "status": 200,
+          "file": "a-repository-a-maintenance-bump-targets/triggerEvent.json",
+          "frozen": {
+            "ids": [
+              "$.eventId",
+              "$.runIds[*]"
+            ],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a repository that declares a release phase",
       "slug": "a-repository-that-declares-a-release-phase",
       "params": {
@@ -426,7 +556,7 @@
       "name": "a repository whose release recipe selects SCMRelease",
       "slug": "a-repository-whose-release-recipe-selects-scmrelease",
       "params": {
-        "commitSha": "6b93a3149f666c1bc4eaba652b4b264f46a80d8f",
+        "commitSha": "23e932a573a8b653a118200c842672f9be0dcb5a",
         "projectId": "00000000-0000-4000-8000-000000000001",
         "repositoryId": "00000000-0000-4000-8000-000000000002",
         "repositoryName": "contract-service",
@@ -455,6 +585,46 @@
             "ids": [
               "$.eventId",
               "$.runIds[*]"
+            ],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a repository with no pipeline for the event",
+      "slug": "a-repository-with-no-pipeline-for-the-event",
+      "params": {
+        "branch": "maintenance/contract-bump",
+        "eventId": "00000000-0000-4000-8000-000000000001",
+        "projectId": "00000000-0000-4000-8000-000000000002",
+        "repositoryId": "00000000-0000-4000-8000-000000000003",
+        "repositoryName": "contract-service"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "triggerEvent",
+          "method": "POST",
+          "path": "/ci/api/events/trigger",
+          "body": {
+            "name": "MaintenanceBump",
+            "eventId": "{eventId}",
+            "payload": {
+              "repository": "{repositoryName}",
+              "group": "targeted",
+              "branch": "{branch}",
+              "baseRef": "main",
+              "changes": []
+            }
+          },
+          "status": 200,
+          "file": "a-repository-with-no-pipeline-for-the-event/triggerEvent.json",
+          "frozen": {
+            "ids": [
+              "$.eventId"
             ],
             "instants": [],
             "strings": [],
@@ -665,6 +835,21 @@
             "strings": [],
             "listFilteredTo": null
           }
+        },
+        {
+          "operationId": "retryRun",
+          "method": "POST",
+          "path": "/ci/api/runs/{runId}/retry",
+          "status": 409,
+          "file": "a-running-run/retryRun.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [
+              "$.message"
+            ],
+            "listFilteredTo": null
+          }
         }
       ]
     },
@@ -734,6 +919,87 @@
             "strings": [
               "$.targetVersion",
               "$.installScript"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "no candidate repository can be read",
+      "slug": "no-candidate-repository-can-be-read",
+      "params": {
+        "branch": "maintenance/contract-bump",
+        "eventId": "00000000-0000-4000-8000-000000000001",
+        "projectId": "00000000-0000-4000-8000-000000000002",
+        "repositoryId": "00000000-0000-4000-8000-000000000003",
+        "repositoryName": "contract-service"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "triggerEvent",
+          "method": "POST",
+          "path": "/ci/api/events/trigger",
+          "body": {
+            "name": "MaintenanceBump",
+            "eventId": "{eventId}",
+            "payload": {
+              "repository": "{repositoryName}",
+              "group": "targeted",
+              "branch": "{branch}",
+              "baseRef": "main",
+              "changes": []
+            }
+          },
+          "status": 503,
+          "file": "no-candidate-repository-can-be-read/triggerEvent.json",
+          "frozen": {
+            "ids": [
+              "$.eventId",
+              "$.repositoriesSkipped[*]"
+            ],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "no run with the given id",
+      "slug": "no-run-with-the-given-id",
+      "params": {
+        "runId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getRun",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}",
+          "status": 404,
+          "file": "no-run-with-the-given-id/getRun.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [
+              "$.message"
+            ],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "retryRun",
+          "method": "POST",
+          "path": "/ci/api/runs/{runId}/retry",
+          "status": 404,
+          "file": "no-run-with-the-given-id/retryRun.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [
+              "$.message"
             ],
             "listFilteredTo": null
           }
