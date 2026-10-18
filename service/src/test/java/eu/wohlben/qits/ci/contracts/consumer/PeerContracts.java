@@ -68,7 +68,8 @@ import java.util.Set;
  */
 final class PeerContracts {
 
-  static final String CONSUMER = EventsGoldenMasters.CONSUMER;
+  /** This repository, as every interaction's {@code qits-trigger} names it. */
+  static final String CONSUMER = "qits-ci-service";
 
   static final GoldenMasters PROJECTS = GoldenMasters.of("qits-projects-service", "qits-projects");
   static final GoldenMasters GITHOST = GoldenMasters.of("qits-githost-service", "qits-githost");

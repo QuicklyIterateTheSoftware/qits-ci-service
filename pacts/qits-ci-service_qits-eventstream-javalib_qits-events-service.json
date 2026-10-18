@@ -14,11 +14,16 @@
             "app": "qits-ci-service",
             "kind": "schedule",
             "schedule": "CatchupSweeper.catchUp(ci-event-triggers)"
+          },
+          "qits-via": {
+            "artifact": "eu.wohlben.qits:qits-eventstream",
+            "repository": "qits-eventstream-javalib",
+            "version": "2026.1018.151251"
           }
         }
       },
-      "description": "CatchupSweeper.catchUp(ci-event-triggers): listEvents",
-      "key": "a958a7f6",
+      "description": "CatchupSweeper.catchUp(ci-event-triggers): listEvents (every name)",
+      "key": "7f700dd",
       "pending": false,
       "providerStates": [
         {
@@ -47,21 +52,27 @@
           "content": {
             "events": [
               {
+                "description": "qits-projects is deployed",
                 "id": "00000000-0000-4000-8000-000000000001",
                 "name": "DeploymentActive",
                 "occurredAt": "2026-01-01T00:00:00Z",
+                "parentId": "00000000-0000-4000-8000-000000000003",
                 "payload": "{\"application\":\"qits-projects\"}"
               },
               {
+                "description": "qits-projects is deployed",
                 "id": "00000000-0000-4000-8000-000000000001",
                 "name": "DeploymentActive",
                 "occurredAt": "2026-01-01T00:00:00Z",
+                "parentId": "00000000-0000-4000-8000-000000000003",
                 "payload": "{\"application\":\"qits-projects\"}"
               },
               {
+                "description": "qits-projects is deployed",
                 "id": "00000000-0000-4000-8000-000000000001",
                 "name": "DeploymentActive",
                 "occurredAt": "2026-01-01T00:00:00Z",
+                "parentId": "00000000-0000-4000-8000-000000000003",
                 "payload": "{\"application\":\"qits-projects\"}"
               }
             ]
@@ -82,6 +93,14 @@
                 {
                   "match": "type",
                   "min": 3
+                }
+              ]
+            },
+            "$.events[*].description": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
                 }
               ]
             },
@@ -108,6 +127,18 @@
                 {
                   "match": "regex",
                   "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d{1,9})?)?(Z|[+-]\\d{2}:?\\d{2})$"
+                }
+              ]
+            },
+            "$.events[*].parentId": {
+              "combine": "OR",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                },
+                {
+                  "match": "null"
                 }
               ]
             },
@@ -147,11 +178,16 @@
             "app": "qits-ci-service",
             "kind": "schedule",
             "schedule": "CatchupSweeper.catchUp(ci-release-facts)"
+          },
+          "qits-via": {
+            "artifact": "eu.wohlben.qits:qits-eventstream",
+            "repository": "qits-eventstream-javalib",
+            "version": "2026.1018.151251"
           }
         }
       },
-      "description": "CatchupSweeper.catchUp(ci-release-facts): listEvents",
-      "key": "1a509b7d",
+      "description": "CatchupSweeper.catchUp(ci-release-facts): listEvents (one name)",
+      "key": "e7e6ede7",
       "pending": false,
       "providerStates": [
         {
@@ -214,11 +250,16 @@
             "app": "qits-ci-service",
             "kind": "schedule",
             "schedule": "CatchupSweeper.catchUp(ci-release-train)"
+          },
+          "qits-via": {
+            "artifact": "eu.wohlben.qits:qits-eventstream",
+            "repository": "qits-eventstream-javalib",
+            "version": "2026.1018.151251"
           }
         }
       },
-      "description": "CatchupSweeper.catchUp(ci-release-train): listEvents",
-      "key": "e44331d2",
+      "description": "CatchupSweeper.catchUp(ci-release-train): listEvents (one name)",
+      "key": "77968072",
       "pending": false,
       "providerStates": [
         {
@@ -281,11 +322,16 @@
             "app": "qits-ci-service",
             "kind": "schedule",
             "schedule": "CatchupSweeper.catchUp(ci-repository-rename)"
+          },
+          "qits-via": {
+            "artifact": "eu.wohlben.qits:qits-eventstream",
+            "repository": "qits-eventstream-javalib",
+            "version": "2026.1018.151251"
           }
         }
       },
-      "description": "CatchupSweeper.catchUp(ci-repository-rename): listEvents",
-      "key": "daf4badd",
+      "description": "CatchupSweeper.catchUp(ci-repository-rename): listEvents (one name)",
+      "key": "7e677287",
       "pending": false,
       "providerStates": [
         {
@@ -348,11 +394,16 @@
             "app": "qits-ci-service",
             "kind": "schedule",
             "schedule": "CatchupSweeper.initialize(ci-event-triggers)"
+          },
+          "qits-via": {
+            "artifact": "eu.wohlben.qits:qits-eventstream",
+            "repository": "qits-eventstream-javalib",
+            "version": "2026.1018.151251"
           }
         }
       },
-      "description": "CatchupSweeper.initialize(ci-event-triggers): listEvents",
-      "key": "a4801b82",
+      "description": "CatchupSweeper.initialize(ci-event-triggers): listEvents (every name)",
+      "key": "5438bbc9",
       "pending": false,
       "providerStates": [
         {
@@ -409,11 +460,16 @@
             "app": "qits-ci-service",
             "kind": "schedule",
             "schedule": "CatchupSweeper.initialize(ci-release-facts)"
+          },
+          "qits-via": {
+            "artifact": "eu.wohlben.qits:qits-eventstream",
+            "repository": "qits-eventstream-javalib",
+            "version": "2026.1018.151251"
           }
         }
       },
-      "description": "CatchupSweeper.initialize(ci-release-facts): listEvents",
-      "key": "15c6c42d",
+      "description": "CatchupSweeper.initialize(ci-release-facts): listEvents (one name)",
+      "key": "52a97737",
       "pending": false,
       "providerStates": [
         {
@@ -473,11 +529,16 @@
             "app": "qits-ci-service",
             "kind": "schedule",
             "schedule": "CatchupSweeper.initialize(ci-release-train)"
+          },
+          "qits-via": {
+            "artifact": "eu.wohlben.qits:qits-eventstream",
+            "repository": "qits-eventstream-javalib",
+            "version": "2026.1018.151251"
           }
         }
       },
-      "description": "CatchupSweeper.initialize(ci-release-train): listEvents",
-      "key": "dfb95a82",
+      "description": "CatchupSweeper.initialize(ci-release-train): listEvents (one name)",
+      "key": "e25909c2",
       "pending": false,
       "providerStates": [
         {
@@ -523,6 +584,132 @@
           }
         },
         "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-events-service",
+            "operationId": "publishEvent"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "kind": "schedule",
+            "schedule": "OutboxSweeper.tick"
+          },
+          "qits-via": {
+            "artifact": "eu.wohlben.qits:qits-eventstream",
+            "repository": "qits-eventstream-javalib",
+            "version": "2026.1018.151251"
+          }
+        }
+      },
+      "description": "OutboxSweeper.tick: publishEvent (a new id)",
+      "key": "a196c66b",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "no event with the given id",
+          "params": {
+            "eventId": "00000000-0000-4000-8000-000000000001"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "description": null,
+            "environment": null,
+            "name": "DeploymentActive",
+            "occurredAt": "2026-01-01T00:00:00Z",
+            "parentId": null,
+            "payload": "{\"application\":\"qits-eventstream-pact\"}"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/events/api/events/${eventId}",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "content-type": [
+            "application/json"
+          ]
+        },
+        "method": "PUT",
+        "path": "/events/api/events/00000000-0000-4000-8000-000000000001"
+      },
+      "response": {
+        "status": 201
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-events-service",
+            "operationId": "publishEvent"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "kind": "schedule",
+            "schedule": "OutboxSweeper.tick"
+          },
+          "qits-via": {
+            "artifact": "eu.wohlben.qits:qits-eventstream",
+            "repository": "qits-eventstream-javalib",
+            "version": "2026.1018.151251"
+          }
+        }
+      },
+      "description": "OutboxSweeper.tick: publishEvent (a reused id)",
+      "key": "1c7f8ca9",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "an event with the given id",
+          "params": {
+            "eventId": "00000000-0000-4000-8000-000000000001"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "description": null,
+            "environment": null,
+            "name": "DeploymentActive",
+            "occurredAt": "2026-01-01T00:00:00Z",
+            "parentId": null,
+            "payload": "{\"application\":\"qits-eventstream-pact\"}"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/events/api/events/${eventId}",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "content-type": [
+            "application/json"
+          ]
+        },
+        "method": "PUT",
+        "path": "/events/api/events/00000000-0000-4000-8000-000000000001"
+      },
+      "response": {
+        "status": 400
       },
       "type": "Synchronous/HTTP"
     }

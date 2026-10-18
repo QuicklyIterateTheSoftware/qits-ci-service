@@ -84,7 +84,7 @@
              replaces this line through the ordinary bump. Do not ship a release request of this
              repository with the snapshot still in it. -->
         <qits.ci-runner-protocol.version>2026.1018.94143</qits.ci-runner-protocol.version>
-        <qits.eventstream.version>2026.1014.223716</qits.eventstream.version>
+        <qits.eventstream.version>2026.1018.151251</qits.eventstream.version>
         <!-- qits-githost's event vocabulary: the SCM records a push announces. qits-ci consumes
              SCMPublishCommit and nothing else, but the jar is the whole vocabulary — it is a data
              module with one dependency (qits-eventstream) and no container.
@@ -145,20 +145,16 @@
         <!-- pact-jvm's JUnit 5 provider, for contracts/ConsumerPactVerificationTest: the version every
              provider on the estate verifies with, so a consumer's pact is read the same way. -->
         <pact.version>4.7.5</pact.version>
-        <!-- qits-events' golden masters, test scope (qits-1149): the recorded answers this
-             repository's consumer pact against qits-events-service is built from. Moved by the
-             bump train like every internal pin; do not hand-edit it to chase a release. -->
-        <qits.events-golden-masters.version>2026.1010.121628</qits.events-golden-masters.version>
         <!-- The other providers' golden masters (qits-1149), test scope: what this repository's
              consumer pacts against qits-projects, qits-githost, qits-artifacts and qits-idp are
              built from (contracts/consumer/). Bumped like every internal pin. -->
         <qits.projects-golden-masters.version>2026.1016.112931</qits.projects-golden-masters.version>
-        <qits.githost-golden-masters.version>2026.1010.133955</qits.githost-golden-masters.version>
+        <qits.githost-golden-masters.version>2026.1018.135253</qits.githost-golden-masters.version>
         <qits.artifacts-golden-masters.version>2026.1018.73956</qits.artifacts-golden-masters.version>
-        <qits.idp-golden-masters.version>2026.1012.180836</qits.idp-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1018.142635</qits.idp-golden-masters.version>
         <!-- The shared consumer-pact helper (golden-master reader, row builder, pact file) the rows
              above are written with. Released out of the qits-integrations-quarkus reactor. -->
-        <qits.pact-consumer.version>2026.1010.141817</qits.pact-consumer.version>
+        <qits.pact-consumer.version>2026.1018.142240</qits.pact-consumer.version>
         <!-- The consumer pacts contracts/ConsumerPactVerificationTest verifies (qits-1149): each
              consumer publishes `pacts/<consumer>_qits-ci-service.json` as a jar, pinned here in test
              scope and bumped by qits-maintenance when the consumer releases a changed pact. -->
@@ -282,6 +278,14 @@
             <dependency>
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-eventstream</artifactId>
+                <version>${qits.eventstream.version}</version>
+            </dependency>
+            <dependency>
+                <!-- The eventstream pact kit (qits-1163): contracts/consumer/EventstreamPactTest pacts
+                     what qits-eventstream asks qits-events on this service's behalf. Always the
+                     same version as qits-eventstream itself. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-eventstream-contracts</artifactId>
                 <version>${qits.eventstream.version}</version>
             </dependency>
             <dependency>

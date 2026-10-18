@@ -30,8 +30,8 @@ import org.junit.jupiter.api.Test;
  * <p>So a new client class, or a new public method on one, fails here until it has a row. A method
  * that makes no call is named in {@link #NO_CALL}, with its reason. Not here: the qits-eventstream
  * library's calls to qits-events, which live in the library rather than in this source tree — its
- * catch-up read is {@link EventsContract}, held to the durable listeners by {@code
- * EventsPactFileTest}; its outbox publish is {@link PendingContracts}. This service serves
+ * catch-up reads and its outbox publish are pacted from the library's own kit by {@link
+ * EventstreamPactTest} (qits-1163). This service serves
  * websockets (the runner and daemon sockets) but dials none, and probes no peer's health.
  */
 class ClientCallGuardTest {
