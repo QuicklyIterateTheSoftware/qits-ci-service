@@ -149,8 +149,8 @@
              consumer pacts against qits-projects, qits-githost, qits-artifacts and qits-idp are
              built from (contracts/consumer/). Bumped like every internal pin. -->
         <qits.projects-golden-masters.version>2026.1016.112931</qits.projects-golden-masters.version>
-        <qits.githost-golden-masters.version>2026.1018.135253</qits.githost-golden-masters.version>
-        <qits.artifacts-golden-masters.version>2026.1018.73956</qits.artifacts-golden-masters.version>
+        <qits.githost-golden-masters.version>2026.1018.160706</qits.githost-golden-masters.version>
+        <qits.artifacts-golden-masters.version>2026.1018.153037</qits.artifacts-golden-masters.version>
         <qits.idp-golden-masters.version>2026.1018.142635</qits.idp-golden-masters.version>
         <!-- The shared consumer-pact helper (golden-master reader, row builder, pact file) the rows
              above are written with. Released out of the qits-integrations-quarkus reactor. -->
@@ -160,6 +160,7 @@
              scope and bumped by qits-maintenance when the consumer releases a changed pact. -->
         <qits.landing-app-pacts-qits-ci-service.version>2026.1010.174213</qits.landing-app-pacts-qits-ci-service.version>
         <qits.ci-runner-daemon-pacts-qits-ci-service.version>2026.1010.143616</qits.ci-runner-daemon-pacts-qits-ci-service.version>
+        <qits.artifacts-service-pacts-qits-ci-service.version>2026.1018.153037</qits.artifacts-service-pacts-qits-ci-service.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

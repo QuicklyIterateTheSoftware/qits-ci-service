@@ -306,6 +306,12 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-artifacts-service-pacts-qits-ci-service</artifactId>
+            <version>${qits.artifacts-service-pacts-qits-ci-service.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- @TestSecurity + @OidcSecurity: installs the identity quarkus-oidc would have built
                  from a validated bearer, without a running qits-idp. What MachineGuardTest asserts
                  is this service's DECISION on a token's claims — signature and expiry checking is

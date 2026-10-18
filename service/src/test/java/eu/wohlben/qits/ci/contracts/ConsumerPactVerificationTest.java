@@ -30,10 +30,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * that jar as a test dependency, and qits-maintenance bumps the pin when the consumer releases a
  * changed pact. {@link ClasspathPactLoader} finds them all.
  *
- * <p><b>Two consumers pin a pact</b> (qits-1149): qits-landing-app ({@code
- * eu.wohlben.qits:qits-landing-app-pacts-qits-ci-service}) and qits-ci-runner-daemon ({@code
- * eu.wohlben.qits:qits-ci-runner-daemon-pacts-qits-ci-service}), both test-scoped in {@code
- * service/pom.xml}. {@link ClasspathPactLoader#REQUIRED} is true, so a classpath that lost them
+ * <p><b>Three consumers pin a pact</b> (qits-1149): qits-landing-app ({@code
+ * eu.wohlben.qits:qits-landing-app-pacts-qits-ci-service}), qits-ci-runner-daemon ({@code
+ * eu.wohlben.qits:qits-ci-runner-daemon-pacts-qits-ci-service}) and qits-artifacts-service ({@code
+ * eu.wohlben.qits:qits-artifacts-service-pacts-qits-ci-service}), all test-scoped in {@code
+ * service/pom.xml}. Every state {@link ProviderStates} answers has its {@code @State} method below,
+ * so a consumer pinned next needs no edit here unless it asks for a state nobody recorded. {@link ClasspathPactLoader#REQUIRED} is true, so a classpath that lost them
  * fails rather than verifying nothing. A new consumer's jar is pinned beside them, and any state its
  * pact names that {@link ProviderStates} does not answer is added there with its golden master.
  *
@@ -213,5 +215,50 @@ class ConsumerPactVerificationTest {
   @State(ProviderStates.A_RELEASE_RUN_WHOSE_GATE_RUN_HAS_REPORTS)
   Map<String, String> aReleaseRunWhoseGateRunHasReports() {
     return states.params(ProviderStates.A_RELEASE_RUN_WHOSE_GATE_RUN_HAS_REPORTS);
+  }
+
+  @State(ProviderStates.NO_RUN_WITH_THE_GIVEN_ID)
+  Map<String, String> noRunWithTheGivenId() {
+    return states.params(ProviderStates.NO_RUN_WITH_THE_GIVEN_ID);
+  }
+
+  @State(ProviderStates.A_FAILED_RUN_RETRIED_AUTOMATICALLY)
+  Map<String, String> aFailedRunRetriedAutomatically() {
+    return states.params(ProviderStates.A_FAILED_RUN_RETRIED_AUTOMATICALLY);
+  }
+
+  @State(ProviderStates.A_RELEASE_REQUEST_WITH_QA_RUNS_IN_FLIGHT)
+  Map<String, String> aReleaseRequestWithQaRunsInFlight() {
+    return states.params(ProviderStates.A_RELEASE_REQUEST_WITH_QA_RUNS_IN_FLIGHT);
+  }
+
+  @State(ProviderStates.NO_CANDIDATE_REPOSITORY_CAN_BE_READ)
+  Map<String, String> noCandidateRepositoryCanBeRead() {
+    return states.params(ProviderStates.NO_CANDIDATE_REPOSITORY_CAN_BE_READ);
+  }
+
+  @State(ProviderStates.A_REPOSITORY_WITH_NO_PIPELINE_FOR_THE_EVENT)
+  Map<String, String> aRepositoryWithNoPipelineForTheEvent() {
+    return states.params(ProviderStates.A_REPOSITORY_WITH_NO_PIPELINE_FOR_THE_EVENT);
+  }
+
+  @State(ProviderStates.A_REPOSITORY_A_MAINTENANCE_BUMP_TARGETS)
+  Map<String, String> aRepositoryAMaintenanceBumpTargets() {
+    return states.params(ProviderStates.A_REPOSITORY_A_MAINTENANCE_BUMP_TARGETS);
+  }
+
+  @State(ProviderStates.A_REPOSITORY_WITH_A_RELEASE_REQUEST_AUTOMATION_PLATFORM_PIPELINE)
+  Map<String, String> aRepositoryWithAReleaseRequestAutomationPlatformPipeline() {
+    return states.params(ProviderStates.A_REPOSITORY_WITH_A_RELEASE_REQUEST_AUTOMATION_PLATFORM_PIPELINE);
+  }
+
+  @State(ProviderStates.A_REPOSITORY_WITH_RUNS_TO_FIND_BY_THE_START_OF_AN_ID)
+  Map<String, String> aRepositoryWithRunsToFindByTheStartOfAnId() {
+    return states.params(ProviderStates.A_REPOSITORY_WITH_RUNS_TO_FIND_BY_THE_START_OF_AN_ID);
+  }
+
+  @State(ProviderStates.A_REPOSITORY_WITH_ITS_30_MOST_RECENT_RUNS)
+  Map<String, String> aRepositoryWithIts30MostRecentRuns() {
+    return states.params(ProviderStates.A_REPOSITORY_WITH_ITS_30_MOST_RECENT_RUNS);
   }
 }

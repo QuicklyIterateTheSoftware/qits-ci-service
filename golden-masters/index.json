@@ -594,6 +594,94 @@
       ]
     },
     {
+      "name": "a repository with a ReleaseRequestAutomation platform pipeline",
+      "slug": "a-repository-with-a-releaserequestautomation-platform-pipeline",
+      "params": {
+        "branch": "maintenance/automations/entity-diagram/contract",
+        "bumpId": "00000000-0000-4000-8000-000000000001",
+        "foldSha": "0000000000000000000000000000000000000009",
+        "kind": "entity-diagram",
+        "projectId": "00000000-0000-4000-8000-000000000002",
+        "repositoryId": "00000000-0000-4000-8000-000000000003",
+        "repositoryName": "contract-service",
+        "requestId": "00000000-0000-4000-8000-000000000004"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "triggerEvent",
+          "method": "POST",
+          "path": "/ci/api/events/trigger",
+          "body": {
+            "name": "ReleaseRequestAutomation",
+            "eventId": "{bumpId}",
+            "payload": {
+              "kind": "{kind}",
+              "repository": "{repositoryName}",
+              "requestId": "{requestId}",
+              "foldSha": "{foldSha}",
+              "baseRef": "main",
+              "branch": "{branch}",
+              "commitPaths": [
+                "docs/"
+              ]
+            }
+          },
+          "status": 200,
+          "file": "a-repository-with-a-releaserequestautomation-platform-pipeline/triggerEvent.json",
+          "frozen": {
+            "ids": [
+              "$.eventId",
+              "$.runIds[*]"
+            ],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a repository with its 30 most recent runs",
+      "slug": "a-repository-with-its-30-most-recent-runs",
+      "params": {
+        "failedRunId": "00000000-0000-4000-8000-000000000001",
+        "releaseRequestId": "00000000-0000-4000-8000-000000000002",
+        "repositoryId": "00000000-0000-4000-8000-000000000003",
+        "succeededRunId": "00000000-0000-4000-8000-000000000004"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listRuns",
+          "method": "GET",
+          "path": "/ci/api/runs",
+          "query": {
+            "limit": "30",
+            "repositoryId": "00000000-0000-4000-8000-000000000003"
+          },
+          "status": 200,
+          "file": "a-repository-with-its-30-most-recent-runs/listRuns.json",
+          "frozen": {
+            "ids": [
+              "$.runs[*].id",
+              "$.runs[*].repoId",
+              "$.runs[*].releaseRequestId"
+            ],
+            "instants": [
+              "$.runs[*].createdAt",
+              "$.runs[*].startedAt",
+              "$.runs[*].finishedAt"
+            ],
+            "strings": [
+              "$.runs[*].branch"
+            ],
+            "listFilteredTo": "$.runs"
+          }
+        }
+      ]
+    },
+    {
       "name": "a repository with no pipeline for the event",
       "slug": "a-repository-with-no-pipeline-for-the-event",
       "params": {
@@ -629,6 +717,45 @@
             "instants": [],
             "strings": [],
             "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a repository with runs to find by the start of an id",
+      "slug": "a-repository-with-runs-to-find-by-the-start-of-an-id",
+      "params": {
+        "failedRunId": "00000000-0000-4000-8000-000000000001",
+        "releaseRequestId": "00000000-0000-4000-8000-000000000002",
+        "repositoryId": "00000000-0000-4000-8000-000000000003",
+        "succeededRunId": "00000000-0000-4000-8000-000000000004"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listRuns",
+          "method": "GET",
+          "path": "/ci/api/runs",
+          "query": {
+            "repositoryId": "00000000-0000-4000-8000-000000000003"
+          },
+          "status": 200,
+          "file": "a-repository-with-runs-to-find-by-the-start-of-an-id/listRuns.json",
+          "frozen": {
+            "ids": [
+              "$.runs[*].id",
+              "$.runs[*].repoId",
+              "$.runs[*].releaseRequestId"
+            ],
+            "instants": [
+              "$.runs[*].createdAt",
+              "$.runs[*].startedAt",
+              "$.runs[*].finishedAt"
+            ],
+            "strings": [
+              "$.runs[*].branch"
+            ],
+            "listFilteredTo": "$.runs"
           }
         }
       ]
@@ -816,6 +943,7 @@
                 "delta": null
               }
             ],
+            "baseline": null,
             "payload": {
               "totals": {
                 "tests": 128,
@@ -1018,7 +1146,6 @@
           "path": "/ci/api/runners",
           "body": {
             "name": "localhost",
-            "description": "the workstation's own runner",
             "slots": 2
           },
           "status": 201,

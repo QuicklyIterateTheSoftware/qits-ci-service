@@ -125,6 +125,18 @@ class GoldenMasterRecordingTest {
       "group":"targeted","branch":"{branch}","baseRef":"main","changes":[]}}""";
 
   /**
+   * qits-maintenance's release-request automation trigger, as its {@code
+   * CiClient.triggerAutomation} sends it: the bump's row id as {@code eventId}, the kind, the
+   * repository by name, the request and its fold, the base ref and the automation's branch, and the
+   * paths its postlude may stage.
+   */
+  private static final String RELEASE_REQUEST_AUTOMATION =
+      """
+      {"name":"ReleaseRequestAutomation","eventId":"{bumpId}","payload":{"kind":"{kind}",\
+      "repository":"{repositoryName}","requestId":"{requestId}","foldSha":"{foldSha}",\
+      "baseRef":"main","branch":"{branch}","commitPaths":["docs/"]}}""";
+
+  /**
    * Every (state, operation) a consumer reads. The first three are qits-landing-app's release request
    * page; the rest are qits-1149's: qits-bootstrap-cli, qits-platform-access-cli,
    * qits-maintenance-service, qits-projects-service, qits-artifacts-service,
@@ -178,7 +190,7 @@ class GoldenMasterRecordingTest {
               """
               {"kindVersion":1,\
               "highlights":[{"severity":"bad","text":"1 test failed","metric":"tests.failed",\
-              "value":1.0,"delta":null}],\
+              "value":1.0,"delta":null}],"baseline":null,\
               "payload":{"totals":{"tests":128,"passed":127,"failed":1,"errored":0,"skipped":0,\
               "durationMs":44400}}}""",
               BEARER),
@@ -212,7 +224,7 @@ class GoldenMasterRecordingTest {
               "/ci/api/runners",
               201,
               """
-              {"name":"localhost","description":"the workstation's own runner","slots":2}"""),
+              {"name":"localhost","slots":2}"""),
           new Interaction(
               ProviderStates.AN_UNREGISTERED_RUNNER,
               "listRunners",
@@ -370,7 +382,31 @@ class GoldenMasterRecordingTest {
               "POST",
               "/ci/api/events/trigger",
               200,
-              MAINTENANCE_BUMP));
+              MAINTENANCE_BUMP),
+          // --- qits-1149's third round
+          write(
+              ProviderStates.A_REPOSITORY_WITH_A_RELEASE_REQUEST_AUTOMATION_PLATFORM_PIPELINE,
+              "triggerEvent",
+              "POST",
+              "/ci/api/events/trigger",
+              200,
+              RELEASE_REQUEST_AUTOMATION),
+          new Interaction(
+              ProviderStates.A_REPOSITORY_WITH_RUNS_TO_FIND_BY_THE_START_OF_AN_ID,
+              "listRuns",
+              "GET",
+              "/ci/api/runs",
+              Map.of("repositoryId", "{repositoryId}"),
+              200,
+              "$.runs"),
+          new Interaction(
+              ProviderStates.A_REPOSITORY_WITH_ITS_30_MOST_RECENT_RUNS,
+              "listRuns",
+              "GET",
+              "/ci/api/runs",
+              Map.of("repositoryId", "{repositoryId}", "limit", "30"),
+              200,
+              "$.runs"));
 
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final Pattern TEMPLATE_PARAM = Pattern.compile("\\{([A-Za-z][A-Za-z0-9]*)}");

@@ -150,6 +150,18 @@ public class ProviderStates {
   public static final String A_REPOSITORY_A_MAINTENANCE_BUMP_TARGETS =
       "a repository a maintenance bump targets";
 
+  public static final String A_REPOSITORY_WITH_A_RELEASE_REQUEST_AUTOMATION_PLATFORM_PIPELINE =
+      "a repository with a ReleaseRequestAutomation platform pipeline";
+
+  public static final String A_REPOSITORY_WITH_RUNS_TO_FIND_BY_THE_START_OF_AN_ID =
+      "a repository with runs to find by the start of an id";
+
+  public static final String A_REPOSITORY_WITH_ITS_30_MOST_RECENT_RUNS =
+      "a repository with its 30 most recent runs";
+
+  /** The automation kind the ReleaseRequestAutomation state names: a packaged kind file. */
+  static final String AUTOMATION_KIND = "entity-diagram";
+
   /** When the seeded runs were accepted: a fixed base, a minute apart per run. */
   private static final Instant SEEDED_AT = Instant.parse("2026-01-01T00:00:00Z");
 
@@ -271,6 +283,12 @@ public class ProviderStates {
     states.put(
         A_REPOSITORY_WITH_NO_PIPELINE_FOR_THE_EVENT, this::aRepositoryWithNoPipelineForTheEvent);
     states.put(A_REPOSITORY_A_MAINTENANCE_BUMP_TARGETS, this::aRepositoryAMaintenanceBumpTargets);
+    states.put(
+        A_REPOSITORY_WITH_A_RELEASE_REQUEST_AUTOMATION_PLATFORM_PIPELINE,
+        this::aRepositoryWithAReleaseRequestAutomationPlatformPipeline);
+    states.put(
+        A_REPOSITORY_WITH_RUNS_TO_FIND_BY_THE_START_OF_AN_ID, this::aRepositoryWithFinishedQaRuns);
+    states.put(A_REPOSITORY_WITH_ITS_30_MOST_RECENT_RUNS, this::aRepositoryWithFinishedQaRuns);
   }
 
   /** Every state name this provider answers for. */
@@ -961,6 +979,62 @@ public class ProviderStates {
     PlatformPipelineSwitch.set(triggers, true);
     platformPipelinesArmed = true;
     return setup;
+  }
+
+  /**
+   * The repository a {@code ReleaseRequestAutomation} names ({@code repositoryName}), readable on
+   * the git host, with the packaged platform pipelines armed: the {@link #AUTOMATION_KIND} kind
+   * file, composed by {@code CiAutomationComposer}, selects the payload's {@code kind} and records
+   * one run against the repository, which stays {@code QUEUED}. The payload's own rules ({@code
+   * branch} under {@code maintenance/automations/<kind>/}, a hex {@code foldSha}) are the composed
+   * prelude's, checked when the step runs, not at the trigger. {@code bumpId} is the event id, as
+   * qits-maintenance sends its {@code mt_bump} row id; the registry is staged as for the bump.
+   */
+  private Setup aRepositoryWithAReleaseRequestAutomationPlatformPipeline() {
+    Map<String, String> params =
+        ids(
+            Map.of(
+                "branch", "maintenance/automations/" + AUTOMATION_KIND + "/contract",
+                "foldSha", sha(9),
+                "kind", AUTOMATION_KIND,
+                "repositoryName", "contract-service"),
+            "bumpId",
+            "projectId",
+            "repositoryId",
+            "requestId");
+    seedReleasedRepository(params.get("repositoryId"));
+    StubGitHost.alias(
+        params.get("projectId"), params.get("repositoryName"), params.get("repositoryId"));
+    candidates.pin(
+        CiRepoRef.of(
+            params.get("repositoryId"), params.get("projectId"), params.get("repositoryName")));
+    seededRepos.add(params.get("repositoryId"));
+    StagedImagePins.install("sha256:" + "b".repeat(64));
+    PlatformPipelineSwitch.set(triggers, true);
+    platformPipelinesArmed = true;
+    return setup(params);
+  }
+
+  /**
+   * One repository with two finished QA runs of one release request, newest first: the second
+   * succeeded, the first failed. Every field a run row of a listing shows is set — the request by
+   * id and by its logical id, the commit, all three instants. What a listing with no {@code limit}
+   * answers (a lookup of a run by the start of its id reads every run of the repository) and what
+   * one with {@code limit=30} answers (fewer runs than the limit, so all of them).
+   */
+  private Setup aRepositoryWithFinishedQaRuns() {
+    Map<String, String> params =
+        ids(Map.of(), "failedRunId", "releaseRequestId", "repositoryId", "succeededRunId");
+    String repo = params.get("repositoryId");
+    String request = params.get("releaseRequestId");
+    CiRun failed = run(params.get("failedRunId"), repo, "release/" + request, 1, CiRunStatus.FAILED);
+    qa(failed, request);
+    CiRun succeeded =
+        run(params.get("succeededRunId"), repo, "release/" + request, 2, CiRunStatus.SUCCESS);
+    qa(succeeded, request);
+    List.of(failed, succeeded).forEach(r -> r.releaseRequestQualifiedId = "qits-ci-service-rr-5");
+    persist(List.of(failed, succeeded), List.of());
+    return setup(params);
   }
 
   private Setup seededBumpTarget() {
