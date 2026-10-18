@@ -1143,9 +1143,20 @@ public class ProviderStates {
     if (cwd != null) {
       pb.directory(cwd.toFile());
     }
-    // A fixed instant for author and committer, so the commit — and so its sha — is reproducible.
-    pb.environment().put("GIT_AUTHOR_DATE", "2026-01-01T00:00:00Z");
-    pb.environment().put("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z");
+    // A fixed instant and identity for author and committer, so the commit — and so its sha — is
+    // reproducible. The identity is set in the environment too, because an ambient GIT_AUTHOR_* /
+    // GIT_COMMITTER_* (an agent container carries them) outranks `-c user.*` and moved the recorded
+    // sha between a workstation and a CI step; no global or system config is read either.
+    Map<String, String> env = pb.environment();
+    env.keySet().removeIf(name -> name.startsWith("GIT_"));
+    env.put("GIT_AUTHOR_NAME", "contract");
+    env.put("GIT_AUTHOR_EMAIL", "ci@contract.test");
+    env.put("GIT_COMMITTER_NAME", "contract");
+    env.put("GIT_COMMITTER_EMAIL", "ci@contract.test");
+    env.put("GIT_AUTHOR_DATE", "2026-01-01T00:00:00Z");
+    env.put("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z");
+    env.put("GIT_CONFIG_GLOBAL", "/dev/null");
+    env.put("GIT_CONFIG_NOSYSTEM", "1");
     Process p = pb.start();
     String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
     try {

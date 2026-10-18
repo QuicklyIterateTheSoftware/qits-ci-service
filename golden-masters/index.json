@@ -556,7 +556,7 @@
       "name": "a repository whose release recipe selects SCMRelease",
       "slug": "a-repository-whose-release-recipe-selects-scmrelease",
       "params": {
-        "commitSha": "23e932a573a8b653a118200c842672f9be0dcb5a",
+        "commitSha": "6b93a3149f666c1bc4eaba652b4b264f46a80d8f",
         "projectId": "00000000-0000-4000-8000-000000000001",
         "repositoryId": "00000000-0000-4000-8000-000000000002",
         "repositoryName": "contract-service",
