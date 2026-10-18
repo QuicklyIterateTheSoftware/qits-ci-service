@@ -240,7 +240,7 @@
         </dependency>
         <dependency>
             <!-- contracts/ConsumerPactVerificationTest: verifies the consumer pacts this provider
-                 pins (none yet; the first is qits-landing-app's). -->
+                 pins (the two jars below). -->
             <groupId>au.com.dius.pact.provider</groupId>
             <artifactId>junit5</artifactId>
             <version>${pact.version}</version>
@@ -253,6 +253,56 @@
                  brings pact-jvm's consumer and qits-events' golden masters with it. -->
             <groupId>${project.groupId}</groupId>
             <artifactId>qits-eventstream-contracts</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- qits-projects' recorded answers, read by contracts/consumer/ through qits-pact-consumer. -->
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-projects-golden-masters</artifactId>
+            <version>${qits.projects-golden-masters.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- qits-githost's recorded answers, read by contracts/consumer/ through qits-pact-consumer. -->
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-githost-golden-masters</artifactId>
+            <version>${qits.githost-golden-masters.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- qits-artifacts' recorded answers, read by contracts/consumer/ through qits-pact-consumer. -->
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-artifacts-golden-masters</artifactId>
+            <version>${qits.artifacts-golden-masters.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- qits-idp's recorded answers, read by contracts/consumer/ through qits-pact-consumer. -->
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-idp-golden-masters</artifactId>
+            <version>${qits.idp-golden-masters.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- The shared consumer-pact helper: GoldenMasters, GoldenInteraction, ConsumerPact. -->
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-pact-consumer</artifactId>
+            <version>${qits.pact-consumer.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- The consumer pacts ConsumerPactVerificationTest verifies: each jar carries one
+                 `pacts/<consumer>_qits-ci-service.json`, and the test reads them off the classpath.
+                 The pinned jar IS the source of the pact; nothing is copied into this tree. -->
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-landing-app-pacts-qits-ci-service</artifactId>
+            <version>${qits.landing-app-pacts-qits-ci-service.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-ci-runner-daemon-pacts-qits-ci-service</artifactId>
+            <version>${qits.ci-runner-daemon-pacts-qits-ci-service.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>

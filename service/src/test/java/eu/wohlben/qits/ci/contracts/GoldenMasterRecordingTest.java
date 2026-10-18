@@ -116,6 +116,15 @@ class GoldenMasterRecordingTest {
   private static final String RETRIES = ProviderStates.A_FAILED_RUN_THAT_RETRIES_ANOTHER;
 
   /**
+   * qits-maintenance's targeted bump trigger, as its {@code CiClient.trigger} sends it: the bump's
+   * row id as {@code eventId} (the dedupe key), the repository by name, no changes.
+   */
+  private static final String MAINTENANCE_BUMP =
+      """
+      {"name":"MaintenanceBump","eventId":"{eventId}","payload":{"repository":"{repositoryName}",\
+      "group":"targeted","branch":"{branch}","baseRef":"main","changes":[]}}""";
+
+  /**
    * Every (state, operation) a consumer reads. The first three are qits-landing-app's release request
    * page; the rest are qits-1149's: qits-bootstrap-cli, qits-platform-access-cli,
    * qits-maintenance-service, qits-projects-service, qits-artifacts-service,
@@ -305,7 +314,63 @@ class GoldenMasterRecordingTest {
           read(
               ProviderStates.A_RELEASE_RUN_WHOSE_GATE_RUN_HAS_REPORTS,
               "listRunGateReports",
-              "/ci/api/runs/{runId}/gate/reports"));
+              "/ci/api/runs/{runId}/gate/reports"),
+          // --- qits-1149's second round: what the callers on that ticket read and had no state for
+          new Interaction(
+              ProviderStates.NO_RUN_WITH_THE_GIVEN_ID,
+              "getRun",
+              "GET",
+              "/ci/api/runs/{runId}",
+              Map.of(),
+              404,
+              null),
+          write(
+              ProviderStates.NO_RUN_WITH_THE_GIVEN_ID,
+              "retryRun",
+              "POST",
+              "/ci/api/runs/{runId}/retry",
+              404,
+              null),
+          write(ProviderStates.A_RUNNING_RUN, "retryRun", "POST", "/ci/api/runs/{runId}/retry", 409, null),
+          new Interaction(
+              ProviderStates.A_QUARANTINED_RUNNER,
+              "listRunners",
+              "GET",
+              "/ci/api/runners",
+              Map.of(),
+              200,
+              "$.runners"),
+          read(ProviderStates.A_FAILED_RUN_RETRIED_AUTOMATICALLY, "getRun", "/ci/api/runs/{runId}"),
+          write(
+              ProviderStates.A_RELEASE_REQUEST_WITH_QA_RUNS_IN_FLIGHT,
+              "cancelReleaseRequestRuns",
+              "POST",
+              "/ci/api/runs/cancellations",
+              202,
+              """
+              {"repoId":"{repositoryId}","releaseRequestId":"{releaseRequestId}",\
+              "phase":"RELEASE_REQUEST"}"""),
+          write(
+              ProviderStates.NO_CANDIDATE_REPOSITORY_CAN_BE_READ,
+              "triggerEvent",
+              "POST",
+              "/ci/api/events/trigger",
+              503,
+              MAINTENANCE_BUMP),
+          write(
+              ProviderStates.A_REPOSITORY_WITH_NO_PIPELINE_FOR_THE_EVENT,
+              "triggerEvent",
+              "POST",
+              "/ci/api/events/trigger",
+              200,
+              MAINTENANCE_BUMP),
+          write(
+              ProviderStates.A_REPOSITORY_A_MAINTENANCE_BUMP_TARGETS,
+              "triggerEvent",
+              "POST",
+              "/ci/api/events/trigger",
+              200,
+              MAINTENANCE_BUMP));
 
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final Pattern TEMPLATE_PARAM = Pattern.compile("\\{([A-Za-z][A-Za-z0-9]*)}");

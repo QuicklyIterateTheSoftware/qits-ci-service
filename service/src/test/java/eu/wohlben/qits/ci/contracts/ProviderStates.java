@@ -3,7 +3,9 @@ package eu.wohlben.qits.ci.contracts;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.ci.control.CiDaemonPins;
+import eu.wohlben.qits.ci.control.CiEventTriggerService;
 import eu.wohlben.qits.ci.control.CiRepoRef;
+import eu.wohlben.qits.ci.control.PlatformPipelineSwitch;
 import eu.wohlben.qits.ci.control.SuiteRunnerPresence;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import eu.wohlben.qits.ci.entity.CiReleaseAnnouncement;
@@ -30,6 +32,7 @@ import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
 import eu.wohlben.qits.ci.persistence.CiScmReleaseRepository;
 import eu.wohlben.qits.ci.persistence.CiStepRepository;
 import eu.wohlben.qits.ci.runnerhost.CiRunnerPins;
+import eu.wohlben.qits.ci.runnerhost.StagedImagePins;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusMock;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -130,6 +133,23 @@ public class ProviderStates {
   public static final String A_RELEASE_RUN_WHOSE_GATE_RUN_HAS_REPORTS =
       "a release run whose gate run has reports";
 
+  public static final String NO_RUN_WITH_THE_GIVEN_ID = "no run with the given id";
+
+  public static final String A_FAILED_RUN_RETRIED_AUTOMATICALLY =
+      "a failed run retried automatically";
+
+  public static final String A_RELEASE_REQUEST_WITH_QA_RUNS_IN_FLIGHT =
+      "a release request with QA runs in flight";
+
+  public static final String NO_CANDIDATE_REPOSITORY_CAN_BE_READ =
+      "no candidate repository can be read";
+
+  public static final String A_REPOSITORY_WITH_NO_PIPELINE_FOR_THE_EVENT =
+      "a repository with no pipeline for the event";
+
+  public static final String A_REPOSITORY_A_MAINTENANCE_BUMP_TARGETS =
+      "a repository a maintenance bump targets";
+
   /** When the seeded runs were accepted: a fixed base, a minute apart per run. */
   private static final Instant SEEDED_AT = Instant.parse("2026-01-01T00:00:00Z");
 
@@ -194,6 +214,9 @@ public class ProviderStates {
 
   @Inject ObjectMapper json;
 
+  /** Whose platform pipelines the maintenance-bump state arms, and {@link #cleanUp} disarms. */
+  @Inject CiEventTriggerService triggers;
+
   private final Map<String, Supplier<Setup>> states = new LinkedHashMap<>();
 
   /** Run ids the states wrote, removed again by {@link #cleanUp()} with their steps and reports. */
@@ -207,6 +230,9 @@ public class ProviderStates {
 
   /** Whether a runner state ran: every runner named {@link #RUNNER_NAME} goes, and its runs. */
   private boolean seededRunners;
+
+  /** Whether a state armed the platform pipelines, disarmed again by {@link #cleanUp()}. */
+  private boolean platformPipelinesArmed;
 
   /** The idp a runner state stood up, closed by {@link #cleanUp()}. */
   private StubIdp idp;
@@ -238,6 +264,13 @@ public class ProviderStates {
         A_REPOSITORY_THAT_DECLARES_A_RELEASE_PHASE, this::aRepositoryThatDeclaresAReleasePhase);
     states.put(A_COMMIT_WITH_A_RUN_IN_FLIGHT, this::aCommitWithARunInFlight);
     states.put(A_RELEASE_RUN_WHOSE_GATE_RUN_HAS_REPORTS, this::aReleaseRunWhoseGateRunHasReports);
+    states.put(NO_RUN_WITH_THE_GIVEN_ID, this::noRunWithTheGivenId);
+    states.put(A_FAILED_RUN_RETRIED_AUTOMATICALLY, this::aFailedRunRetriedAutomatically);
+    states.put(A_RELEASE_REQUEST_WITH_QA_RUNS_IN_FLIGHT, this::aReleaseRequestWithRunsInFlight);
+    states.put(NO_CANDIDATE_REPOSITORY_CAN_BE_READ, this::noCandidateRepositoryCanBeRead);
+    states.put(
+        A_REPOSITORY_WITH_NO_PIPELINE_FOR_THE_EVENT, this::aRepositoryWithNoPipelineForTheEvent);
+    states.put(A_REPOSITORY_A_MAINTENANCE_BUMP_TARGETS, this::aRepositoryAMaintenanceBumpTargets);
   }
 
   /** Every state name this provider answers for. */
@@ -277,6 +310,10 @@ public class ProviderStates {
     candidates.unpin();
     bearers.reset();
     gitHostListing.set();
+    if (platformPipelinesArmed) {
+      PlatformPipelineSwitch.set(triggers, false);
+      platformPipelinesArmed = false;
+    }
     if (idp != null) {
       idp.close();
       idp = null;
@@ -842,6 +879,104 @@ public class ProviderStates {
                 null,
                 List.of(highlight("info", "coverage 81.3%", "coverage.total", 81.3, null))));
     QuarkusTransaction.requiringNew().run(() -> seeded.forEach(reports::persist));
+    return setup(params);
+  }
+
+  /** No run under {@code runId}: a read and a retry of it answer 404. */
+  private Setup noRunWithTheGivenId() {
+    return setup(ids(Map.of(), "runId"));
+  }
+
+  /**
+   * A failed run ({@code runId}) whose step 0 lost its runner, and its automatic retry ({@code
+   * retryRunId}, {@code QUEUED}): the original's step output ends with the line qits-ci appends
+   * once the retry exists, {@code retried automatically as run <retryRunId>} — what a consumer reads
+   * to find the retry from the original's side.
+   */
+  private Setup aFailedRunRetriedAutomatically() {
+    Map<String, String> params = ids(Map.of(), "repositoryId", "retryRunId", "runId");
+    String repo = params.get("repositoryId");
+    CiRun original = run(params.get("runId"), repo, "main", 1, CiRunStatus.FAILED);
+    eventPipeline(original);
+    CiRun retry = run(params.get("retryRunId"), repo, "main", 2, CiRunStatus.QUEUED);
+    eventPipeline(retry);
+    retry.retryOfRunId = original.id;
+    retry.retryReason = "the runner lost its connection during step 0";
+    retry.startedAt = null;
+    retry.finishedAt = null;
+    persist(
+        List.of(original, retry),
+        List.of(
+            step(
+                original,
+                0,
+                CiStepStatus.FAILED,
+                1,
+                "Cloning into 'contract-service'...\nthe runner went away\nretried automatically as"
+                    + " run "
+                    + retry.id
+                    + "\n")));
+    return setup(params);
+  }
+
+  /**
+   * One candidate repository the git host does not hold: the trigger reads nothing, so it answers
+   * 503 — "could not evaluate yet" — rather than a verdict.
+   */
+  private Setup noCandidateRepositoryCanBeRead() {
+    Map<String, String> params =
+        ids(
+            Map.of("branch", "maintenance/contract-bump", "repositoryName", "contract-service"),
+            "eventId",
+            "projectId",
+            "repositoryId");
+    try {
+      deleteRecursively(StubGitHost.ROOT.resolve("git").resolve(params.get("repositoryId")));
+    } catch (IOException e) {
+      throw new IllegalStateException("could not clear the contract repository", e);
+    }
+    candidates.pin(
+        CiRepoRef.of(
+            params.get("repositoryId"), params.get("projectId"), params.get("repositoryName")));
+    return setup(params);
+  }
+
+  /**
+   * One readable candidate repository that declares no trigger for the event, and no platform
+   * pipeline armed: the trigger read it and recorded nothing — 200 with an empty {@code runIds}.
+   */
+  private Setup aRepositoryWithNoPipelineForTheEvent() {
+    return seededBumpTarget();
+  }
+
+  /**
+   * The repository a {@code MaintenanceBump} names ({@code repositoryName}), readable on the git
+   * host, with the packaged platform pipelines armed: {@code platform-pipelines/maintenance-bump.yml}
+   * records one run against it, which stays {@code QUEUED}. Its step image is the platform's, so
+   * the registry is staged ({@link StagedImagePins}) to answer a digest for it.
+   */
+  private Setup aRepositoryAMaintenanceBumpTargets() {
+    Setup setup = seededBumpTarget();
+    StagedImagePins.install("sha256:" + "b".repeat(64));
+    PlatformPipelineSwitch.set(triggers, true);
+    platformPipelinesArmed = true;
+    return setup;
+  }
+
+  private Setup seededBumpTarget() {
+    Map<String, String> params =
+        ids(
+            Map.of("branch", "maintenance/contract-bump", "repositoryName", "contract-service"),
+            "eventId",
+            "projectId",
+            "repositoryId");
+    seedReleasedRepository(params.get("repositoryId"));
+    StubGitHost.alias(
+        params.get("projectId"), params.get("repositoryName"), params.get("repositoryId"));
+    candidates.pin(
+        CiRepoRef.of(
+            params.get("repositoryId"), params.get("projectId"), params.get("repositoryName")));
+    seededRepos.add(params.get("repositoryId"));
     return setup(params);
   }
 

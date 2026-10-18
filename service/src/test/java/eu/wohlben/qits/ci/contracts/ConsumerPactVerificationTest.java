@@ -8,7 +8,6 @@ import au.com.dius.pact.core.model.ProviderState;
 import au.com.dius.pact.provider.junit5.HttpTestTarget;
 import au.com.dius.pact.provider.junit5.PactVerificationContext;
 import au.com.dius.pact.provider.junit5.PactVerificationInvocationContextProvider;
-import au.com.dius.pact.provider.junitsupport.IgnoreNoPactsToVerify;
 import au.com.dius.pact.provider.junitsupport.Provider;
 import au.com.dius.pact.provider.junitsupport.State;
 import au.com.dius.pact.provider.junitsupport.loader.PactSource;
@@ -31,10 +30,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * that jar as a test dependency, and qits-maintenance bumps the pin when the consumer releases a
  * changed pact. {@link ClasspathPactLoader} finds them all.
  *
- * <p><b>No consumer pins a pact yet</b>, so {@code @IgnoreNoPactsToVerify} lets an empty classpath
- * pass and the loader logs that nothing was verified. The first is qits-landing-app's ({@code
- * eu.wohlben.qits:qits-landing-app-pacts-qits-ci-service}). When its jar is pinned in {@code
- * service/pom.xml}, drop the annotation and set {@link ClasspathPactLoader#REQUIRED} to true.
+ * <p><b>Two consumers pin a pact</b> (qits-1149): qits-landing-app ({@code
+ * eu.wohlben.qits:qits-landing-app-pacts-qits-ci-service}) and qits-ci-runner-daemon ({@code
+ * eu.wohlben.qits:qits-ci-runner-daemon-pacts-qits-ci-service}), both test-scoped in {@code
+ * service/pom.xml}. {@link ClasspathPactLoader#REQUIRED} is true, so a classpath that lost them
+ * fails rather than verifying nothing. A new consumer's jar is pinned beside them, and any state its
+ * pact names that {@link ProviderStates} does not answer is added there with its golden master.
  *
  * <p>Each interaction runs against this {@code @QuarkusTest} application over real HTTP,
  * unauthenticated — the {@code %test} dev user, exactly as {@link GoldenMasterRecordingTest}'s
@@ -50,7 +51,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 @QuarkusTest
 @Provider(ConsumerPactVerificationTest.PROVIDER)
 @PactSource(ClasspathPactLoader.class)
-@IgnoreNoPactsToVerify
 class ConsumerPactVerificationTest {
 
   /**
@@ -71,9 +71,6 @@ class ConsumerPactVerificationTest {
 
   @BeforeEach
   void target(PactVerificationContext context, Pact pact, Interaction interaction) {
-    if (context == null) {
-      return; // no pact to verify: @IgnoreNoPactsToVerify's single empty run
-    }
     String consumer = pact.getConsumer().getName();
     for (ProviderState state : interaction.getProviderStates()) {
       if (!states.names().contains(state.getName())) {
@@ -109,9 +106,6 @@ class ConsumerPactVerificationTest {
   @TestTemplate
   @ExtendWith(PactVerificationInvocationContextProvider.class)
   void consumerPactHolds(PactVerificationContext context) {
-    if (context == null) {
-      return;
-    }
     try {
       context.verifyInteraction();
     } finally {
