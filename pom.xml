@@ -84,7 +84,7 @@
              replaces this line through the ordinary bump. Do not ship a release request of this
              repository with the snapshot still in it. -->
         <qits.ci-runner-protocol.version>2026.1018.94143</qits.ci-runner-protocol.version>
-        <qits.eventstream.version>2026.1018.151251</qits.eventstream.version>
+        <qits.eventstream.version>2026.1018.170159</qits.eventstream.version>
         <!-- qits-githost's event vocabulary: the SCM records a push announces. qits-ci consumes
              SCMPublishCommit and nothing else, but the jar is the whole vocabulary — it is a data
              module with one dependency (qits-eventstream) and no container.
@@ -94,7 +94,7 @@
              snapshot nobody published"; qits-githost released the jar on 2026-08-12 and this is that
              release. What kept the snapshot working until then was the bootstrap seed-publishing it
              into the registry, which is not a release and does not survive one being re-seeded. -->
-        <qits.githost-events.version>2026.1015.22957</qits.githost-events.version>
+        <qits.githost-events.version>2026.1018.160706</qits.githost-events.version>
         <qits.auth-core.version>2026.1012.173247</qits.auth-core.version>
         <!-- qits-http-core's QitsHttpClients: every hand-rolled java.net.http client under
              service/…/{githost,projects,registry,idp}/ is wrapped through it, so the CLIENT span and
@@ -151,10 +151,10 @@
         <qits.projects-golden-masters.version>2026.1016.112931</qits.projects-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1018.160706</qits.githost-golden-masters.version>
         <qits.artifacts-golden-masters.version>2026.1018.153037</qits.artifacts-golden-masters.version>
-        <qits.idp-golden-masters.version>2026.1018.142635</qits.idp-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1018.165736</qits.idp-golden-masters.version>
         <!-- The shared consumer-pact helper (golden-master reader, row builder, pact file) the rows
              above are written with. Released out of the qits-integrations-quarkus reactor. -->
-        <qits.pact-consumer.version>2026.1018.142240</qits.pact-consumer.version>
+        <qits.pact-consumer.version>2026.1018.164604</qits.pact-consumer.version>
         <!-- The consumer pacts contracts/ConsumerPactVerificationTest verifies (qits-1149): each
              consumer publishes `pacts/<consumer>_qits-ci-service.json` as a jar, pinned here in test
              scope and bumped by qits-maintenance when the consumer releases a changed pact. -->
