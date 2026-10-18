@@ -6,9 +6,11 @@ artifacts:
 # `eu.wohlben.qits:qits-ci-golden-masters` and `@qits/ci-golden-masters`, each published only when
 # its content changed, plus the `@contracts/qits-ci` docs bundle. The composed postlude publishes
 # them after the release step below. `contracts/GoldenMasterRecordingTest` records them.
-# THE PACTS (qits-1149): qits-ci's own consumer pact against qits-events (the eventstream library's
-# catch-up reads), flat in `pacts/` as `qits-ci-service_qits-events-service.json`. The platform packs
-# it as eu.wohlben.qits:qits-ci-service-pacts-qits-events-service, published only when it changed.
+# THE PACTS (qits-1149, qits-1163): what qits-eventstream asks qits-events on qits-ci's behalf (the
+# durable listeners' catch-up reads and the outbox publish), flat in `pacts/` as
+# `qits-ci-service_qits-eventstream-javalib_qits-events-service.json`, written by
+# contracts/consumer/EventstreamPactTest from the library's kit. The platform packs it for
+# qits-events-service, published only when it changed.
 contracts:
   application: qits-ci
   golden-masters: { from: golden-masters/, packages: [maven, npm] }

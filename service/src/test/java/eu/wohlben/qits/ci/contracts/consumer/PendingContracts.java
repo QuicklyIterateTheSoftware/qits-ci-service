@@ -8,8 +8,9 @@ import java.util.List;
  * interaction as it will be written — provider, operation, request, the body paths qits-ci reads
  * (empty: status only), the trigger, and the provider state it needs. {@code
  * PendingContractsTest} reports every row as a skipped test naming that state, so the gap shows in
- * every run. When a provider publishes the state, move the row into a real contract table (like
- * {@link EventsContract}) and add the provider's pact to {@code release.yml}'s {@code contracts:}.
+ * every run. When a provider publishes the state, move the row into a real consumer pact test and
+ * add the provider's pact to {@code release.yml}'s {@code contracts:}. (The events publish row went
+ * to qits-eventstream's own kit, {@code EventstreamPactTest}, with qits-1163.)
  *
  * <p>A provider {@code operationId} in angle brackets does not exist yet: the provider's route
  * carries none, so the name is this consumer's proposal.
@@ -32,25 +33,12 @@ final class PendingContracts {
     }
   }
 
-  private static final String EVENTS = "qits-events-service";
   private static final String PROJECTS = "qits-projects-service";
   private static final String GITHOST = "qits-githost-service";
   private static final String IDP = "qits-idp-service";
 
   static final List<Pending> ROWS =
       List.of(
-          // --- qits-events, through the qits-eventstream library's outbox ----------------------
-          new Pending(
-              EVENTS,
-              "<publishEvent>",
-              "PUT",
-              "/events/api/events/{id}",
-              "the event envelope: name, occurredAt, payload, description, parentId, environment",
-              List.of(),
-              Trigger.schedule("OutboxSweeper (BuildAnnouncer, SoftwareReleaseAnnouncer,"
-                  + " RunnerLifecycleAnnouncer)"),
-              "no event with the given id",
-              "PUT of a new event id answering 201 (or 200); qits-ci reads the status only"),
           // --- qits-projects --------------------------------------------------------------------
           new Pending(
               PROJECTS,

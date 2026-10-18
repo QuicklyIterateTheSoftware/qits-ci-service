@@ -247,18 +247,12 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <!-- The consumer half (qits-1149): contracts/consumer/ writes this repository's own
-                 pact against qits-events-service, pacts/qits-ci-service_qits-events-service.json. -->
-            <groupId>au.com.dius.pact.consumer</groupId>
-            <artifactId>junit5</artifactId>
-            <version>${pact.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <!-- qits-events' recorded answers, read by contracts/consumer/EventsGoldenMasters. -->
-            <groupId>eu.wohlben.qits</groupId>
-            <artifactId>qits-events-golden-masters</artifactId>
-            <version>${qits.events-golden-masters.version}</version>
+            <!-- The consumer half (qits-1163): contracts/consumer/EventstreamPactTest writes this
+                 repository's pact of what qits-eventstream asks qits-events for it,
+                 pacts/qits-ci-service_qits-eventstream-javalib_qits-events-service.json. The kit
+                 brings pact-jvm's consumer and qits-events' golden masters with it. -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-eventstream-contracts</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

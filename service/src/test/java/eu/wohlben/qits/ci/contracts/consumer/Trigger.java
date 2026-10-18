@@ -13,6 +13,9 @@ import java.util.Objects;
  */
 public record Trigger(String kind, String app, String key, String value) {
 
+  /** This repository, as every interaction's {@code qits-trigger} names it. */
+  public static final String CONSUMER = "qits-ci-service";
+
   public Trigger {
     Objects.requireNonNull(kind, "kind");
     Objects.requireNonNull(app, "app");
@@ -21,15 +24,15 @@ public record Trigger(String kind, String app, String key, String value) {
   }
 
   public static Trigger operation(String operationId) {
-    return new Trigger("operation", EventsGoldenMasters.CONSUMER, "operationId", operationId);
+    return new Trigger("operation", CONSUMER, "operationId", operationId);
   }
 
   public static Trigger event(String eventType) {
-    return new Trigger("event", EventsGoldenMasters.CONSUMER, "event", eventType);
+    return new Trigger("event", CONSUMER, "event", eventType);
   }
 
   public static Trigger schedule(String schedule) {
-    return new Trigger("schedule", EventsGoldenMasters.CONSUMER, "schedule", schedule);
+    return new Trigger("schedule", CONSUMER, "schedule", schedule);
   }
 
   /** The {@code qits-trigger} group, all values strings, in a fixed key order. */
@@ -39,10 +42,5 @@ public record Trigger(String kind, String app, String key, String value) {
     ref.put("app", app);
     ref.put(key, value);
     return ref;
-  }
-
-  /** An interaction's description: the trigger first, so (description, state) stays unique. */
-  public static String description(String operationId, Trigger trigger) {
-    return trigger.value() + ": " + operationId;
   }
 }
