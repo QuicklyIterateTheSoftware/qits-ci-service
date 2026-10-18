@@ -277,6 +277,233 @@
         "references": {
           "qits-call": {
             "app": "qits-githost-service",
+            "operationId": "getBlob"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "event": "* (CiTriggerListingCache: a declared ci-event trigger file)",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "* (CiTriggerListingCache: a declared ci-event trigger file): getBlob",
+      "key": "8a5f12c5",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a repository declaring an event trigger",
+          "params": {
+            "body": "event: BuildSuccessful\nwhen:\n  - repoId: { exact: contract-upstream }\n    branch: { exact: main }\nsteps:\n  - image: qits/build-images/java-base:latest\n    script: ./bump.sh\n",
+            "directory": ".config/qits",
+            "path": ".config/qits/ci-event-upstream.yml",
+            "projectId": "00000000-0000-4000-8000-000000000001",
+            "repoName": "contract-service",
+            "repositoryId": "00000000-0000-4000-8000-000000000002",
+            "rev": "main",
+            "sha": "0000000000000000000000000000000000000001"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/git/${projectId}/${repoName}/blob/${sha}/${path}",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/git/00000000-0000-4000-8000-000000000001/contract-service/blob/0000000000000000000000000000000000000001/.config/qits/ci-event-upstream.yml"
+      },
+      "response": {
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-githost-service",
+            "operationId": "getRootTree"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "event": "* (CiTriggerListingCache: which triggers does the repository declare?)",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "* (CiTriggerListingCache: which triggers does the repository declare?): getRootTree",
+      "key": "de294ece",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a repository without a config directory",
+          "params": {
+            "directory": ".config/qits",
+            "projectId": "00000000-0000-4000-8000-000000000001",
+            "repoName": "contract-service",
+            "repositoryId": "00000000-0000-4000-8000-000000000002",
+            "rev": "main",
+            "sha": "0000000000000000000000000000000000000001"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/git/${projectId}/${repoName}/tree/${rev}",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/git/00000000-0000-4000-8000-000000000001/contract-service/tree/main"
+      },
+      "response": {
+        "headers": {
+          "Git-Commit-Sha": [
+            "0000000000000000000000000000000000000001"
+          ]
+        },
+        "matchingRules": {
+          "header": {
+            "Git-Commit-Sha": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": ".+"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-githost-service",
+            "operationId": "getTree"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "event": "* (CiTriggerListingCache: which triggers does the repository declare?)",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "* (CiTriggerListingCache: which triggers does the repository declare?): getTree",
+      "key": "e6bf1a27",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a repository declaring an event trigger",
+          "params": {
+            "body": "event: BuildSuccessful\nwhen:\n  - repoId: { exact: contract-upstream }\n    branch: { exact: main }\nsteps:\n  - image: qits/build-images/java-base:latest\n    script: ./bump.sh\n",
+            "directory": ".config/qits",
+            "path": ".config/qits/ci-event-upstream.yml",
+            "projectId": "00000000-0000-4000-8000-000000000001",
+            "repoName": "contract-service",
+            "repositoryId": "00000000-0000-4000-8000-000000000002",
+            "rev": "main",
+            "sha": "0000000000000000000000000000000000000001"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/git/${projectId}/${repoName}/tree/${rev}/${directory}",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/git/00000000-0000-4000-8000-000000000001/contract-service/tree/main/.config/qits"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "entries": [
+              {
+                "name": "ci-event-upstream.yml"
+              },
+              {
+                "name": "ci-event-upstream.yml"
+              },
+              {
+                "name": "ci-event-upstream.yml"
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ],
+          "Git-Commit-Sha": [
+            "0000000000000000000000000000000000000001"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.entries": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "max": 3,
+                  "min": 3
+                }
+              ]
+            },
+            "$.entries[*].name": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            },
+            "Git-Commit-Sha": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": ".+"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-githost-service",
             "operationId": "getTree"
           },
           "qits-trigger": {
@@ -380,6 +607,52 @@
           }
         },
         "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-githost-service",
+            "operationId": "getTree"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "event": "* (CiTriggerListingCache: which triggers does the repository declare?)",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "* (CiTriggerListingCache: which triggers does the repository declare?): getTree",
+      "key": "f6be51b8",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a repository without a config directory",
+          "params": {
+            "directory": ".config/qits",
+            "projectId": "00000000-0000-4000-8000-000000000001",
+            "repoName": "contract-service",
+            "repositoryId": "00000000-0000-4000-8000-000000000002",
+            "rev": "main",
+            "sha": "0000000000000000000000000000000000000001"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/git/${projectId}/${repoName}/tree/${rev}/${directory}",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/git/00000000-0000-4000-8000-000000000001/contract-service/tree/main/.config/qits"
+      },
+      "response": {
+        "status": 404
       },
       "type": "Synchronous/HTTP"
     },

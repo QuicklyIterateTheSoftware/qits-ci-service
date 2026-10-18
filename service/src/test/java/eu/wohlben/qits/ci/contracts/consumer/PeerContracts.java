@@ -255,9 +255,9 @@ final class PeerContracts {
                         .status())));
     Trigger eventTriggers =
         Trigger.event("* (CiTriggerListingCache: which triggers does the repository declare?)");
-    // PENDING until the next qits-githost pin (rr-81 records both states): the listing of
-    // .config/qits naming a ci-event-*.yml, then that file's read at the listing's head sha; and a
-    // repository with no .config/qits, whose listing 404s and whose root tree then answers the head.
+    // Both states recorded by qits-githost: the listing of .config/qits naming a ci-event-*.yml,
+    // then that file's read at the listing's head sha; and a repository with no .config/qits, whose
+    // listing 404s and whose root tree then answers the head.
     rows.add(
         new Bound(
             GITHOST,
@@ -278,9 +278,11 @@ final class PeerContracts {
                           repo(recorded), recorded.params().get("rev"), CiTriggerScope.REPOSITORY);
               assertEquals(EventTriggerLookup.Status.FOUND, lookup.status());
               assertEquals(recorded.responseHeader("Git-Commit-Sha"), lookup.headSha());
+              // The pact answers the recorded listing's first entry (the ci-event-*.yml) as the
+              // template of every entry, so each one the client reads is that file.
               assertEquals(
-                  List.of(recorded.params().get("path")),
-                  lookup.files().stream().map(f -> f.path()).toList());
+                  Set.of(recorded.params().get("path")),
+                  Set.copyOf(lookup.files().stream().map(f -> f.path()).toList()));
             }));
     rows.add(
         new Bound(
