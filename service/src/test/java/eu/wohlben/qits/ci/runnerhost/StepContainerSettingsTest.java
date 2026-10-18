@@ -542,6 +542,23 @@ public class StepContainerSettingsTest {
   }
 
   @Test
+  public void theQuarkusTestForksHttpTransportRetriesTheEdgesRedeployAnswers() {
+    // qits-1169: a @QuarkusTest surefire fork's bootstrap resolver carries no wagon and reads
+    // these through the Apache HttpClient transport instead, so they ride beside the wagon flags
+    // rather than replacing any of them.
+    String retryArgs = StepContainerSettings.MAVEN_RETRY_ARGS;
+    assertTrue(retryArgs.contains("-Daether.connector.http.retryHandler.count=5"), retryArgs);
+    assertTrue(retryArgs.contains("-Daether.connector.http.retryHandler.interval=5000"), retryArgs);
+    assertTrue(
+        retryArgs.contains(
+            "-Daether.connector.http.retryHandler.serviceUnavailable=429,502,503,504"),
+        retryArgs);
+    assertTrue(retryArgs.contains("-Dmaven.resolver.transport=wagon"), retryArgs);
+    assertTrue(retryArgs.contains("-Daether.connector.connectTimeout=60000"), retryArgs);
+    assertTrue(retryArgs.contains("-Daether.connector.requestTimeout=60000"), retryArgs);
+  }
+
+  @Test
   public void theBootstrapHandsTheTokenOverAndHoldsNoExchangeAtAll() {
     // The mechanism, as a property of BOOTSTRAP alone: an executable script under /tmp, chmod 0700,
     // an exported variable holding the token — under the token's guard, and before the daemon

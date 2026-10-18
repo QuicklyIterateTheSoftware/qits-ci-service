@@ -321,7 +321,17 @@ public class StepContainerSettings {
       # max(connectTimeout, requestTimeout), so both are set. Wagon sends server credentials and
       # httpHeaders as the default transport does. APPENDED, so an image's own MAVEN_ARGS is kept;
       # outside the token block, because a step with no token downloads too.
-      MAVEN_ARGS="${MAVEN_ARGS:+$MAVEN_ARGS }-Dmaven.resolver.transport=wagon -Dmaven.wagon.http.retryHandler.class=default -Dmaven.wagon.http.retryHandler.count=5 -Dmaven.wagon.http.retryHandler.nonRetryableClasses=java.net.UnknownHostException -Dmaven.wagon.http.serviceUnavailableRetryStrategy.class=standard -Dmaven.wagon.http.serviceUnavailableRetryStrategy.maxRetries=5 -Dmaven.wagon.http.serviceUnavailableRetryStrategy.retryInterval=5000 -Daether.connector.connectTimeout=60000 -Daether.connector.requestTimeout=60000"
+      #
+      # The three aether.connector.http.retryHandler.* flags are for a different fork: a Quarkus
+      # @QuarkusTest surefire fork, whose bootstrap resolver (quarkus-bootstrap-maven-resolver
+      # 3.40.1, resolver 1.9.27) carries no wagon and uses the Apache HttpClient transport
+      # instead. It reads them because surefire 3.5 promotes the build's user properties to the
+      # fork's system properties, which BootstrapMavenContext copies into its session config. 502
+      # and 504 are what the edge answers while it redeploys. httpclient hard-codes connect
+      # timeouts and refused connections as non-retryable, and resolver 1.9 offers no key to
+      # change that, so in the fork only the 60s connect timeout covers a short connect gap. The
+      # parent's wagon transport ignores these keys.
+      MAVEN_ARGS="${MAVEN_ARGS:+$MAVEN_ARGS }-Dmaven.resolver.transport=wagon -Dmaven.wagon.http.retryHandler.class=default -Dmaven.wagon.http.retryHandler.count=5 -Dmaven.wagon.http.retryHandler.nonRetryableClasses=java.net.UnknownHostException -Dmaven.wagon.http.serviceUnavailableRetryStrategy.class=standard -Dmaven.wagon.http.serviceUnavailableRetryStrategy.maxRetries=5 -Dmaven.wagon.http.serviceUnavailableRetryStrategy.retryInterval=5000 -Daether.connector.connectTimeout=60000 -Daether.connector.requestTimeout=60000 -Daether.connector.http.retryHandler.count=5 -Daether.connector.http.retryHandler.interval=5000 -Daether.connector.http.retryHandler.serviceUnavailable=429,502,503,504"
       export MAVEN_ARGS
       exec /tmp/qits-ci-daemon
       """;
@@ -330,7 +340,10 @@ public class StepContainerSettings {
    * The flags {@link #BOOTSTRAP} appends to {@code MAVEN_ARGS} in every step, so every maven call
    * retries a failed download, a connect timeout included (qits-1169). The text is typed into
    * {@code BOOTSTRAP} too, because that text interpolates nothing; {@code StepContainerSettingsTest}
-   * asserts the two agree. Why each flag is there is told beside the line in {@code BOOTSTRAP}.
+   * asserts the two agree. Why each flag is there is told beside the line in {@code BOOTSTRAP}. The
+   * trailing three {@code aether.connector.http.retryHandler.*} flags are not for the build's own
+   * wagon transport at all: a {@code @QuarkusTest} surefire fork's HttpClient-transport resolver
+   * reads them, which no wagon flag can reach.
    */
   static final String MAVEN_RETRY_ARGS =
       "-Dmaven.resolver.transport=wagon"
@@ -341,7 +354,10 @@ public class StepContainerSettings {
           + " -Dmaven.wagon.http.serviceUnavailableRetryStrategy.maxRetries=5"
           + " -Dmaven.wagon.http.serviceUnavailableRetryStrategy.retryInterval=5000"
           + " -Daether.connector.connectTimeout=60000"
-          + " -Daether.connector.requestTimeout=60000";
+          + " -Daether.connector.requestTimeout=60000"
+          + " -Daether.connector.http.retryHandler.count=5"
+          + " -Daether.connector.http.retryHandler.interval=5000"
+          + " -Daether.connector.http.retryHandler.serviceUnavailable=429,502,503,504";
 
   /**
    * Where the registry push credential lands inside a step container, and the whole reason it can
