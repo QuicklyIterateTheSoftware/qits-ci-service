@@ -487,8 +487,7 @@ public final class CiReleaseComposer {
    * @param slots the repository's own {@code .config/qits/release.yml}
    * @param archetype the recipe {@code slots} names, already parsed, or null when it names none
    * @throws CiConfigException when the composition cannot be made — a script colliding with the
-   *     heredoc delimiter, {@code artifacts:} or {@code contracts:} declared with no release steps to
-   *     publish them
+   *     heredoc delimiter, {@code artifacts:} declared with no release steps to build them
    */
   public static Composed compose(CiRepoRef repo, CiReleaseSlots slots, CiReleaseSlots archetype) {
     return compose(repo, slots, archetype, packagedOutputChecks());
@@ -522,17 +521,13 @@ public final class CiReleaseComposer {
               + " artifact(s) but neither it nor its archetype declares any 'release' step — a"
               + " declaration with no pipeline behind it announces a release nothing published");
     }
-    if (declaredRelease == null && contracts != null) {
-      throw new CiConfigException(
-          slots.configPath()
-              + ": declares contracts but neither it nor its archetype declares any 'release' step —"
-              + " the platform publishes contract packages from the release slot's last step, so"
-              + " with no release slot nothing would ever publish them");
-    }
     // EVERY RELEASE PUBLISHES A CHANGELOG (qits-893), so a composition with no release slot gets
-    // one that does nothing else. The two refusals above stay: artifacts or contracts with no
-    // declared build behind them are still a declaration nothing builds, and the synthesised step
-    // builds nothing.
+    // one that does nothing else — and its CONTRACTS (qits-1149): golden masters and pacts are
+    // committed files, packed from the checkout at the tag by the postlude, so the synthesised step
+    // publishes them too. A repository declares `contracts:` and nothing else; it used to need a
+    // `release:` slot that built nothing, a pipeline living in the repository that the platform's
+    // own composition can answer. The refusal above stays: an artifact is something a declared
+    // build makes, and the synthesised step builds nothing.
     Slot release = declaredRelease != null ? declaredRelease : changelogOnlySlot(slots);
     Postlude postlude = new Postlude(artifacts, artifactsPath, contracts, selector);
     return new Composed(
@@ -544,6 +539,10 @@ public final class CiReleaseComposer {
    * The release half of a composition that declares none: one {@value #CHANGELOG_ONLY_IMAGE} step
    * whose declared script is {@code :}, so the step is the platform's prelude (the tag checkout and
    * the CLI fetch) and its publish block — whose only publish is the changelog — and nothing else.
+   *
+   * <p>Its publish block also carries the repository's {@code contracts:} when it declares any
+   * (qits-1149): they are committed files the postlude packs from the checkout, so they need no build
+   * step and no {@code release:} slot of the repository's own.
    *
    * <p>Synthesised here rather than added to the {@code spa-frontend} and {@code cli} recipes,
    * because the rule is "every release", not "every release on those two archetypes": a repository

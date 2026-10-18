@@ -11,10 +11,12 @@
 # this repository ships a program a person runs, and it declares no `deployments.yml` because there
 # is no application for a deployer to move.
 #
-# Phase two (Publish) exists for one reason only: the contracts (qits-1149). The platform publishes a
-# repository's contract packages — its consumer pacts — from the release slot's last step, so the
-# archetype declares a release slot whose one step builds nothing. See java-service.yml's header for
-# the full three-phase model.
+# Phase two (Publish) builds nothing and this recipe declares no `release:` slot. qits-ci composes
+# the release half itself (CiReleaseComposer.changelogOnlySlot): one step whose postlude publishes the
+# changelog and, when the repository declares `contracts:`, its contract packages — consumer pacts
+# and golden masters, committed files packed from the checkout at the tag (qits-1149). So a CLI that
+# holds pacts declares `contracts:` and nothing more. See java-service.yml's header for the full
+# three-phase model.
 #
 # ---------------------------------------------------------------------------------------------
 # WHY THERE IS A GATE AT ALL
@@ -122,21 +124,3 @@ release-request:
       env "JAVA_TOOL_OPTIONS=${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }${jacoco_options:+$jacoco_options }$pact_options" \
         ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
         ${maven_repository_property:+"$maven_repository_property"}
-
-# THE RELEASE SLOT, FOR THE CONTRACTS ONLY (qits-1149). A CLI ships no artifact, but it may declare
-# `contracts:` — its consumer pacts, committed in `pacts/` — and the platform publishes contract
-# packages from the release slot's last step. So every CLI gets this one step. It builds nothing: the
-# QA step already proved the committed files, and the composed postlude packs them from the checkout
-# at the tag. A CLI that declares no `contracts:` publishes nothing here.
-release:
-
-  - image: qits/build-images/maven-base:latest
-    user: build
-    timeout-seconds: 600
-    script: |
-      if [ -d pacts ]; then
-        echo "contracts: the pacts at this tag"
-        ls pacts/
-      else
-        echo "contracts: this CLI holds no pacts/; nothing to publish"
-      fi

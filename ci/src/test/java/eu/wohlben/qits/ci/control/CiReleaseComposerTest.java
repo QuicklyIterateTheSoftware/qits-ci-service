@@ -1324,11 +1324,12 @@ public class CiReleaseComposerTest {
   }
 
   /**
-   * qits-bootstrap-cli (qits-1149): the packaged cli archetype publishes nothing but its consumer
-   * pacts, so its release slot is one step that builds nothing, and the pacts are packed after it.
+   * qits-bootstrap-cli (qits-1149): the packaged cli archetype declares no release slot, so its
+   * consumer pacts are published from the release half qits-ci synthesises — the repository declares
+   * {@code contracts:} and no {@code release:} slot of its own.
    */
   @Test
-  public void aCliWithPactsPublishesThemFromThePackagedReleaseSlot() throws IOException {
+  public void aCliWithPactsPublishesThemFromTheSynthesisedReleaseStep() throws IOException {
     CiReleaseComposer.Composed composed =
         CiReleaseComposer.compose(
             CiRepoRef.of("55555555-6666-7777-8888-999999999999", "qits", "qits-bootstrap-cli"),
@@ -1343,6 +1344,10 @@ public class CiReleaseComposerTest {
             packaged("cli"));
 
     golden("packaged-cli-pacts-release.yml", composed.releaseDocument());
+    assertEquals(1, occurrences(composed.releaseDocument(), "# --- platform postlude"));
+    assertTrue(
+        composed.releaseDocument().contains("image: '" + CiReleaseComposer.CHANGELOG_ONLY_IMAGE + "'"),
+        composed.releaseDocument());
     assertTrue(
         composed
             .releaseDocument()
@@ -1575,8 +1580,34 @@ public class CiReleaseComposerTest {
     assertEquals(2, occurrences(document, "# --- platform postlude"), document);
   }
 
+  /**
+   * Contracts with no release slot anywhere (qits-1149): no refusal any more — the synthesised
+   * release step publishes them with the changelog, so the platform's composition, not a slot the
+   * repository writes, is where the contract publication lives.
+   */
   @Test
-  public void contractsWithNoReleasePipelineAreRefused() {
+  public void contractsWithNoReleasePipelineArePublishedFromTheSynthesisedStep() {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO,
+            slots(
+                "release-request:\n  - {image: alpine:3, script: echo qa}\n"
+                    + "contracts:\n  application: qits-x\n  golden-masters: { from: gm/,"
+                    + " packages: [maven] }\n"),
+            null);
+
+    String document = composed.releaseDocument();
+    int contract = document.indexOf("qits artifacts publish contract --kind 'golden-masters'");
+    int docs = document.indexOf("qits artifacts publish contract-docs --application 'qits-x'");
+    int changelog = document.indexOf("qits artifacts publish changelog");
+    assertTrue(contract > 0 && docs > contract && changelog > docs, document);
+    assertTrue(document.contains("image: '" + CiReleaseComposer.CHANGELOG_ONLY_IMAGE + "'"), document);
+    assertEquals(1, occurrences(document, "# --- platform postlude"), document);
+  }
+
+  /** Artifacts still need a release step that builds them: the synthesised one builds nothing. */
+  @Test
+  public void artifactsWithNoReleasePipelineAreStillRefused() {
     CiConfigException refused =
         assertThrows(
             CiConfigException.class,
@@ -1585,10 +1616,34 @@ public class CiReleaseComposerTest {
                     REPO,
                     slots(
                         "release-request:\n  - {image: alpine:3, script: echo qa}\n"
-                            + "contracts:\n  application: qits-x\n  golden-masters: { from: gm/,"
-                            + " packages: [maven] }\n"),
+                            + "artifacts:\n  - { type: maven, name: \"g:a\", sbom: target/sbom.json }\n"),
                     null));
-    assertTrue(refused.getMessage().contains("declares contracts but"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("artifact(s) but neither"), refused.getMessage());
+  }
+
+  /**
+   * The packaged cli archetype's QA step (qits-1149): it exports the platform registry beside the
+   * Maven Central mirror, both derived from {@code $QITS_DOMAIN}, because a CLI's contract tests
+   * read its providers' golden-master jars, which only the platform's Maven serves.
+   */
+  @Test
+  public void thePackagedCliQaStepExportsThePlatformMavenRepository() throws IOException {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            CiRepoRef.of("55555555-6666-7777-8888-999999999999", "qits", "qits-bootstrap-cli"),
+            slots("archetype: cli\n"),
+            packaged("cli"));
+
+    String qa = composed.releaseRequestDocument();
+    assertTrue(
+        qa.contains(
+            "export QITS_MAVEN_REPOSITORY_URL=\"https://registry.qits.$qits_domain/artifacts/maven/maven\""),
+        qa);
+    assertTrue(
+        qa.contains(
+            "export QITS_MAVEN_CENTRAL_URL=\"https://mirror.qits.$qits_domain/mirror/maven/central\""),
+        qa);
+    assertTrue(qa.contains("./mvnw -B -ntp -s .qits-maven-settings.xml verify"), qa);
   }
 
   @Test
