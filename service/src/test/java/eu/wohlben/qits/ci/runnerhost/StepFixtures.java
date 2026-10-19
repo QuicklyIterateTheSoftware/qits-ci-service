@@ -30,7 +30,15 @@ public final class StepFixtures {
     return new IdpCommissioner.CommissionedToken("token-1", TOKEN, SUBJECT);
   }
 
-  /** The shipped defaults, {@code dev} resolved — everything a spec is composed from but addresses. */
+  /**
+   * The shipped defaults, {@code dev} resolved — everything a spec is composed from but addresses.
+   *
+   * <p>{@code registrySpellings}/{@code mirrorSpellings} are no longer a shipped default
+   * (qits-1402: the committed Dockerfiles spell the public registry/mirror names directly, so
+   * {@code qits.ci.runner.registry-mirrors.*} ships with no default spellings at all). The values
+   * here are this fixture's own stand-in for an installation that HAS configured extra spellings,
+   * which is what {@link StepImageTest} and {@link StepAddressPlaneTest} exercise against them.
+   */
   public static StepContainerSettings shippedLauncher() {
     StepContainerSettings launcher = new StepContainerSettings();
     launcher.memoryLimit = "4g";

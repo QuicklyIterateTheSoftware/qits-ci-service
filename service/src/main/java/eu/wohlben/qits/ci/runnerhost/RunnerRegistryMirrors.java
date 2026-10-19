@@ -12,26 +12,32 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
  * <b>What a runner's builder must rewrite</b>: every spelling of the platform's registry and
- * mirror that the estate's committed Dockerfiles use, mapped to the PUBLIC name of the same store —
- * the {@code Ack}'s {@code registryMirrors} (qits-466's companion fix, found live).
+ * mirror that a build step's own {@code FROM} might still name, mapped to the PUBLIC name of the
+ * same store — the {@code Ack}'s {@code registryMirrors} (qits-466's companion fix, found live).
  *
- * <p><b>Why a runner needs telling.</b> The estate's Dockerfiles say {@code FROM
+ * <p><b>Why a runner needs telling.</b> A step's image is already moved for it
+ * ({@link StepAddressPlane.ImageRegistries#rewrite}), but an image a BUILD names is inside the
+ * build, where only the builder's own mirror table reaches. So the host hands the runner that
+ * table. Until qits-1402 the estate's committed Dockerfiles said {@code FROM
  * mirror.dev.localhost:8080/…} and {@code FROM registry.dev.localhost:8080/…} — the platform's
- * MACHINE spellings, which resolve only in the platform host's own namespace. A runner's builder is
- * on another machine and is configured with none of them, so a build step there died on its first
- * {@code FROM}. A step image is already moved for it
- * ({@link StepAddressPlane.ImageRegistries#rewrite}), but an image a BUILD names is inside the build,
- * where only the builder's own mirror table reaches. So the host hands the runner that table.
+ * MACHINE spellings, which resolve only in the platform host's own namespace — and a runner's
+ * builder, on another machine and configured with none of them, died on its first such
+ * {@code FROM}. qits-1402 moved every committed Dockerfile to the public
+ * {@code registry.qits.<domain>}/{@code mirror.qits.<domain>} spellings directly, so there is
+ * nothing of that kind left for a default table to carry; what this still handles is an
+ * installation that has configured some OTHER spelling of its own under {@code
+ * qits.ci.runner.registry-mirrors.*}.
  *
  * <p><b>The spellings are the ones {@link StepAddressPlane.ImageRegistries} already knows</b>
- * ({@link StepContainerSettings#imageSpellings}) — {@code qits.artifacts.registry-host}, the machine
- * spellings a committed file uses ({@code qits.ci.runner.registry-mirrors.registry-hosts} and {@code
- * .mirror-hosts}) and the two qits-net aliases of this environment — each to {@code
- * registry.qits.<domain>} or {@code mirror.qits.<domain>}. The three bare upstreams the platform's
- * mirror serves under its own namespaces — {@code docker.io} under {@code /hub}, {@code quay.io}
- * under {@code /quay}, {@code registry.access.redhat.com} under {@code /redhat} ({@code .upstreams})
- * — go to the public mirror under the same paths, so an unqualified {@code FROM quay.io/…} is pulled
- * through the platform's mirror rather than dialling upstream from the runner's machine.
+ * ({@link StepContainerSettings#imageSpellings}) — {@code qits.artifacts.registry-host}, any EXTRA
+ * spelling configured under {@code qits.ci.runner.registry-mirrors.registry-hosts}/{@code
+ * .mirror-hosts} (empty by default) and the two qits-net aliases of this environment — each to
+ * {@code registry.qits.<domain>} or {@code mirror.qits.<domain>}. The three bare upstreams the
+ * platform's mirror serves under its own namespaces — {@code docker.io} under {@code /hub},
+ * {@code quay.io} under {@code /quay}, {@code registry.access.redhat.com} under {@code /redhat}
+ * ({@code .upstreams}) — go to the public mirror under the same paths, so an unqualified
+ * {@code FROM quay.io/…} is pulled through the platform's mirror rather than dialling upstream
+ * from the runner's machine.
  *
  * <p><b>A qits-ci that knows no public domain sends none</b> (null, "not sent"): there is no public
  * name to map to, and such a runner's steps are refused {@code EDGE_PLANE_UNCONFIGURED} anyway.

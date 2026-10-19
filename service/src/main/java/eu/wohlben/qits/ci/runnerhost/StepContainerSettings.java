@@ -441,9 +441,11 @@ public class StepContainerSettings {
   String artifactsImageRepository;
 
   /**
-   * The machine spellings of the registry and of the mirror that the estate's committed files use —
-   * {@code registry.<env>.localhost:<port>}, {@code mirror.<env>.localhost:<port>}. {@code
-   * RunnerRegistryMirrors} reads the same two keys for the table a runner's builder rewrites by.
+   * EXTRA spellings of the registry and of the mirror an installation may configure — never the
+   * estate's own, since qits-1402 moved every committed Dockerfile to the public
+   * {@code registry.qits.<domain>}/{@code mirror.qits.<domain>} names, so there is no default
+   * machine spelling left for either key to carry. {@code RunnerRegistryMirrors} reads the same two
+   * keys for the table a runner's builder rewrites by.
    */
   @ConfigProperty(name = "qits.ci.runner.registry-mirrors.registry-hosts")
   Optional<List<String>> registrySpellings;
@@ -598,10 +600,11 @@ public class StepContainerSettings {
 
   /**
    * The hosts an image reference names the platform's two stores by: {@code
-   * qits.artifacts.registry-host}, the machine spellings of {@code
-   * qits.ci.runner.registry-mirrors.*}, and the two qits-net aliases of this environment. Used to
-   * recognise an image as the platform's and move it to the public name — by {@link #plane} for a
-   * step's own image, by {@code RunnerRegistryMirrors} for the table a runner's builder gets.
+   * qits.artifacts.registry-host}, any EXTRA spellings configured under {@code
+   * qits.ci.runner.registry-mirrors.*} (empty by default since qits-1402), and the two qits-net
+   * aliases of this environment. Used to recognise an image as the platform's and move it to the
+   * public name — by {@link #plane} for a step's own image, by {@code RunnerRegistryMirrors} for
+   * the table a runner's builder gets.
    */
   public StepAddressPlane.ImageRegistries imageSpellings() {
     List<String> registry = new ArrayList<>();
