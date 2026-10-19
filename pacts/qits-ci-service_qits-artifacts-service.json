@@ -246,12 +246,13 @@
         }
       },
       "description": "ReleaseJoin (is a release's artifact in the store?): getNpmPackument",
-      "key": "30d9962a",
+      "key": "14c8222a",
       "pending": false,
       "providerStates": [
         {
           "name": "an npm package published at a version",
           "params": {
+            "name": "contract-package",
             "package": "contract-package",
             "tag": "main",
             "tarball": "contract-package-2100.1.0.tgz",
@@ -394,12 +395,13 @@
         }
       },
       "description": "ReleaseJoin (is a release's artifact in the store?): getNpmPackument",
-      "key": "1060ff1d",
+      "key": "82ebc63",
       "pending": false,
       "providerStates": [
         {
           "name": "no npm package with the given name",
           "params": {
+            "name": "contract-absent-package",
             "package": "contract-absent-package",
             "tag": "main",
             "tarball": "contract-absent-package-2100.1.0.tgz",

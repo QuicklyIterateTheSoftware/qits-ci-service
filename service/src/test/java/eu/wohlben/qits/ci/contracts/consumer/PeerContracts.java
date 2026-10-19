@@ -462,8 +462,8 @@ final class PeerContracts {
             }));
 
     // --- qits-idp -----------------------------------------------------------------------------
-    // PENDING until qits-idp publishes rr-73's states: each commission sends the body qits-ci's own
-    // callers send, so each needs the state recording exactly that body.
+    // Each commission sends the body qits-ci's own callers send, so each binds the state qits-idp
+    // recorded for exactly that body (published with rr-73's golden masters).
     rows.add(
         new Bound(
             IDP,

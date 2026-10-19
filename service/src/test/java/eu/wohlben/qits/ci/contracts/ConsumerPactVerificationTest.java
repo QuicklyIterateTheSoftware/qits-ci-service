@@ -17,6 +17,7 @@ import jakarta.inject.Inject;
 import java.net.URL;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -30,11 +31,13 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * that jar as a test dependency, and qits-maintenance bumps the pin when the consumer releases a
  * changed pact. {@link ClasspathPactLoader} finds them all.
  *
- * <p><b>Three consumers pin a pact</b> (qits-1149): qits-landing-app ({@code
+ * <p><b>Eight consumers pin a pact</b> (qits-1149): qits-landing-app ({@code
  * eu.wohlben.qits:qits-landing-app-pacts-qits-ci-service}), qits-ci-runner-daemon ({@code
- * eu.wohlben.qits:qits-ci-runner-daemon-pacts-qits-ci-service}) and qits-artifacts-service ({@code
- * eu.wohlben.qits:qits-artifacts-service-pacts-qits-ci-service}), all test-scoped in {@code
- * service/pom.xml}. Every state {@link ProviderStates} answers has its {@code @State} method below,
+ * eu.wohlben.qits:qits-ci-runner-daemon-pacts-qits-ci-service}), qits-artifacts-service ({@code
+ * eu.wohlben.qits:qits-artifacts-service-pacts-qits-ci-service}), qits-bootstrap-cli,
+ * qits-maintenance-service, qits-orchestrator-service, qits-platform-access-cli and
+ * qits-projects-service (each {@code eu.wohlben.qits:<consumer>-pacts-qits-ci-service}), all
+ * test-scoped in {@code service/pom.xml}. Every state {@link ProviderStates} answers has its {@code @State} method below,
  * so a consumer pinned next needs no edit here unless it asks for a state nobody recorded. {@link ClasspathPactLoader#REQUIRED} is true, so a classpath that lost them
  * fails rather than verifying nothing. A new consumer's jar is pinned beside them, and any state its
  * pact names that {@link ProviderStates} does not answer is added there with its golden master.
@@ -46,6 +49,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * {@code authorization} param, which {@link ContractBearers} turns into that token's identity. Every {@code @State} method delegates to {@link ProviderStates}; {@link
  * #target} fails an unknown state, and an interaction without {@code comments.references.qits-call}
  * or {@code qits-trigger}.
+ *
+ * <p><b>A pinned pact that is wrong is named in {@link #KNOWN_WRONG}, by its jar's version</b>, and
+ * its interaction is reported as skipped with the reason — never answered by bending the provider
+ * to it (the pattern of qits-maintenance-service). The entry is for that version alone: the bump
+ * that carries the consumer's fix verifies the interaction for real, and a bump that does not fix
+ * it goes red here, which is the point.
  *
  * <p><b>Ordering.</b> pact-jvm runs the {@code @State} methods after every before-each, so the state
  * seeds after {@link #target}; {@link #consumerPactHolds} removes the rows again.
@@ -65,6 +74,32 @@ class ConsumerPactVerificationTest {
     // pact-jvm reports usage metrics over the network unless told not to; a test never should.
     System.setProperty("pact_do_not_track", "true");
   }
+
+  /** A pinned pact interaction this provider cannot honour, and why: the consumer must fix it. */
+  record KnownWrong(String consumer, String version, String description, String reason) {
+
+    boolean names(Pact pact, Interaction interaction) {
+      return consumer.equals(pact.getConsumer().getName())
+          && description.equals(interaction.getDescription())
+          && String.valueOf(pact.getSource()).contains("/" + version + "/");
+    }
+  }
+
+  private static final String REPORT_WITHOUT_RUN_TOKEN =
+      "the pact sends no Authorization header, but the golden master it was built from (state 'a"
+          + " running run', putRunStepReport) sends the run's own ci-run token as {authorization}:"
+          + " the report door judges that token, so a request without it is honestly refused 403."
+          + " The fix is the consumer's: its CiContract row must carry the recorded Authorization"
+          + " header, as qits ci report submit sends the run token in a deployment (ticket"
+          + " qits-1149)";
+
+  static final List<KnownWrong> KNOWN_WRONG =
+      List.of(
+          new KnownWrong(
+              "qits-platform-access-cli",
+              "2026.1019.65035",
+              "qits ci report submit: putRunStepReport",
+              REPORT_WITHOUT_RUN_TOKEN));
 
   @Inject ProviderStates states;
 
@@ -100,6 +135,13 @@ class ConsumerPactVerificationTest {
                 + interaction.getDescription()
                 + "' carries no comments.references."
                 + key);
+      }
+    }
+    for (KnownWrong wrong : KNOWN_WRONG) {
+      if (wrong.names(pact, interaction)) {
+        Assumptions.abort(
+            consumer + " " + wrong.version() + " '" + interaction.getDescription() + "': "
+                + wrong.reason());
       }
     }
     context.setTarget(new HttpTestTarget(base.getHost(), base.getPort()));

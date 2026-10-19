@@ -312,6 +312,36 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-bootstrap-cli-pacts-qits-ci-service</artifactId>
+            <version>${qits.bootstrap-cli-pacts-qits-ci-service.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-maintenance-service-pacts-qits-ci-service</artifactId>
+            <version>${qits.maintenance-service-pacts-qits-ci-service.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-orchestrator-service-pacts-qits-ci-service</artifactId>
+            <version>${qits.orchestrator-service-pacts-qits-ci-service.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-platform-access-cli-pacts-qits-ci-service</artifactId>
+            <version>${qits.platform-access-cli-pacts-qits-ci-service.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-projects-service-pacts-qits-ci-service</artifactId>
+            <version>${qits.projects-service-pacts-qits-ci-service.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- @TestSecurity + @OidcSecurity: installs the identity quarkus-oidc would have built
                  from a validated bearer, without a running qits-idp. What MachineGuardTest asserts
                  is this service's DECISION on a token's claims — signature and expiry checking is
