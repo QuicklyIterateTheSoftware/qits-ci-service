@@ -154,7 +154,7 @@
         <qits.idp-golden-masters.version>2026.1018.175524</qits.idp-golden-masters.version>
         <!-- The shared consumer-pact helper (golden-master reader, row builder, pact file) the rows
              above are written with. Released out of the qits-integrations-quarkus reactor. -->
-        <qits.pact-consumer.version>2026.1018.164604</qits.pact-consumer.version>
+        <qits.pact-consumer.version>2026.1019.81701</qits.pact-consumer.version>
         <!-- The consumer pacts contracts/ConsumerPactVerificationTest verifies (qits-1149): each
              consumer publishes `pacts/<consumer>_qits-ci-service.json` as a jar, pinned here in test
              scope and bumped by qits-maintenance when the consumer releases a changed pact. -->
@@ -162,7 +162,7 @@
         <qits.ci-runner-daemon-pacts-qits-ci-service.version>2026.1010.143616</qits.ci-runner-daemon-pacts-qits-ci-service.version>
         <qits.artifacts-service-pacts-qits-ci-service.version>2026.1018.153037</qits.artifacts-service-pacts-qits-ci-service.version>
         <qits.bootstrap-cli-pacts-qits-ci-service.version>2026.1018.214549</qits.bootstrap-cli-pacts-qits-ci-service.version>
-        <qits.maintenance-service-pacts-qits-ci-service.version>2026.1018.165353</qits.maintenance-service-pacts-qits-ci-service.version>
+        <qits.maintenance-service-pacts-qits-ci-service.version>2026.1019.73752</qits.maintenance-service-pacts-qits-ci-service.version>
         <qits.orchestrator-service-pacts-qits-ci-service.version>2026.1018.172917</qits.orchestrator-service-pacts-qits-ci-service.version>
         <qits.platform-access-cli-pacts-qits-ci-service.version>2026.1019.65035</qits.platform-access-cli-pacts-qits-ci-service.version>
         <qits.projects-service-pacts-qits-ci-service.version>2026.1018.195756</qits.projects-service-pacts-qits-ci-service.version>
