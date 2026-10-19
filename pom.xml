@@ -150,7 +150,7 @@
              built from (contracts/consumer/). Bumped like every internal pin. -->
         <qits.projects-golden-masters.version>2026.1018.195756</qits.projects-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1018.174636</qits.githost-golden-masters.version>
-        <qits.artifacts-golden-masters.version>2026.1018.153037</qits.artifacts-golden-masters.version>
+        <qits.artifacts-golden-masters.version>2026.1019.62657</qits.artifacts-golden-masters.version>
         <qits.idp-golden-masters.version>2026.1018.175524</qits.idp-golden-masters.version>
         <!-- The shared consumer-pact helper (golden-master reader, row builder, pact file) the rows
              above are written with. Released out of the qits-integrations-quarkus reactor. -->
