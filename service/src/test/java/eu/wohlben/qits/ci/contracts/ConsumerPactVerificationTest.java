@@ -85,21 +85,11 @@ class ConsumerPactVerificationTest {
     }
   }
 
-  private static final String REPORT_WITHOUT_RUN_TOKEN =
-      "the pact sends no Authorization header, but the golden master it was built from (state 'a"
-          + " running run', putRunStepReport) sends the run's own ci-run token as {authorization}:"
-          + " the report door judges that token, so a request without it is honestly refused 403."
-          + " The fix is the consumer's: its CiContract row must carry the recorded Authorization"
-          + " header, as qits ci report submit sends the run token in a deployment (ticket"
-          + " qits-1149)";
-
-  static final List<KnownWrong> KNOWN_WRONG =
-      List.of(
-          new KnownWrong(
-              "qits-platform-access-cli",
-              "2026.1019.65035",
-              "qits ci report submit: putRunStepReport",
-              REPORT_WITHOUT_RUN_TOKEN));
+  /**
+   * None at present: qits-platform-access-cli 2026.1019.65035's report row without the run's
+   * Authorization header was fixed in 2026.1019.92700, which is the version pinned.
+   */
+  static final List<KnownWrong> KNOWN_WRONG = List.of();
 
   @Inject ProviderStates states;
 
