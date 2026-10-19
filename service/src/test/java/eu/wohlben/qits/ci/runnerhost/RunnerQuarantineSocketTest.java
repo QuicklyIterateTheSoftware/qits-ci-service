@@ -247,20 +247,21 @@ class RunnerQuarantineSocketTest {
       Map<String, String> mirrors = runner.next(Ack.class, SOON).registryMirrors();
 
       assertNotNull(mirrors, "a runner is told what its builder must rewrite");
-      // The machine spellings the estate's Dockerfiles commit — registry.<env>.localhost:8080 and
-      // its mirror twin, with the tier derived — and the older host-published ports.
+      // qits-1402: the estate's committed Dockerfiles spell the public names directly now, so
+      // `qits.ci.runner.registry-mirrors.registry-hosts`/`.mirror-hosts` ship with no default
+      // spellings any more — they are an installation's door to add EXTRA ones, unset here. What
+      // is still mapped unconditionally: qits.artifacts.registry-host, this environment's two
+      // qits-net aliases, and the bare upstreams through the public mirror's namespaces.
       Config config = ConfigProvider.getConfig();
       List<String> registryHosts =
-          config.getValues("qits.ci.runner.registry-mirrors.registry-hosts", String.class);
+          config.getOptionalValues("qits.ci.runner.registry-mirrors.registry-hosts", String.class)
+              .orElse(List.of());
       List<String> mirrorHosts =
-          config.getValues("qits.ci.runner.registry-mirrors.mirror-hosts", String.class);
-      assertTrue(registryHosts.stream().anyMatch(h -> h.matches("registry\\.[a-z0-9-]+\\.localhost:8080")));
-      assertTrue(mirrorHosts.stream().anyMatch(h -> h.matches("mirror\\.[a-z0-9-]+\\.localhost:8080")));
+          config.getOptionalValues("qits.ci.runner.registry-mirrors.mirror-hosts", String.class)
+              .orElse(List.of());
+      assertTrue(registryHosts.isEmpty(), "no default machine spelling ships any more");
+      assertTrue(mirrorHosts.isEmpty(), "no default machine spelling ships any more");
       Map<String, String> expected = new LinkedHashMap<>();
-      registryHosts.forEach(host -> expected.put(host, "registry.qits.example.org"));
-      mirrorHosts.forEach(host -> expected.put(host, "mirror.qits.example.org"));
-      expected.put("localhost:8081", "registry.qits.example.org");
-      expected.put("localhost:8082", "mirror.qits.example.org");
       // Every spelling qits-ci itself reads for its registry is mapped too.
       expected.put(
           config.getValue("qits.artifacts.registry-host", String.class),
@@ -278,6 +279,9 @@ class RunnerQuarantineSocketTest {
       }
       assertFalse(
           mirrors.containsKey("registry.qits.example.org"), "the public name maps to nothing");
+      // No machine-spelling default means no stale entries for the retired ports either.
+      assertFalse(mirrors.containsKey("localhost:8081"));
+      assertFalse(mirrors.containsKey("localhost:8082"));
     }
   }
 
