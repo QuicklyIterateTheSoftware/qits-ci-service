@@ -166,6 +166,22 @@
         <qits.orchestrator-service-pacts-qits-ci-service.version>2026.1018.172917</qits.orchestrator-service-pacts-qits-ci-service.version>
         <qits.platform-access-cli-pacts-qits-ci-service.version>2026.1019.92700</qits.platform-access-cli-pacts-qits-ci-service.version>
         <qits.projects-service-pacts-qits-ci-service.version>2026.1018.195756</qits.projects-service-pacts-qits-ci-service.version>
+        <!-- The frontends' pacts of what @qits/ui-components asks qits-ci for them (qits-1284): one
+             jar per frontend, `pacts/<frontend>_qits-ui-components-jslib_qits-ci-service.json`,
+             bumped like the rows above when the frontend releases a changed pact. -->
+        <qits.ci-frontend-pacts-qits-ci-service.version>2026.1021.191659</qits.ci-frontend-pacts-qits-ci-service.version>
+        <qits.projects-frontend-pacts-qits-ci-service.version>2026.1021.193038</qits.projects-frontend-pacts-qits-ci-service.version>
+        <qits.docs-frontend-pacts-qits-ci-service.version>2026.1021.193215</qits.docs-frontend-pacts-qits-ci-service.version>
+        <qits.events-frontend-pacts-qits-ci-service.version>2026.1021.193347</qits.events-frontend-pacts-qits-ci-service.version>
+        <qits.githost-frontend-pacts-qits-ci-service.version>2026.1021.193358</qits.githost-frontend-pacts-qits-ci-service.version>
+        <qits.maintenance-frontend-pacts-qits-ci-service.version>2026.1021.193655</qits.maintenance-frontend-pacts-qits-ci-service.version>
+        <qits.artifacts-frontend-pacts-qits-ci-service.version>2026.1021.193823</qits.artifacts-frontend-pacts-qits-ci-service.version>
+        <qits.configuration-frontend-pacts-qits-ci-service.version>2026.1021.193835</qits.configuration-frontend-pacts-qits-ci-service.version>
+        <qits.deployments-frontend-pacts-qits-ci-service.version>2026.1021.193850</qits.deployments-frontend-pacts-qits-ci-service.version>
+        <qits.mirror-frontend-pacts-qits-ci-service.version>2026.1021.194056</qits.mirror-frontend-pacts-qits-ci-service.version>
+        <qits.observability-frontend-pacts-qits-ci-service.version>2026.1021.194102</qits.observability-frontend-pacts-qits-ci-service.version>
+        <qits.orchestrator-frontend-pacts-qits-ci-service.version>2026.1021.194108</qits.orchestrator-frontend-pacts-qits-ci-service.version>
+        <qits.system-frontend-pacts-qits-ci-service.version>2026.1021.194304</qits.system-frontend-pacts-qits-ci-service.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
