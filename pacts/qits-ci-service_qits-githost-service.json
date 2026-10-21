@@ -671,12 +671,13 @@
         }
       },
       "description": "CiRunService.runSteps (is the run's commit still on the host?): getRootTree",
-      "key": "acf0f9b0",
+      "key": "4f5026cd",
       "pending": false,
       "providerStates": [
         {
           "name": "a repository missing the requested commit",
           "params": {
+            "path": ".config/qits/release.yml",
             "projectId": "00000000-0000-4000-8000-000000000001",
             "repoName": "contract-service",
             "repositoryId": "00000000-0000-4000-8000-000000000002",
@@ -762,12 +763,13 @@
         }
       },
       "description": "CiRunService.runSteps (is the run's commit still on the host?): getRootTreeById",
-      "key": "396ef096",
+      "key": "dbce1db3",
       "pending": false,
       "providerStates": [
         {
           "name": "a repository missing the requested commit",
           "params": {
+            "path": ".config/qits/release.yml",
             "projectId": "00000000-0000-4000-8000-000000000001",
             "repoName": "contract-service",
             "repositoryId": "00000000-0000-4000-8000-000000000002",
