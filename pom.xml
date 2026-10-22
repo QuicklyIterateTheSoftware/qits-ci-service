@@ -151,7 +151,7 @@
         <qits.projects-golden-masters.version>2026.1022.75745</qits.projects-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1020.204038</qits.githost-golden-masters.version>
         <qits.artifacts-golden-masters.version>2026.1019.62657</qits.artifacts-golden-masters.version>
-        <qits.idp-golden-masters.version>2026.1021.194347</qits.idp-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1022.183304</qits.idp-golden-masters.version>
         <!-- The shared consumer-pact helper (golden-master reader, row builder, pact file) the rows
              above are written with. Released out of the qits-integrations-quarkus reactor. -->
         <qits.pact-consumer.version>2026.1019.82625</qits.pact-consumer.version>
