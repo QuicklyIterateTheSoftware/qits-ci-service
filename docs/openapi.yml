@@ -1842,6 +1842,8 @@ paths:
           description: No such run
         "409":
           description: "The run has not finished, so there is nothing to retry yet"
+        "503":
+          description: A step image's digest could not be resolved; ask again
         "401":
           description: Not Authorized
       tags:

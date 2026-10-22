@@ -19,6 +19,7 @@ import eu.wohlben.qits.ci.entity.StepImages;
 import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.ConflictException;
 import eu.wohlben.qits.ci.error.NotFoundException;
+import eu.wohlben.qits.ci.error.UnavailableException;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
 import eu.wohlben.qits.ci.persistence.CiStepRepository;
@@ -1816,9 +1817,12 @@ public class CiRunService {
    * A platform step image whose immutable digest could not be had, so the run was not accepted.
    *
    * <p>A plain {@link RuntimeException} rather than anything web-shaped, for the reason every other
-   * type in this module is. The trigger engine catches it and leaves the event owed; nothing else
-   * does, so a caller that does not know about it gets a failed accept rather than a run against an
-   * unknown tool — which is the correct default for a case that must never be swallowed.
+   * type in this module is. The trigger engine catches it and leaves the event owed; {@link
+   * CiRunnerHealth#queueHealthCheck} catches it and answers its own web-facing {@code
+   * UnavailableException}; {@link #refire} — a person's retry and, through it, {@link #autoRetry} —
+   * does the same, before any row of the retry exists. Any other caller that does not know about it
+   * gets a failed accept rather than a run against an unknown tool — which is the correct default
+   * for a case that must never be swallowed.
    */
   public static class StepImageUnpinned extends RuntimeException {
 
@@ -3822,6 +3826,9 @@ public class CiRunService {
    * was meant to serve.
    *
    * @return the new run, already {@code QUEUED} and announced to the runners
+   * @throws UnavailableException when the retry's re-pin of a platform step image could not be had
+   *     — no row is written, and the caller's next attempt asks a registry that has probably come
+   *     back
    */
   public CiRun retry(String runId) {
     return refire(runId, null);
@@ -3830,6 +3837,9 @@ public class CiRunService {
   /**
    * {@link #retry}, with the reason an automatic one records on its row — null for a person's. Both
    * resume a RELEASE run at the first step its source did not finish green ({@link #carryOver}).
+   * {@link #autoRetry} catches whatever this throws and settles the source run {@code FAILED} as
+   * before, exactly as it does for any other {@link RuntimeException} the accept can throw — a
+   * person's own call is the one path that lets {@link UnavailableException} reach a caller.
    */
   private CiRun refire(String runId, String autoRetryReason) {
     CiRun source = requireRun(runId);
@@ -3864,7 +3874,16 @@ public class CiRunService {
         triggerParser
             .parseSnapshot(source.configPath, pipeline.document(), "The run being retried for " + runId)
             .pipeline();
-    String pins = StepImages.encode(pinStepImages(retried));
+    String pins;
+    try {
+      pins = StepImages.encode(pinStepImages(retried));
+    } catch (StepImageUnpinned unpinned) {
+      // Thrown before any row for this retry exists — see pinStepImages and acceptHealthCheck's
+      // identical placement — so there is nothing here to roll back. Mirrors
+      // CiRunnerHealth.queueHealthCheck: a registry that will not answer is "come back", not a
+      // failed request, for a person retrying exactly as it is for a queued health check.
+      throw new UnavailableException(unpinned.getMessage());
+    }
     // Decided here, outside the accept's bracket, for the re-composition's reason: it reads the
     // source's step rows, and the source is terminal, so they cannot move between here and the
     // insert. A RELEASE run resumes where its source stopped (qits-1222) — see carryOver.

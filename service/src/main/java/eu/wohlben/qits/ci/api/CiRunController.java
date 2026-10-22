@@ -912,6 +912,9 @@ public class CiRunController {
               + " role, or a project claim this instance cannot place the repository in")
   @APIResponse(responseCode = "404", description = "No such run")
   @APIResponse(responseCode = "409", description = "The run has not finished, so there is nothing to retry yet")
+  @APIResponse(
+      responseCode = "503",
+      description = "A step image's digest could not be resolved; ask again")
   public Response retryRun(@PathParam("runId") String runId) {
     CiRun run = runService.requireRun(runId);
     String projectScope = cancellationScope();

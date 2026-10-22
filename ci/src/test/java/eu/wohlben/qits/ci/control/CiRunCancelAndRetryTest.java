@@ -12,6 +12,7 @@ import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.error.ConflictException;
 import eu.wohlben.qits.ci.error.NotFoundException;
+import eu.wohlben.qits.ci.error.UnavailableException;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.time.Instant;
@@ -407,6 +408,45 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     assertEquals(3, service.runsFor(repo).size());
     assertEquals(first.id, service.requireRun(second.id).retryOfRunId, "a chain, not a star");
     assertEquals("rr-a", service.requireRun(second.id).releaseRequestId);
+  }
+
+  @Test
+  public void aRetryWhoseStepImageCannotBePinnedIsRefusedAndRecordsNoRun() throws Exception {
+    // The registry answered when the source run was accepted, so the original really ran — then the
+    // tag's digest becomes unresolvable before the retry re-pins it (CiStepImagePinTest's own
+    // registryReference arrangement: the platform namespace prefixed with the resolved registry
+    // host). A retry re-pins rather than copying, exactly so a broken registry is caught again.
+    String repo = "consumer-" + UUID.randomUUID();
+    String reference = "dev-qits-artifacts:8080/qits/build-images/ci-base:latest";
+    fakeImagePins.pins(reference, "sha256:" + "1".repeat(64));
+    String original =
+        service.onEventTrigger(
+            eventRun(
+                repo,
+                "main",
+                "a".repeat(40),
+                """
+                steps:
+                  - image: qits/build-images/ci-base:latest
+                    script: "true"
+                """));
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    assertEquals(CiRunStatus.SUCCESS, service.requireRun(original).status);
+
+    fakeImagePins.unresolvable(reference);
+
+    UnavailableException thrown =
+        assertThrows(UnavailableException.class, () -> service.retry(original));
+    assertTrue(
+        thrown.getMessage().contains(reference),
+        "the caller needs to know which image, not merely that one did not resolve: "
+            + thrown.getMessage());
+
+    assertEquals(
+        1,
+        service.runsFor(repo).size(),
+        "the pin is asked before any row of the retry exists, so a refusal writes nothing");
   }
 
   // --- fixture -----------------------------------------------------------------------------------
