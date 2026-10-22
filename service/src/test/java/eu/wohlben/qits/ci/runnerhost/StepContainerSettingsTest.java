@@ -203,7 +203,8 @@ public class StepContainerSettingsTest {
             "2",
             1000,
             "qits-ci-01234567-412621e6-2",
-            false),
+            false,
+            true),
         compose(spec));
   }
 
@@ -290,7 +291,8 @@ public class StepContainerSettingsTest {
         original.oomScoreAdj(),
         original.name(),
         // buildPlane follows docker/build, not the socket alone; a plain step declares neither.
-        false);
+        false,
+        original.init());
   }
 
   /** The one field under test, put back to what a step that declared nothing would have sent. */
@@ -313,7 +315,8 @@ public class StepContainerSettingsTest {
         original.cpus(),
         original.oomScoreAdj(),
         original.name(),
-        original.buildPlane());
+        original.buildPlane(),
+        original.init());
   }
 
   private static WorkloadSpec withEnv(WorkloadSpec original, Map<String, String> env) {
@@ -335,7 +338,8 @@ public class StepContainerSettingsTest {
         original.cpus(),
         original.oomScoreAdj(),
         original.name(),
-        original.buildPlane());
+        original.buildPlane(),
+        original.init());
   }
 
   @Test
