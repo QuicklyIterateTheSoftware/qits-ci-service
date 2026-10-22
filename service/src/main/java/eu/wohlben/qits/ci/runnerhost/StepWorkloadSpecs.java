@@ -264,7 +264,11 @@ public final class StepWorkloadSpecs {
         settings.cpus(),
         settings.oomScoreAdj(),
         StepContainerSettings.containerName(spec.runId(), spec.stepIndex()),
-        spec.docker() || spec.build());
+        spec.docker() || spec.build(),
+        // docker-init as PID 1 (qits-1509). The daemon reaps only its own children, and git >= 2.47
+        // orphans a detached `maintenance run --auto` on every commit, fetch and push: unreaped, each
+        // stays a zombie holding a pid against the limit above until the JVM cannot start a thread.
+        true);
   }
 
   /**
