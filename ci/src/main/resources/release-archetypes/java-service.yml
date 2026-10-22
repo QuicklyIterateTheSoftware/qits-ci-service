@@ -476,12 +476,22 @@ release-request:
       # the SPA. It is also what keeps this step from needing the submodule at all — the daemon's
       # clone does not recurse, so the webui directory is empty here, which is the one state Quinoa
       # calls a misconfiguration.
+      verify_status=0
       env "JAVA_TOOL_OPTIONS=${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }${jacoco_options:+$jacoco_options }$pact_options" \
         ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
         -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
         -Dquarkus.quinoa=false \
         -DskipITs=false \
-        ${it_selection:+"$it_selection"}
+        ${it_selection:+"$it_selection"} || verify_status=$?
+
+      # THE STEP'S OWN LIMITS (qits-1509), printed whether or not the verify passed: a red
+      # `unable to create native thread` is the run this line exists to explain. The step's
+      # `--pids-limit` (`qits.ci.pids-limit`) counts threads and processes alike, and zombies used to
+      # fill it: git >= 2.47 leaves a detached `git maintenance run --auto --detach` behind on every
+      # commit, fetch and push, and a PID 1 that does not reap keeps each one as a zombie holding a
+      # pid. `pids.peak` needs kernel >= 6.1, hence the `n/a` fallbacks.
+      echo "step limits: pids.peak=$(cat /sys/fs/cgroup/pids.peak 2>/dev/null || echo n/a) pids.max=$(cat /sys/fs/cgroup/pids.max 2>/dev/null || echo n/a) memory.peak=$(cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo n/a) zombies=$(grep -l '^State:.Z' /proc/[0-9]*/status 2>/dev/null | wc -l | tr -d ' ') nproc=$(ulimit -u 2>/dev/null || echo n/a)"
+      [ "$verify_status" -eq 0 ] || exit "$verify_status"
 
       # The bundle. `-C <dir> .` so the story directories are the bundle's roots — nesting one level
       # deep would put the directory in every served URL. The directory is `<module>/target/
