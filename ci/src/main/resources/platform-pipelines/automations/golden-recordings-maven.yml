@@ -1,0 +1,74 @@
+# Re-record a maven consumer's pacts, `pacts/*.json`, on a release request's fold: the
+# `golden-recordings-maven` kind of qits-maintenance's release-request automations (qits-1516).
+#
+# A KIND FILE, not a pipeline. qits-ci's CiAutomationComposer composes it into a platform
+# trigger on `ReleaseRequestAutomation` selected by `kind: golden-recordings-maven` (this file's
+# name), and wraps the script below in the platform's own prelude and postlude:
+#
+#   prelude   validates the payload, fetches the fold (`baseRef`) and refuses with
+#             "superseded before start" unless it is still `foldSha`; checks it out, gives the
+#             step a writable HOME and works out the commit subject's work item
+#   script    this file's, run as data in a child shell
+#   postlude  stages only the payload's `commitPaths`, commits `chore(<item>): update golden
+#             recordings maven` (or prints `unchanged` and exits 0), and makes a plain push to the
+#             payload's `branch`
+#
+# So nothing here touches a ref or makes a commit.
+#
+# WHY IT EXISTS. A dependency bump moves a consumer's `*-golden-masters` pin in the fold, and the
+# pacts the consumer recorded against the provider's previous answers go stale with it: the fold's
+# QA then fails on a contract nobody changed by hand. qits-maintenance sends this kind for a
+# repository with a root pom.xml (a root package.json and no pom.xml is `golden-recordings-npm`'s).
+#
+# THE ONLY PATH COMMITTED IS `pacts/*.json` - qits-maintenance sends exactly `:(glob)pacts/*.json`
+# for this kind, the flat directory every consumer records into. The suite's update switch also
+# rewrites whatever else a repository records (its own golden masters, an exported OpenAPI
+# document); none of that is committed here, and every other file the build writes (target/, the
+# local repository) stays out of the commit.
+#
+# THE GATE'S OWN TEST RUN IS THE CHECK. QA runs the same suite WITHOUT the switch, and a recording
+# test compares instead of writing: a pact this run did not bring up to date fails QA as a test
+# failure. So there is no `check-outputs:` key for this kind - the check already exists, and it is
+# the test itself.
+#
+# What runs is the repository's surefire suite, the `test` phase and nothing past it: no ITs, no
+# packaging, no SPA. The update switch is `-Dgolden.update=true` and `QITS_GOLDEN_UPDATE=true`,
+# both, because `GoldenFiles.updating()` reads either and a repository's copy may read only one.
+# A failing test fails the run, and nothing is committed.
+#
+# `user: build`, as java-service's QA step: the estate's Quarkus tests start zonky's embedded
+# postgres, initdb refuses uid 0 and calls getpwuid, and maven-base carries the passwd-backed
+# build user (uid 1001). A step container starts `--cap-drop=ALL`, so the script could not switch
+# user itself.
+image: qits/build-images/maven-base:latest
+user: build
+timeout-seconds: 2400
+script: |
+  if [ ! -f pom.xml ]; then
+    echo "no pom.xml: golden-recordings-maven re-records a maven repository's pacts; a root package.json is golden-recordings-npm's" >&2
+    exit 1
+  fi
+
+  # The platform registry and the Central mirror, composed exactly as java-service's QA step
+  # composes them: both are code under the platform's public domain (qits-731), which the
+  # composed prelude has already demanded.
+  qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+  export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
+  export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
+
+  # The repository's own settings when it keeps them: the exact-id mirror there is what passes
+  # Maven's HTTP blocker, and its servers read the run's credential from the step environment.
+  settings=""
+  if [ -f .qits-maven-settings.xml ]; then
+    settings="-s .qits-maven-settings.xml"
+  fi
+
+  # The suite, in update mode. `test`, not `verify`: the recordings are surefire's, so no IT runs
+  # and nothing is packaged. Quinoa off: the SPA is no input, and the clone does not recurse, so a
+  # webui submodule is an empty directory here - the one state Quinoa calls a misconfiguration.
+  # Test port 0: nothing else may hold 8081 in a step container, and a fixed port is a race.
+  QITS_GOLDEN_UPDATE=true ./mvnw -B -ntp ${settings} test \
+    -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
+    -Dquarkus.quinoa=false \
+    -Dquarkus.http.test-port=0 \
+    -Dgolden.update=true

@@ -1,0 +1,62 @@
+# Re-record an npm consumer's pacts, `pacts/*.json`, on a release request's fold: the
+# `golden-recordings-npm` kind of qits-maintenance's release-request automations (qits-1516).
+#
+# A KIND FILE, not a pipeline. qits-ci's CiAutomationComposer composes it into a platform
+# trigger on `ReleaseRequestAutomation` selected by `kind: golden-recordings-npm` (this file's
+# name), and wraps the script below in the platform's own prelude and postlude:
+#
+#   prelude   validates the payload, fetches the fold (`baseRef`) and refuses with
+#             "superseded before start" unless it is still `foldSha`; checks it out, gives the
+#             step a writable HOME and works out the commit subject's work item
+#   script    this file's, run as data in a child shell
+#   postlude  stages only the payload's `commitPaths`, commits `chore(<item>): update golden
+#             recordings npm` (or prints `unchanged` and exits 0), and makes a plain push to the
+#             payload's `branch`
+#
+# So nothing here touches a ref or makes a commit.
+#
+# WHY IT EXISTS. A dependency bump moves a consumer's `*-golden-masters` pin in the fold, and the
+# pacts the consumer recorded against the provider's previous answers go stale with it: the fold's
+# QA then fails on a contract nobody changed by hand. qits-maintenance sends this kind for a
+# repository with a root package.json and no root pom.xml (one with a pom.xml is
+# `golden-recordings-maven`'s).
+#
+# THE ONLY PATH COMMITTED IS `pacts/*.json` - qits-maintenance sends exactly `:(glob)pacts/*.json`
+# for this kind, the flat directory every consumer records into. Anything else the run writes
+# (node_modules/, a coverage or report directory) stays out of the commit.
+#
+# THE GATE'S OWN TEST RUN IS THE CHECK. The `app` and `spa-frontend` QA steps run the same unit
+# tests WITHOUT the switch, and a recording spec (the jslib's `assertPactPart(...,
+# 'QITS_GOLDEN_UPDATE')`) compares instead of writing: a pact this run did not bring up to date
+# fails QA as a test failure. So there is no `check-outputs:` key for this kind - the check already
+# exists, and it is the spec itself.
+#
+# It runs on node-browser-base, the image the `app` QA step tests in (the image `screenshot-
+# baselines` installs on too), so the specs record under the node and npm the gate compares
+# under. A failing spec fails the run, and nothing is committed.
+image: qits/build-images/node-browser-base:latest
+timeout-seconds: 1800
+script: |
+  if [ ! -f package.json ]; then
+    echo "no package.json: golden-recordings-npm re-records an npm repository's pacts; a root pom.xml is golden-recordings-maven's" >&2
+    exit 1
+  fi
+
+  # The same install the `app` QA step runs: the lockfile as committed, resolving against the
+  # platform's two public registries, and nothing rewritten (qits-731). An entry naming any
+  # other host fails `npm ci` itself.
+  # THE ADDRESSES ARE CODE: the platform's public domain is the one input, and the hosts and
+  # paths are constants under it. A step is always told the domain; the `:?` stops one that
+  # is not, here, rather than at a host named `registry.qits.`.
+  qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+  npm_hosted_origin="https://registry.qits.$qits_domain"
+  npm_proxy_origin="https://mirror.qits.$qits_domain"
+  npm_hosted_path=/artifacts/npm/npm/
+  env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
+      "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
+      npm ci --no-audit --no-fund
+
+  # The unit tests, in update mode: the QA steps' own `npm run --if-present test` (every
+  # consumer's `test` is `ng test`, the jsdom target), run once - no TTY, and CI=true says so to
+  # vitest as well - with the switch the recording specs read from the environment.
+  CI=true QITS_GOLDEN_UPDATE=true npm run --if-present test

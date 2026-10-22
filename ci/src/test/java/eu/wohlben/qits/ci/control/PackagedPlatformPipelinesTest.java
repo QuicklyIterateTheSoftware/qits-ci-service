@@ -123,6 +123,8 @@ public class PackagedPlatformPipelinesTest {
             "ReleaseRequestAutomation",
             "ReleaseRequestAutomation",
             "ReleaseRequestAutomation",
+            "ReleaseRequestAutomation",
+            "ReleaseRequestAutomation",
             "ReleaseRequestAutomation"),
         packaged().stream()
             .map(file -> triggerParser.parse(file.path(), file.content()).eventName())
@@ -396,6 +398,123 @@ public class PackagedPlatformPipelinesTest {
     int mentions = script.split("docs/database", -1).length - 1;
     assertEquals(1, mentions, script);
     assertTrue(script.contains("--out docs/database"), script);
+  }
+
+  // --- the composed golden-recordings automations (qits-1516) -----------------------------------
+
+  private static String composedKind(String kind) {
+    String path = "ci/src/main/resources/platform-pipelines/automations/" + kind + ".yml";
+    return packaged().stream()
+        .filter(file -> file.path().equals(path))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError(path + " is not in the set"))
+        .content();
+  }
+
+  private static String kindScript(String script) {
+    int body = script.indexOf("cat > " + CiAutomationComposer.KIND_SCRIPT);
+    return script.substring(
+        script.indexOf('\n', body) + 1,
+        script.indexOf("\n" + CiAutomationComposer.HEREDOC_DELIMITER + "\n"));
+  }
+
+  @Test
+  public void theGoldenRecordingsMavenKindRunsTheSuiteInUpdateModeAsTheBuildUser(
+      @TempDir Path dir) throws Exception {
+    String path = "ci/src/main/resources/platform-pipelines/automations/golden-recordings-maven.yml";
+    String composed = composedKind("golden-recordings-maven");
+    CiEventTrigger trigger = triggerParser.parse(path, composed);
+    assertEquals("ReleaseRequestAutomation", trigger.eventName());
+    assertEquals(null, trigger.checkout(), "recorded at main's head, never at the fold");
+    assertTrue(composed.contains("  - kind: { exact: 'golden-recordings-maven' }\n"), composed);
+    assertEquals(1, trigger.pipeline().steps().size());
+    CiStepDecl step = trigger.pipeline().steps().get(0);
+    assertEquals("qits/build-images/maven-base:latest", step.image());
+    // initdb refuses uid 0: the suite's embedded postgres needs the image's passwd-backed user.
+    assertEquals("build", step.user());
+    assertEquals(2400, step.timeoutSeconds());
+    // No CLI: the suite writes the recordings itself.
+    assertFalse(composed.contains("qits CLI, pinned, on PATH"), composed);
+
+    String script = step.script();
+    int body = script.indexOf("cat > " + CiAutomationComposer.KIND_SCRIPT);
+    int noPom = script.indexOf("no pom.xml: golden-recordings-maven");
+    int maven = script.indexOf("./mvnw -B -ntp ${settings} test");
+    int add = script.indexOf("git add -A --");
+    assertTrue(script.indexOf("superseded before start") < body, "the prelude comes first");
+    assertTrue(body < noPom && noPom < maven && maven < add, script);
+    for (String line :
+        List.of(
+            "qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}",
+            "export QITS_MAVEN_REPOSITORY_URL=\"https://registry.qits.$qits_domain/artifacts/maven/maven\"",
+            "export QITS_MAVEN_CENTRAL_URL=\"https://mirror.qits.$qits_domain/mirror/maven/central\"",
+            "QITS_GOLDEN_UPDATE=true ./mvnw",
+            "-Dgolden.update=true",
+            "-Dquarkus.quinoa=false",
+            "-Dquarkus.http.test-port=0",
+            "-Dqits.maven.repository.url=\"$QITS_MAVEN_REPOSITORY_URL\"")) {
+      assertTrue(script.contains(line), line);
+    }
+    // The test phase only: no ITs, nothing packaged, nothing skipped.
+    String kind = kindScript(script);
+    String mvnw = kind.substring(kind.indexOf("./mvnw"));
+    for (String word : List.of("verify", "install", "package", "skipTests", "maven.test.skip")) {
+      assertFalse(mvnw.contains(word), word + " in: " + mvnw);
+    }
+    syntax(dir, kind, path + " (the kind's script)");
+  }
+
+  @Test
+  public void theGoldenRecordingsNpmKindInstallsAsScreenshotBaselinesAndTestsInUpdateMode(
+      @TempDir Path dir) throws Exception {
+    String path = "ci/src/main/resources/platform-pipelines/automations/golden-recordings-npm.yml";
+    String composed = composedKind("golden-recordings-npm");
+    CiEventTrigger trigger = triggerParser.parse(path, composed);
+    assertEquals("ReleaseRequestAutomation", trigger.eventName());
+    assertEquals(null, trigger.checkout(), "recorded at main's head, never at the fold");
+    assertTrue(composed.contains("  - kind: { exact: 'golden-recordings-npm' }\n"), composed);
+    CiStepDecl step = trigger.pipeline().steps().get(0);
+    assertEquals("qits/build-images/node-browser-base:latest", step.image());
+    assertEquals("", step.user(), "the image's own user");
+    assertEquals(1800, step.timeoutSeconds());
+
+    String script = step.script();
+    int body = script.indexOf("cat > " + CiAutomationComposer.KIND_SCRIPT);
+    int noPackage = script.indexOf("no package.json: golden-recordings-npm");
+    int npmCi = script.indexOf("npm ci --no-audit --no-fund");
+    int test = script.indexOf("CI=true QITS_GOLDEN_UPDATE=true npm run --if-present test");
+    int add = script.indexOf("git add -A --");
+    assertTrue(script.indexOf("superseded before start") < body, "the prelude comes first");
+    assertTrue(body < noPackage && noPackage < npmCi && npmCi < test && test < add, script);
+
+    // The install is screenshot-baselines' own, line for line.
+    String baselines = Files.readString(SOURCE.resolve("automations/screenshot-baselines.yml"));
+    String npm = Files.readString(SOURCE.resolve("automations/golden-recordings-npm.yml"));
+    String install =
+        baselines.substring(
+            baselines.indexOf("  qits_domain=${QITS_DOMAIN"),
+            baselines.indexOf("npm ci --no-audit --no-fund\n"));
+    assertTrue(npm.contains(install), install);
+    syntax(dir, kindScript(script), path + " (the kind's script)");
+  }
+
+  @Test
+  public void theGoldenRecordingsKindsNeverNameWhatTheyCommit() throws Exception {
+    // pacts/*.json is the payload's to name (qits-maintenance sends it), never the composition's.
+    for (String kind : List.of("golden-recordings-maven", "golden-recordings-npm")) {
+      String composed = composedKind(kind);
+      Matcher adds = Pattern.compile("git add[^\n]*").matcher(composed);
+      List<String> found = new java.util.ArrayList<>();
+      while (adds.find()) {
+        found.add(adds.group().strip());
+      }
+      assertEquals(List.of("git add -A -- \"$@\""), found, kind);
+      assertFalse(composed.contains("pacts/*.json"), kind + ": a path the payload did not name");
+      Matcher matcher = GUARD.matcher(composed);
+      assertTrue(matcher.find(), kind + ": the composed automation has no commit guard");
+      assertTrue(matcher.group().contains("--ignore-submodules=none"), matcher.group());
+      assertFalse(composed.contains("--force"), kind + ": a forced push");
+    }
   }
 
   // --- the composed dependency-bump automation (qits-1133) --------------------------------------

@@ -2008,8 +2008,9 @@ more. A `ScreenshotBaselines` event today matches no trigger file and starts no 
 `ci/src/main/resources/platform-pipelines/automations/<kind>.yml` declares only `image`, `timeout-seconds`,
 the regeneration `script` and, optionally, `qits-cli: true` (the pinned qits CLI on `PATH`, fetched
 by the same emitter as the release prelude and the QA report hook, but hard: a failed fetch ends the
-step with `the qits CLI could not be fetched`) and, optionally, `commit-type: <word>` (below); any
-other key, or any other `qits-cli` or `commit-type` value, fails the boot naming the file.
+step with `the qits CLI could not be fetched`), optionally, `commit-type: <word>` (below) and,
+optionally, `user: <name>` (the composed step's `user:`, qits-1516); any other key, or any other
+`qits-cli`, `commit-type` or `user` value, fails the boot naming the file.
 `CiAutomationComposer` turns it into a trigger on `event: ReleaseRequestAutomation` with `when:
 [{kind: {exact: <kind>}}]` — the kind is the file's name — and one step: a prelude that refuses an
 implausible payload (`kind`, `branch` under `maintenance/automations/<kind>/`, `baseRef` under
@@ -2044,7 +2045,13 @@ in step with a twin: `maintenance-bump.yml`'s maven step retired with the GROUP 
 since its one remaining caller, `estate-pins`, never bumps a `pom.xml`. The two docker programs
 (`bump-from.awk`, `bump-arg.awk`) still are a lift — `maintenance-bump.yml` keeps applying docker
 and gitlink changes for that caller — and `PackagedPlatformPipelinesTest` holds the two files equal
-on those two programs so they cannot drift.
+on those two programs so they cannot drift. And two that re-record a consumer's pacts after a bump
+moved its `*-golden-masters` pin (qits-1516), each committing only `:(glob)pacts/*.json`:
+`golden-recordings-maven` (`maven-base`, 2400 s, `user: build` because the suite's embedded postgres
+refuses root) runs `./mvnw test` with `-Dgolden.update=true` and `QITS_GOLDEN_UPDATE=true`, and
+`golden-recordings-npm` (`node-browser-base`, 1800 s) installs as `screenshot-baselines` does and runs
+`npm run --if-present test` with `QITS_GOLDEN_UPDATE=true`. Neither has a `check-outputs:` arm: QA's
+own test run, without the switch, is the check.
 
 Until 2026-10-02 they were `ci-platform-event-*.yml` files in the wrapper, read at its `main` head
 per event: a fix shipped only with a wrapper release, which needs a person's approval. No repository

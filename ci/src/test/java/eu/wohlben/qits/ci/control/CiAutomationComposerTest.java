@@ -204,6 +204,55 @@ public class CiAutomationComposerTest {
     }
   }
 
+  // --- user (qits-1516) ---------------------------------------------------------------------------
+
+  @Test
+  public void aUserBecomesTheComposedStepsUserAndNothingElseMoves() {
+    String without = CiAutomationComposer.compose("test-kind", PATH, MINIMAL);
+    String with = CiAutomationComposer.compose("test-kind", PATH, MINIMAL + "user: build\n");
+    assertEquals(
+        without.replace(
+            "  - image: 'qits/build-images/node-browser-base:latest'\n",
+            "  - image: 'qits/build-images/node-browser-base:latest'\n    user: build\n"),
+        with);
+    CiEventTrigger trigger = new CiEventTriggerParser().parse(PATH, with);
+    assertEquals("build", trigger.pipeline().steps().get(0).user());
+    assertEquals(
+        "",
+        new CiEventTriggerParser().parse(PATH, without).pipeline().steps().get(0).user(),
+        "a kind without the key runs as the image's user");
+  }
+
+  @Test
+  public void anImplausibleUserIsABootErrorNamingTheFile() {
+    for (String value : List.of("Build", "-u", "build:root", "''", "1001", "[build]")) {
+      CiConfigException error =
+          assertThrows(
+              CiConfigException.class,
+              () -> CiAutomationComposer.compose("test-kind", PATH, MINIMAL + "user: " + value + "\n"),
+              value);
+      assertTrue(error.getMessage().startsWith(PATH + ": "), error.getMessage());
+      assertTrue(error.getMessage().contains("'user'"), error.getMessage());
+    }
+  }
+
+  @Test
+  public void theGoldenRecordingsMavenKindIsComposedAsItsFixture() throws Exception {
+    // composed/automation-golden-recordings-maven.yml: the one packaged kind declaring `user:`, so
+    // the line's place in the composed step is held byte for byte.
+    String path =
+        "ci/src/main/resources/platform-pipelines/automations/golden-recordings-maven.yml";
+    String kindFile = Files.readString(Path.of("..").resolve(path));
+    try (var in =
+        getClass()
+            .getClassLoader()
+            .getResourceAsStream("composed/automation-golden-recordings-maven.yml")) {
+      assertEquals(
+          new String(in.readAllBytes(), StandardCharsets.UTF_8),
+          CiAutomationComposer.compose("golden-recordings-maven", path, kindFile));
+    }
+  }
+
   // --- the composed step, run --------------------------------------------------------------------
 
   private static final String BRANCH = "maintenance/automations/test-kind/abc";

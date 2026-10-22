@@ -2052,7 +2052,9 @@ is about*.
   `dependency-bump` uses it for `bump(<item>): N dependencies`, qits-1133; a script may also write
   work items, single-space separated, to `$QITS_AUTOMATION_TICKETS` and the subject becomes
   `chore(<ids>): <type>(<item>): …`, committed `--cleanup=verbatim` — `dependency-bump` takes the
-  ids and the changelog body from `qits changelog bump-message`, qits-893), nothing else;
+  ids and the changelog body from `qits changelog bump-message`, qits-893) and optionally `user:
+  <name>` (the composed step's `user:`; `golden-recordings-maven` runs as `build` because zonky's
+  initdb refuses root, qits-1516), nothing else;
   `CiAutomationComposer` composes it into a `ReleaseRequestAutomation` trigger selecting `kind:
   <kind>` with the platform's prelude (payload refusals, fold fetch, `superseded before start`) and
   postlude (stage only `commitPaths`, the `--ignore-submodules=none` guard, plain push). The fold
