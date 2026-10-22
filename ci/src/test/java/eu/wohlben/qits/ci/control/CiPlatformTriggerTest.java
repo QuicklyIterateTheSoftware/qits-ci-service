@@ -258,6 +258,8 @@ public class CiPlatformTriggerTest extends CiTestSupport {
             "ci/src/main/resources/platform-pipelines/automations/dependency-bump.yml",
             "ci/src/main/resources/platform-pipelines/automations/entity-diagram.yml",
             "ci/src/main/resources/platform-pipelines/automations/estate-pins.yml",
+            "ci/src/main/resources/platform-pipelines/automations/golden-recordings-maven.yml",
+            "ci/src/main/resources/platform-pipelines/automations/golden-recordings-npm.yml",
             "ci/src/main/resources/platform-pipelines/automations/screenshot-baselines.yml"),
         platformPipelines.files().stream().map(EventTriggerFile::path).toList());
   }

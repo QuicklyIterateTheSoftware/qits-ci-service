@@ -29,6 +29,13 @@ import java.util.regex.Pattern;
  *   <li>{@code commit-type} — optional, a lowercase word ({@code [a-z]+}): the kind writes its
  *       OWN commit message, under that conventional-commit type. See below; a kind without the key
  *       is composed exactly as if the key did not exist.
+ *   <li>{@code user} — optional, a passwd name or a bare uid ({@code [a-z0-9_][a-z0-9_-]*}): the
+ *       composed step's {@code user:}, the one moment a step container's user can be chosen (see
+ *       {@link CiConfigSchema}'s {@code user}). A kind whose script runs a test suite needs it: the
+ *       estate's Quarkus tests start zonky's embedded postgres, whose initdb refuses uid 0, so the
+ *       {@code golden-recordings-maven} kind (qits-1516) runs as maven-base's {@code build} user,
+ *       exactly as java-service's QA step does. A kind without the key is composed exactly as if
+ *       the key did not exist, and runs as the image's own user.
  * </ul>
  *
  * <p>Anything else is a {@link CiConfigException} naming the file, and so a boot error: a kind file
@@ -141,9 +148,17 @@ public final class CiAutomationComposer {
 
   static final String COMMIT_TYPE_KEY = "commit-type";
 
+  static final String USER_KEY = "user";
+
   /** The whole kind-file vocabulary. Anything else is an error naming the file. */
   static final Set<String> KEYS =
-      Set.of(IMAGE_KEY, TIMEOUT_KEY, SCRIPT_KEY, QITS_CLI_KEY, COMMIT_TYPE_KEY);
+      Set.of(IMAGE_KEY, TIMEOUT_KEY, SCRIPT_KEY, QITS_CLI_KEY, COMMIT_TYPE_KEY, USER_KEY);
+
+  /**
+   * What a {@code user} may spell: {@link CiConfigSchema}'s own step {@code user:} charset, so the
+   * composed document is never one its parser refuses.
+   */
+  static final Pattern USER = Pattern.compile("[a-z0-9_][a-z0-9_-]*");
 
   /** What a {@code commit-type} may spell: a conventional-commit type, nothing more. */
   static final Pattern COMMIT_TYPE = Pattern.compile("[a-z]+");
@@ -282,6 +297,7 @@ public final class CiAutomationComposer {
     String script = requireText(root, SCRIPT_KEY, configPath);
     boolean qitsCli = optionalTrue(root, QITS_CLI_KEY, configPath);
     String commitType = optionalCommitType(root, configPath);
+    String user = optionalUser(root, configPath);
     for (String line : script.split("\n", -1)) {
       if (line.strip().equals(HEREDOC_DELIMITER)) {
         throw new CiConfigException(
@@ -300,6 +316,9 @@ public final class CiAutomationComposer {
     out.append("  - ").append(KIND_FIELD).append(": { exact: ").append(scalar(kind)).append(" }\n");
     out.append("steps:\n");
     out.append("  - image: ").append(scalar(image)).append('\n');
+    if (user != null) {
+      out.append("    user: ").append(user).append('\n');
+    }
     out.append("    timeout-seconds: ").append(timeout).append('\n');
     out.append("    script: |\n");
     block(out, step(kind, image, script, qitsCli, commitType), "      ");
@@ -667,6 +686,30 @@ public final class CiAutomationComposer {
               + "'");
     }
     return type;
+  }
+
+  /**
+   * The {@code user}, or null when the key is absent. A value outside {@link #USER} is a boot error
+   * naming the file: a mis-spelled user that fell back to root would fail deep inside a test with
+   * initdb's own message.
+   */
+  private static String optionalUser(Map<?, ?> root, String configPath) {
+    if (!root.containsKey(USER_KEY)) {
+      return null;
+    }
+    Object value = root.get(USER_KEY);
+    if (!(value instanceof String user) || !USER.matcher(user).matches()) {
+      throw new CiConfigException(
+          configPath
+              + ": '"
+              + USER_KEY
+              + "' must be a lowercase name or a bare uid, "
+              + USER.pattern()
+              + " (leave it out to run as the image's user), not '"
+              + value
+              + "'");
+    }
+    return user;
   }
 
   /** A YAML single-quoted scalar. */

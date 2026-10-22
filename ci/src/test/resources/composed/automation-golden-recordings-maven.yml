@@ -1,0 +1,199 @@
+# Composed by qits-ci from ci/src/main/resources/platform-pipelines/automations/golden-recordings-maven.yml.
+# Generated: this text is never committed. Edit the kind file.
+event: ReleaseRequestAutomation
+when:
+  - kind: { exact: 'golden-recordings-maven' }
+steps:
+  - image: 'qits/build-images/maven-base:latest'
+    user: build
+    timeout-seconds: 2400
+    script: |
+      set -eu
+      # --- platform prelude: the golden-recordings-maven automation ---
+      : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no platform address}"
+      if ! command -v jq > /dev/null 2>&1; then
+        echo 'qits-ci: the image for this step (qits/build-images/maven-base:latest) has no jq, so the automation payload cannot be read' >&2
+        exit 1
+      fi
+      field() {
+        printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r --arg f "$1" '.[$f] // "" | if type == "string" then . else error("refusing a payload whose \($f) is not a string") end'
+      }
+      expected_kind='golden-recordings-maven'
+      kind=$(field kind) || exit 1
+      branch=$(field branch) || exit 1
+      base=$(field baseRef) || exit 1
+      fold=$(field foldSha) || exit 1
+      item=$(field workItem) || exit 1
+      case "$kind" in ''|*[!a-z0-9-]*) echo "refusing an implausible kind: $kind" >&2; exit 1 ;; esac
+      if [ "$kind" != "$expected_kind" ]; then
+        echo "refusing a $kind payload: this step is composed from the $expected_kind kind file" >&2
+        exit 1
+      fi
+      for ref in "$branch" "$base"; do
+        case "$ref" in
+          ''|-*|*..*|*[!0-9A-Za-z._/-]*) echo "refusing an implausible ref: $ref" >&2; exit 1 ;;
+        esac
+      done
+      case "$branch" in
+        "maintenance/automations/$kind/"?*) ;;
+        *) echo "refusing an automation branch outside maintenance/automations/$kind/: $branch" >&2; exit 1 ;;
+      esac
+      case "$base" in
+        release/?*) ;;
+        *) echo "refusing a base that is not a release request's fold: $base" >&2; exit 1 ;;
+      esac
+      case "$fold" in
+        ''|*[!0-9a-f]*) echo "refusing an implausible foldSha: $fold" >&2; exit 1 ;;
+      esac
+      if [ ${#fold} -ne 40 ] && [ ${#fold} -ne 64 ]; then
+        echo "refusing an implausible foldSha: $fold" >&2
+        exit 1
+      fi
+      case "$item" in *[!0-9A-Za-z-]*) echo "refusing an implausible work item: $item" >&2; exit 1 ;; esac
+      printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r '
+        .commitPaths
+        | if type == "array" and length > 0 and all(.[]; type == "string" and (contains("\n") | not))
+          then .[]
+          else error("refusing a payload whose commitPaths is not a non-empty array of paths") end' > /tmp/qits-automation-paths || exit 1
+      while IFS= read -r path; do
+        rest=${path#':(glob)'}
+        case "$rest" in
+          ''|/*|-*|*..*|*[!0-9A-Za-z._/*-]*) echo "refusing an implausible commit path: $path" >&2; exit 1 ;;
+        esac
+      done < /tmp/qits-automation-paths
+      # qits-1253: a git host answering 5xx, refusing or dropping a connection is a moment, not a
+      # verdict - three attempts, 2s then 5s apart. A rejection, a missing ref or a 4xx is an
+      # answer and is never retried. Callers read git_net_transient and git_net_last afterwards.
+      git_net_out=
+      git_net() {
+        git_net_attempt=1
+        while :; do
+          git_net_status=0
+          git_net_out=$(git "$@" 2>&1) || git_net_status=$?
+          if [ -n "$git_net_out" ]; then printf '%s\n' "$git_net_out" >&2; fi
+          if [ "$git_net_status" -eq 0 ] || ! git_net_transient || [ "$git_net_attempt" -ge 3 ]; then
+            return "$git_net_status"
+          fi
+          if [ "$git_net_attempt" -eq 1 ]; then git_net_delay=2; else git_net_delay=5; fi
+          echo "git $1: the git host failed (attempt $git_net_attempt of 3); retrying in ${git_net_delay}s" >&2
+          sleep "$git_net_delay"
+          git_net_attempt=$((git_net_attempt + 1))
+        done
+      }
+      git_net_transient() {
+        # An answer first: a push refused with a 4xx says "RPC failed" too.
+        if printf '%s\n' "$git_net_out" \
+            | grep -Eqi '\[rejected\]|non-fast-forward|fetch first|couldn.t find remote ref|returned error: 4[0-9][0-9]|HTTP 4[0-9][0-9]'; then
+          return 1
+        fi
+        printf '%s\n' "$git_net_out" \
+          | grep -Eqi 'The requested URL returned error: 5[0-9][0-9]|Could not resolve host|Connection refused|Connection reset|Connection timed out|Operation timed out|early EOF|RPC failed|unexpected disconnect'
+      }
+      git_net_last() {
+        printf '%s\n' "$git_net_out" | sed '/^[[:space:]]*$/d' | tail -n 1
+      }
+      if ! git_net fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$base"; then
+        if git_net_transient; then
+          echo "the git host is unavailable: $base could not be fetched for the fold $fold ($(git_net_last)); re-run this automation" >&2
+          exit 1
+        fi
+        echo "the fold's branch is missing: $base is not on the git host, so the fold $fold cannot be fetched. Something deleted the release request's backing branch after it was folded; re-run this automation once the request has folded again" >&2
+        exit 1
+      fi
+      head=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
+      if [ "$head" != "$fold" ]; then
+        echo "superseded before start: $base is at $head, not at the fold $fold this run was sent for" >&2
+        exit 1
+      fi
+      git checkout -q --detach FETCH_HEAD
+      [ -n "${HOME:-}" ] && [ -w "$HOME" ] || export HOME=/tmp
+      if [ -z "$item" ]; then
+        item=$(git log -n 200 --format=%s 2>/dev/null \
+          | sed -nE 's/^[A-Za-z][A-Za-z0-9_\/.-]*\(([A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18})(, *[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18})*\)!?: .*/\1/p' \
+          | head -n 1)
+      fi
+      # --- the kind's script, run as data ---
+      cat > /tmp/qits-automation.sh <<'QITS_AUTOMATION_EOF'
+      if [ ! -f pom.xml ]; then
+        echo "no pom.xml: golden-recordings-maven re-records a maven repository's pacts; a root package.json is golden-recordings-npm's" >&2
+        exit 1
+      fi
+
+      # The platform registry and the Central mirror, composed exactly as java-service's QA step
+      # composes them: both are code under the platform's public domain (qits-731), which the
+      # composed prelude has already demanded.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+      export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
+      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
+
+      # The repository's own settings when it keeps them: the exact-id mirror there is what passes
+      # Maven's HTTP blocker, and its servers read the run's credential from the step environment.
+      settings=""
+      if [ -f .qits-maven-settings.xml ]; then
+        settings="-s .qits-maven-settings.xml"
+      fi
+
+      # The suite, in update mode. `test`, not `verify`: the recordings are surefire's, so no IT runs
+      # and nothing is packaged. Quinoa off: the SPA is no input, and the clone does not recurse, so a
+      # webui submodule is an empty directory here - the one state Quinoa calls a misconfiguration.
+      # Test port 0: nothing else may hold 8081 in a step container, and a fixed port is a race.
+      QITS_GOLDEN_UPDATE=true ./mvnw -B -ntp ${settings} test \
+        -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
+        -Dquarkus.quinoa=false \
+        -Dquarkus.http.test-port=0 \
+        -Dgolden.update=true
+      QITS_AUTOMATION_EOF
+      if command -v bash > /dev/null 2>&1; then
+        bash -eu /tmp/qits-automation.sh
+      else
+        sh -eu /tmp/qits-automation.sh
+      fi
+      # --- platform postlude: commit only the payload's paths, push plainly ---
+      set --
+      while IFS= read -r path; do
+        if [ -n "$(git ls-files --cached --others --exclude-standard -- "$path" | head -n 1)" ]; then
+          set -- "$@" "$path"
+        fi
+      done < /tmp/qits-automation-paths
+      if [ $# -gt 0 ]; then
+        git add -A -- "$@"
+      fi
+      if git diff --cached --quiet --ignore-submodules=none; then
+        echo "unchanged: the golden-recordings-maven regeneration changed nothing under the commit paths"
+        exit 0
+      fi
+      git diff --cached --stat --ignore-submodules=none
+      subject='update golden recordings maven'
+      if [ -n "$item" ]; then
+        subject="chore($item): $subject"
+      else
+        subject="chore: $subject"
+      fi
+      git -c user.name="qits maintenance" -c user.email="maintenance@qits.local" \
+          commit -q -m "$subject"
+      if ! git_net push "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
+        push_transient=no
+        push_last=
+        if git_net_transient; then
+          push_transient=yes
+          push_last=$(git_net_last)
+        fi
+        remote=
+        if git_net fetch -q "$QITS_CI_REPOSITORY_URL" "refs/heads/$branch"; then
+          remote=$(git rev-parse --verify -q 'FETCH_HEAD^{commit}' || true)
+        fi
+        if [ -n "$remote" ] \
+            && [ "$(git rev-list --parents -n 1 "$remote")" = "$remote $fold" ] \
+            && [ "$(git rev-parse "$remote^{tree}")" = "$(git rev-parse 'HEAD^{tree}')" ]; then
+          echo "already pushed: $branch at $remote carries the same content"
+          echo "pushed $remote to $branch"
+          exit 0
+        fi
+        if [ "$push_transient" = yes ]; then
+          echo "the git host did not answer the push to $branch ($push_last); re-run this automation" >&2
+          exit 1
+        fi
+        echo "push to $branch was rejected - the fold no longer contains it; remove the branch or join it again" >&2
+        exit 1
+      fi
+      echo "pushed $(git rev-parse HEAD) to $branch"
