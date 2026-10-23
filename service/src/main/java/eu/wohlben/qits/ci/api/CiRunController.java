@@ -160,7 +160,9 @@ public class CiRunController {
    * What qits-projects sends to withdraw a release request's CI: the repository, and the request
    * whose work is no longer wanted. Both are required — see {@link #cancelReleaseRequestRuns}. The
    * phase is optional and narrows the cancellation to that phase's runs; absent, every phase's runs
-   * stop, which is what a sender that predates it still means (qits-1264).
+   * stop, which is what a sender that predates it still means (qits-1264). The reason is optional
+   * too; absent, it is {@link CiRunService#RELEASE_REQUEST_CANCELLED} — what a sender that predates
+   * the field still means.
    */
   public record CancelReleaseRequestRunsRequest(
       @Schema(description = "The repository whose runs to stop", required = true) String repoId,
@@ -171,7 +173,15 @@ public class CiRunController {
                   "Stop only this phase's runs: RELEASE_REQUEST (QA) or RELEASE (publish). Omit to"
                       + " stop every unfinished run of the request",
               enumeration = {"RELEASE_REQUEST", "RELEASE"})
-          String phase) {}
+          String phase,
+      @Schema(
+              description =
+                  "Why the runs are being stopped: RELEASE_REQUEST_CANCELLED (the request itself"
+                      + " went away — withdrawn, closed or re-scoped) or HELD_BY_PRE_RUN_GATE (a"
+                      + " pre-run gate is holding the request; not a verdict). Omit for"
+                      + " RELEASE_REQUEST_CANCELLED, today's behaviour",
+              enumeration = {"RELEASE_REQUEST_CANCELLED", "HELD_BY_PRE_RUN_GATE"})
+          String reason) {}
 
   /** Which runs the cancellation actually reached — empty when there was nothing left in flight. */
   public record CancelReleaseRequestRunsResponse(List<String> runIds) {}
@@ -697,6 +707,14 @@ public class CiRunController {
    * every phase. A word that names no phase is a 400 through {@link #requirePhase}, as on {@link
    * #rerunReleaseRequestPhase}, rather than read as absent: a misspelt narrowing silently widened to
    * everything is exactly the cancellation this field exists to prevent.
+   *
+   * <p><b>An optional {@code reason} names what the cancellation records</b> (qits-899). The
+   * allowlist is {@link CiRunService#RELEASE_REQUEST_CANCELLED} — absent, and the request itself
+   * went away — and {@link CiRunService#HELD_BY_PRE_RUN_GATE} — a pre-run gate is holding the
+   * request, which is not a verdict either. {@link CiRunService} validates the word against that
+   * allowlist before touching a single run, so an unknown reason is a 400 that cancels nothing,
+   * exactly the way an unknown phase is. An old qits-projects that sends no reason keeps today's
+   * behaviour.
    */
   @POST
   @Path("/cancellations")
@@ -708,7 +726,12 @@ public class CiRunController {
       responseCode = "202",
       description = "The request's runs have been stopped or asked to stop",
       content = @Content(schema = @Schema(implementation = CancelReleaseRequestRunsResponse.class)))
-  @APIResponse(responseCode = "400", description = "The repository id or the release request id is missing or invalid, or the phase names no phase")
+  @APIResponse(
+      responseCode = "400",
+      description =
+          "The repository id or the release request id is missing or invalid, the phase names no"
+              + " phase, or the reason names neither RELEASE_REQUEST_CANCELLED nor"
+              + " HELD_BY_PRE_RUN_GATE")
   @APIResponse(
       responseCode = "403",
       description =
@@ -728,7 +751,8 @@ public class CiRunController {
     return Response.accepted()
         .entity(
             new CancelReleaseRequestRunsResponse(
-                runService.cancelReleaseRequestRuns(request.repoId(), releaseRequestId, phase)))
+                runService.cancelReleaseRequestRuns(
+                    request.repoId(), releaseRequestId, phase, request.reason())))
         .build();
   }
 
