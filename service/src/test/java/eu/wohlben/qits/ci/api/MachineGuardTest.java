@@ -189,59 +189,6 @@ public class MachineGuardTest {
       """
       {"repoId":"guarded-repo","releaseRequestId":"rr-guarded","phase":"RELEASE_REQUEST"}""";
 
-  /** The runner register door — the one machine door {@code CiRunnerController} has. */
-  private static final String REGISTER =
-      "/ci/api/runners/00000000-0000-0000-0000-000000000440/register";
-
-  @Test
-  void theRunnerRegisterDoorWithNoMachineTokenIs401() {
-    given()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body("{\"capabilities\":{}}")
-        .when()
-        .post(REGISTER)
-        .then()
-        .statusCode(401);
-  }
-
-  @Test
-  @TestSecurity(user = "tok-ci-runner-registration-x", roles = {"qits:ci-runner-registration"})
-  @OidcSecurity(
-      claims = {
-        @Claim(key = "aud", value = FOREIGN_AUDIENCE),
-        @Claim(key = "sub", value = "tok-ci-runner-registration-x")
-      })
-  void aRegistrationTokenAddressedElsewhereMayNotRegister() {
-    // MachineAuth's own 403, asked before anything is read: this door does not even say whether the
-    // runner exists to a token that is not addressed to the platform.
-    given()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body("{\"capabilities\":{}}")
-        .when()
-        .post(REGISTER)
-        .then()
-        .statusCode(403);
-  }
-
-  @Test
-  @TestSecurity(user = ARTIFACTS, roles = {"qits:agent"})
-  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
-  void anAgentTokenMayNotDeclareARunner() {
-    // qits-521 widened the four lifecycle writes to {qits:admin, qits:system} — a qits:system
-    // bearer addressed here now declares (CiRunnerControllerTest's
-    // aSystemBearerCreatesPatchesRotatesAndDeletesARunner and
-    // aSystemBearerAddressedElsewhereIs403AndMintsNothing cover that pair in full) — but
-    // qits:agent never gets this far: it is in none of these doors' @RolesAllowed, exactly as it
-    // is refused every other write in this file.
-    given()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body("{\"name\":\"machine-made\",\"slots\":1}")
-        .when()
-        .post("/ci/api/runners")
-        .then()
-        .statusCode(403);
-  }
-
   @Test
   void thePhaseRerunWithNoMachineTokenIs401() {
     given()

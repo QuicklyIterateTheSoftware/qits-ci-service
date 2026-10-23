@@ -860,7 +860,7 @@ public final class CiReleaseComposer {
       // `latestVersion` — so every composed release on the platform ran whatever the last CLI
       // release had been, with nothing in any consumer's tree naming it and no line anybody could
       // revert. It is a pom pin now (eu.wohlben.qits:qits-platform-access-cli-binary), injected by
-      // StepContainerSettings as $QITS_ARTIFACTS_CLI_VERSION, and this text simply spends it.
+      // CiSlotSettings as $QITS_ARTIFACTS_CLI_VERSION, and this text simply spends it.
       //
       // Which is why the listing read, its best-effort bearer and the jq that parsed it are all
       // gone: a release step's image no longer needs jq for the CLI's sake at all.
@@ -902,7 +902,7 @@ public final class CiReleaseComposer {
       // The file NAMES are history: they carried a commissioned client's id and secret while a step
       // ran on qits-net. A step holds `$QITS_TOKEN` and nothing else now (qits-515), so the id is
       // `$QITS_TOKEN_SUBJECT` — this run's own subject, sent alongside the token by
-      // `StepWorkloadSpecs` — and the secret is the token, which is what the edge's Basic realm
+      // `CiSlotSpecs` — and the secret is the token, which is what the edge's Basic realm
       // introspects. With no token the files are empty.
       out.append("(\n");
       out.append("  umask 077\n");
@@ -1240,7 +1240,7 @@ public final class CiReleaseComposer {
     // this block, the postlude's `qits artifacts publish` included, is unaffected by which arm
     // ran.
     // The download goes through the public edge, which answers an anonymous read with a 401.
-    // `$QITS_TOKEN` is this run's ci-run token, exactly as `StepContainerSettings.BOOTSTRAP` reads
+    // `$QITS_TOKEN` is this run's ci-run token, exactly as `CiSlotSettings.BOOTSTRAP` reads
     // it for the daemon binary's own download, and the idiom is the same: a local `set --` builds
     // the bearer header as a positional list, spent as `"$@"` on both arms and never interpolated
     // into the url. `set --` is safe here because nothing else the release prelude, the declared

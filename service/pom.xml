@@ -51,14 +51,8 @@
             <artifactId>qits-ci-daemon-protocol</artifactId>
         </dependency>
         <dependency>
-            <!-- The runner control-socket wire contract — what runnerhost/CiRunnerSocket speaks with a
-                 registered runner. Pinned in the root pom beside the daemon protocol. -->
-            <groupId>${project.groupId}</groupId>
-            <artifactId>qits-ci-runner-protocol</artifactId>
-        </dependency>
-        <dependency>
             <!-- WHICH qits CLI EVERY COMPOSED RELEASE STEP RUNS. Three strings and no bytes:
-                 PlatformAccessCliBinary.VERSION is what StepContainerSettings injects as
+                 PlatformAccessCliBinary.VERSION is what CiSlotSettings injects as
                  $QITS_ARTIFACTS_CLI_VERSION, and the composed prelude downloads exactly that
                  coordinate. Declared here and not in `ci/` because the launcher — the one thing
                  that has to state a version — lives in this module; the composer only reads the
@@ -297,12 +291,6 @@
             <groupId>eu.wohlben.qits</groupId>
             <artifactId>qits-landing-app-pacts-qits-ci-service</artifactId>
             <version>${qits.landing-app-pacts-qits-ci-service.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>eu.wohlben.qits</groupId>
-            <artifactId>qits-ci-runner-daemon-pacts-qits-ci-service</artifactId>
-            <version>${qits.ci-runner-daemon-pacts-qits-ci-service.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>

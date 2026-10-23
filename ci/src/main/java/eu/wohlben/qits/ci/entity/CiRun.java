@@ -463,31 +463,34 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   public String stepImages;
 
   /**
-   * The {@link CiRunner} that held this run, or null for every run a runner did not execute — which
-   * is every run the since-deleted in-process executor ran (its steps launched through
-   * qits-containers), and every row recorded before {@code V23__runners.sql}. Every run a live
-   * qits-ci executes carries one (qits-506).
-   *
-   * <p><b>No foreign key, for {@link #repoId}'s reason.</b> A decommissioned runner leaves its runs
-   * behind as history: a key would either refuse the decommission or cascade the history away. What
-   * reads it is {@code CiRunners} — a runner holding a {@code RUNNING} run may not be deleted, and
-   * how many it holds is on its listing — and the run's own DTO, which names the runner.
+   * The run's lease on an execution target (epic qits-1481, {@code V39__run_leases.sql}): asked for
+   * when the run is queued, and ended when it closes. One lease runs every step of the run. Null for
+   * a run whose lease is not asked for yet, and for every row recorded before the column — the runs
+   * CI runners executed. <b>No foreign key</b>: the lease is qits-system's row, in another database.
    */
-  @Column(name = "runner_id")
-  public UUID runnerId;
+  @Column(name = "lease_id")
+  public UUID leaseId;
 
   /**
-   * The step launch this run has in flight on its runner, so that a restarted qits-ci can take the
-   * running container back instead of starting the run again (qits-1192, {@code
-   * V37__run_inflight_launch.sql}). Written when a step's launch is recorded, before the runner is
-   * asked for the container. A value is current only while no step row exists for {@link
-   * #inflightStepIndex}: step rows are written when a step ends, so a stale value names a step that
-   * already has its row. None of it is a secret.
+   * The target the run's lease was granted on, written by the claim, or null while the run waits —
+   * what a person reads to know where a run ran. No foreign key, for {@link #leaseId}'s reason.
+   */
+  @Column(name = "target_id")
+  public UUID targetId;
+
+  /**
+   * The run's launch and the step it has in flight, so that a restarted qits-ci can take the run back
+   * instead of starting it again (qits-1192, {@code V37__run_inflight_launch.sql}). Since a run is
+   * one lease (epic qits-1481) the launch is the lease's daemon: {@link #inflightDaemonId} and
+   * {@link #inflightTokenSubject} are written when the lease is asked for, and this index when each
+   * step is about to be sent. A value is current only while no step row exists for it: step rows are
+   * written when a step ends, so a stale value names a step that already has its row. None of it is a
+   * secret.
    */
   @Column(name = "inflight_step_index")
   public Integer inflightStepIndex;
 
-  /** The launch id the step's ci-daemon names in its {@code Hello}. */
+  /** The launch id the lease's ci-daemon names in its {@code Hello}. */
   @Column(name = "inflight_daemon_id", length = 64)
   public String inflightDaemonId;
 
@@ -500,26 +503,15 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   public Instant inflightStartedAt;
 
   /**
-   * What this run is for — {@link CiRunPurpose#BUILD} on every row but a runner's health check, and
-   * on every row written before {@code V24__runner_quarantine.sql}, whose default wrote it.
-   *
-   * <p>Initialised here so every insert path that predates health checks keeps writing a build
-   * without naming one; the one writer of {@link CiRunPurpose#HEALTHCHECK} is {@code
-   * CiRunService.acceptHealthCheck}.
+   * What this run is for — {@link CiRunPurpose#BUILD} on every row a live qits-ci writes. The other
+   * value is a retired CI runner's health check, on historical rows only (epic qits-1481); the
+   * column keeps its default so every insert path writes a build without naming one.
    */
   @Enumerated(EnumType.STRING)
   @Column(nullable = false, length = 32)
   public CiRunPurpose purpose = CiRunPurpose.BUILD;
 
-  /**
-   * The one runner a health check may be reserved by, or null on every build. No foreign key, for
-   * {@link #runnerId}'s reason. It is what a runner's {@code Reserve} is matched against — and the
-   * only thing that lets a quarantined runner take anything at all.
-   */
-  @Column(name = "target_runner_id")
-  public UUID targetRunnerId;
-
-  /** Whether this run is a runner's health check rather than a build. */
+  /** Whether this run is a retired CI runner's health check rather than a build. */
   public boolean healthCheck() {
     return purpose == CiRunPurpose.HEALTHCHECK;
   }

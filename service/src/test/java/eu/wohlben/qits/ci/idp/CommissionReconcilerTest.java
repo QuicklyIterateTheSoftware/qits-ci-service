@@ -6,7 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -61,7 +60,7 @@ public class CommissionReconcilerTest {
                 token("tok-live", "ci-run", "run-live", old),
                 // Younger than the grace: its run may simply not have launched a step yet.
                 token("tok-young", "ci-run", "run-young", now.minus(Duration.ofMinutes(2))),
-                // Another kind of token is the registration sweep's, never this one's.
+                // Another kind of token is not a run's, and this sweep never touches it.
                 token("tok-reg", "ci-runner-registration", "runner-1", old)),
             Set.of("run-live"),
             now);
@@ -96,7 +95,8 @@ public class CommissionReconcilerTest {
   /**
    * qits-515: the reconciler stops looking for {@code ci-run} CLIENTS. A run commissions a token and
    * never a client, so a row of that kind in the listing — whatever a qits-ci before this one left —
-   * is none of this sweep's business: the client half of a pass touches {@code ci-runner} rows only.
+   * is none of this sweep's business. Since epic qits-1481 a pass reaps no client at all: the
+   * retired runner's clients are {@code LegacyRunnerClients}' one-shot.
    */
   @Test
   public void aCiRunClientInTheListingIsNoLongerReaped() {
@@ -109,8 +109,6 @@ public class CommissionReconcilerTest {
         List.of(row("client-dead", "ci-run", "run-dead")), reconciler.idp.live().orElseThrow());
     // ...and left alone by the whole pass, which does not even read the run table for it.
     reconciler.reconcile();
-    assertEquals(List.of(), idp.deleted);
-    assertEquals(0, reconciler.reapRunnerClients(reconciler.idp.live().orElseThrow(), Map.of()));
     assertEquals(List.of(), idp.deleted);
   }
 
@@ -127,88 +125,14 @@ public class CommissionReconcilerTest {
     assertTrue(idp.listings.get() > 0, "it did ask");
   }
 
-  // --- runners ------------------------------------------------------------------------------------
-
   private static final Instant NOW = Instant.parse("2026-09-27T12:00:00Z");
-
-  private static final Instant OLD = NOW.minus(Duration.ofHours(2));
-
-  private static CommissionReconciler.RunnerCredentials unregistered(String tokenId) {
-    return new CommissionReconciler.RunnerCredentials(null, tokenId);
-  }
-
-  private static CommissionReconciler.RunnerCredentials registered(String clientId, String tokenId) {
-    return new CommissionReconciler.RunnerCredentials(clientId, tokenId);
-  }
-
-  private static IdpCommissioner.LiveToken token(String id, String runner, Instant createdAt) {
-    return new IdpCommissioner.LiveToken(
-        id, "tok-ci-runner-registration-" + runner, "ci-runner-registration", runner, createdAt);
-  }
-
-  @Test
-  public void aRunnerClientIsReapedWhenItsRunnerIsGoneOrNamesAnotherClient() {
-    Map<String, CommissionReconciler.RunnerCredentials> rows = new HashMap<>();
-    rows.put("runner-live", registered("client-live", null));
-    rows.put("runner-registering", unregistered("token-r"));
-    rows.put("runner-reregistered", registered("client-winner", null));
-
-    int reaped =
-        reconciler.reapRunnerClients(
-            List.of(
-                row("client-live", "ci-runner", "runner-live"),
-                // A registration between its commission and its write: the row has no client yet.
-                row("client-in-flight", "ci-runner", "runner-registering"),
-                row("client-loser", "ci-runner", "runner-reregistered"),
-                row("client-orphan", "ci-runner", "runner-deleted"),
-                // Another kind is not a runner's client, and nothing reaps it (qits-515).
-                row("client-run", "ci-run", "runner-deleted")),
-            rows);
-
-    assertEquals(2, reaped);
-    assertEquals(List.of("client-loser", "client-orphan"), idp.deleted);
-  }
-
-  @Test
-  public void aRegistrationTokenIsReapedWhenGoneSpentOrReplacedAndSparedWhileYoung() {
-    Map<String, CommissionReconciler.RunnerCredentials> rows = new HashMap<>();
-    rows.put("runner-waiting", unregistered("token-current"));
-    rows.put("runner-rotated", unregistered("token-new"));
-    rows.put("runner-registered", registered("client-x", "token-spent"));
-
-    int reaped =
-        reconciler.reapRunnerTokens(
-            List.of(
-                token("token-current", "runner-waiting", OLD),
-                token("token-old", "runner-rotated", OLD),
-                token("token-spent", "runner-registered", OLD),
-                token("token-orphan", "runner-deleted", OLD),
-                // Commissioned a moment ago, before the create's row could name it.
-                token("token-young", "runner-being-created", NOW.minusSeconds(30)),
-                // A listing with no instant reads as old, never as young.
-                token("token-undated", "runner-deleted", null)),
-            rows,
-            NOW);
-
-    assertEquals(4, reaped);
-    assertEquals(List.of("token-old", "token-spent", "token-orphan", "token-undated"), idp.deletedTokens);
-  }
-
-  @Test
-  public void anUnreadableRunnerTableReapsNoRunnerCredential() {
-    assertEquals(
-        0, reconciler.reapRunnerClients(List.of(row("c", "ci-runner", "r")), null));
-    assertEquals(0, reconciler.reapRunnerTokens(List.of(token("t", "r", OLD)), null, NOW));
-    assertEquals(List.of(), idp.deleted);
-    assertEquals(List.of(), idp.deletedTokens);
-  }
 
   @Test
   public void aRealTokenListingIsReadOffTheWireAndAnUnreadableOneReapsNothing() {
     idp.tokenListingBody =
-        "[{\"tokenId\":\"token-dead\",\"subject\":\"tok-ci-runner-registration-r-1\","
-            + "\"owner\":\"dev-qits-ci\",\"contextKind\":\"ci-runner-registration\","
-            + "\"contextId\":\"runner-gone\",\"claims\":{},\"gitRefs\":[],"
+        "[{\"tokenId\":\"token-dead\",\"subject\":\"tok-ci-run-run-gone-1\","
+            + "\"owner\":\"dev-qits-ci\",\"contextKind\":\"ci-run\","
+            + "\"contextId\":\"run-gone\",\"claims\":{},\"gitRefs\":[],"
             + "\"createdAt\":\"2026-09-27T09:00:00Z\"}]";
 
     List<IdpCommissioner.LiveToken> live = reconciler.idp.liveTokens().orElseThrow();
@@ -217,12 +141,12 @@ public class CommissionReconcilerTest {
         List.of(
             new IdpCommissioner.LiveToken(
                 "token-dead",
-                "tok-ci-runner-registration-r-1",
-                "ci-runner-registration",
-                "runner-gone",
+                "tok-ci-run-run-gone-1",
+                "ci-run",
+                "run-gone",
                 Instant.parse("2026-09-27T09:00:00Z"))),
         live);
-    assertEquals(1, reconciler.reapRunnerTokens(live, Map.of(), NOW));
+    assertEquals(1, reconciler.reapRunTokens(live, Set.of(), NOW));
     assertEquals(List.of("token-dead"), idp.deletedTokens);
 
     idp.tokenListingBody = "{\"not\":\"an array\"}";
@@ -232,15 +156,15 @@ public class CommissionReconcilerTest {
   @Test
   public void aCommissionedTokenAndItsDeletionGoToTheTokenSurface() {
     IdpCommissioner.CommissionedToken minted =
-        reconciler.idp.commissionToken("ci-runner-registration", "runner-9", List.of());
+        reconciler.idp.commissionToken("ci-run", "run-9", List.of());
 
     assertEquals("token-1", minted.tokenId());
     assertEquals("qits_tok_stub-1", minted.token());
-    assertEquals("tok-ci-runner-registration-runner-9-1", minted.subject());
+    assertEquals("tok-ci-run-run-9-1", minted.subject());
     // A record's toString names every component; this one must not name the value.
     assertTrue(!minted.toString().contains("qits_tok_"), minted.toString());
     assertEquals(
-        List.of("{\"contextKind\":\"ci-runner-registration\",\"contextId\":\"runner-9\",\"gitRefs\":[]}"),
+        List.of("{\"contextKind\":\"ci-run\",\"contextId\":\"run-9\",\"gitRefs\":[]}"),
         idp.postedTokens);
     assertEquals(List.of(), idp.posted, "a token is not a client");
 
@@ -251,6 +175,6 @@ public class CommissionReconcilerTest {
     idp.tokenMintStatus = 403;
     assertThrows(
         IdpCommissioner.CommissionFailedException.class,
-        () -> reconciler.idp.commissionToken("ci-runner-registration", "runner-9", List.of()));
+        () -> reconciler.idp.commissionToken("ci-run", "run-9", List.of()));
   }
 }

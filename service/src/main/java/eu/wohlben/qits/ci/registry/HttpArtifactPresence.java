@@ -48,7 +48,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * deployment sets it, otherwise the origin of {@code qits.artifacts.maven.registry-url}. The maven
  * root is {@code qits.artifacts.maven.registry-url} itself when no explicit origin is set (it IS the
  * hosted maven root), and {@code <origin>/artifacts/maven/maven} when one is; the npm root is {@code
- * <origin>/artifacts/npm/npm} — the same two paths {@code StepAddressPlane} tells a step.
+ * <origin>/artifacts/npm/npm} — the same two paths {@code CiSlotAddresses} tells a step.
  *
  * <p><b>No credential, deliberately</b>, for {@link HttpImagePins}' reason: qits-artifacts' {@code
  * PublishGuard} guards only the publish verbs ({@code PUT} on {@code /artifacts/maven/…} and {@code

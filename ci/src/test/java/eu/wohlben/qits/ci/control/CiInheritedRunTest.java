@@ -34,9 +34,10 @@ import org.junit.jupiter.api.Test;
  * hold the engine's half of the fix, against the scripted seam:
  *
  * <ul>
- *   <li>a run a runner holds is <b>inherited</b> — it stays {@code RUNNING}, steps and all — and once
- *       the runner claims it the run continues: the in-flight step is taken back, never launched;
- *   <li>a run whose runner does not come back is settled — FAILED when it publishes, re-queued when
+ *   <li>a run that holds a lease is <b>inherited</b> — it stays {@code RUNNING}, steps and all — and
+ *       once its daemon dials back the run continues on the same lease: the in-flight step is taken
+ *       back, never sent again;
+ *   <li>a run whose daemon does not come back is settled — FAILED when it publishes, re-queued when
  *       it does not;
  *   <li>a step the stopping process gives up on settles nothing;
  *   <li>a launch is recorded on the run row before its container can exist;
@@ -64,11 +65,14 @@ public class CiInheritedRunTest extends CiTestSupport {
 
   private static final Instant STARTED = Instant.parse("2026-10-11T12:08:25Z");
 
-  /** The launch id the previous process recorded for step 1; one this service mints, a UUID. */
+  /** The run's launch id the previous process recorded; one this service mints, a UUID. */
   private static final String DAEMON_1 = "5b1f0c1e-6a43-4f3e-9d1a-0c8b2f7e1a11";
 
-  /** The launch id of step 0, recorded and long over. */
-  private static final String DAEMON_0 = "0aa7c2d4-1b1e-4c55-8f0e-7d3c2b1a0f00";
+  /** The same lease's launch, as a row between two steps records it. */
+  private static final String DAEMON_0 = DAEMON_1;
+
+  /** The run's lease in qits-system. */
+  private static final UUID LEASE = UUID.fromString("7d0c0f6e-2a1b-4c3d-9e8f-0a1b2c3d4e5f");
 
   @BeforeEach
   void captured() {
@@ -77,24 +81,26 @@ public class CiInheritedRunTest extends CiTestSupport {
   }
 
   @Test
-  public void aRunItsRunnerHoldsIsInheritedNotRestarted() throws Exception {
+  public void aRunItsLeaseHoldsIsInheritedNotRestarted() throws Exception {
     String runId = insertRunning(null, true);
 
     service.sweepInterrupted();
     forgetLoadedEntities();
 
     CiRun row = service.requireRun(runId);
-    assertEquals(CiRunStatus.RUNNING, row.status, "it waits for its runner; it is not re-queued");
+    assertEquals(CiRunStatus.RUNNING, row.status, "it waits for its daemon; it is not re-queued");
     assertEquals(1, service.stepsFor(runId).size(), "the finished step keeps its row");
     assertEquals(1, fakeRunner.inheritances().size());
     CiStepRunner.InheritedRun inherited = fakeRunner.inheritances().get(0).run();
     assertEquals(runId, inherited.runId());
-    assertEquals(suiteRunner.id(), inherited.runnerId());
+    assertEquals(LEASE, inherited.leaseId());
+    assertEquals(DAEMON_1, inherited.daemonId(), "the run's one launch, to be admitted again");
+    assertEquals("sub-run", inherited.tokenSubject());
     assertEquals(
         new CiStepRunner.InFlightStep(1, DAEMON_1, "sub-run", STARTED, "echo publish", 600),
         inherited.inFlight(),
         "the in-flight step as the row recorded it, with its script for a daemon still owed it");
-    assertTrue(fakeRunner.executed().isEmpty(), "nothing is launched before the runner is back");
+    assertTrue(fakeRunner.executed().isEmpty(), "nothing is sent before the daemon is back");
     assertTrue(fakeRunner.revoked().isEmpty(), "its old token is still the running step's");
   }
 
@@ -103,7 +109,7 @@ public class CiInheritedRunTest extends CiTestSupport {
     String runId = insertRunning(null, true);
     service.sweepInterrupted();
 
-    // The runner came back holding the run: its driver continues it.
+    // The daemon dialled back: the run's driver continues it.
     fakeRunner.inheritances().get(0).adopted().run();
     forgetLoadedEntities();
 
@@ -125,15 +131,15 @@ public class CiInheritedRunTest extends CiTestSupport {
         recorded.get(1).startedAt.truncatedTo(ChronoUnit.SECONDS),
         "the taken-back step keeps the start the previous process recorded");
     assertEquals("fake-daemon-old", row.daemonVersion, "the run keeps the daemon it pinned");
-    assertEquals(
-        List.of(runId),
-        fakeRunner.revoked(),
-        "the old token is revoked once the taken-back step, its last user, has ended");
+    assertTrue(
+        fakeRunner.revoked().isEmpty(),
+        "the old token is the lease container's for every step left: the run's close deletes it");
+    assertTrue(fakeRunner.closed().contains(runId));
   }
 
   @Test
-  public void anInheritedRunWithoutAStepInFlightContinuesWithALaunch() throws Exception {
-    // Between two steps when the process stopped: step 0 has its row, step 1 was never launched.
+  public void anInheritedRunWithoutAStepInFlightContinuesOnItsLease() throws Exception {
+    // Between two steps when the process stopped: step 0 has its row, step 1 was never sent.
     String runId = insertRunning(null, false);
     service.sweepInterrupted();
     assertNull(fakeRunner.inheritances().get(0).run().inFlight());
@@ -141,7 +147,7 @@ public class CiInheritedRunTest extends CiTestSupport {
     fakeRunner.inheritances().get(0).adopted().run();
     forgetLoadedEntities();
 
-    assertEquals(List.of(runId), fakeRunner.revoked(), "no container uses the old token");
+    assertTrue(fakeRunner.revoked().isEmpty(), "the lease container still holds the old token");
     assertTrue(fakeRunner.reattached().isEmpty());
     assertEquals(
         List.of(1, 2), fakeRunner.executed().stream().map(CiStepRunner.StepSpec::stepIndex).toList());
@@ -149,7 +155,7 @@ public class CiInheritedRunTest extends CiTestSupport {
   }
 
   @Test
-  public void aPublishingRunWhoseRunnerDoesNotComeBackFailsAndIsNotRunAgain() throws Exception {
+  public void aPublishingRunWhoseDaemonDoesNotComeBackFailsAndIsNotRunAgain() throws Exception {
     String runId = insertRunning(CiRunPhase.RELEASE, true);
     service.sweepInterrupted();
 
@@ -167,7 +173,7 @@ public class CiInheritedRunTest extends CiTestSupport {
     assertTrue(
         recorded.get(1).output.contains("it is not run again"),
         "the step says why: " + recorded.get(1).output);
-    assertTrue(recorded.get(1).output.contains("runner " + SuiteRunner.NAME), recorded.get(1).output);
+    assertTrue(recorded.get(1).output.contains("did not come back"), recorded.get(1).output);
     assertEquals(CiStepStatus.SKIPPED, recorded.get(2).status);
     assertTrue(fakeRunner.executed().isEmpty(), "no step is launched again");
     assertEquals(1, runsOf(row.repoId).size(), "and nothing retries it behind a person's back");
@@ -178,7 +184,7 @@ public class CiInheritedRunTest extends CiTestSupport {
   }
 
   @Test
-  public void anOrdinaryRunWhoseRunnerDoesNotComeBackStartsOver() throws Exception {
+  public void anOrdinaryRunWhoseDaemonDoesNotComeBackStartsOver() throws Exception {
     String runId = insertRunning(null, true);
     service.sweepInterrupted();
 
@@ -186,7 +192,7 @@ public class CiInheritedRunTest extends CiTestSupport {
     suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
-    // Re-queued with its steps cleared, and a runner ran it again from the start, as every
+    // Re-queued with its steps cleared, and a lease ran it again from the start, as every
     // interrupted run used to: it publishes nothing.
     CiRun row = service.requireRun(runId);
     assertEquals(CiRunStatus.SUCCESS, row.status);
@@ -214,7 +220,7 @@ public class CiInheritedRunTest extends CiTestSupport {
   }
 
   @Test
-  public void aRunCancelledWhileItsRunnerWasAwayIsOnlyClosedAndItsTokenRevoked() throws Exception {
+  public void aRunCancelledWhileItsDaemonWasAwayIsOnlyClosedAndItsTokenRevoked() throws Exception {
     String runId = insertRunning(CiRunPhase.RELEASE, true);
     service.sweepInterrupted();
     service.cancel(runId);
@@ -250,8 +256,9 @@ public class CiInheritedRunTest extends CiTestSupport {
   }
 
   @Test
-  public void aRunWhoseRunnerIsGoneIsSettled() throws Exception {
-    assertSettledAtBoot(row -> row.runnerId = UUID.randomUUID(), "no longer exists");
+  public void aRunThatHoldsNoLeaseIsSettled() throws Exception {
+    // What the cutover finds: a run a retired CI runner held (epic qits-1481).
+    assertSettledAtBoot(row -> row.leaseId = null, "holds no lease");
   }
 
   @Test
@@ -265,10 +272,8 @@ public class CiInheritedRunTest extends CiTestSupport {
             () -> {
               CiRun row = runs.findById(runId);
               row.carriedSteps = 1;
-              row.daemonVersion = null;
+              // The lease's launch is recorded when it is asked for; no step was sent yet.
               row.inflightStepIndex = null;
-              row.inflightDaemonId = null;
-              row.inflightTokenSubject = null;
               row.inflightStartedAt = null;
             });
 
@@ -281,18 +286,16 @@ public class CiInheritedRunTest extends CiTestSupport {
 
     assertEquals(
         List.of(1, 2), fakeRunner.executed().stream().map(CiStepRunner.StepSpec::stepIndex).toList(),
-        "the carried step is never launched");
+        "the carried step is never sent");
     assertEquals(CiRunStatus.SUCCESS, service.requireRun(runId).status);
   }
 
   @Test
   public void aRunThatMayHaveLaunchedWithoutARecordIsSettled() throws Exception {
-    // What a process older than the record leaves: a pinned daemon, a finished step, no launch.
+    // A finished step and a launch that names no step: one may have been sent and not recorded.
     assertSettledAtBoot(
         row -> {
           row.inflightStepIndex = null;
-          row.inflightDaemonId = null;
-          row.inflightTokenSubject = null;
           row.inflightStartedAt = null;
         },
         "none is recorded");
@@ -430,9 +433,9 @@ public class CiInheritedRunTest extends CiTestSupport {
   }
 
   /**
-   * A three-step event run the previous process left {@code RUNNING} on the suite's runner: step 0
-   * finished and has its row; step 1's launch is recorded when {@code inFlight}, as the previous
-   * process records it before asking the runner for the container, and step 0's otherwise.
+   * A three-step event run the previous process left {@code RUNNING} in a lease: step 0 finished and
+   * has its row; the run's launch names step 1 when {@code inFlight}, as the previous process records
+   * it before it sends the step, and step 0 otherwise.
    */
   private String insertRunning(CiRunPhase phase, boolean inFlight) {
     String id = UUID.randomUUID().toString();
@@ -456,7 +459,7 @@ public class CiInheritedRunTest extends CiTestSupport {
               run.triggerEventPayload = "{\"version\":\"2026.1011.115738\"}";
               run.triggerConfig = triggerFile(THREE_STEPS);
               run.phase = phase;
-              run.runnerId = suiteRunner.id();
+              run.leaseId = LEASE;
               run.daemonVersion = "fake-daemon-old";
               if (inFlight) {
                 run.inflightStepIndex = 1;

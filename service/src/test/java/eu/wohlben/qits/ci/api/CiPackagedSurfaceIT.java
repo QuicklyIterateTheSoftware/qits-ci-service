@@ -8,9 +8,6 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 import eu.wohlben.qits.ci.daemonhost.FakeCiDaemon;
 import eu.wohlben.qits.ci.githost.StubGitHost;
-import eu.wohlben.qits.ci.runnerhost.CiRunnerSocket;
-import eu.wohlben.qits.ci.runnerhost.FakeCiRunner;
-import eu.wohlben.qits.ci.runnerhost.RunnerAddresses;
 import eu.wohlben.qits.ci.testdb.EmbeddedPg;
 import io.quarkus.test.junit.QuarkusIntegrationTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
@@ -60,8 +57,6 @@ import org.junit.jupiter.api.Test;
  *       {@code @WebSocket} endpoint is registered by an extension at augmentation, so "websockets-next
  *       is native-image supported" is a claim this repo's rule says the binary has to prove rather
  *       than the documentation;
- *   <li>so is the runner control socket at {@code /ci/runners/socket}, the second endpoint of the
- *       same kind and owed the same proof;
  *   <li>and, for the same reason, <b>how the Angular client and the machine surface divide {@code
  *       /ci}</b>. Quinoa is disabled by default in test mode, so no {@code @QuarkusTest} in this repo
  *       has ever seen the client at all — the SPA fallback, the {@code <base href>} another
@@ -77,8 +72,8 @@ import org.junit.jupiter.api.Test;
  *
  * <p>The pipeline it pushes declares <b>no steps</b> — a config-less push records nothing at all, so
  * an empty {@code steps} list is the smallest config that still records a run, and it takes the path
- * through the parser and the database without needing docker. Step execution is a runner's, and the
- * stories play one ({@code stories/support/StoryRunner}).
+ * through the parser and the database without needing docker. Step execution is a CI lease's on a
+ * qits-system target, and the stories play qits-system ({@code stories/support/StorySystem}).
  */
 @QuarkusIntegrationTest
 @TestProfile(CiPackagedSurfaceIT.PackagedUnderTarget.class)
@@ -335,51 +330,22 @@ public class CiPackagedSurfaceIT {
   }
 
   @Test
-  public void theRunnerInstallScriptIsInTheArtifact() {
-    // The template is read by name at run time (quarkus.native.resources.includes), so a native
-    // build that dropped it would answer every install line with a 500. The gate is off here, so
-    // the forward-auth pair carries a reading role; the body is the generic script, with no
-    // placeholder left.
-    String script =
-        given()
-            .header(FakeCiDaemon.USER_HEADER, "a-reader")
-            .header(FakeCiDaemon.ROLES_HEADER, "qits:agent")
-            .when()
-            .get("/ci/api/runners/install.sh")
-            .then()
-            .statusCode(200)
-            .contentType(ContentType.TEXT)
-            .extract()
-            .asString();
-    assertTrue(script.startsWith("#!/bin/sh\n"), script);
-    assertFalse(script.contains("{{"), script);
-    // The runner image is named on the registry's public name under the launched process's domain.
-    assertTrue(
-        script.contains("image='registry.qits." + PackagedUnderTarget.DOMAIN + "/qits/qits-ci-runner:"),
-        script);
-  }
-
-  @Test
-  public void theRunnerControlSocketIsOnTheArtifactsRouter() throws Exception {
-    // The daemon socket's probe, for the runner's: route presence, not behaviour. A runner dials
-    // exactly this path (RunnerAddresses composes its socketUrl from it), and a native build that
-    // dropped the endpoint would leave every runner reconnecting forever with nothing to say why.
-    //
-    // The gate is off here, so the forward-auth pair is what carries the role past the upgrade —
-    // and with no validated token there is no subject, so the socket closes 1008 after admitting
-    // the upgrade. A missing route fails the upgrade instead, with a 404.
-    URI socket =
-        URI.create("http://localhost:" + RestAssured.port + RunnerAddresses.SOCKET_PATH);
-    try (FakeCiRunner runner =
-        FakeCiRunner.dial(
-            socket,
-            Map.of(
-                FakeCiDaemon.USER_HEADER, "a-runner-without-a-token",
-                FakeCiDaemon.ROLES_HEADER, CiRunnerSocket.RUNNER_ROLE))) {
-      assertEquals(
-          (Short) (short) 1008,
-          runner.awaitClose(Duration.ofSeconds(20)),
-          "the packaged artifact must serve the runner socket and refuse a runner it cannot name");
+  public void theRetiredRunnerSurfaceIsGoneFromTheArtifact() {
+    // Epic qits-1481: a run is a CI lease on a qits-system target, so the runner API, its install
+    // script and its socket are deleted rather than left answering. A reading role is presented so
+    // a 404 here is the router's, not an authorization refusal dressed as one.
+    for (String path :
+        java.util.List.of("/ci/api/runners", "/ci/api/runners/install.sh", "/ci/runners/socket")) {
+      int status =
+          given()
+              .header(FakeCiDaemon.USER_HEADER, "a-reader")
+              .header(FakeCiDaemon.ROLES_HEADER, "qits:agent")
+              .when()
+              .get(path)
+              .then()
+              .extract()
+              .statusCode();
+      assertEquals(404, status, path + " must be gone from the packaged artifact");
     }
   }
 
@@ -398,13 +364,14 @@ public class CiPackagedSurfaceIT {
    * semantics are a {@code @QuarkusTest}'s ({@code CiPipelineBoundaryTest}).
    *
    * <p><b>The run is asserted ACCEPTED, not finished.</b> This used to wait for {@code SUCCESS},
-   * back when an in-process executor ran even a {@code steps: []} pipeline; since qits-506 every run
-   * is a runner's, and no runner connects to this process (this profile has no idp to mint a runner
-   * a bearer — the stories play one). So the row is {@code QUEUED} for good, which still proves
+   * back when an in-process executor ran even a {@code steps: []} pipeline; every run is a CI lease
+   * on a qits-system target now (epic qits-1481), and this profile commissions no run token and
+   * names no qits-system, so no lease is ever asked for (the stories play qits-system). So the row
+   * is {@code QUEUED} for good, which still proves
    * the parse, the migration and the write. The probe then <b>cancels</b> it — a second Panache write
    * — and deletes the row, and that is load-bearing rather than tidiness: {@code
    * TokenValidationBootstrapIT}'s profile extends this one, so every story class shares this
-   * database. A row left queued here is a run the next story's runner is handed instead of its own,
+   * database. A row left queued here is a run the stories' qits-system is asked a lease for,
    * and even a cancelled one keeps its repository a trigger candidate there — one no story git host
    * serves, so every story evaluation reports it skipped (both measured, running the two together).
    */
@@ -432,7 +399,7 @@ public class CiPackagedSurfaceIT {
         .statusCode(200);
 
     Map<String, Object> run = awaitRecordedRun(repoId);
-    assertEquals("QUEUED", run.get("status"), "no runner is connected, so the accepted run waits");
+    assertEquals("QUEUED", run.get("status"), "no lease is granted, so the accepted run waits");
     assertEquals(sha, run.get("commitSha"));
 
     // The run above proves the ci store. Read the row back out of the database this JVM handed the
@@ -450,7 +417,7 @@ public class CiPackagedSurfaceIT {
       }
     }
 
-    // Settle it, so no later story's runner is handed this row (see the javadoc).
+    // Settle it, so no later story's qits-system is asked a lease for this row (see the javadoc).
     String runId = String.valueOf(run.get("id"));
     given()
         .headers(OPERATOR)

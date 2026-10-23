@@ -13,7 +13,7 @@ import eu.wohlben.qits.ci.stories.support.StoryDaemon;
 import eu.wohlben.qits.ci.stories.support.StoryEdge;
 import eu.wohlben.qits.ci.stories.support.StoryIdentities;
 import eu.wohlben.qits.ci.stories.support.StoryOrigin;
-import eu.wohlben.qits.ci.stories.support.StoryRunner;
+import eu.wohlben.qits.ci.stories.support.StorySystem;
 import eu.wohlben.qits.ci.stories.support.StoryTarget;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonBinary;
 import io.quarkus.test.junit.QuarkusIntegrationTest;
@@ -82,8 +82,8 @@ import org.junit.jupiter.api.condition.EnabledIf;
  * step container this gate runs in, so the artifact that ships is the artifact that executes. (The
  * sibling {@code WorkspaceDaemonPinIT} has to download a jar instead, because that daemon's native
  * image is compiled against glibc. Same idea, opposite constraint.) What is not covered is the step
- * image's own toolchain and the runner's pull, which are qits-ci-runner-daemon's and the image
- * pipeline's.
+ * image's own toolchain and the target's pull, which are qits-system-runner-daemon's and the
+ * image pipeline's.
  *
  * <h2>Why it reuses the story harness rather than standing up a host of its own</h2>
  *
@@ -91,7 +91,7 @@ import org.junit.jupiter.api.condition.EnabledIf;
  * over there the subject is the codec. Here the subject is a <b>run</b>: a daemon that registers,
  * checks out and streams is only interesting if what comes back is a row somebody can read. So this
  * is {@link BuildExecutionIT}'s story with the fake daemon taken out and the real binary put in — the
- * same {@link StoryOrigin} repository, the same {@link StoryRunner}, the same trigger
+ * same {@link StoryOrigin} repository, the same {@link StorySystem}, the same trigger
  * door, the same transcript read over HTTP — and it shares that class's {@code @TestProfile}
  * deliberately. A second {@code @TestProfile} is a second launched qits-ci for the failsafe phase,
  * and a CI step here runs in a 4 g cgroup with no swap where each Quarkus profile retains ~125 MB of
@@ -104,9 +104,9 @@ import org.junit.jupiter.api.condition.EnabledIf;
  *
  * <h2>It gates, and it skips only where it must</h2>
  *
- * <p>No {@code @Tag("extended")}: this one has to run, and it needs no docker, because the runner is
- * {@link StoryRunner} — qits-ci sends a runner a workload spec, nothing starts a container, and the
- * test starts the daemon itself with the launch id and token it reads <b>out of that recorded spec</b>. Nothing
+ * <p>No {@code @Tag("extended")}: this one has to run, and it needs no docker, because the target is
+ * {@link StorySystem} — qits-ci asks qits-system for a lease, nothing starts a container, and the
+ * test starts the daemon itself with the launch id and token it reads <b>out of that lease's spec</b>. Nothing
  * here reads the host's launch table, which is what makes an admitted dial a measurement of the whole
  * path rather than of a fixture.
  *
@@ -163,7 +163,7 @@ public class CiDaemonPinIT {
 
   private static final int STEP_TIMEOUT_SECONDS = 300;
 
-  /** How long a launch may take to arrive once the runner holds the run. */
+  /** How long the run's lease may take to be asked for once the run is accepted. */
   private static final Duration LAUNCH_PATIENCE = Duration.ofSeconds(90);
 
   /**
@@ -224,7 +224,7 @@ public class CiDaemonPinIT {
             + " test");
 
     // NOT /tmp/qits-ci-daemon, AND THE NAME IS THE REASON. Inside a CI step container that exact
-    // path IS the running ci daemon: StepContainerSettings.BOOTSTRAP downloads the binary there, chmods
+    // path IS the running ci daemon: CiSlotSettings.BOOTSTRAP downloads the binary there, chmods
     // it and execs it, so a write to it gets ETXTBSY in CI while passing on a developer sandbox —
     // a red gate whose cause is a coincidence of names. This test owns its own directory and puts
     // everything, the binary included, inside it.
@@ -244,40 +244,38 @@ public class CiDaemonPinIT {
     StoryOrigin.awaitCandidateListing();
 
     Process daemon = null;
-    StoryRunner runner = null;
     StoryEdge edge = null;
     try {
       String runId = trigger();
 
-      // The credentials come out of the workload spec a runner was sent and by no other route —
+      // The credentials come out of the lease spec qits-system was sent and by no other route —
       // reading the host's own launch table instead would make the dial a fixture rather than a
       // measurement of the path qits-ci says it uses.
-      runner = StoryRunner.connect();
-      runner.take(runId);
-      StoryRunner.Launch launch = runner.awaitLaunch(LAUNCH_PATIENCE);
-      assertEquals(REPO_ID, launch.environment().get("QITS_CI_REPO_ID"), "the launch is for our run");
-      String daemonId = launch.environment().get(StoryDaemon.ID_VARIABLE);
-      String token = launch.environment().get(StoryDaemon.TOKEN_VARIABLE);
-      String subject = launch.environment().get(StoryDaemon.TOKEN_SUBJECT_VARIABLE);
+      StorySystem.Lease lease = StorySystem.awaitLease(runId, LAUNCH_PATIENCE);
+      Map<String, String> environment = lease.env();
+      assertEquals(REPO_ID, environment.get("QITS_CI_REPO_ID"), "the lease is for our run");
+      String daemonId = environment.get(StoryDaemon.ID_VARIABLE);
+      String token = environment.get(StoryDaemon.TOKEN_VARIABLE);
+      String subject = environment.get(StoryDaemon.TOKEN_SUBJECT_VARIABLE);
       assertNotNull(daemonId, "the spec must carry the per-container launch id");
       assertNotNull(token, "…and the run's token, which is the whole of the daemon's handshake");
       assertNotNull(subject, "…and the subject the edge forwards that token as");
       assertTrue(
-          launch.environment().get(StoryDaemon.URL_VARIABLE).endsWith(StoryTarget.DAEMON_PATH),
+          environment.get(StoryDaemon.URL_VARIABLE).endsWith(StoryTarget.DAEMON_PATH),
           "the container is told to dial " + StoryTarget.DAEMON_PATH);
-      // What the runner's host says once `docker run` returned — here, once this test is about to
+      // What qits-system's target says once the slot started — here, once this test is about to
       // start the binary itself.
-      runner.launched(launch);
+      StorySystem.grant(lease);
 
       // The binary presents the raw token and nothing else, which is the platform edge's to
       // introspect — so what the edge does stands between it and the host under test.
       edge = StoryEdge.inFrontOf(StoryTarget.daemonSocket(), token, subject);
-      daemon = start(binary, checkout, launch, publishedSha, log, edge.socketUrl());
+      daemon = start(binary, checkout, environment, publishedSha, log, edge.socketUrl());
       assertPinnedVersion(log);
 
-      // The step's end is the container's removal: qits-ci asks the runner to remove it before the
-      // run is settled, so the Reap is answered first and the run read after.
-      runner.awaitReapAndConfirm(launch, RUN_PATIENCE);
+      // The run's end is its lease's: qits-ci sends the daemon Close and ends the lease once the
+      // run is settled.
+      StorySystem.awaitEnded(lease, RUN_PATIENCE);
       Map<String, Object> run = awaitTerminalRun(runId, log);
       assertEquals(
           "SUCCESS",
@@ -297,8 +295,8 @@ public class CiDaemonPinIT {
           "the step's row must carry what the pinned daemon streamed; got: "
               + steps.getFirst().get("output"));
 
-      // Decommission: this daemon has one step in it and every ending is an exit, so a clean run is
-      // a process that has already gone by the time the runner is told to remove it. Waited for rather than
+      // Decommission: the run's Close is the daemon's exit, so a clean run is a process that has
+      // already gone by the time its lease is ended. Waited for rather than
       // killed — a daemon that delivered its StepFinished and then hung would be a bump worth
       // failing on, and destroying it in the finally would hide exactly that.
       assertTrue(
@@ -309,12 +307,7 @@ public class CiDaemonPinIT {
           daemon.exitValue(),
           "the pinned daemon exited nonzero after delivering its step; its output was:\n"
               + logText(log));
-
-      runner.awaitReleased(runId, Duration.ofSeconds(30));
     } finally {
-      if (runner != null) {
-        runner.close();
-      }
       if (edge != null) {
         edge.close();
       }
@@ -474,7 +467,7 @@ public class CiDaemonPinIT {
   private static Process start(
       Path binary,
       Path checkout,
-      StoryRunner.Launch launch,
+      Map<String, String> lease,
       String sha,
       Path log,
       String daemonUrl)
@@ -484,10 +477,16 @@ public class CiDaemonPinIT {
     Map<String, String> env = builder.environment();
     env.keySet().removeIf(key -> key.startsWith("QITS_"));
     env.put(StoryDaemon.URL_VARIABLE, daemonUrl);
-    env.put(StoryDaemon.ID_VARIABLE, launch.environment().get(StoryDaemon.ID_VARIABLE));
-    env.put(StoryDaemon.TOKEN_VARIABLE, launch.environment().get(StoryDaemon.TOKEN_VARIABLE));
+    env.put(StoryDaemon.ID_VARIABLE, lease.get(StoryDaemon.ID_VARIABLE));
+    env.put(StoryDaemon.TOKEN_VARIABLE, lease.get(StoryDaemon.TOKEN_VARIABLE));
+    // The run's identity, which a capability-2 daemon requires of its lease.
+    for (String key : List.of("QITS_CI_RUN_ID", "QITS_CI_PROJECT_ID", "QITS_CI_REPO_NAME")) {
+      if (lease.get(key) != null) {
+        env.put(key, lease.get(key));
+      }
+    }
     env.put("QITS_CI_REPOSITORY_URL", StoryOrigin.bare(REPO_ID).toUri().toString());
-    env.put("QITS_CI_BRANCH", launch.environment().get("QITS_CI_BRANCH"));
+    env.put("QITS_CI_BRANCH", lease.get("QITS_CI_BRANCH"));
     env.put("QITS_CI_SHA", sha);
     // TO A FILE, AND NOT inheritIO(). A pipe nobody drains would fill and wedge the child, so the
     // output has to go somewhere — and `inheritIO` sends it to this forked JVM's native stdout,

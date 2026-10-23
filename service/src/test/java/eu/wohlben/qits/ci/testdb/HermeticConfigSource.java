@@ -41,7 +41,7 @@ import org.eclipse.microprofile.config.spi.ConfigSource;
  * step is told is composed from the platform's public domain and there is nothing to fall back to
  * (qits-515), so a suite with no domain could declare no runner and launch no step. The shipped key
  * is {@code ${QITS_DOMAIN:}}, which an ambient variable would decide; this pin is above it. A case
- * about a qits-ci that knows no domain installs a {@code RunnerAddresses} of its own over the bean.
+ * about a qits-ci that knows no domain installs a {@code CiSlotAddresses} of its own over the bean.
  */
 public class HermeticConfigSource implements ConfigSource {
 

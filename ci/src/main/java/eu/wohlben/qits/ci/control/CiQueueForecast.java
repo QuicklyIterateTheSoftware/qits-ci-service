@@ -1,13 +1,11 @@
 package eu.wohlben.qits.ci.control;
 
-import eu.wohlben.qits.ci.dto.CiRunnerHealthcheckDto;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.ExpectedStepDurations;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.UUID;
 
 /**
  * <b>When the queue is expected to get to each run.</b> One pure function over what is {@code
@@ -54,8 +52,8 @@ import java.util.UUID;
  * and dialled back) rather than a missing fact, and reading it as anything else would need a second
  * timeline this service deliberately does not keep.
  *
- * <p><b>The slots are the model and they are the whole of it.</b> {@code slots} slots — the
- * connected runners' own, see {@link #slotCount} — each holding the instant it frees; seeded with
+ * <p><b>The slots are the model and they are the whole of it.</b> {@code slots} slots — see
+ * {@link #leaseSlots} — each holding the instant it frees; seeded with
  * the {@code RUNNING} runs' remaining times, fewest-remaining first, and padded with zero for every
  * idle slot. Then the queued runs in claim order, each into the earliest-free slot: its start is
  * that slot's free-at, its finish is that plus its own expected total, and the slot frees at that
@@ -63,17 +61,15 @@ import java.util.UUID;
  * before it ends.
  *
  * <p><b>More {@code RUNNING} runs than slots is a real shape, not a contradiction to refuse.</b> A
- * runner whose slots an operator shrank, one that disconnected while holding runs, or a leftover a
- * predecessor was holding all produce it. The extras are <em>folded onto the earliest-free
+ * caller that passes a smaller count than the leases it is running produces it. The extras are <em>folded onto the earliest-free
  * slot</em> rather than dropped: the remainings are seeded smallest-first and each one is added to
  * whichever slot frees soonest, so the surplus work queues behind the rest exactly as a queued run
  * would. Taking the {@code slots} smallest and discarding the others was the alternative and it is
  * worse in the direction that matters — it would forecast a queue that starts sooner than anything
  * could possibly start it, by pretending work in flight is not in flight.
  *
- * <p><b>Zero slots is a real estate, and answers no ETA rather than a guess</b> (qits-503). Every
- * run is a runner's, so a moment with no runner connected — or only quarantined ones — is a queue
- * nothing will move until one arrives. Every queued run's start is then {@link
+ * <p><b>Zero slots answers no ETA rather than a guess</b> (qits-503). Every queued run's start is
+ * then {@link
  * Unknown#NO_BUILD_SLOTS}, and so is its finish unless its own total is unknown too, which wins as
  * it always does; the running half is forecast as ever, since a run already executing somewhere has
  * its own remaining time whatever the slots now say. A negative count is read as zero.
@@ -128,8 +124,8 @@ public final class CiQueueForecast {
     RUNNING_RUN_HAS_NO_PREDICTION,
 
     /**
-     * No build slot exists to start it in: no runner that takes work is connected (qits-503).
-     * Heals the moment one connects.
+     * No build slot exists to start it in (qits-503). A caller that counts its slots from the
+     * leases it runs ({@link #leaseSlots}) never passes zero; kept for the arithmetic's own sake.
      */
     NO_BUILD_SLOTS
   }
@@ -202,61 +198,17 @@ public final class CiQueueForecast {
   public record Forecast(List<QueuedForecast> queued, List<RunningForecast> running) {}
 
   /**
-   * One runner as the queue sees it: how many runs its row grants, how many it holds, and whether a
-   * socket is open to it right now — the {@code runners} half of {@code GET /ci/api/runs/queue}. The
-   * three version facts are {@code CiRunnerDto}'s, carried for a reader and read by no arithmetic
-   * here.
+   * How many runs the estate is assumed to execute at once: as many CI leases as it is running right
+   * now, and at least one.
    *
-   * <p>The quarantine is {@code CiRunnerDto}'s too (qits-466), and {@code quarantined} is the one of
-   * those facts the arithmetic DOES read: a quarantined runner takes no queued work, so it counts no
-   * slots in {@link #slotCount} whatever {@code slots} — its operator's number, kept for a reader —
-   * says.
+   * <p>Since a run is a lease (epic qits-1481), qits-ci holds no slot count of its own: how many CI
+   * leases the targets grant is qits-system's, decided per target against every other slot type's
+   * minimums. So the forecast assumes the estate keeps granting what it grants now — a queue behind
+   * three running leases moves three at a time — and never assumes nothing will run, which no
+   * longer has a state that says so. It is an estimate, and every duration on the wire is one.
    */
-  public record RunnerCapacity(
-      UUID id,
-      String name,
-      int slots,
-      long held,
-      boolean connected,
-      String runnerVersion,
-      String targetVersion,
-      boolean updating,
-      boolean quarantined,
-      String quarantineReason,
-      Instant quarantinedAt,
-      CiRunnerHealthcheckDto lastHealthcheck) {
-
-    /** A runner whose versions nothing reported. */
-    public RunnerCapacity(UUID id, String name, int slots, long held, boolean connected) {
-      this(id, name, slots, held, connected, null, null, false, false, null, null, null);
-    }
-
-    /** How many slots the queue can count on this runner for: none while it is quarantined. */
-    public int effectiveSlots() {
-      return quarantined ? 0 : Math.max(0, slots);
-    }
-  }
-
-  /**
-   * How many runs the estate executes at once: the slots of every <b>connected</b> runner, since a
-   * runner is the only thing that executes a run (qits-506).
-   *
-   * <p><b>A runner's whole slot count, not its free slots.</b> The runs a runner holds are already
-   * {@code RUNNING} rows, so they are already in the forecast's running half, where each occupies
-   * a slot until its predicted finish. Counting only the free slots would count those runs twice —
-   * once as capacity missing and once as occupancy — and forecast every queued run late by exactly
-   * the work the runners are doing. A runner that is not connected contributes nothing: nothing
-   * would claim for it, whatever its row grants — and neither does a quarantined one, which takes
-   * nothing from the queue but its own health check (see {@link RunnerCapacity#effectiveSlots}).
-   */
-  public static int slotCount(List<RunnerCapacity> runners) {
-    int slots = 0;
-    for (RunnerCapacity runner : runners == null ? List.<RunnerCapacity>of() : runners) {
-      if (runner.connected()) {
-        slots += runner.effectiveSlots();
-      }
-    }
-    return slots;
+  public static int leaseSlots(int running) {
+    return Math.max(1, running);
   }
 
   /**
@@ -274,8 +226,8 @@ public final class CiQueueForecast {
    *     queue then starts at zero
    * @param queuedInClaimOrder the queued runs <b>already in claim order</b>, as {@link
    *     CiRunOrdering#explain(List)} answers them; null or empty answers an empty list
-   * @param slots how many runs the estate executes at once — every connected runner's slots, see
-   *     {@link #slotCount}; 0 forecasts every queued run {@link Unknown#NO_BUILD_SLOTS}
+   * @param slots how many runs the estate executes at once — see {@link #leaseSlots}; 0 forecasts
+   *     every queued run {@link Unknown#NO_BUILD_SLOTS}
    * @param now the instant every millisecond in the answer is relative to; never read from a clock
    *     in here
    * @return one entry per input run on each side

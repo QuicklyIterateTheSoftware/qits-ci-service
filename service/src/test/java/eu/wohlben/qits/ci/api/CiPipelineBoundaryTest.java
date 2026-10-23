@@ -681,11 +681,11 @@ public class CiPipelineBoundaryTest {
         .then()
         .statusCode(200)
         .contentType(ContentType.JSON)
-        // The queue envelope's own four keys, and not the single-run shape. No concurrentBuilds any
-        // more (qits-506): the slots are the runners'.
+        // The queue envelope's own three keys, and not the single-run shape. No concurrentBuilds
+        // (qits-506) and no runners (epic qits-1481): the slots are qits-system's.
         .body("$", org.hamcrest.Matchers.hasKey("running"))
         .body("$", org.hamcrest.Matchers.hasKey("queued"))
-        .body("$", org.hamcrest.Matchers.hasKey("runners"))
+        .body("$", org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasKey("runners")))
         .body("$", org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasKey("concurrentBuilds")))
         .body("generatedAt", org.hamcrest.Matchers.notNullValue())
         .body("id", org.hamcrest.Matchers.nullValue())

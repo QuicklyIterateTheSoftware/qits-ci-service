@@ -60,7 +60,7 @@ public class ReleaseAnnounceSeamTest extends CiTestSupport {
         - { type: daemon, name: qits-ci-daemon }
       steps:
         - image: alpine:3
-          docker: true
+          build: true
           script: ./publish-daemon.sh
       """;
 

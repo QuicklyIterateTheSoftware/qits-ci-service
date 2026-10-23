@@ -62,12 +62,14 @@ public class CiRestartReconciliationTest {
 
       // An event run is restarted from its own immutable snapshot, which is what makes an
       // event-trigger script an at-least-once boundary. The sweep writes it QUEUED and announces the
-      // backlog, so what is observable after awaitIdle is the run having been RE-EXECUTED by a
-      // runner — a stronger statement than the intermediate status. Its pipeline declares no steps.
+      // backlog, so what is observable after awaitIdle is the run having been RE-EXECUTED in a
+      // lease — a stronger statement than the intermediate status. Its pipeline declares no steps.
+      // It held no lease (a retired CI runner's), so it is settled as a run that could not be taken
+      // back: it publishes nothing, so it starts over.
       CiRun event = runs.findById(eventRunId);
       assertEquals(CiRunStatus.SUCCESS, event.status, "an interrupted event run is re-run, not failed");
       assertNotNull(event.finishedAt);
-      assertEquals(suiteRunner.id(), event.runnerId, "and a runner is what re-ran it");
+      assertEquals(suiteRunner.id(), event.targetId, "and a lease is what re-ran it");
     } finally {
       suiteRunner.disable();
       QuarkusTransaction.requiringNew()

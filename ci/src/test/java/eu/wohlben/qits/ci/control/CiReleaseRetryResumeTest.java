@@ -314,7 +314,9 @@ public class CiReleaseRetryResumeTest extends CiTestSupport {
   }
 
   @Test
-  public void aReComposedPipelineWhoseCarriedStepChangedImageRunsEverything() throws Exception {
+  public void aReComposedPipelineWhoseCarriedStepDeclaresAnotherImageStillResumes() throws Exception {
+    // A declared image is ignored (epic qits-1481): every step ran, and runs, in the ci-slot image,
+    // so a carried step that now declares another one is the same step and is still carried.
     composeFrom(TWO_RELEASE_STEPS);
     fakeRunner.scriptSequence(1, RED);
     CiRun original = deliverRelease();
@@ -332,8 +334,8 @@ public class CiReleaseRetryResumeTest extends CiTestSupport {
     suiteRunner.awaitIdle();
     forgetLoadedEntities();
 
-    assertEquals(List.of(0, 1), executedSteps(retry.id));
-    assertNull(service.requireRun(retry.id).carriedSteps);
+    assertEquals(List.of(1), executedSteps(retry.id));
+    assertEquals(1, service.requireRun(retry.id).carriedSteps);
   }
 
   // --- fixture -----------------------------------------------------------------------------------

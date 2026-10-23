@@ -35,7 +35,7 @@ import org.junit.jupiter.api.Test;
  *
  * <p>Addresses the socket through {@code @TestHTTPResource} rather than a hard-coded port, and
  * through its <b>absolute</b> path — {@code /ci/daemon} is a literal that does not follow {@code
- * quarkus.rest.path}, and it is the path {@code StepAddressPlane} composes into every container's daemon url, so
+ * quarkus.rest.path}, and it is the path {@code CiSlotAddresses} composes into every lease's daemon url, so
  * a test that addressed it relatively would not catch a segment regression.
  */
 @QuarkusTest
@@ -55,7 +55,7 @@ public class CiDaemonSocketTest {
 
   /** A launch of {@code run}'s step, bound to that run's token subject. */
   private String launch(String run) {
-    return registry.registerLaunch(run, 0, subject(run), null);
+    return registry.registerLaunch(run, subject(run));
   }
 
   /** A daemon of {@code run} that named {@code daemonId} in its Hello and was answered an Ack. */
@@ -220,11 +220,7 @@ public class CiDaemonSocketTest {
   public void theWholeStepLifecycleRunsThroughTheBlockingBridge() throws Exception {
     List<String> chunks = Collections.synchronizedList(new ArrayList<>());
     String daemonId =
-        registry.registerLaunch(
-            "run-lifecycle",
-            3,
-            subject("run-lifecycle"),
-            (stream, seq, text) -> chunks.add(stream + ":" + seq + ":" + text));
+        registry.registerLaunch("run-lifecycle", subject("run-lifecycle"));
     try (FakeCiDaemon daemon = admitted("run-lifecycle", daemonId)) {
       daemon.send(new Heartbeat());
       daemon.send(new Initialized());
@@ -235,7 +231,7 @@ public class CiDaemonSocketTest {
       assertEquals(CiDaemonRegistry.Phase.INITIALIZED, registry.phaseOf(daemonId));
 
       // The step arrives as the answer to Initialized — the host initiates nothing.
-      String correlationId = registry.sendRunStep(daemonId, "echo hi", 60);
+      String correlationId = registry.sendRunStep(daemonId, 3, "echo hi", 60, java.util.Map.of(), (stream, seq, text) -> chunks.add(stream + ":" + seq + ":" + text));
       RunStep runStep = assertInstanceOf(RunStep.class, daemon.next(SOON));
       assertEquals(correlationId, runStep.correlationId());
       assertEquals("echo hi", runStep.script());
@@ -243,7 +239,7 @@ public class CiDaemonSocketTest {
 
       daemon.send(new StepChunk(correlationId, 0, Stream.OUT, "hi\n"));
       daemon.send(new StepChunk(correlationId, 1, Stream.ERR, "warn\n"));
-      daemon.send(new StepFinished(correlationId, 0, false));
+      daemon.send(new StepFinished(correlationId, 3, 0, false));
 
       CiDaemonRegistry.Completion completion = registry.awaitFinished(daemonId, SOON);
       assertEquals(CiDaemonRegistry.Completion.Status.FINISHED, completion.status());
@@ -285,7 +281,7 @@ public class CiDaemonSocketTest {
       assertEquals(
           CiDaemonRegistry.Initialization.Status.INITIALIZED,
           registry.awaitInitialized(daemonId, SOON).status());
-      registry.sendRunStep(daemonId, "sleep 600", 600);
+      registry.sendRunStep(daemonId, 0, "sleep 600", 600, java.util.Map.of(), null);
       assertInstanceOf(RunStep.class, daemon.next(SOON));
 
       long start = System.nanoTime();
@@ -316,18 +312,14 @@ public class CiDaemonSocketTest {
     registry.reconnectGrace(Duration.ofSeconds(30));
     List<String> chunks = Collections.synchronizedList(new ArrayList<>());
     String daemonId =
-        registry.registerLaunch(
-            "run-redial-mid",
-            0,
-            subject("run-redial-mid"),
-            (stream, seq, text) -> chunks.add(seq + ":" + text));
+        registry.registerLaunch("run-redial-mid", subject("run-redial-mid"));
     try {
       FakeCiDaemon first = admitted("run-redial-mid", daemonId);
       first.send(new Initialized());
       assertEquals(
           CiDaemonRegistry.Initialization.Status.INITIALIZED,
           registry.awaitInitialized(daemonId, SOON).status());
-      String correlationId = registry.sendRunStep(daemonId, "make", 600);
+      String correlationId = registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), (stream, seq, text) -> chunks.add(seq + ":" + text));
       assertInstanceOf(RunStep.class, first.next(SOON));
       first.send(new StepChunk(correlationId, 0, Stream.OUT, "a\n"));
 
@@ -347,7 +339,7 @@ public class CiDaemonSocketTest {
 
         second.send(new StepChunk(correlationId, 0, Stream.OUT, "a\n"));
         second.send(new StepChunk(correlationId, 1, Stream.OUT, "b\n"));
-        second.send(new StepFinished(correlationId, 0, false));
+        second.send(new StepFinished(correlationId, 0, 0, false));
 
         CiDaemonRegistry.Completion completion = registry.awaitFinished(daemonId, SOON);
         assertEquals(CiDaemonRegistry.Completion.Status.FINISHED, completion.status());

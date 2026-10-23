@@ -1,103 +1,133 @@
 package eu.wohlben.qits.ci.control;
 
-import eu.wohlben.qits.ci.entity.CiRunner;
-import eu.wohlben.qits.ci.entity.CiRunnerPlane;
-import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
+import eu.wohlben.qits.ci.entity.CiRun;
+import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.jboss.logging.Logger;
 
 /**
- * <b>The runner the service suite's runs execute on</b>, for the suites that want a run to actually
- * run — the ci module's {@code SuiteRunner}, duplicated because the modules share no test classpath
- * (the {@link FakeCiStepRunner} trade).
+ * <b>The execution target the service suite's runs execute on</b>, for the suites that want a run to
+ * actually run — the ci module's {@code SuiteRunner}, duplicated because the modules share no test
+ * classpath (the {@link FakeCiStepRunner} trade).
  *
- * <p>Since qits-506 there is no claim loop in {@code CiRunService}: a run is a runner's reservation
- * or nothing. This plays a connected runner through the same two public doors the runner socket
- * uses — told the backlog moved, it asks {@link CiRunService#reserveFor} for its own row and runs
- * what it is handed with {@link CiRunService#executeReserved} on a driver thread of its own, holding
- * the run in {@link FakeCiStepRunner} from the reservation until it closes, so its steps are the
- * fake's scripts while a real socket runner's go through the real seam.
+ * <p>A run is a CI lease (epic qits-1481). This plays qits-system granting one through the same
+ * public doors {@code targethost/CiLeases} uses: told a run was queued, it asks {@link
+ * CiRunService#leaseCandidate} for it, records a lease of its own ({@link CiRunService#recordLease})
+ * and, once its one slot is free, claims it ({@link CiRunService#claimLeased}) and runs it with
+ * {@link CiRunService#executeReserved} on a driver thread, holding the run in {@link
+ * FakeCiStepRunner} until it closes — so its steps are the fake's scripts, while a run whose lease the
+ * real seam asked for goes through the real one.
  *
- * <p><b>Off unless a suite turns it on</b> ({@link #enable}, and {@link #disable} after): its row is
- * a real {@code ci_runner} row, and the runner suites here assert on exactly which rows exist. On,
- * it is one slot and docker-capable — the old {@code qits.ci.concurrent-builds=1} — so a
- * run parked in its first step still holds everything accepted behind it {@code QUEUED}.
+ * <p><b>Off unless a suite turns it on</b> ({@link #enable}, and {@link #disable} after). On, it is
+ * one slot — the old {@code qits.ci.concurrent-builds=1} — so a run parked in its first step still
+ * holds everything accepted behind it {@code QUEUED}.
  */
 @ApplicationScoped
-public class SuiteRunner implements CiBacklogListener {
+public class SuiteRunner {
 
   private static final Logger LOG = Logger.getLogger(SuiteRunner.class);
 
-  public static final String NAME = "suite-runner";
-
   @Inject CiRunService service;
 
-  @Inject CiRunnerRepository runnerRows;
+  @Inject CiRunRepository runRows;
 
   @Inject FakeCiStepRunner steps;
 
   private final ExecutorService drivers =
       Executors.newCachedThreadPool(
           r -> {
-            Thread t = new Thread(r, "suite-runner-driver");
+            Thread t = new Thread(r, "suite-target-driver");
+            t.setDaemon(true);
+            return t;
+          });
+
+  private final ScheduledExecutorService grants =
+      Executors.newSingleThreadScheduledExecutor(
+          r -> {
+            Thread t = new Thread(r, "suite-target-grants");
             t.setDaemon(true);
             return t;
           });
 
   private final AtomicInteger busy = new AtomicInteger();
 
-  private volatile UUID runnerId;
+  private final AtomicInteger running = new AtomicInteger();
 
-  /** Its row's id while enabled, else null. */
+  private volatile UUID targetId;
+
+  /** The target the suite's runs are granted on, or null while it is off. */
   public UUID id() {
-    return runnerId;
+    return targetId;
   }
 
-  /** Registers the runner's row — fresh, so no streak or quarantine carries over — and passes once. */
+  /** Whether the suite's target takes runs. */
+  public boolean enabled() {
+    return targetId != null;
+  }
+
+  /** Brings the target up, and leases whatever is already queued. */
   public void enable() {
-    UUID fresh = UUID.randomUUID();
-    QuarkusTransaction.requiringNew()
-        .run(
-            () -> {
-              runnerRows.delete("name", NAME);
-              CiRunner row = new CiRunner();
-              row.id = fresh;
-              row.name = NAME;
-              row.slots = 1;
-              row.plane = CiRunnerPlane.EDGE;
-              row.clientId = "client-" + NAME + "-" + fresh;
-              row.capabilities = "{\"docker\":true,\"arch\":\"amd64\"}";
-              row.registeredAt = Instant.now();
-              row.createdAt = Instant.now();
-              runnerRows.persist(row);
-            });
-    runnerId = fresh;
-    pass();
+    targetId = UUID.randomUUID();
+    List<String> queued =
+        QuarkusTransaction.requiringNew()
+            .call(() -> runRows.listQueuedOldestFirst().stream().map(run -> run.id).toList());
+    queued.forEach(this::queued);
   }
 
-  /** Waits out what is running and removes the row, so nothing more is reserved for it. */
+  /** Waits for what is running to finish, then takes the target down. */
   public void disable() throws InterruptedException {
     awaitIdle();
-    UUID id = runnerId;
-    runnerId = null;
-    if (id != null) {
-      QuarkusTransaction.requiringNew().run(() -> runnerRows.deleteById(id));
+    targetId = null;
+  }
+
+  /** A run was queued: lease it now, and grant what fits a moment later. */
+  void queued(String runId) {
+    if (targetId == null) {
+      return;
+    }
+    lease(runId);
+    busy.incrementAndGet();
+    try {
+      grants.schedule(
+          () -> {
+            try {
+              grantAll();
+            } finally {
+              busy.decrementAndGet();
+            }
+          },
+          50,
+          TimeUnit.MILLISECONDS);
+    } catch (RuntimeException rejected) {
+      busy.decrementAndGet();
     }
   }
 
-  @Override
-  public void backlogChanged(int queued) {
-    if (queued > 0 && runnerId != null) {
-      pass();
+  private void lease(String runId) {
+    try {
+      Optional<CiRunService.Reservation> candidate = service.leaseCandidate(runId);
+      if (candidate.isEmpty() || candidate.get().run().leaseId != null) {
+        return;
+      }
+      service.recordLease(
+          runId,
+          UUID.randomUUID(),
+          UUID.randomUUID().toString(),
+          "suite-subject-" + runId,
+          steps.pinDaemon().version());
+    } catch (RuntimeException e) {
+      LOG.debugf("Suite target: run %s could not be leased (%s)", runId, e.getMessage());
     }
   }
 
@@ -107,7 +137,7 @@ public class SuiteRunner implements CiBacklogListener {
       drivers.execute(
           () -> {
             try {
-              reserveAll();
+              grantAll();
             } finally {
               busy.decrementAndGet();
             }
@@ -117,27 +147,25 @@ public class SuiteRunner implements CiBacklogListener {
     }
   }
 
-  private void reserveAll() {
-    UUID id = runnerId;
-    if (id == null) {
-      return;
-    }
-    CiRunner row = QuarkusTransaction.requiringNew().call(() -> runnerRows.findById(id));
-    if (row == null) {
-      return;
-    }
-    Optional<CiRunService.Reservation> next;
-    while ((next = reserve(row)).isPresent()) {
+  private synchronized void grantAll() {
+    UUID target = targetId;
+    while (target != null && running.get() < 1) {
+      Optional<CiRunService.Reservation> next = grantNext(target);
+      if (next.isEmpty()) {
+        return;
+      }
       CiRunService.Reservation reservation = next.get();
       steps.hold(reservation.run().id);
+      running.incrementAndGet();
       busy.incrementAndGet();
       drivers.execute(
           () -> {
             try {
               service.executeReserved(reservation);
             } catch (Throwable fatal) {
-              LOG.warnf(fatal, "Suite runner: run %s ended by a throw", reservation.run().id);
+              LOG.warnf(fatal, "Suite target: run %s ended by a throw", reservation.run().id);
             } finally {
+              running.decrementAndGet();
               pass();
               busy.decrementAndGet();
             }
@@ -145,23 +173,39 @@ public class SuiteRunner implements CiBacklogListener {
     }
   }
 
-  /**
-   * One {@code Reserve} at a time, as one runner connection asks: two concurrent reservations for
-   * one row would each read the other's claim as uncommitted and could hold more runs than its
-   * slots.
-   */
-  private synchronized Optional<CiRunService.Reservation> reserve(CiRunner row) {
+  private Optional<CiRunService.Reservation> grantNext(UUID target) {
+    List<CiRun> leased;
     try {
-      return service.reserveFor(row);
+      leased =
+          QuarkusTransaction.requiringNew()
+              .call(
+                  () ->
+                      runRows.listQueuedOldestFirst().stream()
+                          .filter(run -> run.leaseId != null)
+                          .toList());
     } catch (RuntimeException e) {
-      LOG.debugf("Suite runner: a reservation failed (%s)", e.getMessage());
       return Optional.empty();
     }
+    for (CiRun candidate : CiRunOrdering.suggestedOrder(CiRunService.builds(leased))) {
+      try {
+        Optional<CiRunService.Reservation> claimed =
+            service.claimLeased(candidate.id, candidate.leaseId, target);
+        if (claimed.isPresent()) {
+          return claimed;
+        }
+      } catch (RuntimeException e) {
+        LOG.debugf("Suite target: run %s could not be claimed (%s)", candidate.id, e.getMessage());
+      }
+    }
+    return Optional.empty();
   }
 
-  /** Waits until nothing it runs is running and its last reservation came back empty. */
+  /**
+   * Blocks until no driver is running anything and a grant pass found nothing more to start. A
+   * disabled target is idle at once.
+   */
   public void awaitIdle() throws InterruptedException {
-    if (runnerId != null) {
+    if (targetId != null) {
       pass();
     }
     while (busy.get() > 0) {
@@ -171,6 +215,7 @@ public class SuiteRunner implements CiBacklogListener {
 
   @PreDestroy
   void stop() {
+    grants.shutdownNow();
     drivers.shutdownNow();
   }
 }

@@ -61,13 +61,13 @@ public class CiDaemonRegistryReconnectTest {
   @Test
   public void aDaemonThatComesBackInsideTheGraceFinishesItsStepOnTheNewSocket() throws Exception {
     CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
-    String daemonId = registry.registerLaunch("run-blip", 0, SUBJECT, null);
+    String daemonId = registry.registerLaunch("run-blip", SUBJECT);
     FakeConnection first = admit(registry, daemonId, "c1");
     registry.onMessage(daemonId, first.connection, new Initialized());
     assertEquals(
         CiDaemonRegistry.Initialization.Status.INITIALIZED,
         registry.awaitInitialized(daemonId, SOON).status());
-    String correlationId = registry.sendRunStep(daemonId, "make", 600);
+    String correlationId = registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
     assertInstanceOf(RunStep.class, first.sent().getLast());
 
     first.drop(registry, daemonId);
@@ -89,7 +89,7 @@ public class CiDaemonRegistryReconnectTest {
     registry.onMessage(daemonId, second.connection, new Initialized());
     assertEquals(CiDaemonRegistry.Phase.RUNNING, registry.phaseOf(daemonId));
 
-    registry.onMessage(daemonId, second.connection, new StepFinished(correlationId, 3, false));
+    registry.onMessage(daemonId, second.connection, new StepFinished(correlationId, 0, 3, false));
     CiDaemonRegistry.Completion completion = finished.get(SOON.toMillis(), TimeUnit.MILLISECONDS);
     assertEquals(CiDaemonRegistry.Completion.Status.FINISHED, completion.status());
     assertEquals(3, completion.exitCode());
@@ -100,10 +100,10 @@ public class CiDaemonRegistryReconnectTest {
   public void aDaemonThatDoesNotComeBackIsLostWhenTheGraceRunsOutAndNotAtTheClose() {
     Duration grace = Duration.ofMillis(600);
     CiDaemonRegistry registry = registry(grace);
-    String daemonId = registry.registerLaunch("run-gone", 0, SUBJECT, null);
+    String daemonId = registry.registerLaunch("run-gone", SUBJECT);
     FakeConnection first = admit(registry, daemonId, "c1");
     registry.onMessage(daemonId, first.connection, new Initialized());
-    registry.sendRunStep(daemonId, "make", 600);
+    registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
 
     long start = System.nanoTime();
     first.drop(registry, daemonId);
@@ -120,10 +120,10 @@ public class CiDaemonRegistryReconnectTest {
   @Test
   public void aZeroGraceIsTheOldBehaviourLostAtTheClose() {
     CiDaemonRegistry registry = registry(Duration.ZERO);
-    String daemonId = registry.registerLaunch("run-nograce", 0, SUBJECT, null);
+    String daemonId = registry.registerLaunch("run-nograce", SUBJECT);
     FakeConnection first = admit(registry, daemonId, "c1");
     registry.onMessage(daemonId, first.connection, new Initialized());
-    registry.sendRunStep(daemonId, "make", 600);
+    registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
 
     first.drop(registry, daemonId);
 
@@ -138,10 +138,10 @@ public class CiDaemonRegistryReconnectTest {
   @Test
   public void aReapDuringTheGraceEndsTheStepAtOnce() throws Exception {
     CiDaemonRegistry registry = registry(Duration.ofSeconds(60));
-    String daemonId = registry.registerLaunch("run-reap", 0, SUBJECT, null);
+    String daemonId = registry.registerLaunch("run-reap", SUBJECT);
     FakeConnection first = admit(registry, daemonId, "c1");
     registry.onMessage(daemonId, first.connection, new Initialized());
-    registry.sendRunStep(daemonId, "make", 600);
+    registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
     first.drop(registry, daemonId);
 
     CompletableFuture<CiDaemonRegistry.Completion> finished =
@@ -162,13 +162,13 @@ public class CiDaemonRegistryReconnectTest {
   @Test
   public void aRunStepSentWhileUnboundIsDeliveredOnTheReadmissionAndACancelAfterIt() {
     CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
-    String daemonId = registry.registerLaunch("run-unbound", 0, SUBJECT, null);
+    String daemonId = registry.registerLaunch("run-unbound", SUBJECT);
     FakeConnection first = admit(registry, daemonId, "c1");
     registry.onMessage(daemonId, first.connection, new Initialized());
     first.drop(registry, daemonId);
 
     // The worker hands over the step and then asks for it to stop, both while nothing is bound.
-    String correlationId = registry.sendRunStep(daemonId, "make", 600);
+    String correlationId = registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
     registry.cancel(daemonId);
     assertEquals(1, first.sent().size(), "nothing goes out on a closed socket: " + first.sent());
 
@@ -190,7 +190,7 @@ public class CiDaemonRegistryReconnectTest {
   @Test
   public void everyReHelloIsAckedAndADuplicateInitializedChangesNothing() {
     CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
-    String daemonId = registry.registerLaunch("run-dup-init", 0, SUBJECT, null);
+    String daemonId = registry.registerLaunch("run-dup-init", SUBJECT);
     FakeConnection first = admit(registry, daemonId, "c1");
     registry.onMessage(daemonId, first.connection, new Initialized());
     assertEquals(CiDaemonRegistry.Phase.INITIALIZED, registry.phaseOf(daemonId));
@@ -208,24 +208,25 @@ public class CiDaemonRegistryReconnectTest {
         registry.awaitInitialized(daemonId, SOON).status());
 
     // A second drop and re-Hello is answered too.
-    String correlationId = registry.sendRunStep(daemonId, "make", 600);
+    String correlationId = registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
     second.drop(registry, daemonId);
     FakeConnection third = admit(registry, daemonId, "c3");
     assertInstanceOf(Ack.class, third.sent().get(0));
     registry.onMessage(daemonId, third.connection, new Initialized());
     assertEquals(CiDaemonRegistry.Phase.RUNNING, registry.phaseOf(daemonId));
 
-    // After the terminal frame a late duplicate is ignored as well.
-    registry.onMessage(daemonId, third.connection, new StepFinished(correlationId, 0, false));
+    // After the step's terminal frame the launch is between steps again — one launch carries the
+    // whole run (epic qits-1481) — and a late duplicate Initialized is ignored there as well.
+    registry.onMessage(daemonId, third.connection, new StepFinished(correlationId, 0, 0, false));
     registry.onMessage(daemonId, third.connection, new Initialized());
-    assertEquals(CiDaemonRegistry.Phase.DONE, registry.phaseOf(daemonId));
+    assertEquals(CiDaemonRegistry.Phase.INITIALIZED, registry.phaseOf(daemonId));
     registry.reap(daemonId);
   }
 
   @Test
   public void aFirstHelloIsOwedNothingButItsAck() {
     CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
-    String daemonId = registry.registerLaunch("run-first", 0, SUBJECT, null);
+    String daemonId = registry.registerLaunch("run-first", SUBJECT);
     FakeConnection first = admit(registry, daemonId, "c1");
     assertEquals(1, first.sent().size());
     assertEquals(CiDaemonRegistry.Phase.CONNECTED, registry.phaseOf(daemonId));
@@ -237,11 +238,10 @@ public class CiDaemonRegistryReconnectTest {
     List<String> chunks = Collections.synchronizedList(new ArrayList<>());
     CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
     String daemonId =
-        registry.registerLaunch(
-            "run-replay", 0, SUBJECT, (stream, seq, text) -> chunks.add(seq + ":" + text));
+        registry.registerLaunch("run-replay", SUBJECT);
     FakeConnection first = admit(registry, daemonId, "c1");
     registry.onMessage(daemonId, first.connection, new Initialized());
-    String correlationId = registry.sendRunStep(daemonId, "make", 600);
+    String correlationId = registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), (stream, seq, text) -> chunks.add(seq + ":" + text));
     for (int seq = 0; seq <= 2; seq++) {
       registry.onMessage(
           daemonId, first.connection, new StepChunk(correlationId, seq, Stream.OUT, "l" + seq));
@@ -264,7 +264,7 @@ public class CiDaemonRegistryReconnectTest {
   @Test
   public void aSecondDialWhileTheFirstIsStillOpenIsStillAClaim() {
     CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
-    String daemonId = registry.registerLaunch("run-claim", 0, SUBJECT, null);
+    String daemonId = registry.registerLaunch("run-claim", SUBJECT);
     admit(registry, daemonId, "c1");
     FakeConnection second = new FakeConnection("c2");
     assertEquals(

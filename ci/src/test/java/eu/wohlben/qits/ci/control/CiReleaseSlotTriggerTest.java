@@ -378,11 +378,9 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     assertTrue(
         run.triggerConfig.contains("npm ci && npm run build-the-shadow"),
         "the LOCAL recipe wins over the packaged one of the same name: " + run.triggerConfig);
-    // And it really is the archetype's step that ran.
-    // The resolved reference, not the recipe's shorthand: CiStepImage prefixes a platform image
-    // with the deployment's registry, and the composer changes nothing about that.
+    // And every step runs in the run's ci-slot image, whatever the recipe declared (epic qits-1481).
     assertTrue(
-        fakeRunner.executed().get(0).image().endsWith("qits/build-images/node-base:latest"),
+        fakeRunner.executed().get(0).image().endsWith("qits/build-images/ci-slot:latest"),
         fakeRunner.executed().get(0).image());
   }
 
@@ -677,7 +675,9 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     assertEquals(1, recorded.size());
     assertEquals(BESPOKE_PATH, recorded.get(0).configPath);
     assertEquals(BESPOKE, recorded.get(0).triggerConfig, "the file, verbatim, as it always was");
-    assertEquals("alpine:3", fakeRunner.executed().get(0).image());
+    assertTrue(
+        fakeRunner.executed().get(0).image().contains("qits/build-images/ci-slot"),
+        "a declared image is ignored: " + fakeRunner.executed().get(0).image());
   }
 
   // --- a read that did not happen: no run, and the event STAYS OWED ---------------------------------

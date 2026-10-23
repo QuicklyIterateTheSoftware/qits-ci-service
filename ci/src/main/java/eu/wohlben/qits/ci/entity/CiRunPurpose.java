@@ -7,12 +7,11 @@ package eu.wohlben.qits.ci.entity;
  * against a commit, whose verdict is a statement about that commit. Every insert path that predates
  * health checks writes it by the entity's own default, so none of them had to learn a new word.
  *
- * <p><b>{@link #HEALTHCHECK} is a pseudo-build whose verdict is about a RUNNER</b> ({@code
- * CiRun#targetRunnerId}): one step, {@code echo hello world}, in the platform's own base image,
- * through exactly the path a runner can break — the image pull, the daemon download, the dial back
- * through the edge, the clone through githost with the run's credential. Because it says nothing
- * about the commit it checks out, it announces nothing a build announces, gates nothing, is listed in
- * no repository's runs and is no part of the queue's forecast; see {@code CiRunnerHealth}.
+ * <p><b>{@link #HEALTHCHECK} was a pseudo-build whose verdict was about a CI runner</b>: one step
+ * in the platform's base image, through the path a runner could break. It went with the runner (epic
+ * qits-1481) — a target's health is qits-system's — and the value stays because historical rows
+ * carry the string; nothing writes it any more. Such a row announces nothing, is listed in no
+ * repository's runs and is no part of the queue's forecast.
  */
 public enum CiRunPurpose {
   BUILD,

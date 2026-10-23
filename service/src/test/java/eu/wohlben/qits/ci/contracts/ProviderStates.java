@@ -6,33 +6,26 @@ import eu.wohlben.qits.ci.control.CiDaemonPins;
 import eu.wohlben.qits.ci.control.CiEventTriggerService;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.PlatformPipelineSwitch;
-import eu.wohlben.qits.ci.control.SuiteRunnerPresence;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import eu.wohlben.qits.ci.entity.CiReleaseAnnouncement;
 import eu.wohlben.qits.ci.entity.CiReport;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
-import eu.wohlben.qits.ci.entity.CiRunner;
-import eu.wohlben.qits.ci.entity.CiRunnerPlane;
 import eu.wohlben.qits.ci.entity.CiScmRelease;
 import eu.wohlben.qits.ci.entity.CiStep;
 import eu.wohlben.qits.ci.entity.CiStepStatus;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
 import eu.wohlben.qits.ci.githost.FakeGitHostRepoListing;
 import eu.wohlben.qits.ci.githost.StubGitHost;
-import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.ci.idp.ScriptedRunTokens;
-import eu.wohlben.qits.ci.idp.StubIdp;
 import eu.wohlben.qits.ci.persistence.CiReleaseAnnouncementRepository;
 import eu.wohlben.qits.ci.persistence.CiReportRepository;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
-import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
 import eu.wohlben.qits.ci.persistence.CiScmReleaseRepository;
 import eu.wohlben.qits.ci.persistence.CiStepRepository;
-import eu.wohlben.qits.ci.runnerhost.CiRunnerPins;
-import eu.wohlben.qits.ci.runnerhost.StagedImagePins;
+import eu.wohlben.qits.ci.registry.StagedImagePins;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusMock;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -71,15 +64,14 @@ import java.util.stream.Stream;
  *
  * <p><b>A state removes what it wrote again</b> ({@link #cleanUp}): the suite shares one database,
  * and a {@code RUNNING} row left behind would show in every other class's queue. That includes what
- * the recorded call itself wrote — a retry's run, a runner a create declared, a health check a
- * registration queued — so the clean-up goes by repository and by runner, not only by seeded id.
+ * the recorded call itself wrote — a retry's run — so the clean-up goes by repository, not only by
+ * seeded id.
  *
  * <p><b>Test seams a state arms, and disarms in {@link #cleanUp}</b>: {@link ContractCandidateRepos}
  * (the trigger reads only the state's repository), {@link ContractBearers} (a consumer's bearer
- * becomes the machine identity the door judges), {@link SuiteRunnerPresence} (a runner counts as
- * connected), a {@link StubIdp} behind {@link IdpCommissioner} and {@link ScriptedRunTokens} behind
- * {@link RunCommissions} — the last two through {@code QuarkusMock}, which holds for the test method
- * the state runs in.
+ * becomes the machine identity the door judges) and {@link ScriptedRunTokens} behind {@link
+ * RunCommissions} — the last through {@code QuarkusMock}, which holds for the test method the state
+ * runs in.
  */
 @ApplicationScoped
 public class ProviderStates {
@@ -102,17 +94,12 @@ public class ProviderStates {
 
   public static final String THE_MACHINE_GATE_IS_ON = "the machine gate is on";
 
-  public static final String NO_RUNNERS = "no runners";
-
-  public static final String AN_UNREGISTERED_RUNNER = "an unregistered runner";
-
-  public static final String A_REGISTERED_RUNNER = "a registered runner";
-
-  public static final String A_CONNECTED_RUNNER = "a connected runner";
-
-  public static final String A_QUARANTINED_RUNNER = "a quarantined runner";
-
-  public static final String RUNNERS_WITH_FREE_SLOTS = "runners with free slots";
+  /**
+   * One run running and one waiting: the queue {@code /ci/api/runs/queue} answers. It replaced
+   * {@code runners with free slots} (epic qits-1481): a run is a CI lease, and the queue carries no
+   * runners any more.
+   */
+  public static final String A_RUN_QUEUE_WITH_A_RUN_WAITING = "a run queue with a run waiting";
 
   public static final String A_PINNED_DAEMON = "a pinned daemon";
 
@@ -165,19 +152,8 @@ public class ProviderStates {
   /** When the seeded runs were accepted: a fixed base, a minute apart per run. */
   private static final Instant SEEDED_AT = Instant.parse("2026-01-01T00:00:00Z");
 
-  /** The runner every runner state seeds — the name qits-bootstrap-cli declares on a workstation. */
-  static final String RUNNER_NAME = "localhost";
-
   /** The released version the git-backed states tag, and the version their payloads name. */
   static final String VERSION = "2026.1001.1";
-
-  /**
-   * The bearer a registration token is presented as, and the subject the edge forwards for it — what
-   * the runner row records as its registration token's subject.
-   */
-  static final String REGISTRATION_BEARER = "Bearer qits_tok_contract-registration";
-
-  static final String REGISTRATION_SUBJECT = "tok-ci-runner-registration-contract";
 
   /** The bearer a run's ci-run token is presented as, and its subject. */
   static final String RUN_BEARER = "Bearer qits_tok_contract-ci-run";
@@ -192,8 +168,7 @@ public class ProviderStates {
    *
    * @param params the state's parameters, keys sorted — what a pact {@code @State} method returns
    * @param uniqueTokens strings the answer holds that differ per build — frozen to {@code frozen-token-N} (the
-   *     daemon pin's version and the runner version a runner view targets, which every
-   *     dependency bump moves)
+   *     daemon pin's version, which every dependency bump moves)
    */
   public record Setup(Map<String, String> params, List<String> uniqueTokens) {}
 
@@ -205,8 +180,6 @@ public class ProviderStates {
 
   @Inject CiScmReleaseRepository scmReleases;
 
-  @Inject CiRunnerRepository runnerRows;
-
   @Inject CiReleaseAnnouncementRepository announcements;
 
   @Inject CiStepRelay relay;
@@ -215,14 +188,9 @@ public class ProviderStates {
 
   @Inject ContractBearers bearers;
 
-  @Inject SuiteRunnerPresence presence;
-
   @Inject FakeGitHostRepoListing gitHostListing;
 
   @Inject CiDaemonPins daemonPins;
-
-  /** The runner version every runner view targets — moved by every bump, so frozen as a token. */
-  @Inject CiRunnerPins runnerPins;
 
   @Inject ObjectMapper json;
 
@@ -240,14 +208,8 @@ public class ProviderStates {
   /** Release rows the states wrote, removed again by {@link #cleanUp()}. */
   private final List<String> seededReleases = new ArrayList<>();
 
-  /** Whether a runner state ran: every runner named {@link #RUNNER_NAME} goes, and its runs. */
-  private boolean seededRunners;
-
   /** Whether a state armed the platform pipelines, disarmed again by {@link #cleanUp()}. */
   private boolean platformPipelinesArmed;
-
-  /** The idp a runner state stood up, closed by {@link #cleanUp()}. */
-  private StubIdp idp;
 
   public ProviderStates() {
     states.put(
@@ -261,12 +223,7 @@ public class ProviderStates {
         A_REPOSITORY_WHOSE_RELEASE_RECIPE_SELECTS_SCM_RELEASE,
         this::aRepositoryWhoseReleaseRecipeSelectsScmRelease);
     states.put(THE_MACHINE_GATE_IS_ON, this::theMachineGateIsOn);
-    states.put(NO_RUNNERS, this::noRunners);
-    states.put(AN_UNREGISTERED_RUNNER, this::anUnregisteredRunner);
-    states.put(A_REGISTERED_RUNNER, this::aRegisteredRunner);
-    states.put(A_CONNECTED_RUNNER, this::aConnectedRunner);
-    states.put(A_QUARANTINED_RUNNER, this::aQuarantinedRunner);
-    states.put(RUNNERS_WITH_FREE_SLOTS, this::runnersWithFreeSlots);
+    states.put(A_RUN_QUEUE_WITH_A_RUN_WAITING, this::aRunQueueWithARunWaiting);
     states.put(A_PINNED_DAEMON, this::aPinnedDaemon);
     states.put(
         A_RELEASED_VERSION_WITH_ARTIFACT_DECISIONS, this::aReleasedVersionWithArtifactDecisions);
@@ -319,11 +276,9 @@ public class ProviderStates {
     List<String> ids = List.copyOf(seededRuns);
     List<String> repos = List.copyOf(seededRepos);
     List<String> releases = List.copyOf(seededReleases);
-    boolean runnersToo = seededRunners;
     seededRuns.clear();
     seededRepos.clear();
     seededReleases.clear();
-    seededRunners = false;
     ids.forEach(relay::drop);
     candidates.unpin();
     bearers.reset();
@@ -332,33 +287,18 @@ public class ProviderStates {
       PlatformPipelineSwitch.set(triggers, false);
       platformPipelinesArmed = false;
     }
-    if (idp != null) {
-      idp.close();
-      idp = null;
-    }
-    if (ids.isEmpty() && repos.isEmpty() && releases.isEmpty() && !runnersToo) {
+    if (ids.isEmpty() && repos.isEmpty() && releases.isEmpty()) {
       return;
     }
-    QuarkusTransaction.requiringNew().run(() -> remove(ids, repos, releases, runnersToo));
+    QuarkusTransaction.requiringNew().run(() -> remove(ids, repos, releases));
   }
 
   /** Deletes the rows; joins the caller's transaction. */
-  private void remove(
-      List<String> runIds, List<String> repoIds, List<String> releaseIds, boolean runnersToo) {
+  private void remove(List<String> runIds, List<String> repoIds, List<String> releaseIds) {
     List<String> all = new ArrayList<>(runIds);
     if (!repoIds.isEmpty()) {
       runs.list("repoId in ?1", repoIds).forEach(run -> all.add(run.id));
       announcements.delete("repoId in ?1", repoIds);
-    }
-    if (runnersToo) {
-      List<UUID> runnerIds =
-          runnerRows.list("name", RUNNER_NAME).stream().map(r -> r.id).toList();
-      if (!runnerIds.isEmpty()) {
-        runs.list("targetRunnerId in ?1 or runnerId in ?1", runnerIds)
-            .forEach(run -> all.add(run.id));
-        runnerIds.forEach(presence::forget);
-        runnerRows.delete("id in ?1", runnerIds);
-      }
     }
     if (!all.isEmpty()) {
       steps.delete("runId in ?1", all);
@@ -572,7 +512,7 @@ public class ProviderStates {
         .run(
             () -> {
               // Rows a failed earlier setup left behind would collide on the fixed ids.
-              remove(ids, List.of(), List.of(release.id), false);
+              remove(ids, List.of(), List.of(release.id));
               runs.persist(baselineRun);
               runs.persist(run);
               scmReleases.persist(release);
@@ -685,85 +625,29 @@ public class ProviderStates {
     return setup(new TreeMap<>(Map.of("authorization", JUNK_BEARER)));
   }
 
-  // --- the runner states -----------------------------------------------------------------------
-
-  /** No runner named {@link #RUNNER_NAME}, and an idp that commissions its registration token. */
-  private Setup noRunners() {
-    clearRunners();
-    standUpIdp();
-    return setup(new TreeMap<>(), runnerPins.version());
-  }
+  // --- the queue (epic qits-1481) ------------------------------------------------------------
 
   /**
-   * Runner {@link #RUNNER_NAME}, declared and never registered or seen; its registration token is
-   * presented as the {@code authorization} param. The idp commissions what a rotation or a
-   * registration asks for.
+   * One run running and one waiting in the queue. The running run holds its lease on a target; the
+   * waiting one is QUEUED with its lease asked for. What {@code /ci/api/runs/queue} answers about
+   * them is the forecast — no runner is part of it any more.
    */
-  private Setup anUnregisteredRunner() {
-    Map<String, String> params = ids(Map.of("authorization", REGISTRATION_BEARER), "runnerId");
-    CiRunner runner = runner(params.get("runnerId"));
-    persistRunner(runner);
-    standUpIdp();
-    bearers.grant(REGISTRATION_BEARER, REGISTRATION_SUBJECT, "qits:ci-runner-registration");
-    return setup(params, runnerPins.version());
-  }
-
-  /** Runner {@link #RUNNER_NAME}, registered already: its registration token opens nothing now. */
-  private Setup aRegisteredRunner() {
-    Map<String, String> params = ids(Map.of("authorization", REGISTRATION_BEARER), "runnerId");
-    CiRunner runner = runner(params.get("runnerId"));
-    registered(runner);
-    persistRunner(runner);
-    bearers.grant(REGISTRATION_BEARER, REGISTRATION_SUBJECT, "qits:ci-runner-registration");
-    return setup(params, runnerPins.version());
-  }
-
-  /** Runner {@link #RUNNER_NAME}, registered and connected, not quarantined. */
-  private Setup aConnectedRunner() {
-    Map<String, String> params = ids(Map.of(), "runnerId");
-    CiRunner runner = runner(params.get("runnerId"));
-    registered(runner);
-    persistRunner(runner);
-    presence.declareConnected(runner.id);
-    return setup(params, runnerPins.version());
-  }
-
-  /** Runner {@link #RUNNER_NAME}, registered and connected, quarantined after failed runs. */
-  private Setup aQuarantinedRunner() {
-    Map<String, String> params = ids(Map.of(), "runnerId");
-    CiRunner runner = runner(params.get("runnerId"));
-    registered(runner);
-    runner.quarantinedAt = SEEDED_AT.plus(Duration.ofMinutes(30));
-    runner.quarantineReason = "3 infrastructure failures in a row";
-    persistRunner(runner);
-    presence.declareConnected(runner.id);
-    return setup(params, runnerPins.version());
-  }
-
-  /**
-   * Runner {@link #RUNNER_NAME}, connected with two slots: one holds a running run, one is free, and
-   * one run waits in the queue.
-   */
-  private Setup runnersWithFreeSlots() {
-    Map<String, String> params = ids(
-        Map.of(), "queuedRunId", "repositoryId", "runnerId", "runningRunId");
-    CiRunner runner = runner(params.get("runnerId"));
-    registered(runner);
-    runner.slots = 2;
-    persistRunner(runner);
-    presence.declareConnected(runner.id);
+  private Setup aRunQueueWithARunWaiting() {
+    Map<String, String> params =
+        ids(Map.of(), "leaseId", "queuedRunId", "repositoryId", "runningRunId", "targetId");
     String repo = params.get("repositoryId");
     CiRun running = run(params.get("runningRunId"), repo, "main", 1, CiRunStatus.RUNNING);
     eventPipeline(running);
     running.finishedAt = null;
-    running.runnerId = runner.id;
+    running.leaseId = UUID.fromString(params.get("leaseId"));
+    running.targetId = UUID.fromString(params.get("targetId"));
     CiRun queued = run(
         params.get("queuedRunId"), repo, "feature/csv-export", 2, CiRunStatus.QUEUED);
     eventPipeline(queued);
     queued.startedAt = null;
     queued.finishedAt = null;
     persist(List.of(running, queued), List.of());
-    return setup(params, runnerPins.version());
+    return setup(params);
   }
 
   /** The daemon pin, as configured: nothing to seed. Its version moves with every bump. */
@@ -805,7 +689,7 @@ public class ProviderStates {
 
   /**
    * A release request with a QA run waiting in the queue: the cancellation reaches it at once, as
-   * no runner holds it.
+   * no driver holds it.
    */
   private Setup aReleaseRequestWithRunsInFlight() {
     Map<String, String> params = ids(Map.of(), "queuedRunId", "releaseRequestId", "repositoryId");
@@ -1096,47 +980,6 @@ public class ProviderStates {
     step.finishedAt = step.startedAt.plusSeconds(9);
     step.output = output;
     return step;
-  }
-
-  /** Runner {@link #RUNNER_NAME} as a create declares it: one slot, never registered or seen. */
-  private static CiRunner runner(String id) {
-    CiRunner runner = new CiRunner();
-    runner.id = UUID.fromString(id);
-    runner.name = RUNNER_NAME;
-    runner.description = "the workstation's own runner";
-    runner.slots = 1;
-    runner.plane = CiRunnerPlane.EDGE;
-    runner.registrationTokenId = "token-contract-registration";
-    runner.registrationTokenSubject = REGISTRATION_SUBJECT;
-    runner.createdAt = SEEDED_AT;
-    return runner;
-  }
-
-  /** The runner, registered with its client and seen a minute later. */
-  private static void registered(CiRunner runner) {
-    runner.clientId = "dev-qits-ci-runner-" + runner.id;
-    runner.capabilities = "{\"arch\":\"amd64\",\"docker\":true}";
-    runner.registeredAt = SEEDED_AT.plus(Duration.ofMinutes(1));
-    runner.lastSeenAt = SEEDED_AT.plus(Duration.ofMinutes(2));
-  }
-
-  private void clearRunners() {
-    seededRunners = true;
-    QuarkusTransaction.requiringNew().run(() -> runnerRows.delete("name", RUNNER_NAME));
-  }
-
-  private void persistRunner(CiRunner runner) {
-    clearRunners();
-    QuarkusTransaction.requiringNew().run(() -> runnerRows.persist(runner));
-  }
-
-  /** qits-idp's commissioning surface, scripted, behind {@link IdpCommissioner}. */
-  private void standUpIdp() {
-    if (idp != null) {
-      idp.close();
-    }
-    idp = new StubIdp();
-    QuarkusMock.installMockForType(idp.commissioner(Duration.ofSeconds(2)), IdpCommissioner.class);
   }
 
   private static CiReleaseAnnouncement announcement(

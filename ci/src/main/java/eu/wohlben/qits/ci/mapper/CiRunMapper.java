@@ -45,11 +45,9 @@ public interface CiRunMapper {
   @Mapping(target = "archetypeConfigPath", source = "archetypeConfigPath")
   @Mapping(target = "archetypeRev", source = "archetypeRev")
   @Mapping(target = "archetypeVersion", source = "archetypeVersion")
-  // The runner: its id is a column and maps by name, spelled out for `phase`'s reason; its NAME is the
-  // runner row's, a second read, so it is attached at the boundary (CiRunners.withRunnerNames) like
-  // the queue facts are, and never by this mapper.
-  @Mapping(target = "runnerId", source = "runnerId")
-  @Mapping(target = "runnerName", ignore = true)
+  // Where the run runs (epic qits-1481): two columns, spelled out for `phase`'s reason.
+  @Mapping(target = "leaseId", source = "leaseId")
+  @Mapping(target = "targetId", source = "targetId")
   // The automatic-retry marker (qits-440): the column, and the flag that is nothing but its presence.
   @Mapping(target = "retryReason", source = "retryReason")
   @Mapping(target = "autoRetry", expression = "java(entity.retryReason != null)")

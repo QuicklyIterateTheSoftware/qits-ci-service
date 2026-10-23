@@ -55,7 +55,7 @@ import java.util.UUID;
  *
  * <p><b>{@code priority} is why the queue reorders</b>, and it is here for exactly that reason. It
  * is the triggering event's own word — the release request's effective priority, folded in
- * qits-projects — recorded verbatim at accept, and it is one of the two inputs a runner's reservation ranks
+ * qits-projects — recorded verbatim at accept, and it is one of the two inputs the queue's explanation ranks
  * {@code QUEUED} runs by. An operator looking at {@code /active} and asking why the newest run was
  * claimed before the oldest must be able to read the answer off the rows rather than infer it, so
  * the value is exposed even though this service compares it to nothing outside its ordering.
@@ -127,7 +127,7 @@ import java.util.UUID;
  *
  * <p><b>{@code queuePosition} is the run's 0-based index in the suggested claim order</b> — where
  * this service would really get to it, not where it sits in whatever order the listing happens to
- * be sorted in. It is computed by the same pure function a runner's reservation walks, so a client asking
+ * be sorted in. It is computed by the same pure function the lease priority comes from, so a client asking
  * "how far down the queue am I" gets qits-ci's own answer rather than a reconstruction. <b>A client
  * must not compute this for itself</b>: the criteria are kind, then dependency topology, then
  * priority, then queue time, and any second implementation of them is a second implementation that
@@ -182,11 +182,10 @@ import java.util.UUID;
  * of history pays for a forecast it would have thrown away. A client therefore reads null as "not
  * answered here" and never as "zero".
  *
- * <p><b>{@code runnerId} and {@code runnerName} say which runner executed the run</b>, and are null
- * on every run no runner held — every run whose steps qits-ci launched itself, and every row
- * recorded before runners existed. The id is the row's; the name is looked up at read time, so a run
- * whose runner has since been deleted keeps its id and reads a null name — the run is history and
- * the runner is not.
+ * <p><b>{@code leaseId} and {@code targetId} say where the run runs</b> (epic qits-1481): its CI
+ * lease in qits-system, once asked for, and the execution target that lease was granted on, once it
+ * was. Both are null on a run still waiting to ask, and on every row recorded before runs were
+ * leases — the runner that held those is not recorded any more.
  *
  * <p><b>{@code autoRetry} and {@code retryReason} say whether this run was fired by qits-ci
  * itself</b> because the run named by {@code retryOfRunId} failed through the infrastructure (a step
@@ -236,8 +235,8 @@ public record CiRunDto(
     Long expectedFinishInMillis,
     String predictionUnavailable,
     CiRunOrderingDto ordering,
-    UUID runnerId,
-    String runnerName,
+    UUID leaseId,
+    UUID targetId,
     String retryReason,
     boolean autoRetry) {
 
@@ -284,8 +283,8 @@ public record CiRunDto(
         expectedFinishInMillis,
         predictionUnavailable,
         ordering,
-        runnerId,
-        runnerName,
+        leaseId,
+        targetId,
         retryReason,
         autoRetry);
   }
@@ -342,56 +341,8 @@ public record CiRunDto(
         expectedFinishInMillis,
         predictionUnavailable,
         ordering,
-        runnerId,
-        runnerName,
-        retryReason,
-        autoRetry);
-  }
-
-  /**
-   * This run with the name of the runner that holds it attached. {@code runnerId} is a column and
-   * comes off the entity; the name is the runner row's, so like the queue facts it is attached by
-   * whoever holds that second read — {@code CiRunners.withRunnerNames} — rather than by the mapper.
-   * A run whose runner has been decommissioned keeps its {@code runnerId} and reads a null name.
-   */
-  public CiRunDto withRunnerName(String runnerName) {
-    return new CiRunDto(
-        id,
-        repoId,
-        projectId,
-        repoName,
-        branch,
-        commitSha,
-        status,
-        createdAt,
-        startedAt,
-        finishedAt,
-        cancellationReason,
-        supersededByRunId,
-        daemonVersion,
-        triggerType,
-        triggerEventId,
-        triggerEventName,
-        releaseRequestId,
-        releaseRequestQualifiedId,
-        retryOfRunId,
-        configPath,
-        archetypeName,
-        archetypeConfigPath,
-        archetypeRev,
-        archetypeVersion,
-        priority,
-        expectedStepDurationsMillis,
-        steps,
-        live,
-        phase,
-        queuePosition,
-        expectedStartInMillis,
-        expectedFinishInMillis,
-        predictionUnavailable,
-        ordering,
-        runnerId,
-        runnerName,
+        leaseId,
+        targetId,
         retryReason,
         autoRetry);
   }

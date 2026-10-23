@@ -51,7 +51,7 @@ public class CiDaemonRegistryTimeoutTest {
   @Test
   public void everyAwaitReturnsWhenNothingEverDials() {
     CiDaemonRegistry registry = new CiDaemonRegistry();
-    String daemonId = registry.registerLaunch("run-silent", 0, "tok-ci-run-run-silent-1", null);
+    String daemonId = registry.registerLaunch("run-silent", "tok-ci-run-run-silent-1");
 
     long start = System.nanoTime();
     assertFalse(
@@ -86,7 +86,7 @@ public class CiDaemonRegistryTimeoutTest {
   @Test
   public void reapingResolvesWhateverTheWorkerIsParkedOn() throws Exception {
     CiDaemonRegistry registry = new CiDaemonRegistry();
-    String daemonId = registry.registerLaunch("run-reaped", 0, "tok-ci-run-run-reaped-1", null);
+    String daemonId = registry.registerLaunch("run-reaped", "tok-ci-run-run-reaped-1");
 
     Thread reaper =
         new Thread(
@@ -113,8 +113,8 @@ public class CiDaemonRegistryTimeoutTest {
   @Test
   public void aLaunchIsMintedAFreshIdAndNoSecret() {
     CiDaemonRegistry registry = new CiDaemonRegistry();
-    String first = registry.registerLaunch("run-a", 0, "tok-ci-run-run-a-1", null);
-    String second = registry.registerLaunch("run-a", 1, "tok-ci-run-run-a-1", null);
+    String first = registry.registerLaunch("run-a", "tok-ci-run-run-a-1");
+    String second = registry.registerLaunch("run-a", "tok-ci-run-run-a-1");
 
     // Two steps of one run are two launches under one token subject; what tells them apart is the
     // id each daemon names, which is a random UUID and not a secret (qits-515).
@@ -123,7 +123,7 @@ public class CiDaemonRegistryTimeoutTest {
     assertEquals(2, registry.size());
     // A launch is always bound to its run's token: there is nothing else to admit a dial by.
     assertThrows(
-        NullPointerException.class, () -> registry.registerLaunch("run-a", 2, null, null));
+        NullPointerException.class, () -> registry.registerLaunch("run-a", null));
   }
 
   /**

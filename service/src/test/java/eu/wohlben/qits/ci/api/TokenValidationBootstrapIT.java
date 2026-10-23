@@ -151,6 +151,14 @@ public class TokenValidationBootstrapIT {
       // qits-idp's commissioning surface (stories/support/StoryRunTokens); what this service
       // VALIDATES still comes from the mock idp above.
       overrides.putAll(eu.wohlben.qits.ci.stories.support.StoryRunTokens.configOverrides());
+      // THE TARGET (epic qits-1481). Every run is one CI lease at qits-system now, so the build
+      // stories need somewhere to ask for one: an in-memory stand-in for qits-system's lease
+      // surface (stories/support/StorySystem), with the reconcile at a second so a lease the story
+      // grants is noticed without an event bus. And the ci-slot image every step runs in is a
+      // platform image, which a run pins by digest at accept: no registry answers here, so the
+      // pin is off and the run names the tag — the shipped switch, and its documented off arm.
+      overrides.putAll(eu.wohlben.qits.ci.stories.support.StorySystem.configOverrides());
+      overrides.put("qits.ci.resolve-platform-step-images", "false");
       // THERE IS NO THIRD DIAL ANY MORE. This block used to carry a second switch —
       // qits.ci.daemon-autoadopt-enabled=false — because the daemon pin ladder's startup discovery
       // was a SEPARATE HTTP call to qits.events.url that the key above did not cover, and a launched
@@ -160,12 +168,11 @@ public class TokenValidationBootstrapIT {
       // NO ORCHESTRATOR ANY MORE (qits-506). This block used to point qits.containers.url at a
       // recording stand-in (MockContainers) and shrink the boot reap's patience, because qits-ci
       // asked qits-containers for every step container and reaped them at boot. It asks nobody now:
-      // a runner holds every run, and the build stories play one over the real socket
-      // (stories/support/StoryRunner), reading the workload spec out of the Launch it is sent.
+      // every run is a lease at qits-system (above), and the build stories read the lease's spec
+      // out of the stand-in and dial as its daemon.
       //
-      // AND NO READINESS HATCH. This story asserts /ci/q/health/ready answers 200 BEFORE any story
-      // has connected a runner, and it does with nothing set: the ci-runners check is always UP — a
-      // runner connects through the routing that health gates, so it can never be a precondition.
+      // AND NO READINESS HATCH. This story asserts /ci/q/health/ready answers 200 with nothing set:
+      // no readiness check here depends on a target, a lease or an inbound connection.
       // AND NO DAEMON PIN IS SET HERE EITHER, which is one fewer thing a story has to arrange. This
       // block used to carry qits.ci.daemon-version=2026.101.000000 purely so /ci/q/health/ready came
       // up: the readiness check was DOWN whenever the pin ladder had no rung at all — no adopted

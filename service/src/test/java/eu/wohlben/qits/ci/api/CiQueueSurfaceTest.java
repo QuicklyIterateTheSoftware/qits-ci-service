@@ -72,7 +72,6 @@ public class CiQueueSurfaceTest {
   private static final String EVENT_NAME = "CiQueueEvent";
 
   /** No slash, so {@code CiStepImage} leaves it alone and the staged history names what runs. */
-  private static final String IMAGE = "alpine:3";
 
   private static final String TRIGGER_FILE =
       """
@@ -86,7 +85,7 @@ public class CiQueueSurfaceTest {
 
   @Inject FakeCiStepRunner fakeRunner;
 
-  /** Executes this suite's runs: every run is a runner's since qits-506 — see {@link SuiteRunner}. */
+  /** Executes this suite's runs: the stand-in target granting every run's lease — see {@link SuiteRunner}. */
   @Inject SuiteRunner suiteRunner;
   @Inject CiRunService runService;
   @Inject CiEventTriggerParser triggerParser;
@@ -139,16 +138,10 @@ public class CiQueueSurfaceTest {
           "the instant the durations are relative to is this response's own, not a stored one");
       assertFalse(
           body.containsKey("concurrentBuilds"),
-          "no local pool any more (qits-506): the slots are the connected runners'");
-      List<Map<String, Object>> runners = rows(body, "runners");
-      assertTrue(
-          runners.stream()
-              .anyMatch(
-                  r ->
-                      SuiteRunner.NAME.equals(r.get("name"))
-                          && Boolean.TRUE.equals(r.get("connected"))
-                          && Integer.valueOf(1).equals(r.get("slots"))),
-          "the one connected one-slot runner the forecast really modelled with: " + runners);
+          "no local pool any more (qits-506): the slots are the target's");
+      assertFalse(
+          body.containsKey("runners"),
+          "no runners any more (epic qits-1481): every run is a lease on a qits-system target");
 
       // The running half: one run, holding the slot, with a remaining that is its predicted total
       // minus however long it has really been going. No position and no ordering — it is past being
@@ -345,8 +338,9 @@ public class CiQueueSurfaceTest {
       Map<String, Object> detail = run(runId);
       List<Map<String, Object>> detailSteps = rowsOf(detail, "steps");
       assertEquals(1, detailSteps.size());
-      assertEquals(
-          "step 0 ran", detailSteps.get(0).get("output"), "the run read still carries the output");
+      assertTrue(
+          String.valueOf(detailSteps.get(0).get("output")).endsWith("step 0 ran"),
+          "the run read still carries the output: " + detailSteps.get(0).get("output"));
       @SuppressWarnings("unchecked")
       Map<String, Object> detailLive = (Map<String, Object>) detail.get("live");
       assertNotNull(detailLive);
@@ -460,7 +454,9 @@ public class CiQueueSurfaceTest {
                 step.id = UUID.randomUUID().toString();
                 step.runId = run.id;
                 step.stepIndex = stepIndex;
-                step.image = IMAGE;
+                // What a step row records since epic qits-1481: the ci-slot image every step runs
+                // in, whatever the pipeline named — and what a prediction samples history by.
+                step.image = runService.resolveStepImage(eu.wohlben.qits.ci.control.CiSlot.IMAGE_TAG);
                 step.status = CiStepStatus.SUCCESS;
                 step.exitCode = 0;
                 step.finishedAt = nextFinish;

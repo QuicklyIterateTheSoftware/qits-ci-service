@@ -18,6 +18,8 @@ import eu.wohlben.qits.ci.githost.HttpGitHostRepoListing;
 import eu.wohlben.qits.ci.githost.IdpGitHostBearer;
 import eu.wohlben.qits.ci.idp.IdpClients;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
+import eu.wohlben.qits.ci.targethost.SystemLeases;
+import eu.wohlben.qits.ci.targethost.SystemLeasesClients;
 import eu.wohlben.qits.ci.projects.HttpProjectsRepoListing;
 import eu.wohlben.qits.ci.projects.ProjectsClients;
 import eu.wohlben.qits.ci.registry.HttpArtifactPresence;
@@ -55,6 +57,11 @@ import java.util.Set;
  *   <li><b>qits-idp</b>: commissioned clients and tokens ({@code idp/IdpCommissioner}, Basic auth as
  *       qits-ci's own client), and the client-credentials token mint quarkus-oidc-client makes for
  *       the {@code qits} client ({@code githost/IdpGitHostBearer}).
+ *   <li><b>qits-system</b> (epic qits-1481): a run's CI lease — {@code createLease}, {@code
+ *       getLease}, {@code listLeases} and {@code endLease} ({@code targethost/SystemLeases}). Every
+ *       row is <b>pending</b> until this repository pins qits-system's golden masters, which do not
+ *       record the targets module's states yet; the rows name the states qits-system-service records
+ *       on its epic branch ({@code no target}, {@code a queued lease}).
  * </ul>
  *
  * <p><b>A row whose state its provider has not recorded is pending</b>: it stays in the table, is left
@@ -75,6 +82,7 @@ final class PeerContracts {
   static final GoldenMasters GITHOST = GoldenMasters.of("qits-githost-service", "qits-githost");
   static final GoldenMasters ARTIFACTS = GoldenMasters.of("qits-artifacts-service", "qits-artifacts");
   static final GoldenMasters IDP = GoldenMasters.of("qits-idp-service", "qits-idp");
+  static final GoldenMasters SYSTEM = GoldenMasters.of("qits-system-service", "qits-system");
 
   /** The client qits-ci commissions as in the idp's recordings: {@code test-broad}. */
   static final String IDP_CLIENT_ID = "test-broad";
@@ -127,7 +135,7 @@ final class PeerContracts {
 
   /** Every provider's pact, of its rows. */
   static final List<ConsumerPact> PACTS =
-      List.of(pact(PROJECTS), pact(GITHOST), pact(ARTIFACTS), pact(IDP));
+      List.of(pact(PROJECTS), pact(GITHOST), pact(ARTIFACTS), pact(IDP), pact(SYSTEM));
 
   private PeerContracts() {}
 
@@ -149,8 +157,7 @@ final class PeerContracts {
     List<Bound> rows = new ArrayList<>();
 
     // --- qits-projects ------------------------------------------------------------------------
-    for (Trigger trigger :
-        List.of(CANDIDATES, Trigger.schedule("CiRunnerHealth.healthcheck"))) {
+    for (Trigger trigger : List.of(CANDIDATES)) {
       rows.add(
           new Bound(
               PROJECTS,
@@ -464,45 +471,7 @@ final class PeerContracts {
     // --- qits-idp -----------------------------------------------------------------------------
     // Each commission sends the body qits-ci's own callers send, so each binds the state qits-idp
     // recorded for exactly that body (published with rr-73's golden masters).
-    rows.add(
-        new Bound(
-            IDP,
-            GoldenInteraction.of(
-                    Trigger.operation("CiRunnerController.register"),
-                    "a ci runner being commissioned",
-                    "commissionClient")
-                .header("Authorization", "{authorization}")
-                .consumes("clientId", "secret"),
-            IdpCommissioner.class,
-            "commission",
-            (url, recorded) -> {
-              // As the register door asks: the runner's client, which may push nothing.
-              IdpCommissioner.Commission commission =
-                  commissioner(url)
-                      .commission(
-                          IdpCommissioner.RUNNER_KIND, recorded.params().get("runnerId"), List.of());
-              assertFalse(commission.clientId().isBlank());
-              assertFalse(commission.secret().isBlank());
-            }));
-    rows.add(
-        new Bound(
-            IDP,
-            GoldenInteraction.of(
-                    Trigger.operation("CiRunnerController.create (the runner's registration token)"),
-                    "a ci runner's registration token being commissioned",
-                    "commissionToken")
-                .header("Authorization", "{authorization}")
-                .consumes("tokenId", "token", "subject"),
-            IdpCommissioner.class,
-            "commissionToken",
-            (url, recorded) ->
-                assertToken(
-                    commissioner(url)
-                        .commissionToken(
-                            IdpCommissioner.RUNNER_REGISTRATION_KIND,
-                            recorded.params().get("runnerId"),
-                            List.of()))));
-    Trigger runToken = Trigger.schedule("RunCommissions.forRun (a step's run token)");
+    Trigger runToken = Trigger.schedule("RunCommissions.forRun (a run's lease token)");
     rows.add(
         new Bound(
             IDP,
@@ -535,10 +504,11 @@ final class PeerContracts {
                         .commissionToken(
                             IdpCommissioner.CONTEXT_KIND, recorded.params().get("runId"), null))));
     Trigger reconcile = Trigger.schedule("CommissionReconciler.tick");
+    Trigger retired = Trigger.schedule("LegacyRunnerClients.giveBack (the retired CI runner's)");
     rows.add(
         new Bound(
             IDP,
-            GoldenInteraction.of(reconcile, "a commissioned client", "listClients")
+            GoldenInteraction.of(retired, "a commissioned client", "listClients")
                 .header("Authorization", "{authorization}")
                 .consumes("[].clientId", "[].contextKind", "[].contextId"),
             IdpCommissioner.class,
@@ -550,7 +520,7 @@ final class PeerContracts {
     rows.add(
         new Bound(
             IDP,
-            GoldenInteraction.of(reconcile, "a commissioned client", "decommissionClient")
+            GoldenInteraction.of(retired, "a commissioned client", "decommissionClient")
                 .header("Authorization", "{authorization}"),
             IdpCommissioner.class,
             "decommission",
@@ -596,6 +566,82 @@ final class PeerContracts {
             IdpGitHostBearer.class,
             "token",
             null));
+    // --- qits-system (epic qits-1481): every row pending until its golden masters are pinned ----
+    Trigger lease = Trigger.schedule("CiLeases.request (a queued run's lease)");
+    Trigger follow = Trigger.schedule("CiLeases.reconcile");
+    rows.add(
+        new Bound(
+            SYSTEM,
+            GoldenInteraction.of(lease, "no target", "createLease")
+                .header("Authorization", "{authorization}")
+                .consumes("id", "ownerRef", "state", "targetId", "requestedAt"),
+            SystemLeases.class,
+            "create",
+            (url, recorded) -> {
+              SystemLeases.LeaseView created =
+                  system(url, recorded)
+                      .create(
+                          new SystemLeases.CreateLease(
+                              SystemLeases.SLOT_TYPE,
+                              "run-1",
+                              0,
+                              new SystemLeases.LeaseSpec(
+                                  "registry.qits.wohlben.eu/qits/build-images/ci-slot:2026.1",
+                                  Map.of("QITS_TOKEN", "qits_tok_run"),
+                                  "1001",
+                                  new SystemLeases.Limits("4g", null, 4096L, null, null))));
+              assertFalse(created.id() == null);
+            }));
+    rows.add(
+        new Bound(
+            SYSTEM,
+            GoldenInteraction.of(
+                    Trigger.event("CiDaemonRegistry.DaemonDialled (a lease's daemon dialled in)"),
+                    "a queued lease",
+                    "getLease")
+                .header("Authorization", "{authorization}")
+                .consumes("id", "ownerRef", "state", "targetId", "exitCode", "detail"),
+            SystemLeases.class,
+            "get",
+            (url, recorded) ->
+                assertTrue(
+                    system(url, recorded)
+                        .get(java.util.UUID.fromString(recorded.params().get("leaseId")))
+                        .isPresent())));
+    rows.add(
+        new Bound(
+            SYSTEM,
+            GoldenInteraction.of(follow, "a queued lease", "listLeases")
+                .header("Authorization", "{authorization}")
+                .consumes(
+                    "[].id", "[].ownerRef", "[].state", "[].targetId", "[].exitCode", "[].detail",
+                    "[].requestedAt"),
+            SystemLeases.class,
+            "list",
+            (url, recorded) -> assertFalse(system(url, recorded).list().isEmpty())));
+    rows.add(
+        new Bound(
+            SYSTEM,
+            GoldenInteraction.of(lease, "a queued lease", "listLeases")
+                .header("Authorization", "{authorization}")
+                .consumes("[].id", "[].ownerRef", "[].state"),
+            SystemLeases.class,
+            "liveLeaseOf",
+            (url, recorded) -> system(url, recorded).liveLeaseOf("run-1")));
+    rows.add(
+        new Bound(
+            SYSTEM,
+            GoldenInteraction.of(
+                    Trigger.schedule("LeaseStepRunner.runClosed (a closed run's lease)"),
+                    "a queued lease",
+                    "endLease")
+                .header("Authorization", "{authorization}")
+                .consumes("id", "state"),
+            SystemLeases.class,
+            "end",
+            (url, recorded) ->
+                system(url, recorded)
+                    .end(java.util.UUID.fromString(recorded.params().get("leaseId")))));
     return List.copyOf(rows);
   }
 
@@ -603,6 +649,16 @@ final class PeerContracts {
     assertFalse(token.tokenId().isBlank());
     assertFalse(token.token().isBlank());
     assertFalse(token.subject().isBlank());
+  }
+
+  /** {@link SystemLeases} against the mock server, its bearer the state's {@code authorization}. */
+  private static SystemLeases system(String url, Operation recorded) {
+    String authorization = recorded.params().get("authorization");
+    return SystemLeasesClients.against(
+        url,
+        authorization == null
+            ? java.util.Optional.empty()
+            : java.util.Optional.of(authorization.replaceFirst("^Bearer ", "")));
   }
 
   private static HttpGitConfigSource gitConfig(String url) {

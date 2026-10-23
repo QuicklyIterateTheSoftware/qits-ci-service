@@ -3,18 +3,8 @@ package eu.wohlben.qits.ci.bus;
 import eu.wohlben.qits.ci.events.BuildFailed;
 import eu.wohlben.qits.ci.events.BuildStatusChanged;
 import eu.wohlben.qits.ci.events.BuildSuccessful;
-import eu.wohlben.qits.ci.events.RunnerChanged;
-import eu.wohlben.qits.ci.events.RunnerConnected;
-import eu.wohlben.qits.ci.events.RunnerCreated;
-import eu.wohlben.qits.ci.events.RunnerDeleted;
-import eu.wohlben.qits.ci.events.RunnerDisconnected;
-import eu.wohlben.qits.ci.events.RunnerHealthChecked;
-import eu.wohlben.qits.ci.events.RunnerQuarantined;
-import eu.wohlben.qits.ci.events.RunnerRegistered;
-import eu.wohlben.qits.ci.events.RunnerReinstated;
-import eu.wohlben.qits.ci.events.RunnerUpdateStarted;
-import eu.wohlben.qits.ci.events.RunnerUpdated;
 import eu.wohlben.qits.ci.events.SoftwareRelease;
+import eu.wohlben.qits.ci.targethost.TargetLeaseChanged;
 import eu.wohlben.qits.eventstream.control.EventEnvelope;
 import eu.wohlben.qits.eventstream.control.EventFrame;
 import eu.wohlben.qits.githost.events.SCMPublishCommit;
@@ -90,14 +80,11 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * record would be a throw or a mangled payload several times per run rather than once, and the run
  * lifecycle a mirror is built on would simply never arrive.
  *
- * <p><b>The eleven runner lifecycle events are publish-only too</b> — {@link RunnerCreated} through
- * {@link RunnerDeleted}, and the quarantine's {@link RunnerQuarantined}, {@link RunnerReinstated} and
- * {@link RunnerHealthChecked}, announced by {@link RunnerLifecycleAnnouncer} and never read back here —
- * and they are on this list for exactly {@link BuildStatusChanged}'s reason. They add no new kind of
- * risk, only the new shapes worth naming: {@link RunnerChanged} carries a {@code List<String>}, which
- * Jackson writes from the component's accessor like any other, and {@link RunnerDisconnected} and
- * {@link RunnerChanged} declare static constants, which no serializer reads. An unregistered one
- * would fail on the publishing thread, where the only witness is a WARN.
+ * <p><b>{@link TargetLeaseChanged} is the one foreign payload this service BINDS</b> besides {@link
+ * RepositoryRenamed}: qits-system's lease events, transcribed (epic qits-1481), are decoded into that
+ * record by the bus's own mapper for {@code targethost/TargetLeaseEvents}, so the record is a
+ * reflection target exactly as a published one is. The eleven runner lifecycle events that used to
+ * sit here went with the CI runner.
  *
  * <p><b>An event this service only publishes is exactly as dependent on this list</b>, which is
  * worth stating because "nothing binds it back" reads like a reason to skip it. The failure is on
@@ -144,19 +131,9 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       BuildFailed.class,
       BuildStatusChanged.class,
       SoftwareRelease.class,
-      RunnerCreated.class,
-      RunnerRegistered.class,
-      RunnerConnected.class,
-      RunnerDisconnected.class,
-      RunnerUpdateStarted.class,
-      RunnerUpdated.class,
-      RunnerChanged.class,
-      RunnerDeleted.class,
-      RunnerQuarantined.class,
-      RunnerReinstated.class,
-      RunnerHealthChecked.class,
       SCMPublishCommit.class,
       RepositoryRenamed.class,
+      TargetLeaseChanged.class,
       EventEnvelope.class,
       EventFrame.class
     },

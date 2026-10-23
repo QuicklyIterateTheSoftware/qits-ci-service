@@ -5,6 +5,7 @@ import eu.wohlben.qits.cidaemon.protocol.AckReceived;
 import eu.wohlben.qits.cidaemon.protocol.Cancel;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonMessage;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonProtocol;
+import eu.wohlben.qits.cidaemon.protocol.Close;
 import eu.wohlben.qits.cidaemon.protocol.Heartbeat;
 import eu.wohlben.qits.cidaemon.protocol.Hello;
 import eu.wohlben.qits.cidaemon.protocol.InitFailed;
@@ -17,8 +18,10 @@ import io.quarkus.websockets.next.CloseReason;
 import io.quarkus.websockets.next.WebSocketConnection;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Event;
 import jakarta.inject.Inject;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -33,10 +36,12 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
- * The in-memory launch table: every step container qits-ci has asked a runner for and not yet
- * reaped, keyed by the {@code daemonId} it was launched with, holding the subject of its run's
- * {@code ci-run} token, the (run, step) it belongs to, its connection once it dials, its lifecycle
- * phase, and the listener its output goes to. It is the in-JVM half of the control plane — {@link CiDaemonSocket} owns the WebSocket
+ * The in-memory launch table: one launch per CI run's lease (epic qits-1481, capability 2), keyed
+ * by the {@code daemonId} the lease's container was told, holding the subject of its run's {@code
+ * ci-run} token, the run it belongs to, its connection once it dials, its lifecycle phase, and the
+ * step in flight with the listener that step's output goes to. One daemon runs every step of the
+ * run: it says {@code Initialized} once, is sent one {@link RunStep} per step, answers each with a
+ * {@link StepFinished} naming the step, and is told {@link Close} when the run is over. It is the in-JVM half of the control plane — {@link CiDaemonSocket} owns the WebSocket
  * lifecycle and forwards frames here, exactly as {@code WorkspaceDaemonRegistry} sits behind {@code
  * DaemonControlSocket} in qits-workspaces.
  *
@@ -92,7 +97,7 @@ import org.jboss.logging.Logger;
  * daemon that does not re-dial (one older than the re-dial) costs its step the grace and no more.
  * {@code 0} restores the old behaviour.
  *
- * <p>{@code RunnerStepRunner} is what drives this in production, one step at a time.
+ * <p>{@code targethost/LeaseStepRunner} is what drives this in production, one step at a time.
  */
 @ApplicationScoped
 public class CiDaemonRegistry {
@@ -142,8 +147,7 @@ public class CiDaemonRegistry {
 
   /**
    * Package-private for one reason: a suite proving a grace runs out cannot wait a minute. A method
-   * rather than a field write because this bean is normal-scoped — {@code
-   * CiRunnerRegistry.reconnectGrace}'s reason. {@code null} puts the configured value back.
+   * rather than a field write because this bean is normal-scoped. {@code null} puts the configured value back.
    */
   void reconnectGrace(Duration grace) {
     this.reconnectGrace = grace;
@@ -175,15 +179,15 @@ public class CiDaemonRegistry {
 
   /** How far along one launch is. Observational — the awaits are what callers actually use. */
   public enum Phase {
-    /** Minted and (presumably) started; nothing has dialled. */
+    /** Minted and its lease asked for; nothing has dialled. */
     LAUNCHED,
     /** A dial was admitted: its {@code Hello} named this launch and its token is the run's. */
     CONNECTED,
-    /** The daemon reported its clone and checkout done. */
+    /** The daemon reported its worktree ready, and no step is in flight — between two steps too. */
     INITIALIZED,
-    /** A {@link RunStep} has been sent. */
+    /** A {@link RunStep} has been sent and its {@link StepFinished} has not arrived. */
     RUNNING,
-    /** A terminal frame arrived, or the launch failed to reach one. */
+    /** The daemon failed to initialize, or the launch was reaped. */
     DONE
   }
 
@@ -252,62 +256,82 @@ public class CiDaemonRegistry {
     ALREADY_CONNECTED,
     /**
      * The caller is not this launch's run's token: the subject it arrived as is not the one
-     * recorded at {@link #registerLaunch(String, int, String, StepListener)}.
+     * recorded at {@link #registerLaunch(String, String)}.
      */
     WRONG_RUN
   }
 
-  // --- the launch side (called by the launcher / the runner's worker thread) ----------------------
+  // --- the launch side (called by the lease's step runner) --------------------------------------
 
   /**
-   * Mint an id for one step container and record the launch, bound to the subject of its run's
-   * {@code ci-run} token: the daemon dials through the edge with that token and is admitted only
-   * when the {@code sub} it arrives as is this one. Called before the runner is asked to start the
-   * container, so the record exists before anything can dial against it.
+   * Who hears that a launch's daemon dialled in for the first time — {@code CiLeases}, which starts
+   * the run's driver then rather than waiting for qits-system to say the lease is running. Fired on
+   * the socket's virtual thread, after the admission; an observer must not block for long.
+   */
+  public record DaemonDialled(String daemonId, String runId) {}
+
+  @Inject Event<DaemonDialled> dialled;
+
+  /**
+   * Mint an id for one run's lease and record the launch, bound to the subject of its run's {@code
+   * ci-run} token: the daemon dials through the edge with that token and is admitted only when the
+   * {@code sub} it arrives as is this one. Called before the lease is asked for, so the record exists
+   * before anything can dial against it.
    *
-   * @return the launch's {@code daemonId}, which the container is told as {@code
+   * @return the launch's {@code daemonId}, which the lease's container is told as {@code
    *     $QITS_CI_DAEMON_ID} and names in its {@code Hello}
    */
-  public String registerLaunch(
-      String runId, int stepIndex, String tokenSubject, StepListener listener) {
+  public String registerLaunch(String runId, String tokenSubject) {
     Objects.requireNonNull(tokenSubject, "a launch is bound to its run's token subject");
     String daemonId = UUID.randomUUID().toString();
-    launches.put(daemonId, new Launch(daemonId, runId, stepIndex, tokenSubject, listener));
-    LOG.debugf("Minted ci-daemon %s for run %s step %d", daemonId, runId, stepIndex);
+    launches.put(daemonId, new Launch(daemonId, runId, tokenSubject));
+    LOG.debugf("Minted ci-daemon %s for run %s", daemonId, runId);
     return daemonId;
   }
 
+  /** A step a previous process had in flight on this launch: what {@link #reattachLaunch} resumes. */
+  public record InFlightStep(
+      int stepIndex, String script, int timeoutSeconds, Map<String, String> env) {}
+
   /**
    * Record a launch a <b>previous process</b> of this service made, so that its daemon — still
-   * running on the runner, re-dialling through its reconnect budget — is admitted when it comes back
-   * (qits-1192). The id, the run, the step and the token subject are the ones that process recorded
-   * on the run row; nothing is minted. The launch counts as admitted once already, so the daemon's
-   * dial is a reconnect, and it waits {@link #reconnectGrace()} for it from now, as a dropped socket
-   * does.
+   * running in its lease, re-dialling through its reconnect budget — is admitted when it comes back
+   * (qits-1192). The id, the run and the token subject are the ones that process recorded on the run
+   * row; nothing is minted. The launch counts as admitted once already, so the daemon's dial is a
+   * reconnect, and it waits {@link #reconnectGrace()} for it from now, as a dropped socket does.
    *
-   * <p>{@code runStep} is the step the daemon was sent, when it was sent one: it is sent again after
-   * the re-admission's {@code Ack}, and a daemon that already has it ignores it. Null for a step that
-   * was not started — the daemon then says {@code Initialized} again, and the caller sends the step.
+   * <p>{@code inFlight} is the step the daemon was sent, when one was in flight: it is sent again
+   * after the re-admission's {@code Ack} (a daemon ignores a step index it already ran), and its
+   * output goes to {@code listener}. Null when no step was in flight — before the first, or between
+   * two: the daemon then waits for its next {@code RunStep}.
    */
   public void reattachLaunch(
       String daemonId,
       String runId,
-      int stepIndex,
       String tokenSubject,
-      String script,
-      int timeoutSeconds,
+      InFlightStep inFlight,
       StepListener listener) {
     Objects.requireNonNull(daemonId, "a re-attached launch names its daemon");
     Objects.requireNonNull(tokenSubject, "a launch is bound to its run's token subject");
-    Launch launch = new Launch(daemonId, runId, stepIndex, tokenSubject, listener);
+    Launch launch = new Launch(daemonId, runId, tokenSubject);
     Duration grace = reconnectGrace();
     synchronized (launch) {
       launch.admissions = 1;
-      if (script != null) {
-        // The correlation id is the launch id: the old one died with the previous process, and one
-        // step per container keeps either unambiguous.
-        launch.correlationId = daemonId;
-        launch.runStep = new RunStep(daemonId, script, timeoutSeconds);
+      // A launch that was running steps had initialized; one that had not is told so again by its
+      // daemon, which resends an Initialized nobody read.
+      if (inFlight != null) {
+        launch.initialized.complete(Initialization.ok());
+        launch.beginStep(inFlight.stepIndex(), listener);
+        // The correlation id is the launch id plus the step: the old one died with the previous
+        // process, and the step index is what the daemon matches a repeated RunStep by.
+        launch.correlationId = daemonId + "-" + inFlight.stepIndex();
+        launch.runStep =
+            new RunStep(
+                launch.correlationId,
+                inFlight.stepIndex(),
+                inFlight.script(),
+                inFlight.timeoutSeconds(),
+                inFlight.env());
         launch.phase = Phase.RUNNING;
       }
       if (!grace.isZero() && !grace.isNegative()) {
@@ -324,27 +348,27 @@ public class CiDaemonRegistry {
       return;
     }
     LOG.infof(
-        "Waiting %ss for ci-daemon %s of run %s step %d, launched by the previous process, to come"
-            + " back",
-        grace.toSeconds(), daemonId, runId, stepIndex);
+        "Waiting %ss for ci-daemon %s of run %s, launched by the previous process, to come back%s",
+        grace.toSeconds(),
+        daemonId,
+        runId,
+        inFlight == null ? "" : " (step " + inFlight.stepIndex() + " in flight)");
   }
 
   /**
    * For a re-attached launch whose step was not started: block until the daemon says {@code
-   * Initialized} (it is still owed its step), or its terminal frame arrives first (it had the step
-   * after all), or the deadline expires. Null means the terminal frame came first.
+   * Initialized} (it is still owed its step), or the step's terminal frame arrives first (it had the
+   * step after all), or the deadline expires. Null means the terminal frame came first.
    */
   public Initialization awaitInitializedUnlessFinished(String daemonId, Duration timeout) {
     Launch launch = launches.get(daemonId);
     if (launch == null) {
       return Initialization.of(Initialization.Status.CONNECTION_LOST);
     }
-    await(
-        CompletableFuture.anyOf(launch.initialized, launch.finished),
-        timeout,
-        null);
+    CompletableFuture<Completion> step = launch.stepFinished;
+    await(CompletableFuture.anyOf(launch.initialized, step), timeout, null);
     Initialization initialized = launch.initialized.getNow(null);
-    Completion finished = launch.finished.getNow(null);
+    Completion finished = step.getNow(null);
     if (finished != null && finished.status() == Completion.Status.FINISHED) {
       return null;
     }
@@ -353,10 +377,13 @@ public class CiDaemonRegistry {
         : Initialization.of(Initialization.Status.NEVER_INITIALIZED);
   }
 
-  /** Whether a terminal frame arrived for this launch — its step ended, whatever the host did. */
+  /**
+   * Whether the step in flight on this launch has its terminal frame — the step ended, whatever the
+   * host did. False with no step in flight.
+   */
   public boolean finished(String daemonId) {
     Launch launch = launches.get(daemonId);
-    Completion finished = launch == null ? null : launch.finished.getNow(null);
+    Completion finished = launch == null ? null : launch.stepFinished.getNow(null);
     return finished != null && finished.status() == Completion.Status.FINISHED;
   }
 
@@ -397,7 +424,7 @@ public class CiDaemonRegistry {
    * delivery — which is what a real run actually depends on, since {@code Ack} and every frame after
    * it (not least {@code RunStep}) travel that direction.
    *
-   * <p><b>Nothing calls this today, and it is kept deliberately.</b> {@code RunnerStepRunner}
+   * <p><b>Nothing calls this today, and it is kept deliberately.</b> {@code LeaseStepRunner}
    * moves straight from {@link #awaitRegistered} to {@link #awaitInitialized}, so a real container's
    * {@link AckReceived} is recorded here and never awaited. Its one caller was the pin ladder's
    * container probe, whose whole job was to prove the host→daemon round trip before a version was
@@ -422,31 +449,64 @@ public class CiDaemonRegistry {
   }
 
   /**
-   * Send this container's one and only {@link RunStep}. The correlation id is returned so the caller
-   * can tie chunks and the terminal frame to it — one step per container makes it unambiguous today,
-   * and it exists from the first version so moving output to a second socket later never changes a
-   * message's shape.
+   * Send one step of the run. Its output goes to {@code listener} from here on, its terminal frame
+   * is what {@link #awaitFinished} waits for, and it names {@code stepIndex}, which the daemon echoes
+   * on that frame and matches a repeated {@code RunStep} by. {@code env} is the step's own
+   * environment, laid over the lease's for that step only. Returns the correlation id.
+   *
+   * <p>A launch whose daemon is lost — its reconnect grace ran out, or it was reaped — answers the
+   * step lost at once rather than leaving it to its backstop.
    */
-  public String sendRunStep(String daemonId, String script, int timeoutSeconds) {
+  public String sendRunStep(
+      String daemonId,
+      int stepIndex,
+      String script,
+      int timeoutSeconds,
+      Map<String, String> env,
+      StepListener listener) {
     Launch launch = require(daemonId);
     String correlationId = UUID.randomUUID().toString();
-    RunStep runStep = new RunStep(correlationId, script, timeoutSeconds);
-    launch.correlationId = correlationId;
-    // Recorded BEFORE the send reads the connection: a re-admission that binds a socket after this
-    // send found none is guaranteed to see it and deliver it (see #resume).
-    launch.runStep = runStep;
-    launch.phase = Phase.RUNNING;
+    RunStep runStep = new RunStep(correlationId, stepIndex, script, timeoutSeconds, env);
+    synchronized (launch) {
+      launch.beginStep(stepIndex, listener);
+      launch.correlationId = correlationId;
+      // Recorded BEFORE the send reads the connection: a re-admission that binds a socket after this
+      // send found none is guaranteed to see it and deliver it (see #resume).
+      launch.runStep = runStep;
+      launch.phase = Phase.RUNNING;
+      if (launch.lost) {
+        launch.stepFinished.complete(Completion.of(Completion.Status.CONNECTION_LOST));
+        return correlationId;
+      }
+    }
     send(launch, runStep);
     return correlationId;
   }
 
-  /** Block until the step's terminal frame, the socket's loss, or the host's backstop deadline. */
+  /**
+   * Tell the daemon the run is over: it kills a step still running, removes the run's worktree and
+   * exits 0. There is no answer frame; the socket closing is the answer, and the lease is ended
+   * after this. Best effort: a daemon with no live socket is not owed it — ending the lease removes
+   * its container either way.
+   */
+  public void sendClose(String daemonId) {
+    Launch launch = launches.get(daemonId);
+    if (launch == null) {
+      return;
+    }
+    send(launch, new Close());
+  }
+
+  /**
+   * Block until the step in flight has its terminal frame, the socket is lost, or the host's backstop
+   * deadline passes.
+   */
   public Completion awaitFinished(String daemonId, Duration timeout) {
     Launch launch = launches.get(daemonId);
     if (launch == null) {
       return Completion.of(Completion.Status.CONNECTION_LOST);
     }
-    return await(launch.finished, timeout, Completion.of(Completion.Status.NO_ANSWER));
+    return await(launch.stepFinished, timeout, Completion.of(Completion.Status.NO_ANSWER));
   }
 
   /**
@@ -458,7 +518,9 @@ public class CiDaemonRegistry {
    */
   public void cancel(String daemonId) {
     Launch launch = launches.get(daemonId);
-    if (launch == null || launch.correlationId == null) {
+    if (launch == null || launch.correlationId == null || launch.phase != Phase.RUNNING) {
+      // No step in flight: a Cancel would reach a daemon with nothing to kill, and one before the
+      // first step makes it exit. The run's close is what ends the lease.
       return;
     }
     launch.cancelPending = true;
@@ -593,9 +655,9 @@ public class CiDaemonRegistry {
     synchronized (launch) {
       if (!launch.tokenSubject.equals(runSubject)) {
         LOG.warnf(
-            "ci-daemon %s of run %s step %d was dialled as subject '%s', and the run's ci-run token"
+            "ci-daemon %s of run %s was dialled as subject '%s', and the run's ci-run token"
                 + " is '%s' — refused WRONG_RUN",
-            daemonId, launch.runId, launch.stepIndex, runSubject, launch.tokenSubject);
+            daemonId, launch.runId, runSubject, launch.tokenSubject);
         return Admission.WRONG_RUN;
       }
       if (launch.connection != null && launch.connection.isOpen()) {
@@ -603,8 +665,8 @@ public class CiDaemonRegistry {
       }
       if (launch.admissions > 0) {
         LOG.infof(
-            "ci-daemon %s of run %s step %d came back (connection %s, phase %s)",
-            daemonId, launch.runId, launch.stepIndex, connection.id(), launch.phase);
+            "ci-daemon %s of run %s came back (connection %s, phase %s)",
+            daemonId, launch.runId, connection.id(), launch.phase);
       }
       cancelExpiry(launch);
       launch.admissions++;
@@ -613,10 +675,16 @@ public class CiDaemonRegistry {
         launch.phase = Phase.CONNECTED;
       }
     }
-    launch.registered.complete(Boolean.TRUE);
+    boolean first = launch.registered.complete(Boolean.TRUE);
     LOG.debugf(
-        "ci-daemon %s registered for run %s step %d (connection %s)",
-        daemonId, launch.runId, launch.stepIndex, connection.id());
+        "ci-daemon %s registered for run %s (connection %s)", daemonId, launch.runId, connection.id());
+    if (first && dialled != null) {
+      try {
+        dialled.fire(new DaemonDialled(daemonId, launch.runId));
+      } catch (RuntimeException e) {
+        LOG.debugf("A DaemonDialled observer failed for run %s: %s", launch.runId, e.getMessage());
+      }
+    }
     return Admission.ADMITTED;
   }
 
@@ -662,8 +730,8 @@ public class CiDaemonRegistry {
         /* liveness only — the open socket is the signal */
       }
       case Initialized ignored -> {
-        // A daemon that re-dials resends an Initialized it could not deliver; one arriving after
-        // the step was sent must not move the phase back.
+        // Once per lease. A daemon that re-dials resends an Initialized it could not deliver; one
+        // arriving after a step was sent must not move the phase back.
         synchronized (launch) {
           if (launch.phase == Phase.LAUNCHED || launch.phase == Phase.CONNECTED) {
             launch.phase = Phase.INITIALIZED;
@@ -677,13 +745,24 @@ public class CiDaemonRegistry {
       }
       case StepChunk chunk -> relay(launch, chunk);
       case StepFinished finished -> {
-        launch.phase = Phase.DONE;
-        launch.finished.complete(Completion.finished(finished));
+        // It ends the step it names, not the lease. A StepFinished for any other step — a replay
+        // of an earlier one after a reconnect — has nothing left to complete.
+        synchronized (launch) {
+          if (launch.phase == Phase.RUNNING && finished.stepIndex() == launch.stepIndex) {
+            launch.phase = Phase.INITIALIZED;
+            launch.stepFinished.complete(Completion.finished(finished));
+          } else {
+            LOG.debugf(
+                "ci-daemon %s finished step %d, and step %d is the one in flight — ignored",
+                daemonId, finished.stepIndex(), launch.stepIndex);
+          }
+        }
       }
       // Host → daemon messages are never received here; ignore defensively.
       case Ack ignored -> {}
       case RunStep ignored -> {}
       case Cancel ignored -> {}
+      case Close ignored -> {}
     }
     return true;
   }
@@ -726,8 +805,8 @@ public class CiDaemonRegistry {
       return;
     }
     LOG.infof(
-        "ci-daemon %s of run %s step %d disconnected in phase %s; waiting %ss for it to come back",
-        daemonId, launch.runId, launch.stepIndex, launch.phase, grace.toSeconds());
+        "ci-daemon %s of run %s disconnected in phase %s; waiting %ss for it to come back",
+        daemonId, launch.runId, launch.phase, grace.toSeconds());
   }
 
   /** The grace ran out: unless the daemon came back (or the launch was reaped) first, it is lost. */
@@ -741,8 +820,8 @@ public class CiDaemonRegistry {
     }
     if (launches.get(launch.daemonId) == launch) {
       LOG.warnf(
-          "ci-daemon %s of run %s step %d did not come back within %ss; its step is lost",
-          launch.daemonId, launch.runId, launch.stepIndex, reconnectGrace().toSeconds());
+          "ci-daemon %s of run %s did not come back within %ss; its lease is lost",
+          launch.daemonId, launch.runId, reconnectGrace().toSeconds());
     }
     completeLost(launch);
   }
@@ -757,12 +836,19 @@ public class CiDaemonRegistry {
     }
   }
 
-  /** Whatever the worker is parked on, completed as lost. A completed future is left as it is. */
+  /**
+   * Whatever the worker is parked on, completed as lost, and the launch marked lost so a step sent
+   * after this is answered lost at once. A completed future is left as it is.
+   */
   private static void completeLost(Launch launch) {
+    synchronized (launch) {
+      launch.lost = true;
+    }
+    launch.registered.complete(Boolean.FALSE);
     launch.helloReceived.complete(-1);
     launch.ackConfirmed.complete(Boolean.FALSE);
     launch.initialized.complete(Initialization.of(Initialization.Status.CONNECTION_LOST));
-    launch.finished.complete(Completion.of(Completion.Status.CONNECTION_LOST));
+    launch.stepFinished.complete(Completion.of(Completion.Status.CONNECTION_LOST));
   }
 
   /**
@@ -775,7 +861,7 @@ public class CiDaemonRegistry {
     if (launch.phase == Phase.DONE) {
       return;
     }
-    RunStep runStep = launch.runStep;
+    RunStep runStep = launch.phase == Phase.RUNNING ? launch.runStep : null;
     if (runStep != null) {
       LOG.infof("Resending the step to ci-daemon %s after its reconnect", launch.daemonId);
       send(launch, runStep);
@@ -831,11 +917,12 @@ public class CiDaemonRegistry {
       }
       launch.lastSeq = chunk.seq();
     }
-    if (launch.listener == null) {
+    StepListener listener = launch.listener;
+    if (listener == null) {
       return;
     }
     try {
-      launch.listener.onChunk(chunk.stream(), chunk.seq(), chunk.text());
+      listener.onChunk(chunk.stream(), chunk.seq(), chunk.text());
     } catch (RuntimeException e) {
       LOG.debugf("ci-daemon %s chunk listener failed (dropped): %s", launch.daemonId, e.getMessage());
     }
@@ -878,34 +965,40 @@ public class CiDaemonRegistry {
     return launch;
   }
 
-  /** One launched step container: what it is bound to and the transitions it owes the host. */
+  /** One run's lease container: what it is bound to and the transitions it owes the host. */
   private static final class Launch {
 
     private final String daemonId;
 
     private final String runId;
-    private final int stepIndex;
 
     /** The subject of the run's ci-run token, which the daemon's connection must arrive as. */
     private final String tokenSubject;
 
-    private final StepListener listener;
-
     private volatile WebSocketConnection connection;
     private volatile Phase phase = Phase.LAUNCHED;
+
+    /** The step in flight, or the last one: its index, its listener and its correlation id. */
+    private volatile int stepIndex = -1;
+    private volatile StepListener listener;
     private volatile String correlationId;
+
     /** Guards {@link #lastSeq}: a re-dial can briefly overlap the old socket's last frames. */
     private final Object seqLock = new Object();
+    /** One counter for the whole lease (capability 2): a replay is anything at or below it. */
     private long lastSeq = -1;
 
     /** How many connections have been admitted for this launch; above one is a reconnect. */
     private int admissions;
 
-    /** The step, once sent — what a daemon that comes back is sent again ({@link #resume}). */
+    /** The step in flight, once sent — what a daemon that comes back is sent again ({@link #resume}). */
     private volatile RunStep runStep;
 
     /** A {@link Cancel} that found no live socket, owed to the daemon when it comes back. */
     private volatile boolean cancelPending;
+
+    /** Set once the launch is lost — its grace ran out, or it was reaped; guarded by the launch. */
+    private boolean lost;
 
     /** The reconnect grace's end, while the launch has no connection; guarded by the launch. */
     private ScheduledFuture<?> expiry;
@@ -923,20 +1016,23 @@ public class CiDaemonRegistry {
      * #awaitAckConfirmed}.
      */
     private final CompletableFuture<Boolean> ackConfirmed = new CompletableFuture<>();
+    /** Once per lease: the worktree is ready, or could not be made. */
     private final CompletableFuture<Initialization> initialized = new CompletableFuture<>();
-    private final CompletableFuture<Completion> finished = new CompletableFuture<>();
+    /** The step in flight's terminal frame; replaced by every {@link #beginStep}. */
+    private volatile CompletableFuture<Completion> stepFinished = new CompletableFuture<>();
 
-    Launch(
-        String daemonId,
-        String runId,
-        int stepIndex,
-        String tokenSubject,
-        StepListener listener) {
+    Launch(String daemonId, String runId, String tokenSubject) {
       this.daemonId = daemonId;
       this.runId = runId;
-      this.stepIndex = stepIndex;
       this.tokenSubject = tokenSubject;
-      this.listener = listener;
+    }
+
+    /** A new step in flight: its own terminal future, its own listener. Holding the launch. */
+    void beginStep(int index, StepListener stepListener) {
+      this.stepIndex = index;
+      this.listener = stepListener;
+      this.cancelPending = false;
+      this.stepFinished = new CompletableFuture<>();
     }
   }
 }

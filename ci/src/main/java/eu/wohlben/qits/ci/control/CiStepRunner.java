@@ -5,11 +5,13 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Executes one pipeline step. The contract {@link CiRunnerStepRunner} extends, and that is the one
- * seam asked for since qits-506: the service module's {@code RunnerStepRunner} asks the runner that
- * holds the run to start a container, waits for that container's own {@code qits-ci-daemon} to dial
- * back, and hands the step's script over as the reply to the daemon's {@code Initialized}. <b>Nothing on
- * this side of the seam ever runs a step's script</b> — see the invariant in {@code CLAUDE.md}.
+ * Executes one pipeline step, and holds the transport a run's steps go through — the one seam asked
+ * for since qits-506. <b>A run is one CI lease on an execution target</b> (epic qits-1481): the
+ * service module's {@code targethost/LeaseStepRunner} asks qits-system for the run's lease when the
+ * run is queued ({@link #queued}), the lease's one container runs {@code qits-ci-daemon}, which dials
+ * back once, and every step of the run is a {@code RunStep} on that one connection; {@link
+ * #runClosed} sends {@code Close} and ends the lease. <b>Nothing on this side of the seam ever runs
+ * a step's script</b> — see the invariant in {@code CLAUDE.md}.
  *
  * <p>The seam survived the swap as a name and as a <em>shape</em>: still exactly one blocking call
  * per step, so {@code CiRunService.runSteps} stays a sequential loop with one transaction per row
@@ -32,26 +34,19 @@ public interface CiStepRunner {
    * QITS_CI_PROJECT_ID}/{@code QITS_CI_REPO_NAME}; with no pair it builds the id-addressed URL this
    * service always built.
    *
-   * <p>{@code daemonBinaryUrl} is resolved once per run from {@link #pinDaemon()} and repeated into
-   * every one of that run's containers, so a deploy landing mid-run cannot make step 3 speak a
-   * different protocol than step 1. {@code timeoutSeconds} is the step's own deadline — the
+   * <p>{@code daemonBinaryUrl} is resolved once per run from {@link #pinDaemon()}; the run's one
+   * lease container downloads it. {@code timeoutSeconds} is the step's own deadline — the
    * per-step {@code timeout-seconds} from the pipeline config, or the {@code
    * qits.ci.step-timeout-seconds} default — enforced by the daemon inside the container, with the
    * host holding a longer backstop behind it.
    *
-   * <p>{@code docker} is the step's own {@code docker: true} declaration, carried across the seam
-   * untouched: this side neither interprets it nor defaults it, and the implementation turns it into
-   * a bind mount of the host's docker socket. It travels here rather than being read from config
-   * because it is a <em>property of the step</em> — one step of a run may have it and the next may
-   * not, and the run row records each of them the same way.
+   * <p>{@code image}, {@code docker}, {@code build} and {@code user} are the step's own
+   * declarations, carried across untouched and <b>not read by the lease seam</b>: every step runs in
+   * the run's one ci-slot container, as its build user, with the target's builder ({@link CiSlot}).
+   * A {@code docker: true} pipeline never gets here — it is settled {@code CONFIG_ERROR} before a
+   * lease is asked for.
    *
-   * <p>{@code user} is the step's own {@code user:} declaration, carried across untouched like
-   * {@code docker}. Empty means the config named nobody and the image's default stands. The
-   * implementation turns it into the container's {@code --user}, which is the only place it can be
-   * turned into anything: a step container runs {@code --cap-drop=ALL} and can neither {@code su}
-   * nor {@code chown} from the inside.
-   *
-   * <p>{@code env} is <b>run-scoped</b> environment the container gets on top of the fixed contract:
+   * <p>{@code env} is <b>run-scoped</b> environment the lease gets on top of the fixed contract:
    * today exactly the {@code QITS_EVENT_*} four an event-triggered run carries, and empty on every
    * push. It is a map rather than four fields because what it holds is a property of the <em>trigger</em>
    * and this seam has no business enumerating triggers; it is emitted in sorted key order so an argv
@@ -90,17 +85,20 @@ public interface CiStepRunner {
   enum StepOutcome {
     /** The step ran. {@code exitCode} and {@code timedOut} are the step's own. */
     OK,
-    /** The daemon cloned but could not check the pushed sha out — the force-push backstop. */
+    /** The daemon fetched its mirror but could not check the pushed sha out — the force-push backstop. */
     SHA_GONE,
     /** The daemon reported a structured setup failure that was not a missing commit. */
     INIT_FAILED,
     /** The daemon registered and then said nothing before the initialize deadline. */
     NEVER_INITIALIZED,
-    /** Docker refused to start the container at all; no daemon was ever possible. */
+    /**
+     * The run's lease could not run it: it could not be asked for, or it ended {@code FAILED} or
+     * {@code EXITED} before its daemon initialized — the lease's detail says why.
+     */
     LAUNCH_FAILED,
-    /** The container started and nothing ever dialled back — the bootstrap's own log says why. */
+    /** The lease was granted and nothing ever dialled back — the bootstrap's own log says why. */
     NEVER_STARTED,
-    /** The control socket went away before a terminal frame. */
+    /** The control socket went away before a terminal frame, or the lease ended mid-step. */
     CONNECTION_LOST
   }
 
@@ -138,20 +136,19 @@ public interface CiStepRunner {
     void onFinished();
 
     /**
-     * The step's launch is recorded and the runner is about to be asked for its container: the
-     * launch id its daemon will name and the token subject it will dial back as. What a restarted
-     * process needs to take the container back (qits-1192), so the caller records it before the
-     * container can exist. A throw means it could not be recorded: the seam then does not make
-     * the launch, and the step fails without a container.
+     * The step is about to be sent to the run's daemon: the launch id the daemon named and the token
+     * subject it dialled as. What a restarted process needs to take the step back (qits-1192), so
+     * the caller records it before the {@code RunStep} leaves. A throw means it could not be
+     * recorded: the seam then does not send the step, and the step fails.
      */
     default void onLaunched(String daemonId, String tokenSubject) {}
   }
 
   /**
    * Thrown out of {@link #run} and {@link #reattach} when this process is stopping and the step has
-   * not ended (qits-1192). The step's container keeps running on its runner and the successor takes
-   * it back, so <b>nothing may settle the run on the way out</b>: no verdict, no step row, no {@code
-   * Released}, no credential given back. Every caller up to the driver lets it pass.
+   * not ended (qits-1192). The run's lease keeps running and the successor takes the step back, so
+   * <b>nothing may settle the run on the way out</b>: no verdict, no step row, no {@code Close}, no
+   * lease ended, no credential given back. Every caller up to the driver lets it pass.
    */
   final class ProcessStopping extends RuntimeException {
 
@@ -161,7 +158,7 @@ public interface CiStepRunner {
               + runId
               + " step "
               + stepIndex
-              + " is left running on its runner for the successor to take back",
+              + " is left running in its lease for the successor to take back",
           null,
           false,
           false);
@@ -183,17 +180,20 @@ public interface CiStepRunner {
       int timeoutSeconds) {}
 
   /**
-   * A run a previous process of this service left {@code RUNNING} on a runner. {@code inFlight} is
-   * null when no step was in flight — between two steps, or before the first.
+   * A run a previous process of this service left {@code RUNNING} in a lease. {@code daemonId} and
+   * {@code tokenSubject} are the run's launch as its row recorded it; {@code inFlight} is null when
+   * no step was in flight — between two steps, or before the first.
    */
-  record InheritedRun(String runId, UUID runnerId, InFlightStep inFlight) {}
+  record InheritedRun(
+      String runId, UUID leaseId, String daemonId, String tokenSubject, InFlightStep inFlight) {}
 
   /**
-   * Wait for the runner of a run a previous process left {@code RUNNING} to come back holding it
-   * (qits-1192). When it does, {@code adopted} runs on a driver thread of its own and is the rest of
-   * the run's life: it continues the run, taking the in-flight step back with {@link #reattach}.
-   * When the runner does not claim the run within its reconnect grace, {@code lost} runs instead.
-   * Exactly one of the two runs, once.
+   * Wait for the daemon of a run a previous process left {@code RUNNING} to dial back (qits-1192):
+   * its lease keeps running through the restart, and the daemon re-dials within its reconnect
+   * budget. When it does, {@code adopted} runs on a driver thread of its own and is the rest of the
+   * run's life: it continues the run, taking the in-flight step back with {@link #reattach}. When it
+   * does not within its reconnect grace, or the lease is gone, {@code lost} runs instead. Exactly one
+   * of the two runs, once.
    *
    * <p>The default re-attaches nothing: a seam that cannot take a container back says so at once.
    */
@@ -211,8 +211,8 @@ public interface CiStepRunner {
 
   /**
    * Take back the in-flight step of an inherited run ({@link #inherit}) and wait for its end, as
-   * {@link #run} would for a step it started. It never starts the step's container: a step whose
-   * container does not come back ends {@code CONNECTION_LOST}.
+   * {@link #run} would for a step it started. It never sends the step a second time with a new
+   * index: a step whose daemon does not come back ends {@code CONNECTION_LOST}.
    */
   default StepResult reattach(StepSpec spec, StepListener listener) {
     return new StepResult(
@@ -224,8 +224,7 @@ public interface CiStepRunner {
 
   /**
    * The daemon build a run pins itself to: the version recorded on the run row, and the download url
-   * every one of its step containers is handed. Resolved <b>once</b> per run, for the reason the
-   * whole pin exists.
+   * its lease container is handed. Resolved <b>once</b> per run, for the reason the whole pin exists.
    */
   record DaemonPin(String version, String binaryUrl) {}
 
@@ -233,8 +232,8 @@ public interface CiStepRunner {
   DaemonPin pinDaemon();
 
   /**
-   * The pin a run already recorded, for an inherited run that continues: its next containers must
-   * download the build its first ones did. The default answers a fresh pin.
+   * The pin a run already recorded, for an inherited run that continues. The default answers a fresh
+   * pin.
    */
   default DaemonPin pinDaemon(String version) {
     return pinDaemon();
@@ -262,6 +261,16 @@ public interface CiStepRunner {
    */
   boolean owns(String runId);
 
-  /** The run reached a terminal state: release everything still held for it. */
+  /**
+   * A run was queued — accepted, retried or put back by the boot sweep: ask for its lease. Never
+   * throws and never blocks on the network for long; a lease that could not be asked for is asked
+   * for again by the seam's own reconcile.
+   */
+  default void queued(String runId) {}
+
+  /**
+   * The run reached a terminal state, or was settled while it was still queued: release everything
+   * still held for it — the daemon is told {@code Close}, the lease is ended, the token deleted.
+   */
   void runClosed(String runId);
 }

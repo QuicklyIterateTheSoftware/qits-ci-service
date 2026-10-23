@@ -48,8 +48,13 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 public class CiRunExpectedDurationTest extends CiTestSupport {
 
-  /** The image every staged sample and most pipelines here name. No slash, so it resolves to itself. */
-  private static final String IMAGE = "alpine:3";
+  /**
+   * The image every step row records since CI runs in a slot (epic qits-1481): the ci-slot image,
+   * whatever the step declared — so every staged sample names it.
+   */
+  private String image() {
+    return runService.resolveStepImage(CiSlot.IMAGE_TAG);
+  }
 
   private static final String ONE_STEP =
       """
@@ -104,8 +109,8 @@ public class CiRunExpectedDurationTest extends CiTestSupport {
     String repoId = repo();
     // Sorted [1, 1, 9, 9, 9] seconds: p95 lands inside the repeated top value, so the answer is 9s
     // exactly. The mean would be 5.8s and the median 9s — this is the slow end on purpose.
-    stage(repoId, 0, IMAGE, 1_000, 9_000, 1_000, 9_000, 9_000);
-    stage(repoId, 1, IMAGE, 2_000, 2_000, 2_000);
+    stage(repoId, 0, image(), 1_000, 9_000, 1_000, 9_000, 9_000);
+    stage(repoId, 1, image(), 2_000, 2_000, 2_000);
 
     CiRun accepted = accept(repoId, TWO_STEPS);
 
@@ -121,10 +126,10 @@ public class CiRunExpectedDurationTest extends CiTestSupport {
     // Five very slow runs, then a full window of fast ones. Unwindowed, the slow five are the top
     // 17% of thirty samples and the p95 is 60s; windowed to the newest twenty-five they are not in
     // the sample at all.
-    stage(repoId, 0, IMAGE, 60_000, 60_000, 60_000, 60_000, 60_000);
+    stage(repoId, 0, image(), 60_000, 60_000, 60_000, 60_000, 60_000);
     long[] recent = new long[CiRunService.DURATION_SAMPLE_SIZE];
     java.util.Arrays.fill(recent, 1_000L);
-    stage(repoId, 0, IMAGE, recent);
+    stage(repoId, 0, image(), recent);
 
     CiRun accepted = accept(repoId, ONE_STEP);
 
@@ -137,7 +142,7 @@ public class CiRunExpectedDurationTest extends CiTestSupport {
   @Test
   public void aPipelineThatGrewAStepPredictsNothing() throws Exception {
     String repoId = repo();
-    stage(repoId, 0, IMAGE, 3_000, 3_000, 3_000);
+    stage(repoId, 0, image(), 3_000, 3_000, 3_000);
 
     CiRun accepted = accept(repoId, TWO_STEPS);
 
@@ -147,21 +152,21 @@ public class CiRunExpectedDurationTest extends CiTestSupport {
   }
 
   @Test
-  public void aStepThatChangedItsImagePredictsNothing() throws Exception {
+  public void historyRecordedInAnotherImagePredictsNothing() throws Exception {
+    // A row from before CI ran in a slot names the step's own image; a step that runs in the ci-slot
+    // container now is doing different work, and its old rows are not evidence.
     String repoId = repo();
-    stage(repoId, 0, IMAGE, 3_000, 3_000, 3_000);
+    stage(repoId, 0, "alpine:3", 3_000, 3_000, 3_000);
 
     CiRun accepted = accept(repoId, ONE_STEP_OTHER_IMAGE);
 
-    assertNull(
-        accepted.expectedStepDurations,
-        "a step that changed its container is doing different work; its old rows are not evidence");
+    assertNull(accepted.expectedStepDurations);
   }
 
   @Test
   public void anotherPipelineOfTheSameRepositoryIsNotHistoryForThisOne() throws Exception {
     String repoId = repo();
-    stageAt(repoId, ".config/qits/ci-event-elsewhere.yml", 0, IMAGE, 3_000, 3_000, 3_000);
+    stageAt(repoId, ".config/qits/ci-event-elsewhere.yml", 0, image(), 3_000, 3_000, 3_000);
 
     CiRun accepted = accept(repoId, ONE_STEP);
 
@@ -173,7 +178,7 @@ public class CiRunExpectedDurationTest extends CiTestSupport {
   @Test
   public void aRetryPredictsFromTheHistoryItFindsRatherThanFromTheRunItRefires() throws Exception {
     String repoId = repo();
-    stage(repoId, 0, IMAGE, 4_000, 4_000, 4_000);
+    stage(repoId, 0, image(), 4_000, 4_000, 4_000);
     // The source predates its own history — its column is null — so a retry that carried the value
     // forward the way it carries priority forward would predict nothing.
     String sourceId = stageFinishedRun(repoId, triggerFile(ONE_STEP));
@@ -191,7 +196,7 @@ public class CiRunExpectedDurationTest extends CiTestSupport {
   @Test
   public void aTriggerConfigThatWillNotParseCostsThePredictionAndNothingElse() throws Exception {
     String repoId = repo();
-    stage(repoId, 0, IMAGE, 5_000, 5_000, 5_000);
+    stage(repoId, 0, image(), 5_000, 5_000, 5_000);
 
     // The snapshot on the row is nonsense while the parsed trigger beside it is fine — a state the
     // engine cannot produce, staged here because the rule under test is what happens when the
@@ -224,7 +229,7 @@ public class CiRunExpectedDurationTest extends CiTestSupport {
   @Test
   public void theDtoCarriesThePredictionOnEveryRunItReturns() throws Exception {
     String repoId = repo();
-    stage(repoId, 0, IMAGE, 7_000, 7_000, 7_000);
+    stage(repoId, 0, image(), 7_000, 7_000, 7_000);
 
     CiRun accepted = accept(repoId, ONE_STEP);
 

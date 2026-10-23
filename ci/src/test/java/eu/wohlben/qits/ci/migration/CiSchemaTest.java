@@ -162,93 +162,31 @@ public class CiSchemaTest {
   }
 
   @Test
-  public void theRunnerTableCarriesItsNameGuaranteeAndNoCheck() throws SQLException {
-    // V23. The name is the one constraint beyond the key: a taken name is a 409 the domain checks
-    // first, and uq_ci_runner_name is what answers the race that check cannot see. The plane is an
-    // enum column like ci_run.status, so — like it — no check constraint names its values.
-    assertTrue(constraints("ci_runner", 'u').contains("uq_ci_runner_name"));
-    assertEquals(List.of(), constraints("ci_runner", 'c'));
-    assertEquals(List.of(), constraints("ci_runner", 'f'));
-    // Capabilities are the one jsonb in this lineage — the next epic's scheduler queries into them.
-    assertEquals("jsonb", columnType("ci_runner", "capabilities"));
-    // ci_run.runner_id: a uuid, and NO foreign key — a decommissioned runner leaves its runs as
-    // history rather than refusing the delete or cascading the history away.
-    assertEquals("uuid", columnType("ci_run", "runner_id"));
+  public void aRunIsALeaseAndTheRunnerTableIsGone() throws SQLException {
+    // V39 (epic qits-1481): a run holds a lease on an execution target, and qits-ci holds no runner
+    // of its own any more. Both new columns are uuids with NO foreign key — the lease and the target
+    // are qits-system's rows — and every runner column is gone with its table.
+    assertFalse(tableExists("ci_runner"), "V39 drops ci_runner");
+    assertEquals("uuid", columnType("ci_run", "lease_id"));
+    assertEquals("uuid", columnType("ci_run", "target_id"));
+    assertNull(columnType("ci_run", "runner_id"));
+    assertNull(columnType("ci_run", "target_runner_id"));
+    assertNull(columnType("ci_run", "avoid_runner_ids"));
     assertEquals(List.of(), constraints("ci_run", 'f'));
+    // The purpose stays, and keeps its default: historical health checks carry the other value.
     try (Connection connection = ci.getConnection()) {
       connection.setAutoCommit(false);
-      try (PreparedStatement runner =
+      try (PreparedStatement run =
           connection.prepareStatement(
-              "insert into ci_runner (id, name, created_at) values"
-                  + " ('00000000-0000-0000-0000-0000000c1023', ?, current_timestamp)"
-                  + " returning slots, plane")) {
-        runner.setString(1, "schema-probe");
-        try (ResultSet defaults = runner.executeQuery()) {
+              "insert into ci_run (id, repo_id, branch, commit_sha, status, created_at,"
+                  + " trigger_type, config_path) values ('lease-probe', 'schema-probe', 'main',"
+                  + " '0', 'QUEUED', current_timestamp, 'EVENT', '.config/qits/release.yml')"
+                  + " returning purpose, lease_id, target_id")) {
+        try (ResultSet defaults = run.executeQuery()) {
           assertTrue(defaults.next());
-          // The COLUMN's own defaults: one slot, and EDGE — V28 moved the plane default off the
-          // retired word INTERNAL (V23's, applied and never edited) now that no row holds it. No
-          // code path relies on either default: CiRunners.create always writes both explicitly,
-          // and CiRunnerPlaneConverter reads whatever is stored as EDGE regardless.
-          assertEquals(1, defaults.getInt(1));
-          assertEquals("EDGE", defaults.getString(2));
-        }
-      }
-      connection.rollback();
-    }
-  }
-
-  @Test
-  public void theQuarantineColumnsDefaultARunnerInServiceAndARunToABuild() throws SQLException {
-    // V24. Every runner that exists before it is in service with an empty streak, and every run is a
-    // build: the two not-null columns carry defaults that write exactly that, and nothing else is
-    // backfilled. target_runner_id is a uuid with NO foreign key, runner_id's reason.
-    assertEquals("uuid", columnType("ci_run", "target_runner_id"));
-    assertEquals("text", columnType("ci_runner", "quarantine_reason"));
-    assertEquals("text", columnType("ci_runner", "infra_failure_runs"));
-    assertEquals("text", columnType("ci_runner", "last_healthcheck_detail"));
-    assertEquals(List.of(), constraints("ci_runner", 'c'));
-    assertEquals(List.of(), constraints("ci_run", 'f'));
-    try (Connection connection = ci.getConnection()) {
-      connection.setAutoCommit(false);
-      try (PreparedStatement runner =
-          connection.prepareStatement(
-              "insert into ci_runner (id, name, created_at) values"
-                  + " ('00000000-0000-0000-0000-0000000c1024', ?, current_timestamp)"
-                  + " returning quarantined_at, quarantine_reason, infra_failures,"
-                  + " infra_failure_runs, last_healthcheck_at")) {
-        runner.setString(1, "quarantine-probe");
-        try (ResultSet defaults = runner.executeQuery()) {
-          assertTrue(defaults.next());
-          assertEquals(null, defaults.getObject(1));
-          assertEquals(null, defaults.getObject(2));
-          assertEquals(0, defaults.getInt(3));
-          assertEquals(null, defaults.getObject(4));
-          assertEquals(null, defaults.getObject(5));
-        }
-      }
-      connection.rollback();
-    }
-  }
-
-  @Test
-  public void theStepMemoryLimitIsNullableAndDefaultsEveryRunnerToThePlatformCap()
-      throws SQLException {
-    // V26. Null is "qits.ci.memory-limit", so a runner that predates the column — and one created
-    // without naming a cap — keeps exactly the cap it had. No default, no backfill, no check: the
-    // grammar is CiRunners.STEP_MEMORY_LIMIT's, the only writer.
-    assertEquals("character varying", columnType("ci_runner", "step_memory_limit"));
-    assertEquals(List.of(), constraints("ci_runner", 'c'));
-    try (Connection connection = ci.getConnection()) {
-      connection.setAutoCommit(false);
-      try (PreparedStatement runner =
-          connection.prepareStatement(
-              "insert into ci_runner (id, name, created_at) values"
-                  + " ('00000000-0000-0000-0000-0000000c1026', ?, current_timestamp)"
-                  + " returning step_memory_limit")) {
-        runner.setString(1, "memory-probe");
-        try (ResultSet defaults = runner.executeQuery()) {
-          assertTrue(defaults.next());
-          assertNull(defaults.getObject(1));
+          assertEquals("BUILD", defaults.getString(1));
+          assertNull(defaults.getObject(2));
+          assertNull(defaults.getObject(3));
         }
       }
       connection.rollback();

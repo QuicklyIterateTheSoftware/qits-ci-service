@@ -87,9 +87,6 @@ import org.jboss.logging.Logger;
  * — and remembering it would turn a git-host blip into a repository that answers nothing for a
  * whole TTL. Such a candidate is asked again on the next event, exactly as before.
  *
- * <p><b>Not routed through here: {@code CiRunnerHealth}'s head read.</b> The health probe exists to
- * ask the git host whether it answers; a cached answer would make it a probe of this map.
- *
  * <p>Memory is bounded by what the engine asks for — one entry per candidate per scope — and a
  * store sweeps expired entries, so a repository that stopped being a candidate does not keep its
  * listing past one TTL.

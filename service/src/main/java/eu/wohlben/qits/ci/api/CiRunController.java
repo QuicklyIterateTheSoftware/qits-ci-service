@@ -11,7 +11,6 @@ import eu.wohlben.qits.ci.control.CiQueueForecast;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiRunOrdering;
 import eu.wohlben.qits.ci.control.CiRunService;
-import eu.wohlben.qits.ci.control.CiRunners;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import eu.wohlben.qits.ci.dto.CiLiveStepDto;
 import eu.wohlben.qits.ci.dto.CiRunDto;
@@ -110,9 +109,6 @@ public class CiRunController {
   @Inject CiRunMapper mapper;
 
   @Inject CiStepRelay relay;
-
-  /** Where a run's runner NAME comes from — a second read the mapper deliberately does not make. */
-  @Inject CiRunners runners;
 
   @Inject ObjectMapper objectMapper;
 
@@ -306,7 +302,6 @@ public class CiRunController {
   private ListRunsResponse listing(List<CiRun> forRuns, CiRunService.Snapshot queue) {
     Map<String, List<CiStep>> stepsByRun = runService.stepsForAll(forRuns);
     return new ListRunsResponse(
-        runners.withRunnerNames(
             forRuns.stream()
             .map(
                 run -> {
@@ -318,7 +313,7 @@ public class CiRunController {
                   // of the status here: a finished run is in neither half of the queue.
                   return queue == null ? dto : withQueueFacts(run, dto, queue);
                 })
-            .toList()));
+            .toList());
   }
 
   /** Whether the run is still in the queue's world — {@code QUEUED} or {@code RUNNING}. */
@@ -379,13 +374,15 @@ public class CiRunController {
    * order</b>, each row carrying where it sits and when the queue is expected to reach it.
    *
    * <p><b>No other route answers this, and the gap was not cosmetic.</b> The order was computed and
-   * thrown away — {@link eu.wohlben.qits.ci.control.CiRunOrdering}'s only production caller is a
+   * thrown away — {@link eu.wohlben.qits.ci.control.CiRunOrdering}'s only production caller was a
    * runner's reservation — and {@code /active} deliberately answers newest-first, which is a different
    * question with a plausible-looking answer. So "which build is next" had no reader, and the only
    * way a client could have one was to re-implement four ordering criteria, a topological pass and a
    * private rank table against rows that do not carry half of what the decision reads. That second
-   * implementation would not crash; it would disagree, quietly, with the order the reservations act
-   * on. <b>Queue-wait prediction is this service's to compute.</b>
+   * implementation would not crash; it would disagree, quietly, with this service's own order. Since a
+   * run is a CI lease (epic qits-1481) the grant order is qits-system's, by the lease priority {@link
+   * eu.wohlben.qits.ci.control.CiRunOrdering#leasePriority} gives each run; this route is still the
+   * one place the queue explains itself. <b>Queue-wait prediction is this service's to compute.</b>
    *
    * <p><b>{@code generatedAt} is what makes the durations interpretable, and it is why it is on the
    * envelope rather than on each row.</b> Every {@code expectedStartInMillis} and {@code
@@ -396,7 +393,7 @@ public class CiRunController {
    *
    * <p><b>{@code running} is newest-first</b>, the same order {@code /active} documents, so a client
    * holding both sees one repository's run in the same place in each. <b>{@code queued} is in
-   * suggested claim order</b> — position 0 is the run a runner with a free slot would take next — which is the
+   * suggested claim order</b> — position 0 is the run this service would start next — which is the
    * whole reason this route exists and is the one listing here whose order is not chronological.
    *
    * <p><b>The rows are {@link CiRunDto}, not a queue-specific shape.</b> A third copy of a run's
@@ -431,23 +428,18 @@ public class CiRunController {
     CiRunService.Snapshot queue = runService.queueSnapshot();
     return new QueueResponse(
         queue.generatedAt(),
-        runners.withRunnerNames(
-            queue.running().stream()
-                .map(run -> withQueueFacts(run, mapper.toDto(run), queue))
-                .toList()),
-        runners.withRunnerNames(
-            queue.queuedInClaimOrder().stream()
-                .map(ordered -> withQueueFacts(ordered.run(), mapper.toDto(ordered.run()), queue))
-                .toList()),
-        queue.runners());
+        queue.running().stream()
+            .map(run -> withQueueFacts(run, mapper.toDto(run), queue))
+            .toList(),
+        queue.queuedInClaimOrder().stream()
+            .map(ordered -> withQueueFacts(ordered.run(), mapper.toDto(ordered.run()), queue))
+            .toList());
   }
 
   /**
-   * The queue envelope: the instant every duration in it is relative to, the two halves of the
-   * queue, and the runners whose slots the forecast models. There is no {@code concurrentBuilds} any
-   * more (qits-506): this process executes no run itself, so the slots are the connected runners'
-   * alone — {@code runners} says which, so a reader can see why the queue moves as fast or as slowly
-   * as it does.
+   * The queue envelope: the instant every duration in it is relative to, and the two halves of the
+   * queue. There is no {@code runners} any more (epic qits-1481): a run is a CI lease, how many run
+   * at once is qits-system's to grant, and the forecast models as many slots as leases are running.
    *
    * @param generatedAt the instant every {@code expectedStartInMillis} and {@code
    *     expectedFinishInMillis} in this body is measured from. <b>It is the only absolute instant
@@ -456,14 +448,8 @@ public class CiRunController {
    * @param running the {@code RUNNING} runs, newest first
    * @param queued the {@code QUEUED} runs in suggested claim order, each carrying its {@code
    *     queuePosition}, its {@code ordering} and its ETAs
-   * @param runners every declared runner: its slots, how many runs it holds, and whether it is
-   *     connected — only a connected runner's slots count towards the forecast
    */
-  public record QueueResponse(
-      Instant generatedAt,
-      List<CiRunDto> running,
-      List<CiRunDto> queued,
-      List<CiQueueForecast.RunnerCapacity> runners) {}
+  public record QueueResponse(Instant generatedAt, List<CiRunDto> running, List<CiRunDto> queued) {}
 
   /**
    * The run's row stamped with what the queue says about it, or unchanged when the queue says
@@ -618,7 +604,7 @@ public class CiRunController {
   public CiRunDto getRun(@PathParam("runId") String runId) {
     CiRun run = runService.requireRun(runId);
     List<CiStep> steps = runService.stepsFor(runId);
-    CiRunDto dto = runners.withRunnerName(mapper.toDto(run, steps, liveStep(run, steps, true)));
+    CiRunDto dto = mapper.toDto(run, steps, liveStep(run, steps, true));
     // Only an unfinished run has a queue to be placed in, and only then is the extra read made.
     if (run.status != CiRunStatus.QUEUED && run.status != CiRunStatus.RUNNING) {
       return dto;

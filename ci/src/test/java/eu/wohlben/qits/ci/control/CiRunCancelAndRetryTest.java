@@ -480,7 +480,8 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     // registryReference arrangement: the platform namespace prefixed with the resolved registry
     // host). A retry re-pins rather than copying, exactly so a broken registry is caught again.
     String repo = "consumer-" + UUID.randomUUID();
-    String reference = "dev-qits-artifacts:8080/qits/build-images/ci-base:latest";
+    // The one image a run pins is the ci-slot image (epic qits-1481), whatever its step declares.
+    String reference = service.resolveStepImage(CiSlot.IMAGE_TAG);
     fakeImagePins.pins(reference, "sha256:" + "1".repeat(64));
     String original =
         service.onEventTrigger(

@@ -39,7 +39,7 @@ import org.jboss.logging.Logger;
  * <p><b>Two names, one registry, and each is used for what it is.</b> {@code
  * qits.artifacts.registry-host} is the host a pinned reference is built with and recognised by,
  * while what this process dials is the in-network origin above. A step's runner pulls the pinned
- * image from neither: {@code StepAddressPlane} moves the reference to the registry's public name.
+ * image from neither: {@code CiSlotAddresses} moves the reference to the registry's public name.
  * Resolving through one and pulling through another is correct and not a mismatch: a digest is
  * content-addressed, so the same digest names the same bytes at whichever address they are read.
  *
@@ -198,7 +198,7 @@ public class HttpImagePins implements CiStepImagePins {
    * states one, otherwise the scheme and authority of {@code qits.artifacts.maven.registry-url}.
    *
    * <p>This is where qits-ci ITSELF asks about the store, from inside the swarm — not an address a
-   * step is told. A step reads the same store at its public name ({@code StepAddressPlane}); a
+   * step is told. A step reads the same store at its public name ({@code CiSlotAddresses}); a
    * digest is content-addressed, so the pin resolved here names the same bytes there.
    */
   String registryApiOrigin() {

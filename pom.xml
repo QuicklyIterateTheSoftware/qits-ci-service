@@ -76,14 +76,6 @@
              Do NOT hand-edit it to chase a release you just made: a hand-written pin asserts a
              pairing nobody gated, and the next bump overwrites it regardless. -->
         <qits.ci-daemon-protocol.version>2026.1018.205200</qits.ci-daemon-protocol.version>
-        <!-- The runner control-socket wire contract (qits-ci-runner-daemon's ci-runner-protocol) and
-             the runner binary's version with it (CiRunnerBinary) — this pin's twin for the other
-             socket, and a released-calver pin in the same sense once qits-ci-runner-daemon has cut
-             its first release. It is a SNAPSHOT until then, and knowingly: the runner and the host
-             side of its socket landed in one epic, and the first release of the protocol jar
-             replaces this line through the ordinary bump. Do not ship a release request of this
-             repository with the snapshot still in it. -->
-        <qits.ci-runner-protocol.version>2026.1023.100259</qits.ci-runner-protocol.version>
         <qits.eventstream.version>2026.1019.123026</qits.eventstream.version>
         <!-- qits-githost's event vocabulary: the SCM records a push announces. qits-ci consumes
              SCMPublishCommit and nothing else, but the jar is the whole vocabulary — it is a data
@@ -159,7 +151,6 @@
              consumer publishes `pacts/<consumer>_qits-ci-service.json` as a jar, pinned here in test
              scope and bumped by qits-maintenance when the consumer releases a changed pact. -->
         <qits.landing-app-pacts-qits-ci-service.version>2026.1010.174213</qits.landing-app-pacts-qits-ci-service.version>
-        <qits.ci-runner-daemon-pacts-qits-ci-service.version>2026.1010.143616</qits.ci-runner-daemon-pacts-qits-ci-service.version>
         <qits.artifacts-service-pacts-qits-ci-service.version>2026.1018.153037</qits.artifacts-service-pacts-qits-ci-service.version>
         <qits.bootstrap-cli-pacts-qits-ci-service.version>2026.1019.84610</qits.bootstrap-cli-pacts-qits-ci-service.version>
         <qits.maintenance-service-pacts-qits-ci-service.version>2026.1019.73752</qits.maintenance-service-pacts-qits-ci-service.version>
@@ -291,11 +282,6 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-ci-daemon-protocol</artifactId>
                 <version>${qits.ci-daemon-protocol.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>${project.groupId}</groupId>
-                <artifactId>qits-ci-runner-protocol</artifactId>
-                <version>${qits.ci-runner-protocol.version}</version>
             </dependency>
             <dependency>
                 <groupId>${project.groupId}</groupId>

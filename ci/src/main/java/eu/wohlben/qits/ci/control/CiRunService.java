@@ -9,8 +9,6 @@ import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunPurpose;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
-import eu.wohlben.qits.ci.entity.CiRunner;
-import eu.wohlben.qits.ci.entity.RunnerCapabilities;
 import eu.wohlben.qits.ci.entity.CiStep;
 import eu.wohlben.qits.ci.entity.CiStepStatus;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
@@ -21,7 +19,6 @@ import eu.wohlben.qits.ci.error.ConflictException;
 import eu.wohlben.qits.ci.error.NotFoundException;
 import eu.wohlben.qits.ci.error.UnavailableException;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
-import eu.wohlben.qits.ci.persistence.CiRunnerRepository;
 import eu.wohlben.qits.ci.persistence.CiStepRepository;
 import eu.wohlben.qits.db.DbRetry;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -61,9 +58,9 @@ import org.jboss.logging.Logger;
  * BlobService}/{@code GitHostRoutes} stance). How many runs execute at once is the connected
  * runners' slots, and nothing in this process.
  *
- * <p>The driver parks on sockets rather than on a process — {@link CiRunnerStepRunner} asks the
- * runner to start each step's container and waits for that container's own daemon — but the shape
- * is one blocking call per step, in order.
+ * <p>The driver parks on sockets rather than on a process — {@link CiStepRunner} sends each
+ * step to the run's one lease container over its daemon's connection — but the shape is one
+ * blocking call per step, in order.
  *
  * <p><b>There is ONE way in, and that is the whole of the 2026-09-05 change.</b> {@link
  * #onEventTrigger} takes a domain event that matched a {@code .config/qits/ci-event-*.yml}: it names
@@ -117,7 +114,7 @@ import org.jboss.logging.Logger;
  * #reserveFor},
  * {@link #finishRun}, {@code failIncompleteSteps}, {@link #discardRun}, the step inserts) is wrapped:
  * those have their own recovery in {@code sweepInterrupted} at boot, which is a stronger answer than
- * a fifteen-second wait on the runner's driver. The rule they follow was written for a third case that no
+ * a fifteen-second wait on the lease's driver. The rule they follow was written for a third case that no
  * longer exists — {@code acceptPostReceive} ran inside the push listener's claiming transaction,
  * where a retry outliving that claim's connection would have committed a {@code QUEUED} row behind an
  * event the funnel then re-offered — and it is worth keeping in front of you the next time an accept
@@ -163,38 +160,33 @@ import org.jboss.logging.Logger;
  *
  * <h2>What a restart costs now</h2>
  *
- * <p>{@link #sweepInterrupted} <b>inherits</b> a {@code RUNNING} event pipeline a runner holds
- * (qits-1192): the step containers live on the runner, which keeps them through the restart, so
- * the run stays {@code RUNNING} and continues where it was once the runner comes back holding it —
- * its in-flight step taken back, never started again. Only a run whose runner does not come back is
+ * <p>{@link #sweepInterrupted} <b>inherits</b> a {@code RUNNING} event pipeline that holds a lease
+ * (qits-1192): the run's one container lives on its execution target, which keeps it through the
+ * restart, so the run stays {@code RUNNING} and continues where it was once its daemon dials back —
+ * its in-flight step taken back, never started again. Only a run whose daemon does not come back is
  * settled: a publishing one fails, any other is restarted from the snapshot on its row, which is
  * why event pipelines that publish nothing must be idempotent. Anything else left {@code RUNNING}
- * is failed instead —
- * which after the push retirement means a leftover {@code POST_RECEIVE} row from a predecessor
- * deployment, since replaying repository-authored work that already began is not safe and this engine
- * could not replay it anyway. Every {@code QUEUED} row a successor can run is re-enqueued oldest
- * first; one it cannot is settled {@code CANCELLED} rather than left to sit in {@code
- * /ci/api/runs/active} forever.
+ * is failed instead — which after the push retirement means a leftover {@code POST_RECEIVE} row from
+ * a predecessor deployment. Every {@code QUEUED} row a successor can run is asked a lease for again;
+ * one it cannot is settled {@code CANCELLED} rather than left to sit in {@code /ci/api/runs/active}
+ * forever.
  *
  * <p>An event-triggered row also stores its event envelope and exact trigger-file content. The
- * worker reparses that immutable snapshot, so a queued event run is recoverable without consulting
+ * driver reparses that immutable snapshot, so a queued event run is recoverable without consulting
  * a branch that may have moved and without relying on an at-most-once event redelivery.
  *
- * <h2>The queue is the table, and the runners reserve out of it</h2>
+ * <h2>The queue is the table, and every run is one lease</h2>
  *
- * <p><b>There is no in-memory queue, and since qits-506 no claim loop in this process either.</b>
- * The in-process worker pool ({@code qits.ci.concurrent-builds} claim loops) is deleted: every run
- * is held by a runner — the platform host's own included, the reserved {@code localhost} runner
- * qits-deployments runs beside this service. An accept, a retry and a boot sweep only tell the
- * runners there is work ({@link #announceBacklog}, a {@code Backlog} frame); a runner answers with
- * {@code Reserve}, and {@link #reserveFor} reads every {@code QUEUED} row in one transaction, asks
- * the pure {@link CiRunOrdering} which of them to take, and claims the first that runner may have
- * with one conditional UPDATE that writes its {@code runner_id}.
+ * <p><b>There is no in-memory queue, and no claim loop in this process.</b> A run is one CI lease on
+ * an execution target (epic qits-1481): an accept, a retry and a boot sweep hand the queued run to
+ * the step seam ({@link CiStepRunner#queued}), which asks qits-system for its lease with a priority
+ * from {@link CiRunOrdering#leasePriority}; qits-system orders the leases of every owner and grants
+ * them as targets free a slot. When the lease is granted, the seam claims the row with {@link
+ * #claimLeased} — one conditional UPDATE from {@code QUEUED} to {@code RUNNING} that writes the
+ * target's id — and runs it on a driver thread of its own through {@link #executeReserved}.
  *
- * <p>Ordering is <b>dynamic</b>: a high-priority run accepted while ten others wait is reserved next
- * rather than eleventh, because the order is re-derived on every reservation rather than fixed at
- * submit time. A restart is no special path — the boot sweep announces the backlog and the next
- * reservation re-derives the same order from the same rows.
+ * <p>The suggested order this class still derives ({@link CiRunOrdering}) is the queue's
+ * <em>explanation</em> on {@code /ci/api/runs/queue}; the claim order is qits-system's.
  *
  * <p>What is deliberately NOT here: no cross-state blocking (a run may start while the run it
  * depends on is {@code RUNNING} — see {@link CiRunOrdering}), and no lock. The ordering is a
@@ -238,16 +230,11 @@ public class CiRunService {
   @Inject CiEventTriggerParser triggerParser;
 
   /**
-   * The step seam every run goes through — see {@link CiRunnerStepRunner} and {@link
-   * #stepRunnerFor}. The {@code ci} module ships no implementation; the service's runner socket is
-   * what satisfies it, and a suite supplies a fake.
+   * The step seam every run goes through — see {@link CiStepRunner} and {@link #stepRunnerFor}. The
+   * {@code ci} module ships no implementation; the service's lease seam is what satisfies it, and a
+   * suite supplies a fake.
    */
-  @Inject Instance<CiRunnerStepRunner> runnerSteps;
-
-  /** The runner rows a reservation re-reads, and the runners' view the queue snapshot shows. */
-  @Inject CiRunnerRepository runnerRows;
-
-  @Inject CiRunners ciRunners;
+  @Inject Instance<CiStepRunner> stepRunners;
 
   /**
    * What fixes a step's floating {@code :latest} to the bytes it names — see {@link
@@ -268,12 +255,6 @@ public class CiRunService {
   @Inject Instance<RunAnnouncer> runAnnouncers;
 
   /**
-   * Who hears the queue's length when it may have moved — see {@link CiBacklogListener} and {@link
-   * #announceBacklog}. Zero implementations is fine, and is the {@code ci} suites' state.
-   */
-  @Inject Instance<CiBacklogListener> backlogListeners;
-
-  /**
    * The gate a published artifact goes through — see {@link ReleaseJoin}. This class decides that a
    * release pipeline finished and what it published; that one decides whether the platform is
    * allowed to hear about it.
@@ -290,13 +271,6 @@ public class CiRunService {
    * second thing to keep in step.
    */
   @Inject CiEventTriggerService triggerService;
-
-  /**
-   * The runners' standing: what a runner-caused step failure counts toward, and what a settled
-   * health check reports to. Circular like {@link #triggerService} — it queues health checks through
-   * {@link #acceptHealthCheck} — and sound for the same reason: both beans are normal-scoped.
-   */
-  @Inject CiRunnerHealth runnerHealth;
 
   /**
    * The field a release pipeline's version comes out of. It is the triggering event's payload, read
@@ -644,26 +618,20 @@ public class CiRunService {
    * Reconciles what a previous process left behind, and the two halves pull in opposite directions
    * on purpose.
    *
-   * <p>An event run left {@code RUNNING} on a runner is <b>inherited</b> (qits-1192): it stays
-   * {@code RUNNING}, and the runner, which keeps its containers through the restart, is waited for.
-   * When it comes back holding the run, the run continues where it was — the in-flight step's
-   * container is taken back and its result collected, never started a second time. When it does
-   * not, the run is settled by {@link #settleUninherited}: a publishing run fails, anything else is
-   * re-queued and starts again from its durable snapshot. An event run with no runner is reset and
-   * restarted the same way; trigger scripts are an at-least-once/idempotent boundary for every run
-   * that does not publish. Anything else left {@code RUNNING} cannot make progress and is failed once here —
-   * after the push retirement that is a {@code POST_RECEIVE} row a predecessor deployment left, work
-   * this engine has no worker for and could not safely replay if it had one.
+   * <p>An event run left {@code RUNNING} in a lease is <b>inherited</b> (qits-1192): it stays {@code
+   * RUNNING}, and its daemon, whose container the target keeps through the restart, is waited for.
+   * When it dials back, the run continues where it was — the in-flight step taken back and its result
+   * collected, never started a second time. When it does not, the run is settled by {@link
+   * #settleUninherited}: a publishing run fails, anything else is re-queued and starts again from its
+   * durable snapshot. An event run with no lease — one a retired CI runner held when the cutover
+   * deployed (epic qits-1481) — is settled the same way at once. Anything else left {@code RUNNING}
+   * cannot make progress and is failed once here: after the push retirement that is a {@code
+   * POST_RECEIVE} row a predecessor deployment left.
    *
-   * <p>A run left {@code QUEUED} never started. Its row is the whole of it, so it is <b>announced to the
-   * runners again</b> rather than failed: this is the point of the status
-   * existing, and it is what closes the cutover loss for builds that were accepted while qits-ci was
-   * redeploying itself. Event-triggered rows contain their envelope and trigger snapshot too, so
-   * every runnable row takes the same recovery path. One this engine cannot run is settled {@code
-   * CANCELLED} instead, by the reservation that walks past it — see {@link #reserveFor}.
-   *
-   * <p>There is no container half to it any more (qits-506): a step container belongs to the runner
-   * that started it, whose own boot sweep removes what a previous life of it left behind.
+   * <p>A run left {@code QUEUED} never started. Its row is the whole of it, so it is <b>handed to the
+   * step seam again</b> ({@link CiStepRunner#queued}) rather than failed, which asks for a fresh lease
+   * — the lease a previous process asked for is ended first, since nothing here holds its launch any
+   * more. One this engine cannot run is settled {@code CANCELLED} on the way ({@link #leaseCandidate}).
    */
   void onStart(@Observes @Priority(BOOT_SWEEP_PRIORITY) StartupEvent event) {
     if (LaunchMode.current() == LaunchMode.TEST) {
@@ -673,22 +641,12 @@ public class CiRunService {
   }
 
   /**
-   * What one sweep found: how many rows are queued for a runner to reserve, and the runs it failed
-   * — announced after the commit.
-   *
-   * <p>{@code requeued} is a <b>count</b> rather than a list of ids: a row is reserved because it is
-   * {@code QUEUED} in the table, never because a particular id was handed to a particular runner.
-   * The sweep's whole remaining job is to say "there is work" once.
-   *
-   * <p><b>{@code restarted} is a list where {@code requeued} is a count, and the asymmetry is the
-   * same distinction pointed at two different readers.</b> The runners want a {@code Backlog} and
-   * nothing else, so a count is the whole of what they are owed. A mirror of the active listing is owed the
-   * rows: a run this sweep moved from {@code RUNNING} back to {@code QUEUED} is a transition like any
-   * other, and one nobody else will ever announce — the run's next announcement is the {@code
-   * RUNNING} a runner's reservation makes, later and from a state the mirror was never told about.
+   * What one sweep found: the queued rows to hand to the seam again, the runs it failed and the runs
+   * it moved back to {@code QUEUED} (announced after the commit), the runs to inherit, and the runs
+   * whose rows do not add up (settled at once).
    */
   private record Sweep(
-      int requeued,
+      List<String> queued,
       List<FailedOrphan> failed,
       List<CiRun> restarted,
       List<CiStepRunner.InheritedRun> inherited,
@@ -699,11 +657,8 @@ public class CiRunService {
 
   /**
    * The sweep itself — package-private because {@link #onStart} skips test mode, so this is what a
-   * suite drives to make a claim about a restart.
-   *
-   * <p>The backlog is announced <b>after</b> the transaction commits: a runner answers it with a
-   * {@code Reserve}, whose claim reads the row back and checks it is still {@code QUEUED}, which it
-   * cannot do against a write this thread has not committed yet.
+   * suite drives to make a claim about a restart. Everything that leaves this process — an
+   * announcement, a lease asked for — happens after the transaction commits.
    */
   void sweepInterrupted() {
     Sweep sweep;
@@ -717,9 +672,6 @@ public class CiRunService {
       LOG.infof(
           "Marked %d CI run(s) left RUNNING by a previous shutdown as FAILED",
           sweep.failed().size());
-      // After the commit, like the re-enqueue below and for the same reason turned outward: a
-      // consumer told the run failed must be able to read the terminal row back. An interrupted
-      // run is a real failure of a real commit, so the per-commit ledger hears about it too.
       for (FailedOrphan orphan : sweep.failed()) {
         announceStatus(
             orphan.run(), CiRunStatus.FAILED, CiRunStatus.RUNNING, orphan.finishedAt());
@@ -730,19 +682,13 @@ public class CiRunService {
       LOG.infof(
           "Restarting %d event-triggered CI run(s) interrupted by the previous shutdown",
           sweep.restarted().size());
-      // The one transition on this path that goes BACKWARDS, and the one nothing else would ever
-      // say: the run was RUNNING in a process that is gone and is queued again here. Its next
-      // announcement is a runner's RUNNING reservation, so a mirror not told about this one would be
-      // holding a run it believes is still executing on a dead instance.
       for (CiRun restarted : sweep.restarted()) {
         announceStatus(restarted, CiRunStatus.QUEUED, CiRunStatus.RUNNING, restarted.createdAt);
       }
     }
-    if (sweep.requeued() > 0) {
-      LOG.infof("Re-enqueued %d CI run(s) left QUEUED by a previous shutdown", sweep.requeued());
-      // Once, not once per row: the rows are in the table and a reservation re-derives their order
-      // for itself, so what a sweep owes the runners is "there is work", once.
-      announceBacklog();
+    if (!sweep.queued().isEmpty()) {
+      LOG.infof("Asking a lease again for %d CI run(s) left QUEUED", sweep.queued().size());
+      sweep.queued().forEach(this::announceQueued);
     }
     // Fail closed: what these rows say about their launch does not add up, so nothing is taken back.
     sweep.unsound().forEach(this::settleUninherited);
@@ -752,18 +698,19 @@ public class CiRunService {
   }
 
   /**
-   * Hands one inherited run to the step seam to wait for its runner — see {@link #onStart}. A seam
+   * Hands one inherited run to the step seam to wait for its daemon — see {@link #onStart}. A seam
    * that cannot be resolved, or that throws, takes nothing back, and the run is settled at once.
    */
   private void inherit(CiStepRunner.InheritedRun inherited) {
     String runId = inherited.runId();
     CiStepRunner.InFlightStep step = inherited.inFlight();
     LOG.infof(
-        "CI run %s was RUNNING on runner %s when the previous process stopped%s; waiting for the"
-            + " runner to come back holding it",
+        "CI run %s was RUNNING in lease %s when the previous process stopped%s; waiting for its"
+            + " ci-daemon %s to come back",
         runId,
-        inherited.runnerId(),
-        step == null ? "" : " (step " + step.stepIndex() + " in flight, ci-daemon " + step.daemonId() + ")");
+        inherited.leaseId(),
+        step == null ? "" : " (step " + step.stepIndex() + " in flight)",
+        inherited.daemonId());
     try {
       stepRunnerFor(runId)
           .inherit(inherited, () -> executeInherited(runId), () -> settleUninherited(runId));
@@ -773,6 +720,10 @@ public class CiRunService {
     }
   }
 
+  /** What an event run a retired CI runner held at the cutover is told (epic qits-1481). */
+  static final String HELD_BY_A_RETIRED_RUNNER =
+      "it was held by a CI runner, and CI runs in leases on execution targets now";
+
   private Sweep reconcile() {
     List<CiRun> orphans = runs.list("status = ?1", CiRunStatus.RUNNING);
     List<FailedOrphan> failed = new ArrayList<>();
@@ -780,16 +731,24 @@ public class CiRunService {
     List<CiStepRunner.InheritedRun> inherited = new ArrayList<>();
     Map<String, String> unsound = new java.util.LinkedHashMap<>();
     for (CiRun orphan : orphans) {
-      // The run a runner holds, and after qits-506 the only one a live deployment produces: its
-      // containers outlive this process on the runner's host, so it is waited for, never restarted
-      // here. It stays RUNNING, steps and all.
-      if (orphan.triggerType == CiTriggerType.EVENT
-          && orphan.triggerConfig != null
-          && orphan.runnerId != null) {
+      if (orphan.triggerType == CiTriggerType.EVENT && orphan.triggerConfig != null) {
+        if (orphan.leaseId == null) {
+          // Nothing of it is running anywhere this process can reach: settled like a run whose
+          // daemon did not come back — a publishing run fails, any other starts over as a lease.
+          unsound.put(orphan.id, HELD_BY_A_RETIRED_RUNNER);
+          continue;
+        }
+        // The run a lease holds: its container outlives this process on its target, so it is
+        // waited for, never restarted here. It stays RUNNING, steps and all.
         Inheritance inheritance = inheritanceOf(orphan);
         if (inheritance.sound()) {
           inherited.add(
-              new CiStepRunner.InheritedRun(orphan.id, orphan.runnerId, inheritance.inFlight()));
+              new CiStepRunner.InheritedRun(
+                  orphan.id,
+                  orphan.leaseId,
+                  orphan.inflightDaemonId,
+                  orphan.inflightTokenSubject,
+                  inheritance.inFlight()));
         } else {
           LOG.warnf(
               "CI run %s cannot be taken back: %s — it is settled instead",
@@ -798,32 +757,15 @@ public class CiRunService {
         }
         continue;
       }
-      // The restartable case: an event run no runner held. The `else` covers what a predecessor
-      // left: a POST_RECEIVE row whose in-flight step died with its process, which this engine has
-      // no worker for and could not safely replay if it had one.
-      if (orphan.triggerType == CiTriggerType.EVENT && orphan.triggerConfig != null) {
-        deleteExecutedSteps(orphan);
-        reports.deleteForRun(orphan.id);
-        orphan.status = CiRunStatus.QUEUED;
-        orphan.finishedAt = null;
-        orphan.daemonVersion = null;
-        restarted.add(orphan);
-      } else {
-        failIncompleteSteps(orphan.id);
-        orphan.status = CiRunStatus.FAILED;
-        orphan.finishedAt = Instant.now();
-        failed.add(new FailedOrphan(orphan, orphan.finishedAt));
-      }
+      // What a predecessor left: a POST_RECEIVE row whose in-flight step died with its process,
+      // which this engine has no driver for and could not safely replay if it had one.
+      failIncompleteSteps(orphan.id);
+      orphan.status = CiRunStatus.FAILED;
+      orphan.finishedAt = Instant.now();
+      failed.add(new FailedOrphan(orphan, orphan.finishedAt));
     }
-
-    // Every QUEUED row is counted, including one this engine can no longer run — a POST_RECEIVE
-    // leftover from a predecessor deployment. The reservation is the single place that decides what
-    // a row is worth (it has to be: a row can also become unrunnable between here and a runner
-    // reaching it), and it settles such a row CANCELLED rather than leaving it QUEUED for a
-    // successor that will make the same discovery. The count includes the rows this method just
-    // moved back to QUEUED — the query flushes them first, which is what makes an interrupted event
-    // run restart on this boot rather than on the next one.
-    return new Sweep(runs.listQueuedOldestFirst().size(), failed, restarted, inherited, unsound);
+    List<String> queued = runs.listQueuedOldestFirst().stream().map(run -> run.id).toList();
+    return new Sweep(queued, failed, restarted, inherited, unsound);
   }
 
   /**
@@ -844,23 +786,26 @@ public class CiRunService {
   /**
    * Reads what a run's row says about its launch and <b>fails closed</b> (qits-1192): anything that
    * does not add up refuses the run, which is then settled — failed when it publishes, re-queued
-   * otherwise — and its old credentials revoked. Nothing is ever taken back on partial data. Sound
-   * is exactly one of:
+   * otherwise — and its old credentials revoked. Nothing is ever taken back on partial data.
+   *
+   * <p>The run's launch is its lease's daemon (one per run, epic qits-1481): its id, a UUID this
+   * service mints, and the token subject it dials as, both recorded when the lease was asked for.
+   * Sound is then exactly one of:
    *
    * <ul>
-   *   <li><b>A step in flight</b>: the launch is complete (index, a launch id that is a UUID, a
-   *       token subject) and names the first step without a row.
+   *   <li><b>A step in flight</b>: the launch names the first step without a row.
    *   <li><b>Between two steps</b>: the launch names the last step with a row.
-   *   <li><b>Before the first launch</b>: no launch, no step row and no daemon pinned yet.
+   *   <li><b>Before the first step</b>: the launch names no step, and the only rows are the ones a
+   *       retry carried over.
    * </ul>
    *
-   * <p>The runner must still exist, the pipeline must read back, the run must have a step left,
-   * and every step row must be green — a run whose rows hold a red one had stopped, and continuing
-   * it would announce a verdict its steps never reached.
+   * <p>The pipeline must read back, the run must have a step left, and every step row must be green
+   * — a run whose rows hold a red one had stopped, and continuing it would announce a verdict its
+   * steps never reached.
    */
   Inheritance inheritanceOf(CiRun run) {
-    if (runnerRows.findById(run.runnerId) == null) {
-      return Inheritance.refused("its runner " + run.runnerId + " no longer exists");
+    if (run.leaseId == null) {
+      return Inheritance.refused("it holds no lease");
     }
     List<CiPipeline.CiStepDecl> declared;
     try {
@@ -878,20 +823,7 @@ public class CiRunService {
     if (done >= declared.size()) {
       return Inheritance.refused("every step already has a row");
     }
-    boolean noLaunch =
-        run.inflightStepIndex == null
-            && run.inflightDaemonId == null
-            && run.inflightTokenSubject == null
-            && run.inflightStartedAt == null;
-    if (noLaunch) {
-      // Before the first launch the only rows are the ones a retry carried over (qits-1222): copies
-      // written at accept, never executions of this run.
-      return done == run.carriedStepCount() && run.daemonVersion == null
-          ? new Inheritance(null, null)
-          : Inheritance.refused("a step may have been launched and none is recorded");
-    }
-    if (run.inflightStepIndex == null
-        || run.inflightDaemonId == null
+    if (run.inflightDaemonId == null
         || run.inflightTokenSubject == null
         || run.inflightTokenSubject.isBlank()) {
       return Inheritance.refused("its recorded launch is incomplete");
@@ -901,9 +833,16 @@ public class CiRunService {
     } catch (IllegalArgumentException notAnId) {
       return Inheritance.refused("its recorded launch id is not one this service mints");
     }
+    if (run.inflightStepIndex == null) {
+      // Before the first step the only rows are the ones a retry carried over (qits-1222): copies
+      // written at accept, never executions of this run.
+      return done == run.carriedStepCount()
+          ? new Inheritance(null, null)
+          : Inheritance.refused("a step may have been sent and none is recorded");
+    }
     int index = run.inflightStepIndex;
     if (index == done - 1) {
-      // The launch of the step that already has its row: between two steps, nothing in flight.
+      // The step that already has its row: between two steps, nothing in flight.
       return new Inheritance(null, null);
     }
     if (index != done) {
@@ -934,6 +873,19 @@ public class CiRunService {
     return new CiRepoRef(run.repoId, run.projectId, run.repoName);
   }
 
+  /** {@link #repoOf}, for the lease seam: how the run's lease addresses the repository. */
+  public static CiRepoRef repoRefOf(CiRun run) {
+    return repoOf(run);
+  }
+
+  /**
+   * A run's run-scoped environment — the {@code QITS_EVENT_*} of its trigger and {@code
+   * QITS_VERSION} — which its lease carries for every step ({@link #eventEnv}).
+   */
+  public static Map<String, String> runEnv(EventRun request) {
+    return eventEnv(request);
+  }
+
   /** What a run left behind for the successor is told, in one wording, from both places. */
   private static void logLeftQueuedWhileDraining(String runId) {
     LOG.infof(
@@ -943,20 +895,23 @@ public class CiRunService {
   }
 
   /**
-   * Tells the runners a run was queued — a {@code Backlog} through every {@link CiBacklogListener}
-   * ({@link #announceBacklog}). There is nothing to wake in this process: a runner answers with a
-   * {@code Reserve}, and {@link #reserveFor} is the claim.
+   * Hands a queued run to the step seam, which asks qits-system for its lease ({@link
+   * CiStepRunner#queued}). Never a failure of the caller: a lease that could not be asked for now is
+   * asked for again by the seam's own reconcile.
    *
-   * <p>The draining refusal is the one thing it adds: a dying process must not hand out work, so it
-   * does not even say there is any. The row stays {@code QUEUED} for the successor's boot sweep —
-   * see {@link #draining}.
+   * <p>The draining refusal is the one thing it adds: a dying process must not hand out work. The
+   * row stays {@code QUEUED} for the successor's boot sweep — see {@link #draining}.
    */
   private void announceQueued(String runId) {
     if (draining) {
       logLeftQueuedWhileDraining(runId);
       return;
     }
-    announceBacklog();
+    try {
+      stepRunnerFor(runId).queued(runId);
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "CI run %s: its lease could not be asked for now", runId);
+    }
   }
 
   /**
@@ -1019,9 +974,9 @@ public class CiRunService {
    * given, and only while the row really is still queued.
    *
    * <p><b>A write that throws is answered {@code false} rather than propagated</b>, and that is the
-   * scan's whole safety net: this runs after a runner's reservation, over a row nobody can run, and
-   * a database blip while settling one poison row must not cost that reservation its answer. The
-   * row stays {@code QUEUED} and the next reservation tries again.
+   * whole safety net: this runs on the lease path, over a row nobody can run, and a database blip
+   * while settling one poison row must not cost anything else. The row stays {@code QUEUED} and the
+   * next lease request tries again.
    *
    * <p><b>The announcement is made here rather than by either caller</b>, for the reason {@link
    * #reserveFor} makes the {@code RUNNING} one: this is the single write, so it is the one place
@@ -1056,7 +1011,8 @@ public class CiRunService {
       return false;
     }
     announceStatus(settled, CiRunStatus.CANCELLED, CiRunStatus.QUEUED, settled.finishedAt);
-    announceBacklog();
+    // Whatever was asked for it — a lease, a token — is given back.
+    closeWith(runId);
     return true;
   }
 
@@ -1221,7 +1177,7 @@ public class CiRunService {
   }
 
   /**
-   * Runs a run a runner has <b>already claimed</b> — reached from {@link #executeReserved} and from
+   * Runs a run its lease has <b>already claimed</b> — reached from {@link #executeReserved} and from
    * nowhere else.
    *
    * <p><b>Everything a claimed run does is inside the try, and the daemon pin is why that had to be
@@ -1234,7 +1190,7 @@ public class CiRunService {
    * write, which is reason enough on its own.
    *
    * <p><b>An {@code Error} settles the row too, and is then rethrown.</b> The run is over either way
-   * and its row must say so, while the caller — the runner's driver — decides what to do about a JVM
+   * and its row must say so, while the caller — the lease's driver — decides what to do about a JVM
    * that has just thrown an {@code Error}.
    */
   private void executeClaimed(CiRun run, EventRun request) {
@@ -1259,11 +1215,11 @@ public class CiRunService {
     boolean leftRunning = false;
     try {
       DaemonPin pin;
-      if (run.daemonVersion != null && resume.inherited()) {
-        // An inherited run keeps its pin: its next containers download the build its first ones did.
+      if (run.daemonVersion != null) {
+        // The pin its lease was asked with: the lease's container downloaded that build.
         pin = stepRunnerFor(run).pinDaemon(run.daemonVersion);
       } else {
-        // Resolved once, here: every step container of this run downloads the same daemon build.
+        // Resolved once, here, for a run whose lease recorded none.
         pin = stepRunnerFor(run).pinDaemon();
         pinDaemonVersion(run.id, pin.version());
         run.daemonVersion = pin.version();
@@ -1277,8 +1233,8 @@ public class CiRunService {
           resume);
     } catch (CiStepRunner.ProcessStopping stopping) {
       // The process is going away under a step that has not ended. The step's container keeps
-      // running on its runner and the successor takes it back: nothing is settled, nothing given
-      // back, and the driver is told so it does not release the runner's slot either.
+      // running in its lease and the successor takes it back: nothing is settled, nothing given
+      // back, and the lease is not ended.
       leftRunning = true;
       LOG.infof("CI run %s left RUNNING: %s", run.id, stopping.getMessage());
       throw stopping;
@@ -1296,15 +1252,16 @@ public class CiRunService {
   }
 
   /**
-   * The rest of an inherited run's life, on the driver thread its runner's claim started ({@link
-   * #inherit}). It continues at the first step without a row: the in-flight step is taken back with
-   * {@link CiStepRunner#reattach} when the row recorded its launch, and every later step is launched
-   * as usual. A run settled meanwhile — cancelled while its runner was away — is only closed.
+   * The rest of an inherited run's life, on the driver thread its daemon's return started ({@link
+   * #inherit}). It continues at the first step without a row, on the same lease and the same daemon:
+   * the in-flight step is taken back with {@link CiStepRunner#reattach} when the row recorded it in
+   * flight, and every later step is sent as usual. A run settled meanwhile — cancelled while its
+   * daemon was away — is only closed.
    */
   void executeInherited(String runId) {
     CiRun run = QuarkusTransaction.requiringNew().call(() -> runs.findById(runId));
     if (run == null || run.status != CiRunStatus.RUNNING) {
-      LOG.infof("CI run %s was settled before its runner came back; nothing to continue", runId);
+      LOG.infof("CI run %s was settled before its ci-daemon came back; nothing to continue", runId);
       revokeInherited(runId);
       closeWith(runId);
       return;
@@ -1326,12 +1283,10 @@ public class CiRunService {
             && run.inflightStepIndex != null
             && run.inflightStepIndex == from;
     LOG.infof(
-        "CI run %s continues at step %d on its runner%s",
-        runId, from, reattach ? ", taking the in-flight step's container back" : "");
-    if (!reattach) {
-      // No container of the previous process is running for it, so its old credential is unused.
-      revokeInherited(runId);
-    }
+        "CI run %s continues at step %d in its lease%s",
+        runId, from, reattach ? ", taking the in-flight step back" : "");
+    // The run's token stays: its lease's container — still the previous process's — holds it for
+    // every step left, and the run's close deletes it.
     executeClaimed(
         run, request, new Resume(from, true, reattach, reattach ? run.inflightStartedAt : null));
   }
@@ -1366,10 +1321,7 @@ public class CiRunService {
     if (publishes(run)) {
       failUninherited(
           run,
-          why != null
-              ? why
-              : (run.runnerId == null ? "its runner" : runnerWordsQuietly(run.runnerId))
-                  + " did not come back holding it");
+          why != null ? why : "its lease's ci-daemon did not come back");
       return;
     }
     boolean requeued =
@@ -1393,7 +1345,7 @@ public class CiRunService {
     }
     LOG.infof(
         "CI run %s could not be taken back (%s); it is queued again and starts over",
-        runId, why != null ? why : "its runner did not come back holding it");
+        runId, why != null ? why : "its lease's ci-daemon did not come back");
     announceStatus(run, CiRunStatus.QUEUED, CiRunStatus.RUNNING, run.createdAt);
     announceQueued(runId);
   }
@@ -1457,7 +1409,8 @@ public class CiRunService {
         "CI run %s publishes and could not be taken back after qits-ci restarted (%s) — FAILED,"
             + " not run again",
         run.id, why);
-    announceBacklog();
+    // Its lease, if it still has one, and its token are given back.
+    closeWith(run.id);
     announceStatus(run, CiRunStatus.FAILED, CiRunStatus.RUNNING, finishedAt);
     announceFailedRun(run, finishedAt, CiRunStatus.FAILED);
   }
@@ -1483,14 +1436,6 @@ public class CiRunService {
       return reconstructEventRun(run).trigger().pipeline().steps();
     } catch (RuntimeException unreadable) {
       return List.of();
-    }
-  }
-
-  private String runnerWordsQuietly(UUID runnerId) {
-    try {
-      return runnerWords(runnerId);
-    } catch (RuntimeException e) {
-      return "runner " + runnerId;
     }
   }
 
@@ -1571,16 +1516,11 @@ public class CiRunService {
   }
 
   /**
-   * <b>The transport that runs this run's steps</b>: the runner seam, {@link CiRunnerStepRunner},
-   * for every run — the one method every caller asks (the step loop, the run's close, and a
-   * cancellation), so the three can never disagree about which seam owns a run.
+   * <b>The transport that runs this run's steps</b>: the lease seam, {@link CiStepRunner}, for every
+   * run — the one method every caller asks (the queue, the step loop, the run's close, and a
+   * cancellation), so they can never disagree about which seam owns a run.
    *
-   * <p><b>A run with no {@code runner_id} is history</b>: the in-process executor that claimed such
-   * runs is deleted (qits-506). One still {@code RUNNING} at boot is reset to {@code QUEUED} by
-   * {@link #sweepInterrupted} and reserved by a runner from there; one met by a cancellation at run
-   * time is not owned by the runner seam, so {@link #cancel} settles it in one write.
-   *
-   * @throws IllegalStateException in an application with no runner seam — only the {@code ci}
+   * @throws IllegalStateException in an application with no step seam — only the {@code ci}
    *     module's own without a suite fake, since the service always has one
    */
   CiStepRunner stepRunnerFor(CiRun run) {
@@ -1588,11 +1528,11 @@ public class CiRunService {
   }
 
   private CiStepRunner stepRunnerFor(String runId) {
-    if (runnerSteps == null || !runnerSteps.isResolvable()) {
+    if (stepRunners == null || !stepRunners.isResolvable()) {
       throw new IllegalStateException(
-          "CI run " + runId + " cannot be executed: this application has no runner step seam");
+          "CI run " + runId + " cannot be executed: this application has no step seam");
     }
-    return runnerSteps.get();
+    return stepRunners.get();
   }
 
   /**
@@ -1610,13 +1550,6 @@ public class CiRunService {
     announceStatus(run, outcome, CiRunStatus.RUNNING, finishedAt);
     if (outcome == CiRunStatus.FAILED) {
       announceFailedRun(run, finishedAt, outcome);
-    }
-    if (run.healthCheck()) {
-      runnerHealth.healthCheckSettled(
-          run,
-          outcome,
-          "the health check could not be executed",
-          "the health check could not be executed: " + cause);
     }
   }
 
@@ -1835,9 +1768,7 @@ public class CiRunService {
    * A platform step image whose immutable digest could not be had, so the run was not accepted.
    *
    * <p>A plain {@link RuntimeException} rather than anything web-shaped, for the reason every other
-   * type in this module is. The trigger engine catches it and leaves the event owed; {@link
-   * CiRunnerHealth#queueHealthCheck} catches it and answers its own web-facing {@code
-   * UnavailableException}; {@link #refire} — a person's retry and, through it, {@link #autoRetry} —
+   * type in this module is. The trigger engine catches it and leaves the event owed; {@link #refire} — a person's retry and, through it, {@link #autoRetry} —
    * does the same, before any row of the retry exists. Any other caller that does not know about it
    * gets a failed accept rather than a run against an unknown tool — which is the correct default
    * for a case that must never be swallowed.
@@ -1906,12 +1837,8 @@ public class CiRunService {
     }
     boolean failed = false;
     boolean timedOut = false;
-    // What a health check reports if it goes red: the failing step's outcome and the head of what it
-    // said. Unread for a build, whose verdict is its steps' rows.
-    String redOutcome = null;
-    String redDetail = null;
-    // The step that failed through the INFRASTRUCTURE rather than the build, if one did — the
-    // quarantine's classifier (CiRunnerHealth.isInfra), and what autoRetry acts on.
+    // The step that failed through the INFRASTRUCTURE rather than the build, if one did —
+    // InfraFailures.isInfra, and what autoRetry acts on.
     StepResult infraResult = null;
     int infraStep = -1;
 
@@ -1940,8 +1867,6 @@ public class CiRunService {
         StepResult result;
         if (reattach) {
           result = stepRunnerFor(run).reattach(spec, stamps);
-          // The taken-back container was the old credential's last user.
-          revokeInherited(run.id);
         } else {
           result = stepRunnerFor(run).run(spec, stamps);
         }
@@ -1950,13 +1875,6 @@ public class CiRunService {
         // frame — so cancelledness is read from the flag rather than inferred from how run() came
         // back.
         boolean wasCancelled = cancelled.contains(run.id);
-
-        // A runner's step says something about the RUNNER before it says anything about the build:
-        // one that never got as far as its daemon counts toward a quarantine, one that did resets
-        // the count. A cancelled step says neither — a person stopped it. Never a failure of the run.
-        if (!wasCancelled) {
-          runnerHealth.stepEnded(run, result);
-        }
 
         // The daemon's checkout could not find the run's sha. Two very different causes, so ask the
         // git host which it was rather than guessing: the commit may have been force-pushed away
@@ -1968,9 +1886,7 @@ public class CiRunService {
         // UNKNOWN is deliberately NOT read as gone: a git host that could not be asked has said
         // nothing about the commit, and discarding over that would erase a verdict on evidence
         // nobody has.
-        // A health check is never discarded: its verdict is about the runner, and "the commit moved
-        // away" would silently cost the runner its answer. It stays a red check naming the outcome.
-        if (result.outcome() == StepOutcome.SHA_GONE && !wasCancelled && !run.healthCheck()) {
+        if (result.outcome() == StepOutcome.SHA_GONE && !wasCancelled) {
           boolean commitGone =
               configSource.commitHeld(repoOf(run), run.commitSha) == CommitHeld.GONE;
           if (commitGone) {
@@ -2010,13 +1926,9 @@ public class CiRunService {
         imagesIgnored = null;
         failed = !ok;
         timedOut = stepTimedOut;
-        if (!ok && !wasCancelled) {
-          redOutcome = CiRunnerHealth.outcomeOf(result, stepTimedOut);
-          redDetail = CiRunnerHealth.detailOf(result, stepTimedOut);
-          if (!stepTimedOut && CiRunnerHealth.isInfra(result)) {
-            infraResult = result;
-            infraStep = index;
-          }
+        if (!ok && !wasCancelled && !stepTimedOut && InfraFailures.isInfra(result)) {
+          infraResult = result;
+          infraStep = index;
         }
         index++;
       }
@@ -2042,8 +1954,6 @@ public class CiRunService {
       }
       failed = true;
       timedOut = false;
-      redOutcome = "the step could not be executed";
-      redDetail = redOutcome + ": " + e;
     }
 
     for (int skipped = index; skipped < declared.size(); skipped++) {
@@ -2082,11 +1992,6 @@ public class CiRunService {
     } else if (outcome != CiRunStatus.CANCELLED && autoRetried == null) {
       announceFailedRun(run, finishedAt, outcome);
     }
-    if (run.healthCheck()) {
-      // The pseudo-build's one consequence: its runner's standing. After the terminal row, like
-      // every announcement above, so a runner's page following the link reads the run it was told.
-      runnerHealth.healthCheckSettled(run, outcome, redOutcome, redDetail);
-    }
   }
 
   /**
@@ -2117,7 +2022,7 @@ public class CiRunService {
    * published event's parent, so the run's own {@code BuildSuccessful} names what caused it and a
    * release train is a chain in the event log. It comes off the row rather than out of an ambient
    * context because there is none to read here: the engine consumed the frame on the bus's dispatch
-   * thread and this is a runner's driver thread, minutes later. Null only on a historical push row,
+   * thread and this is a lease's driver thread, minutes later. Null only on a historical push row,
    * which publishes a root — correctly, since a push was not caused by an event.
    *
    * <p><b>{@link CiRun#retryOfRunId} rides along too, and it is the only lineage the causation edge
@@ -2127,11 +2032,6 @@ public class CiRunService {
    * that is not a retry, straight off the row.
    */
   private void announceRun(CiRun run, Instant finishedAt) {
-    if (run.healthCheck()) {
-      // A health check's green is about a runner, never a commit: RunnerHealthChecked says it, and a
-      // BuildSuccessful here would reach a release request's gate. See announceStatus.
-      return;
-    }
     for (RunAnnouncer announcer : runAnnouncers) {
       try {
         announcer.onRunSucceeded(
@@ -2203,9 +2103,6 @@ public class CiRunService {
    * #announceRun}'s reasoning, unchanged.
    */
   private void announceFailedRun(CiRun run, Instant finishedAt, CiRunStatus outcome) {
-    if (run.healthCheck()) {
-      return;
-    }
     for (RunAnnouncer announcer : runAnnouncers) {
       try {
         announcer.onRunFailed(
@@ -2262,13 +2159,6 @@ public class CiRunService {
    */
   private void announceStatus(
       CiRun run, CiRunStatus status, CiRunStatus previous, Instant occurredAt) {
-    if (run.healthCheck()) {
-      // "Every writer calls it" stands, and this is where a health check is let off: its row is in
-      // no listing a mirror of /active holds (activeRuns leaves it out), so a transition of it is
-      // one no mirror could place — and all three build events here are statements a subscriber
-      // reads as being about a repository's CI. Its one event is RunnerHealthChecked.
-      return;
-    }
     for (RunAnnouncer announcer : runAnnouncers) {
       try {
         announcer.onRunStatusChanged(
@@ -2312,7 +2202,7 @@ public class CiRunService {
    * announcement with a guessed or blank version — which downstream would install.
    */
   private void announceRelease(CiRun run, Instant finishedAt, DeclaredRelease release) {
-    if (release == null || run.healthCheck()) {
+    if (release == null) {
       return;
     }
     String version = releaseVersionOf(run.triggerEventName, release.eventPayload());
@@ -2398,376 +2288,229 @@ public class CiRunService {
     }
     return switch (result.outcome()) {
       case OK -> null;
-      case SHA_GONE -> "[the step container could not check out this commit]";
-      case INIT_FAILED -> "[the step container could not prepare its workspace]";
-      case NEVER_INITIALIZED -> "[the step container never reported its checkout done]";
-      case LAUNCH_FAILED -> "[the step container could not be started]";
-      case NEVER_STARTED -> "[the step container never started its ci daemon]";
-      case CONNECTION_LOST -> "[the connection to the step container was lost]";
+      case SHA_GONE -> "[the run's ci-daemon could not check out this commit]";
+      case INIT_FAILED -> "[the run's ci-daemon could not prepare its worktree]";
+      case NEVER_INITIALIZED -> "[the run's ci-daemon never reported its worktree done]";
+      case LAUNCH_FAILED -> "[the run's lease could not start it]";
+      case NEVER_STARTED -> "[the run's lease container never started its ci daemon]";
+      case CONNECTION_LOST -> "[the connection to the run's lease container was lost]";
     };
   }
 
-  /**
-   * How many runs are {@code QUEUED} right now — what a runner is told in the {@code Backlog} that
-   * follows its {@code Ack}, and what {@link #announceBacklog} pushes afterwards.
-   */
+  /** How many runs are {@code QUEUED} right now. */
   public int queuedCount() {
     long queued = QuarkusTransaction.requiringNew().call(runs::countQueued);
     return (int) Math.min(Integer.MAX_VALUE, queued);
   }
 
   /**
-   * Tells every {@link CiBacklogListener} the queue's current length, after the write that may have
-   * moved it has committed.
-   *
-   * <p><b>Counted rather than tracked.</b> Every caller has just changed the table, and the count is
-   * the table's own answer — a running tally kept here would be a second copy of the queue that a
-   * reservation, a supersede or a boot sweep could each leave wrong. It costs one indexed count per
-   * transition, and only when somebody listens.
-   *
-   * <p><b>Never a failure of the caller.</b> This runs on the path of an accept, a finish and a
-   * cancel; a listener that throws, or a count the database could not answer, costs this push and
-   * nothing else. The next transition pushes again, which is the whole recovery a hint needs.
-   */
-  private void announceBacklog() {
-    if (backlogListeners == null || backlogListeners.isUnsatisfied()) {
-      return;
-    }
-    int queued;
-    try {
-      queued = queuedCount();
-    } catch (RuntimeException e) {
-      LOG.debugf("Could not count the queue for its listeners: %s", e.getMessage());
-      return;
-    }
-    for (CiBacklogListener listener : backlogListeners) {
-      try {
-        listener.backlogChanged(queued);
-      } catch (RuntimeException e) {
-        LOG.warnf(e, "A backlog listener failed on a queue of %d", queued);
-      }
-    }
-  }
-
-  /**
-   * One run a runner reserved: the claimed row, and the pipeline rebuilt from it — everything the
-   * runner's driver needs to run it through {@link #executeReserved}.
+   * One claimed run: the row, and the pipeline rebuilt from it — everything a driver needs to run it
+   * through {@link #executeReserved}.
    */
   public record Reservation(CiRun run, EventRun request) {}
 
   /**
-   * <b>A runner's {@code Reserve}, answered: the claim, narrowed to what this runner may take.</b>
-   * Every {@code QUEUED} build in {@link CiRunOrdering#suggestedOrder}, and one compare-and-swap on
-   * the row's status with {@code runner_id} written in that UPDATE ({@link
-   * CiRunRepository#claimQueuedForRunner}) — so any number of runners compete for one row and the
-   * database picks exactly one of them. It is the only claim there is (qits-506).
+   * <b>A queued run, as its lease is asked for</b>: the row as it is now, and its pipeline rebuilt
+   * from it — or empty when there is no lease to ask for, because the run is no longer {@code
+   * QUEUED}, or because nothing can run it and it was settled on the way:
    *
-   * <p><b>One transaction</b>, re-reading the runner's row inside it: an operator may have changed
-   * its slots, drained it or deleted it since it connected, and the answer has to be about the row
-   * as it is now. Refused outright, with no candidate read, when the runner already holds as many
-   * {@code RUNNING} runs as its row grants, and when this process is draining.
+   * <ul>
+   *   <li>A row that is not an event run, or whose snapshot will not reconstruct, is settled {@code
+   *       CANCELLED} ({@link #TRIGGER_RETIRED}/{@link #TRIGGER_UNREADABLE}) — one poison row costs
+   *       one row. This was the runner reservation's job, when there was one.
+   *   <li>A pipeline with a {@code docker: true} step is a {@code CONFIG_ERROR} (epic qits-1481): a
+   *       slot has no docker socket and its image no docker CLI. The run is settled with {@link
+   *       CiSlot#DOCKER_UNSUPPORTED} on the first such step and announced as a failure, so a release
+   *       request's gate hears a verdict rather than waiting for one.
+   * </ul>
    *
-   * <p><b>A runner's own health check comes first, and is the one thing a quarantined runner may
-   * take</b> (qits-466): it is matched by {@code target_runner_id}, so no other runner is ever handed
-   * it, and it needs no free slot beyond the one it occupies. Everything else is refused to a
-   * quarantined runner outright, and a health check is left out of the ordinary candidates.
-   *
-   * <p><b>What a runner cannot take is passed over, never settled.</b> A pipeline with a {@code
-   * docker: true} or {@code build: true} step needs a host that will run docker for it, and a runner
-   * whose capabilities do not say {@code docker: true} is never handed one; a {@code build: true}
-   * pipeline is never handed to a runner whose id range cannot map uids/gids 0..65535 ({@link
-   * #tooNarrowToBuild}, qits-556, qits-443). A passed-over row never holds back the rows behind it:
-   * the walk continues to the next candidate.
-   *
-   * <p><b>Which runner failed a run before is not asked</b> (qits-443, the owner's ruling of
-   * 2026-09-30): a retry used to be kept off the runner that failed it, which nobody specified and
-   * which, with a single runner, stranded the retry {@code QUEUED} forever. {@code
-   * ci_run.avoid_runner_ids} is still in the schema and is read by nothing, so a row written while
-   * the feature lived is taken like any other.
-   *
-   * <p><b>What nobody can run is settled, after the claim's transaction.</b> A row that is not an
-   * event run, or whose snapshot will not reconstruct, is passed over inside the transaction and
-   * then settled {@code CANCELLED} ({@link #retireUnrunnable}, {@link #settleUnreadable}) once it has
-   * committed, each in its own write that re-reads the status — so one poison row neither holds up
-   * the rows behind it nor survives to the next boot. This used to be the in-process claim loop's
-   * job; it is the reservation's now that the loop is gone.
-   *
-   * @return the reservation, or empty when there was nothing this runner could have
+   * <p>Refused outright while this process is draining: a dying process asks for no lease.
    */
-  public java.util.Optional<Reservation> reserveFor(CiRunner runner) {
+  public java.util.Optional<Reservation> leaseCandidate(String runId) {
     if (draining || stopping) {
       return java.util.Optional.empty();
     }
-    // Filled inside the transaction, settled after it: a settlement is a write of its own with an
-    // announcement after its commit, and must not ride — or roll back with — this claim.
-    List<CiRun> unrunnable = new ArrayList<>();
-    List<CiRun> unreadable = new ArrayList<>();
-    Reservation reserved =
-        QuarkusTransaction.requiringNew()
-            .call(
-                () -> {
-                  CiRunner row = runnerRows.findById(runner.id);
-                  if (row == null) {
-                    return null;
-                  }
-                  // ITS OWN HEALTH CHECK FIRST, and past every gate below: a quarantine blocks
-                  // ordinary work only, and a check is the one way out of one; the slots are not
-                  // asked either, because the check takes the one it occupies and nothing more.
-                  // Nobody else is ever handed it — this lookup is keyed by the asking runner.
-                  CiRun check = runs.findQueuedHealthCheck(row.id).orElse(null);
-                  if (check != null && !draining) {
-                    try {
-                      EventRun request = reconstructEventRun(check);
-                      if (runs.claimQueuedForRunner(check.id, Instant.now(), row.id) > 0) {
-                        runs.getEntityManager().refresh(check);
-                        return new Reservation(check, request);
-                      }
-                    } catch (RuntimeException unparseable) {
-                      LOG.warnf(
-                          "Runner %s's health check %s cannot be reconstructed (%s) — passing"
-                              + " over it",
-                          row.name, check.id, unparseable.getMessage());
-                    }
-                  }
-                  // A quarantined runner takes nothing else, whatever its row's slots say — they
-                  // are its operator's number, kept for when it is put back.
-                  if (row.quarantined() || row.slots <= 0) {
-                    return null;
-                  }
-                  if (runs.countRunningOnRunner(row.id) >= row.slots) {
-                    return null;
-                  }
-                  boolean docker = hasDocker(row);
-                  boolean narrowIds = tooNarrowToBuild(row);
-                  unrunnable.clear();
-                  unreadable.clear();
-                  for (CiRun candidate :
-                      CiRunOrdering.suggestedOrder(builds(runs.listQueuedOldestFirst()))) {
-                    if (!runnable(candidate)) {
-                      unrunnable.add(candidate);
-                      continue;
-                    }
-                    EventRun request;
-                    try {
-                      request = reconstructEventRun(candidate);
-                    } catch (RuntimeException unparseable) {
-                      LOG.errorf(
-                          unparseable,
-                          "CI run %s cannot be reconstructed from its own row (%s) — settling it"
-                              + " CANCELLED/%s",
-                          candidate.id,
-                          candidate.configPath,
-                          TRIGGER_UNREADABLE);
-                      unreadable.add(candidate);
-                      continue;
-                    }
-                    if (!docker && needsDocker(request.trigger().pipeline())) {
-                      continue;
-                    }
-                    if (narrowIds && needsBuildPlane(request.trigger().pipeline())) {
-                      continue;
-                    }
-                    if (draining) {
-                      logLeftQueuedWhileDraining(candidate.id);
-                      return null;
-                    }
-                    if (runs.claimQueuedForRunner(candidate.id, Instant.now(), row.id) == 0) {
-                      continue;
-                    }
-                    runs.getEntityManager().refresh(candidate);
-                    return new Reservation(candidate, request);
-                  }
-                  return null;
-                });
-    unrunnable.forEach(this::retireUnrunnable);
-    unreadable.forEach(this::settleUnreadable);
-    if (reserved == null) {
+    CiRun run = QuarkusTransaction.requiringNew().call(() -> runs.findById(runId));
+    if (run == null || run.status != CiRunStatus.QUEUED) {
       return java.util.Optional.empty();
     }
-    CiRun run = reserved.run();
-    LOG.infof("CI run %s reserved by runner %s (%s)", run.id, runner.name, runner.id);
-    announceStatus(run, CiRunStatus.RUNNING, CiRunStatus.QUEUED, run.startedAt);
-    return java.util.Optional.of(reserved);
-  }
-
-  // --- a runner's health check: a pseudo-build, recorded here because it is a run ------------------
-
-  /**
-   * The {@code config_path} a health check is recorded under. It names no committed file — the
-   * document is {@link #healthCheckDocument}, written here — and it is spelled like one so every
-   * reader of the column (the dedupe, the duration history, a person) has a path that says what the
-   * run was and can never collide with a repository's own {@code ci-event-*.yml}.
-   */
-  public static final String HEALTHCHECK_CONFIG_PATH = ".config/qits/ci-runner-healthcheck.yml";
-
-  /** The event name the document declares and the row records: no event on the bus carries it. */
-  public static final String HEALTHCHECK_EVENT_NAME = "RunnerHealthCheck";
-
-  /**
-   * The synthetic trigger identity a health check is recorded with, {@link #RETRY_TRIGGER_PREFIX}'s
-   * device: unique by construction (it is followed by the run's own id), so the dedupe constraint
-   * stays exactly as it is, and unmistakably not an event id.
-   */
-  public static final String HEALTHCHECK_TRIGGER_PREFIX = "healthcheck:";
-
-  /** The whole of what a health check runs: proof the container started and its daemon ran a step. */
-  public static final String HEALTHCHECK_SCRIPT = "echo hello world";
-
-  /** Its step's deadline. An image pull is the slow part, and it is not inside this budget. */
-  public static final int HEALTHCHECK_TIMEOUT_SECONDS = 300;
-
-  /**
-   * The one-step pipeline a health check runs, as the trigger document its row stores — the same
-   * grammar a repository commits, so the run is reconstructed, pinned, launched and recorded by
-   * exactly the path a build takes. The image is single-quoted YAML, so a reference is data whatever
-   * it contains.
-   */
-  static String healthCheckDocument(String image) {
-    return "event: "
-        + HEALTHCHECK_EVENT_NAME
-        + "\nsteps:\n  - image: '"
-        + image.replace("'", "''")
-        + "'\n    script: "
-        + HEALTHCHECK_SCRIPT
-        + "\n    timeout-seconds: "
-        + HEALTHCHECK_TIMEOUT_SECONDS
-        + "\n";
+    if (!runnable(run)) {
+      retireUnrunnable(run);
+      return java.util.Optional.empty();
+    }
+    EventRun request;
+    try {
+      request = reconstructEventRun(run);
+    } catch (RuntimeException unparseable) {
+      LOG.errorf(
+          unparseable,
+          "CI run %s cannot be reconstructed from its own row (%s) — settling it CANCELLED/%s",
+          run.id,
+          run.configPath,
+          TRIGGER_UNREADABLE);
+      settleUnreadable(run);
+      return java.util.Optional.empty();
+    }
+    if (needsDocker(request.trigger().pipeline())) {
+      settleConfigError(run, request.trigger().pipeline(), CiSlot.DOCKER_UNSUPPORTED);
+      return java.util.Optional.empty();
+    }
+    return java.util.Optional.of(new Reservation(run, request));
   }
 
   /**
-   * <b>Records a health check for one runner as a {@code QUEUED} pseudo-build</b>, and wakes whoever
-   * listens to the queue. {@link CiRunnerHealth} decides when one is owed and resolves where it runs;
-   * this is the insert, because a health check is a run and every run is written here.
-   *
-   * <p>It is an ordinary event run in everything but two columns: {@code purpose = HEALTHCHECK}, and
-   * {@code target_runner_id}, the only runner {@link #reserveFor} will hand it to. So it is
-   * reconstructed from its own snapshot like any row, its image is {@linkplain #pinStepImages pinned
-   * to a digest} at accept like any build's, a restart re-queues it like any event run, and it clones
-   * {@code repo} at {@code sha} with the run's own commissioned credential — the whole path a runner
-   * can break, which is the point.
-   *
-   * @throws StepImageUnpinned when the platform image's digest could not be had — no row is written,
-   *     and the caller's next attempt asks a registry that has probably come back
+   * Settles a queued run whose pipeline cannot run at all as {@code CONFIG_ERROR}: the first step
+   * that asks for what no slot has is {@code FAILED} with {@code why} as its output, every other step
+   * not yet carried is {@code SKIPPED}, and the run's verdict is announced like any red run's.
+   * Re-reads the status inside its write, so a run somebody cancelled meanwhile stays cancelled.
    */
-  public CiRun acceptHealthCheck(UUID runnerId, CiRepoRef repo, String sha, String image) {
-    Objects.requireNonNull(runnerId, "runnerId");
-    CiIdentifiers.requireRepo(repo);
-    CiIdentifiers.requireSha(sha);
-    String document = healthCheckDocument(image);
-    CiEventTrigger trigger = triggerParser.parse(HEALTHCHECK_CONFIG_PATH, document);
-    // Before the insert's bracket, acceptEventRun's placement for its reason: this is registry I/O.
-    String pins = StepImages.encode(pinStepImages(trigger.pipeline()));
-    CiRun accepted =
-        DbRetry.inNewTx(
-            "health check accept",
-            () -> {
-              CiRun run = newRun(repo, MAIN_BRANCH, sha);
-              run.purpose = CiRunPurpose.HEALTHCHECK;
-              run.targetRunnerId = runnerId;
-              run.triggerType = CiTriggerType.EVENT;
-              run.configPath = HEALTHCHECK_CONFIG_PATH;
-              run.triggerEventId = HEALTHCHECK_TRIGGER_PREFIX + run.id;
-              run.triggerEventName = HEALTHCHECK_EVENT_NAME;
-              run.triggerEventOccurredAt = run.createdAt;
-              run.triggerEventPayload = "{\"runnerId\":\"" + runnerId + "\"}";
-              run.triggerConfig = document;
-              run.stepImages = pins;
-              runs.persist(run);
-              runs.flush();
-              return run;
-            },
-            retryDeadline());
-    LOG.infof(
-        "Health check %s queued for runner %s — %s at %s", accepted.id, runnerId, repo.display(),
-        sha);
-    // The Backlog a runner acts on — the target runner reserves it first.
-    announceQueued(accepted.id);
-    return accepted;
+  private void settleConfigError(CiRun run, CiPipeline pipeline, String why) {
+    List<CiPipeline.CiStepDecl> declared = pipeline.steps();
+    int offending = 0;
+    for (int i = 0; i < declared.size(); i++) {
+      if (declared.get(i).docker()) {
+        offending = i;
+        break;
+      }
+    }
+    int failing = Math.max(offending, run.carriedStepCount());
+    Instant finishedAt = Instant.now();
+    CiRun settled;
+    try {
+      settled =
+          QuarkusTransaction.requiringNew()
+              .call(
+                  () -> {
+                    CiRun row = runs.findById(run.id);
+                    if (row == null || row.status != CiRunStatus.QUEUED) {
+                      return null;
+                    }
+                    for (int i = row.carriedStepCount(); i < declared.size(); i++) {
+                      CiStep step = new CiStep();
+                      step.id = UUID.randomUUID().toString();
+                      step.runId = row.id;
+                      step.stepIndex = i;
+                      step.image = stepImage(declared.get(i));
+                      if (i == failing) {
+                        step.status = CiStepStatus.FAILED;
+                        step.exitCode = -1;
+                        step.output = why;
+                        step.startedAt = finishedAt;
+                        step.finishedAt = finishedAt;
+                      } else {
+                        step.status = CiStepStatus.SKIPPED;
+                      }
+                      steps.persist(step);
+                    }
+                    row.status = CiRunStatus.CONFIG_ERROR;
+                    row.startedAt = finishedAt;
+                    row.finishedAt = finishedAt;
+                    return row;
+                  });
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "CI run %s could not be settled CONFIG_ERROR — the next lease request tries again", run.id);
+      return;
+    }
+    if (settled == null) {
+      return;
+    }
+    LOG.warnf("CI run %s (%s@%s, %s) is a CONFIG_ERROR: %s", run.id, run.repoId, run.branch, run.configPath, why);
+    closeWith(run.id);
+    announceStatus(settled, CiRunStatus.CONFIG_ERROR, CiRunStatus.QUEUED, finishedAt);
+    announceFailedRun(settled, finishedAt, CiRunStatus.CONFIG_ERROR);
   }
 
   /**
-   * Settles a health check that is still {@code QUEUED} as {@code FAILED} — its runner never took it
-   * — and answers the settled row, or null when it had already moved (taken, cancelled, gone).
-   * Nothing is announced: a health check's one event is {@link CiRunnerHealth}'s to publish.
+   * Records the run's lease on its row, with the launch its daemon will name — the launch id and the
+   * subject of the token it dials as — and the daemon build its container downloads, so a successor
+   * can take the run back (qits-1192). <b>Fails
+   * closed</b>: answers false when the row is no longer {@code QUEUED}, and throws when the write
+   * could not be made; either way the caller ends the lease it just asked for.
    */
-  CiRun failQueuedHealthCheck(String runId) {
-    CiRun settled =
+  public boolean recordLease(
+      String runId, UUID leaseId, String daemonId, String tokenSubject, String daemonVersion) {
+    try {
+      return QuarkusTransaction.requiringNew()
+              .call(() -> runs.recordLease(runId, leaseId, daemonId, tokenSubject, daemonVersion))
+          > 0;
+    } catch (RuntimeException e) {
+      throw new IllegalStateException(
+          "the lease of run " + runId + " could not be recorded on its row: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Forgets a queued run's lease — one a previous process asked for, or one that ended before it was
+   * granted — so a fresh one can be asked for. Only while the row is {@code QUEUED} and still names
+   * {@code leaseId}; answers whether it did.
+   */
+  public boolean forgetLease(String runId, UUID leaseId) {
+    return QuarkusTransaction.requiringNew().call(() -> runs.forgetLease(runId, leaseId)) > 0;
+  }
+
+  /**
+   * <b>A granted lease's run, claimed</b>: one conditional UPDATE from {@code QUEUED} to {@code
+   * RUNNING} that writes the target it runs on, only while the row still names {@code leaseId} — so
+   * an event and a reconcile racing for one grant are settled by the database, and a run cancelled
+   * while it waited is never started. Answers the claimed row and its pipeline, or empty when there
+   * was nothing to claim.
+   */
+  public java.util.Optional<Reservation> claimLeased(String runId, UUID leaseId, UUID targetId) {
+    if (draining || stopping) {
+      return java.util.Optional.empty();
+    }
+    Reservation claimed =
         QuarkusTransaction.requiringNew()
             .call(
                 () -> {
-                  CiRun row = runs.findById(runId);
-                  if (row == null || row.status != CiRunStatus.QUEUED || !row.healthCheck()) {
+                  if (runs.claimLeased(runId, leaseId, targetId, Instant.now()) == 0) {
                     return null;
                   }
-                  row.status = CiRunStatus.FAILED;
-                  row.finishedAt = Instant.now();
-                  return row;
+                  CiRun row = runs.findById(runId);
+                  runs.getEntityManager().refresh(row);
+                  return new Reservation(row, reconstructEventRun(row));
                 });
-    if (settled != null) {
-      announceBacklog();
+    if (claimed == null) {
+      return java.util.Optional.empty();
     }
-    return settled;
+    CiRun run = claimed.run();
+    LOG.infof("CI run %s claimed by its lease %s on target %s", run.id, leaseId, targetId);
+    announceStatus(run, CiRunStatus.RUNNING, CiRunStatus.QUEUED, run.startedAt);
+    return java.util.Optional.of(claimed);
+  }
+
+  /** Every run that holds a lease and is not finished — what the lease reconcile walks. */
+  public List<CiRun> leasedRuns() {
+    return QuarkusTransaction.requiringNew().call(runs::listLeased);
+  }
+
+  /** Every queued run that holds no lease yet — what the lease reconcile asks one for. */
+  public List<String> queuedWithoutLease() {
+    return QuarkusTransaction.requiringNew()
+        .call(() -> runs.listQueuedOldestFirst().stream().filter(run -> run.leaseId == null).map(run -> run.id).toList());
+  }
+
+  /** A run's row as it is now, or null — what the lease seam reads a run's lease off. */
+  public CiRun runRow(String runId) {
+    return QuarkusTransaction.requiringNew().call(() -> runs.findById(runId));
   }
 
   /**
-   * Run a reserved run to its end, on the caller's thread — the runner's driver thread. Everything
+   * Run a claimed run to its end, on the caller's thread — the lease's driver thread. Everything
    * after the claim is {@link #executeClaimed}'s.
    */
   public void executeReserved(Reservation reservation) {
     executeClaimed(reservation.run(), reservation.request());
   }
 
-  /** Whether the runner said it will run docker for a step. Absent or unreadable is no. */
-  private static boolean hasDocker(CiRunner runner) {
-    JsonNode capabilities = RunnerCapabilities.decode(runner.capabilities);
-    return capabilities != null && capabilities.path("docker").asBoolean(false);
-  }
-
   /**
-   * The smallest id range a runner's builder may have and still be handed a {@code build: true}
-   * pipeline: {@code 65536}, uids/gids {@code 0..65535}, which is every id a layer on this estate
-   * owns since qits-556 A rebuilt the workspace images that owned files at {@code 1001380000}.
+   * Whether any step declares {@code docker: true} — a {@code CONFIG_ERROR} since CI runs in slots
+   * (see {@link #leaseCandidate}). {@code build: true} is not: every CI lease has the target's
+   * builder.
    */
-  static final long MIN_BUILD_ID_RANGE = 65536L;
-
-  /**
-   * Whether the runner said its user namespace cannot map the ordinary 16-bit id space (qits-556,
-   * qits-443): its builder would fail to unpack a layer owning an id it cannot map, so it is never
-   * handed a {@code build: true} pipeline. A rootless docker or an unprivileged LXC maps less than
-   * the whole 32-bit space (the live {@code qits-ci} runner advertises {@code 458752}) and is
-   * <em>not</em> too narrow for that: every layer on this estate stays below {@code 65536}, and with
-   * the in-process executor retired a runner is the only place a build can run, so the old
-   * whole-space rule would leave every image build QUEUED. Unknown — a runner older than {@code
-   * idRange}, or a value that is not a number — is no, because refusing it would strand every
-   * runner released before the field.
-   */
-  public static boolean tooNarrowToBuild(CiRunner runner) {
-    JsonNode capabilities = RunnerCapabilities.decode(runner.capabilities);
-    if (capabilities == null) {
-      return false;
-    }
-    JsonNode range = capabilities.path("idRange");
-    return range.isIntegralNumber() && range.asLong() < MIN_BUILD_ID_RANGE;
-  }
-
-  /**
-   * Whether any step runs in the runner's own builder ({@code build: true}) — the one place a narrow
-   * id range fails, because it is the runner's daemon that unpacks the layers. A {@code docker: true}
-   * step is handed the host's socket and is judged by {@link CiRunnerHealth#isInfra} after the fact.
-   */
-  static boolean needsBuildPlane(CiPipeline pipeline) {
-    for (CiPipeline.CiStepDecl step : pipeline.steps()) {
-      if (step.build()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /** Whether any step asks for the build plane — a socket or a builder, both of them docker's. */
   static boolean needsDocker(CiPipeline pipeline) {
     for (CiPipeline.CiStepDecl step : pipeline.steps()) {
-      if (step.docker() || step.build()) {
+      if (step.docker()) {
         return true;
       }
     }
@@ -3590,9 +3333,6 @@ public class CiRunService {
               run.finishedAt = finishedAt;
               clearInFlight(run);
             });
-    // A finished run moves no QUEUED row, and it is told anyway: it is the moment capacity came
-    // back, and a runner that was answered Nothing is parked until it next hears a Backlog.
-    announceBacklog();
     return finishedAt;
   }
 
@@ -3690,13 +3430,13 @@ public class CiRunService {
       LOG.infof("CI run %s cancelled on request before it started (%s)", runId, reason);
       announceStatus(
           neverStarted, CiRunStatus.CANCELLED, CiRunStatus.QUEUED, neverStarted.finishedAt);
-      announceBacklog();
+      // The lease it may have been asked, and its token, are given back.
+      closeWith(runId);
       return;
     }
-    // The seam that owns this run, decided by who claimed it. A runner's run is its driver's from
-    // the Take to the Released, so a cancellation between two of its steps still reaches it.
-    // Read again rather than taken from the row above: a runner may have reserved the run between
-    // that read and the queued arm's write, and the column that says so is on the row as it is now.
+    // The seam that owns this run, decided by whether a driver of this process holds it: a lease's
+    // run is its driver's from the claim to the close, so a cancellation between two of its steps
+    // still reaches it.
     CiStepRunner owner = stepRunnerFor(requireRun(runId));
     if (!owner.owns(runId)) {
       // Nobody here is running it, so there is nothing to ask to stop and nothing that will ever
@@ -3725,6 +3465,7 @@ public class CiRunService {
       if (settled != null) {
         announceStatus(settled, CiRunStatus.CANCELLED, CiRunStatus.RUNNING, settled.finishedAt);
       }
+      closeWith(runId);
       return;
     }
     DbRetry.runInNewTx(
@@ -3917,11 +3658,10 @@ public class CiRunService {
           "CI run " + runId + " has not finished (" + source.status + ") — nothing to retry yet");
     }
     if (source.healthCheck()) {
-      // A re-fire copies the work, not what the work is for: its row would be a BUILD of the health
-      // check's pipeline that any worker could take. A runner's next check is asked for by name.
+      // A runner's health-check pseudo-build, from before CI ran in leases: there is no runner left
+      // for it to be about.
       throw new ConflictException(
-          "CI run " + runId + " is a runner's health check — ask for a new one at POST"
-              + " /ci/api/runners/" + source.targetRunnerId + "/healthcheck");
+          "CI run " + runId + " is a retired CI runner's health check — there is nothing to retry");
     }
     RetriedPipeline pipeline = retriedPipeline(source);
     // Predicted rather than copied, unlike priority and the downstream closure beside it: those are
@@ -3947,10 +3687,8 @@ public class CiRunService {
     try {
       pins = StepImages.encode(pinStepImages(retried));
     } catch (StepImageUnpinned unpinned) {
-      // Thrown before any row for this retry exists — see pinStepImages and acceptHealthCheck's
-      // identical placement — so there is nothing here to roll back. Mirrors
-      // CiRunnerHealth.queueHealthCheck: a registry that will not answer is "come back", not a
-      // failed request, for a person retrying exactly as it is for a queued health check.
+      // Thrown before any row for this retry exists — see pinStepImages — so there is nothing here
+      // to roll back: a registry that will not answer is "come back", not a failed request.
       throw new UnavailableException(unpinned.getMessage());
     }
     // Decided here, outside the accept's bracket, for the re-composition's reason: it reads the
@@ -3983,7 +3721,7 @@ public class CiRunService {
 
   /**
    * <b>A run the infrastructure failed is asked again at once</b> (qits-440): called by {@code
-   * runSteps} for a run that just went {@code FAILED} on a step {@link CiRunnerHealth#isInfra}
+   * runSteps} for a run that just went {@code FAILED} on a step {@link InfraFailures#isInfra}
    * classifies as the host's fault — the runner quarantine's own classifier, so "infra failure" means
    * one thing on this service — and answers the retry, or null when there is none and the failure
    * must settle as an ordinary red verdict.
@@ -3994,12 +3732,10 @@ public class CiRunService {
    * mid-step). Everything else means the daemon registered and the step is the build's: a real exit
    * code, 137 included (the OOM killer is a property of the build's memory, handled apart); a
    * deadline ({@code TIMED_OUT}); {@code INIT_FAILED} and {@code SHA_GONE}, which are the checkout —
-   * a deleted branch fails them identically on every attempt; and {@code NEVER_INITIALIZED}, which
-   * the quarantine does not count either. A step runner that threw is not classified at all. The one
-   * exit code that IS infrastructure is a step whose output ends with one of {@link
-   * CiRunnerHealth#INFRA_SIGNATURES} — the builder could not map an id a layer owns (qits-556), which
-   * fails on that runner every time and nowhere else. Widening either set moves the quarantine with
-   * it, on purpose.
+   * a deleted branch fails them identically on every attempt; and {@code NEVER_INITIALIZED}. A step
+   * runner that threw is not classified at all. The one exit code that IS infrastructure is a step
+   * whose output ends with one of {@link InfraFailures#INFRA_SIGNATURES} — the builder could not map
+   * an id a layer owns (qits-556), which fails on that target every time and nowhere else.
    *
    * <p><b>Why this is the gate hook.</b> The caller skips {@code BuildFailed} when this answers a
    * run, and that is the whole of the change on the gate's side: qits-projects' release gate hears
@@ -4012,17 +3748,14 @@ public class CiRunService {
    * <p><b>Bounded</b> at {@link #AUTO_RETRY_MAX} (2) consecutive automatic retries along
    * {@code retry_of_run_id}: a run whose chain already holds that many settles normally. A retry a
    * person pressed carries no {@code retry_reason}, so the count restarts behind it — a person
-   * re-asking is a new question. A health check is never re-fired here: its red is its answer.
+   * re-asking is a new question.
    *
    * <p><b>Never a failure of the run.</b> A retry that could not be accepted (the git host, the
    * registry, the database) is logged and answers null, so the red is announced as it always was.
-   * The runner's quarantine streak has already been recorded by then and is untouched: the retry
-   * does not un-count the failure, and it is neither pinned anywhere nor kept off anything — it
-   * re-enters the ordinary queue, and any worker may take it, the runner that failed it included
-   * (with one runner, that is the only worker there is).
+   * The retry is pinned to no target: it is a lease like any other.
    */
   private CiRun autoRetry(CiRun run, int failedStep, StepResult failure) {
-    if (run.healthCheck() || autoRetryMax <= 0) {
+    if (autoRetryMax <= 0) {
       return null;
     }
     String what;
@@ -4102,30 +3835,26 @@ public class CiRunService {
             });
   }
 
-  /** The infra failure as a person reads it — naming the runner when one held the run. */
+  /** The infra failure as a person reads it — naming the target when the run was granted one. */
   private String infraFailureWords(CiRun run, StepResult failure) {
-    String runner = run.runnerId == null ? null : runnerWords(run.runnerId);
-    String signature = CiRunnerHealth.infraSignature(failure);
+    String target = run.targetId == null ? null : "target " + run.targetId;
+    String signature = InfraFailures.infraSignature(failure);
     if (signature != null) {
       // The id-mapping failure (qits-556): the cause an operator fixes is the host's id range.
       return "the builder could not map a file owner (\"" + signature + "\")"
-          + (runner == null ? "" : " on " + runner + " — its uid/gid range is too narrow");
+          + (target == null ? "" : " on " + target + " — its uid/gid range is too narrow");
     }
     return switch (failure.outcome()) {
       case CONNECTION_LOST ->
-          runner == null ? "the connection to the step container was lost" : runner + " disconnected";
+          "the connection to the run's lease container was lost"
+              + (target == null ? "" : " on " + target);
       case LAUNCH_FAILED ->
-          "the step container could not be started" + (runner == null ? "" : " on " + runner);
+          "the run's lease could not start it" + (target == null ? "" : " on " + target);
       case NEVER_STARTED ->
-          "the step container never started its ci daemon" + (runner == null ? "" : " on " + runner);
-      default -> failure.outcome().name() + (runner == null ? "" : " on " + runner);
+          "the run's lease container never started its ci daemon"
+              + (target == null ? "" : " on " + target);
+      default -> failure.outcome().name() + (target == null ? "" : " on " + target);
     };
-  }
-
-  /** "runner <name>", or its id when the row is gone. */
-  private String runnerWords(UUID runnerId) {
-    CiRunner row = QuarkusTransaction.requiringNew().call(() -> runnerRows.findById(runnerId));
-    return "runner " + (row == null ? runnerId.toString() : row.name);
   }
 
   /** Appends one line to a recorded step's output. */
@@ -4643,45 +4372,13 @@ public class CiRunService {
     // claim order regardless of which order the rows arrived in — the ordering's own guarantee, and
     // the reason nothing has to sort the input here.
     List<CiRunOrdering.OrderedRun> ordered = CiRunOrdering.explain(queued);
-    List<CiQueueForecast.RunnerCapacity> runnerCapacity = runnerCapacity();
     return new Snapshot(
         generatedAt,
         active,
         List.copyOf(running),
         ordered,
         CiQueueForecast.forecast(
-            running, ordered, CiQueueForecast.slotCount(runnerCapacity), generatedAt),
-        runnerCapacity);
-  }
-
-  /**
-   * Every declared runner as the queue sees it. A listing that could not be read is an empty one:
-   * the queue's own rows are the answer this read exists for, and a runner table that did not
-   * answer costs the forecast the runners' slots rather than costing the caller the queue.
-   */
-  private List<CiQueueForecast.RunnerCapacity> runnerCapacity() {
-    try {
-      return ciRunners.views().stream()
-          .map(
-              view ->
-                  new CiQueueForecast.RunnerCapacity(
-                      view.id(),
-                      view.name(),
-                      view.slots(),
-                      view.heldRuns(),
-                      view.connected(),
-                      view.runnerVersion(),
-                      view.targetVersion(),
-                      view.updating(),
-                      view.quarantined(),
-                      view.quarantineReason(),
-                      view.quarantinedAt(),
-                      view.lastHealthcheck()))
-          .toList();
-    } catch (RuntimeException e) {
-      LOG.debugf("The queue snapshot could not read the runners: %s", e.getMessage());
-      return List.of();
-    }
+            running, ordered, CiQueueForecast.leaseSlots(running.size()), generatedAt));
   }
 
   /**
@@ -4706,17 +4403,15 @@ public class CiRunService {
    *     that a caller re-ordering nothing is consistent with every other listing on this surface
    * @param queuedInClaimOrder the {@code QUEUED} rows in suggested claim order, each with the
    *     ordering's reasons attached
-   * @param forecast when the queue is expected to reach each of them — modelled over every
-   *     connected runner's slots
-   * @param runners every declared runner, with its slots, what it holds and whether it is connected
+   * @param forecast when the queue is expected to reach each of them — modelled over as many slots
+   *     as leases are running ({@link CiQueueForecast#leaseSlots})
    */
   public record Snapshot(
       Instant generatedAt,
       List<CiRun> activeNewestFirst,
       List<CiRun> running,
       List<CiRunOrdering.OrderedRun> queuedInClaimOrder,
-      CiQueueForecast.Forecast forecast,
-      List<CiQueueForecast.RunnerCapacity> runners) {
+      CiQueueForecast.Forecast forecast) {
 
     /** This run's place in the claim order and why, or null when it is not queued here. */
     public CiRunOrdering.OrderedRun orderingOf(String runId) {

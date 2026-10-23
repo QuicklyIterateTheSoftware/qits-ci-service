@@ -31,9 +31,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * that jar as a test dependency, and qits-maintenance bumps the pin when the consumer releases a
  * changed pact. {@link ClasspathPactLoader} finds them all.
  *
- * <p><b>Twenty-one consumers pin a pact</b>. Eight since qits-1149: qits-landing-app ({@code
- * eu.wohlben.qits:qits-landing-app-pacts-qits-ci-service}), qits-ci-runner-daemon ({@code
- * eu.wohlben.qits:qits-ci-runner-daemon-pacts-qits-ci-service}), qits-artifacts-service ({@code
+ * <p><b>Twenty consumers pin a pact</b>. Seven since qits-1149: qits-landing-app ({@code
+ * eu.wohlben.qits:qits-landing-app-pacts-qits-ci-service}), qits-artifacts-service ({@code
  * eu.wohlben.qits:qits-artifacts-service-pacts-qits-ci-service}), qits-bootstrap-cli,
  * qits-maintenance-service, qits-orchestrator-service, qits-platform-access-cli and
  * qits-projects-service (each {@code eu.wohlben.qits:<consumer>-pacts-qits-ci-service}), all
@@ -55,7 +54,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
  *
  * <p>Each interaction runs against this {@code @QuarkusTest} application over real HTTP,
  * unauthenticated — the {@code %test} dev user, exactly as {@link GoldenMasterRecordingTest}'s
- * REST-assured calls run. A door that judges the caller's token (register a runner, submit a step's
+ * REST-assured calls run. A door that judges the caller's token (submit a step's
  * report, the machine gate) reads the {@code Authorization} header the pact sends: the state's
  * {@code authorization} param, which {@link ContractBearers} turns into that token's identity. Every {@code @State} method delegates to {@link ProviderStates}; {@link
  * #target} fails an unknown state, and an interaction without {@code comments.references.qits-call}
@@ -195,34 +194,9 @@ class ConsumerPactVerificationTest {
     return states.params(ProviderStates.THE_MACHINE_GATE_IS_ON);
   }
 
-  @State(ProviderStates.NO_RUNNERS)
-  Map<String, String> noRunners() {
-    return states.params(ProviderStates.NO_RUNNERS);
-  }
-
-  @State(ProviderStates.AN_UNREGISTERED_RUNNER)
-  Map<String, String> anUnregisteredRunner() {
-    return states.params(ProviderStates.AN_UNREGISTERED_RUNNER);
-  }
-
-  @State(ProviderStates.A_REGISTERED_RUNNER)
-  Map<String, String> aRegisteredRunner() {
-    return states.params(ProviderStates.A_REGISTERED_RUNNER);
-  }
-
-  @State(ProviderStates.A_CONNECTED_RUNNER)
-  Map<String, String> aConnectedRunner() {
-    return states.params(ProviderStates.A_CONNECTED_RUNNER);
-  }
-
-  @State(ProviderStates.A_QUARANTINED_RUNNER)
-  Map<String, String> aQuarantinedRunner() {
-    return states.params(ProviderStates.A_QUARANTINED_RUNNER);
-  }
-
-  @State(ProviderStates.RUNNERS_WITH_FREE_SLOTS)
-  Map<String, String> runnersWithFreeSlots() {
-    return states.params(ProviderStates.RUNNERS_WITH_FREE_SLOTS);
+  @State(ProviderStates.A_RUN_QUEUE_WITH_A_RUN_WAITING)
+  Map<String, String> aRunQueueWithARunWaiting() {
+    return states.params(ProviderStates.A_RUN_QUEUE_WITH_A_RUN_WAITING);
   }
 
   @State(ProviderStates.A_PINNED_DAEMON)

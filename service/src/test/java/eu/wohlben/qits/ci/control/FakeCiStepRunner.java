@@ -1,7 +1,7 @@
 package eu.wohlben.qits.ci.control;
 
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
-import eu.wohlben.qits.ci.runnerhost.RunnerStepRunner;
+import eu.wohlben.qits.ci.targethost.LeaseStepRunner;
 import io.quarkus.test.Mock;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Typed;
@@ -34,20 +34,19 @@ import java.util.function.Consumer;
  * could not see {@code GET /ci/api/runs/&#123;runId&#125;}'s {@code live} object at all and every
  * assertion about it would have to be made against a hand-wired relay instead of against the read
  * surface. What is still scripted rather than performed is everything a step does; the four calls
- * below are the ones {@code RunnerStepRunner} makes around a step, in its order.
+ * below are the ones {@code LeaseStepRunner} makes around a step, in its order.
  *
- * <p><b>It is the runner seam, and it scripts only the {@link SuiteRunner}'s runs.</b> Since qits-506
- * every run is a runner's and {@link CiRunnerStepRunner} is the only seam {@code CiRunService} asks,
- * so this {@code @Mock} alternative stands in for it across the test application — but a run a real
- * runner holds over the real socket ({@code CiRunnerSocketTest}, {@code RunnerStepRunnerTest}) is
- * handed straight to the real {@link RunnerStepRunner}, untouched. Which is which is decided by
- * {@link #hold}: the suite's runner holds its runs here from its reservation until they close, the
- * way the real registry holds a socket runner's.
+ * <p><b>It is the step seam, and it scripts only the {@link SuiteRunner}'s runs.</b> {@link
+ * CiStepRunner} is the only seam {@code CiRunService} asks, so this {@code @Mock} alternative stands
+ * in for it across the test application — but a run the real lease seam holds ({@code
+ * LeaseStepRunnerTest}) is handed straight to the real {@link LeaseStepRunner}, untouched. Which is
+ * which is decided by {@link #hold}: the suite's target holds its runs here from its claim until
+ * they close.
  */
 @Mock
 @ApplicationScoped
-@Typed({FakeCiStepRunner.class, CiRunnerStepRunner.class})
-public class FakeCiStepRunner implements CiRunnerStepRunner {
+@Typed({FakeCiStepRunner.class, CiStepRunner.class})
+public class FakeCiStepRunner implements CiStepRunner {
 
   /** What a scripted step emits before it answers. */
   public record Script(List<String> chunks, StepResult result) {
@@ -72,7 +71,23 @@ public class FakeCiStepRunner implements CiRunnerStepRunner {
   @Inject CiStepRelay relay;
 
   /** The real seam, for every run the suite's runner does not hold. */
-  @Inject RunnerStepRunner real;
+  @Inject LeaseStepRunner real;
+
+  @Inject jakarta.enterprise.inject.Instance<SuiteRunner> target;
+
+  /**
+   * A queued run is the suite's target's when that is on, and the real lease seam's otherwise —
+   * which asks qits-system for nothing while this suite commissions no token.
+   */
+  @Override
+  public void queued(String runId) {
+    SuiteRunner suite = target.get();
+    if (suite.enabled()) {
+      suite.queued(runId);
+      return;
+    }
+    real.queued(runId);
+  }
 
   /** The suite's runner's runs, from reservation to close — see {@link #hold}. */
   private final Set<String> held = ConcurrentHashMap.newKeySet();

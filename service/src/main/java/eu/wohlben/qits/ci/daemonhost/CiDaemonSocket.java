@@ -54,7 +54,7 @@ import org.jboss.logging.Logger;
  * again rather than refused (qits-748). While the first is still open, a second is {@code
  * ALREADY_CONNECTED} as ever.
  *
- * <p><b>The address is a cross-repo contract.</b> {@code StepAddressPlane} composes {@code
+ * <p><b>The address is a cross-repo contract.</b> {@code CiSlotAddresses} composes {@code
  * wss://ci.qits.<domain>/ci/daemon} as {@code $QITS_CI_DAEMON_URL} for every step container, and
  * qits-ci-daemon dials exactly that string verbatim. Move this path and that composition moves
  * with it.

@@ -123,20 +123,11 @@ public class CiQueueForecastTest {
   }
 
   @Test
-  public void aConnectedRunnersSlotsAreCapacityAndItsHeldRunsAreOccupancyNotBoth() {
-    // A one-slot runner busy for 30s more, and a connected runner granting two slots and holding
-    // one run with 10s left. A held run is in `running` like any other, so a runner's slots are
-    // counted whole: counting only its free slot would charge that run twice.
-    List<CiQueueForecast.RunnerCapacity> runners =
-        List.of(
-            new CiQueueForecast.RunnerCapacity(
-                java.util.UUID.randomUUID(), "localhost", 1, 1, true),
-            new CiQueueForecast.RunnerCapacity(
-                java.util.UUID.randomUUID(), "connected", 2, 1, true),
-            new CiQueueForecast.RunnerCapacity(
-                java.util.UUID.randomUUID(), "offline", 8, 0, false));
-    int slots = CiQueueForecast.slotCount(runners);
-    assertEquals(3, slots, "the connected runners' slots, the offline one none");
+  public void theSlotsAreCapacityAndTheRunningRunsAreOccupancyNotBoth() {
+    // Three slots, two of them busy — one for 30s more, one with 10s left. A running run is in
+    // `running` like any other, so the slots are counted whole: counting only the free one would
+    // charge the running runs twice.
+    int slots = 3;
 
     CiQueueForecast.Forecast forecast =
         CiQueueForecast.forecast(
@@ -147,17 +138,10 @@ public class CiQueueForecastTest {
             slots,
             NOW);
 
-    // The runner's free slot takes `a` now and `b` behind it; `c` starts at 10s, when the runner's
-    // held run and `b` both free a slot. With the free slot alone counted (two slots) `a` would
-    // have waited for the held run and every start would be 10s late.
+    // The free slot takes `a` now and `b` behind it; `c` starts at 10s, when the running run and
+    // `b` both free a slot. With the free slot alone counted `a` would have waited for the running
+    // run and every start would be 10s late.
     assertEquals(Arrays.asList(0L, 5 * SECOND, 10 * SECOND), starts(forecast));
-  }
-
-  @Test
-  public void noRunnersIsNoSlotAtAll() {
-    // There is no local pool to fall back on (qits-506): a runner is the only thing that runs a run.
-    assertEquals(0, CiQueueForecast.slotCount(List.of()));
-    assertEquals(0, CiQueueForecast.slotCount(null));
   }
 
   @Test
@@ -271,14 +255,12 @@ public class CiQueueForecastTest {
   }
 
   @Test
-  public void theSlotsAreTheConnectedRunnersAlone() {
-    List<CiQueueForecast.RunnerCapacity> runners =
-        List.of(
-            new CiQueueForecast.RunnerCapacity(
-                java.util.UUID.randomUUID(), "localhost", 2, 0, true),
-            new CiQueueForecast.RunnerCapacity(
-                java.util.UUID.randomUUID(), "offline", 8, 0, false));
-    assertEquals(2, CiQueueForecast.slotCount(runners));
+  public void theSlotsAreAsManyAsTheLeasesRunningAndAtLeastOne() {
+    // Epic qits-1481: how many CI leases run at once is qits-system's to grant, so the forecast
+    // assumes the estate keeps granting what it grants now — and never that nothing will run.
+    assertEquals(1, CiQueueForecast.leaseSlots(0));
+    assertEquals(1, CiQueueForecast.leaseSlots(1));
+    assertEquals(3, CiQueueForecast.leaseSlots(3));
 
     CiQueueForecast.Forecast forecast =
         CiQueueForecast.forecast(

@@ -140,7 +140,8 @@ class GoldenMasterRecordingTest {
    * Every (state, operation) a consumer reads. The first three are qits-landing-app's release request
    * page; the rest are qits-1149's: qits-bootstrap-cli, qits-platform-access-cli,
    * qits-maintenance-service, qits-projects-service, qits-artifacts-service,
-   * qits-orchestrator-service and qits-ci-runner-daemon. Which consumer asked for which is the
+   * qits-orchestrator-service (and qits-ci-runner-daemon, whose register door went with the CI
+   * runner in epic qits-1481, with every /ci/api/runners read). Which consumer asked for which is the
    * round-2 states table's ({@code qits-ci-service-states.md}).
    */
   static final List<Interaction> INTERACTIONS =
@@ -217,74 +218,14 @@ class GoldenMasterRecordingTest {
               null,
               "{}",
               BEARER),
-          write(
-              ProviderStates.NO_RUNNERS,
-              "createRunner",
-              "POST",
-              "/ci/api/runners",
-              201,
-              """
-              {"name":"localhost","slots":2}"""),
           new Interaction(
-              ProviderStates.AN_UNREGISTERED_RUNNER,
-              "listRunners",
-              "GET",
-              "/ci/api/runners",
-              Map.of(),
-              200,
-              "$.runners"),
-          write(
-              ProviderStates.AN_UNREGISTERED_RUNNER,
-              "rotateRegistrationToken",
-              "POST",
-              "/ci/api/runners/{runnerId}/registration-token",
-              200,
-              null),
-          new Interaction(
-              ProviderStates.AN_UNREGISTERED_RUNNER,
-              "registerRunner",
-              "POST",
-              "/ci/api/runners/{runnerId}/register",
-              Map.of(),
-              200,
-              null,
-              """
-              {"capabilities":{"arch":"amd64","docker":true}}""",
-              BEARER),
-          new Interaction(
-              ProviderStates.A_REGISTERED_RUNNER,
-              "registerRunner",
-              "POST",
-              "/ci/api/runners/{runnerId}/register",
-              Map.of(),
-              409,
-              null,
-              """
-              {"capabilities":{"arch":"amd64","docker":true}}""",
-              BEARER),
-          new Interaction(
-              ProviderStates.A_CONNECTED_RUNNER,
-              "listRunners",
-              "GET",
-              "/ci/api/runners",
-              Map.of(),
-              200,
-              "$.runners"),
-          write(
-              ProviderStates.A_QUARANTINED_RUNNER,
-              "greenlightRunner",
-              "POST",
-              "/ci/api/runners/{runnerId}/greenlight",
-              200,
-              null),
-          new Interaction(
-              ProviderStates.RUNNERS_WITH_FREE_SLOTS,
+              ProviderStates.A_RUN_QUEUE_WITH_A_RUN_WAITING,
               "getRunQueue",
               "GET",
               "/ci/api/runs/queue",
               Map.of(),
               200,
-              "$.running,$.queued,$.runners"),
+              "$.running,$.queued"),
           read(ProviderStates.A_PINNED_DAEMON, "getDaemonPin", "/ci/api/daemon"),
           read(
               ProviderStates.A_RELEASED_VERSION_WITH_ARTIFACT_DECISIONS,
@@ -344,14 +285,6 @@ class GoldenMasterRecordingTest {
               404,
               null),
           write(ProviderStates.A_RUNNING_RUN, "retryRun", "POST", "/ci/api/runs/{runId}/retry", 409, null),
-          new Interaction(
-              ProviderStates.A_QUARANTINED_RUNNER,
-              "listRunners",
-              "GET",
-              "/ci/api/runners",
-              Map.of(),
-              200,
-              "$.runners"),
           read(ProviderStates.A_FAILED_RUN_RETRIED_AUTOMATICALLY, "getRun", "/ci/api/runs/{runId}"),
           write(
               ProviderStates.A_RELEASE_REQUEST_WITH_QA_RUNS_IN_FLIGHT,

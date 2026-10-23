@@ -12,7 +12,7 @@ import eu.wohlben.qits.ci.stories.support.StoryDaemon;
 import eu.wohlben.qits.ci.stories.support.StoryGitHost;
 import eu.wohlben.qits.ci.stories.support.StoryIdentities;
 import eu.wohlben.qits.ci.stories.support.StoryOrigin;
-import eu.wohlben.qits.ci.stories.support.StoryRunner;
+import eu.wohlben.qits.ci.stories.support.StorySystem;
 import eu.wohlben.qits.ci.stories.support.StoryTarget;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonProtocol;
 import eu.wohlben.qits.cidaemon.protocol.RunStep;
@@ -46,11 +46,11 @@ import org.junit.jupiter.api.condition.EnabledIf;
  * <p>The arrangement is the whole design of this service, and it is inside out on purpose:
  *
  * <ol>
- *   <li>A <b>runner</b> — a machine registered with qits-ci, holding {@code /ci/runners/socket}
- *       open — reserves the run, and qits-ci sends it a {@code Launch} for the step: the whole
- *       workload spec, whose environment carries a launch id minted for this one step and the
- *       run's own token. The runner's host starts that container with its own docker; this process holds no
- *       docker socket, spawns no process and calls no orchestrator (qits-506).
+ *   <li>qits-ci asks <b>qits-system</b> for one CI <b>lease</b> for the whole run (epic
+ *       qits-1481): a spec whose environment carries a launch id minted for the run's daemon and
+ *       the run's own token. A target grants it and starts one {@code qits/build-images/ci-slot}
+ *       container; this process holds no docker socket, spawns no process and calls no
+ *       orchestrator.
  *   <li>The container's own {@code qits-ci-daemon} <b>dials out</b> to {@code wss://…/ci/daemon},
  *       through the platform edge, presenting the run's token, and names its launch in its first
  *       frame. qits-ci never dials in, which is why a step container needs no address.
@@ -58,21 +58,21 @@ import org.junit.jupiter.api.condition.EnabledIf;
  *       to that</b>. The host initiates nothing: a script leaves this process as one field of one
  *       JSON frame, and executes as the daemon's child inside the sandbox.
  *   <li>Output comes back as {@code StepChunk} frames while the step runs, and one {@code
- *       StepFinished} ends it. qits-ci then sends the runner a {@code Reap} for the container, and
- *       a {@code Released} for the run.
+ *       StepFinished} ends it. Every further step is another {@code RunStep} on the same
+ *       connection; once the run is over qits-ci sends {@code Close} and ends the lease.
  * </ol>
  *
  * <p><b>The daemon in this story is a real client of the real socket.</b> {@link StoryDaemon} is a
  * Vert.x WebSocket framing the vendored protocol exactly as the native binary does, and — the part
  * that makes this evidence rather than a fixture — it learns its credentials <b>only</b> from the
- * workload spec that reached {@link StoryRunner} in a {@code Launch}. Nothing here reads the host's
- * launch table. An admitted dial is therefore a measurement of the whole path: qits-ci commissioned
- * the run a token, minted the launch an id, put both in a container spec, sent it to the runner,
- * and then recognised the launch coming back off a socket as that token's subject.
+ * lease spec that reached {@link StorySystem}. Nothing here reads the host's launch table. An
+ * admitted dial is therefore a measurement of the whole path: qits-ci commissioned the run a
+ * token, minted the launch an id, put both in a lease spec, asked qits-system for it, and then
+ * recognised the launch coming back off a socket as that token's subject.
  *
  * <p>What is <b>not</b> proved here, and is out of reach in this container: a real image, a real
  * daemon binary and a real docker daemon. The real daemon binary is {@code CiDaemonPinIT}'s; the
- * real {@code docker run} is the runner's own (qits-ci-runner-daemon). What this story adds is that
+ * real container is qits-system's target's (qits-system-runner-daemon). What this story adds is that
  * it needs none of it — so the flow is documented on every ordinary build.
  *
  * <p><b>Two stories, and the second is deliberately not the first one's tail.</b> The peer that
@@ -80,7 +80,7 @@ import org.junit.jupiter.api.condition.EnabledIf;
  * qits-platform-maintenance does while it waits out a bump. A <b>person</b> reading the transcript
  * afterwards is a different door, a different identity track and — the claim the diagram makes —
  * a walk that reaches no other service at all: the step's output is a row by then, so reading it
- * costs the git host nothing and the runner nothing.
+ * costs the git host nothing and qits-system nothing.
  */
 @QuarkusIntegrationTest
 @TestProfile(TokenValidationBootstrapIT.PackagedWithMockIdp.class)
@@ -125,7 +125,7 @@ public class BuildExecutionIT {
 
   static final String STDERR_LINE = "note: nothing to do\n";
 
-  /** How long a launch may take to arrive once the runner holds the run. */
+  /** How long the run's lease may take to be asked for once the run is accepted. */
   private static final Duration LAUNCH_PATIENCE = Duration.ofSeconds(60);
 
   private static String publishedSha;
@@ -170,13 +170,13 @@ public class BuildExecutionIT {
   @UserStory(value = "A build step connects to qits-ci and streams its output", category = BUILDS)
   @UserStoryDescription(
       """
-      A pipeline declares a step, and the step runs somewhere qits-ci cannot reach. A runner takes
-      the run, and qits-ci asks it to start a container for the step, handing it an id and the
-      run's own token, and then waits — because the container's daemon is what dials back. The
+      A pipeline declares a step, and the step runs somewhere qits-ci cannot reach. qits-ci asks
+      qits-system for one CI slot for the whole run, handing it an id and the run's own token, and
+      then waits — because the slot's daemon is what dials back. The
       step itself travels down that connection as the reply to the daemon saying its checkout is
       done, and the build's output comes back up it a frame at a time. This story is that whole
       exchange, played by a real client of the real socket that learns its credentials the way a
-      container learns them: out of the container spec.
+      container learns them: out of the lease spec.
       """)
   @UserflowRunsAfter(TokenValidationBootstrapIT.class)
   @Order(1)
@@ -200,38 +200,37 @@ public class BuildExecutionIT {
     runId = runIds.getFirst();
     story.note("a release this repository depends on is announced, and a run is accepted").as("run-accepted");
 
-    // --- a runner takes the run, and qits-ci asks it for a container: that is where the token is
-    NetworkCapture.actor(StoryRunner.ACTOR);
-    StoryRunner runner = StoryRunner.connect();
-    runner.take(runId);
-    StoryRunner.Launch launch = runner.awaitLaunch(LAUNCH_PATIENCE);
-    String daemonId = launch.environment().get(StoryDaemon.ID_VARIABLE);
-    runToken = launch.environment().get(StoryDaemon.TOKEN_VARIABLE);
+    // --- qits-ci asks qits-system for the run's lease: that is where the token is ---------------
+    NetworkCapture.actor(StorySystem.ACTOR);
+    StorySystem.Lease lease = StorySystem.awaitLease(runId, LAUNCH_PATIENCE);
+    Map<String, String> environment = lease.env();
+    String daemonId = environment.get(StoryDaemon.ID_VARIABLE);
+    runToken = environment.get(StoryDaemon.TOKEN_VARIABLE);
     // Read once, used twice: what the container would present to the edge, and afterwards to
     // prove it is nowhere in the bundle.
     assertNotNull(daemonId, "the spec must carry the per-container launch id");
     assertNotNull(runToken, "…and the run's token, which is the whole of the step's credential");
     assertTrue(runToken.startsWith("qits_tok_"), "…an opaque token, not a client pair");
     assertNull(
-        launch.environment().get("QITS_CI_DAEMON_SECRET"), "there is no per-container secret");
+        environment.get("QITS_CI_DAEMON_SECRET"), "there is no per-container secret");
     assertNull(
-        launch.environment().get("QITS_COMMISSIONED_CLIENT_ID"), "and no commissioned client");
+        environment.get("QITS_COMMISSIONED_CLIENT_ID"), "and no commissioned client");
     // The address is a cross-repo contract: the daemon binary dials this string verbatim, so the
     // path in it and the @WebSocket literal on the endpoint are the same fact spelled twice.
     assertTrue(
-        launch.environment().get(StoryDaemon.URL_VARIABLE).endsWith(StoryTarget.DAEMON_PATH),
+        environment.get(StoryDaemon.URL_VARIABLE).endsWith(StoryTarget.DAEMON_PATH),
         "the container is told to dial " + StoryTarget.DAEMON_PATH);
-    runner.launched(launch);
+    StorySystem.grant(lease);
     story
         .note(
-            "a runner takes the run, and qits-ci asks it for one container, carrying an id for"
-                + " it and the run's token")
+            "qits-ci asks qits-system for one CI lease for the whole run, carrying an id for its"
+                + " daemon and the run's token, and a target starts the slot")
         .as("container-requested");
 
     // --- the container's daemon dials back ------------------------------------------------------
     NetworkCapture.actor(StoryDaemon.ACTOR);
     try (StoryDaemon daemon =
-        StoryDaemon.dial(StoryTarget.daemonSocket(), launch.environment())) {
+        StoryDaemon.dial(StoryTarget.daemonSocket(), environment)) {
       daemon.hello(daemonId);
       assertEquals(
           CiDaemonProtocol.CAPABILITY_VERSION,
@@ -264,12 +263,9 @@ public class BuildExecutionIT {
       story.note("the step's output streams back frame by frame, and then it ends").as("step-finished");
     }
 
-    // --- the runner is told to remove the container, and then that the run is over -------------
-    NetworkCapture.actor(StoryRunner.ACTOR);
-    try (runner) {
-      runner.awaitReapAndConfirm(launch, Duration.ofSeconds(30));
-      runner.awaitReleased(runId, Duration.ofSeconds(30));
-    }
+    // --- the run is over, and its lease is ended ------------------------------------------------
+    NetworkCapture.actor(StorySystem.ACTOR);
+    StorySystem.awaitEnded(lease, Duration.ofSeconds(30));
 
     // --- the peer that asked for the build polls the run it asked for ---------------------------
     // The machine role, not a person's: a peer waiting out a build it triggered must not be handed
@@ -281,7 +277,10 @@ public class BuildExecutionIT {
     List<Map<String, Object>> steps = readSteps(run);
     assertEquals(1, steps.size(), "the pipeline declared one step and one step was recorded");
     assertEquals(0, steps.getFirst().get("exitCode"));
-    assertEquals(STEP_IMAGE, steps.getFirst().get("image"));
+    assertEquals(
+        eu.wohlben.qits.ci.control.CiSlot.IMAGE_TAG,
+        steps.getFirst().get("image"),
+        "every step runs in the ci-slot image, whatever the pipeline names");
     assertTrue(
         String.valueOf(steps.getFirst().get("output")).contains(STDOUT_LINE.strip()),
         "the step's row holds what came up the socket");
@@ -298,7 +297,7 @@ public class BuildExecutionIT {
       are worth saying about that walk. It is authenticated as a PERSON — this service
       authenticates nobody itself, so the platform edge asserts who the caller is and what they
       may do — and it reaches nothing else at all: the build's output is a row by the time anyone
-      reads it, so no git host and no runner is on the path.
+      reads it, so no git host and no target is on the path.
       """)
   @Order(2)
   void anOperatorReadsTheTranscript(Interactions story) {
@@ -398,30 +397,25 @@ public class BuildExecutionIT {
         StoryTarget.SERVICE,
         StoryGitHost.SERVICE_NAME,
         StoryGitHost.label("GET", blobPath(), 200));
-    // (3) the runner: it dialled, took the run, and was asked for the container and to remove it
-    // again. qits-ci holds no docker socket and calls no orchestrator, so Launch and Reap are the
-    // entirety of its container vocabulary for one step.
+    // (3) the target: qits-ci asks qits-system for ONE lease for the whole run, qits-system says
+    // the slot is running, and qits-ci ends the lease once the run is over. qits-ci holds no docker
+    // socket and calls no orchestrator, so a lease is the entirety of its container vocabulary.
     ReportAssertions.assertEdge(
         BUILDS,
         STEP_SLUG,
-        NetworkEdge.SOCKET,
-        StoryRunner.ACTOR,
+        NetworkEdge.HTTP,
         StoryTarget.SERVICE,
-        "CONNECT " + eu.wohlben.qits.ci.runnerhost.RunnerAddresses.SOCKET_PATH);
+        StorySystem.ACTOR,
+        "POST /system/api/leases -> 201");
     ReportAssertions.assertEdge(
-        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryRunner.ACTOR, StoryTarget.SERVICE, "reserve");
+        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StorySystem.ACTOR, StoryTarget.SERVICE, "lease RUNNING");
     ReportAssertions.assertEdge(
-        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryTarget.SERVICE, StoryRunner.ACTOR, "take");
-    ReportAssertions.assertEdge(
-        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryTarget.SERVICE, StoryRunner.ACTOR, "launch");
-    ReportAssertions.assertEdge(
-        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryRunner.ACTOR, StoryTarget.SERVICE, "launched");
-    ReportAssertions.assertEdge(
-        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryTarget.SERVICE, StoryRunner.ACTOR, "reap");
-    ReportAssertions.assertEdge(
-        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryRunner.ACTOR, StoryTarget.SERVICE, "reaped");
-    ReportAssertions.assertEdge(
-        BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryTarget.SERVICE, StoryRunner.ACTOR, "released");
+        BUILDS,
+        STEP_SLUG,
+        NetworkEdge.HTTP,
+        StoryTarget.SERVICE,
+        StorySystem.ACTOR,
+        "DELETE /system/api/leases/{id} -> 200");
     // (4) the socket, and the frames on it. The DIAL is the container's: qits-ci never dials in.
     ReportAssertions.assertEdge(
         BUILDS,
@@ -455,14 +449,14 @@ public class BuildExecutionIT {
         StoryDaemon.ACTOR,
         StoryTarget.SERVICE,
         "stepFinished exit 0");
-    // Four initiators and no fifth: the peer that asked, the runner that took the run, the
-    // container that dialled back, and qits-ci itself.
+    // Four initiators and no fifth: the peer that asked, the target that started the slot, the
+    // slot's daemon that dialled back, and qits-ci itself.
     ReportAssertions.assertEdge(
         BUILDS, STEP_SLUG, NetworkEdge.EVENT, StoryDaemon.ACTOR, StoryTarget.SERVICE, "heartbeat");
     ReportAssertions.assertOnlyEdgesFrom(
         BUILDS,
         STEP_SLUG,
-        List.of(PLATFORM, StoryRunner.ACTOR, StoryDaemon.ACTOR, StoryTarget.SERVICE));
+        List.of(PLATFORM, StorySystem.ACTOR, StoryDaemon.ACTOR, StoryTarget.SERVICE));
     // Neither credential is in the bundle: not the bearer that opened the trigger, and not the
     // run's token the container was handed.
     ReportAssertions.assertNotLeaked(BUILDS, STEP_SLUG, platformBearer);
@@ -497,7 +491,7 @@ public class BuildExecutionIT {
     ReportAssertions.assertEdgeCount(OPERATIONS, TRANSCRIPT_SLUG, 3);
     ReportAssertions.assertOnlyEdgesFrom(OPERATIONS, TRANSCRIPT_SLUG, List.of(OPERATOR));
     ReportAssertions.assertNoEdgesTo(OPERATIONS, TRANSCRIPT_SLUG, StoryGitHost.SERVICE_NAME);
-    ReportAssertions.assertNoEdgesTo(OPERATIONS, TRANSCRIPT_SLUG, StoryRunner.ACTOR);
+    ReportAssertions.assertNoEdgesTo(OPERATIONS, TRANSCRIPT_SLUG, StorySystem.ACTOR);
   }
 
   private static String blobPath() {

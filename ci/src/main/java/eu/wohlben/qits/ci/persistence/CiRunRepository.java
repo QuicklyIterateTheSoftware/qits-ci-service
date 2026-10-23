@@ -7,23 +7,19 @@ import eu.wohlben.qits.ci.entity.CiRunStatus;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
  * Panache DAO for {@link CiRun} (keyed by its String UUID row id).
  *
- * <p><b>A repository's listings are its BUILDS.</b> A runner's health check is a run recorded against
- * a real repository and commit ({@code qits.ci.runner.healthcheck.repository}), and its verdict says
- * nothing about either, so every read that answers "what has this repository's CI done" — its run
- * listing, its newest run and newest {@code main} run, the finished listing, and which repositories
- * have runs at all — carries {@code purpose = BUILD}. The reads that are about the QUEUE, not about
- * a repository ({@link #listActiveNewestFirst}, {@link #listQueuedOldestFirst}, {@link #countQueued})
- * keep every run, because a pending health check is real work a runner has to take and a credential
- * the commission reconciler must not reap; the queue's callers filter for themselves.
+ * <p><b>A repository's listings are its BUILDS.</b> A retired CI runner's health check was a run
+ * recorded against a real repository and commit, and its verdict says nothing about either, so every
+ * read that answers "what has this repository's CI done" — its run listing, its newest run and newest
+ * {@code main} run, the finished listing, and which repositories have runs at all — carries {@code
+ * purpose = BUILD}. Nothing writes another purpose since CI runs in leases (epic qits-1481); the
+ * predicate keeps the historical rows out.
  */
 @ApplicationScoped
 public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
@@ -90,55 +86,65 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   }
 
   /**
-   * How many {@code RUNNING} runs one runner holds — the read behind a runner's {@code heldRuns}, and
-   * behind the refusal to delete a runner that is still executing something. Only {@code RUNNING}:
-   * a finished run on a runner is history, and history never holds a runner up.
+   * <b>The claim, as one conditional UPDATE</b> (epic qits-1481): a run whose lease was granted
+   * becomes {@code RUNNING}, stamped and naming the target it runs on, only while the row is still
+   * {@code QUEUED} and still names that lease. One row changed is this caller's run; zero is nobody's
+   * — a cancellation, a settlement or a second observer of the same grant got there first. Postgres
+   * re-evaluates the predicate against a concurrently committed version of the row, so two
+   * transactions racing for one row cannot both see one row changed.
    */
-  public long countRunningOnRunner(UUID runnerId) {
-    return count("runnerId = ?1 and status = ?2", runnerId, CiRunStatus.RUNNING);
-  }
-
-  /** {@link #countRunningOnRunner} for every runner at once, keyed by runner; absent means none. */
-  public Map<UUID, Long> countRunningByRunner() {
-    Map<UUID, Long> held = new HashMap<>();
-    List<Object[]> rows =
-        getEntityManager()
-            .createQuery(
-                "select r.runnerId, count(r) from CiRun r where r.runnerId is not null"
-                    + " and r.status = ?1 group by r.runnerId",
-                Object[].class)
-            .setParameter(1, CiRunStatus.RUNNING)
-            .getResultList();
-    for (Object[] row : rows) {
-      held.put((UUID) row[0], ((Number) row[1]).longValue());
-    }
-    return held;
+  public int claimLeased(String runId, UUID leaseId, UUID targetId, Instant startedAt) {
+    return update(
+        "status = ?1, startedAt = ?2, targetId = ?3 where id = ?4 and status = ?5 and leaseId = ?6",
+        CiRunStatus.RUNNING,
+        startedAt,
+        targetId,
+        runId,
+        CiRunStatus.QUEUED,
+        leaseId);
   }
 
   /**
-   * <b>The claim, as one conditional UPDATE</b>: {@code QUEUED} becomes {@code RUNNING}, stamped and
-   * naming the runner that reserved it, only while the row still is {@code QUEUED}. One row changed
-   * is this caller's run; zero is somebody else's — another runner's reservation, or a cancellation
-   * that got there first. Postgres re-evaluates the predicate against a concurrently committed
-   * version of the row, so two transactions racing for one row cannot both see one row changed,
-   * which a read followed by a dirty write under READ COMMITTED could. The runner is written in the
-   * same statement, so a run the boot sweep handed back to {@code QUEUED} comes back up naming the
-   * runner that reserved it now, never the one it was interrupted on.
+   * Records a queued run's lease and its launch, as one conditional UPDATE — only while the row is
+   * still {@code QUEUED}, so a cancellation committing in between is never overwritten by a write
+   * that read the row before it.
    */
-  public int claimQueuedForRunner(String runId, Instant startedAt, UUID runnerId) {
+  public int recordLease(
+      String runId, UUID leaseId, String daemonId, String tokenSubject, String daemonVersion) {
     return update(
-        "status = ?1, startedAt = ?2, runnerId = ?3 where id = ?4 and status = ?5",
-        CiRunStatus.RUNNING,
-        startedAt,
-        runnerId,
+        "leaseId = ?1, targetId = null, daemonVersion = ?2, inflightStepIndex = null,"
+            + " inflightDaemonId = ?3, inflightTokenSubject = ?4, inflightStartedAt = null"
+            + " where id = ?5 and status = ?6",
+        leaseId,
+        daemonVersion,
+        daemonId,
+        tokenSubject,
         runId,
         CiRunStatus.QUEUED);
   }
 
+  /** Forgets a queued run's lease, conditionally like {@link #recordLease}. */
+  public int forgetLease(String runId, UUID leaseId) {
+    return update(
+        "leaseId = null, targetId = null, daemonVersion = null, inflightStepIndex = null,"
+            + " inflightDaemonId = null, inflightTokenSubject = null, inflightStartedAt = null"
+            + " where id = ?1 and status = ?2 and leaseId = ?3",
+        runId,
+        CiRunStatus.QUEUED,
+        leaseId);
+  }
+
+  /** Every run that holds a lease and is {@code QUEUED} or {@code RUNNING} — the lease reconcile's walk. */
+  public List<CiRun> listLeased() {
+    return list(
+        "leaseId is not null and status in (?1, ?2) order by createdAt, id",
+        CiRunStatus.QUEUED,
+        CiRunStatus.RUNNING);
+  }
+
   /**
-   * How many runs are {@code QUEUED} right now — the number a runner's {@code Backlog} frame
-   * carries. A count rather than {@link #listQueuedOldestFirst}'s size because it is asked on every
-   * transition that may move it, and nobody on that path wants the rows.
+   * How many runs are {@code QUEUED} right now. A count rather than {@link #listQueuedOldestFirst}'s
+   * size, for a caller that does not want the rows.
    */
   public long countQueued() {
     return count("status", CiRunStatus.QUEUED);
@@ -174,61 +180,8 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   }
 
   /**
-   * The runner's health check that is {@code QUEUED} or {@code RUNNING}, or empty — the one a door
-   * refuses a second of (409), the one the schedule skips a runner for, and, while {@code QUEUED},
-   * the one that runner's {@code Reserve} takes first.
-   */
-  public Optional<CiRun> findPendingHealthCheck(UUID runnerId) {
-    return find(
-            "targetRunnerId = ?1 and purpose = ?2 and status in (?3, ?4) order by createdAt, id",
-            runnerId,
-            CiRunPurpose.HEALTHCHECK,
-            CiRunStatus.QUEUED,
-            CiRunStatus.RUNNING)
-        .firstResultOptional();
-  }
-
-  /** The runner's oldest {@code QUEUED} health check, or empty — what its {@code Reserve} takes. */
-  public Optional<CiRun> findQueuedHealthCheck(UUID runnerId) {
-    return find(
-            "targetRunnerId = ?1 and purpose = ?2 and status = ?3 order by createdAt, id",
-            runnerId,
-            CiRunPurpose.HEALTHCHECK,
-            CiRunStatus.QUEUED)
-        .firstResultOptional();
-  }
-
-  /**
-   * When the newest health check of the runner accepted after {@code since} was accepted — whatever
-   * became of it — or empty when there is none. What the health-check schedule counts from: the
-   * next check of a quarantined runner is due at the first of its slots after this ({@code
-   * CiRunnerHealth}).
-   */
-  public Optional<Instant> newestHealthCheckSince(UUID runnerId, Instant since) {
-    return Optional.ofNullable(
-        getEntityManager()
-            .createQuery(
-                "select max(r.createdAt) from CiRun r where r.targetRunnerId = ?1"
-                    + " and r.purpose = ?2 and r.createdAt > ?3",
-                Instant.class)
-            .setParameter(1, runnerId)
-            .setParameter(2, CiRunPurpose.HEALTHCHECK)
-            .setParameter(3, since)
-            .getSingleResult());
-  }
-
-  /** Every health check still {@code QUEUED} that was accepted before {@code cutoff}. */
-  public List<CiRun> listHealthChecksQueuedBefore(Instant cutoff) {
-    return list(
-        "purpose = ?1 and status = ?2 and createdAt < ?3 order by createdAt, id",
-        CiRunPurpose.HEALTHCHECK,
-        CiRunStatus.QUEUED,
-        cutoff);
-  }
-
-  /**
-   * Every {@code QUEUED} run, oldest-first — the <b>candidate feed</b> a runner's reservation scans and the
-   * startup sweep counts.
+   * Every {@code QUEUED} run, oldest-first — what the startup sweep asks leases for again, and what the
+   * queue's explanation orders.
    *
    * <p>It was "what the startup sweep re-enqueues, in the order the runs were accepted so a restart
    * does not reorder a backlog", and both halves of that moved on. A reservation reads this list on

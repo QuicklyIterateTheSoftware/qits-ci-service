@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.entity.CiRun;
 import java.time.Instant;
@@ -56,6 +57,32 @@ public class CiRunOrderingTest {
 
   private static List<String> order(CiRun... queued) {
     return CiRunOrdering.suggestedOrder(List.of(queued)).stream().map(run -> run.id).toList();
+  }
+
+  // --- the lease priority (epic qits-1481) --------------------------------------------------------
+
+  @Test
+  public void theLeasePriorityIsTheTierFirstAndThePriorityWordWithinIt() {
+    // An ordinary run with no word asks what a workspace or desk lease asks: 0.
+    assertEquals(0, CiRunOrdering.leasePriority(run("plain", 0)));
+    assertEquals(0, CiRunOrdering.leasePriority(withPriority(run("medium", 0), "MEDIUM")));
+    assertEquals(0, CiRunOrdering.leasePriority(withPriority(run("odd", 0), "urgent!")));
+    assertEquals(3, CiRunOrdering.leasePriority(withPriority(run("blocking", 0), "BLOCKING")));
+    assertEquals(2, CiRunOrdering.leasePriority(withPriority(run("higher", 0), "HIGHER")));
+    assertEquals(1, CiRunOrdering.leasePriority(withPriority(run("high", 0), "HIGH")));
+    assertEquals(-1, CiRunOrdering.leasePriority(withPriority(run("low", 0), "LOW")));
+    assertEquals(-2, CiRunOrdering.leasePriority(withPriority(run("lowest", 0), "LOWEST")));
+
+    // A release being built is the higher tier, whatever either run's word says.
+    CiRun release = run("release", 0);
+    release.triggerEventName = ReleaseJoin.RELEASE_EVENT_NAME;
+    assertEquals(CiRunOrdering.RELEASE_TIER_PRIORITY, CiRunOrdering.leasePriority(release));
+    CiRun lowestRelease = withPriority(run("lowest-release", 0), "LOWEST");
+    lowestRelease.triggerEventName = ReleaseJoin.RELEASE_EVENT_NAME;
+    assertTrue(
+        CiRunOrdering.leasePriority(lowestRelease)
+            > CiRunOrdering.leasePriority(withPriority(run("blocking", 0), "BLOCKING")),
+        "the tier always decides first");
   }
 
   // --- the base case: no signals at all -----------------------------------------------------------

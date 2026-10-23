@@ -116,6 +116,35 @@ public final class CiRunOrdering {
   private static final int DEFAULT_RANK = 3;
 
   /**
+   * How far above an ordinary run a release run's lease asks to be granted: further than any
+   * priority word can move a run within its tier, so the tier always decides first.
+   */
+  static final int RELEASE_TIER_PRIORITY = 100;
+
+  /**
+   * <b>The run's lease priority</b> (epic qits-1481): the integer qits-system grants leases by,
+   * higher first and then oldest first, across every owner's leases. It is this ordering's first and
+   * third criteria, the only two that are a property of one run:
+   *
+   * <ul>
+   *   <li><b>the tier</b> — a release being built ({@code SCMRelease}) asks {@value
+   *       #RELEASE_TIER_PRIORITY} above everything else;
+   *   <li><b>the priority word</b> within the tier — {@code MEDIUM}, absent and unknown are {@code 0},
+   *       so an ordinary run asks exactly what a workspace or desk lease asks; {@code BLOCKING} is
+   *       {@code +3}, {@code HIGHER} {@code +2}, {@code HIGH} {@code +1}, {@code LOW} {@code -1} and
+   *       {@code LOWEST} {@code -2}.
+   * </ul>
+   *
+   * <p>The dependency topology is not in it and cannot be: it is a relation between queued runs,
+   * and a lease's priority is fixed when it is asked for. {@link #explain} still derives the whole
+   * order for {@code /ci/api/runs/queue}, where it explains what the queue is waiting for.
+   */
+  public static int leasePriority(CiRun run) {
+    int withinTier = DEFAULT_RANK - priorityRank(run);
+    return kindRank(run) == 0 ? RELEASE_TIER_PRIORITY + withinTier : withinTier;
+  }
+
+  /**
    * The suggested claim order over a set of queued runs.
    *
    * <p>Total, deterministic and permutation-stable: the same rows in any input order produce the

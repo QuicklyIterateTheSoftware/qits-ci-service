@@ -324,12 +324,12 @@ public class CiPlatformTriggerTest extends CiTestSupport {
     assertNull(run.releaseRequestId, "an automation run is no part of a release's CI");
     assertNull(run.phase);
     String image = fakeRunner.executed().get(0).image();
-    assertTrue(image.contains("qits/build-images/node-browser-base"), image);
+    assertTrue(image.contains("qits/build-images/ci-slot"), image);
     assertEquals(TARGET_HEAD, fakeRunner.executed().get(0).sha(), "the step clones main's head");
   }
 
   @Test
-  public void anEntityDiagramAutomationStartsExactlyOneRunOnMavenBase() throws Exception {
+  public void anEntityDiagramAutomationStartsExactlyOneRunInTheSlotImage() throws Exception {
     // qits-760: the kind file is packaged now, so the kind qits-996 left without one starts a run.
     platformPipelines.override(null);
     CiEventTriggerService.Arrival arrival = automation("entity-diagram");
@@ -348,12 +348,12 @@ public class CiPlatformTriggerTest extends CiTestSupport {
     assertNull(run.releaseRequestId, "an automation run is no part of a release's CI");
     assertNull(run.phase);
     String image = fakeRunner.executed().get(0).image();
-    assertTrue(image.contains("qits/build-images/maven-base"), image);
+    assertTrue(image.contains("qits/build-images/ci-slot"), image);
     assertEquals(TARGET_HEAD, fakeRunner.executed().get(0).sha(), "the step clones main's head");
   }
 
   @Test
-  public void anEstatePinsAutomationStartsExactlyOneRunOnNodeBrowserBase() throws Exception {
+  public void anEstatePinsAutomationStartsExactlyOneRunInTheSlotImage() throws Exception {
     // qits-1258: estate-pins is a kind file like any other now, composed off the packaged set
     // rather than committing onto a source branch through ../maintenance-bump.yml.
     platformPipelines.override(null);
@@ -373,7 +373,7 @@ public class CiPlatformTriggerTest extends CiTestSupport {
     assertNull(run.releaseRequestId, "an automation run is no part of a release's CI");
     assertNull(run.phase);
     String image = fakeRunner.executed().get(0).image();
-    assertTrue(image.contains("qits/build-images/node-browser-base"), image);
+    assertTrue(image.contains("qits/build-images/ci-slot"), image);
     assertEquals(TARGET_HEAD, fakeRunner.executed().get(0).sha(), "the step clones main's head");
   }
 

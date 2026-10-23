@@ -7,7 +7,7 @@ import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
 import eu.wohlben.qits.ci.persistence.CiRunRepository;
-import eu.wohlben.qits.ci.runnerhost.StagedImagePins;
+import eu.wohlben.qits.ci.registry.StagedImagePins;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Test;
  *
  * <p>{@link StagedImagePins#install(String) install(null)} stages the registry's silence: every
  * platform reference (one with no {@code @digest} already on it) answers {@code UNRESOLVED}, which
- * is exactly {@link eu.wohlben.qits.ci.runnerhost.RunnerQuarantineSocketTest}'s arrangement for the
+ * applied here to the one image a retry pins, the ci-slot image every step runs in.
  * runner health check's own pin, applied here to a retry's.
  */
 @QuarkusTest
@@ -96,6 +96,6 @@ class RunRetryStepImagePinTest {
         .post("/ci/api/runs/" + finished + "/retry")
         .then()
         .statusCode(503)
-        .body("message", containsString("qits/build-images/ci-base"));
+        .body("message", containsString("qits/build-images/ci-slot"));
   }
 }

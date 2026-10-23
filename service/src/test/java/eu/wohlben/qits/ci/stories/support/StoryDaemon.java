@@ -30,8 +30,8 @@ import java.util.Map;
  * <p>{@link FakeCiDaemon} is a real Vert.x WebSocket dialling the real endpoint and framing the
  * real protocol through the vendored {@code CiDaemonCodec} — the host cannot tell it from a
  * container. What this class adds is the <b>credential's provenance</b> and the <b>edges</b>. The
- * launch id and the run's token come out of the workload spec qits-ci sent a runner in a {@code
- * Launch} ({@link StoryRunner#awaitLaunch}), which is exactly where a container gets them and the
+ * launch id and the run's token come out of the lease spec qits-ci asked qits-system for
+ * ({@link StorySystem#awaitLease}), which is exactly where a slot gets them and the
  * only place they exist: nothing in the story reads the host's launch table, so an admitted dial
  * here is evidence that the credential really travelled the way the service says it does.
  *
@@ -101,7 +101,7 @@ public final class StoryDaemon implements AutoCloseable {
 
   /**
    * Dial the control socket as one step container's daemon arrives behind the edge, and record the
-   * connection. {@code environment} is the workload spec's, as the runner was sent it.
+   * connection. {@code environment} is the lease spec's, as qits-system was sent it.
    *
    * <p>The upgrade completing is not admission: the connection is bound to no launch until its
    * {@link #hello(String)} names one, and a refusal is a 1008 <b>close</b> after a successful
@@ -166,8 +166,12 @@ public final class StoryDaemon implements AutoCloseable {
     RunStep step =
         assertInstanceOf(RunStep.class, next(), "the step must arrive as the reply to Initialized");
     fromHost("runStep");
+    lastStepIndex = step.stepIndex();
     return step;
   }
+
+  /** The index of the step {@link #awaitRunStep} last delivered, which its StepFinished names. */
+  private volatile int lastStepIndex;
 
   /** One line of the step's output, on the stream it was written to. */
   public void chunk(String correlationId, long seq, Stream stream, String text) throws Exception {
@@ -177,7 +181,7 @@ public final class StoryDaemon implements AutoCloseable {
 
   /** The terminal frame: the step ended, with this exit code, and whether its own deadline fired. */
   public void finished(String correlationId, int exitCode, boolean timedOut) throws Exception {
-    socket.send(new StepFinished(correlationId, exitCode, timedOut));
+    socket.send(new StepFinished(correlationId, lastStepIndex, exitCode, timedOut));
     fromDaemon("stepFinished exit " + exitCode);
   }
 

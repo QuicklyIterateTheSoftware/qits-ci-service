@@ -22,10 +22,10 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
- * The qits-idp commissioning client. It mints three things: one {@code ci-run} TOKEN per CI run,
- * commissioned on demand and deleted when the run closes; a runner's one-use registration token;
- * and a registered runner's own client — the last two asked for by {@code CiRunnerController} and
- * given back when the runner is decommissioned.
+ * The qits-idp commissioning client. It mints one thing: one {@code ci-run} TOKEN per CI run,
+ * commissioned when the run's lease is asked for and deleted when the run closes. It also lists and
+ * gives back this owner's clients and tokens — what the reconciliation reaps, and what {@code
+ * targethost/LegacyRunnerClients} gives back of the retired CI runner's two kinds (epic qits-1481).
  *
  * <p><b>What replaced what.</b> A publishing step used to push with {@code
  * qits.ci.registry-auth.client-id}/{@code …client-secret} — one static credential, shared by every
@@ -33,8 +33,8 @@ import org.jboss.logging.Logger;
  * qits-idp grew a commissioning API, so the credential a step holds is this run's own: it exists
  * for the length of one pipeline, it is readable only by containers of that pipeline, and a leak
  * costs what one run could have done rather than what every run could. A run's credential was a
- * commissioned CLIENT while steps ran on qits-net; it is a token only since qits-515, and {@link
- * #commission} now mints a runner's client and nothing else.
+ * commissioned CLIENT while steps ran on qits-net; it is a token only since qits-515, and the
+ * runner's client this class minted until the CI runner was retired is gone with it.
  *
  * <p><b>Hand-rolled {@code java.net.http}, like every other client in this deployable.</b> The rule
  * is {@code AGENTS.md}'s native-image one — prefer what the image already has over a REST client
@@ -59,7 +59,7 @@ import org.jboss.logging.Logger;
  * <p><b>{@link #enabled()} is the fallback arm.</b> With {@code
  * quarkus.oidc-client.qits.client-enabled} off — {@code %dev} and {@code %test}, so every test —
  * there is no credential to present and nothing to commission with, so this class does nothing at
- * all, and no step can be launched: {@code RunnerStepRunner} refuses one that has no token.
+ * all, and no lease is asked for: {@code targethost/CiLeases} asks for none without a token.
  */
 @ApplicationScoped
 public class IdpCommissioner {
@@ -68,19 +68,6 @@ public class IdpCommissioner {
 
   /** What a run's token is <b>about</b>: one CI run, named by its run id. */
   public static final String CONTEXT_KIND = "ci-run";
-
-  /**
-   * A registered runner's own client, named by the runner's id. qits-idp grants it {@code
-   * qits:ci-runner} and nothing else ({@code CommissionRoles.forKind}).
-   */
-  public static final String RUNNER_KIND = "ci-runner";
-
-  /**
-   * A runner's one-use registration token, named by the runner's id. qits-idp grants it {@code
-   * qits:ci-runner-registration}, which opens {@code POST /ci/api/runners/{id}/register} and no other
-   * route on the platform.
-   */
-  public static final String RUNNER_REGISTRATION_KIND = "ci-runner-registration";
 
   /** Bound on opening the socket, the same 2s every hand-rolled client in this repo carries. */
   static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(2);
@@ -94,9 +81,6 @@ public class IdpCommissioner {
    * the run's driver on refusals nobody has fixed yet.
    */
   static final Duration RETRY_PAUSE = Duration.ofSeconds(5);
-
-  /** One commissioned pair. The secret is returned once, by qits-idp, and is never re-readable. */
-  public record Commission(String clientId, String secret) {}
 
   /** One live commission of this owner's, as the listing reports it — no secret, ever. */
   public record LiveClient(String clientId, String contextKind, String contextId) {}
@@ -180,8 +164,9 @@ public class IdpCommissioner {
   }
 
   /**
-   * Commission one client for a context — a registered runner's ({@link #RUNNER_KIND}) — holding
-   * through the answers that are about the moment.
+   * Commission one opaque token for a context — {@code POST <idp>/api/tokens}, the credential
+   * qits-idp issues a run (its README, "Commissioned tokens"), holding through the answers that are
+   * about the moment. A run's {@code ci-run} token is minted when its lease is asked for.
    *
    * <p><b>The classification holds through what is about the moment.</b> Nothing answered, a 5xx and a 401 are held through — the last one because an idp that
    * has just been replaced answers exactly that to a credential that was valid a minute ago, which
@@ -194,20 +179,6 @@ public class IdpCommissioner {
    * method then asks again at once with an empty list and logs an ERROR naming the context and
    * qits-idp's reason. <b>It fails closed</b>: once a scope is stated it never commissions without
    * one, because that would widen the credential. A 400 to the empty list stands like any other.
-   *
-   * @throws CommissionFailedException when every attempt inside the patience window failed
-   */
-  public Commission commission(String contextKind, String contextId, List<String> gitRefs) {
-    return holdThrough(clientsUrl(), "a client", contextKind, contextId, gitRefs,
-        this::readCommission);
-  }
-
-  /**
-   * Commission one opaque token for a context — {@code POST <idp>/api/tokens}, the third credential
-   * qits-idp issues (its README, "Commissioned tokens"). Same caller, same body, same retry window
-   * and the same classification as {@link #commission}. A run's {@code ci-run} token is minted on
-   * the run's driver and a runner's registration token on an operator's request, but a qits-idp in
-   * its cutover window is the same moment either way.
    *
    * @throws CommissionFailedException when every attempt inside the patience window failed
    */
@@ -490,17 +461,6 @@ public class IdpCommissioner {
     } catch (Exception e) {
       LOG.warnf("Could not list this service's commissioned tokens (GET %s): %s", url, e.toString());
       return Optional.empty();
-    }
-  }
-
-  private Commission readCommission(String body) {
-    try {
-      JsonNode root = objectMapper.readTree(body);
-      String id = text(root, "clientId");
-      String minted = text(root, "secret");
-      return id.isBlank() || minted.isBlank() ? null : new Commission(id, minted);
-    } catch (Exception notJson) {
-      return null;
     }
   }
 

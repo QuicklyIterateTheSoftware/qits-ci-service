@@ -114,13 +114,15 @@ public class CiReservedRunResilienceTest extends CiTestSupport {
   public void aRowThatCannotBeReconstructedIsSettledAndTheRunsBehindItStillRun() throws Exception {
     // The poison row is the OLDEST and both rows state nothing else, so CiRunOrdering's last
     // tie-break puts it first — which is what made it a wedge once: a scan that stopped there left
-    // every row behind it unreachable, on every pass, and the boot sweep handed the same row back.
-    // The reservation walks past it, takes the row behind, and settles it after its own claim.
+    // every row behind it unreachable. Since a run is a lease (epic qits-1481) the poison row is met
+    // when its lease is asked for — the boot sweep and the lease reconcile ask for every queued row
+    // — and that request settles it instead; the row behind runs as ever.
     String poisonRepo = "poison-" + UUID.randomUUID();
     String poison = insertUnreadableQueuedRow(poisonRepo, Instant.now().minusSeconds(60));
     String behind = seedRepo();
 
     accept(behind);
+    service.sweepInterrupted();
     suiteRunner.awaitIdle();
 
     forgetLoadedEntities();

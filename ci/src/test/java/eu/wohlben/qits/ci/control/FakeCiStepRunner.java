@@ -30,7 +30,24 @@ import java.util.function.Function;
  * extra, {@link #answer}, stages a runner that cannot start a container.
  */
 @ApplicationScoped
-public class FakeCiStepRunner implements CiRunnerStepRunner {
+public class FakeCiStepRunner implements CiStepRunner {
+
+  /** Where a queued run is leased and granted: the suite's stand-in for qits-system. */
+  @jakarta.inject.Inject jakarta.enterprise.inject.Instance<SuiteRunner> target;
+
+  @Override
+  public void queued(String runId) {
+    queuedRuns.add(runId);
+    target.get().queued(runId);
+  }
+
+  private final List<String> queuedRuns = java.util.Collections.synchronizedList(new ArrayList<>());
+
+  /** Every run handed to {@link #queued}, in order. */
+  public List<String> queuedRuns() {
+    return queuedRuns;
+  }
+
 
   /** What a scripted step emits before it answers. */
   public record Script(List<String> chunks, StepResult result) {
@@ -225,6 +242,7 @@ public class FakeCiStepRunner implements CiRunnerStepRunner {
 
   public void reset() {
     executed.clear();
+    queuedRuns.clear();
     emitted.clear();
     scripted.clear();
     synchronized (this) {

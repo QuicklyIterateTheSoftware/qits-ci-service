@@ -10,17 +10,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import eu.wohlben.qits.ci.events.BuildFailed;
 import eu.wohlben.qits.ci.events.BuildStatusChanged;
 import eu.wohlben.qits.ci.events.BuildSuccessful;
-import eu.wohlben.qits.ci.events.RunnerChanged;
-import eu.wohlben.qits.ci.events.RunnerConnected;
-import eu.wohlben.qits.ci.events.RunnerCreated;
-import eu.wohlben.qits.ci.events.RunnerDeleted;
-import eu.wohlben.qits.ci.events.RunnerDisconnected;
-import eu.wohlben.qits.ci.events.RunnerHealthChecked;
-import eu.wohlben.qits.ci.events.RunnerQuarantined;
-import eu.wohlben.qits.ci.events.RunnerRegistered;
-import eu.wohlben.qits.ci.events.RunnerReinstated;
-import eu.wohlben.qits.ci.events.RunnerUpdateStarted;
-import eu.wohlben.qits.ci.events.RunnerUpdated;
 import eu.wohlben.qits.ci.events.SoftwareRelease;
 import eu.wohlben.qits.eventstream.QitsDurableEventListener;
 import eu.wohlben.qits.eventstream.QitsRawEventListener;
@@ -92,24 +81,14 @@ public class EventWireReflectionTest {
             BuildFailed.class,
             BuildStatusChanged.class,
             SoftwareRelease.class,
-            RunnerCreated.class,
-            RunnerRegistered.class,
-            RunnerConnected.class,
-            RunnerDisconnected.class,
-            RunnerUpdateStarted.class,
-            RunnerUpdated.class,
-            RunnerChanged.class,
-            RunnerDeleted.class,
-            RunnerQuarantined.class,
-            RunnerReinstated.class,
-            RunnerHealthChecked.class,
             SCMPublishCommit.class,
             RepositoryRenamed.class,
+            eu.wohlben.qits.ci.targethost.TargetLeaseChanged.class,
             EventEnvelope.class,
             EventFrame.class),
         Set.of(registration.targets()),
-        "the four build events and the eleven runner events out, the push and the rename in,"
-            + " the PUT body, the frame — a twentieth wire type is added here");
+        "the four build events out, the push, the rename and qits-system's lease event in, the PUT"
+            + " body, the frame — a tenth wire type is added here");
   }
 
   /**

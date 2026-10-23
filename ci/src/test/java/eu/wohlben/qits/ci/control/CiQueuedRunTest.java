@@ -124,7 +124,11 @@ public class CiQueuedRunTest extends CiTestSupport {
     CiRun queued = soleRun(repoId);
     assertEquals(CiRunStatus.QUEUED, queued.status);
     assertNull(queued.finishedAt, "a queued run has not finished");
-    assertNull(queued.daemonVersion, "nothing is pinned until a container is about to launch");
+    // The daemon build is pinned when the run's lease is asked for, since that lease's container is
+    // what downloads it (epic qits-1481) — so a queued run that holds a lease names its build.
+    assertEquals("fake-daemon", queued.daemonVersion, "pinned with the lease, before any step");
+    assertNotNull(queued.leaseId, "and it waits holding its lease");
+    assertNull(queued.targetId, "on no target yet");
     assertEquals(CiTriggerType.EVENT, queued.triggerType);
     assertEquals(0, service.stepsFor(queued.id).size());
 

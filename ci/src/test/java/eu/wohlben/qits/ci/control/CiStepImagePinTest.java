@@ -19,11 +19,10 @@ import org.junit.jupiter.api.Test;
 /**
  * <b>A run is fixed to one toolchain, and the fixing happens once.</b>
  *
- * <p>Every recipe step on the estate names {@code qits/build-images/*:latest}. Carried through to
- * the launch as written, that tag is resolved independently by each step's own container start — so
- * a publish landing mid-build means a run that verified against one toolchain and published from
- * another, with nothing on the row to say which. The run now resolves each distinct reference to a
- * digest when it is accepted and spends that digest at every step.
+ * <p>Every step of a run runs in the run's one {@code qits/build-images/ci-slot} container (epic
+ * qits-1481), whatever image the step declares. The run resolves that one image's {@code :latest} to
+ * a digest when it is accepted, and its lease is asked for at that digest — so a publish of the image
+ * landing mid-build cannot make a run verify against one toolchain and publish from another.
  *
  * <p>The cases here are the four answers the seam has, and each of them is a different sentence
  * about the run: pinned, already pinned by the author, not this platform's to pin, and not
@@ -37,8 +36,8 @@ public class CiStepImagePinTest extends CiTestSupport {
   private static final String PUSHED = "b".repeat(40);
   private static final String TRIGGER_PATH = ".config/qits/ci-event-build.yml";
 
-  /** The platform's own image as a recipe spells it, and as it is addressed once resolved. */
-  private static final String BARE = "qits/build-images/ci-base:latest";
+  /** The one image a run runs in, as the engine spells it before it is resolved. */
+  private static final String BARE = CiSlot.IMAGE_TAG;
 
   /**
    * The registry the engine prefixes a platform reference with — the RESOLVED value of
@@ -89,7 +88,7 @@ public class CiStepImagePinTest extends CiTestSupport {
 
     List<CiStepRunner.StepSpec> launched = fakeRunner.executed();
     assertEquals(2, launched.size());
-    String pinned = REGISTRY + "/qits/build-images/ci-base@" + DIGEST;
+    String pinned = REGISTRY + "/qits/build-images/ci-slot@" + DIGEST;
     assertEquals(pinned, launched.get(0).image());
     assertEquals(
         pinned,
@@ -117,7 +116,7 @@ public class CiStepImagePinTest extends CiTestSupport {
 
     CiRun run = runService.runsFor(repoId).get(0);
     assertEquals(
-        Map.of(registryReference, REGISTRY + "/qits/build-images/ci-base@" + DIGEST),
+        Map.of(registryReference, REGISTRY + "/qits/build-images/ci-slot@" + DIGEST),
         StepImages.decode(run.stepImages),
         "archetype_rev says which recipe ran; this says which image it ran inside, and neither is"
             + " reconstructable afterwards by asking a registry what a moving tag used to be");
@@ -131,54 +130,31 @@ public class CiStepImagePinTest extends CiTestSupport {
   }
 
   /**
-   * <b>An image this platform does not publish is launched as named, and the row says so by
-   * carrying no pin.</b>
-   *
-   * <p>{@code alpine:3} and {@code docker:28-dind} come from a store qits-ci holds no credential
-   * for and no address to. Recording nothing is the honest answer — "this reference floated" is
-   * then readable rather than assumed — and refusing the run over it would stop the one repository
-   * on the estate that legitimately cannot run on a platform image.
+   * <b>A step's own image is ignored</b>, a foreign one and an author's own digest alike: what runs
+   * is the run's ci-slot image, and a deployment whose registry pins nothing launches it at its tag.
    */
   @Test
-  public void aForeignImageLaunchesAsNamedAndPinsNothing() throws Exception {
+  public void aStepsOwnImageIsIgnoredWhateverItNames() throws Exception {
     deliver(
         """
         event: SCMPublishCommit
         steps:
           - image: alpine:3
             script: "true"
-        """);
-
-    assertEquals("alpine:3", fakeRunner.executed().get(0).image());
-    assertNull(
-        runService.runsFor(repoId).get(0).stepImages,
-        "no pin is a statement about a foreign registry, not a gap");
-  }
-
-  /**
-   * <b>A reference that is already a digest is spent verbatim and never re-resolved.</b>
-   *
-   * <p>Re-resolving one would turn somebody's deliberate pin into whatever {@code :latest} is now,
-   * which is this feature's own defect wearing the fix's clothes.
-   */
-  @Test
-  public void anAuthorsOwnDigestIsSpentVerbatim() throws Exception {
-    String pinnedByHand = REGISTRY + "/qits/build-images/ci-base@" + OTHER_DIGEST;
-    deliver(
-        """
-        event: SCMPublishCommit
-        steps:
           - image: %s
             script: "true"
         """
-            .formatted(pinnedByHand));
+            .formatted(REGISTRY + "/qits/build-images/ci-base@" + OTHER_DIGEST));
 
-    assertEquals(pinnedByHand, fakeRunner.executed().get(0).image());
+    assertEquals(registryReference, fakeRunner.executed().get(0).image());
+    assertEquals(registryReference, fakeRunner.executed().get(1).image());
     assertEquals(
-        Map.of(pinnedByHand, pinnedByHand),
-        StepImages.decode(runService.runsFor(repoId).get(0).stepImages),
-        "recorded as its own pin: the run really did run at those bytes, and a reader should not"
-            + " have to tell 'nobody pinned this' from 'the author did'");
+        List.of(registryReference),
+        fakeImagePins.asked().stream().distinct().toList(),
+        "the one image asked about is ci-slot");
+    assertNull(
+        runService.runsFor(repoId).get(0).stepImages,
+        "the registry answered nothing to pin, and nothing is recorded as pinned");
   }
 
   /**
@@ -257,7 +233,7 @@ public class CiStepImagePinTest extends CiTestSupport {
     assertEquals(List.of(), evaluation.repositoriesUnreadable(), "nothing is owed: " + evaluation);
     assertEquals(3, fakeImagePins.timesAsked(registryReference));
     assertEquals(
-        REGISTRY + "/qits/build-images/ci-base@" + DIGEST, fakeRunner.executed().get(0).image());
+        REGISTRY + "/qits/build-images/ci-slot@" + DIGEST, fakeRunner.executed().get(0).image());
   }
 
   /**

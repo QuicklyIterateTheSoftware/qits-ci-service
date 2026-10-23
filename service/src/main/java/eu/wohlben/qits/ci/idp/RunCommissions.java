@@ -24,7 +24,7 @@ import org.jboss.logging.Logger;
  * the credential belongs to the run rather than to the step, and one commission per step would be N
  * tokens to leak instead of one.
  *
- * <p><b>Given back at {@code runClosed}.</b> {@code RunnerStepRunner.runClosed} is called from the
+ * <p><b>Given back at {@code runClosed}.</b> {@code LeaseStepRunner.runClosed} is called from the
  * {@code finally} of the run body, which is what makes the release unconditional. The paths that
  * never enter a run body — a supersede at accept, a {@code QUEUED} cancel, a row the boot sweep
  * failed — commissioned nothing in this process and have nothing to give back; what covers a

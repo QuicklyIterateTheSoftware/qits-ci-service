@@ -165,8 +165,11 @@ public class CiRunServiceTest extends CiTestSupport {
     for (CiStep step : recorded) {
       assertEquals(CiStepStatus.SUCCESS, step.status);
       assertEquals(0, step.exitCode);
-      assertEquals("ok step " + step.stepIndex, step.output);
-      assertEquals("alpine:3", step.image);
+      assertEquals(
+          (step.stepIndex == 0 ? CiSlot.STEP_IMAGES_IGNORED + "\n" : "") + "ok step " + step.stepIndex,
+          step.output,
+          "the declared image is ignored, and the run says so once");
+      assertEquals(service.resolveStepImage(CiSlot.IMAGE_TAG), step.image);
       // Host-stamped at the two points the host knows about first-hand, and in that order.
       assertNotNull(step.startedAt, "a step that ran must carry a started_at");
       assertNotNull(step.finishedAt, "a step that ran must carry a finished_at");
@@ -196,7 +199,7 @@ public class CiRunServiceTest extends CiTestSupport {
     List<CiStep> recorded = service.stepsFor(run.id);
     assertEquals(CiStepStatus.FAILED, recorded.get(0).status);
     assertEquals(7, recorded.get(0).exitCode);
-    assertEquals("boom", recorded.get(0).output);
+    assertEquals(CiSlot.STEP_IMAGES_IGNORED + "\nboom", recorded.get(0).output);
     assertEquals(CiStepStatus.SKIPPED, recorded.get(1).status);
     assertNull(recorded.get(1).exitCode);
     // A skipped step never started, so it carries neither timestamp.
@@ -281,29 +284,27 @@ public class CiRunServiceTest extends CiTestSupport {
   }
 
   @Test
-  public void aDeclaredDockerFlagTravelsFromTheYamlToTheStepItWasDeclaredOn() {
-    // The seam-level half of the docker-socket feature: everything from the parsed key to the argv is
-    // covered elsewhere, and what this asserts is the wiring in between — that the flag arrives at the
-    // runner attached to the step that declared it and to no other. The mount itself is
-    // StepContainerSettingsTest's subject; that a step which declared nothing keeps its sandbox is asserted
-    // there as an absence, and here as a plain false.
+  public void aDeclaredBuildFlagTravelsFromTheYamlToTheStepItWasDeclaredOn() {
+    // The seam-level half of `build: true`: the flag arrives attached to the step that declared it
+    // and to no other. It changes nothing about the step's environment any more — every CI lease has
+    // the target's builder (epic qits-1481) — and a `docker: true` step never gets here at all: it
+    // is a CONFIG_ERROR (CiSlotPipelineTest).
     seedConfig(
         """
         steps:
           - image: alpine:3
             script: ./mvnw -B -ntp verify
           - image: alpine:3
-            docker: true
+            build: true
             script: |
-              docker build -t "registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/app:$QITS_CI_SHA" .
-              docker push "registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/app:$QITS_CI_SHA"
+              buildctl build --output type=image,name=registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/app:$QITS_CI_SHA,push=true
         """);
     run("main");
 
     assertEquals(CiRunStatus.SUCCESS, soleRun().status);
     assertEquals(2, fakeRunner.executed().size());
-    assertFalse(fakeRunner.executed().get(0).docker(), "a step declaring nothing asks for no socket");
-    assertTrue(fakeRunner.executed().get(1).docker(), "the publish step's declaration must arrive");
+    assertFalse(fakeRunner.executed().get(0).build(), "a step declaring nothing asks for nothing");
+    assertTrue(fakeRunner.executed().get(1).build(), "the build step's declaration must arrive");
     // And a publish step is an ordinary step in every other respect — same image handling, same
     // recorded row, same deployment-default deadline unless it said otherwise.
     assertEquals(1800, fakeRunner.executed().get(1).timeoutSeconds());
@@ -391,7 +392,7 @@ public class CiRunServiceTest extends CiTestSupport {
     assertEquals(CiRunStatus.FAILED, run.status);
     CiStep first = service.stepsFor(run.id).get(0);
     assertEquals(CiStepStatus.FAILED, first.status);
-    assertTrue(first.output.contains("could not prepare its workspace"), first.output);
+    assertTrue(first.output.contains("could not prepare its worktree"), first.output);
   }
 
   @Test
@@ -429,10 +430,10 @@ public class CiRunServiceTest extends CiTestSupport {
 
   private static String expectedNote(StepOutcome outcome) {
     return switch (outcome) {
-      case LAUNCH_FAILED -> "[the step container could not be started]";
-      case NEVER_STARTED -> "[the step container never started its ci daemon]";
-      case NEVER_INITIALIZED -> "[the step container never reported its checkout done]";
-      case CONNECTION_LOST -> "[the connection to the step container was lost]";
+      case LAUNCH_FAILED -> "[the run's lease could not start it]";
+      case NEVER_STARTED -> "[the run's lease container never started its ci daemon]";
+      case NEVER_INITIALIZED -> "[the run's ci-daemon never reported its worktree done]";
+      case CONNECTION_LOST -> "[the connection to the run's lease container was lost]";
       default -> throw new IllegalArgumentException(outcome.name());
     };
   }
