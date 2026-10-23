@@ -34,7 +34,9 @@
 #     presents the run's ci-run token.
 #   * QITS_CONTAINERS_URL and QITS_CI_CONCURRENT_BUILDS — the in-process executor's two keys, gone
 #     with it (qits-506): qits-ci asks no qits-containers for a step container and runs no claim
-#     loop of its own. Every run is a runner's, the platform host's `localhost` runner included.
+#     loop of its own.
+#   * QITS_CI_MEMORY_LIMIT and QITS_CI_CPUS — the per-step-container caps, gone with the runners
+#     (epic qits-1481): a run is one CI lease on a qits-system target, capped by QITS_CI_SLOT_*.
 #   * QITS_CI_REGISTRY_AUTH_CLIENT_ID / _SECRET — the old static push credential, replaced by one
 #     commissioned per run.
 #   * The internal step-address plane's keys, gone with it (qits-515): QITS_CI_CONTAINER_GIT_URL,
@@ -43,10 +45,10 @@
 #     QITS_CI_DAEMON_BINARY_URL_TEMPLATE, QITS_ARTIFACTS_NPM_HOSTED_URL, QITS_ARTIFACTS_DOCS_URL,
 #     QITS_MIRROR_MAVEN_CENTRAL_BUILD_URL, QITS_MIRROR_MAVEN_CENTRAL_STEP_URL,
 #     QITS_CI_RUNNER_INTERNAL_URL and QITS_CI_RUNNER_ARTIFACTS_INTERNAL_URL. Each spelled a qits-net
-#     address for a step or a runner; both are told public names composed from QITS_DOMAIN now.
+#     address for a step or a runner; a run's slot is told public names composed from QITS_DOMAIN.
 #   * QITS_DOMAIN and QITS_ENVIRONMENT — written into every container by the deployer, like
-#     QITS_RESOURCE_*. QITS_DOMAIN is what every address a runner and a step are told is composed
-#     from; without it qits-ci hands out none and launches no step.
+#     QITS_RESOURCE_*. QITS_DOMAIN is what every address a run's slot is told is composed from;
+#     without it qits-ci hands out none and asks no lease.
 #   * QITS_RESOURCE_* — injected by the deployer from its resource registry. Configuration cannot
 #     state or delete one.
 #
@@ -68,19 +70,23 @@ keys:
     type: string
     description: "The event bus this service publishes to and consumes from."
 
+  env.QITS_SYSTEM_URL:
+    type: string
+    description: "Where qits-system answers; every run is one CI lease asked of it. Scheme, host and port only; unset, http://<environment>-qits-system:8080."
+
   env.QITS_OBSERVABILITY_URL:
     type: string
     description: "Where this service's OTLP telemetry goes. Scheme, host and port only."
 
-  # --- step containers ---------------------------------------------------------------------------
+  # --- a run's ci-slot container (one CI lease per run) ------------------------------------------
 
-  env.QITS_CI_MEMORY_LIMIT:
+  env.QITS_CI_SLOT_MEMORY:
     type: string
-    description: "Memory cap for one step container, with its unit (for example 4g). A runner row's own step memory limit replaces it for that runner's steps."
+    description: "Memory cap for a run's ci-slot container, with its unit (for example 4g). Shipped 4g."
 
-  env.QITS_CI_CPUS:
+  env.QITS_CI_SLOT_CPUS:
     type: number
-    description: "CPU cap for one step container, as docker's --cpus reads it."
+    description: "CPU cap for a run's ci-slot container, as docker's --cpus reads it. Shipped 2."
 
   # The version itself is NOT configuration any more: it is the version of the pinned dependency
   # eu.wohlben.qits:qits-ci-daemon-protocol, whose release also published the binary. This entry is

@@ -3,6 +3,20 @@
 Read `README.md` first: it defines the boundary (what arrives over HTTP, what ci fetches for
 itself) and the config surface. This file is the working conventions on top of it.
 
+**Epic qits-1481 (qits-1544) replaced the runners with CI leases, and much of the prose below still
+describes the runner era.** Read it with this in front of you: a run is ONE lease on a qits-system
+target (`service/…/targethost/`: `CiLeases`, `SystemLeases`, `CiSlotSpecs`, `CiSlotSettings`,
+`CiSlotAddresses`, `LeaseStepRunner`, `TargetLeaseEvents`, `LegacyRunnerClients`); every step runs
+in the one `qits/build-images/ci-slot` container as a `RunStep` over one daemon connection, then
+`Close`. `runnerhost/`, `/ci/api/runners`, `/ci/runners/socket`, `ci_runner`, the quarantine, the
+health check, the `Runner*` events and `CiRunnerReadinessCheck` are deleted; `StepContainerSettings`
+is `CiSlotSettings`, `StepAddressPlane`/`RunnerAddresses` are `CiSlotAddresses`,
+`StepWorkloadSpecs` is `CiSlotSpecs`, `RunnerStepRunner` is `LeaseStepRunner`, and
+`SocketBearerLifetime` moved to `daemonhost/`. `image:` is ignored, `docker: true` is
+`CONFIG_ERROR`, `build: true` stays. Migration `V39__run_leases.sql`. `docs/step-execution-flow.md`
+and `README.md` ("Runs are CI leases on a qits-system target") are current; where this file
+disagrees with them, they win.
+
 ## The two rules that shape everything
 
 **A clone builds against the platform Maven repository** — no monorepo and no prior `mvn install`.
@@ -65,9 +79,9 @@ package:
   `@Mapper(componentModel = "jakarta")`.
 - `service/` — `api` (the JAX-RS routes and the `ExceptionMapper`), `bus`, `githost`,
   `daemonhost` (the ci-daemon control socket, the launch registry and the live relay) and
-  `runnerhost` (the runner socket, `RunnerStepRunner` — the sole implementation of the step seam —
-  and `StepContainerSettings`/`StepWorkloadSpecs`/`StepAddressPlane`, what a step's `Launch` is
-  composed from). It
+  `targethost` (a run's CI lease at qits-system, `LeaseStepRunner` — the sole implementation of the
+  step seam — and `CiSlotSettings`/`CiSlotSpecs`/`CiSlotAddresses`, what a lease's spec is composed
+  from). It
   read "`api` only" until the daemon control plane landed; the transport lives beside the API because
   it needs a web stack, which is the same line that put `api` here rather than in `ci/`, and it is
   where qits-workspaces keeps its own `daemonhost` for the same reason. `ci/` keeps the
@@ -102,31 +116,14 @@ package:
   registry which bytes a step image's tag names right now. An *adapter* like `githost` and `idp`
   are, for the `CiStepImagePins` seam in `ci/control`, and another hand-rolled `java.net.http` one
   for the reason the whole `githost` package is. See "A run is fixed to one toolchain".
-- `service/…/runnerhost/` — the runner side of the host, beside `daemonhost`: the runner socket
-  (`CiRunnerSocket`), its session table (`CiRunnerRegistry`, also the `CiRunnerPresence` and
-  `CiBacklogListener` seams), the `Reserve` → `Take` driver (`RunnerReservations`), the step seam for
-  a reserved run (`RunnerStepRunner`, the `ci/control/CiRunnerStepRunner` implementation, typed so it
-  never competes for `CiStepRunner`), and `RunnerAddresses`, the single composition of what a runner is told — every address a PUBLIC edge
-  name, `https://<host>.qits.${QITS_DOMAIN}` as qits-idp's `PlatformDomain` composes its own origin
-  (the CI base and so the `wss://` socket, the idp token url, the registry host), each with an
-  override, and **no fallback**: with no public domain and no override it throws
-  `RunnerAddresses.UnconfiguredException` naming the key (qits-515 deleted the qits-net aliases it
-  used to answer). The same domain is what every address a STEP is told is composed from
-  (`StepAddressPlane`). The register door answers it,
-  and `RunnerInstallScript` renders the generic script `GET /ci/api/runners/install.sh` serves (the
-  runner image — the registry host and the version `CiRunnerPins` reads off the pinned protocol jar —
-  which the registry's `Upgrade` to a runner of any other version names too) and the
-  one-line `installScript` the create and a rotation answer; two compositions would be two chances
-  to disagree. The runner rules themselves are
-  `ci/control/CiRunners`, the operator verbs and the register door `api/CiRunnerController` — see
-  `README.md` under "Runners". The quarantine and the health check are `ci/control/CiRunnerHealth`
-  (the rules, the schedule) over `CiRunners`' row writes, and reach a connected runner through the
-  `CiRunnerSignals` seam, which `CiRunnerRegistry` implements: every change of what a runner may hold
-  is a fresh `Ack` and a `Backlog`, and every `Ack` to an EDGE runner carries `RunnerRegistryMirrors`'
-  table. The runner's NODE health report (qits-896) is `runnerhost/CiRunnerNodeHealth` — the
-  `healthCheck` frame, its pending request in memory, the `NO_ANSWER` timeout — reached from the
-  schedule through `CiRunnerSignals.nodeHealthCheck` and stored by `CiRunners.recordNodeHealth`; it is
-  a diagnosis, and nothing in `CiRunnerHealth` reads it.
+- `service/…/targethost/` — the lease side of the host, beside `daemonhost` (epic qits-1481; it
+  replaced `runnerhost/`): `SystemLeases` (the hand-rolled qits-system client), `CiLeases` (asking,
+  observing, reconciling and ending a run's lease; the token is minted before the lease),
+  `CiSlotSpecs`/`CiSlotSettings`/`CiSlotAddresses` (the spec: the pinned ci-slot image, the env, user
+  1001, `qits.ci.slot.*` limits, every address a public name under `qits.ci.domain`),
+  `LeaseStepRunner` (every step a `RunStep` over the one daemon connection, then `Close`),
+  `TargetLeaseEvents` (`TargetLeaseChanged`, owner `qits-ci`) and `LegacyRunnerClients` (a boot
+  one-shot giving back the retired `ci-runner` clients and registration tokens).
 - `ci-events/` — the event classes qits-ci emits, `eu.wohlben.qits.ci.events`. Under this repo's own
   namespace because it *is* this repo's vocabulary; depends on `eventstream` and nothing else.
 

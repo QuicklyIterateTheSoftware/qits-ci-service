@@ -29,7 +29,7 @@ capability rather than a leftover — and none does.
 |---|---|
 | `ci/` | `eu.wohlben.qits.ci.*` — entity, persistence, dto, mapper, control, error. The pipeline itself. No web, no JAX-RS. |
 | `service/` | `eu.wohlben.qits.ci.api` — the run read surface, the manual event trigger and the exception mapper — plus `…ci.bus`, where every domain event arrives, and `…ci.daemonhost`, the step-container control plane (below). There is no filter in front of the one write: it calls `MachineAuth` (qits-auth-core) itself. |
-| `ci-events/` | `eu.wohlben.qits.ci.events` — the events this service announces: `BuildSuccessful`/`BuildFailed` for a finished run's verdict, `BuildStatusChanged` for every transition of a run's row, `SoftwareRelease` once per artifact a release pipeline declared, and the eight `Runner*` lifecycle events (see "A runner's lifecycle is on the bus"). Depends on the published `qits-eventstream` jar and nothing else. |
+| `ci-events/` | `eu.wohlben.qits.ci.events` — the events this service announces: `BuildSuccessful`/`BuildFailed` for a finished run's verdict, `BuildStatusChanged` for every transition of a run's row, `SoftwareRelease` once per artifact a release pipeline declared (the `Runner*` lifecycle events went with the runners in epic qits-1481). Depends on the published `qits-eventstream` jar and nothing else. |
 
 `ci/` is a library jar. **`service/` is the application** — it carries
 `<packaging>quarkus</packaging>` and produces a process, as a JVM fast-jar or as a native binary:
@@ -46,7 +46,7 @@ finding none it does not fail — it falls back to pulling a 1.8 GB Mandrel imag
 docker. That fallback still works and is what a GraalVM-less CI gets; it is just not the intended
 path, and it is worth recognising by name when a build that normally takes two minutes starts
 downloading a container image. Note the coincidence: this service *causes* a container to run, per
-step, by design (below) — through a runner, which runs `docker run` on its own host — and the
+run, by design (below) — through a CI lease, whose qits-system target runs the container — and the
 **build** must not touch docker at all.
 
 Most of the 0.2s is connecting to postgres and running Flyway; the framework itself is up in
@@ -112,7 +112,7 @@ rest of qits it reaches over a URL it is configured with:
 | in | `POST /ci/api/events/trigger` — `{name, payload, occurredAt?, eventId?}` → 200 `{eventId, runIds, repositoriesRead, repositoriesSkipped}`, one domain event supplied by hand instead of by the bus; it **evaluates before it answers**, and a 503 means it could not ("Triggering one by hand") | two real callers, like the cancellation below: an operator on the edge's forwarded session (`qits:admin`), and a machine token of this service's audience. `project=*` evaluates the whole catalogue; a token scoped to **one project** is admitted and the evaluation is narrowed to that project's repositories, so a cross-project trigger is impossible rather than refused. A project this instance can place no repository in is a 403 |
 | in | `GET /ci/api/runs?repositoryId={repoId}[&limit={n}]`, `GET /ci/api/runs/{runId}` | not machine-guarded; they carry build logs, so a deployment must keep them behind its auth policy. **Every read here takes `qits:admin` OR `qits:system`** — `qits:system` is the machine role and `qits:admin` the human one, and a peer polling a run it asked for (qits-platform-maintenance waits out a bump this way) must not be granted a person's role to do it. **`qits:agent` reads them too**, with no filter: every read route here takes it, and no write does. `POST /ci/api/runs/{runId}/cancel` is not widened with them and stays `qits:admin` |
 | in | `GET /ci/api/runs/active` → `{"runs": [...]}` — every `QUEUED` or `RUNNING` run on the instance, all repositories, newest first, no parameters | same; unscoped, because "what is CI doing right now" has no repository to scope to |
-| in | `GET /ci/api/runs/queue` → `{generatedAt, running: [...], queued: [...], runners: [...]}` — the queue in **claim order**, each queued row carrying its `queuePosition`, its `ordering` and its ETAs. `generatedAt` is the instant every millisecond in the body is relative to | same; the one read whose order is not chronological, because "which build is next" is not "which build is newest" |
+| in | `GET /ci/api/runs/queue` → `{generatedAt, running: [...], queued: [...]}` — the queue in **claim order**, each queued row carrying its `queuePosition`, its `ordering` and its ETAs. `generatedAt` is the instant every millisecond in the body is relative to | same; the one read whose order is not chronological, because "which build is next" is not "which build is newest" |
 | in | `GET /ci/api/repositories` → `{"repositoryIds": [...]}` — the distinct repo ids this instance has runs for, ascending | same; it is the one read here that is not scoped to a repository, because it answers *which* |
 | in | `GET /ci/api/repositories/summary` → `{"repositories": [{repositoryId, projectId, repoName, lastRun, lastMainRun}]}` — ascending by id, full run objects, `lastMainRun` null when there is none, and the name pair null for a repository whose pushes were id-addressed | same; it is the id listing plus the two runs a client would otherwise make a request per repository to find |
 | in | `GET /ci/api/daemon` → `{"daemonName", "daemonVersion", "previousDaemonVersion", "source"}` — what a run started right now would download, never a run row. `source` is `"pinned"` (the version of the protocol dependency this service is built against — the ordinary answer) or `"override"`; `daemonVersion` is never blank and `previousDaemonVersion` is always blank, a pin having no fallback rung | same; read fail-closed by qits-artifacts' daemon GC and readable by the client |
@@ -126,17 +126,18 @@ rest of qits it reaches over a URL it is configured with:
 | out | where a step container downloads the daemon binary from: `https://registry.qits.<domain>/artifacts/daemons/qits-ci-daemon/<version>`, presenting the run's token | `qits.ci.domain` + the version of the pinned `qits-ci-daemon-protocol` dependency (or `qits.ci.daemon-version-override`, the emergency hatch) |
 | out | `PUT /events/api/events/{uuid}` — one `BuildSuccessful` per **green** run, idempotent (the `RunAnnouncer` seam), and the **only** thing a green run announces | `qits.events.url`, `qits.eventstream.enabled` |
 | out | the same route — one `SoftwareRelease` per artifact a green **release pipeline** declared (the `ReleaseAnnouncer` seam), and **only once an `SCMRelease` for the same (repository, version) has been seen** — see "The release join" | the same two keys |
-| out | the same route — the eight runner lifecycle events, `RunnerCreated` … `RunnerDeleted`, one per fact as it happens (the `RunnerAnnouncer` seam) — see "A runner's lifecycle is on the bus" | the same two keys |
 | out | `ws://…/events/stream` — dialled out and held open, carrying what qits-events broadcasts back | the same two keys; the address is derived, never configured twice |
-| out | `POST/DELETE/GET /idp/api/tokens` — one `ci-run` TOKEN per run, minted at the run's first step and deleted when the run closes: every step clones, downloads, publishes and dials with it, and it is the step's only credential. And a runner's one-use registration token (`ci-runner-registration`) | `quarkus.oidc-client.qits.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.qits.client-enabled` |
-| out | `POST/DELETE/GET /idp/api/clients` — a registered runner's own client (`ci-runner`), given back when the runner is decommissioned — see "Runners" below. A run commissions no client (qits-515) | the same keys as the row above |
+| out | `POST/DELETE/GET /idp/api/tokens` — one `ci-run` TOKEN per run, minted at the run's first step and deleted when the run closes: every step clones, downloads, publishes and dials with it, and it is the step's only credential. It is minted before the run's lease is asked for | `quarkus.oidc-client.qits.auth-server-url` + `…client-id` / `…credentials.secret`, `quarkus.oidc-client.qits.client-enabled` |
+| out | `GET/DELETE /idp/api/clients` and `/idp/api/tokens` once at boot (`LegacyRunnerClients`) — the retired runners' `ci-runner` clients and `ci-runner-registration` tokens given back. A run commissions no client (qits-515) | the same keys as the row above |
+| out | `POST/GET/DELETE /system/api/leases` on qits-system — a run's one CI lease (`targethost/SystemLeases`), with this service's `qits` client bearer | `qits.system.url` |
+| in | `TargetLeaseChanged` off qits-events, owner `qits-ci`, slot `CI` — a lease moved (`targethost/TargetLeaseEvents`); a reconcile every `qits.ci.target-leases.reconcile-interval` covers a missed one | the bus keys |
 | out | `HEAD <origin>/v2/<name>/manifests/<tag>` on qits-artifacts — the digest a run's step image is pinned to, asked by this process from inside the swarm | `qits.artifacts.url`, else the origin of `qits.artifacts.maven.registry-url`; the pinned reference is addressed under `qits.artifacts.registry-host` |
-| out | the platform's public domain itself, bare, as `$QITS_DOMAIN` in **every** step container — the address input a recipe derives the platform's other addresses from (qits-731). `registry.qits.$QITS_DOMAIN` (the image registry, the hosted npm `/artifacts/npm/npm/` root, the docs store `/artifacts/docs/docs`, the daemons store the prelude fetches the qits CLI from) and `mirror.qits.$QITS_DOMAIN` (npmjs `/npm/npmjs/`) are code, spelled from it with those constant paths, and **no URL variable carries either**: `$QITS_REGISTRY`, `$QITS_BUILD_REGISTRY`, `$QITS_NPM_REGISTRY_URL`, `$QITS_NPM_PROXY_URL`, `$QITS_DOCS_URL` and `$QITS_ARTIFACTS_URL` are no longer sent. The hosted **maven** `/artifacts/maven/maven` root and Maven Central's cache `/mirror/maven/central` are the one pair that IS sent, as `$QITS_MAVEN_REPOSITORY_URL`/`$QITS_MAVEN_CENTRAL_URL` (qits-896) — still composed in code from this same domain by `StepAddressPlane`, never from configuration, because every repository's committed `.qits-maven-settings.xml` already reads exactly those two names and a repository overriding an archetype's slots would otherwise re-derive both by hand; `qits.mirror.maven-central.enabled`, the old empty-string kill switch for them, stays gone | `qits.ci.domain` |
+| out | the platform's public domain itself, bare, as `$QITS_DOMAIN` in **every** step container — the address input a recipe derives the platform's other addresses from (qits-731). `registry.qits.$QITS_DOMAIN` (the image registry, the hosted npm `/artifacts/npm/npm/` root, the docs store `/artifacts/docs/docs`, the daemons store the prelude fetches the qits CLI from) and `mirror.qits.$QITS_DOMAIN` (npmjs `/npm/npmjs/`) are code, spelled from it with those constant paths, and **no URL variable carries either**: `$QITS_REGISTRY`, `$QITS_BUILD_REGISTRY`, `$QITS_NPM_REGISTRY_URL`, `$QITS_NPM_PROXY_URL`, `$QITS_DOCS_URL` and `$QITS_ARTIFACTS_URL` are no longer sent. The hosted **maven** `/artifacts/maven/maven` root and Maven Central's cache `/mirror/maven/central` are the one pair that IS sent, as `$QITS_MAVEN_REPOSITORY_URL`/`$QITS_MAVEN_CENTRAL_URL` (qits-896) — still composed in code from this same domain by `CiSlotAddresses`, never from configuration, because every repository's committed `.qits-maven-settings.xml` already reads exactly those two names and a repository overriding an archetype's slots would otherwise re-derive both by hand; `qits.mirror.maven-central.enabled`, the old empty-string kill switch for them, stays gone | `qits.ci.domain` |
 | out | the namespace a published image goes under, as `$QITS_IMAGE_REPOSITORY` in **every** step container; the image is `registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/<application>:$QITS_VERSION` | `qits.artifacts.image-repository` |
 | out | qits-workspaces, as `$QITS_WORKSPACES_URL` (`https://workspaces.qits.<domain>`) in **every** step container | `qits.ci.domain` |
 
-**Every step row above is one plane.** A step runs on a runner outside the swarm and is told the
-public name of each service, `https://<host>.qits.<domain>`, composed by `runnerhost/StepAddressPlane`
+**Every step row above is one plane.** A run's slot runs on a qits-system target and is told the
+public name of each service, `https://<host>.qits.<domain>`, composed by `targethost/CiSlotAddresses`
 from `qits.ci.domain` (`QITS_DOMAIN`) and the service's own path. It joins no docker network, is
 given no extra host, and its credential is the run's `ci-run` token. The second plane — a step on
 qits-net, told each service's wire alias — was deleted in qits-515, with the keys that spelled those
@@ -147,457 +148,80 @@ aliases: `qits.ci.container-daemon-url`, `qits.ci.container-git-url`, `qits.ci.n
 `qits.mirror.maven-central.step-url`, `qits.ci.runner.internal-url` and
 `qits.ci.runner.artifacts-internal-url`.
 
-### Runners
+### Runs are CI leases on a qits-system target
 
-A **runner** is a machine that registers with qits-ci and pulls step work (epic qits-440), and since
-qits-506 it is the only thing that executes a run: the platform host's own steps are `localhost`'s,
-below. This section is the row, the operator's six verbs, the runner's register door, and the socket
-it then holds open to pull work.
+**A run is one CI lease** (epic qits-1481, qits-1544). There are no runners any more: the runner
+API (`/ci/api/runners…`), its install script, its socket (`/ci/runners/socket`), the `ci_runner`
+table, the quarantine and health check, the runner lifecycle events and the `ci-runner` /
+`ci-runner-registration` idp clients and tokens are deleted. `targethost/` is what replaced
+`runnerhost/`:
 
-| verb | answer | role |
-|---|---|---|
-| `POST /ci/api/runners` `{name, description?, slots?, plane?, stepMemoryLimit?}` | 201 the runner's fields plus `installScript` — the one install line carrying the registration token, **once**; 400 on a name outside `[a-z][a-z0-9-]{0,63}` or a `stepMemoryLimit` that is not a docker size of at least `6m`, 400 `UNKNOWN_PLANE` for a `plane` other than `EDGE` (`INTERNAL` included; absent means `EDGE`), 409 on a taken one, 503 on a qits-ci that knows no public domain to address a runner by | `qits:admin`, `qits:system` |
-| `GET /ci/api/runners/install.sh` | `text/plain`: the generic install script the line pipes into `sh` — no secret, no runner | `qits:ci-runner-registration`, `qits:admin`, `qits:system`, `qits:agent` |
-| `GET /ci/api/runners` | `{runners: [{id, name, description, slots, plane, stepMemoryLimit, capabilities, registered, connected, heldRuns, lastSeenAt, createdAt, runnerVersion, targetVersion, updating, quarantined, quarantineReason, quarantinedAt, lastHealthcheck: {at, result, runId, detail}}]}`, `localhost` first, then by name | `qits:admin`, `qits:system`, `qits:agent` |
-| `GET /ci/api/runners/{id}` | one runner, 404 | the same |
-| `PATCH /ci/api/runners/{id}` `{slots?, description?, plane?, stepMemoryLimit?}` | the runner; `slots: 0` drains it; a `stepMemoryLimit` change reaches its next step, and a blank `stepMemoryLimit` clears it back to the platform default; `plane` may be `EDGE` or absent and changes nothing, 400 `UNKNOWN_PLANE` for any other value; 400 on a malformed `stepMemoryLimit` | `qits:admin`, `qits:system` |
-| `POST /ci/api/runners/{id}/registration-token` | the runner's fields plus a fresh `installScript` line with a new token, once; the old one is deleted at qits-idp. 409 once registered | `qits:admin`, `qits:system` |
-| `DELETE /ci/api/runners/{id}` | 204; its client and token are given back at qits-idp. 409 while it holds a `RUNNING` run; 409 `LAST_RUNNER` for `localhost` while no other runner exists | `qits:admin`, `qits:system` |
-| `POST /ci/api/runners/{id}/greenlight` | the runner, its quarantine lifted and its failure streak reset; a runner in service is answered as it is | `qits:admin` |
-| `POST /ci/api/runners/{id}/healthcheck` | 202 `{runId, requestId}`: a health check queued for it now and, when the runner is connected, its node health report asked for (`requestId` null otherwise); 409 while one is queued or running, 503 when its repository, head or image cannot be resolved — neither sends the node frame | `qits:admin`, `qits:system`, `qits:agent` |
-| `GET /ci/api/runners/{id}/health` | 200 `{at, ok, detail, requestId, dataOmitted, checks: [{name, ok, detail, data}]}`: the runner's newest node health report; 204 while it has never reported; 404 | `qits:admin`, `qits:system`, `qits:agent` |
+- **`CiLeases`** asks qits-system for a run's lease when the run is queued, on one
+  `ci-lease-requests` thread: it mints the run's `ci-run` token **first**, records the launch the
+  slot's daemon will name (`CiDaemonRegistry.registerLaunch`), and `POST /system/api/leases`
+  `{slotType: CI, ownerRef: <runId>, priority, spec}`. The priority is `CiRunOrdering.leasePriority`
+  — 100 for a release run, plus 3 − the run's priority rank — so qits-system's `priority desc,
+  requested_at asc` reproduces this service's tiers. The lease id and the launch go onto the row
+  (`ci_run.lease_id`, `inflight_*`) in one conditional UPDATE; a lease that cannot be recorded is
+  ended again and its token given back.
+- **The spec** (`CiSlotSpecs`) is the `qits/build-images/ci-slot` image pinned by digest at accept
+  (`pinStepImages`), on the registry's public name; the run's environment without any per-step part
+  (`QITS_CI_STEP_INDEX` rides each `RunStep` instead); user `1001`; limits
+  `qits.ci.slot.{memory,memory-swap,pids-limit,cpus}` (4g / 4g / 4096 / 2). qits-system refuses
+  `BUILDKIT_HOST`, `HOME` and `CLAUDE_CONFIG_DIR` in a spec, and user 0; this service sends none of
+  them.
+- **The lease's progress** arrives as `TargetLeaseChanged` (owner `qits-ci`, slot `CI`) on the bus,
+  as a read when the slot's daemon dials in, and from a reconcile every
+  `qits.ci.target-leases.reconcile-interval` (`PT30S`). `GRANTED`/`RUNNING` claims the run
+  (`RUNNING`, `target_id`) and drives it on a `ci-run-<id>` thread. A lease `FAILED` or `EXITED`
+  before the daemon said `Initialized` is the run's first step `LAUNCH_FAILED` with the lease's
+  detail. The reconcile also ends a lease no live run names (older than two minutes) and asks a
+  lease for a queued run that has none.
+- **`LeaseStepRunner`** is the step seam: every step is a `RunStep` over the one daemon connection,
+  and the run's close is `Close`, the lease ended (`DELETE /system/api/leases/{id}`) and the token
+  deleted.
+- **`LegacyRunnerClients`** is a boot one-shot that gives back every `ci-runner` client and
+  `ci-runner-registration` token this service still owns at qits-idp.
 
-**The four lifecycle writes take `qits:system` as well as `qits:admin`** (qits-521), the pair `POST
-/ci/api/runs/cancellations` takes, and on the machine arm the bearer must be addressed to the platform
-(`MachineAuth.require()`, exactly as the cancellation asks; no `project` claim is required, since a
-runner belongs to no project). **The machine caller is the bootstrap's own service client**: on a cold
-start it creates the `localhost` runner, reads the registration token out of the 201's
-`installScript`, and hands it to the deployer — with nobody at a keyboard. Greenlight stays
-`qits:admin` alone, because nothing on that path needs it: the register door queues a new runner's
-first health check itself and a green one lifts the quarantine. **A health check on demand is open to
-`qits:system` and `qits:agent` too** (qits-896): it probes and changes nothing a person set, and its
-only effect on the runner's standing is the one its own result has. It is the only write `qits:agent`
-may press here, and the register door admits `qits:ci-runner-registration` alone.
+**What a step may declare changed with it.** `image:` is ignored, with one line on the first step's
+output: `step images are ignored: every step runs in qits/build-images/ci-slot`. `docker: true` is
+`CONFIG_ERROR`: `docker steps are not supported: steps run in qits/build-images/ci-slot without
+Docker`. `build: true` stays — an image build is the target's builder's.
 
-**`stepMemoryLimit` is the one cap a runner may set for its own steps.** Every step container is capped
-at `qits.ci.memory-limit` (4g), sent as its memory **and** memory-swap; that number is sized for the
-swarm host `localhost` shares with every platform service, and a runner with RAM to spare
-still OOM-killed a native-image build at it (exit 137). So a runner's row may carry its own cap — a
-docker size, the runner's own `RunnerArgv` grammar (`[0-9]{1,15}[bkmgBKMG]?`, e.g. `6g`, `6144m`) and
-at least docker's `6m` floor, checked at the door because a value the runner refuses is a
-`LAUNCH_FAILED` that counts toward its quarantine. It replaces both memory and memory-swap in that
-runner's `Launch`, and is read off the row at **each step's launch**, so a change reaches the runner's
-next step with no reconnect. Null — every runner that never set one — is the platform default.
+**A run's credential is a `ci-run` TOKEN**, one per run, minted before its lease and deleted at its
+close (and as soon as its lease is seen to have ended). The slot gets `$QITS_TOKEN` and
+`$QITS_TOKEN_SUBJECT` (and `$QITS_MAVEN_AUTH_USR`/`_PSW`), and `CiSlotSettings.BOOTSTRAP` turns the
+token into the daemon download's bearer, the git helper, maven settings, `~/.npmrc` and the docker
+document (`token:<value>` per public registry host). On a qits-ci that commissions nothing
+(`quarkus.oidc-client.qits.client-enabled` off, the shipped posture) no lease is asked for: the run
+waits `QUEUED`. `CommissionReconciler` reaps a `ci-run` token whose run is no longer
+`QUEUED`/`RUNNING` once it is ten minutes old.
 
-**The register door is `POST /ci/api/runners/{id}/register` `{capabilities}`**, and a runner knocks on
-it with its registration token — a `qits_tok_` value the edge introspects and exchanges for a short
-JWT whose `sub` is the token's subject. The door admits `qits:ci-runner-registration` alone, and
-the bearer's `sub` must be **this** runner's registration token subject (403 otherwise). It
-commissions the runner's own `ci-runner` client, deletes the spent token and answers **once**
-`{clientId, secret, tokenUrl, audience: "qits-platform", socketUrl}`; a runner that has registered is
-409, which is what a replay of the right token gets. **`qits:ci-runner-registration` opens exactly
-two routes on the platform: this one, and `GET /ci/api/runners/install.sh`** — the generic install
-script, which carries no secret and names no runner, so any live registration token reads it.
-
-**The door does not take the raw registration token.** A runner comes through the edge, which
-introspects the `qits_tok_` and forwards the JWT above; `MachineAuth.require()` checks that JWT and
-the door compares its `sub`. The mechanism that let a runner on qits-net present the raw value to
-qits-ci itself (`runnerhost/RegistrationTokenMechanism`, which asked qits-idp's
-`/api/tokens/introspect`) was deleted in qits-515. A raw `qits_tok_` presented to this service
-directly is a bearer quarkus-oidc cannot verify: 401 on every route.
-
-Every credential here is handed out exactly once and logged never: the token's value is on no row
-and no read, the client's secret likewise. A refused request leaves nothing minted behind — a token
-or client whose write lost a race is given back at once — and `CommissionReconciler` reaps what a
-give-back could not: a runner's client once its row is gone or names another client, a registration
-token once its row is gone, has registered or names a newer token (tokens younger than ten minutes
-are spared, since a create commissions before it writes). With the qits oidc client off — the
-shipped posture — nothing can be commissioned, and the create, a rotation and the register door
-answer 503.
-
-**A runner goes through the public edge**, and every address it is told is a public name
-(`runnerhost/RunnerAddresses`, the one place they are composed). It is a machine a person owns — not
-on the swarm, no qits-net, no internal DNS — so the CI base is `https://ci.qits.<domain>`, `socketUrl`
-`wss://ci.qits.<domain>/ci/runners/socket`, `tokenUrl` `https://idp.qits.<domain>/idp/token`, and the
-artifacts base `https://registry.qits.<domain>`. `<domain>` is `QITS_DOMAIN`, which qits-deployments
-writes into every container, and the composition is the one qits-idp uses for its canonical origin
-(`PlatformDomain.canonicalOrigin`, `https://idp.qits.<domain>`) and the edge for its door
-(`EdgeSessions.canonicalOrigin`): `https://<host>.qits.<domain>`, where `qits` is the platform's own
-project and carries **no environment label** — the edge's grammar is `<app>[.<env>].<project>.<domain>`
-and the env label is present exactly when the project supports environments, which the platform
-project does not. `ci` is this application's derived host label, `idp` and `registry` are qits-idp's
-and qits-artifacts' `host:` lines. On the live estate (`QITS_DOMAIN=wohlben.eu`) that is
-`ci.qits.wohlben.eu`, `idp.qits.wohlben.eu` and `registry.qits.wohlben.eu`, whatever `QITS_ENVIRONMENT`
-says. Each has an override that ships unset — `qits.ci.runner.public-url`, `qits.ci.runner.token-url`,
-`qits.ci.runner.artifacts-url` — and with no public domain (none, or a single label such as
-`localhost`: a clone) and no override there is **nothing to fall back to**: `RunnerAddresses` throws
-naming `QITS_DOMAIN`, so declaring a runner, a rotation, rendering the install script and the
-register door answer 503, and a runner that says hello at another version is not sent an `Upgrade`.
-The qits-net aliases it used to answer (`qits.ci.runner.internal-url`,
-`qits.ci.runner.artifacts-internal-url`) are deleted with the internal plane (qits-515). The steps a
-runner starts are told the same domain's names — below. The suite states its own domain
-(`testdb/HermeticConfigSource`).
-
-**Installing is one line** (`runnerhost/RunnerInstallScript`). The create and a rotation answer the
-runner's own read fields flat, as `GET` does, plus `installScript` — whose value is the line to paste:
-
-    curl -fsSL -H 'Authorization: Bearer qits_tok_…' https://ci.qits.<domain>/ci/api/runners/install.sh | sudo env QITS_CI_RUNNER_URL='https://ci.qits.<domain>' QITS_CI_RUNNER_ID='<id>' QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_…' QITS_CI_RUNNER_SLOTS='<n>' sh
-
-The token is in it twice — the fetch's bearer and the script's value — and in no other body anywhere:
-not on the row, not on any read, not in a log line. Piped into `sh`, the script runs in a process of
-its own, so a refusal never closes the shell it was pasted into. The script itself is **generic**:
-`GET /ci/api/runners/install.sh` serves `service/src/main/resources/runner-install.sh.tmpl` with only
-the runner image filled in. **The runner is a native binary running inside a docker container**
-(qits-484) — there is no systemd unit, no binary on the host's disk and no env file. The image is
-`<registry host>/qits/qits-ci-runner:<version>` (`RunnerAddresses.runnerImage`): the registry host is
-the authority of `qits.ci.runner.artifacts-url` or of `https://registry.qits.<domain>`, and with no
-public domain `qits.artifacts.registry-host`, the name the platform host's own docker pulls under. POSIX
-`sh`, `set -eu`; it reads the four values from its environment and refuses, one sentence each, when one
-is missing or when `docker version` does not answer; logs in to the registry host with `docker --config
-<a temp dir> login -u token --password-stdin` (the registration token — the edge introspects it),
-pulls the image and deletes that config; `docker rm -f`s every container labelled
-`qits.ci.runner.process=<id>`; removes `client.json` from the kept state volume with a throwaway
-`docker run --rm --entrypoint rm`, so the credential it next registers with is the one THIS run was
-given rather than a stale one already sitting in the volume; and `docker run -d`s
-`qits-ci-runner-<first 8 of the id>-<version>`, labelled `qits.ci.runner.process=<id>` and
-`qits.ci.runner.version=<version>`, `--restart unless-stopped`, with the host's
-`/var/run/docker.sock`, the volume `qits-ci-runner-state-<first 8 of the id>` at
-`/var/lib/qits-ci-runner`, no `--network`, `QITS_CI_RUNNER_URL`, `_ID` and `_SLOTS` (the row's, at
-least 1) passed as `NAME=value`, and `_REGISTRATION_TOKEN` passed by name alone from its environment,
-so the token is on no command line. It prints `qits-ci-runner started; watch: docker logs -f <name>`
-and never the token. Run again from a rotation's line it pulls the pinned image, replaces the
-container and clears `client.json` again; the state volume itself is kept throughout, and the runner
-re-registers by itself against whatever token it was just started with. The version is the pinned
-`qits-ci-runner-protocol`'s
-`CiRunnerBinary.VERSION` (`runnerhost/CiRunnerPins`), with `qits.ci.runner-version-override` as the
-unset hatch. Every rendered value is held to a charset that is literal inside single quotes and a
-docker argument (the script checks the four again on the host): a deployment value outside it is 503
-before anything is minted, a token outside it 502 and given back.
-The template's shape is qits-ci-runner-daemon's `scripts/test-install-contract.sh` contract;
-`RunnerInstallScriptTest` runs that test against a rendering when the runner repository is checked out
-beside this one, and writes the rendering to `service/target/runner-install.fixture.sh`, which is that
-repository's committed fixture.
-
-**A step is told the public name of every service** (epic qits-441, and the only plane since
-qits-515). `runnerhost/StepAddressPlane` composes each address from the public origin of the service
-that answers it and that service's own path — `$QITS_CI_DAEMON_URL`
+**A slot is told the public name of every service.** `targethost/CiSlotAddresses` composes each
+address from `qits.ci.domain` (`QITS_DOMAIN`): `$QITS_CI_DAEMON_URL`
 `wss://ci.qits.<domain>/ci/daemon`, the daemon binary on `registry.qits.<domain>`, the clone url on
-`githost.qits.<domain>`, `$QITS_WORKSPACES_URL` `https://workspaces.qits.<domain>` — with no docker
-network and no extra host. The registry and the two pull-through caches are not among them: a recipe
-spells `registry.qits.$QITS_DOMAIN` and `mirror.qits.$QITS_DOMAIN` itself (qits-731). The public names are
-`RunnerAddresses.publicOrigin` — the same composition the runner is told, from `qits.ci.domain`
-(`QITS_DOMAIN`) — and **not** the epic's `<label>.<env>.<domain>` under two new `qits.ci.edge.*` keys:
-the platform project carries no environment label (`ci.dev.qits.wohlben.eu` is a 404 live), and
-`qits.ci.domain` already is the platform's domain, so neither key exists. On a qits-ci that knows no
-public domain a step has no address to be told and is not launched: it is recorded `LAUNCH_FAILED`,
-its output beginning `EDGE_PLANE_UNCONFIGURED`.
+`githost.qits.<domain>`, `$QITS_WORKSPACES_URL`. With no public domain no lease is asked for.
 
-**`ci_runner.plane` has one value, `EDGE`.** `INTERNAL` — a runner on qits-net — was deleted in
-qits-515. The API refuses it, and any other word, 400 `UNKNOWN_PLANE` on create and patch; an
-omitted plane means `EDGE`. There is no migration: the column stays, its own default is still
-`'INTERNAL'` (`V23`, applied and never edited), `CiRunners.create` always writes `EDGE`, and
-`CiRunnerPlaneConverter` reads whatever a row stores as `EDGE`, so a leftover row does not break the
-runner table's read.
+**The slot's daemon is matched to its launch by the launch id it names, bound to the run's token**,
+and its socket outlives the bearer it was opened with (`daemonhost/SocketBearerLifetime`): the edge's
+JWT lives five minutes, and the connection lasts the whole run. A dropped connection waits
+`qits.ci.daemon.reconnect-grace-seconds` for the daemon to dial again; the in-flight `RunStep` is
+sent again and the daemon ignores a step index it already ran.
 
-**A run's credential is a `ci-run` TOKEN** (qits-475), and nothing else since qits-515. The edge
-introspects a `qits_tok_` itself — as a bearer, and as the password of git's and docker's Basic — so
-`RunCommissions.forRun(runId, env)` commissions one token per run at its first step (context the run
-id, `gitRefs` the run's `RunGitRefs` scope), holds it in memory, and deletes it when the run closes;
-`CommissionReconciler` reaps a `ci-run` token whose run is no longer `QUEUED`/`RUNNING` once it is ten
-minutes old. The step gets `$QITS_TOKEN` and `$QITS_TOKEN_SUBJECT` (and `$QITS_MAVEN_AUTH_USR`/`_PSW`,
-the subject and the token, for a repository's own maven settings), and
-`StepContainerSettings.BOOTSTRAP` turns the token into the daemon download's bearer,
-`$QITS_PUBLISH_TOKEN_COMMAND` printing the token, the git helper (`oauth2`/token, for the clone url's
-host only), `-gs` maven settings carrying the bearer on `qits`, `qits-maven-network` and
-`qits-central-proxy`, an `_authToken` per npm registry host in `~/.npmrc`, and the docker document
-(`token:<value>` per public registry host). **A run commissions no client**:
-`$QITS_COMMISSIONED_CLIENT_ID`/`_SECRET`, `$QITS_GIT_AUTH_TOKEN_URL`, `_HOST`, `_AUDIENCE`, the
-bootstrap branch that wrote a token-minting script from them, and the reconciler's reaping of `ci-run`
-clients are deleted. On a qits-ci that commissions nothing (`quarkus.oidc-client.qits.client-enabled`
-off, the shipped posture) no step is launched: it is recorded `LAUNCH_FAILED` naming that key.
+**A qits-ci restart ends no run** (qits-1192, kept for leases). The lease outlives the process; the
+successor registers the recorded launch again and continues the run at the first step without a row.
+A `RUNNING` row with no lease (a runner's, from before the cutover) is settled
+`HELD_BY_A_RETIRED_RUNNER`.
 
-**A step's daemon is matched to its launch by the launch id it names, bound to the run's token.**
-`CiDaemonRegistry.registerLaunch` records each launch against the token's subject; the daemon dials
-with the token, names the launch in its `Hello`, and is admitted only as that subject. The
-per-container secret (`$QITS_CI_DAEMON_SECRET`) and the `X-Qits-Ci-Daemon-Id`/`-Secret` handshake
-headers are deleted.
+A run read carries `leaseId` and `targetId` where it used to carry `runnerId` and `runnerName`.
+`GET /ci/api/runs/queue` answers `{generatedAt, running, queued}`; its forecast counts as many slots
+as there are runs running (at least one), since how many CI slots qits-system will grant is
+qits-system's.
 
-**A build step builds and pushes through the registry's public vhost** (qits-479): on a
-`docker: true` or `build: true` step the recipe pushes to `registry.qits.$QITS_DOMAIN` (qits-731;
-`$QITS_REGISTRY` and `$QITS_BUILD_REGISTRY` are no longer sent), `$QITS_IMAGE_REPOSITORY` is
-`qits.artifacts.image-repository`,
-`BUILDKIT_HOST` is left **absent** for the runner to fill (the runner owns its builder), and the docker
-document's hosts are `registry.` and `mirror.qits.<domain>`. `StepEnvironmentTest` pins the whole
-environment. There is no `qits.ci.buildkit.enabled` kill switch any more and no
-`qits.ci.docker-auth-hosts` (qits-515). The composed release prelude writes the run's token and its
-subject to `/tmp/qits-client-secret` and `/tmp/qits-client-id`, the two files a Dockerfile build
-mounts as BuildKit secrets for `QITS_MAVEN_AUTH_USR`/`_PSW`; the file names are history. **The npm
-proxy is served at the root of qits-platform-mirror's own hostname, `/npm/npmjs/` (qits-474)**:
-`https://mirror.qits.<domain>/npm/npmjs/`, the path every recipe spells under
-`mirror.qits.$QITS_DOMAIN`. The earlier `/artifacts/npm/npmjs/` and the briefly used
-`/mirror/npm/npmjs/` are both gone, and so is the key `qits.artifacts.npm.proxy-url`; a leftover
-deployment row for it is dead and never read.
-
-A run a runner executed carries `runnerId` and `runnerName` on every run read; the id outlives the
-runner (no foreign key), the name does not.
-
-**The socket is `/ci/runners/socket`** (`runnerhost/CiRunnerSocket`), `@RolesAllowed("qits:ci-runner")`.
-The runner's identity is the validated bearer's `sub` — qits-idp sets it to the client id for a
-`client_credentials` token — looked up against `ci_runner.client_id`; no row, or no token at all, is
-a 1008. Forward-auth headers never name a runner, so **the machine gate must be on for a runner to
-connect.** The conversation is the protocol jar's (`qits-ci-runner-protocol`): `Hello` (capabilities
-and `last_seen_at` recorded, a foreign `CAPABILITY_VERSION` closed 1008) → `Ack{slots}` with the
-**row's** slots → `Backlog{queued}`, pushed again after every accept, finish and settlement; a
-heartbeat stamps the row at most once a minute; a second connection of the same runner that says
-`Hello` in the **same version** replaces the first, which is closed 1008 `ALREADY_CONNECTED` (decided
-at that `Hello`, where the version is known — a dial that never says hello replaces nothing).
-
-**A runner updates itself** (qits-465). Every `Hello`'s `runnerVersion` is compared with the pin
-(`CiRunnerPins`) *before* its capability version, so a runner of any older protocol is told what to
-become rather than closed; only the pinned version speaking another capability is refused. Any other
-version — older or newer, the pin is the authority — is sent `Upgrade{version: <pin>, image:
-RunnerAddresses.runnerImage(<pin>), sha256: null}` and that **connection drains**: `Ack{slots: 0}` (no
-`Ack` at all when its capability differs — it would exit on one), every `Reserve` answered `Nothing`,
-and the runs it already holds carry on over it to their end. The runner starts its successor container
-beside itself, which dials as a second connection — allowed because the versions differ. Once a
-connection of the pinned version has said `Hello` it gets the row's slots, and every other connection
-of the runner is sent `Retire{reason: "superseded by <pin>"}`; the runner closes that socket itself.
-**Runs are routed by connection, not by runner**: a run is held by the connection its `Take` went out
-on (`CiRunnerRegistry.hold`), and every `Launch`, `Reap`, `Cancel` and `Released` for it goes there —
-the draining one for what it took before, the successor for everything after. A runner's read shape
-and its row in the queue carry `runnerVersion` (what its current connection said), `targetVersion`
-(the pin) and `updating` (a draining connection is still open); `connected` is any open connection.
-
-**A deployer-managed runner is never upgraded by qits-ci** (qits-443). The platform host's `localhost`
-runner runs as a swarm service with `QITS_CI_RUNNER_SELF_UPDATE=false` and advertises the capability
-label `qits.ci.runner.self-update=false`; a `Hello` carrying it is taken as it is whatever its
-`runnerVersion` — no `Upgrade`, no draining, `Ack` with the row's slots, `Reserve` claims as ever and
-`updating` is never true, while `targetVersion` still shows the pin. **Its version moves when
-qits-deployments redeploys it**: the new container dials as a second connection, and the old one is
-sent `Retire` like any superseded connection. Only a capability version this host does not speak
-still refuses it, since there is nothing to update it to.
-
-**`Reserve` is the claim, and the only one** (qits-506 deleted the in-process worker pool and its
-claim loops). `CiRunService.reserveFor` walks the queue in `CiRunOrdering.suggestedOrder` and takes the
-first run with one conditional UPDATE (`claimQueuedForRunner`) that writes `runner_id` in the same
-statement — so two runners racing for a row compete for it and exactly one wins. A row no engine can
-run — not an event run, or one whose trigger snapshot is unreadable — is settled `CANCELLED`
-(`TRIGGER_RETIRED` / `TRIGGER_UNREADABLE`) by the reservation that walks past it, after that
-reservation's own transaction. It passes
-over a run with a `docker:`/`build:` step for a runner whose capabilities do not say `docker: true`,
-a run with a `build:` step for a runner whose advertised `idRange` (its user namespace's mapped
-uid/gid count, stored in `capabilities` from its `Hello`) is below 65536 — its builder cannot map
-the 16-bit id space every layer on this estate owns since qits-556 rebuilt the images that owned
-ids above it, so a rootless or LXC range such as `qits-ci`'s 458752 takes builds (qits-443); a
-runner that sends no range is allowed — and refuses a
-runner already holding its slots. A run passed over never holds back the runs behind it. The answer is `Take` or `Nothing`. A taken run is
-driven on its own `ci-runner-run-<runId>` thread (`CiRunService.executeReserved`), through
-`runnerhost/RunnerStepRunner`: each step is a `Launch{workloadSpec}` to the runner — the spec
-`runnerhost/StepWorkloadSpecs` composes — which the runner turns into `docker run` on its host and
-answers `Launched`/`LaunchFailed` within `qits.ci.runner.launch-timeout-seconds` (180); then the
-container's own daemon dials `/ci/daemon` within `qits.ci.daemon-register-timeout-seconds` and the
-step runs; then `Reap`, which the runner answers with `docker rm` and `Reaped` carrying the
-container's log tail. When the run closes, whatever its
-verdict, qits-ci sends `Released{runId}`, the only frame that frees the runner's slot. A runner whose
-socket drops mid-step keeps the step's container and redials; its runs wait
-`qits.ci.runner.reconnect-grace-seconds` (60) for it, and its next `Hello` in the same version claims
-them (`heldRuns`) and is answered with those qits-ci kept (`Ack.adoptedRuns`) — the step carries on as
-if nothing happened (qits-545). A run nobody comes back for inside the grace, or that the returning
-runner does not claim (a restarted process, a runner older than the claim), ends its step
-`CONNECTION_LOST`, its output naming the runner (`[runner <name> disconnected]`); the run is an
-ordinary failed run and retries like one — unless it publishes, which is not retried automatically.
-A deleted or retired runner's runs get no grace.
-
-**A qits-ci restart ends no step** (qits-1192). A stopping qits-ci leaves running steps alone, and the
-run row records each launch (`ci_run.inflight_*`). The successor keeps the runs `RUNNING`, waits the
-same grace for each runner to claim its runs, and continues them: the in-flight step's daemon is
-admitted under its old launch id and its result collected, never started a second time. A run whose
-runner does not claim it is `FAILED` when it publishes (phase `RELEASE` or declared artifacts) and
-re-queued otherwise.
-
-**The step's daemon socket has a grace of its own** (qits-748). It crosses the same edge, so an edge
-redeploy drops it together with the runner's while the container keeps running. A dropped daemon
-socket completes nothing: the launch waits `qits.ci.daemon.reconnect-grace-seconds` (60) for the
-daemon to dial again with the same token and name the same launch in a fresh `Hello` — admitted like
-the first once the old connection has closed (an open one still makes the second `ALREADY_CONNECTED`),
-answered an `Ack`, then its `RunStep` again (a daemon ignores a second) and any `Cancel` that found no
-socket. Replayed `StepChunk`s at or below the highest `seq` already relayed are dropped. A daemon that
-does not come back in time ends the step `CONNECTION_LOST` as before; the step's own deadlines keep
-running through the gap, and a reap (the run lost, cancelled or ended) ends it at once. 0 is the old
-behaviour.
-
-**Neither control socket closes when its bearer expires.** Quarkus' websockets-next closes a
-connection 1008 `Authentication expired` at the `exp` of the token that opened it, which cut every
-runner off exactly one token lifetime (an hour) after each connect and would cut a step's daemon
-off five minutes in (the edge's introspected JWT). `runnerhost/SocketBearerLifetime` drops that
-expiry from the identity of the two upgrades: both are authenticated at the upgrade only, a deleted
-runner is closed by `deleted` whatever its token says, and a step's daemon lives as long as its
-container.
-`GET /ci/api/runs/queue` lists every runner (`runners: [{id, name, slots, held, connected, …, quarantined,
-quarantineReason, quarantinedAt, lastHealthcheck}]`) and its forecast counts the connected runners'
-slots alone (`CiQueueForecast.slotCount`) — none of a quarantined one's; with no slot anywhere every
-queued run's ETA is `NO_BUILD_SLOTS`. **Accepting a run does not claim it**: an
-accept, a retry and the boot sweep only announce the backlog (`CiRunService.announceQueued` →
-`Backlog` to every connected runner), and whichever runner answers `Reserve` first takes it.
-
-#### `localhost`: the platform host is a runner like any other
-
-**The platform host's own runner is named `localhost`** (qits-503, epic qits-443). The name is an
-ordinary runner name reserved for ONE row by the unique constraint every name has — a second create is
-409 like any taken name, and no door renames a runner — and it is special in two places only: every
-runner listing (`GET /ci/api/runners`, the queue's `runners`) answers it **first**, then the rest by
-name, and `DELETE` of it answers **409 `LAST_RUNNER`** (`{"code": "LAST_RUNNER", "message": …}`) while
-no other runner row exists, since with no in-process executor left it is the only thing that
-executes a step. The bootstrap creates it on a cold start (see the `qits:system` paragraph above).
-**Its install values are pasted into qits-configuration, never into a shell**: the operator (or the
-bootstrap) takes `QITS_CI_RUNNER_ID` and `QITS_CI_RUNNER_REGISTRATION_TOKEN` out of the create's (or a
-rotation's) `installScript` and stores them as `env.QITS_CI_RUNNER_ID` and
-`env.QITS_CI_RUNNER_REGISTRATION_TOKEN` of the application `qits-ci-runner`, which qits-deployments
-runs as a swarm service on the platform host; the curl line is for a machine a person owns.
-
-#### Readiness counts runners
-
-**`/q/health/ready`'s `ci-runners` entry (`api/CiRunnerReadinessCheck`, which replaced
-`ci-run-workers` in qits-503) is ALWAYS UP: a readout, not a gate** (qits-443). Its data is
-`connectedRunners` and `totalSlots` (the connected runners' effective slots, a quarantined one
-counting none), plus a **`warning`** — "nothing can execute a run: …; an accepted run sits QUEUED
-until a runner connects" — exactly when no runner is connected (a quarantined one counts as
-connected) and the process is not stopping. It counts runners only since the in-process executor
-went (qits-506): `liveWorkers` and `configuredWorkers` are gone with the claim loops they counted.
-
-**It never goes DOWN because readiness cannot depend on an inbound connection.** Swarm gates routing
-on container health — an unhealthy task is never put behind the service's VIP and alias — and a
-runner connects *through* that routing (edge → alias → qits-ci). Until qits-443 this check was DOWN
-with no live loop and no connected runner, and on a qits-ci with no claim loop of its own that can
-never come up: the runner it waits for cannot reach the task that is waiting. Observed 2026-09-30,
-when the deployment of `2026.930.103022` was killed `unhealthy` and rolled back — and, the update
-being stop-first, the runner had been disconnected from the old task too. Restarting qits-ci because
-a remote runner is offline would fix nothing either. The state the DOWN stood for is still stated,
-as the `warning`.
-
-**So a qits-ci that boots with no runner connected comes up healthy**, carries the `warning`, and
-loses it when the first runner dials in; runs accepted in between wait `QUEUED`. There is no key
-that makes the check wait for a runner, deliberately.
-
-#### Quarantine, and the health check that ends one
-
-**A runner that keeps failing is taken out of service** (qits-466, `ci/control/CiRunnerHealth`). A step
-of a runner's run that ends `LAUNCH_FAILED`, `NEVER_STARTED` or `CONNECTION_LOST` failed through the
-runner's fault, before or outside its build script; `qits.ci.runner.quarantine.failures` (3) of them in
-a row, spanning at least `qits.ci.runner.quarantine.min-runs` (2) distinct runs, **quarantine** it with a
-reason such as `3 consecutive runner failures (NEVER_STARTED on run …)`. **One disconnect is one
-failure** (qits-748): a `CONNECTION_LOST` within `qits.ci.runner.quarantine.loss-window` (`PT2M`) of the
-runner's previous *counted* one — an edge redeploy ends every run a runner holds in the same instant —
-adds neither a failure nor its run to the streak (`ci_runner.connection_loss_window_start`,
-`V32__runner_connection_loss_window.sql`); the other outcomes count per step. Any step whose daemon dialled
-back resets the streak, whatever the build then did; the two-run rule is what keeps one recipe naming an
-unpublished image (a `LAUNCH_FAILED` on every attempt) from quarantining a healthy machine. A quarantined
-runner's **effective slots are 0**: its `Ack` carries 0, every ordinary `Reserve` is answered `Nothing`,
-and the queue's forecast counts none of it — while its row's `slots` stays its operator's number, which
-is what it gets back. **A newly registered runner starts quarantined** (`awaiting its first health
-check`) and is queued a health check at once. `V24__runner_quarantine.sql` has the columns.
-
-**The health check is a pseudo-build**: a `ci_run` with `purpose = HEALTHCHECK` and `target_runner_id`,
-cloning `main`'s head of `qits.ci.runner.healthcheck.repository` (`qits-ci-service`) and running `echo
-hello world` for up to 300 s in `qits.ci.runner.healthcheck.image` (`qits/build-images/ci-base:latest`,
-pinned to a digest like any step image) — the image pull, the daemon download, the dial back through
-the edge and the clone with the run's credential, which is exactly what a runner can break. **Only its
-target may take it, and may take it while quarantined** (its `Reserve` is matched to it first, needing
-no free slot beyond the one it occupies; while one waits the runner's `Ack` grants one more than it
-holds, since a runner never reserves past its `Ack`); no other runner ever claims it. It announces no `BuildSuccessful`/`BuildFailed`/`BuildStatusChanged`, gates no release request,
-cannot be retried (409) and is in **no listing** — not a repository's runs, `/active`, `/finished`,
-`/queue` or `GET /ci/api/repositories[/summary]`; it is read by id at `GET /ci/api/runs/{runId}`, which
-is how a runner's page links it. Green records `PASSED` and reinstates a quarantined runner; red records
-`FAILED` with the step's outcome and the head of its output (the runner's container log tail included)
-and quarantines the runner (`health check failed: <outcome>`) or keeps it so; a cancelled one settles
-nothing. A check's own steps never count toward a streak. One is queued at registration, by the admin
-door, and on a **backing-off schedule** for each quarantined, **connected** runner with none pending
-(qits-748): `qits.ci.runner.healthcheck.schedule` (`PT1M,PT15M,PT30M,PT60M,PT90M,PT120M,PT180M`) is a list
-of offsets from the quarantine — the runner's slots, starting at +1 m because most quarantines are a
-momentary blip and that reinstates the runner almost every time — and after the last, one more every
-hour (+240 m, +300 m, …). A check is due at the first slot after the newest check accepted since that
-quarantine, so a runner not connected at its slot gets one check at the first sweep after it returns and
-then waits for its next slot, not a backlog; a red check leaves `quarantinedAt` alone, so the schedule
-carries on, and a new quarantine starts it over at +1 m. It replaced `qits.ci.runner.healthcheck.interval`
-(a flat hour). One still `QUEUED` after
-`qits.ci.runner.healthcheck.queue-timeout` (30 min) is settled `FAILED`, `runner not connected`.
-
-**The node health report is a diagnosis beside the check, never part of it** (qits-896). A connected
-runner can also be asked to run its own named checks on its node — `healthCheck{requestId, image}` →
-`healthChecked{ok, detail, requestId, checks}`, qits-ci-runner-daemon's README under "The node health
-check" — and it is asked whenever the operator's door queues a pseudo-build for it and whenever the
-schedule above does. `image` is `qits.ci.runner.healthcheck.image` resolved and pinned to its digest
-exactly as a pseudo-build accepted now would be (`CiRunService.launchStepImage`) and moved to the
-registry's public name as a launch moves it — `registry.qits.<domain>/qits/build-images/ci-base@sha256:…`,
-the reference that run's launch names — so the runner's `stepImage` check looks for what its next health
-check would start; the tag only when no pin could be had (registry unreachable), and the request goes
-out either way. One request is pending
-per runner, in memory (`runnerhost/CiRunnerNodeHealth`): a second ask while one is pending on a live
-session answers its `requestId` and sends nothing; an answer naming another id is dropped; an answer
-naming none settles the pending one; and one not answered within
-`qits.ci.runner.node-healthcheck.timeout` (`PT5M`) is stored as `ok: false`, `detail: NO_ANSWER`, its
-`requestId` and no checks — what a runner older than the frame always gets. The report lands on
-`ci_runner.node_health` (`jsonb`, `{ok, detail, requestId, dataOmitted, checks}`) and
-`node_health_at` (`V35__runner_node_health.sql`), bounded at 128 KiB by dropping every check's `data`
-and setting `dataOmitted`, and `GET /ci/api/runners/{id}/health` reads it. **Nothing reads it to decide
-anything**: the quarantine, the streak, the schedule and the reinstatement follow the pseudo-build and
-the infra streak alone, and no event announces a node report.
-
-**A connected runner is told**: `Quarantined{reason, since}` when it is taken out and right after its
-`Ack` at every `Hello` while out, `Reinstated{by: admin|healthcheck}` when it is put back — both
-additive frames an older runner drops. And **every change of what a connected runner may hold re-sends
-`Ack` with the effective slots, then `Backlog`**: an operator's `PATCH` of `slots`, a quarantine, a
-reinstatement, a health check queued or settled. A runner learns its slots from an `Ack` alone, so before
-this a runner connected at 0 and raised to 1 sat idle beside a queued run (measured live); the runner
-reads every `Ack` as a new cap and keeps its held runs. **A runner's `Ack` also carries
-`registryMirrors`** (`runnerhost/RunnerRegistryMirrors`): every spelling of the platform's registry and
-mirror the estate's Dockerfiles commit (`registry.<env>.localhost:8080`, `mirror.<env>.localhost:8080`,
-`localhost:8081`/`8082`, `qits.artifacts.registry-host`, and the two stores' qits-net aliases in this
-environment) mapped to `registry.qits.<domain>` or `mirror.qits.<domain>`, plus `docker.io`, `quay.io`
-and `registry.access.redhat.com` to the public mirror's `/hub`, `/quay` and `/redhat`. It is null on a
-qits-ci that knows no public domain.
-
-#### A runner's lifecycle is on the bus
-
-qits-ci publishes one event per lifecycle fact (`ci-events/`, `eu.wohlben.qits.ci.events`), through
-the `RunnerAnnouncer` seam in `ci/control`, implemented by `service/…/bus/RunnerLifecycleAnnouncer`:
-
-- **`RunnerCreated`** — an operator's create committed: `slots`, `plane`, `description`,
-  `stepMemoryLimit` (absent while it takes the platform default).
-- **`RunnerRegistered`** — the register door committed: the runner's `clientId`, and the `docker`,
-  `arch` and `os` it registered with.
-- **`RunnerConnected`** — a connection's `Hello` was taken: `runnerVersion`, `targetVersion` (the
-  pin), `upgradeRequired`, and the host's `docker`, `arch`, `os`.
-- **`RunnerDisconnected`** — a connection that said `Hello` ended: its `runnerVersion`, `heldRuns`
-  (above 0 on a `LOST` connection: those runs wait the reconnect grace, and are recorded
-  `CONNECTION_LOST` only if the runner does not come back for them), and a `reason` — `RETIRED` (sent
-  `Retire`), `REPLACED` (closed `ALREADY_CONNECTED` by a same-version connection), `LOST` (closed
-  without qits-ci closing it), `REFUSED` (closed 1008 at its `Hello`, and never connected) or
-  `SHUTDOWN` (this qits-ci is stopping).
-- **`RunnerUpdateStarted`** — `Upgrade` was sent and the connection drains: `fromVersion`,
-  `toVersion`, `heldRuns`.
-- **`RunnerUpdated`** — a connection of the pinned version said `Hello` beside one of another
-  version, which is being sent `Retire`: `fromVersion`, `toVersion`.
-- **`RunnerChanged`** — an operator's `PATCH` moved at least one setting: the new `slots`, `plane`,
-  `description`, `stepMemoryLimit`, and `changed`, which of them moved.
-- **`RunnerDeleted`** — an operator's delete committed.
-- **`RunnerQuarantined`** — the runner was taken out of service: its `reason`. Once per quarantine; a
-  registration announces it right after `RunnerRegistered`.
-- **`RunnerReinstated`** — a quarantine was lifted: `by` is `admin` or `healthcheck`.
-- **`RunnerHealthChecked`** — a health check settled: `runId`, `result` (`PASSED`/`FAILED`), `detail`.
-  Announced before whatever the result does to the runner's standing; the check's run publishes no
-  build event at all.
-
-Each carries `runnerId` and `runnerName`, and the envelope's `occurredAt` is when the thing happened
-(the row's own `createdAt`/`registeredAt`, the moment the registry changed state), never when it was
-published. The four row events are announced **after their transaction commits**, and a refused
-request — 400, 403, 404, 409, 502 — announces nothing; a `PATCH` that leaves every value as it was
-announces nothing either. A self-update reads `RunnerConnected{upgradeRequired: true}`,
-`RunnerUpdateStarted`, then the successor's `RunnerConnected` and `RunnerUpdated`, then the old
-connection's `RunnerDisconnected{reason: RETIRED}`. **Publishing never waits on qits-events**: the
-announcer hands each event to one ordered publishing thread and returns, so a runner's `Hello` is
-never left unanswered by an outage of the bus, and nothing an announcement does can fail the request
-or the socket frame that caused it.
+**Blocking consumers.** The pacts other repositories pin against `/ci/api/runners` (qits-bootstrap-cli's
+`createRunner`, `listRunners`, `rotateRegistrationToken`, `greenlightRunner`, and
+qits-maintenance-service's `getRunQueue` reading `runners[*]`) have to move with this change in their
+own repositories.
 
 The run listing takes the repository as a **query filter, not a path segment**. ci does not own
 repositories, so `/repositories/{repoId}/runs` asserted a containment this context does not have —
@@ -636,25 +260,23 @@ across all repositories, newest first, no parameters. It is the only read here t
 a repository *and* not a listing of them — "what is CI doing right now" has no repository to scope to,
 and asking per repository would mean knowing the repositories first and still seeing a different
 instant in each answer. It needs no `?limit=`: what is active is bounded by accepted work and the
-connected runners' slots, not by uptime. It became answerable only when a queued run became a row
+CI slots qits-system grants, not by uptime. It became answerable only when a queued run became a row
 (below).
 
 ### The queue, in claim order, with an ETA
 
 `GET /ci/api/runs/queue` answers the question no other route here does: **which build is next, and
 when does the queue get to mine.** `/active` is newest-first and that is a documented contract; the
-order a runner's `Reserve` actually claims in was computed by `CiRunOrdering`, walked by
-`reserveFor` and thrown away.
+order the queue is leased in was computed by `CiRunOrdering` and thrown away.
 
     { "generatedAt": "2026-09-19T12:00:00Z",
       "running": [ CiRunDto, … ],     # newest first, as /active is
-      "queued":  [ CiRunDto, … ],     # suggested claim order; index 0 is claimed next
-      "runners": [ … ] }              # every runner, localhost first — see "Runners"
+      "queued":  [ CiRunDto, … ] }    # suggested claim order; index 0 is claimed next
 
 **Queue-wait prediction is qits-ci's to compute, not a client's.** A client reconstructing the order
 from a listing would be a second implementation of four ordering criteria, a topological pass and a
 private priority rank table — against rows that do not carry half of what the decision reads. It
-would not crash; it would quietly disagree with the order `reserveFor` acts on, and be believed.
+would not crash; it would quietly disagree with the order the leases are asked in, and be believed.
 So the order travels on the rows, as `queuePosition`, and the reasoning travels beside it as
 `ordering` (`{position, kindTier, priority, priorityRank, topologyBlockers: [{runId, repoName}],
 selection}`) — because two runs sit in a given order for one of four completely different reasons and
@@ -917,6 +539,12 @@ one stops the loop. `SKIPPED` therefore means one thing again: the loop never re
 
 ### The image floats in the recipe and is fixed for the run
 
+**Since epic qits-1481 a step's `image:` is ignored**: every step of a run runs in the run's one
+`qits/build-images/ci-slot` container, and the first step's output says so once (`step images are
+ignored: every step runs in qits/build-images/ci-slot`). What follows still holds, for that one
+reference: the run pins `qits/build-images/ci-slot:latest` by digest at accept, and the lease's spec
+names that digest.
+
 **A recipe names `qits/build-images/*:latest` and that stays true.** A version named only in a
 recipe gets no keep from qits-platform-maintenance's pins API, so docker GC would eventually evict
 the image the whole estate boots from; and twenty repositories pinning by hand is twenty commits per
@@ -975,81 +603,36 @@ this key exists at all: zonky's embedded postgres refuses to `initdb` as uid 0 a
 `maven-base` carries `build` (uid 1001) and pre-creates `/workspace`, since a non-root container user
 cannot make a directory at the root of the filesystem.
 
-**`user:` with `docker: true` is a `CONFIG_ERROR`.** A step holding the host's docker socket stays
-root: the socket's ownership is the host's fact and not a repository's. Split the work into two
-steps, which is what every publishing pipeline here already does.
+**Since epic qits-1481 every step runs as user `1001` in the run's ci-slot container**, which is
+what the lease's spec states for the whole container; a step's `user:` still parses, and changes
+nothing a step can observe (it was `build`, uid 1001, on every step that declared one).
 
-**Publishing an image is not a feature here, it is a step.** Steps are sequential, so the push runs
-only after the build steps went green; a failed push is a failed step is a **failed run**, so the
-`BuildSuccessful` announcement (`SUCCESS` only) keeps implying the image exists. The tag is the whole contract
-with qits-platform-deployments, which pulls `<registry>/<repository>/<application>:<sha>` where
-`<application>` is by convention the repository's name — the script must spell exactly that, and the
-only enforcement is the convention plus the deployer's `IMAGE_MISSING` telling on a mismatch.
+**`docker: true` is a `CONFIG_ERROR`** — `docker steps are not supported: steps run in
+qits/build-images/ci-slot without Docker`. No step gets a docker socket: the slot is a container on a
+qits-system target and the socket would be that target's root. The run is recorded with the
+declaring step failed and nothing is leased.
 
-> **`docker: true` makes that step root-equivalent on the host.** The workload spec carries a
-> `hostDockerSocket` flag and the runner bind-mounts its host's docker socket into the step's
-> container — where that socket lives is the runner host's fact, not this service's — and the socket *is* the daemon
-> and the daemon is root: such a step can mount host paths, start privileged containers and leave
-> the sandbox at will. The `--cap-drop=ALL` / `no-new-privileges` flags stay on and still fence the
-> step's own process tree, but they do not bound what the daemon will do on its behalf. It is
-> accepted for the POC under the standing posture (the sources are trusted), and it is **opt-in per
-> step**: a repository declares it, a config diff shows it, and every step that does not declare it
-> keeps exactly the sandbox described below.
-
-The build and the push both happen in the *host's* daemon — the step's CLI is only a client — so the
-registry address must resolve and be trusted **from the docker host**, not from this process. The
-step image supplies the docker CLI; the platform supplies the socket and the two coordinates.
-
-> **The platform builder is the migration off that whole arrangement**, and `docker: true` is its
-> declaration too (the wrapper's `qits-buildkit-plan.md` carries the plan; qits-workspace-daemon's
-> two pipeline files are the converted reference). A socket-holding step is additionally handed:
->
-> - `$BUILDKIT_HOST` — the builder's address, filled in by **the runner**, which owns its builder
->   (and so the address); this service never spells it;
-> - nothing naming the registry: it is `registry.qits.$QITS_DOMAIN`, code a converted recipe composes
->   its `buildctl … --output type=image,name=…,push=true` reference from (qits-731).
->
-> A converted recipe calls `buildctl` (ci-base and node-docker-base ship it), passes no
-> `--network host`, and hands its secrets in **file form** on both sides. The committed `FROM`
-> vhosts keep working: the runner's builder rewrites them by the `registryMirrors` table its `Ack`
-> carries.
->
-> **`build: true` is the converted declaration**, and it is `docker: true` minus the
-> root-equivalence: the same per-step, diff-visible opt-in, the same registry login, the same
-> `$BUILDKIT_HOST` (the runner fills it into a build step's
-> container whenever the key is absent) — and **no socket**. Declaring both on one step is a parse error. An older qits-ci
-> ignores the key, hands the step neither socket nor build environment, and the recipe's
-> `${BUILDKIT_HOST:?}` guard stops it naming the cause.
->
-> There is no kill switch: `qits.ci.buildkit.enabled` was deleted in qits-515. The socket mount
-> itself stays until the last recipe converts — removing it is the migration's end state, not its
-> first move.
+**`build: true` stays**, and is how an image is built: `$BUILDKIT_HOST` is the target's builder,
+which the target sets in the slot (a lease spec may not), and a recipe calls `buildctl … --output
+type=image,name=registry.qits.$QITS_DOMAIN/…,push=true`, passing its secrets in file form. A recipe's
+`${BUILDKIT_HOST:?}` guard stops a step naming the cause when no builder is there.
 
 **A registry that wants a login gets one, the credential is this run's own, and the step's script
-says nothing about either.** The registry's public name answers an anonymous `/v2` with a docker
-Bearer challenge, and the CLI then exchanges a *stored* username/password for a short-lived token at
-the realm the challenge names — by itself, with no `docker login` in the pipeline. At the **first
-step of every run**, qits-ci asks qits-idp to commission a `ci-run` token for that run. Every step
-gets it as `$QITS_TOKEN`, because every step clones from the authenticated git host: the git
-credential helper the bootstrap writes answers the clone host with `oauth2` and the token. A step
-that declared `docker: true` or `build: true` also gets `$DOCKER_CONFIG`, pointing at a directory
-holding the `config.json` the CLI reads, whose entries are `token:<the token>`. Every later step of
-the same run reuses the token; the run's end deletes it. The file lives under `/tmp`, never in the
-checkout, so it can never reach a `docker build` context. It carries **one entry per public registry
-host** — `registry.qits.<domain>` and `mirror.qits.<domain>` — since the docker client picks a login
-by hostname and buildctl does the same, so a build that pulls its base image from the mirror and
-pushes to the registry needs both named. A step that is not a build gets no `$DOCKER_CONFIG`; when
-its own image is the platform's, its `Launch` carries a one-entry document for the runner's pull of
-that image and nothing else.
+says nothing about either.** The run's `ci-run` token is minted before its lease is asked for, and
+the slot gets it as `$QITS_TOKEN`; the git credential helper the bootstrap writes answers the clone
+host with `oauth2` and the token, and `$DOCKER_CONFIG` points at a `config.json` under `/tmp` — never
+in the checkout — whose entries are `token:<the token>`, one per public registry host
+(`registry.qits.<domain>`, `mirror.qits.<domain>`). The run's end deletes the token.
 
 **There are no `qits.ci.registry-auth.*` keys any more.** The credential used to be one static pair
 in a deployment's environment, shared by every run of every repository; a deployment still setting
 them is setting nothing. What decides whether anything is commissioned is
-`quarkus.oidc-client.qits.client-enabled` — off (the shipped default) and no step is launched: a
-step's only credential is the token, so the step is recorded `LAUNCH_FAILED` naming that key.
+`quarkus.oidc-client.qits.client-enabled` — off (the shipped default) and no lease is asked for: a
+run's only credential is the token, so the run waits `QUEUED`.
 
-**A commission that could not be made fails the step**, naming the call, rather than launching a
-step with no credential: an unreachable idp must not surface as a mysterious push 401 minutes later.
+**A commission that could not be made asks no lease**: the run waits `QUEUED` and the reconcile
+tries again, rather than leasing a slot with no credential — an unreachable idp must not surface as a
+mysterious push 401 minutes later.
 
 **The commission states which Git refs the run may push.** qits-ci reads them from the event that
 triggered the run and sends them as `gitRefs` on the token's commission, and qits-githost refuses a
@@ -1921,7 +1504,7 @@ and it is wrong the moment that image changes underneath the declaration.
   runner does: `curl` where the image has it, `wget -O` where it does not, and a refusal **naming the
   image** where neither exists rather than an obscure `not found`. Only the fetch is at issue; the
   CLI is a static binary, so the postlude's `qits artifacts publish …` works whichever arm ran.
-- `build: true` — `${BUILDKIT_HOST:?}`, which fails the step naming the cause when a runner did not
+- `build: true` — `${BUILDKIT_HOST:?}`, which fails the step naming the cause when the target did not
   fill the builder's address in
 - `build:`/`docker:` — the run's token and its subject written to `/tmp/qits-client-*` under `umask 077`, in a
   subshell so the umask bounds those two files and nothing after them
@@ -2237,76 +1820,58 @@ Measured 2026-09-04: that commissioned client was 403 here while every other `/c
 the same bearer, which made the documented manual re-fire mechanism unusable by exactly the callers
 that need it.
 
-## How a step runs — a runner starts the container, qits-ci only talks to it
+## How a run runs — one ci-slot container per run, qits-ci only talks to it
 
 > **No code path in qits-ci runs repo-controlled code as a host process, and none runs it through
-> `docker exec`.** A step's script reaches a container only as the reply on the socket that
-> container's own daemon dialled, and executes only as that daemon's child inside the sandbox.
+> `docker exec`.** A step's script reaches the slot only as the reply on the socket the slot's own
+> daemon dialled, and executes only as that daemon's child inside the sandbox.
 
-One container per step, launched from the step's declared image, in sequence — only a step's
-completion starts the next one, and no state crosses steps. Per step:
+**One container per run** (epic qits-1481): every step of a run executes, in sequence, in the one
+`qits/build-images/ci-slot` container its CI lease started, and the worktree carries from one step to
+the next. The run:
 
-1. **Launch.** qits-ci commissions the run's token (at its first step), mints the launch an id bound
-   to that token's subject, and sends the runner holding the run a
-   `Launch{workloadSpec}` over the runner socket (`runnerhost/StepWorkloadSpecs` composes the spec,
-   `runnerhost/StepContainerSettings` supplies what it is composed from). The runner turns it into a
-   `docker run` on its own host and answers `Launched` or `LaunchFailed` with docker's words. The
-   image's entrypoint is overridden to a fixed, host-authored bootstrap
-   (`StepContainerSettings.BOOTSTRAP`): fetch the daemon binary from `$QITS_CI_DAEMON_BINARY_URL`
-   presenting `$QITS_TOKEN`, turn the token into the step's git, maven, npm and docker credentials,
-   `chmod +x`, `exec`. It is a constant with **zero interpolation** and travels as JSON list elements
-   (`["/bin/sh"]`, `["-c", BOOTSTRAP]`) that the runner hands docker one at a time, so nothing about the
-   repository is ever concatenated into it — the whole contract rides as environment. The image
-   contract is therefore `git`, `bash`, and a downloader (`wget` **or** `curl`).
+1. **Lease.** qits-ci commissions the run's token, mints the launch an id bound to that token's
+   subject, and asks qits-system for a CI lease whose spec (`targethost/CiSlotSpecs`, from what
+   `targethost/CiSlotSettings` holds) is the pinned ci-slot image, the run's environment, user
+   `1001` and the `qits.ci.slot.*` limits. A target grants it and starts the slot. The fixed,
+   host-authored bootstrap (`CiSlotSettings.BOOTSTRAP`) fetches the daemon binary from
+   `$QITS_CI_DAEMON_BINARY_URL` presenting `$QITS_TOKEN`, turns the token into the slot's git,
+   maven, npm and docker credentials, `chmod +x`, `exec`. It is a constant with **zero
+   interpolation**; the whole contract rides as environment.
 2. **Register.** The daemon **dials out** to `wss://ci.qits.<domain>/ci/daemon`, through the edge,
    presenting the run's token — which the edge forwards as the token's subject with the role
-   `qits:ci-run`, what the endpoint's `@RolesAllowed` demands at the upgrade — and names its launch
-   id in its first frame. It is admitted when that launch is recorded against that subject.
-   qits-ci never dials in and never learns an address from a container.
-3. **Initialize.** The daemon does its own shallow clone and checks out the pushed sha, then says so
-   — or reports a structured failure. A checkout that cannot find the commit is how a force-push
-   between the host's ancestor check and the container's clone surfaces, and it makes qits-ci
-   re-read the config source and discard a run that describes a push which no longer exists.
-4. **The step arrives as the answer.** The host replies to `Initialized` with this step's script.
-   The container never receives the config file, only its own script.
-5. **Execute and stream.** The daemon runs the script in the checkout and streams stdout/stderr back
-   as chunks, then a terminal frame with the exit code and whether its own deadline killed the
-   child. Timestamps are stamped **here**, on receipt, never taken from the container.
+   `qits:ci-run` — and names its launch id in its first frame. It is admitted when that launch is
+   recorded against that subject. qits-ci never dials in and never learns an address from a
+   container.
+3. **Initialize.** The daemon clones and checks out the run's sha once, then says `Initialized` — or
+   reports a structured failure. A checkout that cannot find the commit makes qits-ci re-read the
+   config source and discard a run that describes a push which no longer exists.
+4. **Each step arrives as a `RunStep`** — `{correlationId, stepIndex, script, timeoutSeconds,
+   env}`, the env carrying `QITS_CI_STEP_INDEX` — the first as the answer to `Initialized`, each
+   later one after the previous `StepFinished`. The slot never receives the config file.
+5. **Execute and stream.** The daemon runs the script in the worktree and streams stdout/stderr back
+   as `StepChunk`s, then `StepFinished{stepIndex, exitCode, timedOut}`. Timestamps are stamped
+   **here**, on receipt, never taken from the container.
 6. **Persist at finish.** Chunks feed a bounded in-memory relay that `GET /ci/api/runs/{runId}`
-   exposes as `live` while the run is running; the step's **row is written once, already terminal**,
-   at the step's end. The database never holds a half-written step.
-7. **Teardown.** qits-ci sends `Reap` on every path; the runner runs `docker rm` and answers `Reaped`
-   with the container's log tail, so the read-before-removal ordering cannot be lost. The launch
-   record is forgotten, and the next step starts — or the run closes, the remaining steps are recorded
-   `SKIPPED`, and `Released{runId}` frees the runner's slot. A container a previous life of the runner
-   left behind is removed by the runner's own boot sweep, not by qits-ci.
+   exposes as `live`; the step's **row is written once, already terminal**.
+7. **Close.** After the last step — or the first red one, the rest recorded `SKIPPED` — qits-ci
+   sends `Close`, ends the lease and deletes the run's token.
 
-The same seven steps as a diagram, plus the one thing prose keeps having to disambiguate — the
-control WebSocket every step dials versus the host's docker socket only a `docker: true` step is
-given — are in [`docs/step-execution-flow.md`](docs/step-execution-flow.md). The prose above stays
-the contract; the diagram illustrates it.
+The same flow as diagrams is in [`docs/step-execution-flow.md`](docs/step-execution-flow.md). The
+prose above stays the contract; the diagrams illustrate it.
 
 **qits-ci spawns no process at all, holds no docker socket and calls no orchestrator** — the config
-read is an HTTP call, so the host needs no `git`, and the container lifecycle is two frames on the
-runner socket, so it needs no docker CLI either. Every docker call is the runner's, on the runner's
-host: `docker run` for a `Launch`, `docker rm` for a `Reap`, and its own boot sweep. That holds for
-the platform host too, whose steps are run by the `localhost` runner qits-deployments deploys beside
-qits-ci. `exec` was never in the vocabulary and is not on the wire either, not even to deliver the
-daemon binary. (Until qits-506 an in-process executor asked qits-containers for each container
-instead; it, `CiDaemonStepRunner` and the `qits-containers-client` dependency are deleted.)
+read is an HTTP call, and the container is a lease at qits-system. A step gets no docker socket
+either: `docker: true` is a `CONFIG_ERROR`, and an image build is the target's builder's
+(`build: true`, `$BUILDKIT_HOST`).
 
-A step's script is **repo-controlled code**, so the step container is a hostile-code sandbox:
-`--cap-drop=ALL`, `no-new-privileges`, no docker socket unless the step declared `docker: true`
-above, and memory/pids/cpu caps
-(`qits.ci.memory-limit`, `…pids-limit`, `…cpus`; a runner's own `stepMemoryLimit` replaces the first
-for the steps it runs — see "Runners"). The daemon lives *inside* that sandbox and the
-script is its child, so everything arriving over the socket is attacker-influenced data about the
-run: recorded, never trusted. The residual gap — a push is itself unauthenticated, and running
-repo-committed scripts is the feature — is a known, documented issue.
+A step's script is **repo-controlled code**, so the slot is a hostile-code sandbox: user `1001`, no
+docker socket, and the `qits.ci.slot.*` memory/pids/cpu caps. The daemon lives *inside* that sandbox
+and the script is its child, so everything arriving over the socket is attacker-influenced data
+about the run: recorded, never trusted.
 
 **The daemon version is the pom, and that is the whole of it.** `CiDaemonPins.answer()` is resolved
-once when a run is created, recorded on the run row, and injected into every one of that run's
-containers, so a deploy landing mid-run cannot make step 3 speak a different protocol than step 1.
+once when a run is created, recorded on the run row, and injected into the run's slot, so a deploy landing mid-run cannot change the daemon a run's lease downloads.
 What it answers is `CiDaemonBinary.VERSION` — a constant filtered into the
 `eu.wohlben.qits:qits-ci-daemon-protocol` jar at build time, naming the `qits-ci-daemon` binary the
 same release published. So the wire contract both sides speak and the binary one side downloads are
@@ -2362,15 +1927,14 @@ document's shape, and an always-blank key costs it nothing while a removed one c
 `ci-daemon-pin`), it is UP unconditionally, and it reports the name, version and source as health
 data. It had a DOWN arm while the ladder could fall all the way through — every candidate rejected
 and nothing configured — and that state no longer exists. Nothing is lost at qits-cd's `awaitHealthy`
-gate, and since qits-443 nothing else is either: `CiRunnerReadinessCheck` (`ci-runners`, formerly
-`ci-run-workers`) was the real gate and is an always-UP readout too now — see "Readiness counts
-runners" for why a check that waits for a runner cannot gate a deployment.
+gate. (`CiRunnerReadinessCheck`, `ci-runners`, went with the runners in epic qits-1481: readiness
+depends on no target, no lease and no inbound connection.)
 
-**Failures stay distinguishable.** The runner refusing the launch (`LaunchFailed`, or no answer
-within `qits.ci.runner.launch-timeout-seconds`), a container whose bootstrap never produced a daemon
-(its own log tail comes back on the `Reaped` that removes it and becomes the step's output), a daemon that registered and then went quiet, a structured setup failure, a lost socket and
-a genuine step timeout are six different recorded outcomes — none of them is "the step failed with
-exit −1".
+**Failures stay distinguishable.** A lease that ended `FAILED` or `EXITED` before its daemon said
+`Initialized` (its detail becomes the step's output), a daemon that never dialled within
+`qits.ci.daemon-register-timeout-seconds`, a daemon that registered and then went quiet, a
+structured setup failure, a lost socket and a genuine step timeout are different recorded outcomes —
+none of them is "the step failed with exit −1".
 
 ## Following a run, stopping one, and asking again
 
@@ -2385,7 +1949,7 @@ JSON body is `{ "reason": "…" }`; absent or blank records `USER_CANCELLED`. Th
 was on is recorded `FAILED` with "cancelled" in its output and the rest `SKIPPED`; the run itself
 finishes as `CANCELLED`, not as a failed pipeline verdict. A run still
 `QUEUED` can be cancelled too, and it is the cheap case: there is no container to ask, so the run is
-recorded `CANCELLED` with no steps and no runner ever reserves it. Cancelling a run that has already
+recorded `CANCELLED` with no steps and no lease ever claims it. Cancelling a run that has already
 finished is a 409. Like every other operation this service serves, it is in `docs/openapi.yml`;
 nothing is hidden there any more, since the one hidden operation was the machine-only push intake.
 A queued run is also cancelled automatically when a newer one supersedes it — a re-fold of the same
@@ -2396,7 +1960,7 @@ sharing `main` by convention are independent pipelines rather than duplicates.
 **One repository builds one release request at a time** (qits-552). When a release request's QA run
 (phase `RELEASE_REQUEST`) is accepted for a repository — by its event or by a retry — every other
 request's unfinished QA run of that repository is superseded: a queued one is settled `CANCELLED` at
-once, a running one is stopped on its runner, and both record `SUPERSEDED_BY_RELEASE_REQUEST` and the
+once, a running one is stopped in its slot, and both record `SUPERSEDED_BY_RELEASE_REQUEST` and the
 newer run's id. The newest wins. Publish runs (`RELEASE`), runs that are no part of a release, other
 repositories and the same request's own runs are untouched, and a superseded run publishes no
 `BuildSuccessful`/`BuildFailed`.
@@ -2404,7 +1968,7 @@ repositories and the same request's own runs are untouched, and a superseded run
 **Two more reasons exist and no live path produces the rows they settle.** A `QUEUED` row no engine
 can execute — a `POST_RECEIVE` leftover from a deployment that predates the 2026-09-05 retirement, or
 an event run whose trigger snapshot cannot be read — is settled `CANCELLED` with `TRIGGER_RETIRED` or
-`TRIGGER_UNREADABLE` by the first runner reservation that walks past it, rather than left sitting in
+`TRIGGER_UNREADABLE` by the lease request that finds it, rather than left sitting in
 `/ci/api/runs/active` waiting for an engine that does not exist. Nobody cancelled it; the engine that
 would have run it is gone, and the row is where that is written down.
 
@@ -2432,30 +1996,28 @@ run that has not finished is a 409; everything terminal is retryable, cancelled 
 
 **A run the infrastructure failed is retried automatically, at once** (qits-440). When a run goes
 `FAILED` on a step that ended `LAUNCH_FAILED`, `NEVER_STARTED` or `CONNECTION_LOST` — exactly the
-set a runner's quarantine counts (`CiRunnerHealth.INFRA_OUTCOMES`), so a build's own exit code, 137
+set `InfraFailures.INFRA_OUTCOMES` names, so a build's own exit code, 137
 included (with the one exception below), a timeout, a failed checkout and a cancellation never qualify — qits-ci re-fires it through
-this same retry path, into the ordinary queue with no runner pinned, and announces **no
+this same retry path, into the ordinary queue on a fresh lease, and announces **no
 `BuildFailed`** for it: a release request's gate hears only the retry's verdict, which carries
 `retryOfRunId`, so an outage no longer rejects the request. At most `CiRunService.AUTO_RETRY_MAX` (2)
 automatic retries in a row per original run, counted along `retryOfRunId`; the next infra failure
 settles as an ordinary red. The retry says so on the run — `autoRetry: true` and `retryReason`
 (`V25__run_auto_retry.sql`); the failed run keeps its `FAILED` row, its failing step's output ends
-with `[infra failure (runner … disconnected) — retried automatically as run <id>]`, and the failure still counts toward the runner's quarantine. A retry a person presses is
+with `[infra failure (the connection to the run's lease container was lost on target …) — retried automatically as run <id>]`. A retry a person presses is
 not marked and starts the count again.
 
 **One exit code is infrastructure too** (qits-556): a step that ran and exited non-zero whose output
-ends with one of `CiRunnerHealth.INFRA_SIGNATURES` — `mount callback failed`, `failed to Lchown`,
+ends with one of `InfraFailures.INFRA_SIGNATURES` — `mount callback failed`, `failed to Lchown`,
 `subordinate IDs in /etc/subuid`, `potentially insufficient UIDs or GIDs`, the words buildkit uses when
-its user namespace cannot map an id a layer owns. It fails on that runner every time and builds green
-anywhere else, so `CiRunnerHealth.isInfra` — the one classifier the quarantine and the automatic retry
-share — counts it like an infra outcome, and the retry line names it (`the builder could not map a file
-owner ("failed to Lchown") on runner …`). Only the last 40 lines are read, so a signature a build
+its user namespace cannot map an id a layer owns. It fails on that target every time and builds green
+anywhere else, so `InfraFailures.isInfra` counts it like an infra outcome, and the retry line names it
+(`the builder could not map a file owner ("failed to Lchown") on target …`). Only the last 40 lines are read, so a signature a build
 printed and survived is not one.
 
-**A retry is not kept off the runner that failed it.** It re-enters the ordinary queue and any runner
-may take it, that runner included. Keeping it off (`avoid_runner_ids`, qits-556) was removed on the
-owner's ruling of 2026-09-30: it was never specified, and with a single runner it strands the retry
-`QUEUED` forever.
+**A retry is not kept off the target that failed it.** It asks a fresh lease and qits-system grants
+it wherever it grants it. (`ci_run.avoid_runner_ids`, from qits-556 and unread since qits-443, is
+dropped in `V39__run_leases.sql`.)
 
 **How it gets past the dedupe.** `unique (trigger_event_id, repo_id, config_path)` is the
 at-most-one-run-per-(event, trigger file) guarantee, and a retry is by definition the same three
@@ -2472,8 +2034,8 @@ release request is one chain in the log rather than an unexplained root.
 ## What a restart costs
 
 **A run is a row from the moment it is accepted.** The trigger engine `INSERT`s before it returns,
-with status `QUEUED`, and a runner's reservation flips it to `RUNNING`, naming itself in
-`runner_id`. Before that, a queued
+with status `QUEUED`, asks qits-system for its CI lease (`lease_id`), and the lease's grant flips it
+to `RUNNING`, naming the target in `target_id`. Before that, a queued
 run was a closure on a single-threaded executor and nothing else — invisible to every read surface,
 and gone with the process. That was the lossy intake: a redeploy landing between acceptance and the
 build lost the build with no row anywhere to say so, and the fix was to replay the event by hand.
@@ -2519,15 +2081,17 @@ On boot:
 - push-triggered runs left `RUNNING` are marked `FAILED` — their in-flight step died with the
   process and CI cannot assume arbitrary repository-authored work is safe to repeat;
 - event-triggered runs left `RUNNING` have partial step rows cleared and go back to `QUEUED`, to be
-  re-run from their stored event/trigger snapshot by whichever runner reserves them next. That
+  re-run from their stored event/trigger snapshot on a fresh lease (a `RUNNING` run that holds a
+  lease is inherited instead and continues where it was, qits-1192 — see "Runs are CI leases"). That
   restart is what recovers them: the event was claimed when it arrived, so catch-up will not offer it
   a second time. Event pipelines are an at-least-once boundary and their scripts must be idempotent;
-- runs left `QUEUED` stay queued and the backlog is **announced** to the runners once, because they
+- runs left `QUEUED` stay queued and each is asked a lease (a lease a previous process asked for is
+  ended and asked again), because they
   never started and the row says everything needed to start them. Nothing is lost and nothing has to
   be replayed;
-- qits-ci removes no container — a step container belongs to the runner that started it, and the
-  runner's own boot sweep removes what a previous life of it left — and a daemon from a previous life
-  that dials in names a launch this process does not know and is closed 1008;
+- qits-ci removes no container — a slot belongs to its lease, and a lease no live run names is ended
+  by the reconcile — and a daemon from a previous life that dials in names a launch this process
+  does not know and is closed 1008;
 - every event left in `ci_owed_event` is **re-evaluated**, on its own thread so a slow git host
   cannot lose the container healthcheck's race — the runs a dead process accepted and never
   recorded.
@@ -2551,26 +2115,19 @@ a repository's own listing will show.
 ## Deploying it
 
 - **qits-ci needs no docker socket.** It holds none, mounts none, spawns no process and calls no
-  orchestrator: every step container is started and removed by the **runner** holding the run, with
-  `docker run`/`docker rm` on the runner's own host, on a `Launch`/`Reap` qits-ci sends over the
-  runner socket. The platform host's steps are the `localhost` runner's, a `qits-ci-runner` that
-  qits-deployments runs beside qits-ci (see "Runners"). A deployment still mounting
+  orchestrator: every run's ci-slot container is started and removed by the qits-system target its
+  CI lease is granted on (see "Runs are CI leases"). Set `qits.system.url` (`QITS_SYSTEM_URL`) where
+  qits-system is not `http://<env>-qits-system:8080`. A deployment still mounting
   `/var/run/docker.sock` into qits-ci is giving it root on the host for no reason left in the code.
   `qits.containers.url`, `qits.containers.client.*`, `qits.ci.containers.owner`,
   `qits.ci.containers.boot-reap-patience` and `qits.ci.containers.launch-patience` are deleted with
   the in-process executor (qits-506); a leftover entry for any of them is never read.
-- **Capacity is runners and their slots, and nothing on qits-ci sizes it.** `qits.ci.concurrent-builds`,
-  `qits.ci.queue-poll-interval` and `qits.ci.in-process-executor.enabled` are deleted with the worker
-  pool they sized, paced and switched (qits-506), and
-  `env.QITS_CI_CONCURRENT_BUILDS` / `env.QITS_CONTAINERS_URL` are listed as deliberately absent in
-  `.config/qits/configuration.yml`. How many pipelines run at once is the sum of the connected,
-  non-quarantined runners' `slots` (`PATCH /ci/api/runners/{id}`); `GET /ci/api/runs/queue` forecasts
-  from exactly that sum, and with none every queued run's ETA is `NO_BUILD_SLOTS`. An accepted run
-  waits `QUEUED` until a runner answers the `Backlog` it is sent with a `Reserve`. Steps remain
-  sequential within one pipeline. Size a runner's slots together with its host's CPU and memory and
-  the per-container `qits.ci.cpus`/`memory-limit` caps (or its row's `stepMemoryLimit`).
-- **`/q/health/ready` does not wait for a runner.** `ci-runners` is always UP and says in a `warning`
-  when none is connected; see "Readiness counts runners" under "Runners".
+- **Capacity is qits-system's, and nothing on qits-ci sizes it.** How many runs execute at once is
+  how many CI leases qits-system grants; an accepted run waits `QUEUED` with its lease asked for
+  until one is granted. Each slot is capped by `qits.ci.slot.memory`, `.memory-swap`, `.pids-limit`
+  and `.cpus` (4g, 4g, 4096, 2). Steps remain sequential within one run. `qits.ci.concurrent-builds`,
+  the runner slots and the `qits.ci.memory-limit`/`pids-limit`/`cpus` caps are deleted.
+- **`/q/health/ready` waits for nothing outside the process**: no target, no lease, no connection.
 - **The run queue is ordered, not FIFO** (since 2026-09-07), and nothing has to be configured for
   that. Queued runs are claimed by: a release build (`SCMRelease`-triggered) before anything else;
   then dependency order, so a run whose repository qits-projects named downstream of another queued
@@ -2579,12 +2136,9 @@ a repository's own listing will show.
   platform that states none of it is claimed oldest-first, exactly as before. A run's own value is on
   `GET /ci/api/runs/*` as `priority`, so an operator can read why the queue reordered.
 - **Make sure the process has `QITS_DOMAIN`**, the platform's public domain, which qits-deployments
-  writes into every container (`qits.ci.domain` reads it). Every address a runner and a step are
-  told is composed from it — `https://<host>.qits.<domain>` — and there is nothing to fall back to:
-  without it qits-ci declares no runner, renders no install script, answers the register door 503
-  and launches no step (`LAUNCH_FAILED`, `EDGE_PLANE_UNCONFIGURED`). The three runner overrides
-  (`qits.ci.runner.public-url`, `.token-url`, `.artifacts-url`) re-point what a runner is told; a
-  step's addresses have no override.
+  writes into every container (`qits.ci.domain` reads it). Every address a slot is told is composed
+  from it — `https://<host>.qits.<domain>` — and there is nothing to fall back to: without it qits-ci
+  asks no lease, and a run waits `QUEUED`. A slot's addresses have no override.
 - Set `qits.ci.git-host-url` to the git host as reachable from the ci host. **It ends at the
   service, not at `/git`** — ci appends `/git/<repoId>` itself, because `/git` is the codebase's
   segment for the git host while *which* service hosts it is a deployment fact. The git host is
@@ -2627,7 +2181,7 @@ a repository's own listing will show.
 - `qits.artifacts.registry-host` is the host a run's pinned step image is addressed under and
   recognised by; `qits.artifacts.image-repository` is the image namespace a step reads as
   `$QITS_IMAGE_REPOSITORY`. Neither is an address a step dials: a step is told the registry's public
-  name, and its runner pulls the pinned image from that public name.
+  name, and its target pulls the pinned ci-slot image from that public name.
 - `qits.artifacts.maven.registry-url` (and `qits.artifacts.url`, blank by default) is where qits-ci
   **itself** asks the registry for a step image's digest, from inside the swarm; the shipped default
   is qits-artifacts' alias. It is not handed to a step.

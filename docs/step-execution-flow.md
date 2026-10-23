@@ -1,221 +1,133 @@
-# How a step actually runs — the picture
+# How a run actually runs — the picture
 
-`README.md`'s **"How a step runs — a runner starts the container, qits-ci only talks to it"** is the
-contract; this file does not restate it. It exists for one reason: the arrangement has **two sockets
-that share a word**, and every reader who meets them in prose has to be told twice which is which. A
-picture is cheaper than re-explaining per reader. (A third socket, the runner's, carries no step data
-at all — only `Launch`/`Reap` and the claim — and is drawn below.)
+`README.md` is the contract; this file draws it. Since epic qits-1481 a run is **one CI lease on a
+qits-system target**: every step of the run executes in the same `qits/build-images/ci-slot`
+container, driven over one control WebSocket. There are no runners, no runner socket and no
+container per step any more, and no step ever gets a docker socket.
 
-| | the control WebSocket | the host's docker daemon socket |
+| | the control WebSocket | the lease |
 |---|---|---|
-| what | `wss://ci.qits.<domain>/ci/daemon`, qits-ci's public name behind the platform edge (composed from `QITS_DOMAIN`) | a unix socket on the **runner's** host — that host's fact, not qits-ci's |
-| who opens it | the **step container**, dialling **out** through the edge; qits-ci never dials in | nobody opens it — the runner bind-mounts its own host's socket into the container as a file |
-| which steps have it | **every** step, always, since the daemon landed | only a step that declared `docker: true` |
-| what rides it | the step's script one way, output chunks and lifecycle frames the other | the docker Engine API, spoken by whatever CLI the step image carries |
-| what it grants | "deliver data about this run", authenticated by the run's `ci-run` token; the launch is named in the daemon's first frame | **root on the host** — the socket *is* the daemon |
-| if it is missing | the step is recorded `NEVER_STARTED` / `CONNECTION_LOST` | a step that asked for it cannot build or push; every other step never notices |
-
-They are unrelated. The control socket is how a step *is* a step; the docker socket is one optional
-privilege a repository can ask for in writing.
+| what | `wss://ci.qits.<domain>/ci/daemon`, qits-ci's public name behind the platform edge (composed from `QITS_DOMAIN`) | `POST /system/api/leases` at qits-system: slot type `CI`, owner `qits-ci`, owner ref the run id |
+| who opens it | the slot's **`qits-ci-daemon`**, dialling **out** through the edge; qits-ci never dials in | qits-ci, once per run, when the run is queued |
+| what rides it | every step's script one way (`RunStep`), output chunks and lifecycle frames the other, and the run's `Close` | the slot's spec — image pinned by digest, environment, user `1001`, limits — and the lease's state |
+| what it grants | "deliver data about this run", authenticated by the run's `ci-run` token; the launch is named in the daemon's first frame | one container on one target for as long as the run holds the lease |
+| if it goes wrong | the step is recorded `NEVER_STARTED` / `CONNECTION_LOST` | a lease that ends `FAILED` or `EXITED` before the daemon said `Initialized` is the run's first step `LAUNCH_FAILED`, with the lease's own words |
 
 ```mermaid
 flowchart LR
     ci["qits-ci<br/>(no docker socket)"]
-    subgraph host["the runner's host"]
-        runner["ci-runner"]
-        dockerd["dockerd<br/>root"]
+    system["qits-system<br/>leases"]
+    subgraph target["a qits-system target"]
+        runner["qits-system-runner"]
+        dockerd["dockerd"]
     end
-    subgraph container["one step container"]
-        daemon["qits-ci-daemon<br/>PID 1"]
-        script["the step's script<br/>repo-controlled code"]
-        cli["docker CLI<br/>only if the image has one"]
+    subgraph slot["one ci-slot container — the whole run"]
+        daemon["qits-ci-daemon"]
+        script["each step's script<br/>repo-controlled code"]
     end
 
-    runner -.->|"runner socket — dialled OUT by the runner<br/>Launch / Reap in, Launched / Reaped out"| ci
+    ci -->|"create / get / list / end lease<br/>(qits system bearer)"| system
+    system -.->|"TargetLeaseChanged on qits-events"| ci
+    system -->|"grants the lease to a target"| runner
     runner -->|"docker run / docker rm"| dockerd
-    dockerd -.->|"starts and removes the container itself"| container
-    daemon -.->|"control WebSocket — dialled OUT, every step<br/>script in, chunks + frames out"| ci
+    dockerd -.->|"starts the slot, user 1001, the spec's limits"| slot
+    daemon -.->|"control WebSocket — dialled OUT, once per run<br/>RunStep in, chunks + StepFinished out, Close in"| ci
     daemon --> script
-    script --> cli
-    cli ==>|"mounted docker socket — only a docker: true step<br/>Engine API: build, push"| dockerd
 
-    classDef privileged fill:#fde,stroke:#c39,stroke-width:2px
     classDef plain fill:#eef,stroke:#89c
-    class dockerd,cli privileged
-    class ci,runner,daemon,script plain
+    class ci,system,runner,dockerd,daemon,script plain
 ```
 
-The dotted line from the daemon is the control socket: outbound, per step, always there. The thick
-line is the docker socket: a mount, only on a declared step, and root-equivalent. Note that `dockerd`
-is *also* what starts the container in the first place — but it is the **runner's** `dockerd`, driven
-by the runner's own `docker run`/`docker rm` on a `Launch`/`Reap` qits-ci sends it. qits-ci holds no
-docker socket and calls no orchestrator. What `docker: true` changes is that the step gets to talk to
-that `dockerd` too.
+**One address plane.** The slot joins no docker network qits-ci knows of. Every address it is told is
+the public name of a service, `https://<host>.qits.<domain>`, reached through the platform edge with
+the run's token: qits-ci's daemon socket, the git host it clones from, the registry, the mirror,
+qits-workspaces.
 
-**One address plane.** A step container joins no docker network and is given no extra host. Every
-address it is told is the public name of a service, `https://<host>.qits.<domain>`, reached through
-the platform edge with the run's token: qits-ci's daemon socket, the git host it clones from, the
-registry, the mirror, qits-workspaces. The plane on which a step stood on qits-net and dialled each
-service by its wire alias was deleted in qits-515.
+**No docker in a step.** A step that declares `docker: true` is `CONFIG_ERROR` with `docker steps are
+not supported: steps run in qits/build-images/ci-slot without Docker` — the run is recorded with that
+step failed, and nothing is leased. A step's `image:` is ignored, and the first step's output says so
+once: `step images are ignored: every step runs in qits/build-images/ci-slot`. `build: true` stays:
+an image build is the target's builder's (`$BUILDKIT_HOST`, which the target sets and the spec may
+not).
 
 ## The whole flow, once
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Dev as developer
     participant Proj as qits-projects
-    participant Git as qits-githost
     participant Bus as qits-events
-    participant Art as qits-artifacts
+    participant Git as qits-githost
+    participant Ci as qits-ci
     participant Idp as qits-idp
-    participant Ci as qits-ci
-    participant Runner as ci-runner
-    participant Dockerd as runner-host dockerd
-    participant Step as step container
+    participant Sys as qits-system
+    participant Tgt as target (qits-system-runner)
+    participant Slot as ci-slot container
 
-    Dev->>Proj: POST /release-requests — the platform runs no CI outside one
-    Proj->>Bus: ReleaseRequestChanged{repository, backingBranch, mergedSha}<br/>through the outbox — durable, so a qits-ci that was down reads it back
-    Bus-->>Ci: the frame, or a catch-up sweep of it later
-    Note over Ci: an ordinary push announces SCMPublishCommit and matches nothing:<br/>per-push CI retired 2026-09-05, so a push triggers no run at all
-    Ci->>Git: GET /git/{projectId}/{repoName}/tree/main/.config/qits<br/>then each ci-event-*.yml at the head it answered — no clone, no mirror
-    Ci->>Ci: match the event, parse the steps, write the run row QUEUED
-    Ci-->>Runner: Backlog{queued}, over the runner socket
-    Runner-->>Ci: Reserve
-    Ci->>Ci: reserveFor — one conditional UPDATE: RUNNING, runner_id = this runner<br/>then pin the daemon version
-    Ci-->>Runner: Take{runId}
+    Proj->>Bus: ReleaseRequestChanged{repository, backingBranch, mergedSha}
+    Bus-->>Ci: the frame (durably; a catch-up sweep reads it back)
+    Ci->>Git: the pipeline files at the event's revision — no clone
+    Ci->>Ci: accept: the run row QUEUED, the ci-slot image pinned by digest
+    Ci->>Idp: POST /idp/api/tokens {contextKind: ci-run, contextId: runId}<br/>BEFORE the lease, so nothing can be granted that has no token
+    Ci->>Sys: POST /system/api/leases {CI, runId, priority, spec}<br/>spec: image@digest, env (no per-step parts), user 1001, qits.ci.slot.* limits
+    Ci->>Ci: record lease_id and the launch (daemon id, token subject) on the row
+    Sys->>Tgt: grant, by priority desc then requested_at
+    Tgt->>Slot: docker run — the slot starts
+    Sys-->>Ci: TargetLeaseChanged{RUNNING, targetId} (and every 30 s reconcile)
+    Slot->>Slot: bootstrap: fetch the pinned qits-ci-daemon with $QITS_TOKEN, exec it
+    Slot-->>Ci: dials the control WebSocket as the run's token, Hello{daemonId}
+    Note over Ci: the dial is also a cue: qits-ci reads the lease and claims the run<br/>(RUNNING, target_id) if no event got there first
+    Slot->>Git: clone with the token, checkout $QITS_CI_SHA
+    Slot-->>Ci: Initialized
 
-    Ci->>Idp: POST /idp/api/tokens {contextKind: ci-run, contextId: runId}<br/>at the run's first step — one token for the whole run
-
-    loop one fresh container per step, in sequence
-        Ci-->>Runner: Launch{workloadSpec} — entrypoint = the host-authored BOOTSTRAP,<br/>the contract as env (public names, $QITS_TOKEN), --cap-drop=ALL, no-new-privileges
-        Runner->>Dockerd: docker run -d …
-        Note over Runner,Dockerd: a step that declared docker: true also gets<br/>the runner host's docker socket mounted here.<br/>Nothing else about the spec differs.
-        Dockerd->>Step: started, detached
-        Runner-->>Ci: Launched{containerId} | LaunchFailed{docker's words}
-        Step->>Art: GET $QITS_CI_DAEMON_BINARY_URL, Bearer $QITS_TOKEN → chmod +x → exec
-        Step-->>Ci: ⇠ dials the CONTROL WebSocket with Bearer $QITS_TOKEN, then Hello{daemonId}
-        Note over Step,Ci: the container dials OUT, through the platform edge, which introspects<br/>the token and forwards its subject. qits-ci never dials in and<br/>never learns an address from a container.
-        Step->>Git: shallow clone --depth 50 with the token, checkout $QITS_CI_SHA
-        Step-->>Ci: Initialized — or InitFailed{SHA_GONE}, and ci then asks the host whether<br/>the repository still HOLDS the sha and discards the run only if it does not
-        Ci-->>Step: RunStep{script, timeoutSeconds} — the reply IS the step<br/>← host-stamped started_at
-        Step-->>Ci: Output{chunk} … many, streamed as the script prints
-        Ci->>Ci: each chunk feeds the bounded relay that GET /ci/api/runs/{runId}<br/>exposes as `live` — poll it; there is no SSE and no push
-        Step->>Step: flush telemetry (≤ qits.ci.telemetry-flush-ms)<br/>OTLP/HTTP to qits-observability, Bearer $QITS_TOKEN
-        Step-->>Ci: Finished{exitCode, timedOut} ← host-stamped finished_at
+    loop every step, on the same connection
+        Ci-->>Slot: RunStep{correlationId, stepIndex, script, timeoutSeconds, env{QITS_CI_STEP_INDEX}}
+        Slot-->>Ci: StepChunk … — the bounded relay behind GET /ci/api/runs/{runId}'s `live`
+        Slot-->>Ci: StepFinished{stepIndex, exitCode, timedOut}
         Ci->>Ci: write the step row ONCE, already terminal
-        Ci-->>Runner: Reap{containerName} — on every path, including the bad ones
-        Runner->>Dockerd: docker rm -f
-        Runner-->>Ci: Reaped{log tail}
     end
-    Ci-->>Runner: Released{runId} — the slot is free
-    Ci->>Idp: DELETE /idp/api/tokens/{tokenId} — the run's token is given back
 
-    Note over Ci: a red step skips the rest; the remaining rows are written SKIPPED
-    Ci->>Bus: BuildSuccessful — only on SUCCESS; BuildFailed with the terminal word otherwise
+    Ci-->>Slot: Close — the daemon exits
+    Ci->>Sys: DELETE /system/api/leases/{leaseId}
+    Ci->>Idp: DELETE /idp/api/tokens/{tokenId}
+    Ci->>Bus: BuildSuccessful on SUCCESS; BuildFailed with the terminal word otherwise
 ```
 
-Three things the diagram is deliberately precise about:
+Four things the diagram is deliberately precise about:
 
-- **The script arrives as a reply.** qits-ci initiates nothing toward a container, and never touches
-  docker: the container exists because the runner ran `docker run` on a `Launch`. The script is a
-  field of the frame answering the daemon's own `Initialized`, which is also why it never appears in
-  an argv and why the container never receives the config *file* — only its own step.
-- **The row is written once, terminal.** While a step runs it has no row at all; `live` is what makes
-  that legible instead of looking like a run with missing steps.
-- **The last arrow goes to the bus and to nobody in particular.** It used to be a POST to
-  qits-platform-deployments' `/events/build-succeeded`, drawn here because a green run *was* a
-  deployment. Both halves of that have gone: qits-ci published its last such POST some releases ago,
-  and the deployer has since removed the path itself — a green build is no longer a reason to put
-  anything live. `BuildSuccessful` is a verdict about a commit now, and its consumer is
-  qits-projects' release-request quality gate.
+- **One lease, one container, one connection per run.** The clone happens once, and every step
+  sees what the steps before it left in the worktree. The `seq` of the output chunks runs across
+  the whole lease, and the daemon ignores a `RunStep` naming an index it has already run, which is
+  what makes a resend after a reconnect safe.
+- **The script arrives as a reply.** qits-ci initiates nothing toward a container and never touches
+  docker. The first `RunStep` answers the daemon's `Initialized`; each later one follows the previous
+  `StepFinished`.
+- **The token comes first and goes last.** It is minted before the lease is asked for and deleted
+  when the run closes, or as soon as the lease is seen to have ended, whichever comes first.
+- **The row is written once, terminal.** While a step runs it has no row; `live` is what makes that
+  legible.
 
-**The reap waits on the flush.** The terminal frame is what triggers `Reap`, and the daemon holds that
-frame back until its own telemetry flush ends — submitted inside `qits.ci.telemetry-flush-ms`, or the
-bound simply runs out — so a step's last logs and spans are either on their way to qits-observability
-or the window has closed before `docker rm -f` can touch the container. An unreachable collector costs
-at most the bound and never changes the step's result. The daemon's last stdout line, visible in
-`Reaped{log tail}`, says which one happened.
+## When the lease does not get that far
 
-## The runner socket, on its own
-
-Every run is a runner's — there is no in-process executor (deleted in qits-506). The runner socket
-carries the claim and the container's lifecycle; the control WebSocket still carries the step.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Runner as ci-runner (runner host)
-    participant Ci as qits-ci
-    participant Step as step container
-
-    Runner-->>Ci: dials /ci/runners/socket with its client's bearer, Hello{capabilities}
-    Ci-->>Runner: Ack{slots}, Backlog{queued}
-    Runner-->>Ci: Reserve
-    Ci->>Ci: reserveFor: the conditional UPDATE, runner_id in the same statement
-    Ci-->>Runner: Take{runId} — or Nothing
-    loop one container per step
-        Ci-->>Runner: Launch{workloadSpec}
-        Runner->>Step: docker run -d
-        Runner-->>Ci: Launched{containerId} | LaunchFailed{docker's words}
-        Step-->>Ci: dials the CONTROL WebSocket through the edge, as every step does
-        Ci-->>Step: RunStep … Finished
-        Note over Step: Finished waits out the telemetry flush<br/>(≤ qits.ci.telemetry-flush-ms) first
-        Ci-->>Runner: Reap{containerName}
-        Runner->>Step: docker rm
-        Runner-->>Ci: Reaped{log tail}
-    end
-    Ci-->>Runner: Released{runId} — the slot is free
-```
-
-A runner socket that closes mid-step keeps the step's container on the runner; the run waits the
-reconnect grace for the runner's next `Hello` to claim it, and ends the step `CONNECTION_LOST`, naming
-the runner, if nobody does. What a previous life of a runner left behind is removed by that runner's
-own boot sweep — qits-ci reaps nothing.
+- **qits-system does not answer** the create: nothing is recorded, the run stays `QUEUED`, and the
+  reconcile asks again.
+- **The lease ends `FAILED` or `EXITED` before `Initialized`** (an image the target refused, a spec
+  the policy rejected, a slot that died booting): the run is claimed anyway and its first step is
+  `LAUNCH_FAILED` with the lease's detail, so the verdict names the cause.
+- **A lease no live run names** (a run settled while its lease was queued, a previous process's
+  leftovers) is ended by the reconcile once it is older than two minutes.
+- **qits-ci restarts mid-run.** The lease outlives the process. The launch and the in-flight step are
+  on the row (`lease_id`, `inflight_*`), the successor registers the launch again under its old id,
+  the re-dialling daemon is admitted as that launch, and the run continues at the first step without
+  a row — the in-flight one taken back, never started twice (qits-1192, kept for leases).
+- **A queued run holding a lease a previous process asked for** has that lease ended and a fresh one
+  requested, since its launch was never recorded in this process.
 
 ## Where a publishing step fits
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Ci as qits-ci
-    participant Step as final step container
-    participant Dockerd as runner-host dockerd
-    participant Reg as qits-artifacts registry
-    participant Bus as qits-events
-    participant Pd as qits-platform-deployments
-
-    Ci-->>Step: RunStep{script} over the control WebSocket
-    Note over Step: the script is just a script:<br/>ref="registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/APP:$QITS_VERSION"<br/>docker build -t "$ref" . && docker push "$ref"
-    Step->>Dockerd: build, over the MOUNTED docker socket<br/>(the CLI streams the context; the daemon builds)
-    Dockerd->>Reg: PUT blobs + manifest, logged in with the run's token
-    Step-->>Ci: Output{chunks} — the build log, over the control WebSocket
-    Step-->>Ci: Finished{exitCode}
-    Ci->>Bus: SoftwareRelease{repoId, projectId, version, package} — one per published declaration
-    Bus-->>Pd: the frame, durably; a deployer that was down reads it back
-    Pd->>Reg: pull REGISTRY/REPOSITORY/APP:VERSION — the tag convention, unenforced
-```
-
-Nothing here is a new mechanism. The push is a step's exit code like any other — a failed push is a
-failed step is a failed run, so the announcement (published declarations only) keeps implying the
-image exists. **What the deployer hears is the release and not the build**: it subscribes to
-`SoftwareRelease`, so a repository whose pipeline publishes nothing deploys nothing, however green
-it goes. Its HTTP intake still takes a `POST /platform-deployments/api/events/software-released`,
-and that door is a bootstrap's and an operator's — qits-ci calls it never.
-
-`$QITS_DOMAIN` and `$QITS_IMAGE_REPOSITORY` are injected into *every* step container so the script
-names no deployment fact: the registry is code under the domain, `registry.qits.$QITS_DOMAIN`
-(qits-731), and no variable carries it.
-
-And note who dials the registry in that diagram: **`Dockerd`, not `Step` and not `Ci`.** The CLI on
-the far side of the mounted socket is a client; the host's daemon is what resolves the registry name,
-negotiates TLS and performs both the build and the push. `registry.qits.$QITS_DOMAIN` is the
-registry's public name, which is what the runner host's daemon resolves.
-
-**A converted recipe replaces `Dockerd` in that diagram with the runner's builder.** The step calls
-`buildctl` against `$BUILDKIT_HOST` — the builder the runner owns, which fills that variable in — and
-the *builder* pulls the bases (rewriting the committed vhost spellings to the public names by the
-`registryMirrors` table qits-ci sends the runner) and pushes the ref the step composed under
-`registry.qits.$QITS_DOMAIN`, the registry's public name, all without the host daemon in the path. The socket stays mounted until the
-last recipe converts; see the README's `docker: true` section and the wrapper's
-`qits-buildkit-plan.md`.
+A publishing step is a step like any other: its script calls `qits artifacts publish …` or drives
+`buildctl` against `$BUILDKIT_HOST`, the target's builder, which pulls the bases through the mirror
+and pushes to `registry.qits.$QITS_DOMAIN` with the run's token. The push is the step's exit code: a
+failed push is a failed step is a failed run, so `SoftwareRelease` — one per published declaration,
+announced by qits-ci only after the run is green and the release is real — keeps implying the
+artifact exists.
