@@ -169,7 +169,11 @@ table, the quarantine and health check, the runner lifecycle events and the `ci-
   (`QITS_CI_STEP_INDEX` rides each `RunStep` instead); user `1001`; limits
   `qits.ci.slot.{memory,memory-swap,pids-limit,cpus}` (4g / 4g / 4096 / 2). qits-system refuses
   `BUILDKIT_HOST`, `HOME` and `CLAUDE_CONFIG_DIR` in a spec, and user 0; this service sends none of
-  them.
+  them. The slot's command rides the env too: the spec has no entrypoint field, so
+  `QITS_CI_BOOTSTRAP` carries `CiSlotSettings.BOOTSTRAP` and the ci-slot image's entrypoint runs
+  `/bin/sh -c "$QITS_CI_BOOTSTRAP"` as user 1001 with `HOME=/work/home`. It writes only under
+  `/tmp`, `/work` and `$HOME`, fetches the pinned daemon with `$QITS_TOKEN` and execs it; the
+  daemon's worktree is `/work/<runId>`.
 - **The lease's progress** arrives as `TargetLeaseChanged` (owner `qits-ci`, slot `CI`) on the bus,
   as a read when the slot's daemon dials in, and from a reconcile every
   `qits.ci.target-leases.reconcile-interval` (`PT30S`). `GRANTED`/`RUNNING` claims the run

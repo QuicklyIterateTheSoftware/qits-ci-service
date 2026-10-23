@@ -71,8 +71,21 @@ class CiSlotSpecsTest {
             "QITS_EVENT_NAME=MaintenanceBump",
             "QITS_EVENT_OCCURRED_AT=2026-09-12T10:00:00Z",
             "QITS_EVENT_PAYLOAD={\"branch\":\"maintenance/dependencies\"}",
-            "QITS_VERSION="),
+            "QITS_VERSION=",
+            "QITS_CI_BOOTSTRAP=" + CiSlotSettings.BOOTSTRAP),
         SlotFixtures.entries(spec.env()));
+  }
+
+  @Test
+  void theSlotsCommandRidesTheSpecAsQitsCiBootstrapAndThePolicyKeysDoNot() {
+    Map<String, String> env = SlotFixtures.compose().env();
+    // The ci-slot image's entrypoint runs `/bin/sh -c "$QITS_CI_BOOTSTRAP"`: the lease spec has
+    // no entrypoint field, so the command is a variable, and it is exactly the shipped text.
+    assertEquals("QITS_CI_BOOTSTRAP", CiSlotSettings.BOOTSTRAP_ENV);
+    assertEquals(CiSlotSettings.BOOTSTRAP, env.get("QITS_CI_BOOTSTRAP"));
+    for (String policy : List.of("HOME", "CLAUDE_CONFIG_DIR", "BUILDKIT_HOST")) {
+      assertFalse(env.containsKey(policy), "the spec carries " + policy);
+    }
   }
 
   @Test
@@ -87,9 +100,12 @@ class CiSlotSpecsTest {
     // No docker socket vocabulary: a slot has none.
     assertFalse(env.containsKey("DOCKER_BUILDKIT"));
     assertFalse(env.containsKey("BUILDX_NO_DEFAULT_ATTESTATIONS"));
-    // And nothing of the deleted internal plane (qits-515).
+    // And nothing of the deleted internal plane (qits-515). The bootstrap is code, not an address.
     env.forEach(
         (key, value) -> {
+          if (key.equals(CiSlotSettings.BOOTSTRAP_ENV)) {
+            return;
+          }
           assertFalse(key.startsWith("QITS_GIT_AUTH_"), key);
           assertFalse(key.startsWith("QITS_COMMISSIONED_CLIENT"), key);
           assertFalse(value.contains("-qits-"), key + " names a qits-net alias: " + value);
@@ -109,7 +125,11 @@ class CiSlotSpecsTest {
             sample.daemonId(),
             sample.daemonBinaryPath(),
             sample.image(),
-            Map.of("BUILDKIT_HOST", "tcp://elsewhere:1234", "HOME", "/root", "QITS_EVENT_NAME", "E"));
+            Map.of(
+                "BUILDKIT_HOST", "tcp://elsewhere:1234",
+                "HOME", "/root",
+                "QITS_CI_BOOTSTRAP", "echo owned",
+                "QITS_EVENT_NAME", "E"));
     Map<String, String> env =
         CiSlotSpecs.compose(
                 SlotFixtures.shippedSettings().settings(),
@@ -119,6 +139,7 @@ class CiSlotSpecsTest {
             .env();
     assertFalse(env.containsKey("BUILDKIT_HOST"));
     assertFalse(env.containsKey("HOME"));
+    assertEquals(CiSlotSettings.BOOTSTRAP, env.get("QITS_CI_BOOTSTRAP"), "the command is ours");
     assertEquals("E", env.get("QITS_EVENT_NAME"));
   }
 

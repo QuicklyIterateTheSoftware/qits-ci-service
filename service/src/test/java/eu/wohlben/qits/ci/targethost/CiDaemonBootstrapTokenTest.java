@@ -280,6 +280,78 @@ public class CiDaemonBootstrapTokenTest {
         gitCredential(composed, "https", "githost.qits.example.org"));
   }
 
+  /**
+   * Started the way the ci-slot image starts it — {@code /bin/sh -c "$QITS_CI_BOOTSTRAP"}, the
+   * text read out of the composed spec's own env — as this suite's user, with a {@code HOME} under
+   * the work root that does not exist yet (the target sets {@code HOME=/work/home}): the home is
+   * made, npm's credential lands in it, and the daemon is exec'd.
+   */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  public void startedFromItsSpecVariableWithAFreshHomeTheBootstrapBecomesTheDaemon()
+      throws Exception {
+    assumeShell();
+    Map<String, String> composed = composedEnv();
+    assertEquals(CiSlotSettings.BOOTSTRAP, composed.get(CiSlotSettings.BOOTSTRAP_ENV));
+    Path home = work.resolve("work").resolve("home");
+
+    Path out = work.resolve("stdout");
+    Path err = work.resolve("stderr");
+    ProcessBuilder builder =
+        stripped(new ProcessBuilder("/bin/sh", "-c", "exec /bin/sh -c \"$QITS_CI_BOOTSTRAP\""), composed);
+    builder.environment().put(CiSlotSettings.BOOTSTRAP_ENV, bootstrapUnderTemp());
+    builder.environment().put("HOME", home.toString());
+    builder.redirectOutput(out.toFile());
+    builder.redirectError(err.toFile());
+    Process process = builder.start();
+    assertTrue(process.waitFor(60, TimeUnit.SECONDS), "the bootstrap never exited");
+    Result result = new Result(process.exitValue(), read(out), read(err));
+
+    assertEquals(0, result.exitCode, result.diagnosis());
+    assertTrue(Files.isDirectory(work.resolve("work")), "the work root is made ready");
+    assertTrue(
+        Files.readString(home.resolve(".npmrc")).contains(":_authToken=" + TOKEN),
+        "npm's credential is in the home the target set: " + result.diagnosis());
+    assertEquals(TOKEN + "\n", Files.readString(work.resolve("inherited-token")), "exec'd");
+  }
+
+  /**
+   * Every path the text writes or makes is under {@code /tmp}, {@code /work} or {@code $HOME} —
+   * or under {@code $DOCKER_CONFIG}/{@code $GIT_CONFIG_GLOBAL}, which the spec points into
+   * {@code /tmp}. Read off the text itself: each redirect target and each {@code mkdir} that names
+   * a path or a variable (the XML the text prints is not a redirect).
+   */
+  @Test
+  public void theBootstrapWritesNowhereButTmpWorkAndHome() {
+    java.util.regex.Matcher targets =
+        java.util.regex.Pattern.compile("(?:>>?|mkdir -p)\\s*\"?([/$&][^\\s\"';)]*)")
+            .matcher(
+                CiSlotSettings.BOOTSTRAP
+                    .lines()
+                    .filter(line -> !line.strip().startsWith("#"))
+                    .collect(java.util.stream.Collectors.joining("\n")));
+    List<String> seen = new ArrayList<>();
+    while (targets.find()) {
+      String target = targets.group(1);
+      if (target.startsWith("&") || target.equals("/dev/null")) {
+        continue;
+      }
+      seen.add(target);
+      assertTrue(
+          target.startsWith("/tmp/")
+              || target.equals(CiSlotSettings.WORK_ROOT)
+              || target.startsWith(CiSlotSettings.WORK_ROOT + "/")
+              || target.startsWith("$HOME")
+              || target.startsWith("$DOCKER_CONFIG")
+              || target.startsWith("$GIT_CONFIG_GLOBAL"),
+          "the bootstrap writes " + target);
+    }
+    assertFalse(seen.isEmpty(), "the pattern found no write at all");
+    Map<String, String> env = composedEnv();
+    assertTrue(env.get("DOCKER_CONFIG").startsWith("/tmp/"), env.get("DOCKER_CONFIG"));
+    assertTrue(env.get("GIT_CONFIG_GLOBAL").startsWith("/tmp/"), env.get("GIT_CONFIG_GLOBAL"));
+  }
+
   /** The env the composition sends a lease holding its run's token. */
   private static Map<String, String> composedEnv() {
     return SlotFixtures.compose().env();
@@ -341,6 +413,7 @@ public class CiDaemonBootstrapTokenTest {
       assertTrue(shipped.contains(literal), literal + " moved");
     }
     return shipped
+        .replace("mkdir -p /work ", "mkdir -p " + work.resolve("work") + " ")
         .replace(SETTINGS_PATH, path(SETTINGS_PATH).toString())
         .replace(TOKEN_SCRIPT_PATH, path(TOKEN_SCRIPT_PATH).toString())
         .replace(GIT_HELPER_PATH, path(GIT_HELPER_PATH).toString())

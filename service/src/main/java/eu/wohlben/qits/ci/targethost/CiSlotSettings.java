@@ -24,11 +24,13 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * {@code RunStep} frame on the socket that container's own daemon dialled, and {@link #BOOTSTRAP}
  * interpolates nothing at all.
  *
- * <p><b>The bootstrap is the container's command, and the lease spec has no field for one.</b>
- * {@code LeaseSpec{image, env, user, limits}} carries no entrypoint, so the text below is what the
- * {@code qits/build-images/ci-slot} image must run as its own command: everything it needs reaches
- * it as the lease's environment ({@code $QITS_CI_DAEMON_BINARY_URL}, {@code $QITS_TOKEN}, …), which
- * {@link CiSlotSpecs} composes.
+ * <p><b>The bootstrap is the container's command, and it travels as an environment variable.</b>
+ * {@code LeaseSpec{image, env, user, limits}} carries no entrypoint, so {@link CiSlotSpecs} puts
+ * the text below into the spec's env as {@link #BOOTSTRAP_ENV}, and the {@code
+ * qits/build-images/ci-slot} image's entrypoint runs {@code /bin/sh -c "$QITS_CI_BOOTSTRAP"}. It
+ * runs as user {@code 1001} with {@code HOME=/work/home} (set by the target, never by the spec),
+ * and writes only under {@code /tmp}, {@code /work} and {@code $HOME}; the daemon it becomes puts
+ * the run's worktree at {@code /work/<runId>}.
  */
 @ApplicationScoped
 public class CiSlotSettings {
@@ -140,10 +142,23 @@ public class CiSlotSettings {
    * built by concatenating it with anything; it is the ci-slot container's own command, run as
    * {@code /bin/sh -c BOOTSTRAP} (see the class javadoc).
    */
+  /** The lease-spec variable that carries {@link #BOOTSTRAP} to the ci-slot image's entrypoint. */
+  public static final String BOOTSTRAP_ENV = "QITS_CI_BOOTSTRAP";
+
+  /** Where the daemon puts the run's worktree ({@code <WORK_ROOT>/<runId>}), made ready here. */
+  static final String WORK_ROOT = "/work";
+
   static final String BOOTSTRAP =
       """
       set -e
       set --
+      # The run's worktree is /work/<runId> and the home the target sets is under /work too; both
+      # are made ready here, as the build user, and a root that cannot be written is the daemon's
+      # to report, not this text's.
+      mkdir -p /work 2>/dev/null || true
+      if [ -n "$HOME" ] && [ ! -d "$HOME" ]; then
+        mkdir -p "$HOME" 2>/dev/null || true
+      fi
       if [ -n "$QITS_TOKEN" ]; then
         set -- --header "Authorization: Bearer $QITS_TOKEN"
       fi

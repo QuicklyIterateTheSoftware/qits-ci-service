@@ -130,6 +130,10 @@ public final class CiSlotSpecs {
         env.put(extra.getKey(), value(extra.getValue()));
       }
     }
+    // The slot's command: the ci-slot image's entrypoint runs whatever this variable carries
+    // (`/bin/sh -c "$QITS_CI_BOOTSTRAP"`), since a lease spec has no entrypoint field. Put last,
+    // so no run-scoped extra can shadow it.
+    env.put(CiSlotSettings.BOOTSTRAP_ENV, CiSlotSettings.BOOTSTRAP);
     return new SystemLeases.LeaseSpec(
         plane.slotImage(run.image()),
         env,

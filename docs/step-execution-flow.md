@@ -74,7 +74,7 @@ sequenceDiagram
     Sys->>Tgt: grant, by priority desc then requested_at
     Tgt->>Slot: docker run — the slot starts
     Sys-->>Ci: TargetLeaseChanged{RUNNING, targetId} (and every 30 s reconcile)
-    Slot->>Slot: bootstrap: fetch the pinned qits-ci-daemon with $QITS_TOKEN, exec it
+    Slot->>Slot: entrypoint runs $QITS_CI_BOOTSTRAP (as 1001, HOME=/work/home):<br/>fetch the pinned qits-ci-daemon with $QITS_TOKEN, write credentials, exec it
     Slot-->>Ci: dials the control WebSocket as the run's token, Hello{daemonId}
     Note over Ci: the dial is also a cue: qits-ci reads the lease and claims the run<br/>(RUNNING, target_id) if no event got there first
     Slot->>Git: clone with the token, checkout $QITS_CI_SHA
