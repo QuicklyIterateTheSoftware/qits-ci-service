@@ -451,10 +451,12 @@ public class PackagedPlatformPipelinesTest {
             "QITS_GOLDEN_UPDATE=true ./mvnw",
             "-Dgolden.update=true",
             "-Dquarkus.quinoa=false",
-            "-Dquarkus.http.test-port=0",
             "-Dqits.maven.repository.url=\"$QITS_MAVEN_REPOSITORY_URL\"")) {
       assertTrue(script.contains(line), line);
     }
+    assertFalse(
+        script.contains("-Dquarkus.http.test-port"),
+        "the suite runs on its own test port, as QA runs it");
     // The test phase only: no ITs, nothing packaged, nothing skipped.
     String kind = kindScript(script);
     String mvnw = kind.substring(kind.indexOf("./mvnw"));

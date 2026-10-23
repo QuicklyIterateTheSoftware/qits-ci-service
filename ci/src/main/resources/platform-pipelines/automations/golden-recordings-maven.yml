@@ -66,9 +66,10 @@ script: |
   # The suite, in update mode. `test`, not `verify`: the recordings are surefire's, so no IT runs
   # and nothing is packaged. Quinoa off: the SPA is no input, and the clone does not recurse, so a
   # webui submodule is an empty directory here - the one state Quinoa calls a misconfiguration.
-  # Test port 0: nothing else may hold 8081 in a step container, and a fixed port is a race.
+  # No test-port override: the suite runs exactly as the repository's own QA runs it (qits-1516
+  # measured a test-port override of 0 breaking qits-platform-access-cli's McpServiceTest, whose
+  # test reads the port back and dialled localhost:0).
   QITS_GOLDEN_UPDATE=true ./mvnw -B -ntp ${settings} test \
     -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
     -Dquarkus.quinoa=false \
-    -Dquarkus.http.test-port=0 \
     -Dgolden.update=true
