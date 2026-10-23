@@ -10,8 +10,7 @@ artifacts:
   - { type: 'docker', name: 'qits/qits-thing' }
   - { type: 'maven', name: 'eu.wohlben.qits:qits-thing-client' }
 steps:
-  - image: 'qits/build-images/ci-base:latest'
-    build: true
+  - build: true
     script: |
       set -eu
       # --- platform prelude ---------------------------------------------------------
@@ -60,7 +59,7 @@ steps:
         elif command -v wget > /dev/null 2>&1; then
           wget -q "$@" -O /tmp/qits-bin/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
         else
-          echo 'qits-ci: the image for this step (qits/build-images/ci-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
+          echo 'qits-ci: the image for this step (qits/build-images/ci-slot) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
           exit 1
         fi
         chmod +x /tmp/qits-bin/qits
@@ -100,8 +99,7 @@ steps:
         qits artifacts publish sbom submit --type 'maven' --name 'eu.wohlben.qits:qits-thing-client' \
           --version "$QITS_VERSION" --file 'core/target/sbom.json'
       fi
-  - image: 'qits/build-images/maven-base:latest'
-    script: |
+  - script: |
       set -eu
       # --- platform prelude ---------------------------------------------------------
       : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no platform address}"
@@ -149,7 +147,7 @@ steps:
         elif command -v wget > /dev/null 2>&1; then
           wget -q "$@" -O /tmp/qits-bin/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
         else
-          echo 'qits-ci: the image for this step (qits/build-images/maven-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
+          echo 'qits-ci: the image for this step (qits/build-images/ci-slot) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
           exit 1
         fi
         chmod +x /tmp/qits-bin/qits

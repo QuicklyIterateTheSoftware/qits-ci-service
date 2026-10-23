@@ -103,14 +103,12 @@
 # ---------------------------------------------------------------------------------------------
 # WHEN TO OVERRIDE
 #
-# A repository whose QA half needs more than a compile — qits-ci-daemon's smoke probe really starts
-# a container on the built binary and therefore keeps `docker: true` — declares its own
-# `release-request:` (phase one). Declaring a slot replaces it entirely.
+# A repository whose QA half needs more than a compile declares its own `release-request:` (phase
+# one). Declaring a slot replaces it entirely.
 
 release-request:
 
-  - image: qits/build-images/ci-base:latest
-    build: true
+  - build: true
     timeout-seconds: 3600
     script: |
       # THE FALLBACK COORDINATE, for a repository that rides this recipe and does NOT own the
@@ -192,8 +190,7 @@ release-request:
 
 release:
 
-  - image: qits/build-images/ci-base:latest
-    build: true
+  - build: true
     timeout-seconds: 3600
     script: |
       # THE COORDINATE, OUT OF THE DECLARATION THAT ANNOUNCES IT — the same reading java-service and

@@ -93,8 +93,7 @@
 event: MaintenanceBump
 qits-cli: true
 steps:
-  - image: qits/build-images/node-base:latest
-    timeout-seconds: 1800
+  - timeout-seconds: 1800
     script: |
       set -eu
 

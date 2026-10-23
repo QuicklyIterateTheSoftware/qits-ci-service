@@ -70,8 +70,7 @@
 
 release-request:
 
-  - image: qits/build-images/node-base:latest
-    timeout-seconds: 1800
+  - timeout-seconds: 1800
     script: |
       # THE RUN'S OWN BEARER, MINTED AT THE CALL SITE. qits-ci hands a step both a
       # $QITS_PUBLISH_TOKEN minted when the container started and a $QITS_PUBLISH_TOKEN_COMMAND
@@ -245,8 +244,7 @@ release-request:
 
 release:
 
-  - image: qits/build-images/node-base:latest
-    timeout-seconds: 1800
+  - timeout-seconds: 1800
     script: |
       # Byte-identical to the QA step's preamble; read the rationale there.
       qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}

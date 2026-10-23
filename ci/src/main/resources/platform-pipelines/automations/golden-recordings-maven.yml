@@ -40,7 +40,6 @@
 # postgres, initdb refuses uid 0 and calls getpwuid, and maven-base carries the passwd-backed
 # build user (uid 1001). A step container starts `--cap-drop=ALL`, so the script could not switch
 # user itself.
-image: qits/build-images/maven-base:latest
 user: build
 timeout-seconds: 2400
 script: |

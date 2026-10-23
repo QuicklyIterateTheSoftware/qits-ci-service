@@ -80,7 +80,6 @@ public class CiAutomationComposerTest {
   public void eachDeclaredValueIsRequiredAndTyped() {
     for (String broken :
         List.of(
-            "timeout-seconds: 600\nscript: echo\n",
             "image: x\nscript: echo\n",
             "image: x\ntimeout-seconds: 600\n",
             "image: x\ntimeout-seconds: 0\nscript: echo\n",
@@ -115,8 +114,7 @@ public class CiAutomationComposerTest {
     assertTrue(composed.contains("when:\n  - kind: { exact: 'test-kind' }\n"), composed);
     assertEquals(1, trigger.pipeline().steps().size());
     assertEquals(600, trigger.pipeline().steps().get(0).timeoutSeconds());
-    assertEquals(
-        "qits/build-images/node-browser-base:latest", trigger.pipeline().steps().get(0).image());
+    assertEquals(null, trigger.pipeline().steps().get(0).image(), "a kind's image is ignored");
   }
 
   // --- qits-cli ----------------------------------------------------------------------------------
@@ -212,8 +210,7 @@ public class CiAutomationComposerTest {
     String with = CiAutomationComposer.compose("test-kind", PATH, MINIMAL + "user: build\n");
     assertEquals(
         without.replace(
-            "  - image: 'qits/build-images/node-browser-base:latest'\n",
-            "  - image: 'qits/build-images/node-browser-base:latest'\n    user: build\n"),
+            "  - timeout-seconds: 600\n", "  - user: build\n    timeout-seconds: 600\n"),
         with);
     CiEventTrigger trigger = new CiEventTriggerParser().parse(PATH, with);
     assertEquals("build", trigger.pipeline().steps().get(0).user());

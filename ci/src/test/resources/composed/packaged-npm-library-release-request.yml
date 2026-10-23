@@ -10,8 +10,7 @@ checkout:
   branch: backingBranch
   sha: mergedSha
 steps:
-  - image: 'qits/build-images/node-base:latest'
-    timeout-seconds: 1800
+  - timeout-seconds: 1800
     script: |
       set -eu
       # --- platform prelude ---------------------------------------------------------
@@ -247,7 +246,7 @@ steps:
       elif command -v wget > /dev/null 2>&1; then
         wget -q ${qits_cli_bearer:+--header} ${qits_cli_bearer:+"$qits_cli_bearer"} -O /tmp/qits-cli/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION" || { echo "qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2; exit 1; }
       else
-        echo 'qits-ci: the image for this step (qits/build-images/node-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image to get its reports submitted' >&2
+        echo 'qits-ci: the image for this step (qits/build-images/ci-slot) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image to get its reports submitted' >&2
         exit 1
       fi
       chmod +x /tmp/qits-cli/qits || { echo "qits-ci: could not make /tmp/qits-cli/qits executable" >&2; exit 1; }

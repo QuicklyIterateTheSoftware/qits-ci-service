@@ -4,15 +4,14 @@ event: ReleaseRequestAutomation
 when:
   - kind: { exact: 'golden-recordings-maven' }
 steps:
-  - image: 'qits/build-images/maven-base:latest'
-    user: build
+  - user: build
     timeout-seconds: 2400
     script: |
       set -eu
       # --- platform prelude: the golden-recordings-maven automation ---
       : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no platform address}"
       if ! command -v jq > /dev/null 2>&1; then
-        echo 'qits-ci: the image for this step (qits/build-images/maven-base:latest) has no jq, so the automation payload cannot be read' >&2
+        echo 'qits-ci: the image for this step (qits/build-images/ci-slot) has no jq, so the automation payload cannot be read' >&2
         exit 1
       fi
       field() {

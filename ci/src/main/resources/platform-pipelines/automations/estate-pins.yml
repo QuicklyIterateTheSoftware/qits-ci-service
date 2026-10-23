@@ -72,7 +72,6 @@
 # do not, and both are confined exactly as `dependency-bump.yml`'s are: the payload is read for
 # `.changes` alone (`branch`, `baseRef` and the rest stay the prelude's), and the one fetch is a
 # gitlink's sibling tag, which writes no ref of this repository.
-image: qits/build-images/node-browser-base:latest
 timeout-seconds: 600
 qits-cli: true
 commit-type: bump

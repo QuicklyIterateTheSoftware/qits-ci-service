@@ -237,8 +237,8 @@ public class PackagedReleaseArchetypesTest {
       for (CiPipeline slot :
           Stream.of(recipe.releaseRequest(), recipe.release()).filter(s -> s != null).toList()) {
         for (CiStepDecl step : slot.steps()) {
-          String shell = step.image().startsWith("qits/build-images/") ? "bash" : "sh";
-          syntax(dir, shell, step.script(), name + " (declared, " + step.image() + ")");
+          // Every step runs in the ci-slot image, which has bash.
+          syntax(dir, "bash", step.script(), name + " (declared)");
         }
       }
     }

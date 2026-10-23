@@ -31,7 +31,6 @@
 #
 # `../screenshot-baselines.yml`, which did the same work for the older `ScreenshotBaselines`
 # event, is retired (qits-1007): this kind file is the only way to render baselines now.
-image: qits/build-images/node-browser-base:latest
 timeout-seconds: 1800
 script: |
   if ! jq -e '.scripts["test:browser"]' package.json >/dev/null 2>&1; then

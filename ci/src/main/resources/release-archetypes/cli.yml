@@ -55,13 +55,12 @@
 
 release-request:
 
-  - image: qits/build-images/maven-base:latest
     # The image's non-root build user (uid 1001, with a passwd entry). Nothing here spawns a
     # postgres or an initdb — the usual reason a sibling needs it — and the suite writes only into
     # the checkout and /tmp, both of which that user owns. It is chosen at launch and not switched
     # to inside the script: a step container starts `--cap-drop=ALL`, so without CAP_SETUID and
     # CAP_SETGID `su` cannot switch user at all.
-    user: build
+  - user: build
     timeout-seconds: 1800
     script: |
       # Maven Central through the platform mirror's public name, and the platform registry — code

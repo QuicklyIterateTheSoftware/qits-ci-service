@@ -16,7 +16,8 @@ import java.util.regex.Pattern;
  * <kind>.yml}, declares exactly:
  *
  * <ul>
- *   <li>{@code image} — the step's image;
+ *   <li>{@code image} — optional and <b>ignored</b> (epic qits-1481): every step runs in the run's
+ *       {@code qits/build-images/ci-slot} container. No packaged kind file declares it any more;
  *   <li>{@code timeout-seconds} — the step's deadline;
  *   <li>{@code script} — the regeneration, with no ref handling and no commit code;
  *   <li>{@code qits-cli} — optional, and only ever {@code true}: the pinned qits CLI is fetched
@@ -292,7 +293,8 @@ public final class CiAutomationComposer {
               + new TreeSet<>(KEYS)
               + "; the event, selection, refs and commit are composed by qits-ci");
     }
-    String image = requireText(root, IMAGE_KEY, configPath);
+    // Ignored (epic qits-1481): every step runs in the run's ci-slot container.
+    String image = root.get(IMAGE_KEY) instanceof String declared ? declared : null;
     int timeout = requireTimeout(root, configPath);
     String script = requireText(root, SCRIPT_KEY, configPath);
     boolean qitsCli = optionalTrue(root, QITS_CLI_KEY, configPath);
@@ -315,11 +317,12 @@ public final class CiAutomationComposer {
     out.append("when:\n");
     out.append("  - ").append(KIND_FIELD).append(": { exact: ").append(scalar(kind)).append(" }\n");
     out.append("steps:\n");
-    out.append("  - image: ").append(scalar(image)).append('\n');
     if (user != null) {
-      out.append("    user: ").append(user).append('\n');
+      out.append("  - user: ").append(user).append('\n');
+      out.append("    timeout-seconds: ").append(timeout).append('\n');
+    } else {
+      out.append("  - timeout-seconds: ").append(timeout).append('\n');
     }
-    out.append("    timeout-seconds: ").append(timeout).append('\n');
     out.append("    script: |\n");
     block(out, step(kind, image, script, qitsCli, commitType), "      ");
     return out.toString();
@@ -349,7 +352,7 @@ public final class CiAutomationComposer {
         .append(
             shellQuote(
                 "qits-ci: the image for this step ("
-                    + image
+                    + CiSlot.IMAGE_REPOSITORY
                     + ") has no jq, so the automation payload cannot be read"))
         .append(" >&2\n");
     out.append("  exit 1\n");

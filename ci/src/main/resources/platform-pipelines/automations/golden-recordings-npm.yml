@@ -34,7 +34,6 @@
 # It runs on node-browser-base, the image the `app` QA step tests in (the image `screenshot-
 # baselines` installs on too), so the specs record under the node and npm the gate compares
 # under. A failing spec fails the run, and nothing is committed.
-image: qits/build-images/node-browser-base:latest
 timeout-seconds: 1800
 script: |
   if [ ! -f package.json ]; then

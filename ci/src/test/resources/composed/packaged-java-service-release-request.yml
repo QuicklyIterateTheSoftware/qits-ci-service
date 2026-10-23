@@ -10,8 +10,7 @@ checkout:
   branch: backingBranch
   sha: mergedSha
 steps:
-  - image: 'qits/build-images/node-docker-base:latest'
-    timeout-seconds: 3600
+  - timeout-seconds: 3600
     build: true
     script: |
       set -eu
@@ -175,7 +174,7 @@ steps:
       elif command -v wget > /dev/null 2>&1; then
         wget -q ${qits_cli_bearer:+--header} ${qits_cli_bearer:+"$qits_cli_bearer"} -O /tmp/qits-cli/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION" || { echo "qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2; exit 1; }
       else
-        echo 'qits-ci: the image for this step (qits/build-images/node-docker-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image to get its reports submitted' >&2
+        echo 'qits-ci: the image for this step (qits/build-images/ci-slot) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image to get its reports submitted' >&2
         exit 1
       fi
       chmod +x /tmp/qits-cli/qits || { echo "qits-ci: could not make /tmp/qits-cli/qits executable" >&2; exit 1; }
@@ -184,8 +183,7 @@ steps:
       QITS_REPORT_HOOK
       sh /tmp/qits-report-hook.sh "$qits_step_exit" || echo "qits-ci: reports were not submitted; the step's verdict is unchanged" >&2
       exit "$qits_step_exit"
-  - image: 'qits/build-images/maven-base:latest'
-    timeout-seconds: 2400
+  - timeout-seconds: 2400
     user: 'build'
     script: |
       set -eu
@@ -239,7 +237,7 @@ steps:
       elif command -v wget > /dev/null 2>&1; then
         wget -q ${qits_cli_bearer:+--header} ${qits_cli_bearer:+"$qits_cli_bearer"} -O /tmp/qits-bin/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION" || { echo "qits-ci: the qits CLI could not be fetched: the download of $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION failed" >&2; exit 1; }
       else
-        echo 'qits-ci: the qits CLI could not be fetched: the image for this step (qits/build-images/maven-base:latest) has neither curl nor wget — add one to the image' >&2
+        echo 'qits-ci: the qits CLI could not be fetched: the image for this step (qits/build-images/ci-slot) has neither curl nor wget — add one to the image' >&2
         exit 1
       fi
       chmod +x /tmp/qits-bin/qits || { echo "qits-ci: the qits CLI could not be fetched: could not make /tmp/qits-bin/qits executable" >&2; exit 1; }
@@ -522,7 +520,7 @@ steps:
       elif command -v wget > /dev/null 2>&1; then
         wget -q ${qits_cli_bearer:+--header} ${qits_cli_bearer:+"$qits_cli_bearer"} -O /tmp/qits-cli/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION" || { echo "qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2; exit 1; }
       else
-        echo 'qits-ci: the image for this step (qits/build-images/maven-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image to get its reports submitted' >&2
+        echo 'qits-ci: the image for this step (qits/build-images/ci-slot) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image to get its reports submitted' >&2
         exit 1
       fi
       chmod +x /tmp/qits-cli/qits || { echo "qits-ci: could not make /tmp/qits-cli/qits executable" >&2; exit 1; }

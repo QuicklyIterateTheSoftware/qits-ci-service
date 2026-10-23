@@ -207,7 +207,7 @@ public class PackagedPlatformPipelinesTest {
     assertTrue(composed.contains("  - kind: { exact: 'screenshot-baselines' }\n"), composed);
     assertEquals(1, trigger.pipeline().steps().size());
     CiStepDecl step = trigger.pipeline().steps().get(0);
-    assertEquals("qits/build-images/node-browser-base:latest", step.image());
+    assertEquals(null, step.image(), "image: is ignored, and no kind file declares one");
     assertEquals(1800, step.timeoutSeconds());
     // The kind's own script, between the prelude and the postlude, and valid shell on its own.
     String script = step.script();
@@ -313,7 +313,7 @@ public class PackagedPlatformPipelinesTest {
     assertTrue(composed.contains("  - kind: { exact: 'entity-diagram' }\n"), composed);
     assertEquals(1, trigger.pipeline().steps().size());
     CiStepDecl step = trigger.pipeline().steps().get(0);
-    assertEquals("qits/build-images/maven-base:latest", step.image());
+    assertEquals(null, step.image(), "image: is ignored, and no kind file declares one");
     assertEquals(1800, step.timeoutSeconds());
 
     String script = step.script();
@@ -429,7 +429,7 @@ public class PackagedPlatformPipelinesTest {
     assertTrue(composed.contains("  - kind: { exact: 'golden-recordings-maven' }\n"), composed);
     assertEquals(1, trigger.pipeline().steps().size());
     CiStepDecl step = trigger.pipeline().steps().get(0);
-    assertEquals("qits/build-images/maven-base:latest", step.image());
+    assertEquals(null, step.image(), "image: is ignored, and no kind file declares one");
     // initdb refuses uid 0: the suite's embedded postgres needs the image's passwd-backed user.
     assertEquals("build", step.user());
     assertEquals(2400, step.timeoutSeconds());
@@ -480,7 +480,7 @@ public class PackagedPlatformPipelinesTest {
     assertEquals(null, trigger.checkout(), "recorded at main's head, never at the fold");
     assertTrue(composed.contains("  - kind: { exact: 'golden-recordings-npm' }\n"), composed);
     CiStepDecl step = trigger.pipeline().steps().get(0);
-    assertEquals("qits/build-images/node-browser-base:latest", step.image());
+    assertEquals(null, step.image(), "image: is ignored, and no kind file declares one");
     assertEquals("", step.user(), "the image's own user");
     assertEquals(1800, step.timeoutSeconds());
 
@@ -549,7 +549,7 @@ public class PackagedPlatformPipelinesTest {
     assertEquals(1, trigger.pipeline().steps().size(), "maven, npm, docker and gitlink: ONE step");
     CiStepDecl step = trigger.pipeline().steps().get(0);
     // The image with node, npm, jq, git and awk; no ecosystem here runs maven.
-    assertEquals("qits/build-images/node-browser-base:latest", step.image());
+    assertEquals(null, step.image(), "image: is ignored, and no kind file declares one");
     assertEquals(1800, step.timeoutSeconds());
 
     String script = step.script();
@@ -689,7 +689,7 @@ public class PackagedPlatformPipelinesTest {
     assertTrue(composed.contains("  - kind: { exact: 'estate-pins' }\n"), composed);
     assertEquals(1, trigger.pipeline().steps().size(), "gitlink only: ONE step");
     CiStepDecl step = trigger.pipeline().steps().get(0);
-    assertEquals("qits/build-images/node-browser-base:latest", step.image());
+    assertEquals(null, step.image(), "image: is ignored, and no kind file declares one");
     assertEquals(600, step.timeoutSeconds());
 
     String script = step.script();

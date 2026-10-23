@@ -467,12 +467,11 @@ public final class CiReleaseComposer {
 
   /**
    * The image of the release half synthesised for a composition that declares no {@code release:}
-   * slot ({@link #changelogOnlySlot}). It needs exactly what the release prelude needs — a shell,
-   * {@code git} for the tag fetch and {@code curl} for the CLI — and {@code ci-base} carries all
-   * three ({@code apk add bash curl git jq} in qits-build-images-oci), at a fraction of {@code
-   * maven-base}'s pull.
+   * slot ({@link #changelogOnlySlot}): none. It used to be {@code ci-base}; every step runs in the
+   * run's {@code qits/build-images/ci-slot} container now (epic qits-1481), which carries the
+   * shell, {@code git} and {@code curl} the release prelude needs.
    */
-  static final String CHANGELOG_ONLY_IMAGE = "qits/build-images/ci-base:latest";
+  static final String CHANGELOG_ONLY_IMAGE = null;
 
   /**
    * The synthesised release half's timeout: a tag fetch, a CLI download and one publish call, with
@@ -536,7 +535,7 @@ public final class CiReleaseComposer {
   }
 
   /**
-   * The release half of a composition that declares none: one {@value #CHANGELOG_ONLY_IMAGE} step
+   * The release half of a composition that declares none: one step
    * whose declared script is {@code :}, so the step is the platform's prelude (the tag checkout and
    * the CLI fetch) and its publish block — whose only publish is the changelog — and nothing else.
    *
@@ -735,20 +734,27 @@ public final class CiReleaseComposer {
     out.append("steps:\n");
     for (int i = 0; i < declared.size(); i++) {
       CiStepDecl step = declared.get(i);
-      out.append("  - image: ").append(scalar(step.image())).append('\n');
+      // No `image:` (epic qits-1481): every step runs in the run's one ci-slot container, so a
+      // declared image is ignored and the composed document does not repeat it. The step's first
+      // key opens its list item instead.
+      String lead = "  - ";
       if (step.timeoutSeconds() != null) {
-        out.append("    timeout-seconds: ").append(step.timeoutSeconds()).append('\n');
+        out.append(lead).append("timeout-seconds: ").append(step.timeoutSeconds()).append('\n');
+        lead = "    ";
       }
       if (step.docker()) {
-        out.append("    docker: true\n");
+        out.append(lead).append("docker: true\n");
+        lead = "    ";
       }
       if (step.build()) {
-        out.append("    build: true\n");
+        out.append(lead).append("build: true\n");
+        lead = "    ";
       }
       if (!step.user().isEmpty()) {
-        out.append("    user: ").append(scalar(step.user())).append('\n');
+        out.append(lead).append("user: ").append(scalar(step.user())).append('\n');
+        lead = "    ";
       }
-      out.append("    script: |\n");
+      out.append(lead).append("script: |\n");
       block(
           out,
           script(
@@ -1115,7 +1121,8 @@ public final class CiReleaseComposer {
    * <p>Package-private for {@link CiAutomationComposer}: a kind file's {@code qits-cli: true} spends
    * this text rather than a copy of it.
    *
-   * @param image the step's image, named in the refusal when it has neither curl nor wget
+   * @param image the step's declared image, which is ignored: the refusal names the ci-slot image
+   *     every step runs in
    */
   static void cliFetch(StringBuilder out, String image, CliFetch mode) {
     boolean soft = mode != CliFetch.RELEASE;
@@ -1129,10 +1136,10 @@ public final class CiReleaseComposer {
         shellQuote(
             automation
                 ? "qits-ci: the qits CLI could not be fetched: the image for this step ("
-                    + image
+                    + CiSlot.IMAGE_REPOSITORY
                     + ") has neither curl nor wget — add one to the image"
                 : "qits-ci: the image for this step ("
-                    + image
+                    + CiSlot.IMAGE_REPOSITORY
                     + ") has neither curl nor wget, so the qits CLI cannot be fetched into it —"
                     + (soft
                         ? " add one to the image to get its reports submitted"

@@ -9,8 +9,7 @@ checkout:
 artifacts:
   - { type: 'maven', name: 'eu.wohlben.qits:qits-bootstrap-cli-pacts-qits-projects-service', publish: 'if-changed', section: 'contracts' }
 steps:
-  - image: 'qits/build-images/ci-base:latest'
-    timeout-seconds: 300
+  - timeout-seconds: 300
     script: |
       set -eu
       # --- platform prelude ---------------------------------------------------------
@@ -59,7 +58,7 @@ steps:
         elif command -v wget > /dev/null 2>&1; then
           wget -q "$@" -O /tmp/qits-bin/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
         else
-          echo 'qits-ci: the image for this step (qits/build-images/ci-base:latest) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
+          echo 'qits-ci: the image for this step (qits/build-images/ci-slot) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
           exit 1
         fi
         chmod +x /tmp/qits-bin/qits

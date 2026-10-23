@@ -70,11 +70,9 @@
 
 release-request:
 
-  # ci-base: buildctl for the build, git for the checkout. `build: true` is the diff-visible
-  # declaration that gets this step the platform builder and the run's commissioned credential —
-  # and, unlike the `docker: true` it replaced, no docker socket at all.
-  - image: qits/build-images/ci-base:latest
-    build: true
+  # The run's ci-slot container carries buildctl and git; `build: true` says this step builds
+  # through the target's buildkitd, whose $BUILDKIT_HOST every CI lease is given.
+  - build: true
     timeout-seconds: 3600
     script: |
       # NOTHING IS PUBLISHED, SO THERE IS NO `--output` AT ALL: buildctl solves the whole graph and
@@ -91,8 +89,7 @@ release-request:
 
 release:
 
-  - image: qits/build-images/ci-base:latest
-    build: true
+  - build: true
     timeout-seconds: 3600
     script: |
       # THE COORDINATE, OUT OF THE DECLARATION THAT ANNOUNCES IT. See the header.

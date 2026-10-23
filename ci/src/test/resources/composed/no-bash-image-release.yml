@@ -9,8 +9,7 @@ checkout:
 artifacts:
   - { type: 'docker', name: 'qits/build-images/ci-base' }
 steps:
-  - image: 'docker:28-dind'
-    timeout-seconds: 3600
+  - timeout-seconds: 3600
     docker: true
     script: |
       set -eu
@@ -60,7 +59,7 @@ steps:
         elif command -v wget > /dev/null 2>&1; then
           wget -q "$@" -O /tmp/qits-bin/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
         else
-          echo 'qits-ci: the image for this step (docker:28-dind) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
+          echo 'qits-ci: the image for this step (qits/build-images/ci-slot) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
           exit 1
         fi
         chmod +x /tmp/qits-bin/qits

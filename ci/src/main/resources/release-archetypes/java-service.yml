@@ -268,11 +268,9 @@
 release-request:
 
   # --- the first half of phase one: build the fold, publish nothing -----------------------------
-  # node-docker-base carries node, npm, git and buildctl. `build: true` is the diff-visible
-  # declaration that gets this step a builder and the run's credential (its token) — and, unlike the
-  # `docker: true` it replaced, no docker socket at all.
-  - image: qits/build-images/node-docker-base:latest
-    build: true
+  # The run's ci-slot container carries node, npm, git and buildctl; `build: true` says this step
+  # builds through the target's buildkitd, whose $BUILDKIT_HOST every CI lease is given.
+  - build: true
     timeout-seconds: 3600
     script: |
       # $QITS_CI_BRANCH is release/<id> and $QITS_CI_SHA is the merged sha. The fold is already
@@ -382,8 +380,7 @@ release-request:
   # embedded postgres, initdb refuses to run as root and calls getpwuid, so the step needs a
   # passwd-backed non-root user — maven-base carries one (uid 1001). A step container starts
   # `--cap-drop=ALL`, so `su` could not have switched user from inside at all.
-  - image: qits/build-images/maven-base:latest
-    user: build
+  - user: build
     timeout-seconds: 2400
     check-outputs: [entity-diagram]
     script: |
@@ -568,8 +565,7 @@ release:
   #
   # The same image and the same build as the QA half, plus the two exports. The composer has already
   # fetched the release tag and detached at it before this script runs.
-  - image: qits/build-images/node-docker-base:latest
-    build: true
+  - build: true
     timeout-seconds: 3600
     script: |
       # THE COORDINATE, OUT OF THE DECLARATION THAT ANNOUNCES IT. See the header for why this is
@@ -673,8 +669,7 @@ release:
   # the run's own credential and submits each `<path>/target/sbom.json`. A repository declaring no
   # maven entry gets a step that says so and exits 0; the postlude still runs, because its
   # `@apidocs`, contract publishes and SBOM presence checks ride on the last step whatever it built.
-  - image: qits/build-images/maven-base:latest
-    timeout-seconds: 1800
+  - timeout-seconds: 1800
     script: |
       # THE MODULES, OUT OF THE DECLARATIONS THAT PUBLISH THEM — see the header. Comments go first,
       # so prose naming an entry is never read as one. Every line still mentioning `type: maven`

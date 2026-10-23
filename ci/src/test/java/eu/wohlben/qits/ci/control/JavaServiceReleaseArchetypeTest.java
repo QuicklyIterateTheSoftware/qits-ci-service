@@ -97,9 +97,9 @@ public class JavaServiceReleaseArchetypeTest {
     assertEquals(2, steps.size());
     CiStepDecl image = steps.get(0);
     CiStepDecl jars = steps.get(1);
-    assertEquals("qits/build-images/node-docker-base:latest", image.image());
+    assertEquals(null, image.image(), "the recipe declares no image");
     assertTrue(image.build());
-    assertEquals("qits/build-images/maven-base:latest", jars.image());
+    assertEquals(null, jars.image(), "the recipe declares no image");
     assertFalse(jars.build());
     assertEquals("", jars.user(), "maven-library's release step runs as the image's user too");
 
@@ -137,7 +137,7 @@ public class JavaServiceReleaseArchetypeTest {
     List<CiStepDecl> steps = composedReleaseSteps(WITHOUT_MAVEN);
 
     assertEquals(2, steps.size());
-    assertEquals("qits/build-images/maven-base:latest", steps.get(1).image());
+    assertEquals(null, steps.get(1).image(), "the recipe declares no image");
     assertFalse(steps.get(1).script().contains("qits artifacts publish maven"));
     assertTrue(
         steps.get(1).script().contains("qits artifacts publish docs submit --site '@apidocs/qits-idp'"));

@@ -39,7 +39,6 @@
 # cannot resolve a sibling module's test-jar in the reactor, which is why this phase is one step
 # further than the classes alone need), and `dependency:build-classpath` lists the jars library
 # entities arrive in.
-image: qits/build-images/maven-base:latest
 timeout-seconds: 1800
 qits-cli: true
 script: |

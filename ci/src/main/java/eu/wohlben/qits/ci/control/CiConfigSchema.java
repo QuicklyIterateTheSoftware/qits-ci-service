@@ -247,7 +247,7 @@ final class CiConfigSchema {
       boolean build = optionalBuild(step, i, docker);
       steps.add(
           new CiStepDecl(
-              requireString(step, "image", i),
+              declaredImage(step),
               requireString(step, "script", i),
               optionalTimeoutSeconds(step, i),
               docker,
@@ -521,6 +521,20 @@ final class CiConfigSchema {
             + "' — a run's branch is the trigger's single decision, made before any step exists, so"
             + " a per-step filter over it is either inert or a step that can never run. A condition"
             + " over the event's payload is what 'when' already is.");
+  }
+
+  /**
+   * A step's {@code image:}, as declared, or null when it declares none. <b>It is ignored</b> (epic
+   * qits-1481, "CI in a slot"): every step of a run runs in the one {@code qits/build-images/ci-slot}
+   * container of the run's lease, so a step image names nothing that runs. It is kept only so a run
+   * whose pipeline still declares one can say once that it was ignored ({@link
+   * CiSlot#STEP_IMAGES_IGNORED}). Ignored rather than refused, so the {@code release.yml} files that
+   * still carry the key need no change in the cutover release; a value that is not a string is
+   * ignored the same way.
+   */
+  private static String declaredImage(Map<?, ?> step) {
+    Object value = step.get("image");
+    return value instanceof String s && !s.isBlank() ? s : null;
   }
 
   private static String requireString(Map<?, ?> step, String key, int index) {

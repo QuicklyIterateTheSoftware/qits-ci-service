@@ -86,8 +86,7 @@
 
 release-request:
 
-  - image: qits/build-images/maven-base:latest
-    user: build
+  - user: build
     timeout-seconds: 1800
     script: |
       # The platform registry: the poms' default names a host-published address that is unreachable
@@ -145,8 +144,7 @@ release-request:
 
 release:
 
-  - image: qits/build-images/maven-base:latest
-    timeout-seconds: 1800
+  - timeout-seconds: 1800
     script: |
       qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"

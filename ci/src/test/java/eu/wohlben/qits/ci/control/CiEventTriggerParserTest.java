@@ -46,6 +46,33 @@ public class CiEventTriggerParserTest {
   // --- gating: is refused, at both scopes, and a stored snapshot is the one exception ------------
 
   @Test
+  public void aStepImageIsOptionalAndIgnored() {
+    // Epic qits-1481: every step runs in the run's one ci-slot container. A step may still declare
+    // an image (the cutover leaves the release.yml files that do unchanged) and the parser keeps it
+    // only so the run can say it was ignored; a step that declares none is just as valid.
+    CiEventTrigger trigger =
+        parser.parse(
+            PATH,
+            """
+            event: E
+            steps:
+              - script: ./verify.sh
+              - image: qits/build-images/maven-base:latest
+                script: ./publish.sh
+              - image: 42
+                script: ./again.sh
+            """);
+    assertEquals(3, trigger.pipeline().steps().size());
+    assertEquals(null, trigger.pipeline().steps().get(0).image());
+    assertEquals("qits/build-images/maven-base:latest", trigger.pipeline().steps().get(1).image());
+    assertEquals(null, trigger.pipeline().steps().get(2).image(), "a non-string image is ignored too");
+    assertTrue(CiRunService.declaresStepImages(trigger.pipeline()));
+    assertEquals(
+        "step images are ignored: every step runs in qits/build-images/ci-slot",
+        CiSlot.STEP_IMAGES_IGNORED);
+  }
+
+  @Test
   public void aFileLevelGatingIsAParseErrorWhateverItSays() {
     // The key is gone as a concept (ticket 9441bc6e): every step of a pipeline gates and a run's
     // verdict is its outcome. It has to be a PARSE ERROR rather than an ignored key, because the

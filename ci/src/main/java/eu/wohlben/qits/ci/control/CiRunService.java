@@ -1692,7 +1692,15 @@ public class CiRunService {
    * moved, which is not what that rule means by a step changing its image.
    */
   private String stepImage(CiPipeline.CiStepDecl decl) {
-    return resolveStepImage(decl.image());
+    // A declared image is ignored (epic qits-1481): every step runs in the run's one ci-slot
+    // container, so every step row names that image — which also keeps the duration prediction
+    // sampling one image per step index, as before.
+    return resolveStepImage(CiSlot.IMAGE_TAG);
+  }
+
+  /** Whether a pipeline declares any step image — the one fact {@link CiSlot#STEP_IMAGES_IGNORED} is about. */
+  static boolean declaresStepImages(CiPipeline pipeline) {
+    return pipeline.steps().stream().anyMatch(step -> step.image() != null);
   }
 
   /**
@@ -1890,6 +1898,12 @@ public class CiRunService {
     // is each container resolving `:latest` for itself at whatever minute it starts.
     Map<String, String> pins = StepImages.decode(run.stepImages);
     int index = resume.from();
+    // Said once per run, in the run's own log: the first step it executes carries the line.
+    String imagesIgnored =
+        declaresStepImages(pipeline) && !resume.inherited() ? CiSlot.STEP_IMAGES_IGNORED : null;
+    if (imagesIgnored != null) {
+      LOG.infof("CI run %s: %s", run.id, imagesIgnored);
+    }
     boolean failed = false;
     boolean timedOut = false;
     // What a health check reports if it goes red: the failing step's outcome and the head of what it
@@ -1988,9 +2002,12 @@ public class CiRunService {
                 ? CiStepStatus.SUCCESS
                 : stepTimedOut ? CiStepStatus.TIMED_OUT : CiStepStatus.FAILED,
             result.exitCode(),
-            annotate(result, wasCancelled),
+            imagesIgnored == null
+                ? annotate(result, wasCancelled)
+                : imagesIgnored + "\n" + annotate(result, wasCancelled),
             stamps.startedAt(),
             stamps.finishedAt());
+        imagesIgnored = null;
         failed = !ok;
         timedOut = stepTimedOut;
         if (!ok && !wasCancelled) {

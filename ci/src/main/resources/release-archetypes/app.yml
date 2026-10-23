@@ -132,13 +132,12 @@
 release-request:
 
   # --- phase one (QA): spa-frontend.yml's step, plus the screenshot check --------------------
-  # NO `docker:` AND NO `build:`. Nothing here needs a builder, a socket or a credential — the image
-  # is phase two's business — so this step keeps the ordinary sandbox a publishing step gives up.
+  # NO `build:`. Nothing here needs a builder — the image is phase two's business.
   #
-  # node-browser-base, NOT node-base: it is Node 24 plus the platform's one screenshot renderer
-  # (Playwright's Chromium and a pinned font stack, described in /etc/qits-renderer-provenance). The
-  # workspace image is built FROM the same image, so a reference screenshot an agent makes there
-  # matches here. See the screenshot check below.
+  # The ci-slot image carries node-browser-base's renderer: Node 24 plus the platform's one
+  # screenshot renderer (Playwright's Chromium and a pinned font stack, described in
+  # /etc/qits-renderer-provenance), so a reference screenshot an agent makes in a workspace matches
+  # here. See the screenshot check below.
   #
   # THE SCREENSHOT CHECK, ON (qits-1178). After the script exits 0, qits-ci runs the
   # screenshot-baselines automation's own generator (the install, `UPDATE_SNAPSHOT=all npm run
@@ -149,8 +148,7 @@ release-request:
   # regenerate them before QA: removing the key here puts its pre-run back. The check needs a
   # `test:browser` script: without one its generator fails the step and says so (qits-landing-app,
   # the one repository on this recipe, has it).
-  - image: qits/build-images/node-browser-base:latest
-    timeout-seconds: 1800
+  - timeout-seconds: 1800
     check-outputs: [screenshot-baselines]
     script: |
       # THE LOCKFILE IS INSTALLED AS COMMITTED (qits-731). npm fetches every tarball by the full
@@ -268,15 +266,12 @@ release-request:
 release:
 
   # --- phase two (Publish): java-service.yml's release step, image half only ---------------------
-  # node-docker-base rather than node-base, and `build: true`: this step needs a BUILDER. `build:`
-  # is the diff-visible declaration that gets it the platform builder and the run's commissioned
-  # credential — and, unlike the `docker: true` it replaced, no docker socket at all. The longer
-  # timeout comes with it: an image build is not an `npm ci`.
+  # `build: true`: this step needs a BUILDER, the target's buildkitd, whose $BUILDKIT_HOST every CI
+  # lease is given. The longer timeout comes with it: an image build is not an `npm ci`.
   #
   # The composer has already fetched the release tag and detached at it before this script runs, and
   # it has already written /tmp/qits-client-id and /tmp/qits-client-secret under `umask 077`.
-  - image: qits/build-images/node-docker-base:latest
-    build: true
+  - build: true
     timeout-seconds: 3600
     script: |
       # THE COORDINATE, OUT OF THE DECLARATION THAT ANNOUNCES IT — java-service.yml's block verbatim,

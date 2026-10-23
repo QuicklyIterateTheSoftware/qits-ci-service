@@ -326,7 +326,7 @@ public class CiReleaseComposerTest {
     // And the refusal names the image, so an author reads a sentence about their own file rather
     // than `curl: not found` out of a line they never wrote.
     assertTrue(
-        document.contains("the image for this step (docker:28-dind) has neither curl nor wget"),
+        document.contains("the image for this step (qits/build-images/ci-slot) has neither curl nor wget"),
         document);
     // Each named program is reached exactly once and only from inside its own test, so neither can
     // become an unguarded line again while the assertions above still pass.
@@ -1346,7 +1346,7 @@ public class CiReleaseComposerTest {
     golden("packaged-cli-pacts-release.yml", composed.releaseDocument());
     assertEquals(1, occurrences(composed.releaseDocument(), "# --- platform postlude"));
     assertTrue(
-        composed.releaseDocument().contains("image: '" + CiReleaseComposer.CHANGELOG_ONLY_IMAGE + "'"),
+        !composed.releaseDocument().contains("image:"),
         composed.releaseDocument());
     assertTrue(
         composed
@@ -1601,7 +1601,7 @@ public class CiReleaseComposerTest {
     int docs = document.indexOf("qits artifacts publish contract-docs --application 'qits-x'");
     int changelog = document.indexOf("qits artifacts publish changelog");
     assertTrue(contract > 0 && docs > contract && changelog > docs, document);
-    assertTrue(document.contains("image: '" + CiReleaseComposer.CHANGELOG_ONLY_IMAGE + "'"), document);
+    assertFalse(document.contains("image:"), document);
     assertEquals(1, occurrences(document, "# --- platform postlude"), document);
   }
 
@@ -2277,11 +2277,11 @@ public class CiReleaseComposerTest {
 
   /** A composed document's one step script, as a plain shell script. */
   private static String stepScript(String document) {
-    int begin = document.indexOf("    script: |\n");
+    int begin = document.indexOf("script: |\n");
     assertTrue(begin >= 0, document);
-    assertEquals(-1, document.indexOf("    script: |\n", begin + 1), "one step expected");
+    assertEquals(-1, document.indexOf("script: |\n", begin + 1), "one step expected");
     StringBuilder out = new StringBuilder();
-    for (String line : document.substring(begin + "    script: |\n".length()).split("\n", -1)) {
+    for (String line : document.substring(begin + "script: |\n".length()).split("\n", -1)) {
       out.append(line.length() >= 6 ? line.substring(6) : line).append('\n');
     }
     return out.toString();

@@ -24,8 +24,7 @@
 # half, because there is nothing to publish from a fold — and had there been one it would gate like
 # this one, since a run announces ONE verdict for all of its steps. See java-service.yml's header.
 #
-# NO `docker:` AND NO `build:`. Nothing here needs a builder, a socket or a credential, so this step
-# keeps the ordinary sandbox that a publishing step has to give up.
+# NO `build:`. Nothing here needs a builder.
 #
 # ---------------------------------------------------------------------------------------------
 # WHEN TO OVERRIDE
@@ -42,8 +41,7 @@
 
 release-request:
 
-  - image: qits/build-images/node-base:latest
-    timeout-seconds: 1800
+  - timeout-seconds: 1800
     script: |
       # THE LOCKFILE IS INSTALLED AS COMMITTED (qits-731). npm fetches every tarball by the full
       # `resolved` URL its lockfile pins and never asks the configured registry for it, so the
