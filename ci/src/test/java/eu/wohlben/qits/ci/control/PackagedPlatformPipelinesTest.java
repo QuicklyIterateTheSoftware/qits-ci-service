@@ -451,7 +451,9 @@ public class PackagedPlatformPipelinesTest {
             "QITS_GOLDEN_UPDATE=true ./mvnw",
             "-Dgolden.update=true",
             "-Dquarkus.quinoa=false",
-            "-Dqits.maven.repository.url=\"$QITS_MAVEN_REPOSITORY_URL\"")) {
+            "if grep -rqs --include=pom.xml 'qits.maven.repository.url' .; then",
+            "maven_repository_property=\"-Dqits.maven.repository.url=$QITS_MAVEN_REPOSITORY_URL\"",
+            "${maven_repository_property:+\"$maven_repository_property\"}")) {
       assertTrue(script.contains(line), line);
     }
     assertFalse(

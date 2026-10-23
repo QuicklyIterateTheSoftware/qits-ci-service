@@ -133,6 +133,15 @@ steps:
         settings="-s .qits-maven-settings.xml"
       fi
 
+      # Passed as a property ONLY when a pom reads ${qits.maven.repository.url}, as cli.yml does: Maven
+      # forwards a user property into surefire's test JVM, and a module with a strict `qits`
+      # ConfigMapping refuses one it does not map (SRCFG00050, qits-bootstrap-cli's WebViewTest in
+      # qits-1516's first live runs).
+      maven_repository_property=""
+      if grep -rqs --include=pom.xml 'qits.maven.repository.url' .; then
+        maven_repository_property="-Dqits.maven.repository.url=$QITS_MAVEN_REPOSITORY_URL"
+      fi
+
       # The suite, in update mode. `test`, not `verify`: the recordings are surefire's, so no IT runs
       # and nothing is packaged. Quinoa off: the SPA is no input, and the clone does not recurse, so a
       # webui submodule is an empty directory here - the one state Quinoa calls a misconfiguration.
@@ -140,7 +149,7 @@ steps:
       # measured a test-port override of 0 breaking qits-platform-access-cli's McpServiceTest, whose
       # test reads the port back and dialled localhost:0).
       QITS_GOLDEN_UPDATE=true ./mvnw -B -ntp ${settings} test \
-        -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
+        ${maven_repository_property:+"$maven_repository_property"} \
         -Dquarkus.quinoa=false \
         -Dgolden.update=true
       QITS_AUTOMATION_EOF
