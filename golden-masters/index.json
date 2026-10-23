@@ -34,36 +34,6 @@
       ]
     },
     {
-      "name": "a connected runner",
-      "slug": "a-connected-runner",
-      "params": {
-        "runnerId": "00000000-0000-4000-8000-000000000001"
-      },
-      "dependsOn": [],
-      "operations": [
-        {
-          "operationId": "listRunners",
-          "method": "GET",
-          "path": "/ci/api/runners",
-          "status": 200,
-          "file": "a-connected-runner/listRunners.json",
-          "frozen": {
-            "ids": [
-              "$.runners[*].id"
-            ],
-            "instants": [
-              "$.runners[*].lastSeenAt",
-              "$.runners[*].createdAt"
-            ],
-            "strings": [
-              "$.runners[*].targetVersion"
-            ],
-            "listFilteredTo": "$.runners"
-          }
-        }
-      ]
-    },
-    {
       "name": "a failed run retried automatically",
       "slug": "a-failed-run-retried-automatically",
       "params": {
@@ -230,90 +200,6 @@
             "strings": [
               "$.daemonVersion"
             ],
-            "listFilteredTo": null
-          }
-        }
-      ]
-    },
-    {
-      "name": "a quarantined runner",
-      "slug": "a-quarantined-runner",
-      "params": {
-        "runnerId": "00000000-0000-4000-8000-000000000001"
-      },
-      "dependsOn": [],
-      "operations": [
-        {
-          "operationId": "greenlightRunner",
-          "method": "POST",
-          "path": "/ci/api/runners/{runnerId}/greenlight",
-          "status": 200,
-          "file": "a-quarantined-runner/greenlightRunner.json",
-          "frozen": {
-            "ids": [
-              "$.id"
-            ],
-            "instants": [
-              "$.lastSeenAt",
-              "$.createdAt"
-            ],
-            "strings": [
-              "$.targetVersion"
-            ],
-            "listFilteredTo": null
-          }
-        },
-        {
-          "operationId": "listRunners",
-          "method": "GET",
-          "path": "/ci/api/runners",
-          "status": 200,
-          "file": "a-quarantined-runner/listRunners.json",
-          "frozen": {
-            "ids": [
-              "$.runners[*].id"
-            ],
-            "instants": [
-              "$.runners[*].lastSeenAt",
-              "$.runners[*].createdAt",
-              "$.runners[*].quarantinedAt"
-            ],
-            "strings": [
-              "$.runners[*].targetVersion"
-            ],
-            "listFilteredTo": "$.runners"
-          }
-        }
-      ]
-    },
-    {
-      "name": "a registered runner",
-      "slug": "a-registered-runner",
-      "params": {
-        "authorization": "Bearer qits_tok_contract-registration",
-        "runnerId": "00000000-0000-4000-8000-000000000001"
-      },
-      "dependsOn": [],
-      "operations": [
-        {
-          "operationId": "registerRunner",
-          "method": "POST",
-          "path": "/ci/api/runners/{runnerId}/register",
-          "headers": {
-            "Authorization": "{authorization}"
-          },
-          "body": {
-            "capabilities": {
-              "arch": "amd64",
-              "docker": true
-            }
-          },
-          "status": 409,
-          "file": "a-registered-runner/registerRunner.json",
-          "frozen": {
-            "ids": [],
-            "instants": [],
-            "strings": [],
             "listFilteredTo": null
           }
         }
@@ -804,6 +690,45 @@
       ]
     },
     {
+      "name": "a run queue with a run waiting",
+      "slug": "a-run-queue-with-a-run-waiting",
+      "params": {
+        "leaseId": "00000000-0000-4000-8000-000000000001",
+        "queuedRunId": "00000000-0000-4000-8000-000000000002",
+        "repositoryId": "00000000-0000-4000-8000-000000000003",
+        "runningRunId": "00000000-0000-4000-8000-000000000004",
+        "targetId": "00000000-0000-4000-8000-000000000005"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getRunQueue",
+          "method": "GET",
+          "path": "/ci/api/runs/queue",
+          "status": 200,
+          "file": "a-run-queue-with-a-run-waiting/getRunQueue.json",
+          "frozen": {
+            "ids": [
+              "$.running[*].id",
+              "$.running[*].repoId",
+              "$.running[*].leaseId",
+              "$.running[*].targetId",
+              "$.queued[*].id",
+              "$.queued[*].repoId"
+            ],
+            "instants": [
+              "$.generatedAt",
+              "$.running[*].createdAt",
+              "$.running[*].startedAt",
+              "$.queued[*].createdAt"
+            ],
+            "strings": [],
+            "listFilteredTo": "$.running,$.queued"
+          }
+        }
+      ]
+    },
+    {
       "name": "a run with reports: failing tests and coverage",
       "slug": "a-run-with-reports-failing-tests-and-coverage",
       "params": {
@@ -982,78 +907,6 @@
       ]
     },
     {
-      "name": "an unregistered runner",
-      "slug": "an-unregistered-runner",
-      "params": {
-        "authorization": "Bearer qits_tok_contract-registration",
-        "runnerId": "00000000-0000-4000-8000-000000000001"
-      },
-      "dependsOn": [],
-      "operations": [
-        {
-          "operationId": "listRunners",
-          "method": "GET",
-          "path": "/ci/api/runners",
-          "status": 200,
-          "file": "an-unregistered-runner/listRunners.json",
-          "frozen": {
-            "ids": [
-              "$.runners[*].id"
-            ],
-            "instants": [
-              "$.runners[*].createdAt"
-            ],
-            "strings": [
-              "$.runners[*].targetVersion"
-            ],
-            "listFilteredTo": "$.runners"
-          }
-        },
-        {
-          "operationId": "registerRunner",
-          "method": "POST",
-          "path": "/ci/api/runners/{runnerId}/register",
-          "headers": {
-            "Authorization": "{authorization}"
-          },
-          "body": {
-            "capabilities": {
-              "arch": "amd64",
-              "docker": true
-            }
-          },
-          "status": 200,
-          "file": "an-unregistered-runner/registerRunner.json",
-          "frozen": {
-            "ids": [],
-            "instants": [],
-            "strings": [],
-            "listFilteredTo": null
-          }
-        },
-        {
-          "operationId": "rotateRegistrationToken",
-          "method": "POST",
-          "path": "/ci/api/runners/{runnerId}/registration-token",
-          "status": 200,
-          "file": "an-unregistered-runner/rotateRegistrationToken.json",
-          "frozen": {
-            "ids": [
-              "$.id"
-            ],
-            "instants": [
-              "$.createdAt"
-            ],
-            "strings": [
-              "$.targetVersion",
-              "$.installScript"
-            ],
-            "listFilteredTo": null
-          }
-        }
-      ]
-    },
-    {
       "name": "no candidate repository can be read",
       "slug": "no-candidate-repository-can-be-read",
       "params": {
@@ -1130,78 +983,6 @@
               "$.message"
             ],
             "listFilteredTo": null
-          }
-        }
-      ]
-    },
-    {
-      "name": "no runners",
-      "slug": "no-runners",
-      "params": {},
-      "dependsOn": [],
-      "operations": [
-        {
-          "operationId": "createRunner",
-          "method": "POST",
-          "path": "/ci/api/runners",
-          "body": {
-            "name": "localhost",
-            "slots": 2
-          },
-          "status": 201,
-          "file": "no-runners/createRunner.json",
-          "frozen": {
-            "ids": [
-              "$.id"
-            ],
-            "instants": [
-              "$.createdAt"
-            ],
-            "strings": [
-              "$.targetVersion",
-              "$.installScript"
-            ],
-            "listFilteredTo": null
-          }
-        }
-      ]
-    },
-    {
-      "name": "runners with free slots",
-      "slug": "runners-with-free-slots",
-      "params": {
-        "queuedRunId": "00000000-0000-4000-8000-000000000001",
-        "repositoryId": "00000000-0000-4000-8000-000000000002",
-        "runnerId": "00000000-0000-4000-8000-000000000003",
-        "runningRunId": "00000000-0000-4000-8000-000000000004"
-      },
-      "dependsOn": [],
-      "operations": [
-        {
-          "operationId": "getRunQueue",
-          "method": "GET",
-          "path": "/ci/api/runs/queue",
-          "status": 200,
-          "file": "runners-with-free-slots/getRunQueue.json",
-          "frozen": {
-            "ids": [
-              "$.running[*].id",
-              "$.running[*].repoId",
-              "$.running[*].runnerId",
-              "$.queued[*].id",
-              "$.queued[*].repoId",
-              "$.runners[*].id"
-            ],
-            "instants": [
-              "$.generatedAt",
-              "$.running[*].createdAt",
-              "$.running[*].startedAt",
-              "$.queued[*].createdAt"
-            ],
-            "strings": [
-              "$.runners[*].targetVersion"
-            ],
-            "listFilteredTo": "$.running,$.queued,$.runners"
           }
         }
       ]

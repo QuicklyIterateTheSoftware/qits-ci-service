@@ -52,8 +52,8 @@
   "expectedFinishInMillis": null,
   "predictionUnavailable": null,
   "ordering": null,
-  "runnerId": null,
-  "runnerName": null,
+  "leaseId": null,
+  "targetId": null,
   "retryReason": "the runner lost its connection during step 1",
   "autoRetry": true
 }

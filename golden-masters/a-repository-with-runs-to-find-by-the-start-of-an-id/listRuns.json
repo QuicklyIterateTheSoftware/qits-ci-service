@@ -35,8 +35,8 @@
       "expectedFinishInMillis": null,
       "predictionUnavailable": null,
       "ordering": null,
-      "runnerId": null,
-      "runnerName": null,
+      "leaseId": null,
+      "targetId": null,
       "retryReason": null,
       "autoRetry": false
     },
@@ -75,8 +75,8 @@
       "expectedFinishInMillis": null,
       "predictionUnavailable": null,
       "ordering": null,
-      "runnerId": null,
-      "runnerName": null,
+      "leaseId": null,
+      "targetId": null,
       "retryReason": null,
       "autoRetry": false
     }

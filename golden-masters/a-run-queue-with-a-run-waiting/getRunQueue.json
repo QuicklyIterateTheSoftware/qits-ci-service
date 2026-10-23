@@ -3,7 +3,7 @@
   "running": [
     {
       "id": "00000000-0000-4000-8000-000000000004",
-      "repoId": "00000000-0000-4000-8000-000000000002",
+      "repoId": "00000000-0000-4000-8000-000000000003",
       "projectId": "contract-project",
       "repoName": "contract-service",
       "branch": "main",
@@ -36,16 +36,16 @@
       "expectedFinishInMillis": null,
       "predictionUnavailable": "RUNNING_RUN_HAS_NO_PREDICTION",
       "ordering": null,
-      "runnerId": "00000000-0000-4000-8000-000000000003",
-      "runnerName": "localhost",
+      "leaseId": "00000000-0000-4000-8000-000000000001",
+      "targetId": "00000000-0000-4000-8000-000000000005",
       "retryReason": null,
       "autoRetry": false
     }
   ],
   "queued": [
     {
-      "id": "00000000-0000-4000-8000-000000000001",
-      "repoId": "00000000-0000-4000-8000-000000000002",
+      "id": "00000000-0000-4000-8000-000000000002",
+      "repoId": "00000000-0000-4000-8000-000000000003",
       "projectId": "contract-project",
       "repoName": "contract-service",
       "branch": "feature/csv-export",
@@ -85,26 +85,10 @@
         "topologyBlockers": [],
         "selection": "UNBLOCKED"
       },
-      "runnerId": null,
-      "runnerName": null,
+      "leaseId": null,
+      "targetId": null,
       "retryReason": null,
       "autoRetry": false
-    }
-  ],
-  "runners": [
-    {
-      "id": "00000000-0000-4000-8000-000000000003",
-      "name": "localhost",
-      "slots": 2,
-      "held": 1,
-      "connected": true,
-      "runnerVersion": null,
-      "targetVersion": "frozen-token-1",
-      "updating": false,
-      "quarantined": false,
-      "quarantineReason": null,
-      "quarantinedAt": null,
-      "lastHealthcheck": null
     }
   ]
 }

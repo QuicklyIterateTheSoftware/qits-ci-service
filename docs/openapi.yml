@@ -58,17 +58,6 @@ components:
       properties:
         reason:
           type: string
-    CheckReport:
-      type: object
-      properties:
-        name:
-          type: string
-        ok:
-          type: boolean
-        detail:
-          type: string
-        data:
-          $ref: "#/components/schemas/JsonNode"
     CiBaselineAnswer:
       type: object
       properties:
@@ -259,10 +248,10 @@ components:
           type: string
         ordering:
           $ref: "#/components/schemas/CiRunOrderingDto"
-        runnerId:
+        leaseId:
           $ref: "#/components/schemas/UUID"
-        runnerName:
-          type: string
+        targetId:
+          $ref: "#/components/schemas/UUID"
         retryReason:
           type: string
         autoRetry:
@@ -319,130 +308,6 @@ components:
       - CANCELLED
       - CONFIG_ERROR
       - TIMED_OUT
-    CiRunnerCreated:
-      type: object
-      properties:
-        id:
-          $ref: "#/components/schemas/UUID"
-        name:
-          type: string
-        description:
-          type: string
-        slots:
-          type: integer
-          format: int32
-        plane:
-          $ref: "#/components/schemas/CiRunnerPlane"
-        stepMemoryLimit:
-          type: string
-        capabilities:
-          $ref: "#/components/schemas/JsonNode"
-        registered:
-          type: boolean
-        connected:
-          type: boolean
-        heldRuns:
-          type: integer
-          format: int64
-        lastSeenAt:
-          $ref: "#/components/schemas/Instant"
-        createdAt:
-          $ref: "#/components/schemas/Instant"
-        runnerVersion:
-          type: string
-        targetVersion:
-          type: string
-        updating:
-          type: boolean
-        quarantined:
-          type: boolean
-        quarantineReason:
-          type: string
-        quarantinedAt:
-          $ref: "#/components/schemas/Instant"
-        lastHealthcheck:
-          $ref: "#/components/schemas/CiRunnerHealthcheckDto"
-        installScript:
-          type: string
-          description: "The one line that installs this runner on a host: it fetches\
-            \ the generic install script with the registration token and pipes it\
-            \ into sudo sh with this runner's values. Returned once; never readable\
-            \ again"
-    CiRunnerDto:
-      type: object
-      properties:
-        id:
-          $ref: "#/components/schemas/UUID"
-        name:
-          type: string
-        description:
-          type: string
-        slots:
-          type: integer
-          format: int32
-        plane:
-          $ref: "#/components/schemas/CiRunnerPlane"
-        stepMemoryLimit:
-          type: string
-        capabilities:
-          $ref: "#/components/schemas/JsonNode"
-        registered:
-          type: boolean
-        connected:
-          type: boolean
-        heldRuns:
-          type: integer
-          format: int64
-        lastSeenAt:
-          $ref: "#/components/schemas/Instant"
-        createdAt:
-          $ref: "#/components/schemas/Instant"
-        runnerVersion:
-          type: string
-        targetVersion:
-          type: string
-        updating:
-          type: boolean
-        quarantined:
-          type: boolean
-        quarantineReason:
-          type: string
-        quarantinedAt:
-          $ref: "#/components/schemas/Instant"
-        lastHealthcheck:
-          $ref: "#/components/schemas/CiRunnerHealthcheckDto"
-    CiRunnerHealthDto:
-      type: object
-      properties:
-        at:
-          $ref: "#/components/schemas/Instant"
-        ok:
-          type: boolean
-        detail:
-          type: string
-        requestId:
-          type: string
-        dataOmitted:
-          type: boolean
-        checks:
-          type: array
-          items:
-            $ref: "#/components/schemas/CheckReport"
-    CiRunnerHealthcheckDto:
-      type: object
-      properties:
-        at:
-          $ref: "#/components/schemas/Instant"
-        result:
-          type: string
-        runId:
-          type: string
-        detail:
-          type: string
-    CiRunnerPlane:
-      type: string
-      enum:
-      - EDGE
     CiStepDto:
       type: object
       properties:
@@ -476,33 +341,6 @@ components:
       enum:
       - POST_RECEIVE
       - EVENT
-    CreateRunnerRequest:
-      type: object
-      required:
-      - name
-      properties:
-        name:
-          type: string
-          description: "[a-z][a-z0-9-]{0,63}, unique"
-        description:
-          type: string
-          description: "Free text, at most 1024 characters"
-        slots:
-          type: integer
-          format: int32
-          description: How many steps it may hold at once; 0 drains it. Default 1
-        plane:
-          type: string
-          enum:
-          - EDGE
-          description: "Where its steps reach the platform. There is one plane, EDGE\
-            \ — through the public names — and absent means EDGE. Any other value\
-            \ is refused 400"
-        stepMemoryLimit:
-          type: string
-          description: "The memory cap its step containers get, memory and memory-swap\
-            \ alike: a docker size, digits and an optional b, k, m or g (6g, 6144m),\
-            \ at least 6m. Absent or blank is the platform default, qits.ci.memory-limit"
     DaemonPinDto:
       type: object
       properties:
@@ -513,13 +351,6 @@ components:
         previousDaemonVersion:
           type: string
         source:
-          type: string
-    HealthCheckQueued:
-      type: object
-      properties:
-        runId:
-          type: string
-        requestId:
           type: string
     Instant:
       type: string
@@ -599,13 +430,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RepositorySummaryDto"
-    ListRunnersResponse:
-      type: object
-      properties:
-        runners:
-          type: array
-          items:
-            $ref: "#/components/schemas/CiRunnerDto"
     ListRunsResponse:
       type: object
       properties:
@@ -613,27 +437,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CiRunDto"
-    PatchRunnerRequest:
-      type: object
-      properties:
-        slots:
-          type: integer
-          format: int32
-          description: 0 drains the runner; absent leaves it
-        description:
-          type: string
-          description: Blank clears it; absent leaves it
-        plane:
-          type: string
-          enum:
-          - EDGE
-          description: "EDGE, or absent; it changes nothing. Any other value is refused\
-            \ 400"
-        stepMemoryLimit:
-          type: string
-          description: "A docker size (6g, 6144m) its step containers are capped at;\
-            \ blank clears it back to the platform default, qits.ci.memory-limit;\
-            \ absent leaves it. Reaches the runner's next step"
     QueueResponse:
       type: object
       properties:
@@ -647,31 +450,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CiRunDto"
-        runners:
-          type: array
-          items:
-            $ref: "#/components/schemas/RunnerCapacity"
-    RegisterRunnerRequest:
-      type: object
-      properties:
-        capabilities:
-          $ref: "#/components/schemas/JsonNode"
-          type: object
-          description: "What the runner says about itself — a JSON object, at most\
-            \ 16 KiB"
-    RegisteredRunner:
-      type: object
-      properties:
-        clientId:
-          type: string
-        secret:
-          type: string
-        tokenUrl:
-          type: string
-        audience:
-          type: string
-        socketUrl:
-          type: string
     ReleaseArtifactsResponse:
       type: object
       properties:
@@ -739,45 +517,16 @@ components:
           description: "The release request the run serves, by its UUID"
         phase:
           type: string
+          description: "Which phase of the release to re-fire: RELEASE_REQUEST (QA)\
+            \ or RELEASE (publish)"
           enum:
           - RELEASE_REQUEST
           - RELEASE
-          description: "Which phase of the release to re-fire: RELEASE_REQUEST (QA)\
-            \ or RELEASE (publish)"
     RetryRunResponse:
       type: object
       properties:
         runId:
           type: string
-    RunnerCapacity:
-      type: object
-      properties:
-        id:
-          $ref: "#/components/schemas/UUID"
-        name:
-          type: string
-        slots:
-          type: integer
-          format: int32
-        held:
-          type: integer
-          format: int64
-        connected:
-          type: boolean
-        runnerVersion:
-          type: string
-        targetVersion:
-          type: string
-        updating:
-          type: boolean
-        quarantined:
-          type: boolean
-        quarantineReason:
-          type: string
-        quarantinedAt:
-          $ref: "#/components/schemas/Instant"
-        lastHealthcheck:
-          $ref: "#/components/schemas/CiRunnerHealthcheckDto"
     Selection:
       type: string
       enum:
@@ -788,17 +537,17 @@ components:
       properties:
         name:
           type: string
+          description: "The event signature, matched against a trigger file's `event:`"
           examples:
           - SoftwareRelease
-          description: "The event signature, matched against a trigger file's `event:`"
         payload:
-          type: object
           description: "The event payload, exactly as it would arrive off the bus"
+          type: object
         occurredAt:
           type: string
+          description: "ISO-8601 instant. Absent: now."
           examples:
           - 2026-08-04T09:00:00Z
-          description: "ISO-8601 instant. Absent: now."
         eventId:
           type: string
           description: "UUID. Absent: a fresh random one, so the call is a rerun —\
@@ -1013,369 +762,6 @@ paths:
         - qits:admin-agent
         - qits:system
         - qits:agent
-  /ci/api/runners:
-    get:
-      summary: "Every runner, with whether it is connected and how many runs it holds"
-      operationId: listRunners
-      responses:
-        "200":
-          description: "Every runner, by name"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ListRunnersResponse"
-        "401":
-          description: Not Authorized
-        "403":
-          description: Not Allowed
-      tags:
-      - Ci Runner Controller
-      security:
-      - SecurityScheme:
-        - qits:admin
-        - qits:admin-agent
-        - qits:system
-        - qits:agent
-    post:
-      summary: "Declare a runner; answers its install line, once"
-      operationId: createRunner
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateRunnerRequest"
-        required: true
-      responses:
-        "201":
-          description: The runner and the install line carrying its registration token
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CiRunnerCreated"
-        "400":
-          description: "A malformed name, slots, description or stepMemoryLimit, or\
-            \ UNKNOWN_PLANE: a plane other than EDGE — INTERNAL included, which no\
-            \ longer exists"
-        "409":
-          description: The name is taken
-        "502":
-          description: qits-idp refused the registration token
-        "503":
-          description: "This deployment commissions nothing, or cannot render an install\
-            \ script — which includes knowing no public domain to address a runner\
-            \ by"
-        "401":
-          description: Not Authorized
-        "403":
-          description: Not Allowed
-      tags:
-      - Ci Runner Controller
-      security:
-      - SecurityScheme:
-        - qits:admin
-        - qits:admin-agent
-        - qits:system
-  /ci/api/runners/install.sh:
-    get:
-      summary: "The generic runner install script, which the install line pipes into\
-        \ sh"
-      responses:
-        "200":
-          description: "A POSIX sh script, carrying no secret"
-          content:
-            text/plain:
-              schema:
-                type: string
-        "503":
-          description: This deployment cannot render an install script
-        "401":
-          description: Not Authorized
-        "403":
-          description: Not Allowed
-      tags:
-      - Ci Runner Controller
-      security:
-      - SecurityScheme:
-        - qits:ci-runner-registration
-        - qits:admin
-        - qits:admin-agent
-        - qits:system
-        - qits:agent
-  /ci/api/runners/{id}:
-    patch:
-      summary: "Change a runner's slots, description or step memory limit"
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/PatchRunnerRequest"
-        required: true
-      responses:
-        "200":
-          description: The runner as it now is
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CiRunnerDto"
-        "400":
-          description: "Negative slots, an overlong description, a malformed stepMemoryLimit,\
-            \ or UNKNOWN_PLANE: a plane other than EDGE"
-        "404":
-          description: No such runner
-        "401":
-          description: Not Authorized
-        "403":
-          description: Not Allowed
-      tags:
-      - Ci Runner Controller
-      security:
-      - SecurityScheme:
-        - qits:admin
-        - qits:admin-agent
-        - qits:system
-    get:
-      summary: One runner
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-      responses:
-        "200":
-          description: The runner
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CiRunnerDto"
-        "404":
-          description: No such runner
-        "401":
-          description: Not Authorized
-        "403":
-          description: Not Allowed
-      tags:
-      - Ci Runner Controller
-      security:
-      - SecurityScheme:
-        - qits:admin
-        - qits:admin-agent
-        - qits:system
-        - qits:agent
-    delete:
-      summary: Decommission a runner and give its credentials back
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-      responses:
-        "204":
-          description: Gone
-        "404":
-          description: No such runner
-        "409":
-          description: "The runner holds a running run, or LAST_RUNNER: it is localhost\
-            \ and no other runner exists"
-        "401":
-          description: Not Authorized
-        "403":
-          description: Not Allowed
-      tags:
-      - Ci Runner Controller
-      security:
-      - SecurityScheme:
-        - qits:admin
-        - qits:admin-agent
-        - qits:system
-  /ci/api/runners/{id}/greenlight:
-    post:
-      summary: Lift a runner's quarantine
-      operationId: greenlightRunner
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-      responses:
-        "200":
-          description: The runner as it now is
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CiRunnerDto"
-        "404":
-          description: No such runner
-        "401":
-          description: Not Authorized
-        "403":
-          description: Not Allowed
-      tags:
-      - Ci Runner Controller
-      security:
-      - SecurityScheme:
-        - qits:admin
-        - qits:admin-agent
-  /ci/api/runners/{id}/health:
-    get:
-      summary: "A runner's newest node health report, every check's data included"
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-      responses:
-        "200":
-          description: The newest node health report
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CiRunnerHealthDto"
-        "204":
-          description: The runner has never reported
-        "404":
-          description: No such runner
-        "401":
-          description: Not Authorized
-        "403":
-          description: Not Allowed
-      tags:
-      - Ci Runner Controller
-      security:
-      - SecurityScheme:
-        - qits:admin
-        - qits:admin-agent
-        - qits:system
-        - qits:agent
-  /ci/api/runners/{id}/healthcheck:
-    post:
-      summary: "Queue a health check for a runner, and ask a connected one for its\
-        \ node report"
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-      responses:
-        "202":
-          description: "The health check's run id, and the node health request's id\
-            \ when the runner is connected"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/HealthCheckQueued"
-        "404":
-          description: No such runner
-        "409":
-          description: One is already queued or running for it
-        "503":
-          description: "The health check's repository, its head or its image could\
-            \ not be resolved; ask again"
-        "401":
-          description: Not Authorized
-        "403":
-          description: Not Allowed
-      tags:
-      - Ci Runner Controller
-      security:
-      - SecurityScheme:
-        - qits:admin
-        - qits:admin-agent
-        - qits:system
-        - qits:agent
-  /ci/api/runners/{id}/register:
-    post:
-      summary: "Register a runner with its registration token; answers its client,\
-        \ once"
-      operationId: registerRunner
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/RegisterRunnerRequest"
-        required: true
-      responses:
-        "200":
-          description: The runner's own client and where to use it
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RegisteredRunner"
-        "400":
-          description: Capabilities that are not a JSON object
-        "403":
-          description: The token is not this runner's
-        "404":
-          description: No such runner
-        "409":
-          description: The runner is already registered
-        "502":
-          description: qits-idp refused the runner's client
-        "503":
-          description: "This deployment commissions nothing, or knows no public domain\
-            \ to tell the runner its addresses by"
-        "401":
-          description: Not Authorized
-      tags:
-      - Ci Runner Controller
-      security:
-      - SecurityScheme:
-        - qits:ci-runner-registration
-  /ci/api/runners/{id}/registration-token:
-    post:
-      summary: "Replace a runner's registration token; answers a new install line,\
-        \ once"
-      operationId: rotateRegistrationToken
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-      responses:
-        "200":
-          description: The runner and the install line carrying its new registration
-            token
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CiRunnerCreated"
-        "404":
-          description: No such runner
-        "409":
-          description: The runner is already registered
-        "502":
-          description: qits-idp refused the registration token
-        "503":
-          description: "This deployment commissions nothing, or cannot render an install\
-            \ script"
-        "401":
-          description: Not Authorized
-        "403":
-          description: Not Allowed
-      tags:
-      - Ci Runner Controller
-      security:
-      - SecurityScheme:
-        - qits:admin
-        - qits:admin-agent
-        - qits:system
   /ci/api/runs:
     get:
       summary: "List a repository's CI runs, newest first"
@@ -1383,8 +769,8 @@ paths:
       parameters:
       - description: Return only the newest n runs; omit for all of them
         schema:
-          type: integer
           minimum: 1
+          type: integer
         name: limit
         in: query
       - description: The repository whose runs to list — required
@@ -1481,9 +867,9 @@ paths:
       parameters:
       - description: "Return the newest n finished runs; omit for 5, capped at 100"
         schema:
-          type: integer
           maximum: 100
           minimum: 1
+          type: integer
         name: limit
         in: query
       responses:

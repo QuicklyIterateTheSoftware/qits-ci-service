@@ -35,8 +35,8 @@
       "expectedFinishInMillis": null,
       "predictionUnavailable": "RUNNING_RUN_HAS_NO_PREDICTION",
       "ordering": null,
-      "runnerId": null,
-      "runnerName": null,
+      "leaseId": null,
+      "targetId": null,
       "retryReason": null,
       "autoRetry": false
     }
