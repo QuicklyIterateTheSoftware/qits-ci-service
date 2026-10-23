@@ -450,7 +450,9 @@ public class PackagedPlatformPipelinesTest {
             "export QITS_MAVEN_CENTRAL_URL=\"https://mirror.qits.$qits_domain/mirror/maven/central\"",
             "QITS_GOLDEN_UPDATE=true ./mvnw",
             "-Dgolden.update=true",
-            "-Dquarkus.quinoa=false",
+            "if grep -rqs --include=pom.xml 'quarkus-quinoa' .; then",
+            "quinoa_property=\"-Dquarkus.quinoa=false\"",
+            "${quinoa_property:+\"$quinoa_property\"}",
             "if grep -rqs --include=pom.xml 'qits.maven.repository.url' .; then",
             "maven_repository_property=\"-Dqits.maven.repository.url=$QITS_MAVEN_REPOSITORY_URL\"",
             "${maven_repository_property:+\"$maven_repository_property\"}")) {
