@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import eu.wohlben.qits.ci.entity.CiRun;
 import eu.wohlben.qits.ci.entity.CiRunPhase;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
+import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.ConflictException;
 import eu.wohlben.qits.ci.error.NotFoundException;
 import eu.wohlben.qits.ci.error.UnavailableException;
@@ -213,6 +214,68 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     forgetLoadedEntities();
     assertEquals(CiRunStatus.CANCELLED, service.requireRun(publish).status);
     assertEquals(CiRunStatus.CANCELLED, service.requireRun(qa).status);
+  }
+
+  // --- a cancellation can say why (qits-899) ------------------------------------------------------
+
+  @Test
+  public void aCancellationWithNoReasonRecordsReleaseRequestCancelled() throws Exception {
+    occupyTheWorker();
+    String repo = "consumer-" + UUID.randomUUID();
+    String withdrawn = accept(repo, "rr-a");
+
+    List<String> stopped = service.cancelReleaseRequestRuns(repo, "rr-a", null, null);
+
+    assertEquals(List.of(withdrawn), stopped);
+    forgetLoadedEntities();
+    assertEquals(
+        CiRunService.RELEASE_REQUEST_CANCELLED,
+        service.requireRun(withdrawn).cancellationReason,
+        "an old caller naming no reason keeps today's behaviour");
+  }
+
+  @Test
+  public void aCancellationHeldByPreRunGateRecordsThatReasonAndAnnouncesNoVerdict()
+      throws Exception {
+    occupyTheWorker();
+    String repo = "consumer-" + UUID.randomUUID();
+    String withdrawn = accept(repo, "rr-a");
+
+    List<String> stopped =
+        service.cancelReleaseRequestRuns(repo, "rr-a", null, CiRunService.HELD_BY_PRE_RUN_GATE);
+
+    assertEquals(List.of(withdrawn), stopped);
+    forgetLoadedEntities();
+    assertEquals(
+        CiRunService.HELD_BY_PRE_RUN_GATE, service.requireRun(withdrawn).cancellationReason);
+    release.countDown();
+    suiteRunner.awaitIdle();
+
+    // Same contract as every other cancellation reason: no verdict either way.
+    assertTrue(
+        announcer.announced().stream().noneMatch(a -> a.runId().equals(withdrawn)),
+        "held by a pre-run gate is not a passing build");
+    assertTrue(
+        announcer.failed().stream().noneMatch(f -> f.runId().equals(withdrawn)),
+        "and not a failing one either — a gate deciding is not a verdict");
+  }
+
+  @Test
+  public void aCancellationWithAnUnknownReasonIsRefusedAndCancelsNothing() throws Exception {
+    occupyTheWorker();
+    String repo = "consumer-" + UUID.randomUUID();
+    String queued = accept(repo, "rr-a");
+
+    assertThrows(
+        BadRequestException.class,
+        () -> service.cancelReleaseRequestRuns(repo, "rr-a", null, "SOMETHING_ELSE"));
+
+    forgetLoadedEntities();
+    assertEquals(
+        CiRunStatus.QUEUED,
+        service.requireRun(queued).status,
+        "an unknown reason is refused before any run is touched");
+    assertNull(service.requireRun(queued).cancellationReason);
   }
 
   // --- re-asking the same question ---------------------------------------------------------------

@@ -37,6 +37,15 @@ components:
           enum:
           - RELEASE_REQUEST
           - RELEASE
+        reason:
+          type: string
+          description: "Why the runs are being stopped: RELEASE_REQUEST_CANCELLED\
+            \ (the request itself went away — withdrawn, closed or re-scoped) or HELD_BY_PRE_RUN_GATE\
+            \ (a pre-run gate is holding the request; not a verdict). Omit for RELEASE_REQUEST_CANCELLED,\
+            \ today's behaviour"
+          enum:
+          - RELEASE_REQUEST_CANCELLED
+          - HELD_BY_PRE_RUN_GATE
     CancelReleaseRequestRunsResponse:
       type: object
       properties:
@@ -1451,7 +1460,8 @@ paths:
                 $ref: "#/components/schemas/CancelReleaseRequestRunsResponse"
         "400":
           description: "The repository id or the release request id is missing or\
-            \ invalid, or the phase names no phase"
+            \ invalid, the phase names no phase, or the reason names neither RELEASE_REQUEST_CANCELLED\
+            \ nor HELD_BY_PRE_RUN_GATE"
         "403":
           description: "The token covers this repository for nobody — no project claim\
             \ and no platform-wide role, or a project claim this instance cannot place\

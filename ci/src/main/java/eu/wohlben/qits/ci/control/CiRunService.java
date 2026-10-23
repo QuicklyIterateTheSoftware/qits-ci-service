@@ -457,6 +457,16 @@ public class CiRunService {
   public static final String SUPERSEDED_BY_RELEASE_REQUEST = "SUPERSEDED_BY_RELEASE_REQUEST";
 
   /**
+   * What a run cancelled through {@code POST /ci/api/runs/cancellations} records when the caller
+   * names it explicitly: a pre-run gate is holding the release request the run would serve, so the
+   * run is stopped while that gate decides rather than because anyone judged the commit. Distinct
+   * from {@link #RELEASE_REQUEST_CANCELLED} for the same reason that reason is distinct from {@link
+   * #USER_CANCELLED} — this is not a verdict, and not the request going away either, only a gate
+   * still deciding.
+   */
+  public static final String HELD_BY_PRE_RUN_GATE = "HELD_BY_PRE_RUN_GATE";
+
+  /**
    * What a row this engine cannot execute records when a boot sweep hands it back: a {@code
    * POST_RECEIVE} run left {@code QUEUED} by a deployment that predates the 2026-09-05 retirement of
    * per-push CI. Its own reason rather than {@link #USER_CANCELLED}, because nobody cancelled it —
@@ -3747,9 +3757,26 @@ public class CiRunService {
    * the release — and the tag push may well have queued it before the status change got here, which
    * is the order that used to cancel it (qits-1264). {@code null} is every phase, which is what a
    * withdrawal and a supersession mean and what a sender that predates the field still gets.
+   *
+   * <p>Overload kept for callers that name no reason — exactly {@link #RELEASE_REQUEST_CANCELLED},
+   * today's behaviour.
    */
   public List<String> cancelReleaseRequestRuns(
       String repoId, String releaseRequestId, CiRunPhase phase) {
+    return cancelReleaseRequestRuns(repoId, releaseRequestId, phase, null);
+  }
+
+  /**
+   * {@link #cancelReleaseRequestRuns(String, String, CiRunPhase)}, with the cancellation reason the
+   * caller names. {@code reason} is validated against the allowlist — {@link
+   * #RELEASE_REQUEST_CANCELLED} (the default when {@code null} or blank, which is what an old caller
+   * naming none still gets) or {@link #HELD_BY_PRE_RUN_GATE} — <b>before</b> anything is read or
+   * cancelled, so an unknown word cancels nothing rather than cancelling some runs under a reason
+   * nobody asked for.
+   */
+  public List<String> cancelReleaseRequestRuns(
+      String repoId, String releaseRequestId, CiRunPhase phase, String reason) {
+    String resolvedReason = releaseRequestCancellationReason(reason);
     List<CiRun> unfinished =
         DbRetry.call(
             "release request run listing",
@@ -3761,7 +3788,7 @@ public class CiRunService {
     List<String> stopped = new ArrayList<>();
     for (CiRun run : unfinished) {
       try {
-        cancel(run.id, RELEASE_REQUEST_CANCELLED);
+        cancel(run.id, resolvedReason);
         stopped.add(run.id);
       } catch (ConflictException | NotFoundException raced) {
         LOG.debugf(
@@ -3770,12 +3797,37 @@ public class CiRunService {
       }
     }
     LOG.infof(
-        "Release request %s in %s: cancelled %d of %d unfinished run(s)",
+        "Release request %s in %s: cancelled %d of %d unfinished run(s) (%s)",
         unfinished.isEmpty() ? releaseRequestId : requestName(unfinished.get(0), releaseRequestId),
         repoId,
         stopped.size(),
-        unfinished.size());
+        unfinished.size(),
+        resolvedReason);
     return stopped;
+  }
+
+  /**
+   * The allowlist for {@code POST /ci/api/runs/cancellations}' {@code reason}: {@link
+   * #RELEASE_REQUEST_CANCELLED} (the default) or {@link #HELD_BY_PRE_RUN_GATE}. Anything else is a
+   * {@link BadRequestException} naming the value, never a silent fallback to the default — a typo in
+   * the one field this door lets a caller choose must not quietly become a different, wrong
+   * statement on the row.
+   */
+  private static String releaseRequestCancellationReason(String requestedReason) {
+    if (requestedReason == null || requestedReason.isBlank()) {
+      return RELEASE_REQUEST_CANCELLED;
+    }
+    String reason = requestedReason.trim();
+    if (reason.equals(RELEASE_REQUEST_CANCELLED) || reason.equals(HELD_BY_PRE_RUN_GATE)) {
+      return reason;
+    }
+    throw new BadRequestException(
+        "Unknown cancellation reason '"
+            + requestedReason
+            + "': expected "
+            + RELEASE_REQUEST_CANCELLED
+            + " or "
+            + HELD_BY_PRE_RUN_GATE);
   }
 
   /**
