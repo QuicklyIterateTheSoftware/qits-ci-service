@@ -108,7 +108,10 @@
 
 release-request:
 
-  - build: true
+  # `image:` is kept only for the qits-ci version that judges this fold against the old parser; the
+  # ci-slot runner that actually executes it ignores the key entirely (qits-1544).
+  - image: qits/build-images/ci-base:latest
+    build: true
     timeout-seconds: 3600
     script: |
       # THE FALLBACK COORDINATE, for a repository that rides this recipe and does NOT own the
@@ -190,7 +193,9 @@ release-request:
 
 release:
 
-  - build: true
+  # `image:` kept for the old parser only; the ci-slot runner ignores it (qits-1544).
+  - image: qits/build-images/ci-base:latest
+    build: true
     timeout-seconds: 3600
     script: |
       # THE COORDINATE, OUT OF THE DECLARATION THAT ANNOUNCES IT — the same reading java-service and

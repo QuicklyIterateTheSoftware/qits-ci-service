@@ -97,9 +97,13 @@ public class JavaServiceReleaseArchetypeTest {
     assertEquals(2, steps.size());
     CiStepDecl image = steps.get(0);
     CiStepDecl jars = steps.get(1);
-    assertEquals(null, image.image(), "the recipe declares no image");
+    // The PACKAGED recipe still declares `image:` on disk — tolerated there rather than read, kept
+    // only for the qits-ci version that judges a fold against the old parser (qits-1544) — but the
+    // COMPOSED document never repeats it: every step runs in the run's one ci-slot container, so the
+    // composer drops a declared image on the way out, and it never reaches this re-parsed pipeline.
+    assertEquals(null, image.image(), "the composed document carries no image");
     assertTrue(image.build());
-    assertEquals(null, jars.image(), "the recipe declares no image");
+    assertEquals(null, jars.image(), "the composed document carries no image");
     assertFalse(jars.build());
     assertEquals("", jars.user(), "maven-library's release step runs as the image's user too");
 
@@ -137,7 +141,8 @@ public class JavaServiceReleaseArchetypeTest {
     List<CiStepDecl> steps = composedReleaseSteps(WITHOUT_MAVEN);
 
     assertEquals(2, steps.size());
-    assertEquals(null, steps.get(1).image(), "the recipe declares no image");
+    // See the comment on the same assertion above (qits-1544).
+    assertEquals(null, steps.get(1).image(), "the composed document carries no image");
     assertFalse(steps.get(1).script().contains("qits artifacts publish maven"));
     assertTrue(
         steps.get(1).script().contains("qits artifacts publish docs submit --site '@apidocs/qits-idp'"));

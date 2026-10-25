@@ -72,7 +72,11 @@ release-request:
 
   # The run's ci-slot container carries buildctl and git; `build: true` says this step builds
   # through the target's buildkitd, whose $BUILDKIT_HOST every CI lease is given.
-  - build: true
+  #
+  # `image:` below is kept only for the qits-ci version that still judges this fold with the old
+  # parser; the ci-slot runner that actually executes it ignores the key entirely (qits-1544).
+  - image: qits/build-images/ci-base:latest
+    build: true
     timeout-seconds: 3600
     script: |
       # NOTHING IS PUBLISHED, SO THERE IS NO `--output` AT ALL: buildctl solves the whole graph and
@@ -89,7 +93,9 @@ release-request:
 
 release:
 
-  - build: true
+  # `image:` kept for the old parser only; the ci-slot runner ignores it (qits-1544).
+  - image: qits/build-images/ci-base:latest
+    build: true
     timeout-seconds: 3600
     script: |
       # THE COORDINATE, OUT OF THE DECLARATION THAT ANNOUNCES IT. See the header.
