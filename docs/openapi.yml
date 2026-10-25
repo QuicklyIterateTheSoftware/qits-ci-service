@@ -493,11 +493,11 @@ components:
           description: How many steps it may hold at once; 0 drains it. Default 1
         plane:
           type: string
-          enum:
-          - EDGE
           description: "Where its steps reach the platform. There is one plane, EDGE\
             \ — through the public names — and absent means EDGE. Any other value\
             \ is refused 400"
+          enum:
+          - EDGE
         stepMemoryLimit:
           type: string
           description: "The memory cap its step containers get, memory and memory-swap\
@@ -625,10 +625,10 @@ components:
           description: Blank clears it; absent leaves it
         plane:
           type: string
-          enum:
-          - EDGE
           description: "EDGE, or absent; it changes nothing. Any other value is refused\
             \ 400"
+          enum:
+          - EDGE
         stepMemoryLimit:
           type: string
           description: "A docker size (6g, 6144m) its step containers are capped at;\
@@ -656,9 +656,9 @@ components:
       properties:
         capabilities:
           $ref: "#/components/schemas/JsonNode"
-          type: object
           description: "What the runner says about itself — a JSON object, at most\
             \ 16 KiB"
+          type: object
     RegisteredRunner:
       type: object
       properties:
@@ -739,11 +739,11 @@ components:
           description: "The release request the run serves, by its UUID"
         phase:
           type: string
+          description: "Which phase of the release to re-fire: RELEASE_REQUEST (QA)\
+            \ or RELEASE (publish)"
           enum:
           - RELEASE_REQUEST
           - RELEASE
-          description: "Which phase of the release to re-fire: RELEASE_REQUEST (QA)\
-            \ or RELEASE (publish)"
     RetryRunResponse:
       type: object
       properties:
@@ -788,17 +788,17 @@ components:
       properties:
         name:
           type: string
+          description: "The event signature, matched against a trigger file's `event:`"
           examples:
           - SoftwareRelease
-          description: "The event signature, matched against a trigger file's `event:`"
         payload:
-          type: object
           description: "The event payload, exactly as it would arrive off the bus"
+          type: object
         occurredAt:
           type: string
+          description: "ISO-8601 instant. Absent: now."
           examples:
           - 2026-08-04T09:00:00Z
-          description: "ISO-8601 instant. Absent: now."
         eventId:
           type: string
           description: "UUID. Absent: a fresh random one, so the call is a rerun —\
@@ -891,6 +891,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
   /ci/api/repositories:
     get:
@@ -912,6 +913,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/repositories/summary:
@@ -934,6 +936,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/repositories/{repoId}/release-phase:
@@ -974,6 +977,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/repositories/{repoId}/releases/{version}/artifacts:
@@ -1011,6 +1015,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runners:
@@ -1034,6 +1039,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
     post:
@@ -1074,6 +1080,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
   /ci/api/runners/install.sh:
     get:
@@ -1099,6 +1106,7 @@ paths:
         - qits:ci-runner-registration
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runners/{id}:
@@ -1138,6 +1146,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
     get:
       summary: One runner
@@ -1166,6 +1175,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
     delete:
@@ -1194,6 +1204,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
   /ci/api/runners/{id}/greenlight:
     post:
@@ -1224,6 +1235,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
   /ci/api/runners/{id}/health:
     get:
       summary: "A runner's newest node health report, every check's data included"
@@ -1254,6 +1266,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runners/{id}/healthcheck:
@@ -1291,6 +1304,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runners/{id}/register:
@@ -1375,6 +1389,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
   /ci/api/runs:
     get:
@@ -1383,8 +1398,8 @@ paths:
       parameters:
       - description: Return only the newest n runs; omit for all of them
         schema:
-          type: integer
           minimum: 1
+          type: integer
         name: limit
         in: query
       - description: The repository whose runs to list — required
@@ -1414,6 +1429,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runs/active:
@@ -1438,6 +1454,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runs/cancellations:
@@ -1474,6 +1491,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
   /ci/api/runs/finished:
     get:
@@ -1481,9 +1499,9 @@ paths:
       parameters:
       - description: "Return the newest n finished runs; omit for 5, capped at 100"
         schema:
-          type: integer
           maximum: 100
           minimum: 1
+          type: integer
         name: limit
         in: query
       responses:
@@ -1506,6 +1524,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runs/queue:
@@ -1529,6 +1548,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runs/rerun:
@@ -1583,6 +1603,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
   /ci/api/runs/{runId}:
     get:
@@ -1613,6 +1634,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runs/{runId}/baseline:
@@ -1645,6 +1667,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
         - qits:ci-run
@@ -1686,6 +1709,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
         - qits:ci-run
@@ -1724,6 +1748,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
   /ci/api/runs/{runId}/gate/reports:
     get:
       summary: "The release reports of the green QA run that gated this run's release\
@@ -1755,6 +1780,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
         - qits:ci-run
@@ -1787,6 +1813,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
         - qits:ci-run
@@ -1824,6 +1851,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
         - qits:ci-run
@@ -1862,6 +1890,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:agent
   /ci/api/runs/{runId}/steps/{stepIndex}/reports/{kind}:
     put:
@@ -1913,4 +1942,4 @@ paths:
         - qits:ci-run
 info:
   title: qits-ci API
-  version: 2026.1010.142433
+  version: 2026.1023.104223

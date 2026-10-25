@@ -617,6 +617,25 @@ class RunnerQuarantineSocketTest {
     given().post(RUNNERS + "/" + runnerId + "/greenlight").then().statusCode(200);
   }
 
+  /**
+   * qits-1596: the delivery desk's token carries {@code qits:desk} alongside {@code qits:agent} and
+   * a {@code project} claim, and it is admitted on {@code greenlight} exactly as {@code
+   * qits:admin-agent} is — outright, because a runner belongs to no project and there is nothing to
+   * bind the desk to.
+   */
+  @Test
+  @TestSecurity(user = "delivery-desk", roles = {"qits:desk", "qits:agent"})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = AUDIENCE),
+        @Claim(key = eu.wohlben.qits.auth.QitsClaims.PROJECT, value = "desk-project")
+      })
+  void aDeskPressesGreenlightAndAgentAloneStillCannot() {
+    declare(1, CiRunnerPlane.EDGE, Instant.now(), "desk greenlight coverage");
+
+    given().post(RUNNERS + "/" + runnerId + "/greenlight").then().statusCode(200);
+  }
+
   // --- staging ------------------------------------------------------------------------------------
 
   private void declare(int slots, CiRunnerPlane plane, Instant quarantinedAt, String reason) {
