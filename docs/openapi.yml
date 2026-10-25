@@ -640,6 +640,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
   /ci/api/repositories:
     get:
@@ -661,6 +662,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/repositories/summary:
@@ -683,6 +685,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/repositories/{repoId}/release-phase:
@@ -723,6 +726,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/repositories/{repoId}/releases/{version}/artifacts:
@@ -760,6 +764,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runs:
@@ -800,6 +805,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runs/active:
@@ -824,6 +830,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runs/cancellations:
@@ -860,6 +867,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
   /ci/api/runs/finished:
     get:
@@ -892,6 +900,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runs/queue:
@@ -915,6 +924,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runs/rerun:
@@ -969,6 +979,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
   /ci/api/runs/{runId}:
     get:
@@ -999,6 +1010,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
   /ci/api/runs/{runId}/baseline:
@@ -1031,6 +1043,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
         - qits:ci-run
@@ -1072,6 +1085,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
         - qits:ci-run
@@ -1110,6 +1124,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
   /ci/api/runs/{runId}/gate/reports:
     get:
       summary: "The release reports of the green QA run that gated this run's release\
@@ -1141,6 +1156,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
         - qits:ci-run
@@ -1173,6 +1189,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
         - qits:ci-run
@@ -1210,6 +1227,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:system
         - qits:agent
         - qits:ci-run
@@ -1248,6 +1266,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:agent
   /ci/api/runs/{runId}/steps/{stepIndex}/reports/{kind}:
     put:
