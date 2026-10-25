@@ -438,9 +438,9 @@ public class CiDaemonPinIT {
    * QITS_CI_DAEMON_URL}, {@code QITS_CI_BRANCH} and {@code QITS_CI_SHA} of the build this very test
    * is part of — which name a different run, a different host, a different branch and a different
    * commit. A pin test whose result depends on where it runs proves nothing about the pin. So the
-   * child gets the six variables {@code DaemonEnv} requires and no others.
+   * child gets the variables the daemon reads and no others.
    *
-   * <p>Four of those six are the spec's own — the launch id, the run's token, and the sha/branch
+   * <p>Most of them are the spec's own — the launch id, the run's token, and the sha/branch
    * qits-ci decided this run is about. Two are not, and both substitutions are named here rather
    * than left to be discovered:
    *
@@ -459,10 +459,17 @@ public class CiDaemonPinIT {
    *       daemon to do. Which transport carried it is qits-githost's question and not this one's.
    * </ul>
    *
-   * <p>The workspace directory is handed over as a system property rather than as a seventh
-   * environment variable, so the env stays exactly the contract. It has to be handed over at all:
-   * the shipped default is {@code /workspace}, which inside a step container is an empty volume and
-   * on this machine is somebody's checkout.
+   * <p>The run's identity — {@code QITS_CI_RUN_ID} and the mirror's coordinates, {@code
+   * QITS_CI_PROJECT_ID}/{@code QITS_CI_REPO_NAME} or, on an id-addressed run like this one, {@code
+   * QITS_CI_REPO_ID} — is the spec's own too. A capability-2 daemon names its mirror and worktree by
+   * it, and with none of the three it answers {@code CLONE_FAILED} before running git at all.
+   *
+   * <p>The mirror root and the work root are handed over as system properties ({@code
+   * qits.ci.git-cache-dir}, {@code qits.ci.work-dir}) rather than as more environment, so the env
+   * stays exactly the contract. They have to be handed over at all: the shipped defaults are {@code
+   * /cache/git} — the target's CI git-cache volume, mounted by qits-system's CI slot policy — and
+   * {@code /work}, neither of which exists or is writable in the step container this gate runs in,
+   * and a daemon that cannot create its mirror answers {@code CLONE_FAILED} too.
    */
   private static Process start(
       Path binary,
@@ -473,14 +480,18 @@ public class CiDaemonPinIT {
       String daemonUrl)
       throws IOException {
     ProcessBuilder builder =
-        new ProcessBuilder(binary.toString(), "-Dqits.ci.workspace-dir=" + checkout);
+        new ProcessBuilder(
+            binary.toString(),
+            "-Dqits.ci.git-cache-dir=" + checkout.resolve("cache-git"),
+            "-Dqits.ci.work-dir=" + checkout.resolve("work"));
     Map<String, String> env = builder.environment();
     env.keySet().removeIf(key -> key.startsWith("QITS_"));
     env.put(StoryDaemon.URL_VARIABLE, daemonUrl);
     env.put(StoryDaemon.ID_VARIABLE, lease.get(StoryDaemon.ID_VARIABLE));
     env.put(StoryDaemon.TOKEN_VARIABLE, lease.get(StoryDaemon.TOKEN_VARIABLE));
     // The run's identity, which a capability-2 daemon requires of its lease.
-    for (String key : List.of("QITS_CI_RUN_ID", "QITS_CI_PROJECT_ID", "QITS_CI_REPO_NAME")) {
+    for (String key :
+        List.of("QITS_CI_RUN_ID", "QITS_CI_PROJECT_ID", "QITS_CI_REPO_NAME", "QITS_CI_REPO_ID")) {
       if (lease.get(key) != null) {
         env.put(key, lease.get(key));
       }
