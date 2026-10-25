@@ -14,9 +14,17 @@ import org.jboss.logging.Logger;
 /**
  * The CI runner's retirement one-shot (epic qits-1481, qits-1544): gives back every qits-idp client
  * and token of the retired kinds, {@code ci-runner} (a registered runner's own client) and {@code
- * ci-runner-registration} (its one-use registration token). Without its client the old runner stops
- * dialling — the toolkit's {@code ControlSocket} gives up on a sustained {@code invalid_client} — and
- * a registration token can install nothing any more.
+ * ci-runner-registration} (its one-use registration token), and nothing else. Without its client
+ * the runner stops dialling and a registration token can install nothing any more.
+ *
+ * <p><b>It only gives back credentials; it decommissions no runner and removes nothing on one</b>
+ * (qits-1592). The fixed runner, qits-ci-runner-daemon 2026.1025.102402 or newer, reads its revoked
+ * credential ({@code invalid_client}) as "stop": it exits and stays down under {@code restart=no},
+ * and removes none of its containers or volumes. A runner older than that read the same revocation
+ * as "deleted" and purged everything it held — which is what happened on 2026-10-24, when the
+ * workspace cutover deleted the old runner's client — so this one-shot is safe only against the
+ * fixed one. Nor does anything here speak to a runner: there is no runner socket any more, so no
+ * {@code Retire} and no {@code RUNNER_DELETED} close can be sent from this service at all.
  *
  * <p><b>Idempotent, and at every boot</b>, on a thread of its own so a slow qits-idp never holds the
  * startup. It deletes only what qits-idp lists for this service under those two kinds, so a second
