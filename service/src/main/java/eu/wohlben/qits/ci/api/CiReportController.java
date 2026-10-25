@@ -68,7 +68,10 @@ import org.jboss.logging.Logger;
  */
 @Path("/runs")
 @Produces(MediaType.APPLICATION_JSON)
-@RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system", "qits:agent", "qits:ci-run"})
+// qits:desk is admitted alongside qits:admin-agent (qits-1596), outright: every route here but
+// submit() is a read, and submit() stays RolesAllowed("qits:ci-run") alone — the desk never gets
+// this class's one write.
+@RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:system", "qits:agent", "qits:ci-run"})
 public class CiReportController {
 
   private static final Logger LOG = Logger.getLogger(CiReportController.class);

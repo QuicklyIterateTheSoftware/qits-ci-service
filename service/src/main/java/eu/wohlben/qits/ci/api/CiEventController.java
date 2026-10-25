@@ -225,7 +225,7 @@ public class CiEventController {
    */
   @POST
   @Path("/trigger")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:system"})
   @Operation(
       operationId = "triggerEvent",
       summary = "Run every event pipeline that selects a caller-supplied domain event")
@@ -324,6 +324,13 @@ public class CiEventController {
    * everything {@code qits:admin} may use.
    */
   private static final String ADMIN_AGENT_ROLE = "qits:admin-agent";
+
+  // qits:desk is admitted on trigger()'s @RolesAllowed wherever ADMIN_AGENT_ROLE is (qits-1596):
+  // the delivery desk's token carries it alongside qits:agent and a project claim. It is
+  // deliberately absent from scopeOf()'s platform-wide arm below — unlike ADMIN_AGENT_ROLE, the
+  // desk is never admitted unscoped there, and a desk caller presenting a project claim is bound
+  // to it by the same project-claim arm this method already has. No DESK_ROLE constant is declared
+  // for the same reason.
 
   /**
    * The guard, and the whole of it: what this caller may have the event evaluated against.

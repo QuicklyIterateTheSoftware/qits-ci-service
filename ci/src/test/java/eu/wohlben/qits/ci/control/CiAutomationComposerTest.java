@@ -1334,6 +1334,9 @@ public class CiAutomationComposerTest {
           + "]}";
     }
 
+    /** The prefix every fixed file of a composed step shares, kind script included (qits-1563). */
+    static final String AUTOMATION_FILES = "/tmp/qits-automation";
+
     Result run(String shell, String kindScript, String payload) throws Exception {
       return run(shell, kindScript, payload, false, null, Map.of());
     }
@@ -1364,8 +1367,14 @@ public class CiAutomationComposerTest {
       Path script = Files.createTempFile(root, "step", ".sh");
       // The CLI goes into the scratch directory, never the host's /tmp/qits-bin (qits-1178): a QA
       // step running these tests keeps the real CLI there for its output check.
+      // The step's fixed /tmp/qits-automation* files go there too (qits-1563): a QA or automation
+      // step running these tests is itself executing /tmp/qits-automation.sh, and bash reads a
+      // script as it runs, so rewriting that file mid-step breaks the step that runs the suite.
+      // The step's output names them by the shipped paths again, so assertions keep reading those.
+      String automationFiles = root.resolve("qits-automation").toAbsolutePath().toString();
       String hermetic =
-          step.replace(CiReleaseComposer.CLI_DIR, root.resolve("qits-bin").toAbsolutePath().toString());
+          step.replace(CiReleaseComposer.CLI_DIR, root.resolve("qits-bin").toAbsolutePath().toString())
+              .replace(AUTOMATION_FILES, automationFiles);
       Files.writeString(script, hermetic, StandardCharsets.UTF_8);
       ProcessBuilder builder =
           new ProcessBuilder(shell, script.toString()).directory(work.toFile()).redirectErrorStream(true);
@@ -1380,7 +1389,9 @@ public class CiAutomationComposerTest {
       env.put("QITS_EVENT_PAYLOAD", payload);
       env.putAll(extraEnv);
       Process process = builder.start();
-      String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+      String output =
+          new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8)
+              .replace(automationFiles, AUTOMATION_FILES);
       assertTrue(process.waitFor(60, TimeUnit.SECONDS), "the step did not return");
       // Every run starts again from the clone's main, as a fresh step container would.
       // Forced: a step that failed mid-apply leaves its edits behind, as a dead container would.

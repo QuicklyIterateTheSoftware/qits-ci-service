@@ -108,6 +108,18 @@ public class CiRunnerController {
   static final String ADMIN_AGENT_ROLE = "qits:admin-agent";
 
   /**
+   * {@code qits:desk} is admitted wherever {@code ADMIN_AGENT_ROLE} is (qits-1596): the delivery
+   * desk's token carries it alongside {@code qits:agent} and a {@code project} claim. Unlike the
+   * project-bound doors on {@code CiRunController} and {@code CiEventController}, every door here
+   * admits it OUTRIGHT, exactly as {@code ADMIN_AGENT_ROLE} is — a runner belongs to no project (see
+   * {@link #requireMachineAudience()}'s javadoc), so there is no claim to bind it to. None of these
+   * doors grants the desk's own identity anything: the four lifecycle writes and the register door
+   * commission a client or a token for a RUNNER, never for the caller, which is exactly the shape
+   * {@code qits-1596} carves out as safe for the desk to hold.
+   */
+  static final String DESK_ROLE = "qits:desk";
+
+  /**
    * A coding agent's role: every read here takes it, and so does the health check on demand
    * (qits-896) — the one write it may press, because a check changes nothing a person set.
    */
@@ -251,7 +263,7 @@ public class CiRunnerController {
 
   @POST
   @Consumes(MediaType.APPLICATION_JSON)
-  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE})
+  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, DESK_ROLE, SYSTEM_ROLE})
   @Operation(
       operationId = "createRunner",
       summary = "Declare a runner; answers its install line, once")
@@ -311,7 +323,7 @@ public class CiRunnerController {
   }
 
   @GET
-  @RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system", "qits:agent"})
+  @RolesAllowed({"qits:admin", "qits:admin-agent", DESK_ROLE, "qits:system", "qits:agent"})
   @Operation(
       operationId = "listRunners",
       summary = "Every runner, with whether it is connected and how many runs it holds")
@@ -330,7 +342,7 @@ public class CiRunnerController {
   @GET
   @Path("/install.sh")
   @Produces(MediaType.TEXT_PLAIN)
-  @RolesAllowed({REGISTRATION_ROLE, "qits:admin", "qits:admin-agent", "qits:system", "qits:agent"})
+  @RolesAllowed({REGISTRATION_ROLE, "qits:admin", "qits:admin-agent", DESK_ROLE, "qits:system", "qits:agent"})
   @Operation(summary = "The generic runner install script, which the install line pipes into sh")
   @APIResponse(responseCode = "200", description = "A POSIX sh script, carrying no secret")
   @APIResponse(
@@ -343,7 +355,7 @@ public class CiRunnerController {
 
   @GET
   @Path("/{id}")
-  @RolesAllowed({"qits:admin", "qits:admin-agent", "qits:system", "qits:agent"})
+  @RolesAllowed({"qits:admin", "qits:admin-agent", DESK_ROLE, "qits:system", "qits:agent"})
   @Operation(summary = "One runner")
   @APIResponse(responseCode = "200", description = "The runner")
   @APIResponse(responseCode = "404", description = "No such runner")
@@ -354,7 +366,7 @@ public class CiRunnerController {
   @PATCH
   @Path("/{id}")
   @Consumes(MediaType.APPLICATION_JSON)
-  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE})
+  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, DESK_ROLE, SYSTEM_ROLE})
   @Operation(summary = "Change a runner's slots, description or step memory limit")
   @APIResponse(responseCode = "200", description = "The runner as it now is")
   @APIResponse(
@@ -401,7 +413,7 @@ public class CiRunnerController {
    */
   @POST
   @Path("/{id}/registration-token")
-  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE})
+  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, DESK_ROLE, SYSTEM_ROLE})
   @Operation(
       operationId = "rotateRegistrationToken",
       summary = "Replace a runner's registration token; answers a new install line, once")
@@ -447,7 +459,7 @@ public class CiRunnerController {
    */
   @DELETE
   @Path("/{id}")
-  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE})
+  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, DESK_ROLE, SYSTEM_ROLE})
   @Operation(summary = "Decommission a runner and give its credentials back")
   @APIResponse(responseCode = "204", description = "Gone")
   @APIResponse(responseCode = "404", description = "No such runner")
@@ -477,8 +489,9 @@ public class CiRunnerController {
   @POST
   @Path("/{id}/greenlight")
   // qits:admin-agent is admitted too (qits-628 follow-up); remove it here if this door must stay
-  // human-only.
-  @RolesAllowed({"qits:admin", "qits:admin-agent"})
+  // human-only. qits:desk is admitted alongside it (qits-1596), outright: a runner belongs to no
+  // project.
+  @RolesAllowed({"qits:admin", "qits:admin-agent", DESK_ROLE})
   @Operation(
       operationId = "greenlightRunner",
       summary = "Lift a runner's quarantine")
@@ -507,8 +520,8 @@ public class CiRunnerController {
    */
   @POST
   @Path("/{id}/healthcheck")
-  // qits:admin-agent is admitted too (qits-628 follow-up).
-  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE, AGENT_ROLE})
+  // qits:admin-agent is admitted too (qits-628 follow-up); qits:desk alongside it (qits-1596).
+  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, DESK_ROLE, SYSTEM_ROLE, AGENT_ROLE})
   @Operation(summary = "Queue a health check for a runner, and ask a connected one for its node report")
   @APIResponse(
       responseCode = "202",
@@ -546,7 +559,7 @@ public class CiRunnerController {
    */
   @GET
   @Path("/{id}/health")
-  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, SYSTEM_ROLE, AGENT_ROLE})
+  @RolesAllowed({ADMIN_ROLE, ADMIN_AGENT_ROLE, DESK_ROLE, SYSTEM_ROLE, AGENT_ROLE})
   @Operation(summary = "A runner's newest node health report, every check's data included")
   @APIResponse(
       responseCode = "200",
@@ -686,11 +699,16 @@ public class CiRunnerController {
    * asking either for one would 401 a person. No {@code project} claim is
    * asked for — a runner belongs to no project — and {@code qits:agent} never gets this far: it is
    * in none of these doors' {@code @RolesAllowed}.
+   *
+   * <p>{@code DESK_ROLE} joins {@code ADMIN_AGENT_ROLE} in this bypass too (qits-1596), for the
+   * same reason it joins it on every {@code @RolesAllowed} above: a runner has no project to bind
+   * the desk to, so there is nothing narrower to check it against than the role itself.
    */
   private void requireMachineAudience() {
     if (MachineIdentity.isMachine(identity)
         && !identity.hasRole(ADMIN_ROLE)
-        && !identity.hasRole(ADMIN_AGENT_ROLE)) {
+        && !identity.hasRole(ADMIN_AGENT_ROLE)
+        && !identity.hasRole(DESK_ROLE)) {
       machineAuth.require();
     }
   }
