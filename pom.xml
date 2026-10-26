@@ -133,7 +133,7 @@
              qits-platform-maintenance moves it like any internal pin, on a maintenance/* branch, and
              THIS repository's own release request is what gates the move. Do not hand-edit it to
              chase a release. -->
-        <qits.platform-access-cli-binary.version>2026.1026.42912</qits.platform-access-cli-binary.version>
+        <qits.platform-access-cli-binary.version>2026.1026.170953</qits.platform-access-cli-binary.version>
         <!-- pact-jvm's JUnit 5 provider, for contracts/ConsumerPactVerificationTest: the version every
              provider on the estate verifies with, so a consumer's pact is read the same way. -->
         <pact.version>4.7.5</pact.version>
@@ -153,7 +153,7 @@
         <qits.landing-app-pacts-qits-ci-service.version>2026.1010.174213</qits.landing-app-pacts-qits-ci-service.version>
         <qits.artifacts-service-pacts-qits-ci-service.version>2026.1018.153037</qits.artifacts-service-pacts-qits-ci-service.version>
         <qits.bootstrap-cli-pacts-qits-ci-service.version>2026.1023.225504</qits.bootstrap-cli-pacts-qits-ci-service.version>
-        <qits.maintenance-service-pacts-qits-ci-service.version>2026.1023.142858</qits.maintenance-service-pacts-qits-ci-service.version>
+        <qits.maintenance-service-pacts-qits-ci-service.version>2026.1026.180147</qits.maintenance-service-pacts-qits-ci-service.version>
         <qits.orchestrator-service-pacts-qits-ci-service.version>2026.1018.172917</qits.orchestrator-service-pacts-qits-ci-service.version>
         <qits.platform-access-cli-pacts-qits-ci-service.version>2026.1019.92700</qits.platform-access-cli-pacts-qits-ci-service.version>
         <qits.projects-service-pacts-qits-ci-service.version>2026.1018.195756</qits.projects-service-pacts-qits-ci-service.version>
