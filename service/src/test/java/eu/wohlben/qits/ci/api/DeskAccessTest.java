@@ -17,8 +17,10 @@ import io.quarkus.test.junit.TestProfile;
 import io.quarkus.test.security.TestSecurity;
 import io.quarkus.test.security.oidc.Claim;
 import io.quarkus.test.security.oidc.OidcSecurity;
+import io.restassured.http.ContentType;
 import jakarta.inject.Inject;
 import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -51,6 +53,8 @@ import org.junit.jupiter.api.Test;
 class DeskAccessTest {
 
   private static final String DESK = "qits:desk";
+
+  private static final String DESK_ADMIN = "qits:desk-admin";
 
   private static final String AGENT = "qits:agent";
 
@@ -214,5 +218,58 @@ class DeskAccessTest {
   void aDeskMayNotRetryARunInAnotherProject() {
     projectsListing.set(new CiRepoRef(REPO, PROJECT, REPO));
     given().when().post("/ci/api/runs/" + finishedRun + "/retry").then().statusCode(403);
+  }
+
+  /**
+   * qits-1621: a {@code qits:desk-admin} token still carries {@code qits:desk} and the desk's own
+   * {@code project} claim, so it goes through {@code cancellationScope()}'s project-claim arm
+   * exactly as the plain desk does — this is {@link #aDeskRetriesARunInItsOwnProject}'s shape,
+   * proved against {@code cancelReleaseRequestRuns} instead of {@code retryRun} because "cancel" is
+   * the literal word the epic's dossier uses for this case. Desk-admin widens the <em>reach</em>
+   * (qits-1631's parity edits to {@code @RolesAllowed}), not the <em>scope</em>: it is bound to its
+   * own project here precisely as a plain desk is bound to its own in {@link
+   * #aDeskRetriesARunInItsOwnProject}.
+   */
+  @Test
+  @TestSecurity(user = "delivery-desk-admin", roles = {DESK, DESK_ADMIN, AGENT})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = OWN_AUDIENCE),
+        @Claim(key = QitsClaims.PROJECT, value = PROJECT)
+      })
+  void aDeskAdminCancelsRunsOfItsOwnProject() {
+    projectsListing.set(new CiRepoRef(REPO, PROJECT, REPO));
+    given()
+        .contentType(ContentType.JSON)
+        .body(Map.of("repoId", REPO, "releaseRequestId", UUID.randomUUID().toString()))
+        .when()
+        .post("/ci/api/runs/cancellations")
+        .then()
+        .statusCode(202);
+  }
+
+  /**
+   * The other half of {@link #aDeskAdminCancelsRunsOfItsOwnProject}: a desk-admin token whose
+   * {@code project} claim does not cover the repository is refused exactly as the plain desk is in
+   * {@link #aDeskMayNotRetryARunInAnotherProject} — {@code qits:desk-admin}'s wider reach never
+   * reaches {@code cancellationScope()}'s project-claim arm, which binds on {@code qits:desk}'s
+   * claim regardless of which other roles ride alongside it.
+   */
+  @Test
+  @TestSecurity(user = "delivery-desk-admin", roles = {DESK, DESK_ADMIN, AGENT})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = OWN_AUDIENCE),
+        @Claim(key = QitsClaims.PROJECT, value = "some-other-project")
+      })
+  void aDeskAdminMayNotCancelRunsOfAnotherProject() {
+    projectsListing.set(new CiRepoRef(REPO, PROJECT, REPO));
+    given()
+        .contentType(ContentType.JSON)
+        .body(Map.of("repoId", REPO, "releaseRequestId", UUID.randomUUID().toString()))
+        .when()
+        .post("/ci/api/runs/cancellations")
+        .then()
+        .statusCode(403);
   }
 }

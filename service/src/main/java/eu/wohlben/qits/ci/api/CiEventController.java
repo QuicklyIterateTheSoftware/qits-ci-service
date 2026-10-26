@@ -225,7 +225,7 @@ public class CiEventController {
    */
   @POST
   @Path("/trigger")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:system"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:system"})
   @Operation(
       operationId = "triggerEvent",
       summary = "Run every event pipeline that selects a caller-supplied domain event")
@@ -325,12 +325,23 @@ public class CiEventController {
    */
   private static final String ADMIN_AGENT_ROLE = "qits:admin-agent";
 
+  /**
+   * {@code qits:desk-admin} is admitted wherever {@code ADMIN_AGENT_ROLE} is (qits-1621): the
+   * delivery desk's token gains it alongside {@code qits:desk} and {@code qits:agent}, and parity
+   * is literal. It still carries {@code qits:desk}'s project claim, so the project-claim arm of
+   * {@link #scopeOf()} scopes it exactly as it scopes the plain desk; this constant is spelled for
+   * the platform-wide arm below, which admits it on the same terms as {@code ADMIN_AGENT_ROLE} and
+   * {@code SYSTEM_ROLE}.
+   */
+  private static final String DESK_ADMIN_ROLE = "qits:desk-admin";
+
   // qits:desk is admitted on trigger()'s @RolesAllowed wherever ADMIN_AGENT_ROLE is (qits-1596):
   // the delivery desk's token carries it alongside qits:agent and a project claim. It is
   // deliberately absent from scopeOf()'s platform-wide arm below — unlike ADMIN_AGENT_ROLE, the
   // desk is never admitted unscoped there, and a desk caller presenting a project claim is bound
   // to it by the same project-claim arm this method already has. No DESK_ROLE constant is declared
-  // for the same reason.
+  // for the same reason; qits:desk-admin's own DESK_ADMIN_ROLE constant above exists only for the
+  // platform-wide arm's literal parity with ADMIN_AGENT_ROLE.
 
   /**
    * The guard, and the whole of it: what this caller may have the event evaluated against.
@@ -379,6 +390,7 @@ public class CiEventController {
     if (project == null) {
       if (!identity.hasRole(ADMIN_ROLE)
           && !identity.hasRole(ADMIN_AGENT_ROLE)
+          && !identity.hasRole(DESK_ADMIN_ROLE)
           && !identity.hasRole(SYSTEM_ROLE)) {
         throw new ForbiddenException(
             "Token carries no "

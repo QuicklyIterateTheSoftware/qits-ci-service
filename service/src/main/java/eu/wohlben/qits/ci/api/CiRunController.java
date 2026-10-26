@@ -101,7 +101,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  */
 @Path("/runs")
 @Produces(MediaType.APPLICATION_JSON)
-@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:system"})
+@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:system"})
 public class CiRunController {
 
   @Inject CiRunService runService;
@@ -148,6 +148,17 @@ public class CiRunController {
    */
   private static final String ADMIN_AGENT_ROLE = "qits:admin-agent";
 
+  /**
+   * {@code qits:desk-admin} is admitted wherever {@code ADMIN_AGENT_ROLE} is (qits-1621): the
+   * delivery desk's token gains it alongside {@code qits:desk} and {@code qits:agent}, and parity
+   * is literal — everywhere this class admits {@code ADMIN_AGENT_ROLE}, it admits this role too.
+   * Unlike {@code ADMIN_AGENT_ROLE}, a desk-admin caller still carries {@code qits:desk}'s project
+   * claim, so {@link #cancellationScope()} scopes it exactly as it scopes the plain desk — this
+   * constant is spelled here only for the platform-wide arm below, which admits it on the same
+   * terms as {@code ADMIN_AGENT_ROLE} and {@code SYSTEM_ROLE}.
+   */
+  private static final String DESK_ADMIN_ROLE = "qits:desk-admin";
+
   // qits:desk is admitted on every @RolesAllowed this class carries, wherever ADMIN_AGENT_ROLE is
   // (qits-1596): the delivery desk's token carries it alongside qits:agent and a project claim.
   // It is deliberately absent from cancellationScope()'s platform-wide arm below — unlike
@@ -155,7 +166,10 @@ public class CiRunController {
   // claim is bound to it exactly as a plain qits:agent is: the same project-claim arm of
   // cancellationScope() that scopes the agent's retry already scopes the desk, with no change to
   // that method needed. No constant is declared for it here because nothing in this class's body
-  // may reference one — spelling it would invite exactly the widening this comment refuses.
+  // may reference one — spelling it would invite exactly the widening this comment refuses. The
+  // same holds for qits:desk-admin, which also carries qits:desk and a project claim: it is scoped
+  // by the same arm, and DESK_ADMIN_ROLE above exists only for the platform-wide arm's literal
+  // parity with ADMIN_AGENT_ROLE.
 
   public record ListRunsResponse(List<CiRunDto> runs) {}
 
@@ -242,7 +256,7 @@ public class CiRunController {
   @GET
   // Every read also takes qits:agent. It sits on each read rather than on the class, because the
   // class list also guards the cancellations write, and agents do not write here.
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:system", "qits:agent"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:system", "qits:agent"})
   @Operation(
       operationId = "listRuns",
       summary = "List a repository's CI runs, newest first")
@@ -362,7 +376,7 @@ public class CiRunController {
    */
   @GET
   @Path("/active")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:system", "qits:agent"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:system", "qits:agent"})
   @Operation(
       operationId = "listActiveRuns",
       summary = "Every queued or running CI run, all repositories, newest first")
@@ -425,7 +439,7 @@ public class CiRunController {
    */
   @GET
   @Path("/queue")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:system", "qits:agent"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:system", "qits:agent"})
   @Operation(
       operationId = "getRunQueue",
       summary = "The run queue in claim order, with each run's expected start and finish")
@@ -569,7 +583,7 @@ public class CiRunController {
    */
   @GET
   @Path("/finished")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:system", "qits:agent"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:system", "qits:agent"})
   @Operation(summary = "The newest finished CI runs, all repositories, newest first")
   @APIResponse(
       responseCode = "200",
@@ -604,7 +618,7 @@ public class CiRunController {
    */
   @GET
   @Path("/{runId}")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:system", "qits:agent"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:system", "qits:agent"})
   @Operation(
       operationId = "getRun",
       summary = "One CI run with its steps, output and — while it runs — its live step")
@@ -647,9 +661,9 @@ public class CiRunController {
   // qits:admin-agent is admitted too (qits-628 follow-up); remove it here if this door must stay
   // human-only. qits:desk is admitted alongside it (qits-1596): the delivery desk is admitted
   // wherever the coordinator is.
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk"})
   @Consumes(MediaType.WILDCARD)
-  @Operation(summary = "Cancel a queued or running CI run")
+  @Operation(operationId = "cancelRun", summary = "Cancel a queued or running CI run")
   @APIResponse(responseCode = "202", description = "The run has been stopped or asked to stop")
   @APIResponse(responseCode = "404", description = "No such run")
   @APIResponse(responseCode = "409", description = "The run has already finished, so there is nothing to stop")
@@ -826,6 +840,7 @@ public class CiRunController {
     if (project == null) {
       if (!identity.hasRole(ADMIN_ROLE)
           && !identity.hasRole(ADMIN_AGENT_ROLE)
+          && !identity.hasRole(DESK_ADMIN_ROLE)
           && !identity.hasRole(SYSTEM_ROLE)) {
         throw new ForbiddenException(
             "Token carries no "
@@ -916,7 +931,7 @@ public class CiRunController {
    */
   @POST
   @Path("/{runId}/retry")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:agent"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:agent"})
   @Consumes(MediaType.WILDCARD)
   @Operation(
       operationId = "retryRun",
@@ -976,7 +991,7 @@ public class CiRunController {
   @POST
   @Path("/rerun")
   @Consumes(MediaType.APPLICATION_JSON)
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:system"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:system"})
   @Operation(
       operationId = "rerunReleaseRequestPhase",
       summary = "Run one phase of a release request's CI again",

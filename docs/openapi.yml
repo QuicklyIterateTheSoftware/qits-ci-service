@@ -640,6 +640,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
   /ci/api/repositories:
@@ -662,6 +663,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -685,6 +687,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -726,6 +729,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -764,6 +768,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -805,6 +810,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -830,6 +836,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -867,6 +874,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
   /ci/api/runs/finished:
@@ -900,6 +908,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -924,6 +933,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -979,6 +989,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
   /ci/api/runs/{runId}:
@@ -1010,6 +1021,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -1043,6 +1055,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -1085,6 +1098,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -1092,6 +1106,7 @@ paths:
   /ci/api/runs/{runId}/cancel:
     post:
       summary: Cancel a queued or running CI run
+      operationId: cancelRun
       parameters:
       - name: runId
         in: path
@@ -1124,6 +1139,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
   /ci/api/runs/{runId}/gate/reports:
     get:
@@ -1156,6 +1172,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -1189,6 +1206,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -1227,6 +1245,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:system
         - qits:agent
@@ -1266,6 +1285,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:agent
   /ci/api/runs/{runId}/steps/{stepIndex}/reports/{kind}:

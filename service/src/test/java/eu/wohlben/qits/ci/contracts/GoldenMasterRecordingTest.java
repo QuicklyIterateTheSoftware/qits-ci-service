@@ -195,6 +195,14 @@ class GoldenMasterRecordingTest {
               "payload":{"totals":{"tests":128,"passed":127,"failed":1,"errored":0,"skipped":0,\
               "durationMs":44400}}}""",
               BEARER),
+          write(
+              ProviderStates.A_RUNNING_RUN,
+              "cancelRun",
+              "POST",
+              "/ci/api/runs/{runId}/cancel",
+              202,
+              """
+              {"reason":"..."}"""),
           new Interaction(
               ProviderStates.A_REPOSITORY_WHOSE_RELEASE_RECIPE_SELECTS_SCM_RELEASE,
               "triggerEvent",
