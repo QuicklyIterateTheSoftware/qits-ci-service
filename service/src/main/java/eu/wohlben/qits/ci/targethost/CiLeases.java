@@ -69,7 +69,11 @@ import org.jboss.logging.Logger;
  * <ul>
  *   <li>{@code GRANTED} or {@code RUNNING}: the run is claimed ({@link CiRunService#claimLeased},
  *       one conditional UPDATE, so the three sources racing claim it once) and driven on a thread of
- *       its own, {@code ci-run-<runId>}.
+ *       its own, {@code ci-run-<runId>}. A granted lease's container is not there yet — the target
+ *       pulls the ci-slot image first — so the driver's first step waits for {@code RUNNING} (or the
+ *       daemon's dial) under {@code qits.ci.lease-start-timeout-seconds}, and only then starts the
+ *       register clock: {@code RUNNING} and the dial are handed to {@link
+ *       LeaseStepRunner#leaseRunning} (qits-1544).
  *   <li>{@code FAILED}, {@code EXITED}, or gone: the run's token is deleted, and the step seam is
  *       told ({@link LeaseStepRunner#leaseEnded}). A run that was still waiting is claimed anyway, so
  *       its first step answers {@code LAUNCH_FAILED} with the lease's detail and the run is settled
@@ -301,8 +305,23 @@ public class CiLeases {
       case QUEUED, ENDING -> {
         /* waiting, or going: nothing for the run to do */
       }
-      case GRANTED, RUNNING -> start(runId, lease);
+      case GRANTED -> start(runId, lease);
+      case RUNNING -> {
+        running(runId, lease.id());
+        start(runId, lease);
+      }
       case EXITED, FAILED, ENDED -> ended(runId, lease.id(), describe(lease));
+    }
+  }
+
+  /**
+   * The lease's container runs: the run's register clock starts now (qits-1544). Only for the lease
+   * this process holds the launch of, so a late report of an earlier lease starts nothing.
+   */
+  private void running(String runId, UUID leaseId) {
+    Launch launch = launches.get(runId);
+    if (launch != null && launch.leaseId().equals(leaseId)) {
+      steps.leaseRunning(runId);
     }
   }
 
@@ -351,6 +370,10 @@ public class CiLeases {
   /** The daemon of a run dialled in: its lease is running, whatever qits-system has said so far. */
   void onDialled(@Observes CiDaemonRegistry.DaemonDialled dialled) {
     Launch launch = launches.get(dialled.runId());
+    if (launch != null && launch.daemonId().equals(dialled.daemonId())) {
+      // A daemon that dialled runs in a container that runs: its register wait is over anyway.
+      steps.leaseRunning(dialled.runId());
+    }
     if (launch == null || drivers.containsKey(dialled.runId()) || stopping) {
       return;
     }

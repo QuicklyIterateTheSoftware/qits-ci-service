@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.targethost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -141,6 +142,29 @@ class CiLeasesTest {
 
     assertEquals(RUN, executed.get(10, TimeUnit.SECONDS));
     assertTrue(calls.contains("claim " + RUN + " on " + TARGET), calls.toString());
+  }
+
+  @Test
+  void aGrantedLeaseDrivesTheRunButOnlyRunningStartsItsRegisterClock() throws Exception {
+    leases.requestNow(RUN);
+    leases.observe(
+        new SystemLeases.LeaseView(LEASE, RUN, "GRANTED", TARGET, null, null, Instant.now()));
+
+    assertEquals(RUN, executed.get(10, TimeUnit.SECONDS), "claimed and driven at the grant");
+    assertNull(
+        steps.leaseRunningSince(RUN),
+        "granted is not started: the target is still pulling the ci-slot image (qits-1544)");
+
+    // A RUNNING report of some other lease of the run's starts nothing.
+    leases.observe(
+        new SystemLeases.LeaseView(
+            UUID.fromString("00000000-0000-4000-8000-000000000001"),
+            RUN, "RUNNING", TARGET, null, null, Instant.now()));
+    assertNull(steps.leaseRunningSince(RUN));
+
+    leases.observe(
+        new SystemLeases.LeaseView(LEASE, RUN, "RUNNING", TARGET, null, null, Instant.now()));
+    assertNotNull(steps.leaseRunningSince(RUN), "RUNNING starts the register clock");
   }
 
   @Test

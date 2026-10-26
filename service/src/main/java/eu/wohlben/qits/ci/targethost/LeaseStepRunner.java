@@ -16,7 +16,11 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -26,14 +30,26 @@ import org.jboss.logging.Logger;
  * granted, and this class drives each step of the run over the lease's one {@code qits-ci-daemon}
  * connection.
  *
- * <p><b>The sequence.</b> The first step waits for the daemon to dial in ({@code
- * qits.ci.daemon-register-timeout-seconds}, counted from the claim) and to report its worktree
- * ready ({@code qits.ci.daemon-init-timeout-seconds}); every step, the first included, is then one
+ * <p><b>The sequence.</b> The first step waits, on two clocks, for the lease's container to start
+ * and its daemon to dial in, and then for the daemon to report its worktree ready ({@code
+ * qits.ci.daemon-init-timeout-seconds}); every step, the first included, is then one
  * {@code RunStep{stepIndex, script, timeoutSeconds, env}} on that connection, answered by {@code
  * StepChunk}s and a {@code StepFinished} naming the step, with the host's backstop {@code
  * qits.ci.step-timeout-grace-seconds} behind the daemon's own deadline. {@link #runClosed} tells the
  * daemon {@code Close}, ends the lease and deletes the run's token. No container is started or
  * removed here: the lease's container is the target's.
+ *
+ * <p><b>The two clocks (qits-1544).</b> A run is claimed when its lease is {@code GRANTED}, but a
+ * granted lease's container does not exist yet: the target pulls the pinned ci-slot image first
+ * (multi-GB, cold on a new target and after every new digest), and on its first CI lease the buildkit
+ * builder too, and only then reports the lease {@code RUNNING}. So the first clock is {@code
+ * qits.ci.lease-start-timeout-seconds}, counted from the claim, and it covers only that: the run
+ * waits while its lease is {@code GRANTED} — no outcome, no retry, the lease kept — until {@link
+ * CiLeases} reports it {@code RUNNING} ({@link #leaseRunning}) or its daemon dials in, whichever is
+ * first. A lease the target never starts within it is {@code LAUNCH_FAILED}. The second clock,
+ * {@code qits.ci.daemon-register-timeout-seconds}, counts from the moment the lease was seen running
+ * and covers what happens inside the container: the bootstrap's daemon download and the dial. A
+ * running lease whose daemon never dials within it is {@code NEVER_STARTED}, as before.
  *
  * <p><b>A lease that ends early is the step's answer.</b> When {@link CiLeases} learns the lease
  * ended {@code FAILED} or {@code EXITED} ({@link #leaseEnded}), the launch is reaped, which completes
@@ -68,6 +84,9 @@ public class LeaseStepRunner implements CiStepRunner {
   @ConfigProperty(name = "qits.ci.daemon-register-timeout-seconds")
   long registerTimeoutSeconds;
 
+  @ConfigProperty(name = "qits.ci.lease-start-timeout-seconds")
+  long leaseStartTimeoutSeconds;
+
   @ConfigProperty(name = "qits.ci.daemon-init-timeout-seconds")
   long initTimeoutSeconds;
 
@@ -82,6 +101,17 @@ public class LeaseStepRunner implements CiStepRunner {
   long registerTimeoutSeconds() {
     return registerTimeoutSeconds;
   }
+
+  /** How often the lease-start wait looks again at its launch and at the process stopping. */
+  static final Duration START_POLL = Duration.ofMillis(500);
+
+  /**
+   * When each run's lease was seen running ({@link #leaseRunning}) — the instant the register clock
+   * counts from. Completed with null when the wait has no lease left to start ({@link #leaseEnded},
+   * {@link #cancel}). Created by whichever comes first, the wait or the report.
+   */
+  private final ConcurrentHashMap<String, CompletableFuture<Instant>> leaseStarts =
+      new ConcurrentHashMap<>();
 
   /** The step each run has in flight, for a cancellation arriving on another thread. */
   private final ConcurrentHashMap<String, InFlight> inFlight = new ConcurrentHashMap<>();
@@ -187,7 +217,11 @@ public class LeaseStepRunner implements CiStepRunner {
     if (initialized.contains(spec.runId())) {
       return null;
     }
-    if (!daemons.awaitRegistered(daemonId, Duration.ofSeconds(registerTimeoutSeconds))) {
+    StepResult unstarted = awaitLeaseStarted(spec, daemonId);
+    if (unstarted != null) {
+      return unstarted;
+    }
+    if (!daemons.awaitRegistered(daemonId, registerWindow(spec.runId()))) {
       abandonIfStopping(spec);
       String ended = endedLeases.get(spec.runId());
       if (ended != null) {
@@ -197,7 +231,7 @@ public class LeaseStepRunner implements CiStepRunner {
           StepOutcome.NEVER_STARTED,
           "the run's lease container never dialled back within "
               + registerTimeoutSeconds
-              + "s; its own log is on its execution target");
+              + "s of its lease running; its own log is on its execution target");
     }
     CiDaemonRegistry.Initialization initialization =
         daemons.awaitInitialized(daemonId, Duration.ofSeconds(initTimeoutSeconds));
@@ -225,6 +259,84 @@ public class LeaseStepRunner implements CiStepRunner {
         return failed(StepOutcome.CONNECTION_LOST, "");
       }
     }
+  }
+
+  /**
+   * The first clock: the wait while the run's lease is granted and its target has not started the
+   * container yet — the ci-slot image pull, and the builder's on a target's first CI lease. Null
+   * once the lease is running (reported, or proven by the daemon's dial) or has nothing left to
+   * start (reaped: ended or cancelled — the register wait then answers at once, with the lease's own
+   * words when it ended). {@code LAUNCH_FAILED} when the target never started it in time.
+   */
+  private StepResult awaitLeaseStarted(StepSpec spec, String daemonId) {
+    CompletableFuture<Instant> started = startOf(spec.runId());
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(leaseStartTimeoutSeconds);
+    while (!started.isDone()) {
+      abandonIfStopping(spec);
+      CiDaemonRegistry.Phase phase = daemons.phaseOf(daemonId);
+      if (phase == null || phase == CiDaemonRegistry.Phase.DONE) {
+        return null;
+      }
+      if (phase != CiDaemonRegistry.Phase.LAUNCHED) {
+        // It dialled: its container runs, whatever qits-system has said so far.
+        started.complete(Instant.now());
+        return null;
+      }
+      long left = deadline - System.nanoTime();
+      if (left <= 0) {
+        String ended = endedLeases.get(spec.runId());
+        if (ended != null) {
+          return failed(StepOutcome.LAUNCH_FAILED, ended);
+        }
+        LOG.warnf(
+            "CI run %s: its lease was granted %ds ago and its target has not started the container",
+            spec.runId(), leaseStartTimeoutSeconds);
+        return failed(StepOutcome.LAUNCH_FAILED, leaseNeverStarted());
+      }
+      try {
+        started.get(Math.min(left, START_POLL.toNanos()), TimeUnit.NANOSECONDS);
+      } catch (TimeoutException stillGranted) {
+        // look again
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        return failed(StepOutcome.LAUNCH_FAILED, "the wait for the run's lease to start was interrupted");
+      } catch (ExecutionException impossible) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /** What a step whose lease the target never started says. */
+  String leaseNeverStarted() {
+    return "the run's lease was granted, and its execution target did not start the container within "
+        + leaseStartTimeoutSeconds
+        + "s (qits.ci.lease-start-timeout-seconds: the ci-slot image pull, and the builder's on the"
+        + " target's first CI lease); the target's runner log says why";
+  }
+
+  /** The second clock: the register deadline, counted from when the lease was seen running. */
+  private Duration registerWindow(String runId) {
+    Duration full = Duration.ofSeconds(registerTimeoutSeconds);
+    Instant runningAt = startOf(runId).getNow(null);
+    if (runningAt == null) {
+      return full;
+    }
+    Duration left = full.minus(Duration.between(runningAt, Instant.now()));
+    return left.isNegative() ? Duration.ZERO : left;
+  }
+
+  private CompletableFuture<Instant> startOf(String runId) {
+    return leaseStarts.computeIfAbsent(runId, id -> new CompletableFuture<>());
+  }
+
+  /**
+   * The run's lease is running: qits-system reported it {@code RUNNING}, or its daemon dialled in.
+   * The register clock counts from the first such report; later ones change nothing. Called by
+   * {@link CiLeases}, only for a lease whose launch it holds.
+   */
+  void leaseRunning(String runId) {
+    startOf(runId).complete(Instant.now());
   }
 
   /** The step's end, from its terminal frame or the backstop. */
@@ -275,6 +387,7 @@ public class LeaseStepRunner implements CiStepRunner {
   void leaseEnded(String runId, String detail) {
     endedLeases.put(runId, detail == null || detail.isBlank() ? "no detail" : detail);
     leases.launchOf(runId).ifPresent(launch -> daemons.reap(launch.daemonId()));
+    startOf(runId).complete(null);
   }
 
   // --- a restart (qits-1192) --------------------------------------------------------------------
@@ -458,6 +571,10 @@ public class LeaseStepRunner implements CiStepRunner {
       return;
     }
     leases.launchOf(runId).ifPresent(launch -> daemons.reap(launch.daemonId()));
+    CompletableFuture<Instant> started = leaseStarts.get(runId);
+    if (started != null) {
+      started.complete(null);
+    }
   }
 
   /** A driver of this process holds the run from its claim to its close. */
@@ -485,6 +602,7 @@ public class LeaseStepRunner implements CiStepRunner {
         });
     leases.end(runId);
     endedLeases.remove(runId);
+    leaseStarts.remove(runId);
     commissions.endAdoption(runId);
     commissions.release(runId);
     commissions.revokeOrphaned(runId);
@@ -517,6 +635,12 @@ public class LeaseStepRunner implements CiStepRunner {
 
   private String tail(String runId) {
     return relay.snapshot(runId).map(CiStepRelay.Snapshot::output).orElse("");
+  }
+
+  /** For a suite: when the run's lease was seen running ({@link #leaseRunning}), or null. */
+  Instant leaseRunningSince(String runId) {
+    CompletableFuture<Instant> started = leaseStarts.get(runId);
+    return started == null ? null : started.getNow(null);
   }
 
   /** For a suite: the reason a run's lease ended, as {@link #leaseEnded} recorded it. */

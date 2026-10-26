@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.targethost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -19,6 +20,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -75,6 +78,7 @@ class LeaseStepRunnerTest {
     runner.settings = SlotFixtures.shippedSettings();
     runner.leases = leases;
     runner.registerTimeoutSeconds = 5;
+    runner.leaseStartTimeoutSeconds = 5;
     runner.initTimeoutSeconds = 5;
     runner.stepTimeoutGraceSeconds = 5;
     return runner;
@@ -193,5 +197,106 @@ class LeaseStepRunnerTest {
     CiStepRunner.StepResult result = runner.run(step(0, "./verify.sh"), new Listened());
     assertEquals(CiStepRunner.StepOutcome.LAUNCH_FAILED, result.outcome());
     assertEquals(LeaseStepRunner.NO_LEASE, result.output());
+  }
+
+  // --- the two clocks (qits-1544) -----------------------------------------------------------------
+  //
+  // Scaled down: the register clock is 1s here where it is 180s on the platform, so "granted for
+  // longer than the register clock" stands for the five minutes a cold ci-slot pull takes.
+
+  /** The first step of the run, on a driver thread of its own, as {@link CiLeases} drives it. */
+  private CompletableFuture<CiStepRunner.StepResult> firstStep() {
+    return CompletableFuture.supplyAsync(() -> runner.run(step(0, "./verify.sh"), new Listened()));
+  }
+
+  @Test
+  void aLeaseGrantedForLongerThanTheRegisterClockThatThenRunsAndDialsContinuesTheRun()
+      throws Exception {
+    runner.registerTimeoutSeconds = 1;
+    runner.leaseStartTimeoutSeconds = 30;
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+
+    CompletableFuture<CiStepRunner.StepResult> result = firstStep();
+    // GRANTED, the target pulling: well past the register clock, and the run is still waiting.
+    Thread.sleep(2500);
+    assertFalse(result.isDone(), "a granted lease's pull does not count against the register clock");
+    assertTrue(ended.isEmpty(), "and the lease is kept, not ended and asked again");
+
+    // RUNNING (the TargetLeaseChanged CiLeases consumes); the daemon dials inside the register clock.
+    runner.leaseRunning(RUN);
+    Thread.sleep(300);
+    daemon = ScriptedLeaseDaemon.dial(registry, daemonId, SUBJECT);
+
+    CiStepRunner.StepResult first = result.get(10, TimeUnit.SECONDS);
+    assertEquals(CiStepRunner.StepOutcome.OK, first.outcome(), first.output());
+    assertEquals(0, first.exitCode());
+  }
+
+  @Test
+  void aDaemonThatDialsWhileTheLeaseStillReadsGrantedEndsTheStartWaitToo() throws Exception {
+    runner.registerTimeoutSeconds = 1;
+    runner.leaseStartTimeoutSeconds = 30;
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+
+    CompletableFuture<CiStepRunner.StepResult> result = firstStep();
+    Thread.sleep(1500);
+    // qits-system has not said RUNNING yet; the dial proves the container runs.
+    daemon = ScriptedLeaseDaemon.dial(registry, daemonId, SUBJECT);
+
+    assertEquals(CiStepRunner.StepOutcome.OK, result.get(10, TimeUnit.SECONDS).outcome());
+  }
+
+  @Test
+  void aLeaseStillGrantedPastTheLeaseStartClockIsLaunchFailedNotNeverStarted() throws Exception {
+    runner.registerTimeoutSeconds = 30;
+    runner.leaseStartTimeoutSeconds = 1;
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+
+    long began = System.nanoTime();
+    CiStepRunner.StepResult result = firstStep().get(10, TimeUnit.SECONDS);
+    long tookMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - began);
+
+    assertEquals(CiStepRunner.StepOutcome.LAUNCH_FAILED, result.outcome());
+    assertEquals(runner.leaseNeverStarted(), result.output());
+    assertTrue(result.output().contains("qits.ci.lease-start-timeout-seconds"), result.output());
+    assertTrue(tookMillis < 10_000, "the lease-start clock, not the register clock: " + tookMillis);
+  }
+
+  @Test
+  void aRunningLeaseWhoseDaemonNeverDialsIsNeverStartedOnTheRegisterClock() throws Exception {
+    runner.registerTimeoutSeconds = 1;
+    runner.leaseStartTimeoutSeconds = 30;
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+
+    CompletableFuture<CiStepRunner.StepResult> result = firstStep();
+    Thread.sleep(1500);
+    assertFalse(result.isDone(), "still granted: waiting");
+    long began = System.nanoTime();
+    runner.leaseRunning(RUN);
+
+    CiStepRunner.StepResult first = result.get(10, TimeUnit.SECONDS);
+    long tookMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - began);
+    assertEquals(CiStepRunner.StepOutcome.NEVER_STARTED, first.outcome());
+    assertTrue(first.output().contains("of its lease running"), first.output());
+    assertTrue(tookMillis >= 900 && tookMillis < 5_000, "counted from RUNNING: " + tookMillis);
+  }
+
+  @Test
+  void aLeaseThatFailsWhileGrantedIsLaunchFailedWithItsDetailAtOnce() throws Exception {
+    runner.leaseStartTimeoutSeconds = 30;
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+
+    CompletableFuture<CiStepRunner.StepResult> result = firstStep();
+    Thread.sleep(500);
+    runner.leaseEnded(RUN, "lease " + LEASE + " FAILED: pull access denied");
+
+    CiStepRunner.StepResult first = result.get(5, TimeUnit.SECONDS);
+    assertEquals(CiStepRunner.StepOutcome.LAUNCH_FAILED, first.outcome());
+    assertEquals("lease " + LEASE + " FAILED: pull access denied", first.output());
   }
 }

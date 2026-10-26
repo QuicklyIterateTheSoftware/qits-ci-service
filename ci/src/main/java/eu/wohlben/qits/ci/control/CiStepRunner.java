@@ -92,11 +92,15 @@ public interface CiStepRunner {
     /** The daemon registered and then said nothing before the initialize deadline. */
     NEVER_INITIALIZED,
     /**
-     * The run's lease could not run it: it could not be asked for, or it ended {@code FAILED} or
-     * {@code EXITED} before its daemon initialized — the lease's detail says why.
+     * The run's lease could not run it: it could not be asked for, it ended {@code FAILED} or
+     * {@code EXITED} before its daemon initialized — the lease's detail says why — or its target
+     * never started the granted lease's container within {@code qits.ci.lease-start-timeout-seconds}.
      */
     LAUNCH_FAILED,
-    /** The lease was granted and nothing ever dialled back — the bootstrap's own log says why. */
+    /**
+     * The lease was running and nothing dialled back within {@code
+     * qits.ci.daemon-register-timeout-seconds} of it — the bootstrap's own log says why.
+     */
     NEVER_STARTED,
     /** The control socket went away before a terminal frame, or the lease ended mid-step. */
     CONNECTION_LOST
