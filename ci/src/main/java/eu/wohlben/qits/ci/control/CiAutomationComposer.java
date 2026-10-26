@@ -347,6 +347,7 @@ public final class CiAutomationComposer {
     out.append("# --- platform prelude: the ").append(kind).append(" automation ---\n");
     out.append(
         ": \"${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no platform address}\"\n");
+    CiReleaseComposer.cacheSizes(out);
     out.append("if ! command -v jq > /dev/null 2>&1; then\n");
     out.append("  echo ")
         .append(

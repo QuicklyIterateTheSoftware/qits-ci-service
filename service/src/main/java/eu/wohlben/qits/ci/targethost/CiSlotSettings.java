@@ -123,6 +123,11 @@ public class CiSlotSettings {
    *       mirror.qits.$QITS_DOMAIN}, the two npm hosts, appended to {@code ~/.npmrc}.
    * </ul>
    *
+   * <p><b>It points Maven, npm and pnpm at the target's cache volumes</b> (qits-1655): {@link
+   * #MAVEN_CACHE_ARGS} appended to {@code MAVEN_ARGS} when {@code /caches/m2} is a writable
+   * directory, and {@code npm_config_cache}/{@code npm_config_store_dir} ({@link #NPM_CACHE_DIR},
+   * {@link #PNPM_STORE_DIR}) when {@code /caches/pnpm} is. A lease without them behaves as before.
+   *
    * <p><b>{@link #DEPLOY_SETTINGS_FILE}'s {@code -gs} is not the only settings file in play, and a
    * live run (ef26d331, qits-stt-service, {@code quarkus-bom} 401) measured that {@code -gs} losing
    * to a repository's own {@code -s .qits-maven-settings.xml}.</b> Every repository declares that
@@ -332,6 +337,24 @@ public class CiSlotSettings {
       # parent's wagon transport ignores these keys.
       MAVEN_ARGS="${MAVEN_ARGS:+$MAVEN_ARGS }-Dmaven.resolver.transport=wagon -Dmaven.wagon.http.retryHandler.class=default -Dmaven.wagon.http.retryHandler.count=5 -Dmaven.wagon.http.retryHandler.nonRetryableClasses=java.net.UnknownHostException -Dmaven.wagon.http.serviceUnavailableRetryStrategy.class=standard -Dmaven.wagon.http.serviceUnavailableRetryStrategy.maxRetries=5 -Dmaven.wagon.http.serviceUnavailableRetryStrategy.retryInterval=5000 -Daether.connector.connectTimeout=60000 -Daether.connector.requestTimeout=60000 -Daether.connector.http.retryHandler.count=5 -Daether.connector.http.retryHandler.interval=5000 -Daether.connector.http.retryHandler.serviceUnavailable=429,502,503,504"
       export MAVEN_ARGS
+      # The target mounts two persistent volumes into every CI lease, /caches/m2 and /caches/pnpm
+      # (qits-1655); HOME is per-run and discarded, so without these lines every run downloads all
+      # of its dependencies again. Each is used only when it is a writable directory: a target
+      # without the volume gets exactly today's behaviour. Maven's local repository is shared by
+      # concurrent leases, so resolver 1.9 takes named file locks per GAV (Maven 3.9); surefire
+      # promotes these user properties into a @QuarkusTest fork, so Quarkus' bootstrap resolver
+      # reads the same repository. npm's cache is content-addressed and safe under concurrency
+      # (most archetypes run `npm ci`); pnpm's store serves the npm-library `pnpm install`.
+      # MAVEN_ARGS is APPENDED to, as above.
+      if [ -d /caches/m2 ] && [ -w /caches/m2 ]; then
+        MAVEN_ARGS="${MAVEN_ARGS:+$MAVEN_ARGS }-Dmaven.repo.local=/caches/m2/repository -Daether.syncContext.named.factory=file-lock -Daether.syncContext.named.nameMapper=file-gav"
+        export MAVEN_ARGS
+      fi
+      if [ -d /caches/pnpm ] && [ -w /caches/pnpm ]; then
+        npm_config_cache=/caches/pnpm/npm
+        npm_config_store_dir=/caches/pnpm/store
+        export npm_config_cache npm_config_store_dir
+      fi
       exec /tmp/qits-ci-daemon
       """;
 
@@ -357,6 +380,23 @@ public class CiSlotSettings {
           + " -Daether.connector.http.retryHandler.count=5"
           + " -Daether.connector.http.retryHandler.interval=5000"
           + " -Daether.connector.http.retryHandler.serviceUnavailable=429,502,503,504";
+
+  /**
+   * The flags {@link #BOOTSTRAP} appends to {@code MAVEN_ARGS} when the target mounted a writable
+   * {@code /caches/m2} (qits-1655): the shared local repository, and the named file locks that make
+   * concurrent leases safe on it. Typed into {@code BOOTSTRAP} too, for the reason {@link
+   * #MAVEN_RETRY_ARGS} is; {@code CiSlotSettingsTest} asserts the two agree.
+   */
+  static final String MAVEN_CACHE_ARGS =
+      "-Dmaven.repo.local=/caches/m2/repository"
+          + " -Daether.syncContext.named.factory=file-lock"
+          + " -Daether.syncContext.named.nameMapper=file-gav";
+
+  /** npm's cache, set as {@code npm_config_cache} when a writable {@code /caches/pnpm} is mounted. */
+  static final String NPM_CACHE_DIR = "/caches/pnpm/npm";
+
+  /** pnpm's store, set as {@code npm_config_store_dir} beside {@link #NPM_CACHE_DIR}. */
+  static final String PNPM_STORE_DIR = "/caches/pnpm/store";
 
   /**
    * Where the registry push credential lands inside a step container, and the whole reason it can

@@ -53,6 +53,9 @@ public class CiDaemonBootstrapTokenTest {
   private static final String GIT_HELPER_PATH = "/tmp/qits-git-credential";
   private static final String SETTINGS_PATH = CiSlotSettings.DEPLOY_SETTINGS_FILE;
 
+  /** The prefix of the target's cache volumes, moved under this test's directory. */
+  private static final String CACHES = "/caches/";
+
   /** The step's {@code http.postBuffer}: qits-githost's 64 MiB {@code max-pack-size}. */
   private static final long GIT_POST_BUFFER = 64L * 1024 * 1024;
 
@@ -84,6 +87,10 @@ public class CiDaemonBootstrapTokenTest {
                       + work.resolve("inherited-token")
                       + " || true\nprintenv MAVEN_ARGS > "
                       + work.resolve("inherited-maven-args")
+                      + " || true\nprintenv npm_config_cache > "
+                      + work.resolve("inherited-npm-cache")
+                      + " || true\nprintenv npm_config_store_dir > "
+                      + work.resolve("inherited-pnpm-store")
                       + " || true\nexit 0\n")
                   .getBytes(StandardCharsets.UTF_8);
           exchange.sendResponseHeaders(200, body.length);
@@ -219,6 +226,79 @@ public class CiDaemonBootstrapTokenTest {
             + CiSlotSettings.MAVEN_RETRY_ARGS
             + "\n",
         Files.readString(work.resolve("inherited-maven-args")));
+  }
+
+  /**
+   * qits-1655: without the target's cache volumes — this test's own {@code caches} directory, which
+   * does not exist — nothing points maven, npm or pnpm anywhere new: behaviour as before.
+   */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  public void withoutTheCacheVolumesNothingPointsAtThem() throws Exception {
+    assumeShell();
+
+    Result result = runBootstrap(composedEnv());
+
+    assertEquals(0, result.exitCode, result.diagnosis());
+    String mavenArgs = Files.readString(work.resolve("inherited-maven-args"));
+    assertFalse(mavenArgs.contains("maven.repo.local"), mavenArgs);
+    assertFalse(mavenArgs.contains("aether.syncContext"), mavenArgs);
+    assertEquals("", Files.readString(work.resolve("inherited-npm-cache")), "npm_config_cache");
+    assertEquals("", Files.readString(work.resolve("inherited-pnpm-store")), "npm_config_store_dir");
+  }
+
+  /**
+   * qits-1655: with writable {@code /caches/m2} and {@code /caches/pnpm}, maven's local repository
+   * (file-locked per GAV) and npm's cache and pnpm's store are on them, appended after the retry
+   * flags.
+   */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  public void writableCacheVolumesHoldMavenNpmAndPnpmDownloads() throws Exception {
+    assumeShell();
+    Files.createDirectories(caches().resolve("m2"));
+    Files.createDirectories(caches().resolve("pnpm"));
+
+    Result result = runBootstrap(composedEnv());
+
+    assertEquals(0, result.exitCode, result.diagnosis());
+    assertEquals(
+        "-gs "
+            + path(SETTINGS_PATH)
+            + " "
+            + CiSlotSettings.MAVEN_RETRY_ARGS
+            + " "
+            + underCaches(CiSlotSettings.MAVEN_CACHE_ARGS)
+            + "\n",
+        Files.readString(work.resolve("inherited-maven-args")));
+    assertEquals(
+        underCaches(CiSlotSettings.NPM_CACHE_DIR) + "\n",
+        Files.readString(work.resolve("inherited-npm-cache")));
+    assertEquals(
+        underCaches(CiSlotSettings.PNPM_STORE_DIR) + "\n",
+        Files.readString(work.resolve("inherited-pnpm-store")));
+  }
+
+  /** qits-1655: a cache directory the build user cannot write is left alone, as if absent. */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  public void unwritableCacheVolumesAreIgnored() throws Exception {
+    assumeShell();
+    assumeTrue(!"root".equals(System.getProperty("user.name")), "root writes a 0555 directory");
+    for (String volume : List.of("m2", "pnpm")) {
+      Path dir = Files.createDirectories(caches().resolve(volume));
+      Files.setPosixFilePermissions(
+          dir, java.nio.file.attribute.PosixFilePermissions.fromString("r-xr-xr-x"));
+    }
+
+    Result result = runBootstrap(composedEnv());
+
+    assertEquals(0, result.exitCode, result.diagnosis());
+    assertFalse(
+        Files.readString(work.resolve("inherited-maven-args")).contains("maven.repo.local"),
+        result.diagnosis());
+    assertEquals("", Files.readString(work.resolve("inherited-npm-cache")));
+    assertEquals("", Files.readString(work.resolve("inherited-pnpm-store")));
   }
 
   /**
@@ -406,18 +486,32 @@ public class CiDaemonBootstrapTokenTest {
     return answer;
   }
 
-  /** The shipped text with its four {@code /tmp} literals moved under this test's directory. */
+  /**
+   * The shipped text with its four {@code /tmp} literals moved under this test's directory, and its
+   * {@code /caches} volumes too: a qits-ci step container mounts the real ones, so leaving them would
+   * make these assertions depend on where the suite runs.
+   */
   private String bootstrapUnderTemp() {
     String shipped = CiSlotSettings.BOOTSTRAP;
     for (String literal : List.of(DAEMON_PATH, TOKEN_SCRIPT_PATH, GIT_HELPER_PATH, SETTINGS_PATH)) {
       assertTrue(shipped.contains(literal), literal + " moved");
     }
-    return shipped
+    assertTrue(shipped.contains(CACHES), "/caches moved");
+    return underCaches(shipped)
         .replace("mkdir -p /work ", "mkdir -p " + work.resolve("work") + " ")
         .replace(SETTINGS_PATH, path(SETTINGS_PATH).toString())
         .replace(TOKEN_SCRIPT_PATH, path(TOKEN_SCRIPT_PATH).toString())
         .replace(GIT_HELPER_PATH, path(GIT_HELPER_PATH).toString())
         .replace(DAEMON_PATH, path(DAEMON_PATH).toString());
+  }
+
+  private Path caches() {
+    return work.resolve("caches");
+  }
+
+  /** {@code text} with every {@code /caches/} literal moved under {@link #caches()}. */
+  private String underCaches(String text) {
+    return text.replace(CACHES, caches() + "/");
   }
 
   private Path path(String tmpLiteral) {

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -419,6 +420,107 @@ public class CiReleaseComposerTest {
       }
     }
     assertEquals(6, steps, "every step of every document was looked at");
+  }
+
+  @Test
+  public void everyComposedStepPrintsTheCacheVolumeSizesOnce() {
+    // qits-1655: the line a live check reads to see the target's cache volumes are mounted and
+    // used, so it is in every step of both phases, in the prelude, before the declared script.
+    List<String> documents = new java.util.ArrayList<>();
+    CiReleaseComposer.Composed archetyped =
+        CiReleaseComposer.compose(
+            REPO, slots("archetype: java-service\n"), archetype("java-service", JAVA_SERVICE));
+    documents.add(archetyped.releaseRequestDocument());
+    documents.add(archetyped.releaseDocument());
+    CiReleaseComposer.Composed bespoke =
+        CiReleaseComposer.compose(
+            REPO,
+            slots(
+                """
+                release-request:
+                  - image: qits/build-images/node-base:latest
+                    script: npm ci
+                  - image: docker:28-dind
+                    build: true
+                    script: buildctl build --frontend dockerfile.v0
+                release:
+                  - image: qits/build-images/ci-base:latest
+                    docker: true
+                    script: echo one
+                  - image: qits/build-images/maven-base:latest
+                    script: echo two
+                artifacts:
+                  - { type: docker, name: qits/thing, sbom: out/sbom.json }
+                """),
+            null);
+    documents.add(bespoke.releaseRequestDocument());
+    documents.add(bespoke.releaseDocument());
+    StringBuilder snippet = new StringBuilder();
+    CiReleaseComposer.cacheSizes(snippet);
+
+    int steps = 0;
+    for (String document : documents) {
+      for (CiPipeline.CiStepDecl step :
+          new CiEventTriggerParser()
+              .parse(CiReleaseSlotParser.CONFIG_PATH, document)
+              .pipeline()
+              .steps()) {
+        String script = step.script();
+        steps++;
+        assertEquals(1, occurrences(script, snippet.toString()), script);
+        assertEquals(1, occurrences(script, "echo \"qits-ci: caches"), script);
+        int at = script.indexOf(snippet.toString());
+        assertTrue(at > script.indexOf(": \"${QITS_DOMAIN:?"), script);
+        assertTrue(at < script.indexOf("# --- the declared step"), script);
+      }
+    }
+    assertTrue(steps >= 6, "every step of every document was looked at");
+  }
+
+  @Test
+  public void theCacheSizeLineSaysSizeAbsentOrUnknownAndNeverFailsTheStep() throws Exception {
+    assumeTrue(Files.isExecutable(Path.of("/bin/sh")), "/bin/sh is required for this test");
+    StringBuilder snippet = new StringBuilder();
+    CiReleaseComposer.cacheSizes(snippet);
+    Path work = Files.createTempDirectory("cache-sizes");
+    Path caches = work.resolve("caches");
+    Files.createDirectories(caches.resolve("m2").resolve("repository"));
+    Files.writeString(caches.resolve("m2").resolve("repository").resolve("a.jar"), "x".repeat(4096));
+    // The real /caches is mounted where this suite runs inside a CI lease, so it is moved here.
+    String script =
+        "set -eu\n"
+            + snippet.toString().replace(CiReleaseComposer.CACHE_ROOT, caches + "/")
+            + "echo after\n";
+    Path file = work.resolve("caches.sh");
+    Files.writeString(file, script);
+
+    String[] seen = runSh(file, System.getenv("PATH"));
+    assertEquals("after\n", seen[0]);
+    assertTrue(
+        seen[1].matches("qits-ci: caches m2=[0-9.,]+[KMGT]? pnpm=absent\n"), "stderr: " + seen[1]);
+
+    // A du that fails is `unknown`, and the step goes on.
+    Path bin = Files.createDirectories(work.resolve("bin"));
+    Path du = bin.resolve("du");
+    Files.writeString(du, "#!/bin/sh\necho boom >&2\nexit 1\n");
+    du.toFile().setExecutable(true);
+    seen = runSh(file, bin + ":" + System.getenv("PATH"));
+    assertEquals("after\n", seen[0]);
+    assertEquals("qits-ci: caches m2=unknown pnpm=absent\n", seen[1]);
+  }
+
+  /** {stdout, stderr} of {@code sh <file>} with only {@code path} in its environment. */
+  private static String[] runSh(Path file, String path) throws Exception {
+    ProcessBuilder builder = new ProcessBuilder("/bin/sh", file.toString());
+    builder.environment().clear();
+    builder.environment().put("PATH", path);
+    Path out = Files.createTempFile("sh-out", ".txt");
+    Path err = Files.createTempFile("sh-err", ".txt");
+    builder.redirectOutput(out.toFile()).redirectError(err.toFile());
+    Process process = builder.start();
+    assertTrue(process.waitFor(60, java.util.concurrent.TimeUnit.SECONDS), "sh never exited");
+    assertEquals(0, process.exitValue(), Files.readString(err));
+    return new String[] {Files.readString(out), Files.readString(err)};
   }
 
   /** A lockfile entry, the shape npm writes it in. */

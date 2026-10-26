@@ -65,8 +65,38 @@ class CiSlotSettingsTest {
         "MAVEN_ARGS=\"${MAVEN_ARGS:+$MAVEN_ARGS }" + CiSlotSettings.MAVEN_RETRY_ARGS + "\"\n";
     int at = bootstrap.indexOf(line);
     assertTrue(at >= 0, bootstrap);
-    assertTrue(at > bootstrap.lastIndexOf("\nfi\n"), "outside every if block");
+    // Unindented, so outside every if block (each block's body is indented); the cache blocks
+    // that follow it (qits-1655) are the only ifs after it.
+    assertTrue(at > 0 && bootstrap.charAt(at - 1) == '\n', "outside every if block");
+    assertTrue(at > bootstrap.indexOf("-gs /tmp/qits-deploy-settings.xml"), "after the token block");
     assertTrue(at < bootstrap.indexOf("exec /tmp/qits-ci-daemon"), bootstrap);
+  }
+
+  @Test
+  void theCacheVolumesAreUsedOnlyWhenTheyAreWritableDirectories() {
+    String bootstrap = CiSlotSettings.BOOTSTRAP;
+    String maven =
+        "if [ -d /caches/m2 ] && [ -w /caches/m2 ]; then\n"
+            + "  MAVEN_ARGS=\"${MAVEN_ARGS:+$MAVEN_ARGS }"
+            + CiSlotSettings.MAVEN_CACHE_ARGS
+            + "\"\n"
+            + "  export MAVEN_ARGS\n"
+            + "fi\n";
+    String npm =
+        "if [ -d /caches/pnpm ] && [ -w /caches/pnpm ]; then\n"
+            + "  npm_config_cache="
+            + CiSlotSettings.NPM_CACHE_DIR
+            + "\n"
+            + "  npm_config_store_dir="
+            + CiSlotSettings.PNPM_STORE_DIR
+            + "\n"
+            + "  export npm_config_cache npm_config_store_dir\n"
+            + "fi\n";
+    assertTrue(bootstrap.contains(maven), bootstrap);
+    assertTrue(bootstrap.contains(npm), bootstrap);
+    String retry = "MAVEN_ARGS=\"${MAVEN_ARGS:+$MAVEN_ARGS }" + CiSlotSettings.MAVEN_RETRY_ARGS;
+    assertTrue(bootstrap.indexOf(retry) < bootstrap.indexOf(maven), "after the retry flags");
+    assertTrue(bootstrap.indexOf(npm) < bootstrap.indexOf("exec /tmp/qits-ci-daemon"), bootstrap);
   }
 
   @Test

@@ -328,6 +328,9 @@ public final class CiReleaseComposer {
   /** Where a composed step writes the repository's own script before running it. */
   static final String SLOT_SCRIPT = "/tmp/qits-slot.sh";
 
+  /** Where the target mounts a CI lease's cache volumes ({@code m2}, {@code pnpm}) (qits-1655). */
+  static final String CACHE_ROOT = "/caches/";
+
   /** The quoted heredoc delimiter. A script containing it is refused — see the class javadoc. */
   static final String HEREDOC_DELIMITER = "QITS_SLOT_EOF";
 
@@ -822,6 +825,7 @@ public final class CiReleaseComposer {
     // by something else, and it must stop here naming the cause rather than dial `registry.qits.`.
     out.append(
         ": \"${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no platform address}\"\n");
+    cacheSizes(out);
     if (releasePhase) {
       // THE TAG IS THE TREE. Every composed release run is now anchored at the tag's own commit —
       // the document declares `checkout: { branch: version, sha: commitSha }` with no `optional:`,
@@ -1271,6 +1275,33 @@ public final class CiReleaseComposer {
     out.append("  PATH=\"").append(dir).append(":$PATH\"\n");
     out.append("  export PATH\n");
     out.append("fi\n");
+  }
+
+  /**
+   * One stderr line, {@code qits-ci: caches m2=<size> pnpm=<size>}, saying how much the target's
+   * two cache volumes hold (qits-1655): {@code CiSlotSettings.BOOTSTRAP} points maven at {@value
+   * #CACHE_ROOT}m2 and npm/pnpm at {@value #CACHE_ROOT}pnpm when they are mounted, and this line in
+   * a step's own log is how anyone sees that they are, and that they grow and are reused. A size is
+   * {@code du -sh}'s first field, {@code absent} for a directory that is not there, and {@code
+   * unknown} when {@code du} fails. It never fails the step: each failure is absorbed where it
+   * happens, so it reads the same under the prelude's {@code set -eu} or without it.
+   *
+   * <p>Package-private for {@link CiAutomationComposer}, whose prelude carries it too.
+   */
+  static void cacheSizes(StringBuilder out) {
+    out.append("qits_caches=\n");
+    out.append("for qits_cache in m2 pnpm; do\n");
+    out.append("  if [ -d \"").append(CACHE_ROOT).append("$qits_cache\" ]; then\n");
+    out.append("    qits_cache_size=$(du -sh \"")
+        .append(CACHE_ROOT)
+        .append("$qits_cache\" 2>/dev/null | cut -f1) || qits_cache_size=\n");
+    out.append("    qits_cache_size=${qits_cache_size:-unknown}\n");
+    out.append("  else\n");
+    out.append("    qits_cache_size=absent\n");
+    out.append("  fi\n");
+    out.append("  qits_caches=\"$qits_caches $qits_cache=$qits_cache_size\"\n");
+    out.append("done\n");
+    out.append("echo \"qits-ci: caches$qits_caches\" >&2 || true\n");
   }
 
   /**

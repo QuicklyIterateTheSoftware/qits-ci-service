@@ -9,6 +9,17 @@ steps:
       set -eu
       # --- platform prelude: the screenshot-baselines automation ---
       : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no platform address}"
+      qits_caches=
+      for qits_cache in m2 pnpm; do
+        if [ -d "/caches/$qits_cache" ]; then
+          qits_cache_size=$(du -sh "/caches/$qits_cache" 2>/dev/null | cut -f1) || qits_cache_size=
+          qits_cache_size=${qits_cache_size:-unknown}
+        else
+          qits_cache_size=absent
+        fi
+        qits_caches="$qits_caches $qits_cache=$qits_cache_size"
+      done
+      echo "qits-ci: caches$qits_caches" >&2 || true
       if ! command -v jq > /dev/null 2>&1; then
         echo 'qits-ci: the image for this step (qits/build-images/ci-slot) has no jq, so the automation payload cannot be read' >&2
         exit 1
