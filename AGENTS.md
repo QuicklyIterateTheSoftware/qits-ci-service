@@ -2664,6 +2664,15 @@ workspace's coding agent carries it alongside `qits:agent`, and for now it may u
 `qits:admin` may use. Stated explicitly beside every `qits:admin` check, never implied, so a later
 per-endpoint removal stays possible.
 
+**`qits:desk-admin` is admitted wherever `qits:admin-agent` is** (qits-1621/qits-1631), with no
+refusals in this repository: the delivery desk's token gains it alongside `qits:desk` and
+`qits:agent`. `CiRunController` and `CiEventController` each extend their local `ADMIN_AGENT_ROLE`
+constant with a `DESK_ADMIN_ROLE` one, admitted on the identical terms in both the `@RolesAllowed`
+lists and the programmatic platform-wide checks in `cancellationScope()`/`scopeOf()`. A desk-admin
+caller still carries `qits:desk`'s project claim, so it stays bound to its own project wherever a
+door already binds the plain desk to one — `cancellationScope()`'s project-claim arm is unchanged
+and governs both roles identically.
+
 **Two identity tracks, and nothing in this repo implements either.** Both arrive in the
 `qits-auth-core` jar (`components/qits-integrations/qits-integrations-quarkus-javalib/`), and
 `service/pom.xml` says so in a comment beside the dependency. There is no `security` package here any more, and no filter.

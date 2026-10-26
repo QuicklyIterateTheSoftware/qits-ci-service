@@ -72,7 +72,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 // qits:desk is admitted alongside qits:admin-agent (qits-1596), outright: every route here is a
 // read, scoped by a repositoryId filter and not by project, exactly as qits:agent already reads
 // unscoped.
-@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:system", "qits:agent"})
+@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:system", "qits:agent"})
 public class CiRepositoryController {
 
   @Inject CiRunService runService;

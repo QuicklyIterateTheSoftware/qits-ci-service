@@ -829,6 +829,22 @@
       "dependsOn": [],
       "operations": [
         {
+          "operationId": "cancelRun",
+          "method": "POST",
+          "path": "/ci/api/runs/{runId}/cancel",
+          "body": {
+            "reason": "..."
+          },
+          "status": 202,
+          "file": "a-running-run/cancelRun.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        },
+        {
           "operationId": "getRun",
           "method": "GET",
           "path": "/ci/api/runs/{runId}",

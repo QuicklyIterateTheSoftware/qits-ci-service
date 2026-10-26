@@ -102,6 +102,13 @@ change here beyond the prefix, along with runs becoming their own entity (below)
 "Authentication" (qits-628 follow-up): an ADMIN workspace's coding agent carries it alongside
 `qits:agent`, and for now it may use everything `qits:admin` may use.
 
+**`qits:desk-admin` is admitted wherever `qits:admin-agent` is, with no exceptions in this
+repository** (qits-1621/qits-1631): the delivery desk's token gains it alongside `qits:desk` and
+`qits:agent`, parity is literal, and every door this service admits `qits:admin-agent` on also
+admits `qits:desk-admin`. It still carries `qits:desk`'s own project claim, so wherever a door binds
+a desk caller to its own project (`cancellationScope()`/`requireRepositoryInProject`, below), a
+desk-admin caller is bound exactly the same way — the role widens *reach*, not *scope*.
+
 Runs reference repositories **by string id and branches by name, never a foreign key** — a deleted
 repository simply leaves runs behind as dangling history. Everything this context needs from the
 rest of qits it reaches over a URL it is configured with:
