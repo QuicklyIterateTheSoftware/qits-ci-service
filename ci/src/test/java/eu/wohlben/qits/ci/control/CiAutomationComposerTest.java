@@ -190,8 +190,9 @@ public class CiAutomationComposerTest {
   @Test
   public void theScreenshotBaselinesKindIsComposedByteIdenticallyToBefore() throws Exception {
     // composed/automation-screenshot-baselines.yml is the composition from before qits-cli: the
-    // key is additive, so a kind that does not set it must not move by a byte. It moved once since,
-    // on purpose: qits-1253 put git_net into every kind's platform prelude and postlude.
+    // key is additive, so a kind that does not set it must not move by a byte. It moved twice
+    // since, on purpose: qits-1253 put git_net into every kind's platform prelude and postlude,
+    // and qits-1687 named the fold on every ending and added the outside-paths report.
     String path = "ci/src/main/resources/platform-pipelines/automations/screenshot-baselines.yml";
     String kindFile = Files.readString(Path.of("..").resolve(path));
     try (var in =
@@ -319,6 +320,92 @@ public class CiAutomationComposerTest {
 
     assertEquals(0, run.exit, run.output);
     assertTrue(run.output.contains("unchanged"), run.output);
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH), "nothing was pushed");
+  }
+
+  // --- what a run changed outside its commit paths (qits-1687) ----------------------------------
+
+  @Test
+  public void anUnchangedRunReportsAGoldenMasterWrittenOutsideItsCommitPaths(@TempDir Path dir)
+      throws Exception {
+    // The incident: golden-recordings-maven rewrote a golden master outside its own
+    // `:(glob)pacts/*.json` commit path, and the step's whole tail said only "unchanged" - nothing
+    // said a file had been touched at all, and nothing named which fold it was built against.
+    Scratch scratch = new Scratch(dir);
+    Result run =
+        scratch.run(
+            "bash",
+            "mkdir -p golden-masters/qits-projects\necho '{}' > golden-masters/qits-projects/listProjectWork.json\n",
+            scratch.payload(BRANCH, scratch.fold, "\":(glob)pacts/*.json\""));
+
+    assertEquals(0, run.exit, run.output);
+    String fold12 = scratch.fold.substring(0, 12);
+    assertTrue(run.output.contains("unchanged at fold " + fold12 + " (release/abc)"), run.output);
+    assertTrue(
+        run.output.contains("changed outside the commit paths, not committed by this kind:"),
+        run.output);
+    assertTrue(
+        run.output.contains("  golden-masters/qits-projects/listProjectWork.json"), run.output);
+    assertTrue(
+        run.output.contains(
+            "a stale file there is fixed by a commit on a source branch, not by a re-run of"
+                + " test-kind"),
+        run.output);
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH), "nothing was pushed");
+  }
+
+  @Test
+  public void aPushedRunReportsAndStillPushesWhatItWroteOutsideItsCommitPaths(@TempDir Path dir)
+      throws Exception {
+    Scratch scratch = new Scratch(dir);
+    // WRITES changes a commit path (out/file.txt) and a path outside it (stray.txt).
+    Result run =
+        scratch.run("bash", WRITES, scratch.payload(BRANCH, scratch.fold, "\":(glob)out/**\""));
+
+    assertEquals(0, run.exit, run.output);
+    String pushed = scratch.originRev("refs/heads/" + BRANCH);
+    String fold12 = scratch.fold.substring(0, 12);
+    assertTrue(
+        run.output.contains("changed outside the commit paths, not committed by this kind:"),
+        run.output);
+    assertTrue(run.output.contains("  stray.txt"), run.output);
+    assertTrue(
+        run.output.contains(
+            "pushed " + pushed + " to " + BRANCH + " (fold " + fold12 + " of release/abc)"),
+        run.output);
+    assertEquals(
+        "out/file.txt",
+        scratch.git(scratch.origin, "diff-tree", "--no-commit-id", "--name-only", "-r", pushed),
+        "stray.txt stayed outside the commit");
+  }
+
+  @Test
+  public void moreThanTwentyOutsidePathsAreCappedWithACount(@TempDir Path dir) throws Exception {
+    Scratch scratch = new Scratch(dir);
+    StringBuilder script = new StringBuilder();
+    for (int i = 1; i <= 25; i++) {
+      script.append("echo x > stray").append(i).append(".txt\n");
+    }
+    Result run =
+        scratch.run("bash", script.toString(), scratch.payload(BRANCH, scratch.fold, "\"out/**\""));
+
+    assertEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains("unchanged"), run.output);
+    long listed =
+        java.util.Arrays.stream(run.output.split("\n")).filter(line -> line.startsWith("  stray")).count();
+    assertEquals(20, listed, run.output);
+    assertTrue(run.output.contains("  ... and 5 more"), run.output);
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH), "nothing was pushed");
+  }
+
+  @Test
+  public void aPlainUnchangedRunWithNothingOutsideHasNoHeader(@TempDir Path dir) throws Exception {
+    Scratch scratch = new Scratch(dir);
+    Result run = scratch.run("bash", "true\n", scratch.payload(BRANCH, scratch.fold, "\"out/**\""));
+
+    assertEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains("unchanged"), run.output);
+    assertFalse(run.output.contains("changed outside the commit paths"), run.output);
     assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH), "nothing was pushed");
   }
 

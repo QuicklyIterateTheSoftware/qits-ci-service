@@ -74,13 +74,31 @@ import java.util.regex.Pattern;
  * <p>The <b>postlude</b> stages <b>only</b> the payload's {@code commitPaths} ({@code git add -A
  * --}), commits {@code chore(<item>): update <kind words>} (or the kind's own message, below)
  * unless the {@code
- * --ignore-submodules=none} guard finds nothing staged — then it prints {@code unchanged} and exits
- * 0 — and makes a plain push, never forced, to {@code HEAD:refs/heads/<branch>}. A rejected push
+ * --ignore-submodules=none} guard finds nothing staged — then it prints {@code unchanged at fold
+ * <sha> (<base>): the <kind> regeneration changed nothing under the commit paths} and exits 0 —
+ * and makes a plain push, never forced, to {@code HEAD:refs/heads/<branch>}. A rejected push
  * fetches the branch: a tip whose one parent is the fold and whose tree is this step's is the same
  * step executed again after its first execution pushed (a runner re-dispatch), so it prints {@code
- * already pushed: <branch> at <sha> carries the same content} and is green, the branch having moved
- * as a fresh push would have moved it. Any other rejection means the fold no longer contains the
- * branch, and the step fails saying so. It ends {@code pushed <sha> to <branch>}.
+ * already pushed: <branch> at <sha> carries the same content (fold <sha> of <base>)} and is green,
+ * the branch having moved as a fresh push would have moved it. Any other rejection means the fold
+ * no longer contains the branch, and the step fails saying so. It ends {@code pushed <sha> to
+ * <branch> (fold <sha> of <base>)}.
+ *
+ * <p><b>Both endings name the fold, and both report what they did not commit</b> (qits-1687). The
+ * CI service keeps only a step's last lines, so a bare {@code unchanged} read beside a run list's
+ * {@code main@<head>} label once let a person conclude a step had built {@code main} rather than
+ * the fold it actually ran against — every ending above now carries the fold's first twelve hex
+ * digits and the {@code baseRef} it ran at, so the tail says which fold on its own. And right
+ * before either ending, the postlude lists every path {@code git status --porcelain
+ * --untracked-files=all --ignore-submodules=none} finds that is <em>not</em> staged — a worktree
+ * change or an untracked ({@code ??}) entry, since a staged one is what this run is about to
+ * commit — under a {@code changed outside the commit paths, not committed by this kind:} header,
+ * up to twenty paths indented two spaces, {@code ... and N more} past the cap, and one sentence
+ * naming the fix: a stale file there is fixed by a commit on a source branch, not by a re-run of
+ * the kind. The incident this closes: {@code golden-recordings-maven} rewrote a golden master
+ * outside its own {@code :(glob)pacts/*.json} path, the step's whole tail read {@code unchanged:
+ * the golden-recordings-maven regeneration changed nothing under the commit paths}, and nothing
+ * in it said that anything had been written at all.
  *
  * <p><b>The git host is allowed a bad moment</b> (qits-1253). The fold fetch, the push and the
  * already-pushed fetch go through {@link #GIT_NET}: a 5xx or a dropped connection is tried three
@@ -191,6 +209,15 @@ public final class CiAutomationComposer {
 
   /** Where the prelude writes the validated {@code commitPaths}, one per line, for the postlude. */
   static final String COMMIT_PATHS = "/tmp/qits-automation-paths";
+
+  /**
+   * Where the postlude writes every path the run touched outside {@link #COMMIT_PATHS} and did
+   * not stage, one per line as {@code git status --porcelain} printed it (qits-1687).
+   */
+  static final String OUTSIDE_PATHS = "/tmp/qits-automation-outside";
+
+  /** How many outside paths the postlude lists before it says {@code ... and N more}. */
+  static final int OUTSIDE_PATHS_SHOWN = 20;
 
   /**
    * The step's one way to reach the git host (qits-1253): {@code git_net <git args>} runs git, prints
@@ -498,6 +525,10 @@ public final class CiAutomationComposer {
     out.append("  sh -eu ").append(KIND_SCRIPT).append('\n');
     out.append("fi\n");
     out.append("# --- platform postlude: commit only the payload's paths, push plainly ---\n");
+    // The fold's first twelve hex digits, named on every ending below (qits-1687): the CI service
+    // keeps only a step's tail, and a bare "unchanged" read beside a run list's "main@<head>"
+    // label once let a person believe a step had built main rather than the fold it ran against.
+    out.append("fold12=$(printf '%s' \"$fold\" | cut -c1-12)\n");
     // A path that matches nothing - no file in the tree, none in the index - would make `git add`
     // fail the whole step, so it is left out: there is nothing under it to commit. An ignored,
     // untracked file is left out the same way rather than refused.
@@ -512,10 +543,38 @@ public final class CiAutomationComposer {
     out.append("if [ $# -gt 0 ]; then\n");
     out.append("  git add -A -- \"$@\"\n");
     out.append("fi\n");
+    // qits-1687: everything the run touched outside the commit paths and left uncommitted - a
+    // worktree change or an untracked ("??") entry, never a staged one, since a staged path is
+    // what this run is about to commit. Reported on every green ending, before its final line, so
+    // a person reading only the step's tail can see a rewrite nothing here owns (the incident:
+    // golden-recordings-maven rewrote a golden master outside its own commit path and the step's
+    // whole tail said only "unchanged").
+    out.append("git status --porcelain --untracked-files=all --ignore-submodules=none \\\n");
+    out.append("  | grep -v '^. ' | cut -c4- > ").append(OUTSIDE_PATHS).append(" || true\n");
+    out.append("qits_report_outside() {\n");
+    out.append("  if [ -s ").append(OUTSIDE_PATHS).append(" ]; then\n");
+    out.append("    echo 'changed outside the commit paths, not committed by this kind:'\n");
+    out.append("    sed -n '1,").append(OUTSIDE_PATHS_SHOWN).append("p' ").append(OUTSIDE_PATHS)
+        .append(" | sed 's/^/  /'\n");
+    out.append("    qits_outside_total=$(wc -l < ").append(OUTSIDE_PATHS).append(")\n");
+    out.append("    if [ \"$qits_outside_total\" -gt ").append(OUTSIDE_PATHS_SHOWN).append(" ]; then\n");
+    out.append("      echo \"  ... and $((qits_outside_total - ")
+        .append(OUTSIDE_PATHS_SHOWN)
+        .append(")) more\"\n");
+    out.append("    fi\n");
+    out.append("    echo ")
+        .append(
+            shellQuote(
+                "a stale file there is fixed by a commit on a source branch, not by a re-run of "
+                    + kind))
+        .append('\n');
+    out.append("  fi\n");
+    out.append("}\n");
     // --ignore-submodules=none for maintenance-bump.yml's reason: a repository whose .gitmodules
     // says `ignore = all` hides a staged gitlink otherwise.
     out.append("if git diff --cached --quiet --ignore-submodules=none; then\n");
-    out.append("  echo \"unchanged: the ")
+    out.append("  qits_report_outside\n");
+    out.append("  echo \"unchanged at fold $fold12 ($base): the ")
         .append(kind)
         .append(" regeneration changed nothing under the commit paths\"\n");
     out.append("  exit 0\n");
@@ -611,8 +670,11 @@ public final class CiAutomationComposer {
     out.append(
         "      && [ \"$(git rev-parse \"$remote^{tree}\")\" = \"$(git rev-parse 'HEAD^{tree}')\" ];"
             + " then\n");
-    out.append("    echo \"already pushed: $branch at $remote carries the same content\"\n");
-    out.append("    echo \"pushed $remote to $branch\"\n");
+    out.append("    qits_report_outside\n");
+    out.append(
+        "    echo \"already pushed: $branch at $remote carries the same content (fold $fold12 of"
+            + " $base)\"\n");
+    out.append("    echo \"pushed $remote to $branch (fold $fold12 of $base)\"\n");
     out.append("    exit 0\n");
     out.append("  fi\n");
     // A host that never answered has said nothing about the fold (qits-1253, run 135af4fc).
@@ -627,7 +689,8 @@ public final class CiAutomationComposer {
             + " or join it again\" >&2\n");
     out.append("  exit 1\n");
     out.append("fi\n");
-    out.append("echo \"pushed $(git rev-parse HEAD) to $branch\"\n");
+    out.append("qits_report_outside\n");
+    out.append("echo \"pushed $(git rev-parse HEAD) to $branch (fold $fold12 of $base)\"\n");
     return out.toString();
   }
 

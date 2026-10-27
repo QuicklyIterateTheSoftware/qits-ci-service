@@ -177,6 +177,7 @@ steps:
         sh -eu /tmp/qits-automation.sh
       fi
       # --- platform postlude: commit only the payload's paths, push plainly ---
+      fold12=$(printf '%s' "$fold" | cut -c1-12)
       set --
       while IFS= read -r path; do
         if [ -n "$(git ls-files --cached --others --exclude-standard -- "$path" | head -n 1)" ]; then
@@ -186,8 +187,22 @@ steps:
       if [ $# -gt 0 ]; then
         git add -A -- "$@"
       fi
+      git status --porcelain --untracked-files=all --ignore-submodules=none \
+        | grep -v '^. ' | cut -c4- > /tmp/qits-automation-outside || true
+      qits_report_outside() {
+        if [ -s /tmp/qits-automation-outside ]; then
+          echo 'changed outside the commit paths, not committed by this kind:'
+          sed -n '1,20p' /tmp/qits-automation-outside | sed 's/^/  /'
+          qits_outside_total=$(wc -l < /tmp/qits-automation-outside)
+          if [ "$qits_outside_total" -gt 20 ]; then
+            echo "  ... and $((qits_outside_total - 20)) more"
+          fi
+          echo 'a stale file there is fixed by a commit on a source branch, not by a re-run of golden-recordings-maven'
+        fi
+      }
       if git diff --cached --quiet --ignore-submodules=none; then
-        echo "unchanged: the golden-recordings-maven regeneration changed nothing under the commit paths"
+        qits_report_outside
+        echo "unchanged at fold $fold12 ($base): the golden-recordings-maven regeneration changed nothing under the commit paths"
         exit 0
       fi
       git diff --cached --stat --ignore-submodules=none
@@ -213,8 +228,9 @@ steps:
         if [ -n "$remote" ] \
             && [ "$(git rev-list --parents -n 1 "$remote")" = "$remote $fold" ] \
             && [ "$(git rev-parse "$remote^{tree}")" = "$(git rev-parse 'HEAD^{tree}')" ]; then
-          echo "already pushed: $branch at $remote carries the same content"
-          echo "pushed $remote to $branch"
+          qits_report_outside
+          echo "already pushed: $branch at $remote carries the same content (fold $fold12 of $base)"
+          echo "pushed $remote to $branch (fold $fold12 of $base)"
           exit 0
         fi
         if [ "$push_transient" = yes ]; then
@@ -224,4 +240,5 @@ steps:
         echo "push to $branch was rejected - the fold no longer contains it; remove the branch or join it again" >&2
         exit 1
       fi
-      echo "pushed $(git rev-parse HEAD) to $branch"
+      qits_report_outside
+      echo "pushed $(git rev-parse HEAD) to $branch (fold $fold12 of $base)"
