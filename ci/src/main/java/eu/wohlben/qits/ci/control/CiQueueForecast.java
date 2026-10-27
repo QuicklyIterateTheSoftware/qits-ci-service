@@ -203,7 +203,7 @@ public final class CiQueueForecast {
    *
    * <p>Since a run is a lease (epic qits-1481), qits-ci holds no slot count of its own: how many CI
    * leases the targets grant is qits-system's, decided per target against every other slot type's
-   * minimums. So the forecast assumes the estate keeps granting what it grants now — a queue behind
+   * reservations. So the forecast assumes the estate keeps granting what it grants now — a queue behind
    * three running leases moves three at a time — and never assumes nothing will run, which no
    * longer has a state that says so. It is an estimate, and every duration on the wire is one.
    */
