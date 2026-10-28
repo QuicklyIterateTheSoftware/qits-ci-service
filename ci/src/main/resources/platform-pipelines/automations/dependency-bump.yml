@@ -226,15 +226,18 @@ script: |
   # rather than quoted. Nothing legitimate needs a character outside these sets.
   : > /tmp/bump-body.txt
   : > /tmp/bump-applied.tsv
+  # The paths the apply touched, as the positional parameters: the "nothing changed" test below
+  # reads these and no others.
+  set --
   while IFS="$us" read -r ecosystem name from to manifest location <&3; do
     case "$to" in ''|*[!0-9A-Za-z._+-]*) echo "refusing an implausible version: $to" >&2; exit 1 ;; esac
     # `from` is not checked: it reaches the commit body and nothing else.
     case "$manifest" in
       ''|/*|-*|*..*|*[!0-9A-Za-z._/-]*) echo "refusing an implausible manifest: $manifest" >&2; exit 1 ;;
     esac
-    # A gitlink's path is a DIRECTORY, and in this clone an empty one - the submodule is never
-    # initialised here, because the whole edit is an index entry. So the file test guards the
-    # three ecosystems that edit a file, and no more.
+    # A gitlink's path is a DIRECTORY - an empty one, or since qits-1541 a populated checkout,
+    # because the step's worktree initialises its submodules (see the gitlink arm). Never a file,
+    # so the file test guards the three ecosystems that edit a file, and no more.
     if [ "$ecosystem" != "gitlink" ] && [ ! -f "$manifest" ]; then
       echo "no such manifest: $manifest" >&2
       exit 1
@@ -322,6 +325,7 @@ script: |
           echo "regenerate the lockfile against those two registries before this dependency can be bumped" >&2
           exit 1
         fi
+        set -- "$@" "$lock"
         ;;
       docker)
         case "$name" in ''|*[!@A-Za-z0-9._/-]*) echo "refusing an implausible image: $name" >&2; exit 1 ;; esac
@@ -361,12 +365,38 @@ script: |
         fi
         # Peeled: a release tag may be annotated, and the entry is the commit it points at.
         sha=$(git rev-parse --verify "FETCH_HEAD^{commit}")
+        # THE PATH IS ONE OF TWO THINGS, and the postlude's `add -A` reads them differently.
+        # POPULATED (qits-1696): since qits-1541 the step's worktree runs `git submodule update
+        # --init` wherever a .gitmodules exists, automation runs included, so a declared
+        # submodule is a real checkout at main's old commit - and staging a populated submodule
+        # records ITS HEAD, which put the old sha straight back over the index entry while this
+        # line still printed `bumped`. So the checkout itself is moved to the tag's commit,
+        # fetched INTO it from the sibling: it may be shallow, and the tag is the one name
+        # certain to carry the object. EMPTY OR MISSING: an uninitialised submodule's empty
+        # directory reads as "unchanged" and keeps the entry, but a MISSING one reads as a
+        # deletion and drops it - so a gitlink new to the tree gets the directory every other
+        # unpopulated gitlink has.
+        if [ -e "$manifest/.git" ]; then
+          if ! git -C "$manifest" fetch -q "$sibling" "refs/tags/$to"; then
+            echo "no tag $to in $sibling for the submodule checkout at $manifest" >&2
+            exit 1
+          fi
+          git -C "$manifest" checkout -q --detach "$sha"
+        else
+          mkdir -p "$manifest"
+        fi
+        # The entry is written either way - a git that skips an `ignore = all` submodule on
+        # `add` still keeps it - and then staged exactly as the postlude will stage it.
         git update-index --add --cacheinfo "160000,$sha,$manifest"
-        # THE EMPTY DIRECTORY IS LOAD-BEARING. The postlude stages each commit path with -A,
-        # which reads an unpopulated submodule's empty directory as "unchanged" and keeps this
-        # entry - but reads a MISSING directory as a deletion and drops it. A gitlink new to the
-        # tree has no directory in this clone, so it gets the one every other gitlink has.
-        mkdir -p "$manifest"
+        git add -A -- "$manifest"
+        # THE GUARD (qits-1696): `bumped` is printed only for an entry that is really staged at
+        # the tag's commit. Anything else fails the step here, rather than committing the other
+        # manifests and reporting a gitlink move that never happened.
+        staged=$(git ls-files -s -- "$manifest" | cut -d ' ' -f 1,2)
+        if [ "$staged" != "160000 $sha" ]; then
+          echo "the gitlink at $manifest did not stage at $sha ($name $to): the index holds '$staged'" >&2
+          exit 1
+        fi
         ;;
       *)
         echo "unknown ecosystem: $ecosystem" >&2
@@ -376,13 +406,16 @@ script: |
     echo "- $ecosystem $name $from -> $to ($manifest)" >> /tmp/bump-body.txt
     printf '%s\t%s\n' "$ecosystem" "$name" >> /tmp/bump-applied.tsv
     echo "bumped $name to $to in $manifest"
+    set -- "$@" "$manifest"
   done 3< /tmp/bump-changes.txt
 
   # --- the commit message: the description, then the body ------------------------------
   # The postlude commits it as `bump(<item>): ...`; the type and the item are not ours to write.
   # The tickets and the changelogs are the CLI's - see the header. Nothing changed, nothing to
-  # compose: the postlude reads no message from a run with nothing staged.
-  if [ -z "$(git status --porcelain --ignore-submodules=none)" ]; then
+  # compose: the postlude reads no message from a run with nothing staged. Asked of the touched
+  # paths alone (qits-1696): a populated submodule the payload does not name still sits at main's
+  # commit while the fold's gitlink may name another, and that drift is not this run's change.
+  if [ -z "$(git status --porcelain --ignore-submodules=none -- "$@")" ]; then
     printf '%d dependencies\n' "$count" > "$QITS_AUTOMATION_MESSAGE"
     exit 0
   fi

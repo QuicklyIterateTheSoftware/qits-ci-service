@@ -240,6 +240,13 @@ public class PackagedPlatformPipelinesTest {
       // below.
       if (!kind.equals(DEPENDENCY_BUMP) && !kind.equals(ESTATE_PINS)) {
         forbidden.addAll(List.of("git fetch", "QITS_EVENT"));
+      } else {
+        // And one stage, of the gitlink alone, so the arm's guard reads what the postlude's own
+        // add will commit (qits-1696). Nothing else of theirs stages.
+        String gitlinkStage = "git add -A -- \"$manifest\"\n";
+        assertEquals(
+            2, kindFile.split(Pattern.quote(gitlinkStage), -1).length, kind + ": one gitlink stage");
+        kindFile = kindFile.replace(gitlinkStage, "");
       }
       for (String word : forbidden) {
         assertFalse(
@@ -593,13 +600,18 @@ public class PackagedPlatformPipelinesTest {
     for (String field : List.of(".branch", ".baseRef", ".foldSha", ".commitPaths", ".workItem")) {
       assertFalse(script.contains(field), "the kind reads the prelude's " + field);
     }
-    // The one fetch: a gitlink's sibling, at a tag — never a ref of this repository.
-    Matcher fetches = Pattern.compile("git fetch[^\n]*").matcher(script);
+    // The one fetch: a gitlink's sibling, at a tag — never a ref of this repository. Made twice
+    // over when the submodule is populated (qits-1696): the second writes into that checkout.
+    Matcher fetches = Pattern.compile("git (?:-C \"\\$manifest\" )?fetch[^\n]*").matcher(script);
     List<String> found = new java.util.ArrayList<>();
     while (fetches.find()) {
       found.add(fetches.group().strip());
     }
-    assertEquals(List.of("git fetch -q \"$sibling\" \"refs/tags/$to\"; then"), found);
+    assertEquals(
+        List.of(
+            "git fetch -q \"$sibling\" \"refs/tags/$to\"; then",
+            "git -C \"$manifest\" fetch -q \"$sibling\" \"refs/tags/$to\"; then"),
+        found);
   }
 
   @Test
@@ -610,7 +622,12 @@ public class PackagedPlatformPipelinesTest {
     while (adds.find()) {
       found.add(adds.group().strip());
     }
-    assertEquals(List.of("git add -A -- \"$@\""), found, "the apply stages nothing itself");
+    // The apply stages one thing itself, a gitlink, the way the postlude will - so its guard
+    // reads what the commit is going to hold (qits-1696).
+    assertEquals(
+        List.of("git add -A -- \"$manifest\"", "git add -A -- \"$@\""),
+        found,
+        "the apply stages nothing but a gitlink itself");
     assertFalse(composed.contains("--force"), "a forced push in the composed automation");
     assertFalse(composed.contains("push -f"), "a forced push in the composed automation");
     Matcher matcher = GUARD.matcher(composed);
@@ -749,13 +766,18 @@ public class PackagedPlatformPipelinesTest {
     for (String field : List.of(".branch", ".baseRef", ".foldSha", ".commitPaths", ".workItem")) {
       assertFalse(script.contains(field), "the kind reads the prelude's " + field);
     }
-    // The one fetch: a gitlink's sibling, at a tag - never a ref of this repository.
-    Matcher fetches = Pattern.compile("git fetch[^\n]*").matcher(script);
+    // The one fetch: a gitlink's sibling, at a tag - never a ref of this repository. Made twice
+    // over when the submodule is populated (qits-1696): the second writes into that checkout.
+    Matcher fetches = Pattern.compile("git (?:-C \"\\$manifest\" )?fetch[^\n]*").matcher(script);
     List<String> found = new java.util.ArrayList<>();
     while (fetches.find()) {
       found.add(fetches.group().strip());
     }
-    assertEquals(List.of("git fetch -q \"$sibling\" \"refs/tags/$to\"; then"), found);
+    assertEquals(
+        List.of(
+            "git fetch -q \"$sibling\" \"refs/tags/$to\"; then",
+            "git -C \"$manifest\" fetch -q \"$sibling\" \"refs/tags/$to\"; then"),
+        found);
   }
 
   @Test
@@ -766,7 +788,12 @@ public class PackagedPlatformPipelinesTest {
     while (adds.find()) {
       found.add(adds.group().strip());
     }
-    assertEquals(List.of("git add -A -- \"$@\""), found, "the apply stages nothing itself");
+    // The apply stages one thing itself, a gitlink, the way the postlude will - so its guard
+    // reads what the commit is going to hold (qits-1696).
+    assertEquals(
+        List.of("git add -A -- \"$manifest\"", "git add -A -- \"$@\""),
+        found,
+        "the apply stages nothing but a gitlink itself");
     assertFalse(composed.contains("--force"), "a forced push in the composed automation");
     assertFalse(composed.contains("push -f"), "a forced push in the composed automation");
     assertFalse(composed.contains("+HEAD:"), "a forced refspec in the composed automation");
@@ -777,8 +804,8 @@ public class PackagedPlatformPipelinesTest {
 
   @Test
   public void theEstatePinsKindSharesTheGitlinkMechanismOfDependencyBump() throws Exception {
-    // qits-1258: the name charset check, the sibling fetch, the peel and the load-bearing
-    // mkdir -p are lifted from dependency-bump.yml's gitlink arm rather than shared code - two
+    // qits-1258: the name charset check, the sibling fetch, the peel, the populated-or-empty
+    // handling of the path and the staged-entry guard (qits-1696) are lifted from dependency-bump.yml's gitlink arm rather than shared code - two
     // YAML kind files cannot `import` one Java string - so this is the drift guard.
     String dependencyBump = Files.readString(SOURCE.resolve("automations/dependency-bump.yml"));
     String estatePins = Files.readString(SOURCE.resolve("automations/estate-pins.yml"));
@@ -790,15 +817,15 @@ public class PackagedPlatformPipelinesTest {
 
   /**
    * The gitlink mechanism of a kind file: from the submodule name's charset check through the
-   * load-bearing {@code mkdir -p}, comments stripped and {@code indent} removed.
+   * guard that the entry staged at the tag's commit, comments stripped and {@code indent} removed.
    */
   private static String gitlinkMechanism(String file, String indent) {
     int start = file.indexOf("case \"$name\" in\n");
     assertTrue(start >= 0, "no multi-line gitlink name check in the file");
-    String marker = "mkdir -p \"$manifest\"\n";
-    int from = file.indexOf(marker, start);
-    assertTrue(from >= 0, "no load-bearing mkdir -p in the file");
-    int end = from + marker.length();
+    int guard = file.indexOf("staged=$(git ls-files -s -- \"$manifest\"", start);
+    assertTrue(guard >= 0, "no staged-entry guard in the file");
+    String marker = "  fi\n";
+    int end = file.indexOf(marker, guard) + marker.length();
     StringBuilder out = new StringBuilder();
     for (String line : file.substring(start, end).split("\n", -1)) {
       String bare = line.startsWith(indent) ? line.substring(indent.length()) : line;

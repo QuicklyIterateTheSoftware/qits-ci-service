@@ -1630,8 +1630,10 @@ branch. Its payload adds `changes`, entries in exactly `maintenance-bump.yml`'s 
 maven|npm|docker|gitlink, `manifestPath`, `name`, `from`, `to`, `location`), and `commitPaths` is
 their manifests; it commits `bump(<item>): <N> dependencies` with one body line per change. The
 apply logic is `maintenance-bump.yml`'s own, lifted into one script — maven and docker are awk,
-gitlink an index write, npm `npm install --package-lock-only` — so it needs node, npm, jq, git and
-awk and no maven at all, which is `node-browser-base` (no platform image carries node and maven
+gitlink an index write (and, where the step's worktree populated the submodule — every run since
+qits-1541 — a move of that checkout to the tag's commit, or the postlude's `git add -A` stages the
+old one back; the arm fails the step unless the entry staged at the tag, qits-1696), npm `npm
+install --package-lock-only` — so it needs node, npm, jq, git and awk and no maven at all, which is `node-browser-base` (no platform image carries node and maven
 together, and none has to). It is the one kind that reads `$QITS_EVENT_PAYLOAD` itself (for
 `changes` alone) and the one that fetches (a gitlink's sibling tag). The maven programs
 (`bump-property.awk`, `bump-dependency.awk`) are this file's own copy now rather than a lift kept

@@ -1333,6 +1333,181 @@ public class CiAutomationComposerTest {
         "", scratch.originRevOrEmpty("refs/heads/" + ESTATE_PINS_BRANCH), "nothing was pushed");
   }
 
+  // --- a populated submodule, run (qits-1696) ------------------------------------------------------
+
+  /**
+   * The sibling a gitlink names, beside the origin, with one commit; returns its sha. {@link
+   * #release} adds the tagged one after it.
+   */
+  private static String sibling(Scratch scratch, Path dir) throws Exception {
+    Path sibling = dir.resolve("scratch").resolve("qits-sibling");
+    scratch.git(dir, "init", "-q", "-b", "main", sibling.toString());
+    scratch.git(
+        sibling, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one");
+    return scratch.git(sibling, "rev-parse", "HEAD");
+  }
+
+  /** A second sibling commit, tagged {@code 2026.2.2} - annotated, so the entry has to be peeled. */
+  private static String release(Scratch scratch, Path dir) throws Exception {
+    Path sibling = dir.resolve("scratch").resolve("qits-sibling");
+    scratch.git(
+        sibling, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "two");
+    scratch.git(sibling, "-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "-m", "r", "2026.2.2");
+    return scratch.git(sibling, "rev-parse", "2026.2.2^{commit}");
+  }
+
+  /**
+   * What qits-ci-daemon's worktree does before every step since qits-1541: the submodule at {@code
+   * path} checked out, at {@code sha}. Made before {@link #release}, so the checkout lacks the
+   * tag's commit, as a shallow one would.
+   */
+  private static void populate(Scratch scratch, Path dir, String path, String sha) throws Exception {
+    Path checkout = scratch.work.resolve(path);
+    scratch.git(
+        dir, "clone", "-q", dir.resolve("scratch").resolve("qits-sibling").toString(), checkout.toString());
+    scratch.git(checkout, "checkout", "-q", "--detach", sha);
+  }
+
+  private static final String GITMODULES =
+      "[submodule \"qits-sibling\"]\n"
+          + "\tpath = service/src/main/webui\n"
+          + "\turl = ../qits-sibling.git\n"
+          + "\tignore = all\n";
+
+  private static final String WEBUI_CHANGE =
+      "{\"ecosystem\":\"gitlink\",\"manifestPath\":\"service/src/main/webui\",\"name\":\"qits-sibling\","
+          + "\"to\":\"2026.2.2\",\"location\":\"gitlink:service/src/main/webui\"}";
+
+  @Test
+  public void aPopulatedSubmoduleIsMovedToTheTagAndItsGitlinkCommitted(@TempDir Path dir)
+      throws Exception {
+    // Run ca51e52f's shape: a pom and the frontend gitlink, the submodule checked out at main's
+    // pin. The commit used to hold the pom alone, after a `bumped` line for the gitlink.
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    String old = sibling(scratch, dir);
+    scratch.foldWith(
+        Map.of("pom.xml", POM, ".gitmodules", GITMODULES), Map.of("service/src/main/webui", old));
+    populate(scratch, dir, "service/src/main/webui", old);
+    String released = release(scratch, dir);
+
+    String changes = "[" + ONE_PROPERTY.substring(1, ONE_PROPERTY.length() - 1) + "," + WEBUI_CHANGE + "]";
+    Result run =
+        scratch.runStep(
+            "bash",
+            dependencyBumpStep(fakeChangelogCli(dir.resolve("store"), "", 0)),
+            bumpPayload(scratch, changes, "\"pom.xml\",\"service/src/main/webui\""),
+            FAKE_CLI_ENV);
+
+    assertEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains("bumped qits-sibling to 2026.2.2 in service/src/main/webui"), run.output);
+    String pushed = scratch.originRev("refs/heads/" + BUMP_BRANCH);
+    assertEquals(
+        "pom.xml\nservice/src/main/webui",
+        scratch.git(scratch.origin, "diff-tree", "--no-commit-id", "--name-only", "-r", pushed));
+    assertEquals(
+        "160000 commit " + released + "\tservice/src/main/webui",
+        scratch.git(scratch.origin, "ls-tree", pushed, "service/src/main/webui"));
+  }
+
+  @Test
+  public void aGitlinkThatDidNotStageAtTheTagFailsTheBumpBeforeItSaysBumped(@TempDir Path dir)
+      throws Exception {
+    // A git whose `add` puts the old commit back over the entry - the incident, whatever its next
+    // cause. The step stops on the gitlink, before `bumped`, and commits nothing.
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    String old = sibling(scratch, dir);
+    scratch.foldWith(Map.of("pom.xml", POM), Map.of("libs/old", old));
+    release(scratch, dir);
+    Path shim = dir.resolve("shim");
+    Files.createDirectories(shim);
+    Path git = shim.resolve("git");
+    Files.writeString(
+        git,
+        "#!/bin/sh\n"
+            + "\"$REAL_GIT\" \"$@\" || exit $?\n"
+            + "if [ \"$1\" = add ]; then\n"
+            + "  exec \"$REAL_GIT\" update-index --cacheinfo \"160000," + old + ",libs/old\"\n"
+            + "fi\n");
+    assertTrue(git.toFile().setExecutable(true));
+    Map<String, String> env = new java.util.HashMap<>(FAKE_CLI_ENV);
+    env.put("REAL_GIT", realGit());
+    env.put("PATH", shim + ":" + System.getenv("PATH"));
+
+    String changes =
+        "[" + ONE_PROPERTY.substring(1, ONE_PROPERTY.length() - 1) + ","
+            + "{\"ecosystem\":\"gitlink\",\"manifestPath\":\"libs/old\",\"name\":\"qits-sibling\","
+            + "\"to\":\"2026.2.2\"}]";
+    Result run =
+        scratch.runStep(
+            "bash",
+            dependencyBumpStep(fakeChangelogCli(dir.resolve("store"), "", 0)),
+            bumpPayload(scratch, changes, "\"pom.xml\",\"libs/old\""),
+            env);
+
+    assertEquals(1, run.exit, run.output);
+    assertTrue(run.output.contains("the gitlink at libs/old did not stage at "), run.output);
+    assertFalse(run.output.contains("bumped qits-sibling"), run.output);
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BUMP_BRANCH), "nothing was pushed");
+  }
+
+  /** The git on this host's PATH, which the shim above hands every call on to. */
+  private static String realGit() {
+    for (String entry : System.getenv("PATH").split(":")) {
+      Path candidate = Path.of(entry).resolve("git");
+      if (Files.isExecutable(candidate)) {
+        return candidate.toString();
+      }
+    }
+    throw new AssertionError("no git on PATH");
+  }
+
+  @Test
+  public void aPopulatedSubmoduleNobodyBumpedIsNotAChangeOfTheRun(@TempDir Path dir)
+      throws Exception {
+    // The fold already holds the pom's pin and moved the gitlink off main's, which the populated
+    // checkout still sits at: no change of this run, so the CLI - failing here - is never asked.
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    String old = sibling(scratch, dir);
+    populate(scratch, dir, "service/src/main/webui", old);
+    String released = release(scratch, dir);
+    scratch.foldWith(
+        Map.of("pom.xml", POM.replace("3.1.0", "3.2.0"), ".gitmodules", GITMODULES),
+        Map.of("service/src/main/webui", released));
+    Result run =
+        scratch.runStep(
+            "bash",
+            dependencyBumpStep(fakeChangelogCli(dir.resolve("failing"), "", 1)),
+            bumpPayload(scratch, ONE_PROPERTY, "\"pom.xml\""),
+            FAKE_CLI_ENV);
+
+    assertEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains("unchanged"), run.output);
+    assertFalse(run.output.contains("fake qits"), run.output);
+  }
+
+  @Test
+  public void anEstatePinOverAPopulatedSubmoduleIsMovedToTheTagAndCommitted(@TempDir Path dir)
+      throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "estate-pins", "bump");
+    String old = sibling(scratch, dir);
+    scratch.foldWith(Map.of(".gitmodules", GITMODULES), Map.of("service/src/main/webui", old));
+    populate(scratch, dir, "service/src/main/webui", old);
+    String released = release(scratch, dir);
+
+    Result run =
+        scratch.runStep(
+            "bash",
+            estatePinsStep(fakeChangelogCli(dir.resolve("store"), "", 0)),
+            estatePinsPayload(scratch, "[" + WEBUI_CHANGE + "]", "\"service/src/main/webui\""),
+            FAKE_CLI_ENV);
+
+    assertEquals(0, run.exit, run.output);
+    String pushed = scratch.originRev("refs/heads/" + ESTATE_PINS_BRANCH);
+    assertEquals(
+        "160000 commit " + released + "\tservice/src/main/webui",
+        scratch.git(scratch.origin, "ls-tree", pushed, "service/src/main/webui"));
+  }
+
   // --- the scratch origin ------------------------------------------------------------------------
 
   private record Result(int exit, String output) {}
