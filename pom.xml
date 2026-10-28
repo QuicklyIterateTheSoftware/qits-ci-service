@@ -157,6 +157,9 @@
         <qits.orchestrator-service-pacts-qits-ci-service.version>2026.1018.172917</qits.orchestrator-service-pacts-qits-ci-service.version>
         <qits.platform-access-cli-pacts-qits-ci-service.version>2026.1027.110304</qits.platform-access-cli-pacts-qits-ci-service.version>
         <qits.projects-service-pacts-qits-ci-service.version>2026.1018.195756</qits.projects-service-pacts-qits-ci-service.version>
+        <!-- qits-workspaces-service's consumer pact (epic qits-1681): the run read a declared wait on a
+             run makes (getRun). The first pin is set by hand; later ones are maintenance bumps. -->
+        <qits.workspaces-service-pacts-qits-ci-service.version>2026.1028.174331</qits.workspaces-service-pacts-qits-ci-service.version>
         <!-- The frontends' pacts of what @qits/ui-components asks qits-ci for them (qits-1284): one
              jar per frontend, `pacts/<frontend>_qits-ui-components-jslib_qits-ci-service.json`,
              bumped like the rows above when the frontend releases a changed pact. -->

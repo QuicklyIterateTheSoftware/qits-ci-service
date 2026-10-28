@@ -330,6 +330,12 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-workspaces-service-pacts-qits-ci-service</artifactId>
+            <version>${qits.workspaces-service-pacts-qits-ci-service.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- The frontends' pacts (qits-1284): each jar carries one
                  `pacts/<frontend>_qits-ui-components-jslib_qits-ci-service.json`, the calls
                  @qits/ui-components makes to qits-ci on that frontend's behalf. -->

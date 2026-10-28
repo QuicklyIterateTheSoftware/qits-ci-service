@@ -31,7 +31,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * that jar as a test dependency, and qits-maintenance bumps the pin when the consumer releases a
  * changed pact. {@link ClasspathPactLoader} finds them all.
  *
- * <p><b>Twenty consumers pin a pact</b>. Seven since qits-1149: qits-landing-app ({@code
+ * <p><b>Twenty-one consumers pin a pact</b>. qits-workspaces-service since epic qits-1681 ({@code
+ * eu.wohlben.qits:qits-workspaces-service-pacts-qits-ci-service}: the run a declared wait on a run
+ * looks up). Seven since qits-1149: qits-landing-app ({@code
  * eu.wohlben.qits:qits-landing-app-pacts-qits-ci-service}), qits-artifacts-service ({@code
  * eu.wohlben.qits:qits-artifacts-service-pacts-qits-ci-service}), qits-bootstrap-cli,
  * qits-maintenance-service, qits-orchestrator-service, qits-platform-access-cli and
