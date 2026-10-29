@@ -105,7 +105,9 @@ import org.jboss.logging.Logger;
  * qits.ci.daemon.silence-limit-seconds} is closed and handed to {@link #onClose}, so the grace above
  * starts. And the daemon, which saw its own socket close, re-dials at once: a same-token dial for a
  * launch whose connection still reads open <b>supersedes</b> that connection rather than being
- * refused, because nothing else can make it — see {@link #admitByToken}.
+ * refused, because nothing else can make it — see {@link #admitByToken}. A step's results that
+ * still arrive on the superseded connection are kept: the daemon resends only a frame whose write
+ * failed, so a late {@code StepFinished} there may be the only copy there is ({@link #onMessage}).
  *
  * <p>{@code targethost/LeaseStepRunner} is what drives this in production, one step at a time.
  */
@@ -690,8 +692,9 @@ public class CiDaemonRegistry {
    * only because it saw its socket close: a leg that died past the edge with no FIN or RST leaves
    * this side open for the edge's idle timeout, and refusing the daemon's re-dials there cost the
    * run once its reconnect budget ran out. So the old connection is unbound and closed {@link
-   * #CLOSE_GOING_AWAY} {@link #SUPERSEDED}, and its late close and any late frame are ignored
-   * ({@link #onClose} and {@link #onMessage} compare it to the bound one).
+   * #CLOSE_GOING_AWAY} {@link #SUPERSEDED}. Its late close starts no grace ({@link #onClose}
+   * compares it to the bound one), while a step result still arriving on it is kept — see {@link
+   * #onMessage}.
    *
    * <p>Either way — superseding, or after the bound one closed — a dial naming the launch is its
    * daemon <b>coming back</b> (qits-748): it is admitted the same way, a reconnect grace {@link
@@ -760,10 +763,20 @@ public class CiDaemonRegistry {
    * for a {@link Hello} whose {@code daemonId} disagrees with the connection the host already
    * authenticated. That field is a claim the host checks rather than an identity it accepts.
    *
-   * <p>A frame from a connection that is no longer the bound one — superseded by its daemon's
-   * re-dial (qits-1728) — is dropped: the daemon says it again on the connection it holds now. Any
-   * frame from the bound one, a {@code Heartbeat} included, is what keeps it inside {@link
-   * #silenceLimit()}.
+   * <p><b>A connection superseded by its daemon's re-dial (qits-1728) still delivers results.</b>
+   * The daemon re-holds only a frame whose write <em>failed</em>; one written to the old socket
+   * before it noticed the drop is never sent again, and a repeated {@code RunStep} for a step it
+   * already ran is ignored. So a {@link StepChunk}, {@link StepFinished}, {@link Initialized} or
+   * {@link InitFailed} arriving on the superseded connection may be the only copy the host will ever
+   * get, and is handled exactly as from the bound one — each is already safe twice: a chunk is
+   * deduplicated by its {@code seq}, a {@code StepFinished} completes only the step in flight with
+   * its index and only once, and a late {@code Initialized} never moves the phase back. Its {@code
+   * Hello}, {@code Heartbeat} and {@code AckReceived} are ignored, since they speak for a
+   * connection the launch no longer holds, and nothing from it counts towards the bound one's
+   * liveness or ever closes the bound one.
+   *
+   * <p>Any frame from the bound connection, a {@code Heartbeat} included, is what keeps it inside
+   * {@link #silenceLimit()}.
    */
   public boolean onMessage(
       String daemonId, WebSocketConnection connection, CiDaemonMessage message) {
@@ -774,12 +787,20 @@ public class CiDaemonRegistry {
     }
     WebSocketConnection bound = launch.connection;
     if (bound != null && !bound.id().equals(connection.id())) {
+      if (message instanceof Hello
+          || message instanceof Heartbeat
+          || message instanceof AckReceived) {
+        LOG.debugf(
+            "%s from superseded connection %s of ci-daemon %s ignored",
+            message.getClass().getSimpleName(), connection.id(), daemonId);
+        return true;
+      }
       LOG.debugf(
-          "Frame from superseded connection %s of ci-daemon %s dropped: %s",
-          connection.id(), daemonId, message.getClass().getSimpleName());
-      return true;
+          "%s from superseded connection %s of ci-daemon %s kept",
+          message.getClass().getSimpleName(), connection.id(), daemonId);
+    } else {
+      launch.lastFrameNanos = System.nanoTime();
     }
-    launch.lastFrameNanos = System.nanoTime();
     switch (message) {
       case Hello hello -> {
         if (!daemonId.equals(hello.daemonId())) {

@@ -314,7 +314,7 @@ public class CiDaemonRegistryReconnectTest {
   }
 
   @Test
-  public void theSupersededConnectionsLateCloseAndFramesDisturbNothing() throws Exception {
+  public void theSupersededConnectionsLateCloseStartsNoGrace() throws Exception {
     Duration grace = Duration.ofMillis(300);
     CiDaemonRegistry registry = registry(grace);
     String daemonId = registry.registerLaunch("run-late-close", SUBJECT);
@@ -324,9 +324,12 @@ public class CiDaemonRegistryReconnectTest {
     FakeConnection second = admit(registry, daemonId, "c2");
     first.awaitClosed();
 
-    // The old socket's close lands late, and a frame from it later still.
+    // The old socket's close lands late, and with it a Hello and a Heartbeat it no longer speaks for.
     first.drop(registry, daemonId);
-    assertTrue(registry.onMessage(daemonId, first.connection, new StepFinished(correlationId, 0, 9, false)));
+    assertTrue(
+        registry.onMessage(
+            daemonId, first.connection, new Hello(daemonId, CiDaemonProtocol.CAPABILITY_VERSION)));
+    assertTrue(registry.onMessage(daemonId, first.connection, new Heartbeat()));
     Thread.sleep(grace.toMillis() * 3);
 
     assertTrue(registry.connected(daemonId), "the new connection is still the launch's");
@@ -334,12 +337,73 @@ public class CiDaemonRegistryReconnectTest {
     assertEquals(
         CiDaemonRegistry.Completion.Status.NO_ANSWER,
         registry.awaitFinished(daemonId, Duration.ofMillis(100)).status(),
-        "no grace ran out and no stale frame ended the step");
+        "no grace ran out on the old connection's close");
+    assertEquals(
+        2, second.sent().size(), "its own Ack and RunStep, nothing for the old Hello: " + second.sent());
 
     registry.onMessage(daemonId, second.connection, new StepFinished(correlationId, 0, 0, false));
     CiDaemonRegistry.Completion completion = registry.awaitFinished(daemonId, SOON);
     assertEquals(CiDaemonRegistry.Completion.Status.FINISHED, completion.status());
     assertEquals(0, completion.exitCode());
+    registry.reap(daemonId);
+  }
+
+  /**
+   * The daemon wrote its StepFinished to the old socket before it noticed the drop; that write
+   * succeeded, so the daemon never resends it, and it arrives on the superseded connection after the
+   * re-dial was admitted. It is the only copy, so it ends the step — once.
+   */
+  @Test
+  public void aLateStepResultOnTheSupersededConnectionCompletesTheStep() throws Exception {
+    List<String> chunks = Collections.synchronizedList(new ArrayList<>());
+    CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
+    String daemonId = registry.registerLaunch("run-late-result", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    String correlationId =
+        registry.sendRunStep(
+            daemonId, 0, "make", 600, java.util.Map.of(), (stream, seq, text) -> chunks.add(text));
+    FakeConnection second = admit(registry, daemonId, "c2");
+    first.awaitClosed();
+
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    registry.onMessage(daemonId, first.connection, new StepChunk(correlationId, 0, Stream.OUT, "a"));
+    assertTrue(
+        registry.onMessage(daemonId, first.connection, new StepFinished(correlationId, 0, 5, false)));
+
+    CiDaemonRegistry.Completion completion = registry.awaitFinished(daemonId, SOON);
+    assertEquals(CiDaemonRegistry.Completion.Status.FINISHED, completion.status());
+    assertEquals(5, completion.exitCode());
+    assertEquals(List.of("a"), chunks);
+    assertEquals(CiDaemonRegistry.Phase.INITIALIZED, registry.phaseOf(daemonId));
+    assertTrue(registry.connected(daemonId), "the bound connection is untouched");
+
+    // The same results replayed on the bound connection change nothing.
+    registry.onMessage(daemonId, second.connection, new StepChunk(correlationId, 0, Stream.OUT, "a"));
+    registry.onMessage(daemonId, second.connection, new StepFinished(correlationId, 0, 9, false));
+    assertEquals(5, registry.awaitFinished(daemonId, SOON).exitCode());
+    assertEquals(List.of("a"), chunks);
+    assertEquals(CiDaemonRegistry.Phase.INITIALIZED, registry.phaseOf(daemonId));
+    registry.reap(daemonId);
+  }
+
+  @Test
+  public void framesFromTheSupersededConnectionDoNotKeepTheBoundOneAlive() throws Exception {
+    Duration limit = Duration.ofMillis(400);
+    CiDaemonRegistry registry = registry(Duration.ofSeconds(30), limit);
+    String daemonId = registry.registerLaunch("run-old-beats", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    FakeConnection second = admit(registry, daemonId, "c2");
+    first.awaitClosed();
+
+    for (int beat = 0; beat < 8; beat++) {
+      Thread.sleep(limit.toMillis() / 4);
+      registry.onMessage(daemonId, first.connection, new Heartbeat());
+      registry.onMessage(daemonId, first.connection, new Initialized());
+    }
+    second.awaitClosed();
+    assertEquals(CiDaemonRegistry.SILENT, second.closeReason);
     registry.reap(daemonId);
   }
 
