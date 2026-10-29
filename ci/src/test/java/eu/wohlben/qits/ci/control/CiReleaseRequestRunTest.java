@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -16,6 +17,9 @@ import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -54,6 +58,14 @@ public class CiReleaseRequestRunTest extends CiTestSupport {
   private static final String HEAD = "a".repeat(40);
   private static final String MERGED = "b".repeat(40);
   private static final String REQUEST_ID = "rr-42";
+
+  /** An unrelated, one-step pipeline for occupying the suite's one slot — see {@code occupyTheWorker}. */
+  private static final String BLOCKER_STEPS =
+      """
+      steps:
+        - image: alpine:3
+          script: echo one
+      """;
 
   @Inject CiEventTriggerService engine;
   @Inject CiRunService runService;
@@ -342,6 +354,95 @@ public class CiReleaseRequestRunTest extends CiTestSupport {
     assertNotEquals(first, refired.id);
     assertEquals(first, runService.requireRun(refired.id).retryOfRunId);
     assertEquals(2, runService.runsFor(repoId).size());
+  }
+
+  @Test
+  public void aCancelledRetryOfARedFoldDoesNotLeaveTheRedRunAnsweringIt() throws Exception {
+    // qits-1656 / qits-system-service-rr-103: A failed, its automatic retry B carried the same
+    // fold forward (same repo, request, sha and trigger file — see CiRunService#insertRetry), and B
+    // was cancelled HELD_BY_PRE_RUN_GATE before it ever started. The old "newest-not-cancelled"
+    // query skipped the cancelled B and answered a re-announced fold with the red A underneath it —
+    // forever, since nothing about that answer ever changes. Only the NEWEST run may answer; if
+    // that newest run is cancelled, the fold must have no answer at all.
+    fakeRunner.script(0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
+    String first = deliverFold(REQUEST_ID, MERGED);
+    assertEquals(CiRunStatus.FAILED, runService.requireRun(first).status);
+
+    // Occupy the suite's one slot with an unrelated repository's run, so the retry this test mints
+    // next stays QUEUED long enough to be cancelled through the real door rather than having to
+    // fake its status directly.
+    CountDownLatch release = occupyTheWorker();
+
+    CiRun retry = runService.retryReleaseRequestPhase(repoId, REQUEST_ID, CiRunPhase.RELEASE_REQUEST);
+    assertEquals(CiRunStatus.QUEUED, runService.requireRun(retry.id).status, "the worker is busy");
+
+    List<String> stopped =
+        runService.cancelReleaseRequestRuns(
+            repoId, REQUEST_ID, CiRunPhase.RELEASE_REQUEST, CiRunService.HELD_BY_PRE_RUN_GATE);
+    assertEquals(List.of(retry.id), stopped);
+    forgetLoadedEntities();
+    assertEquals(CiRunStatus.CANCELLED, runService.requireRun(retry.id).status);
+
+    // Free the worker before asking the fold again — triggerDirectly waits for the suite to go
+    // idle, which it cannot do while the blocker still holds the one slot.
+    release.countDown();
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+
+    String third = triggerDirectly(REQUEST_ID, MERGED);
+    assertNotEquals(first, third, "the red run the cancelled retry replaced must not answer");
+    assertNotEquals(retry.id, third, "the cancelled retry itself has no answer to give");
+    assertNotNull(runService.requireRun(third).status, "a recorded run always has a status");
+    assertEquals(3, runService.runsFor(repoId).size(), "the repeat is accepted as a fresh run");
+  }
+
+  @Test
+  public void aRepeatedFoldAnswersARunningRetryRatherThanTheRedRunItReplaced() throws Exception {
+    // The mirror of the case above: the newest run — the retry — is still live (or finished, red or
+    // green), so IT is the answer, exactly as qits-1250 always meant for a non-retried run.
+    fakeRunner.script(0, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
+    String first = deliverFold(REQUEST_ID, MERGED);
+    assertEquals(CiRunStatus.FAILED, runService.requireRun(first).status);
+
+    CiRun retried =
+        runService.retryReleaseRequestPhase(repoId, REQUEST_ID, CiRunPhase.RELEASE_REQUEST);
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    settle(retried.id, CiRunStatus.RUNNING);
+
+    assertEquals(
+        retried.id,
+        triggerDirectly(REQUEST_ID, MERGED),
+        "the retry is the newest, uncancelled run, so it answers the repeat rather than the red run"
+            + " it replaced");
+    assertEquals(2, runService.runsFor(repoId).size(), "nothing new is recorded");
+  }
+
+  /**
+   * Parks the suite's one slot inside an unrelated repository's first step, which is what makes the
+   * next run genuinely QUEUED rather than relying on a sleep — the {@code CiRunCancelAndRetryTest}
+   * arrangement. Returns the latch the caller opens to let it finish; the caller must do so (and
+   * then {@code suiteRunner.awaitIdle()}) before asking the suite to run anything else.
+   */
+  private CountDownLatch occupyTheWorker() throws Exception {
+    CountDownLatch release = new CountDownLatch(1);
+    CompletableFuture<String> inStepZero = new CompletableFuture<>();
+    fakeRunner.during(
+        0,
+        spec -> {
+          if (!inStepZero.isDone()) {
+            inStepZero.complete(spec.runId());
+            try {
+              release.await(20, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+          }
+        });
+    String blockerRepo = "blocker-" + UUID.randomUUID();
+    runService.onEventTrigger(eventRun(blockerRepo, "main", "d".repeat(40), BLOCKER_STEPS));
+    inStepZero.get(20, TimeUnit.SECONDS);
+    return release;
   }
 
   // --- fixture -----------------------------------------------------------------------------------
