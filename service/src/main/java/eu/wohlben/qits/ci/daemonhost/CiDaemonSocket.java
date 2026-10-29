@@ -50,9 +50,11 @@ import org.jboss.logging.Logger;
  *
  * <p><b>A daemon may dial more than once.</b> The socket crosses the platform edge, and an edge
  * redeploy drops it under a running step; the daemon then re-dials with the same token and names the
- * same launch, and once the dropped connection has closed that dial is admitted as the launch's
- * again rather than refused (qits-748). While the first is still open, a second is {@code
- * ALREADY_CONNECTED} as ever.
+ * same launch, and that dial is admitted as the launch's again rather than refused (qits-748). That
+ * holds even while the first connection still reads open here: a daemon leg that dies behind the
+ * edge with no FIN or RST leaves this side open, so the re-dial supersedes it, which is closed 1001
+ * {@code SUPERSEDED} (qits-1728). The token is what a second party cannot have, and {@code
+ * WRONG_RUN} is checked first.
  *
  * <p><b>The address is a cross-repo contract.</b> {@code CiSlotAddresses} composes {@code
  * wss://ci.qits.<domain>/ci/daemon} as {@code $QITS_CI_DAEMON_URL} for every step container, and
@@ -209,8 +211,9 @@ public class CiDaemonSocket {
    * <p>Bounded through {@link CiDaemonRegistry#closeBounded} rather than {@code closeAndAwait} for
    * the package's one rule: that convenience is {@code close().await().indefinitely()}, and the peer
    * being refused here is by definition one this host has no reason to trust — an unknown id, a
-   * token that is not the launch's run's, or something claiming a launch that is already connected. A caller that could hang
-   * the refusal could pin a virtual thread per dial simply by never completing the handshake.
+   * token that is not the launch's run's, or a {@code Hello} claiming another launch than the one it
+   * was admitted as. A caller that could hang the refusal could pin a virtual thread per dial simply
+   * by never completing the handshake.
    */
   private void close(WebSocketConnection connection, String reason) {
     CiDaemonRegistry.closeBounded(

@@ -163,18 +163,25 @@ public class CiDaemonSocketTest {
     }
   }
 
+  /**
+   * qits-1728: a second dial of the launch's own run while the first still reads open is the daemon
+   * re-dialling past a drop this host did not see. It is admitted, and the first is closed 1001
+   * {@code SUPERSEDED} rather than the second being refused.
+   */
   @Test
-  public void aSecondDialForAnAlreadyConnectedDaemonIsClosed() throws Exception {
+  public void aSecondDialOfTheSameRunSupersedesTheFirst() throws Exception {
     String daemonId = launch("run-redial");
     try (FakeCiDaemon first = admitted("run-redial", daemonId);
         FakeCiDaemon second = FakeCiDaemon.dial(endpoint, subject("run-redial"))) {
       second.hello(daemonId);
+      assertInstanceOf(Ack.class, second.next(SOON));
       assertEquals(
-          (Short) (short) CiDaemonRegistry.CLOSE_UNAUTHORIZED,
-          second.awaitClose(SOON),
-          "a re-dial for a connected launch is a claim on it, not a reconnect");
-      assertEquals("ALREADY_CONNECTED", second.closeReason());
-      assertTrue(first.isOpen(), "the connection that got there first keeps the launch");
+          (Short) (short) CiDaemonRegistry.CLOSE_GOING_AWAY,
+          first.awaitClose(SOON),
+          "the connection the re-dial replaced is closed");
+      assertEquals(CiDaemonRegistry.SUPERSEDED, first.closeReason());
+      assertTrue(second.isOpen());
+      assertTrue(registry.connected(daemonId));
     } finally {
       registry.reap(daemonId);
     }
