@@ -97,6 +97,16 @@ import org.jboss.logging.Logger;
  * daemon that does not re-dial (one older than the re-dial) costs its step the grace and no more.
  * {@code 0} restores the old behaviour.
  *
+ * <p><b>A drop the host never hears about is found by silence</b> (qits-1728). The edge splices the
+ * daemon's leg and this host's into one tunnel, so a daemon leg that dies with no FIN or RST
+ * leaves this side's socket open — for the edge's idle timeout, an hour — and {@link #onClose}
+ * never fires. Two things close that gap. Every frame the bound connection delivers, a {@code
+ * Heartbeat} included, stamps the launch, and a connection silent for {@code
+ * qits.ci.daemon.silence-limit-seconds} is closed and handed to {@link #onClose}, so the grace above
+ * starts. And the daemon, which saw its own socket close, re-dials at once: a same-token dial for a
+ * launch whose connection still reads open <b>supersedes</b> that connection rather than being
+ * refused, because nothing else can make it — see {@link #admitByToken}.
+ *
  * <p>{@code targethost/LeaseStepRunner} is what drives this in production, one step at a time.
  */
 @ApplicationScoped
@@ -106,6 +116,18 @@ public class CiDaemonRegistry {
 
   /** The close code every rejected dial gets: 1008, "policy violation". */
   public static final int CLOSE_UNAUTHORIZED = 1008;
+
+  /**
+   * The close code a connection the host gave up on gets — superseded by its daemon's re-dial, or
+   * silent past {@link #silenceLimit()}: 1001, "going away". Not a refusal, so not 1008.
+   */
+  public static final int CLOSE_GOING_AWAY = 1001;
+
+  /** The reason a connection replaced by its own daemon's re-dial is closed with (qits-1728). */
+  public static final String SUPERSEDED = "SUPERSEDED";
+
+  /** The reason a connection that went silent past {@link #silenceLimit()} is closed with. */
+  public static final String SILENT = "SILENT";
 
   /** How long one frame may take to leave. See {@link #send}. */
   private static final Duration SEND_TIMEOUT = Duration.ofSeconds(30);
@@ -157,6 +179,27 @@ public class CiDaemonRegistry {
   public Duration reconnectGrace() {
     Duration set = reconnectGrace;
     return set != null ? set : Duration.ofSeconds(reconnectGraceSeconds);
+  }
+
+  /**
+   * How long a bound connection may deliver no frame at all before the host closes it (qits-1728).
+   * The daemon heartbeats every 10s, so this is three missed beats. 0 turns the check off.
+   */
+  @ConfigProperty(name = "qits.ci.daemon.silence-limit-seconds")
+  long silenceLimitSeconds;
+
+  /** Set by a suite only; otherwise {@link #silenceLimitSeconds}. */
+  private volatile Duration silenceLimit;
+
+  /** {@link #reconnectGrace(Duration)}'s reason, for the silence limit. */
+  void silenceLimit(Duration limit) {
+    this.silenceLimit = limit;
+  }
+
+  /** How long a bound connection may be silent before it is treated as dropped. */
+  public Duration silenceLimit() {
+    Duration set = silenceLimit;
+    return set != null ? set : Duration.ofSeconds(silenceLimitSeconds);
   }
 
   @PreDestroy
@@ -244,7 +287,11 @@ public class CiDaemonRegistry {
     }
   }
 
-  /** Why a dial was refused, or that it was not. */
+  /**
+   * Why a dial was refused, or that it was not. There is no "already connected" refusal any more
+   * (qits-1728): a dial with the launch's own token while its connection still reads open is its
+   * daemon re-dialling past a drop this host has not seen, and is admitted.
+   */
   public enum Admission {
     ADMITTED,
     /**
@@ -252,8 +299,6 @@ public class CiDaemonRegistry {
      * frame that did not decode as a {@link Hello} at all, which is exactly as unidentifiable.
      */
     UNKNOWN_DAEMON,
-    /** That launch already has an open connection; a second one is not a reconnect, it is a claim. */
-    ALREADY_CONNECTED,
     /**
      * The caller is not this launch's run's token: the subject it arrived as is not the one
      * recorded at {@link #registerLaunch(String, String)}.
@@ -547,6 +592,7 @@ public class CiDaemonRegistry {
     launch.phase = Phase.DONE;
     synchronized (launch) {
       cancelExpiry(launch);
+      cancelWatch(launch);
     }
     launch.registered.complete(Boolean.FALSE);
     completeLost(launch);
@@ -637,12 +683,21 @@ public class CiDaemonRegistry {
    * otherwise speak for that launch by naming it — the mismatch is {@link Admission#WRONG_RUN},
    * logged here with both subjects, before the frame that named it is processed any further.
    *
-   * <p>Atomic in the id, so two dials racing to name one launch cannot both be admitted: while a
-   * connection is bound and open the second is {@link Admission#ALREADY_CONNECTED} — a second party
-   * wanting to speak for it. Once the bound one has closed, a dial naming the launch is its daemon
-   * <b>coming back</b> (qits-748): it is admitted the same way, the reconnect grace {@link #onClose}
-   * started is cancelled, and the phase is left where it was — a re-admission is not a fresh
-   * connection, and what it is owed is sent at its {@code Hello} ({@link #resume}).
+   * <p><b>A dial while the bound connection still reads open SUPERSEDES it</b> (qits-1728). It used
+   * to be refused {@code ALREADY_CONNECTED}, as a second party claiming the launch — but {@link
+   * Admission#WRONG_RUN} is checked first and the run's token lives only in that run's lease
+   * container, so a dial that gets this far can only be the launch's own daemon. And it dials again
+   * only because it saw its socket close: a leg that died past the edge with no FIN or RST leaves
+   * this side open for the edge's idle timeout, and refusing the daemon's re-dials there cost the
+   * run once its reconnect budget ran out. So the old connection is unbound and closed {@link
+   * #CLOSE_GOING_AWAY} {@link #SUPERSEDED}, and its late close and any late frame are ignored
+   * ({@link #onClose} and {@link #onMessage} compare it to the bound one).
+   *
+   * <p>Either way — superseding, or after the bound one closed — a dial naming the launch is its
+   * daemon <b>coming back</b> (qits-748): it is admitted the same way, a reconnect grace {@link
+   * #onClose} started is cancelled, and the phase is left where it was — a re-admission is not a
+   * fresh connection, and what it is owed is sent at its {@code Hello} ({@link #resume}). Atomic in
+   * the launch, so two racing dials are admitted one after the other and the later one holds it.
    */
   public Admission admitByToken(String daemonId, String runSubject, WebSocketConnection connection) {
     if (daemonId == null) {
@@ -652,6 +707,7 @@ public class CiDaemonRegistry {
     if (launch == null) {
       return Admission.UNKNOWN_DAEMON;
     }
+    WebSocketConnection superseded = null;
     synchronized (launch) {
       if (!launch.tokenSubject.equals(runSubject)) {
         LOG.warnf(
@@ -660,10 +716,14 @@ public class CiDaemonRegistry {
             daemonId, launch.runId, runSubject, launch.tokenSubject);
         return Admission.WRONG_RUN;
       }
-      if (launch.connection != null && launch.connection.isOpen()) {
-        return Admission.ALREADY_CONNECTED;
-      }
-      if (launch.admissions > 0) {
+      WebSocketConnection bound = launch.connection;
+      if (bound != null && bound.isOpen()) {
+        LOG.warnf(
+            "ci-daemon %s of run %s was re-dialled (connection %s) while connection %s still read"
+                + " open; the old one is superseded (phase %s)",
+            daemonId, launch.runId, connection.id(), bound.id(), launch.phase);
+        superseded = bound;
+      } else if (launch.admissions > 0) {
         LOG.infof(
             "ci-daemon %s of run %s came back (connection %s, phase %s)",
             daemonId, launch.runId, connection.id(), launch.phase);
@@ -671,9 +731,16 @@ public class CiDaemonRegistry {
       cancelExpiry(launch);
       launch.admissions++;
       launch.connection = connection;
+      watch(launch, connection);
       if (launch.phase == Phase.LAUNCHED) {
         launch.phase = Phase.CONNECTED;
       }
+    }
+    if (superseded != null) {
+      closeInBackground(
+          superseded,
+          new CloseReason(CLOSE_GOING_AWAY, SUPERSEDED),
+          "superseded ci-daemon connection " + superseded.id());
     }
     boolean first = launch.registered.complete(Boolean.TRUE);
     LOG.debugf(
@@ -692,6 +759,11 @@ public class CiDaemonRegistry {
    * Handle one decoded frame. Returns false when the connection should be closed 1008 — today only
    * for a {@link Hello} whose {@code daemonId} disagrees with the connection the host already
    * authenticated. That field is a claim the host checks rather than an identity it accepts.
+   *
+   * <p>A frame from a connection that is no longer the bound one — superseded by its daemon's
+   * re-dial (qits-1728) — is dropped: the daemon says it again on the connection it holds now. Any
+   * frame from the bound one, a {@code Heartbeat} included, is what keeps it inside {@link
+   * #silenceLimit()}.
    */
   public boolean onMessage(
       String daemonId, WebSocketConnection connection, CiDaemonMessage message) {
@@ -700,6 +772,14 @@ public class CiDaemonRegistry {
       LOG.debugf("Frame for reaped ci-daemon %s dropped: %s", daemonId, message.getClass());
       return true;
     }
+    WebSocketConnection bound = launch.connection;
+    if (bound != null && !bound.id().equals(connection.id())) {
+      LOG.debugf(
+          "Frame from superseded connection %s of ci-daemon %s dropped: %s",
+          connection.id(), daemonId, message.getClass().getSimpleName());
+      return true;
+    }
+    launch.lastFrameNanos = System.nanoTime();
     switch (message) {
       case Hello hello -> {
         if (!daemonId.equals(hello.daemonId())) {
@@ -727,7 +807,8 @@ public class CiDaemonRegistry {
         launch.ackConfirmed.complete(Boolean.TRUE);
       }
       case Heartbeat ignored -> {
-        /* liveness only — the open socket is the signal */
+        // Liveness only, and stamped above like every frame: an open socket is not the signal,
+        // because one whose far leg died behind the edge stays open here (qits-1728).
       }
       case Initialized ignored -> {
         // Once per lease. A daemon that re-dials resends an Initialized it could not deliver; one
@@ -775,6 +856,10 @@ public class CiDaemonRegistry {
    * outcome rather than a slow one. A zero grace, and a launch already done, complete at once, as
    * every close used to. The launch record itself survives either way: the caller still has to reap
    * the container.
+   *
+   * <p>Only the <b>bound</b> connection's close counts. A connection a re-dial superseded closes
+   * after its successor is bound (qits-1728), and that close starts no grace; nor does a second
+   * report of a close already handled, which is what {@link #checkSilence} relies on.
    */
   public void onClose(String daemonId, WebSocketConnection connection) {
     Launch launch = launches.get(daemonId);
@@ -789,6 +874,7 @@ public class CiDaemonRegistry {
         return;
       }
       launch.connection = null;
+      cancelWatch(launch);
       now = grace.isZero() || grace.isNegative() || launch.phase == Phase.DONE;
       if (!now) {
         cancelExpiry(launch);
@@ -834,6 +920,85 @@ public class CiDaemonRegistry {
     if (pending != null) {
       pending.cancel(false);
     }
+  }
+
+  /**
+   * Start watching a just-bound connection for silence. Holding the launch's lock. The admission
+   * counts as a frame, so the limit runs from here.
+   */
+  private void watch(Launch launch, WebSocketConnection connection) {
+    cancelWatch(launch);
+    launch.lastFrameNanos = System.nanoTime();
+    Duration limit = silenceLimit();
+    if (limit.isZero() || limit.isNegative()) {
+      return;
+    }
+    Object token = new Object();
+    launch.watchToken = token;
+    launch.watch =
+        graces.schedule(
+            () -> checkSilence(launch, connection, token, limit),
+            limit.toMillis(),
+            TimeUnit.MILLISECONDS);
+  }
+
+  /** Called holding the launch's lock: a pending silence check, if any, will not act. */
+  private static void cancelWatch(Launch launch) {
+    ScheduledFuture<?> pending = launch.watch;
+    launch.watch = null;
+    launch.watchToken = null;
+    if (pending != null) {
+      pending.cancel(false);
+    }
+  }
+
+  /**
+   * One silence check (qits-1728): a connection still bound that has delivered nothing for {@code
+   * limit} is treated as the drop it almost certainly is — unbound through {@link #onClose}, so the
+   * reconnect grace starts, and then closed. A daemon that is really gone is ended by the grace; one
+   * that is not re-dials and is resumed. Otherwise the check is scheduled again for when the limit
+   * would next run out. Runs on the grace thread, so the close itself goes to another one.
+   */
+  private void checkSilence(
+      Launch launch, WebSocketConnection connection, Object token, Duration limit) {
+    long silentNanos;
+    synchronized (launch) {
+      if (launch.watchToken != token || launch.connection != connection) {
+        return;
+      }
+      silentNanos = System.nanoTime() - launch.lastFrameNanos;
+      if (silentNanos < limit.toNanos()) {
+        launch.watch =
+            graces.schedule(
+                () -> checkSilence(launch, connection, token, limit),
+                limit.toNanos() - silentNanos,
+                TimeUnit.NANOSECONDS);
+        return;
+      }
+      launch.watch = null;
+      launch.watchToken = null;
+    }
+    LOG.warnf(
+        "ci-daemon %s of run %s sent nothing on connection %s for %dms (limit %ss); closing it as"
+            + " dropped",
+        launch.daemonId, launch.runId, connection.id(), silentNanos / 1_000_000, limit.toSeconds());
+    onClose(launch.daemonId, connection);
+    closeInBackground(
+        connection,
+        new CloseReason(CLOSE_GOING_AWAY, SILENT),
+        "silent ci-daemon connection " + connection.id());
+  }
+
+  /**
+   * {@link #closeBounded} on a virtual thread of its own. The connections closed this way are ones
+   * the host has given up on, whose peer may well never answer the close: the bound still applies,
+   * but neither a re-dial's admission nor the grace thread should wait it out.
+   */
+  private static void closeInBackground(
+      WebSocketConnection connection, CloseReason reason, String what) {
+    Thread.ofVirtual()
+        .name("ci-daemon-close")
+        .start(() -> closeBounded(connection, reason, what));
   }
 
   /**
@@ -1005,6 +1170,15 @@ public class CiDaemonRegistry {
 
     /** Which scheduled expiry is the live one — a cancelled one that fires anyway is ignored. */
     private Object expiryToken;
+
+    /** When the bound connection last delivered a frame, or was admitted ({@link System#nanoTime}). */
+    private volatile long lastFrameNanos;
+
+    /** The bound connection's next silence check; guarded by the launch. */
+    private ScheduledFuture<?> watch;
+
+    /** Which scheduled silence check is the live one; guarded by the launch. */
+    private Object watchToken;
     /** -1 until a {@link Hello} arrives — see {@link #capabilityVersionOf(String)}. */
     private volatile int capabilityVersion = -1;
 

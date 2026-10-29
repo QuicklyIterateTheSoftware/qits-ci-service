@@ -10,12 +10,14 @@ import eu.wohlben.qits.cidaemon.protocol.Ack;
 import eu.wohlben.qits.cidaemon.protocol.Cancel;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonMessage;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonProtocol;
+import eu.wohlben.qits.cidaemon.protocol.Heartbeat;
 import eu.wohlben.qits.cidaemon.protocol.Hello;
 import eu.wohlben.qits.cidaemon.protocol.Initialized;
 import eu.wohlben.qits.cidaemon.protocol.RunStep;
 import eu.wohlben.qits.cidaemon.protocol.StepChunk;
 import eu.wohlben.qits.cidaemon.protocol.StepFinished;
 import eu.wohlben.qits.cidaemon.protocol.Stream;
+import io.quarkus.websockets.next.CloseReason;
 import io.quarkus.websockets.next.WebSocketConnection;
 import io.smallrye.mutiny.Uni;
 import java.lang.reflect.Proxy;
@@ -53,6 +55,13 @@ public class CiDaemonRegistryReconnectTest {
     CiDaemonRegistry registry = new CiDaemonRegistry();
     registry.codec = codec;
     registry.reconnectGrace(grace);
+    return registry;
+  }
+
+  /** {@link #registry(Duration)} with a silence limit; without one the check is off. */
+  private CiDaemonRegistry registry(Duration grace, Duration silenceLimit) {
+    CiDaemonRegistry registry = registry(grace);
+    registry.silenceLimit(silenceLimit);
     return registry;
   }
 
@@ -261,15 +270,152 @@ public class CiDaemonRegistryReconnectTest {
     registry.reap(daemonId);
   }
 
+  // --- a re-dial while the old connection still reads open (qits-1728) ----------------------------
+
+  /**
+   * The daemon's leg died behind the edge with no FIN or RST, so its old connection still reads open
+   * here, and it re-dials with its own token. That dial is the daemon, not a claim on its launch: it
+   * is admitted, the old connection is closed, and the step goes on on the new one.
+   */
   @Test
-  public void aSecondDialWhileTheFirstIsStillOpenIsStillAClaim() {
+  public void aSameRunDialWhileTheFirstStillReadsOpenSupersedesIt() throws Exception {
+    CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
+    List<String> chunks = Collections.synchronizedList(new ArrayList<>());
+    String daemonId = registry.registerLaunch("run-halfopen", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    String correlationId =
+        registry.sendRunStep(
+            daemonId, 0, "make", 600, java.util.Map.of(), (stream, seq, text) -> chunks.add(text));
+    registry.onMessage(
+        daemonId, first.connection, new StepChunk(correlationId, 0, Stream.OUT, "a"));
+
+    FakeConnection second = admit(registry, daemonId, "c2");
+    first.awaitClosed();
+    assertEquals(CiDaemonRegistry.CLOSE_GOING_AWAY, first.closeCode);
+    assertEquals(CiDaemonRegistry.SUPERSEDED, first.closeReason);
+    assertTrue(registry.connected(daemonId));
+    assertEquals(CiDaemonRegistry.Phase.RUNNING, registry.phaseOf(daemonId));
+
+    // Resumed exactly as a come-back is: the Ack, then the step again.
+    List<CiDaemonMessage> resent = second.sent();
+    assertEquals(2, resent.size(), "an Ack, then the RunStep: " + resent);
+    assertInstanceOf(Ack.class, resent.get(0));
+    assertEquals(correlationId, assertInstanceOf(RunStep.class, resent.get(1)).correlationId());
+
+    registry.onMessage(
+        daemonId, second.connection, new StepChunk(correlationId, 1, Stream.OUT, "b"));
+    registry.onMessage(daemonId, second.connection, new StepFinished(correlationId, 0, 4, false));
+    CiDaemonRegistry.Completion completion = registry.awaitFinished(daemonId, SOON);
+    assertEquals(CiDaemonRegistry.Completion.Status.FINISHED, completion.status());
+    assertEquals(4, completion.exitCode());
+    assertEquals(List.of("a", "b"), chunks);
+    registry.reap(daemonId);
+  }
+
+  @Test
+  public void theSupersededConnectionsLateCloseAndFramesDisturbNothing() throws Exception {
+    Duration grace = Duration.ofMillis(300);
+    CiDaemonRegistry registry = registry(grace);
+    String daemonId = registry.registerLaunch("run-late-close", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    String correlationId = registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+    FakeConnection second = admit(registry, daemonId, "c2");
+    first.awaitClosed();
+
+    // The old socket's close lands late, and a frame from it later still.
+    first.drop(registry, daemonId);
+    assertTrue(registry.onMessage(daemonId, first.connection, new StepFinished(correlationId, 0, 9, false)));
+    Thread.sleep(grace.toMillis() * 3);
+
+    assertTrue(registry.connected(daemonId), "the new connection is still the launch's");
+    assertEquals(CiDaemonRegistry.Phase.RUNNING, registry.phaseOf(daemonId));
+    assertEquals(
+        CiDaemonRegistry.Completion.Status.NO_ANSWER,
+        registry.awaitFinished(daemonId, Duration.ofMillis(100)).status(),
+        "no grace ran out and no stale frame ended the step");
+
+    registry.onMessage(daemonId, second.connection, new StepFinished(correlationId, 0, 0, false));
+    CiDaemonRegistry.Completion completion = registry.awaitFinished(daemonId, SOON);
+    assertEquals(CiDaemonRegistry.Completion.Status.FINISHED, completion.status());
+    assertEquals(0, completion.exitCode());
+    registry.reap(daemonId);
+  }
+
+  @Test
+  public void aDialOfAnotherRunIsStillWrongRunAndLeavesTheBoundConnectionAlone() {
     CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
     String daemonId = registry.registerLaunch("run-claim", SUBJECT);
-    admit(registry, daemonId, "c1");
-    FakeConnection second = new FakeConnection("c2");
+    FakeConnection first = admit(registry, daemonId, "c1");
+    FakeConnection stranger = new FakeConnection("c2");
     assertEquals(
-        CiDaemonRegistry.Admission.ALREADY_CONNECTED,
-        registry.admitByToken(daemonId, SUBJECT, second.connection));
+        CiDaemonRegistry.Admission.WRONG_RUN,
+        registry.admitByToken(daemonId, "tok-ci-run-someone-else-1", stranger.connection));
+    assertTrue(first.open, "a refused dial closes nothing of the launch's");
+    assertTrue(registry.connected(daemonId));
+    registry.reap(daemonId);
+  }
+
+  // --- silence (qits-1728) ----------------------------------------------------------------------
+
+  @Test
+  public void aConnectionSilentPastTheLimitIsClosedAndTheGraceThenRuns() throws Exception {
+    Duration grace = Duration.ofMillis(500);
+    Duration limit = Duration.ofMillis(400);
+    CiDaemonRegistry registry = registry(grace, limit);
+    String daemonId = registry.registerLaunch("run-silent", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+
+    long start = System.nanoTime();
+    first.awaitClosed();
+    long closedMs = (System.nanoTime() - start) / 1_000_000;
+    assertEquals(CiDaemonRegistry.SILENT, first.closeReason);
+    assertFalse(registry.connected(daemonId));
+
+    CiDaemonRegistry.Completion completion =
+        registry.awaitFinished(daemonId, Duration.ofSeconds(30));
+    long lostMs = (System.nanoTime() - start) / 1_000_000;
+    assertEquals(CiDaemonRegistry.Completion.Status.CONNECTION_LOST, completion.status());
+    assertTrue(closedMs < 5_000, "closed at the limit: " + closedMs);
+    assertTrue(lostMs >= grace.toMillis(), "lost at the grace, not at the close: " + lostMs);
+    registry.reap(daemonId);
+  }
+
+  @Test
+  public void aSilencedDaemonThatComesBackIsResumed() throws Exception {
+    CiDaemonRegistry registry = registry(Duration.ofSeconds(30), Duration.ofMillis(300));
+    String daemonId = registry.registerLaunch("run-silent-back", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    String correlationId = registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+    first.awaitClosed();
+
+    FakeConnection second = admit(registry, daemonId, "c2");
+    assertEquals(correlationId, assertInstanceOf(RunStep.class, second.sent().get(1)).correlationId());
+    registry.onMessage(daemonId, second.connection, new StepFinished(correlationId, 0, 2, false));
+    assertEquals(2, registry.awaitFinished(daemonId, SOON).exitCode());
+    registry.reap(daemonId);
+  }
+
+  @Test
+  public void aConnectionThatKeepsHeartbeatingIsNotClosed() throws Exception {
+    Duration limit = Duration.ofMillis(300);
+    CiDaemonRegistry registry = registry(Duration.ofSeconds(30), limit);
+    String daemonId = registry.registerLaunch("run-beating", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+
+    for (int beat = 0; beat < 12; beat++) {
+      Thread.sleep(limit.toMillis() / 3);
+      registry.onMessage(daemonId, first.connection, new Heartbeat());
+    }
+    assertTrue(first.open, "four limits' worth of heartbeats, and still open");
+    assertTrue(registry.connected(daemonId));
+    assertEquals(CiDaemonRegistry.Phase.RUNNING, registry.phaseOf(daemonId));
     registry.reap(daemonId);
   }
 
@@ -290,7 +436,7 @@ public class CiDaemonRegistryReconnectTest {
   }
 
   /**
-   * A {@link WebSocketConnection} that records what is sent on it. Only the four methods the
+   * A {@link WebSocketConnection} that records what is sent on it. Only the methods the
    * registry calls answer; anything else throws, so a new call is noticed rather than faked.
    */
   private final class FakeConnection {
@@ -298,6 +444,9 @@ public class CiDaemonRegistryReconnectTest {
     private final String id;
     private final List<String> texts = Collections.synchronizedList(new ArrayList<>());
     private volatile boolean open = true;
+    private final CompletableFuture<Void> closed = new CompletableFuture<>();
+    volatile int closeCode;
+    volatile String closeReason;
     final WebSocketConnection connection;
 
     FakeConnection(String id) {
@@ -320,7 +469,12 @@ public class CiDaemonRegistryReconnectTest {
                           yield Uni.createFrom().voidItem();
                         }
                         case "close" -> {
+                          if (args != null && args.length == 1 && args[0] instanceof CloseReason r) {
+                            closeCode = r.getCode();
+                            closeReason = r.getMessage();
+                          }
                           open = false;
+                          closed.complete(null);
                           yield Uni.createFrom().voidItem();
                         }
                         case "hashCode" -> System.identityHashCode(proxy);
@@ -335,6 +489,11 @@ public class CiDaemonRegistryReconnectTest {
       synchronized (texts) {
         return texts.stream().map(codec::decode).toList();
       }
+    }
+
+    /** Wait for the host to close this connection — it does so off the calling thread. */
+    void awaitClosed() throws Exception {
+      closed.get(SOON.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     /** The socket drops under the step, and the endpoint reports it. */
