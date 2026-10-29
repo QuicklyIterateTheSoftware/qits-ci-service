@@ -2195,6 +2195,17 @@ phase.
   pipelines are not composed and get no prelude, so one that installs from npm has to write the
   same lockfile discipline into its own script by hand — as the retired `screenshot-baselines.yml`
   did (qits-1007), and as the `screenshot-baselines` automation kind file still does.
+- **The prelude also checks migration versions** (qits-1669). Right after the lockfile check it
+  writes `/tmp/qits-migration-versions.sh` (`CiReleaseComposer.migrationVersionCheck`) and runs it
+  in every composed step. Every `V<digits>__*.sql` under a `src/main/resources/…/db/…` path
+  (`target`, `node_modules` and `.git` pruned) is a migration, and each directory is a lineage of
+  its own. It refuses two files with one version in one directory, compared as numbers so `V057`
+  and `V57` collide. On a release step (`$QITS_VERSION` non-empty, a git checkout here) it also
+  fetches main into `refs/qits/migration-check-main` and refuses a migration main does not have
+  when its version is not above main's highest in that directory, which production would reject as
+  out of order. Every refusal names the file and the free version (the directory's highest + 1).
+  Clean, it prints `qits-ci: migration versions checked (<k> lineages)` or `qits-ci: no
+  migrations here`. Same floor as the lockfile check minus awk, plus `sort`.
 - **The heredoc is the security-shaped part.** A repository's script is data: quoted heredoc to
   `/tmp/qits-slot.sh`, run as a child shell under `-eu`. The only way out of a quoted heredoc is a line
   carrying the delimiter, so a script containing `QITS_SLOT_EOF` is a `CiConfigException` naming the

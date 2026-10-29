@@ -382,6 +382,16 @@ public final class CiReleaseComposer {
   static final String LOCKFILE_CHECK_DELIMITER = "QITS_LOCKFILE_EOF";
 
   /**
+   * Where every composed step's prelude writes the migration version check before running it — see
+   * {@link #migrationVersionCheck()}. A file for the same reason as {@link #LOCKFILE_CHECK}: a recipe
+   * can run it again over a tree it has changed.
+   */
+  public static final String MIGRATION_CHECK = "/tmp/qits-migration-versions.sh";
+
+  /** The quoted heredoc delimiter the migration check is written through. */
+  static final String MIGRATION_CHECK_DELIMITER = "QITS_MIGRATION_EOF";
+
+  /**
    * The kinds a QA step's {@code check-outputs:} may name, each with the paths its output lives
    * under: the {@code git status} pathspecs the check reads. They are the paths qits-maintenance
    * commits for the same kind, so "changed here" means "the regeneration would commit something".
@@ -855,6 +865,20 @@ public final class CiReleaseComposer {
     out.append(lockfileOriginCheck());
     out.append(LOCKFILE_CHECK_DELIMITER).append('\n');
     out.append("sh ").append(LOCKFILE_CHECK).append('\n');
+    // THE MIGRATIONS, checked before the declared script can build or ship one (qits-1669). Flyway
+    // refuses a version twice in one lineage, and production refuses one that sorts behind what it
+    // has already applied — so both used to surface as a red deploy, after the release was cut. Here
+    // they fail the step that would carry them, naming the file and the version that is free. Like
+    // the lockfile check, after the release checkout: the order half compares the tag's tree with
+    // main's, and only a release step has a tag to compare.
+    out.append("cat > ")
+        .append(MIGRATION_CHECK)
+        .append(" <<'")
+        .append(MIGRATION_CHECK_DELIMITER)
+        .append("'\n");
+    out.append(migrationVersionCheck());
+    out.append(MIGRATION_CHECK_DELIMITER).append('\n');
+    out.append("sh ").append(MIGRATION_CHECK).append('\n');
     if (releasePhase) {
       // The qits CLI (qits, which also answers to qits-publish), fetched AT THE VERSION qits-ci
       // PINS and put on PATH for the whole release phase.
@@ -1725,6 +1749,102 @@ public final class CiReleaseComposer {
             exit 1
           fi
         }
+        """;
+  }
+
+  /**
+   * <b>The migration version check</b> (qits-1669): a POSIX {@code sh} script over every Flyway
+   * migration in the tree — a regular file {@code V<digits>__*.sql} under a {@code
+   * src/main/resources/} with a {@code db/} directory somewhere below it, {@code target}, {@code
+   * node_modules} and {@code .git} pruned. Each directory is a lineage of its own, so two services'
+   * {@code V5} are no collision. Versions compare as numbers: {@code V057} is {@code V57}.
+   *
+   * <p><b>Duplicates, always.</b> Two files with one version in one directory fail, naming both and
+   * the version after the directory's highest.
+   *
+   * <p><b>Order, on a release step only</b> — {@code $QITS_VERSION} non-empty and a git checkout
+   * here. It fetches main into {@code refs/qits/migration-check-main} and fails on a migration the
+   * tree has and main does not at that path, when its version is not above the highest main already
+   * holds in that directory: an environment migrated from main would refuse it as out of order. A
+   * directory main does not have constrains nothing.
+   *
+   * <p>Every problem is reported before the exit. Clean, it prints one line: how many lineages it
+   * read, or that there are none. The tool floor is {@link #lockfileOriginCheck()}'s minus awk — the
+   * rows are cut by {@code sed -E} and sorted by {@code sort -n}, and the rest is the shell's own.
+   *
+   * <p>Package-private for {@code CiReleaseComposerTest}, which runs it under {@code sh}.
+   */
+  static String migrationVersionCheck() {
+    return """
+        # qits-ci: every migration lineage here holds each version once, none behind main's (qits-1669).
+        set -eu
+        pattern='(^|/)src/main/resources/(.*/)?db/(.*/)?V[0-9]+__[^/]*\\.sql$'
+        # One row per migration, `<dir>|<version>|<file>`, the version without its leading zeros so V057
+        # and V57 are the same number, sorted by directory and then numerically by version.
+        rows() {
+          grep -E "$pattern" | sed -E 's#^(.*)/V0*([0-9]+)__[^/]*$#\\1|\\2|&#' | sort -t '|' -k1,1 -k2,2n
+        }
+        # The highest version $2's rows hold in directory $1, into $top; empty when they hold none.
+        highest() {
+          top=
+          while IFS='|' read -r hd hv hf; do
+            if [ "$hd" = "$1" ]; then top=$hv; fi
+          done <<EOF
+        $2
+        EOF
+        }
+        here=$(find . \\( -name target -o -name node_modules -o -name .git \\) -prune \\
+          -o -type f -name 'V*__*.sql' -print | sed 's#^\\./##' | rows)
+        if [ -z "$here" ]; then
+          echo "qits-ci: no migrations here" >&2
+          exit 0
+        fi
+        refused=0
+        lineages=0
+        pd=
+        pv=
+        pf=
+        while IFS='|' read -r d v f; do
+          if [ "$d" != "$pd" ]; then
+            lineages=$((lineages + 1))
+          elif [ "$v" = "$pv" ]; then
+            highest "$d" "$here"
+            echo "qits-ci: $d has more than one migration with version $v: $pf $f" >&2
+            echo "qits-ci: rename one of them to V$((top + 1))__..." >&2
+            refused=1
+          fi
+          pd=$d
+          pv=$v
+          pf=$f
+        done <<EOF
+        $here
+        EOF
+        if [ -n "${QITS_VERSION:-}" ] && git rev-parse --git-dir >/dev/null 2>&1; then
+          git fetch -q "${QITS_CI_REPOSITORY_URL:?this step was told no QITS_CI_REPOSITORY_URL}" \\
+            '+refs/heads/main:refs/qits/migration-check-main'
+          main=$(git ls-tree -r --name-only refs/qits/migration-check-main | rows)
+          nl='
+        '
+          while IFS='|' read -r d v f; do
+            case "$nl$main$nl" in
+              *"|$f$nl"*) continue ;;
+            esac
+            highest "$d" "$main"
+            if [ -n "$top" ] && [ "$v" -le "$top" ]; then
+              echo "qits-ci: $f is version $v, but main already has V$top in $d;" \\
+                "production would refuse it as out of order" >&2
+              highest "$d" "$here"
+              echo "qits-ci: rename it to V$((top + 1))__..." >&2
+              refused=1
+            fi
+          done <<EOF
+        $here
+        EOF
+        fi
+        if [ "$refused" -ne 0 ]; then
+          exit 1
+        fi
+        echo "qits-ci: migration versions checked ($lineages lineages)" >&2
         """;
   }
 

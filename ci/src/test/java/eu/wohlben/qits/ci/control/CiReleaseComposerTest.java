@@ -366,6 +366,36 @@ public class CiReleaseComposerTest {
     // step that installs from a lockfile is any step, and the composer cannot tell which. Both
     // phases, a multi-step override, an archetype's slots and a build step alike, each step read
     // back through the ordinary parser the way a run reads its document.
+    List<String> documents = everyShapeOfDocument();
+
+    int steps = 0;
+    for (String document : documents) {
+      for (CiPipeline.CiStepDecl step :
+          new CiEventTriggerParser()
+              .parse(CiReleaseSlotParser.CONFIG_PATH, document)
+              .pipeline()
+              .steps()) {
+        String script = step.script();
+        steps++;
+        int domain = script.indexOf(": \"${QITS_DOMAIN:?");
+        int written = script.indexOf("cat > " + CiReleaseComposer.LOCKFILE_CHECK + " <<'");
+        int run = script.indexOf("\nsh " + CiReleaseComposer.LOCKFILE_CHECK + "\n");
+        int declared = script.indexOf("# --- the declared step");
+        assertTrue(domain >= 0 && domain < written, "the domain is demanded first:\n" + script);
+        assertTrue(written >= 0 && written < run, "the check is written, then run:\n" + script);
+        assertTrue(run < declared, "the check runs before the declared script:\n" + script);
+        assertEquals(1, occurrences(script, "\nsh " + CiReleaseComposer.LOCKFILE_CHECK + "\n"));
+        assertTrue(script.contains(CiReleaseComposer.lockfileOriginCheck()), script);
+        // On a release step the check reads the TAG's tree, so it sits after the checkout.
+        int checkout = script.indexOf("git checkout --detach \"$QITS_VERSION\"");
+        assertTrue(checkout < run, "the check reads the checked-out tree:\n" + script);
+      }
+    }
+    assertEquals(6, steps, "every step of every document was looked at");
+  }
+
+  /** Both phases of an archetyped and a bespoke multi-step composition: every shape a step takes. */
+  private List<String> everyShapeOfDocument() {
     List<String> documents = new java.util.ArrayList<>();
     CiReleaseComposer.Composed archetyped =
         CiReleaseComposer.compose(
@@ -395,9 +425,16 @@ public class CiReleaseComposerTest {
             null);
     documents.add(bespoke.releaseRequestDocument());
     documents.add(bespoke.releaseDocument());
+    return documents;
+  }
 
+  @Test
+  public void everyComposedStepChecksItsMigrationVersionsBeforeItsDeclaredScript() {
+    // qits-1669: a duplicate or out-of-order migration is refused by the step that would carry it,
+    // so the check is in EVERY step, as the lockfile check is — and after it, so after the release
+    // checkout too: the order half compares the tag's tree with main.
     int steps = 0;
-    for (String document : documents) {
+    for (String document : everyShapeOfDocument()) {
       for (CiPipeline.CiStepDecl step :
           new CiEventTriggerParser()
               .parse(CiReleaseSlotParser.CONFIG_PATH, document)
@@ -405,16 +442,15 @@ public class CiReleaseComposerTest {
               .steps()) {
         String script = step.script();
         steps++;
-        int domain = script.indexOf(": \"${QITS_DOMAIN:?");
-        int written = script.indexOf("cat > " + CiReleaseComposer.LOCKFILE_CHECK + " <<'");
-        int run = script.indexOf("\nsh " + CiReleaseComposer.LOCKFILE_CHECK + "\n");
+        int lockfile = script.indexOf("\nsh " + CiReleaseComposer.LOCKFILE_CHECK + "\n");
+        int written = script.indexOf("cat > " + CiReleaseComposer.MIGRATION_CHECK + " <<'");
+        int run = script.indexOf("\nsh " + CiReleaseComposer.MIGRATION_CHECK + "\n");
         int declared = script.indexOf("# --- the declared step");
-        assertTrue(domain >= 0 && domain < written, "the domain is demanded first:\n" + script);
-        assertTrue(written >= 0 && written < run, "the check is written, then run:\n" + script);
+        assertTrue(lockfile >= 0 && lockfile < written, "after the lockfile check:\n" + script);
+        assertTrue(written < run, "the check is written, then run:\n" + script);
         assertTrue(run < declared, "the check runs before the declared script:\n" + script);
-        assertEquals(1, occurrences(script, "\nsh " + CiReleaseComposer.LOCKFILE_CHECK + "\n"));
-        assertTrue(script.contains(CiReleaseComposer.lockfileOriginCheck()), script);
-        // On a release step the check reads the TAG's tree, so it sits after the checkout.
+        assertEquals(1, occurrences(script, "\nsh " + CiReleaseComposer.MIGRATION_CHECK + "\n"));
+        assertTrue(script.contains(CiReleaseComposer.migrationVersionCheck()), script);
         int checkout = script.indexOf("git checkout --detach \"$QITS_VERSION\"");
         assertTrue(checkout < run, "the check reads the checked-out tree:\n" + script);
       }
@@ -637,6 +673,126 @@ public class CiReleaseComposerTest {
 
     assertTrue(process.exitValue() != 0, output);
     assertTrue(output.contains("this step was told no QITS_DOMAIN"), output);
+  }
+
+  // --- the migration version check (qits-1669) ------------------------------------------------
+
+  private static final String MIGRATIONS = "svc/src/main/resources/db/things/migration/";
+
+  private static void touch(Path tree, String... files) throws IOException {
+    for (String file : files) {
+      Path path = tree.resolve(file);
+      Files.createDirectories(path.getParent());
+      Files.writeString(path, "select 1;\n", StandardCharsets.UTF_8);
+    }
+  }
+
+  private static void git(Path dir, String... args) throws Exception {
+    List<String> command = new java.util.ArrayList<>(
+        List.of("git", "-c", "user.name=qits", "-c", "user.email=qits@example.org"));
+    command.addAll(List.of(args));
+    Process process =
+        new ProcessBuilder(command).directory(dir.toFile()).redirectErrorStream(true).start();
+    String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    assertEquals(0, process.waitFor(), String.join(" ", command) + "\n" + output);
+  }
+
+  /** Runs the prelude's migration check under {@code sh} in {@code tree}, with only {@code env}. */
+  private static Map.Entry<Integer, String> runMigrationCheck(Path tree, Map<String, String> env)
+      throws Exception {
+    Path check = tree.resolveSibling(tree.getFileName() + "-migrations.sh");
+    Files.writeString(check, CiReleaseComposer.migrationVersionCheck(), StandardCharsets.UTF_8);
+    ProcessBuilder builder =
+        new ProcessBuilder("sh", check.toString()).directory(tree.toFile()).redirectErrorStream(true);
+    builder.environment().clear();
+    builder.environment().put("PATH", System.getenv("PATH"));
+    builder.environment().putAll(env);
+    Process process = builder.start();
+    String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    process.waitFor();
+    return Map.entry(process.exitValue(), output);
+  }
+
+  @Test
+  public void theMigrationCheckRefusesTwoMigrationsWithOneVersionNamingTheFreeOne(
+      @org.junit.jupiter.api.io.TempDir Path work) throws Exception {
+    Path tree = Files.createDirectories(work.resolve("tree"));
+    touch(tree, MIGRATIONS + "V1__a.sql", MIGRATIONS + "V057__b.sql", MIGRATIONS + "V57__c.sql");
+    // A build output's copy is no migration of the tree's.
+    touch(tree, "svc/target/classes/src/main/resources/db/things/migration/V1__a.sql");
+
+    Map.Entry<Integer, String> result = runMigrationCheck(tree, Map.of());
+
+    String output = result.getValue();
+    assertEquals(1, result.getKey(), output);
+    assertTrue(
+        output.contains(
+            "qits-ci: svc/src/main/resources/db/things/migration has more than one migration with"
+                + " version 57: " + MIGRATIONS + "V057__b.sql " + MIGRATIONS + "V57__c.sql\n"),
+        output);
+    assertTrue(output.contains("qits-ci: rename one of them to V58__"), output);
+  }
+
+  @Test
+  public void theMigrationCheckReadsEachDirectoryAsALineageOfItsOwn(
+      @org.junit.jupiter.api.io.TempDir Path work) throws Exception {
+    Path tree = Files.createDirectories(work.resolve("tree"));
+    touch(
+        tree,
+        "domain/src/main/resources/db/projects/migration/V5__a.sql",
+        "artifacts/src/main/resources/db/artifacts/postgresql/V5__a.sql");
+
+    Map.Entry<Integer, String> result = runMigrationCheck(tree, Map.of());
+
+    assertEquals(0, result.getKey(), result.getValue());
+    assertEquals("qits-ci: migration versions checked (2 lineages)\n", result.getValue());
+  }
+
+  @Test
+  public void theMigrationCheckSaysSoWhenThereAreNoMigrations(
+      @org.junit.jupiter.api.io.TempDir Path work) throws Exception {
+    Path tree = Files.createDirectories(work.resolve("tree"));
+    touch(tree, "src/main/resources/application.properties", "docs/V1__not-a-migration.sql");
+
+    Map.Entry<Integer, String> result = runMigrationCheck(tree, Map.of());
+
+    assertEquals(0, result.getKey(), result.getValue());
+    assertEquals("qits-ci: no migrations here\n", result.getValue());
+  }
+
+  @Test
+  public void theMigrationCheckRefusesOnAReleaseAMigrationBehindMains(
+      @org.junit.jupiter.api.io.TempDir Path work) throws Exception {
+    // main holds V1..V4; the released tree is a separate checkout whose new file is fetched against.
+    Path main = Files.createDirectories(work.resolve("main"));
+    git(main, "init", "-q", "-b", "main");
+    touch(main, MIGRATIONS + "V1__a.sql", MIGRATIONS + "V2__b.sql", MIGRATIONS + "V3__c.sql",
+        MIGRATIONS + "V4__d.sql");
+    git(main, "add", "-A");
+    git(main, "commit", "-q", "-m", "main");
+    Path tree = work.resolve("tree");
+    git(work, "clone", "-q", main.toString(), tree.toString());
+    Map<String, String> release =
+        Map.of("QITS_VERSION", "2026.1029.1", "QITS_CI_REPOSITORY_URL", main.toString());
+
+    touch(tree, MIGRATIONS + "V3__new.sql");
+    Map.Entry<Integer, String> behind = runMigrationCheck(tree, release);
+
+    assertEquals(1, behind.getKey(), behind.getValue());
+    assertTrue(
+        behind.getValue().contains(
+            "qits-ci: " + MIGRATIONS + "V3__new.sql is version 3, but main already has V4 in"
+                + " svc/src/main/resources/db/things/migration; production would refuse it as out"
+                + " of order\n"),
+        behind.getValue());
+    assertTrue(behind.getValue().contains("qits-ci: rename it to V5__"), behind.getValue());
+
+    Files.delete(tree.resolve(MIGRATIONS + "V3__new.sql"));
+    touch(tree, MIGRATIONS + "V5__new.sql");
+    Map.Entry<Integer, String> ahead = runMigrationCheck(tree, release);
+
+    assertEquals(0, ahead.getKey(), ahead.getValue());
+    assertEquals("qits-ci: migration versions checked (1 lineages)\n", ahead.getValue());
   }
 
   @Test
@@ -2061,10 +2217,13 @@ public class CiReleaseComposerTest {
             refused.output());
       }
 
-      // An image with neither curl nor wget: the fetch refuses, the verdict does not move.
+      // An image with neither curl nor wget: the fetch refuses, the verdict does not move. (sort is
+      // the migration check's, qits-1669 — busybox has it, so the floor does.)
       Path bare = Files.createDirectories(work.resolve("bare-bin"));
       for (String tool :
-          List.of("sh", "cat", "mkdir", "chmod", "find", "grep", "sed", "awk", "head", "wc", "tr")) {
+          List.of(
+              "sh", "cat", "mkdir", "chmod", "find", "grep", "sed", "awk", "head", "wc", "tr",
+              "sort")) {
         Files.createSymbolicLink(bare.resolve(tool), which(tool));
       }
       for (String code : List.of("3", "0")) {

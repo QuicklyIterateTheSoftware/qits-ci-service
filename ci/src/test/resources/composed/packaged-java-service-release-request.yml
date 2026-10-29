@@ -56,6 +56,78 @@ steps:
       }
       QITS_LOCKFILE_EOF
       sh /tmp/qits-lockfile-origins.sh
+      cat > /tmp/qits-migration-versions.sh <<'QITS_MIGRATION_EOF'
+      # qits-ci: every migration lineage here holds each version once, none behind main's (qits-1669).
+      set -eu
+      pattern='(^|/)src/main/resources/(.*/)?db/(.*/)?V[0-9]+__[^/]*\.sql$'
+      # One row per migration, `<dir>|<version>|<file>`, the version without its leading zeros so V057
+      # and V57 are the same number, sorted by directory and then numerically by version.
+      rows() {
+        grep -E "$pattern" | sed -E 's#^(.*)/V0*([0-9]+)__[^/]*$#\1|\2|&#' | sort -t '|' -k1,1 -k2,2n
+      }
+      # The highest version $2's rows hold in directory $1, into $top; empty when they hold none.
+      highest() {
+        top=
+        while IFS='|' read -r hd hv hf; do
+          if [ "$hd" = "$1" ]; then top=$hv; fi
+        done <<EOF
+      $2
+      EOF
+      }
+      here=$(find . \( -name target -o -name node_modules -o -name .git \) -prune \
+        -o -type f -name 'V*__*.sql' -print | sed 's#^\./##' | rows)
+      if [ -z "$here" ]; then
+        echo "qits-ci: no migrations here" >&2
+        exit 0
+      fi
+      refused=0
+      lineages=0
+      pd=
+      pv=
+      pf=
+      while IFS='|' read -r d v f; do
+        if [ "$d" != "$pd" ]; then
+          lineages=$((lineages + 1))
+        elif [ "$v" = "$pv" ]; then
+          highest "$d" "$here"
+          echo "qits-ci: $d has more than one migration with version $v: $pf $f" >&2
+          echo "qits-ci: rename one of them to V$((top + 1))__..." >&2
+          refused=1
+        fi
+        pd=$d
+        pv=$v
+        pf=$f
+      done <<EOF
+      $here
+      EOF
+      if [ -n "${QITS_VERSION:-}" ] && git rev-parse --git-dir >/dev/null 2>&1; then
+        git fetch -q "${QITS_CI_REPOSITORY_URL:?this step was told no QITS_CI_REPOSITORY_URL}" \
+          '+refs/heads/main:refs/qits/migration-check-main'
+        main=$(git ls-tree -r --name-only refs/qits/migration-check-main | rows)
+        nl='
+      '
+        while IFS='|' read -r d v f; do
+          case "$nl$main$nl" in
+            *"|$f$nl"*) continue ;;
+          esac
+          highest "$d" "$main"
+          if [ -n "$top" ] && [ "$v" -le "$top" ]; then
+            echo "qits-ci: $f is version $v, but main already has V$top in $d;" \
+              "production would refuse it as out of order" >&2
+            highest "$d" "$here"
+            echo "qits-ci: rename it to V$((top + 1))__..." >&2
+            refused=1
+          fi
+        done <<EOF
+      $here
+      EOF
+      fi
+      if [ "$refused" -ne 0 ]; then
+        exit 1
+      fi
+      echo "qits-ci: migration versions checked ($lineages lineages)" >&2
+      QITS_MIGRATION_EOF
+      sh /tmp/qits-migration-versions.sh
       : "${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only through it}"
       (
         umask 077
@@ -240,6 +312,78 @@ steps:
       }
       QITS_LOCKFILE_EOF
       sh /tmp/qits-lockfile-origins.sh
+      cat > /tmp/qits-migration-versions.sh <<'QITS_MIGRATION_EOF'
+      # qits-ci: every migration lineage here holds each version once, none behind main's (qits-1669).
+      set -eu
+      pattern='(^|/)src/main/resources/(.*/)?db/(.*/)?V[0-9]+__[^/]*\.sql$'
+      # One row per migration, `<dir>|<version>|<file>`, the version without its leading zeros so V057
+      # and V57 are the same number, sorted by directory and then numerically by version.
+      rows() {
+        grep -E "$pattern" | sed -E 's#^(.*)/V0*([0-9]+)__[^/]*$#\1|\2|&#' | sort -t '|' -k1,1 -k2,2n
+      }
+      # The highest version $2's rows hold in directory $1, into $top; empty when they hold none.
+      highest() {
+        top=
+        while IFS='|' read -r hd hv hf; do
+          if [ "$hd" = "$1" ]; then top=$hv; fi
+        done <<EOF
+      $2
+      EOF
+      }
+      here=$(find . \( -name target -o -name node_modules -o -name .git \) -prune \
+        -o -type f -name 'V*__*.sql' -print | sed 's#^\./##' | rows)
+      if [ -z "$here" ]; then
+        echo "qits-ci: no migrations here" >&2
+        exit 0
+      fi
+      refused=0
+      lineages=0
+      pd=
+      pv=
+      pf=
+      while IFS='|' read -r d v f; do
+        if [ "$d" != "$pd" ]; then
+          lineages=$((lineages + 1))
+        elif [ "$v" = "$pv" ]; then
+          highest "$d" "$here"
+          echo "qits-ci: $d has more than one migration with version $v: $pf $f" >&2
+          echo "qits-ci: rename one of them to V$((top + 1))__..." >&2
+          refused=1
+        fi
+        pd=$d
+        pv=$v
+        pf=$f
+      done <<EOF
+      $here
+      EOF
+      if [ -n "${QITS_VERSION:-}" ] && git rev-parse --git-dir >/dev/null 2>&1; then
+        git fetch -q "${QITS_CI_REPOSITORY_URL:?this step was told no QITS_CI_REPOSITORY_URL}" \
+          '+refs/heads/main:refs/qits/migration-check-main'
+        main=$(git ls-tree -r --name-only refs/qits/migration-check-main | rows)
+        nl='
+      '
+        while IFS='|' read -r d v f; do
+          case "$nl$main$nl" in
+            *"|$f$nl"*) continue ;;
+          esac
+          highest "$d" "$main"
+          if [ -n "$top" ] && [ "$v" -le "$top" ]; then
+            echo "qits-ci: $f is version $v, but main already has V$top in $d;" \
+              "production would refuse it as out of order" >&2
+            highest "$d" "$here"
+            echo "qits-ci: rename it to V$((top + 1))__..." >&2
+            refused=1
+          fi
+        done <<EOF
+      $here
+      EOF
+      fi
+      if [ "$refused" -ne 0 ]; then
+        exit 1
+      fi
+      echo "qits-ci: migration versions checked ($lineages lineages)" >&2
+      QITS_MIGRATION_EOF
+      sh /tmp/qits-migration-versions.sh
       # --- the qits CLI, pinned, on PATH: this step's output check needs it ---
       if [ -z "${QITS_ARTIFACTS_CLI_PACKAGE:-}" ]; then
         echo "qits-ci: the qits CLI could not be fetched: no qits CLI package is configured for this deployment" >&2
