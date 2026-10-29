@@ -1072,9 +1072,11 @@ public class CiRunService {
    * {@code ReleaseRequestChanged} posted without an id gets a fresh one, so the constraint cannot
    * see it is the question already asked; a second gating run at the same fold could only add a
    * lineage-less verdict, and qits-projects rejects a request on any red one at its merged sha. So
-   * a run of the same repository, request, sha and trigger file in the {@code RELEASE_REQUEST}
-   * phase that was not cancelled — running or finished — is the answer. Asking again is {@link
-   * #retryReleaseRequestPhase}'s, which never comes through here.
+   * the NEWEST run of the same repository, request, sha and trigger file in the {@code
+   * RELEASE_REQUEST} phase is the answer — running or finished, red or green — unless that newest
+   * run is itself cancelled, in which case the fold has no answer at all and the repeat is accepted
+   * as a fresh run (qits-1656: a cancelled retry must not leave the red run it replaced standing in
+   * for it). Asking again is {@link #retryReleaseRequestPhase}'s, which never comes through here.
    *
    * @return the id of the run this recorded, or of the run this event already had for this
    *     repository and trigger file, or of the gating run this fold already had. The manual trigger

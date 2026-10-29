@@ -268,29 +268,41 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   }
 
   /**
-   * The gating run one fold already has, or empty — the newest run one repository has for one
-   * release request in {@link CiRunPhase#RELEASE_REQUEST} at one sha and one trigger file whose
-   * status is anything but {@link CiRunStatus#CANCELLED} (qits-1250).
+   * The gating run one fold already has, or empty — the NEWEST run one repository has for one
+   * release request in {@link CiRunPhase#RELEASE_REQUEST} at one sha and one trigger file, with a
+   * {@link CiRunStatus#CANCELLED} newest run read as no answer at all rather than skipped over
+   * (qits-1656).
    *
    * <p>What a repeated {@code ReleaseRequestChanged} is answered with when it arrives under a new
    * event id, so the unique constraint on the event cannot tell it is the same question. Finished
    * runs count, green or red: the fold has its verdict, and a second build of it could only add a
-   * lineage-less one beside it. A cancelled run is the one status that answers nothing, so it does
-   * not stand in the way. Served by {@code idx_ci_run_release_request_id}.
+   * lineage-less one beside it.
+   *
+   * <p><b>Only the newest row is ever consulted, whatever its status</b> (qits-1656; before, it was
+   * the newest row whose status was not cancelled, which let a cancelled retry be skipped rather
+   * than answered with). qits-system-service-rr-103: run A failed, its automatic retry B carried the
+   * same fold forward (same repo, request, sha and trigger file — a retry copies all four, see {@link
+   * eu.wohlben.qits.ci.control.CiRunService}'s {@code insertRetry}), and B was later cancelled
+   * ({@code HELD_BY_PRE_RUN_GATE}). The newest-not-cancelled query then skipped B and answered with
+   * the red A underneath it, so qits-projects' re-announced fold was handed a stale red verdict
+   * forever — a retry was asked again, but its answer stayed the one it had replaced. A cancelled
+   * run is a withdrawn question: when it is the NEWEST one, the fold has no answer, which is what
+   * lets a repeat be accepted as a fresh run rather than stuck under a verdict that no longer stands.
+   * Served by {@code idx_ci_run_release_request_id}.
    */
   public Optional<CiRun> findGatingRunForFold(
       String repoId, String releaseRequestId, String commitSha, String configPath) {
     return find(
             "repoId = ?1 and releaseRequestId = ?2 and phase = ?3 and commitSha = ?4"
-                + " and configPath = ?5 and status <> ?6 order by createdAt desc, id desc",
+                + " and configPath = ?5 order by createdAt desc, id desc",
             repoId,
             releaseRequestId,
             CiRunPhase.RELEASE_REQUEST,
             commitSha,
-            configPath,
-            CiRunStatus.CANCELLED)
+            configPath)
         .range(0, 0)
-        .firstResultOptional();
+        .firstResultOptional()
+        .filter(run -> run.status != CiRunStatus.CANCELLED);
   }
 
   /**
