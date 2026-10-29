@@ -110,7 +110,7 @@
              this version is the one that dropped Interactions.happened. It carries its OWN version
              rather than riding the three above, because it is released out of libs/qits-userflows
              and not out of the qits-integrations-quarkus reactor. -->
-        <qits.userflows.version>2026.1002.72731</qits.userflows.version>
+        <qits.userflows.version>2026.1028.231715</qits.userflows.version>
         <!-- The recording service mocks the same IT boots against (the generic MockService plus
              idp.MockIdp), released out of libs/qits-integrations-quarkus like qits-auth-core,
              qits-db-core and qits-arch-rules above — so the same-string policy applies the day this
@@ -140,7 +140,7 @@
         <!-- The other providers' golden masters (qits-1149), test scope: what this repository's
              consumer pacts against qits-projects, qits-githost, qits-artifacts and qits-idp are
              built from (contracts/consumer/). Bumped like every internal pin. -->
-        <qits.projects-golden-masters.version>2026.1028.74846</qits.projects-golden-masters.version>
+        <qits.projects-golden-masters.version>2026.1028.230057</qits.projects-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1020.204038</qits.githost-golden-masters.version>
         <qits.artifacts-golden-masters.version>2026.1027.103538</qits.artifacts-golden-masters.version>
         <qits.idp-golden-masters.version>2026.1027.165632</qits.idp-golden-masters.version>
