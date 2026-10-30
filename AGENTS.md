@@ -2210,6 +2210,17 @@ phase.
   out of order. Every refusal names the file and the free version (the directory's highest + 1).
   Clean, it prints `qits-ci: migration versions checked (<k> lineages)` or `qits-ci: no
   migrations here`. Same floor as the lockfile check minus awk, plus `sort`.
+- **QA refuses a fold whose `release.yml` and `deployments.yml` disagree** (qits-1400). When the QA
+  half is composed, `attemptCompose` also reads `.config/qits/deployments.yml` at the fold and
+  `CiReleaseConsistency` compares it: every `{ type: docker }` entry must be `qits/<application>`
+  and `contracts: application:` must be `<application>` or the repository name (a pact consumer
+  identity is the repository's: qits-platform-access-cli's pacts are its CLI's), the application
+  being `deployments.yml`'s `application:` or the repository name. No `deployments.yml` skips the
+  check. A refusal is composed
+  INTO the QA document — the first step echoes the sentence and exits 1 before the prelude — so the
+  QA run is red and the request REJECTED before any tag; a `CiConfigException` would have recorded
+  no run and hung the gate. An `UNREACHABLE` read is `ComposeOutcome.DEPLOYMENTS_UNREADABLE`: no
+  run, the event stays owed. The release half and the release-phase door never read the file.
 - **The heredoc is the security-shaped part.** A repository's script is data: quoted heredoc to
   `/tmp/qits-slot.sh`, run as a child shell under `-eu`. The only way out of a quoted heredoc is a line
   carrying the delimiter, so a script containing `QITS_SLOT_EOF` is a `CiConfigException` naming the

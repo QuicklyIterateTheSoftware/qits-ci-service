@@ -1274,8 +1274,16 @@ public class CiEventTriggerService {
     if (found.status() != CiConfigSource.FileLookup.Status.FOUND) {
       return ReleaseSlots.NONE;
     }
-    ComposeAttempt attempt = attemptCompose(repo, repoId, rev, found.content(), "no release run");
-    if (attempt.outcome() == ComposeOutcome.ARCHETYPE_UNREADABLE) {
+    ComposeAttempt attempt =
+        attemptCompose(
+            repo,
+            repoId,
+            rev,
+            found.content(),
+            "no release run",
+            CiReleaseComposer.RELEASE_REQUEST_EVENT.equals(arrival.eventName()));
+    if (attempt.outcome() == ComposeOutcome.ARCHETYPE_UNREADABLE
+        || attempt.outcome() == ComposeOutcome.DEPLOYMENTS_UNREADABLE) {
       // THE REPOSITORY COULD NOT BE ASKED WHETHER IT CARRIES THE RECIPE, which is a verdict about
       // nothing — the UNREACHABLE slot file's case, one read later. ARCHETYPE_UNKNOWN is the
       // opposite: committed content (a name in neither place, or a local recipe that does not
@@ -1539,7 +1547,15 @@ public class CiEventTriggerService {
      */
     ARCHETYPE_UNKNOWN,
     /** Parsed and resolved, but the pair cannot be compiled into a pipeline. */
-    UNCOMPOSABLE
+    UNCOMPOSABLE,
+    /**
+     * The fold's {@code deployments.yml} could not be read — {@code UNREACHABLE} — so the QA
+     * consistency check ({@link CiReleaseConsistency}, qits-1400) could not be made. About the
+     * moment rather than committed bytes, exactly as {@link #ARCHETYPE_UNREADABLE} is: owed in an
+     * evaluation, never a QA run composed without the check. Only the QA half reads the file, so the
+     * release-phase door never meets it.
+     */
+    DEPLOYMENTS_UNREADABLE
   }
 
   /**
@@ -1601,7 +1617,12 @@ public class CiEventTriggerService {
    *     for — one commit for the declaration and what it names
    */
   private ComposeAttempt attemptCompose(
-      CiRepoRef repo, String repoId, String rev, String slotFile, String consequence) {
+      CiRepoRef repo,
+      String repoId,
+      String rev,
+      String slotFile,
+      String consequence,
+      boolean qa) {
     CiReleaseSlots slots;
     try {
       slots = slotParser.parse(CiReleaseSlotParser.CONFIG_PATH, slotFile);
@@ -1639,10 +1660,36 @@ public class CiEventTriggerService {
       archetypeSlots = recipe.archetype().slots();
       used = recipe.archetype().ref();
     }
+    // THE QA CONSISTENCY CHECK (qits-1400), read at the same revision as everything above — the
+    // fold. Only for the QA half: it is QA that refuses a fold, before any tag exists, and a release
+    // run of a tag whose QA was green has nothing left to refuse.
+    String qaRefusal = null;
+    if (qa) {
+      CiConfigSource.FileLookup deployments =
+          configSource.readFile(repo, rev, CiReleaseConsistency.DEPLOYMENTS_PATH);
+      if (deployments.status() == CiConfigSource.FileLookup.Status.UNREACHABLE) {
+        LOG.warnf(
+            "%s: %s could not be read at %s, so the QA consistency check cannot be made — %s",
+            repoId, CiReleaseConsistency.DEPLOYMENTS_PATH, rev, consequence);
+        return ComposeAttempt.failed(
+            ComposeOutcome.DEPLOYMENTS_UNREADABLE,
+            CiReleaseConsistency.DEPLOYMENTS_PATH + " could not be read at " + rev);
+      }
+      qaRefusal =
+          CiReleaseConsistency.refusal(
+              repo,
+              slots,
+              deployments.status() == CiConfigSource.FileLookup.Status.FOUND
+                  ? deployments.content()
+                  : null);
+      if (qaRefusal != null) {
+        LOG.warnf("%s: the fold at %s is refused in QA — %s", repoId, rev, qaRefusal);
+      }
+    }
     try {
       return new ComposeAttempt(
           ComposeOutcome.COMPOSED,
-          CiReleaseComposer.compose(repo, slots, archetypeSlots),
+          CiReleaseComposer.compose(repo, slots, archetypeSlots, qaRefusal),
           null,
           used);
     } catch (CiConfigException e) {
@@ -1726,7 +1773,8 @@ public class CiEventTriggerService {
             repoId,
             rev,
             found.content(),
-            "this retry replays the pipeline stored on the run it re-fires");
+            "this retry replays the pipeline stored on the run it re-fires",
+            CiReleaseComposer.RELEASE_REQUEST_EVENT.equals(eventName));
     if (attempt.composed() == null) {
       return null;
     }
@@ -1846,7 +1894,8 @@ public class CiEventTriggerService {
             repoId,
             rev,
             found.content(),
-            "this release-phase read answers on which failure it was");
+            "this release-phase read answers on which failure it was",
+            false);
     return switch (attempt.outcome()) {
       case UNPARSEABLE, ARCHETYPE_UNKNOWN, UNCOMPOSABLE ->
           new ReleasePhase(
@@ -1856,7 +1905,8 @@ public class CiEventTriggerService {
                   + attempt.detail()
                   + " — reported as declared, because a pipeline that must be fixed is recoverable"
                   + " and a release waved through unchecked is not");
-      case ARCHETYPE_UNREADABLE -> new ReleasePhase(Verdict.UNKNOWN, repoId + ": " + attempt.detail());
+      case ARCHETYPE_UNREADABLE, DEPLOYMENTS_UNREADABLE ->
+          new ReleasePhase(Verdict.UNKNOWN, repoId + ": " + attempt.detail());
       case COMPOSED ->
           attempt.composed().releaseDocument() != null
               ? new ReleasePhase(
