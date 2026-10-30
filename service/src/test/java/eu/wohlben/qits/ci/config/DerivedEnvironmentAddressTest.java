@@ -10,6 +10,7 @@ import io.smallrye.config.SmallRyeConfigBuilder;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -73,8 +74,17 @@ class DerivedEnvironmentAddressTest {
   }
 
   private static SmallRyeConfig config(Map<String, String> environment) throws IOException {
-    return new SmallRyeConfigBuilder()
-        .addDefaultInterceptors()
+    return config(null, environment);
+  }
+
+  /** The same rig under a named profile; {@code prod} is what a packaged, deployed process runs. */
+  private static SmallRyeConfig config(String profile, Map<String, String> environment)
+      throws IOException {
+    SmallRyeConfigBuilder builder = new SmallRyeConfigBuilder().addDefaultInterceptors();
+    if (profile != null) {
+      builder.withProfile(profile);
+    }
+    return builder
         .withSources(
             new PropertiesConfigSource(
                 shipped("service/src/main/resources/application.properties").toUri().toURL(),
@@ -152,5 +162,40 @@ class DerivedEnvironmentAddressTest {
     assertEquals(
         "http://staging-qits-artifacts:8080/artifacts/maven/maven",
         value(config(Map.of("QITS_ENVIRONMENT", "staging")), "qits.artifacts.maven.registry-url"));
+  }
+
+  @Test
+  void aDeployedProcessResolvesTheRetiredExtrasToTheirLiveValues() throws IOException {
+    // qits-1391: the deployer stops handing this service qits-configuration's extras, so a deployed
+    // process (the prod profile, QITS_ENVIRONMENT and nothing else) must resolve each value the
+    // extras stated on dev-qits-ci from the shipped files alone.
+    SmallRyeConfig config = config("prod", Map.of("QITS_ENVIRONMENT", "dev"));
+    assertEquals("true", value(config, "qits.auth.machine.required"));
+    assertEquals("true", value(config, "quarkus.oidc.tenant-enabled"));
+    assertEquals("http://dev-qits-projects:8080", value(config, "qits.ci.projects-url"));
+    assertEquals("registry.dev.localhost:8080", value(config, "qits.artifacts.registry-host"));
+    assertEquals("http://dev-qits-githost:8080", value(config, "qits.ci.git-host-url"));
+    assertEquals(
+        "http://dev-qits-artifacts:8080/artifacts/maven/maven",
+        value(config, "qits.artifacts.maven.registry-url"));
+    assertEquals(
+        "http://dev-qits-observability:8080", value(config, "qits.observability.url"));
+
+    SmallRyeConfig staging = config("prod", Map.of("QITS_ENVIRONMENT", "staging"));
+    assertEquals("http://staging-qits-projects:8080", value(staging, "qits.ci.projects-url"));
+    assertEquals(
+        "registry.staging.localhost:8080", value(staging, "qits.artifacts.registry-host"));
+  }
+
+  @Test
+  void devAndTestKeepTheGateOffAndTheKillSwitchUnset() throws IOException {
+    for (String profile : List.of("dev", "test")) {
+      SmallRyeConfig config = config(profile, Map.of());
+      assertEquals("false", value(config, "qits.auth.machine.required"), profile);
+      assertTrue(
+          config.getOptionalValue("qits.ci.projects-url", String.class).isEmpty(), profile);
+      assertEquals(
+          "dev-qits-artifacts:8080", value(config, "qits.artifacts.registry-host"), profile);
+    }
   }
 }

@@ -144,7 +144,13 @@ public class CiPackagedSurfaceIT {
 
     @Override
     public Map<String, String> getConfigOverrides() {
+      // The prod profile now ships the machine gate ON and qits-projects' catalogue address
+      // (qits-1391). This class asks about the packaged surface, and the stories read the git
+      // host's own listing, so both are put back to how they always ran: the gate off (the mock-idp
+      // profile turns it on again) and the catalogue blank, which reads as unset.
       return Map.of(
+          "qits.auth.machine.required", "false",
+          "qits.ci.projects-url", "",
           "qits.ci.domain", DOMAIN,
           "QITS_RESOURCE_DB_URL", databaseUrl(CI_URL_PROPERTY, "ci_packaged_it"),
           "QITS_RESOURCE_DB_USERNAME", EmbeddedPg.USER,
