@@ -78,13 +78,24 @@ public class CiReleaseConsistencyTest {
 
   @Test
   public void aMismatchedContractsApplicationIsRefusedNamingBothValues() {
+    // `foo` is neither the application (`bar`) nor the repository name (`qits-foo-service`).
     String refusal =
         CiReleaseConsistency.refusal(REPO, release("qits/bar", "foo"), deployments("bar"));
 
     assertEquals(
-        "release.yml's contracts application is `foo` but deployments.yml's application is `bar`:"
-            + " they must move together (bar)",
+        "release.yml's contracts application is `foo` but deployments.yml's application is `bar`"
+            + " and the repository is `qits-foo-service`: it must be one of them"
+            + " (bar or qits-foo-service)",
         refusal);
+  }
+
+  @Test
+  public void aContractsApplicationNamingTheRepositoryPasses() {
+    // qits-platform-access-cli's shape: the deployed application differs from the repository name,
+    // and contracts.application is the repository's — the consumer identity its pacts publish under.
+    assertNull(
+        CiReleaseConsistency.refusal(
+            REPO, release("qits/bar", "qits-foo-service"), deployments("bar")));
   }
 
   @Test

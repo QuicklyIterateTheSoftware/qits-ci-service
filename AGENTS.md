@@ -2209,8 +2209,10 @@ phase.
 - **QA refuses a fold whose `release.yml` and `deployments.yml` disagree** (qits-1400). When the QA
   half is composed, `attemptCompose` also reads `.config/qits/deployments.yml` at the fold and
   `CiReleaseConsistency` compares it: every `{ type: docker }` entry must be `qits/<application>`
-  and `contracts: application:` must be `<application>`, the application being `deployments.yml`'s
-  `application:` or the repository name. No `deployments.yml` skips the check. A refusal is composed
+  and `contracts: application:` must be `<application>` or the repository name (a pact consumer
+  identity is the repository's: qits-platform-access-cli's pacts are its CLI's), the application
+  being `deployments.yml`'s `application:` or the repository name. No `deployments.yml` skips the
+  check. A refusal is composed
   INTO the QA document — the first step echoes the sentence and exits 1 before the prelude — so the
   QA run is red and the request REJECTED before any tag; a `CiConfigException` would have recorded
   no run and hung the gate. An `UNREACHABLE` read is `ComposeOutcome.DEPLOYMENTS_UNREADABLE`: no

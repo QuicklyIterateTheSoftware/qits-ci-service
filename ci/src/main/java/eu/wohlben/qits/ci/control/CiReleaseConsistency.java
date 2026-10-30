@@ -20,8 +20,10 @@ import java.util.Map;
  *   <li>every {@code { type: docker }} entry of {@code artifacts:} must be named {@code
  *       qits/<application>} — it is the image qits-deployments deploys as that application, so a
  *       mismatch is a release that pushes one image and deploys another;
- *   <li>{@code contracts: application:}, when present, must be {@code <application>} — it names
- *       the golden masters the deployed application's consumers verify against.
+ *   <li>{@code contracts: application:}, when present, must be {@code <application>} or the
+ *       repository's name — it is the provider identity of the golden masters, or the consumer
+ *       identity a repository's pacts are published under, and the latter is the repository's name
+ *       (qits-platform-access-cli's nine pacts are its CLI's, not its deployed MCP service's).
  * </ul>
  *
  * <p><b>Only what is present is compared.</b> A repository with no {@code deployments.yml} deploys
@@ -98,16 +100,21 @@ public final class CiReleaseConsistency {
       }
     }
     CiContracts contracts = slots.contracts();
+    String repository = repo.display();
     if (contracts != null
         && contracts.application() != null
-        && !application.equals(contracts.application())) {
+        && !application.equals(contracts.application())
+        && !repository.equals(contracts.application())) {
       refusals.add(
           "release.yml's contracts application is `"
               + contracts.application()
               + "` but "
               + deployed
-              + ": they must move together ("
+              + " and the repository is `"
+              + repository
+              + "`: it must be one of them ("
               + application
+              + (application.equals(repository) ? "" : " or " + repository)
               + ")");
     }
     return refusals.isEmpty() ? null : String.join("; ", refusals);
