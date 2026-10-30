@@ -103,7 +103,7 @@
              the driver as a STRING: a driver that moved without the rule would pass a build it
              should fail. -->
         <qits.db-core.version>2026.1002.70617</qits.db-core.version>
-        <qits.arch-rules.version>2026.1026.133840</qits.arch-rules.version>
+        <qits.arch-rules.version>2026.1030.30851</qits.arch-rules.version>
         <!-- The user-story framework (test scope): TokenValidationBootstrapIT is written as a
              @UserStory, so a run of that IT also regenerates service/target/userstories/ — the
              story's documentation, network diagram included — OBSERVED rather than narrated, since
