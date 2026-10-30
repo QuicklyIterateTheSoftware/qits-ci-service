@@ -86,6 +86,7 @@ public class CiPlatformPipelines {
    */
   static final Set<String> AUTOMATIONS =
       Set.of(
+          "cli-tapes",
           "dependency-bump",
           "entity-diagram",
           "estate-pins",

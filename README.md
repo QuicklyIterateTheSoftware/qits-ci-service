@@ -1341,16 +1341,18 @@ its steps run as written, so nothing would act on them.
 - `qits-cli: true` — the pinned qits CLI is fetched onto `PATH` before the step's script, with the
   automation kinds' hard fetch: no CLI, no step. A release step already gets the CLI from its
   prelude; there the key also demands the package.
-- `check-outputs: [entity-diagram, screenshot-baselines]` — QA steps only. After the script exits 0,
+- `check-outputs: [entity-diagram, screenshot-baselines, cli-tapes]` — QA steps only. After the script exits 0,
   each kind's generator runs (the `script:` of `platform-pipelines/automations/<kind>.yml`, verbatim,
   so the check and the regeneration cannot disagree), then `git status --porcelain
   --untracked-files=all` over the kind's paths (`docs/database`; `**/__screenshots__/**` and
-  `**/testing/browser/renderer.txt`). A change there fails the step with one line:
+  `**/testing/browser/renderer.txt`; `tapes/golden/**` and `tapes/recordings/**`). A change there fails the step with one line:
   `qits-ci: stale outputs: <kinds> — regenerate with: qits release-request regenerate --project <p>
   --repository <r> --kind <kind>`. A generator that fails (a failing spec) fails the step with its
   own code and is not called stale. Nothing is regenerated or committed, and the report hook still
   runs. A kind that needs the CLI gets it with the key. The packaged recipes set it where the kind
-  applies (qits-1178): `java-service` checks `entity-diagram`, `app` checks `screenshot-baselines`.
+  applies (qits-1178): `java-service` checks `entity-diagram`, `app` checks `screenshot-baselines`,
+  and `cli` checks `cli-tapes` in a second `build: true` step of its own (epic qits-881; a
+  repository declaring its own `release-request:` adds that step to keep the check).
   The others do not, and their repositories keep qits-maintenance's pre-run. qits-maintenance reads
   the key from the recipe a repository's QA is composed from, so a repository's own `release-request:`
   slot or recipe copy without it also keeps the pre-run.
@@ -1603,8 +1605,12 @@ more. A `ScreenshotBaselines` event today matches no trigger file and starts no 
 the regeneration `script` and, optionally, `qits-cli: true` (the pinned qits CLI on `PATH`, fetched
 by the same emitter as the release prelude and the QA report hook, but hard: a failed fetch ends the
 step with `the qits CLI could not be fetched`), optionally, `commit-type: <word>` (below) and,
-optionally, `user: <name>` (the composed step's `user:`, qits-1516); any other key, or any other
-`qits-cli`, `commit-type` or `user` value, fails the boot naming the file.
+optionally, `user: <name>` (the composed step's `user:`, qits-1516) and, optionally, `build: true`
+(exactly a slot step's `build: true`: the composed step declares it, and its prelude carries the
+slot step's own text — `$BUILDKIT_HOST` demanded, the run's credential written to
+`/tmp/qits-client-id`/`/tmp/qits-client-secret` for a buildctl `--secret` — qits-1377); any other
+key, or any other `qits-cli`, `commit-type`, `user` or `build` value, fails the boot naming the
+file.
 `CiAutomationComposer` turns it into a trigger on `event: ReleaseRequestAutomation` with `when:
 [{kind: {exact: <kind>}}]` — the kind is the file's name — and one step: a prelude that refuses an
 implausible payload (`kind`, `branch` under `maintenance/automations/<kind>/`, `baseRef` under
@@ -1647,7 +1653,16 @@ moved its `*-golden-masters` pin (qits-1516), each committing only `:(glob)pacts
 refuses root) runs `./mvnw test` with `-Dgolden.update=true` and `QITS_GOLDEN_UPDATE=true`, and
 `golden-recordings-npm` (`node-browser-base`, 1800 s) installs as `screenshot-baselines` does and runs
 `npm run --if-present test` with `QITS_GOLDEN_UPDATE=true`. Neither has a `check-outputs:` arm: QA's
-own test run, without the switch, is the check.
+own test run, without the switch, is the check. And `cli-tapes` (`vhs-base` declared, 3600 s,
+`build: true`, epic qits-881), committing `tapes/golden/` and `tapes/recordings/`: a repository with
+no `tapes/prepare.sh` has no tapes and the run is green; otherwise the hook is SOURCED
+(`. ./tapes/prepare.sh`, bash, `set -eu`, so what it exports — `PATH`, the CLI's `QITS_URL_*` — reaches
+the tapes), every `tapes/<name>.tape` is played with `vhs` into `tapes/golden/<name>.txt` alone (its
+own `Output` lines removed), and only a golden that changed, or a missing GIF, earns a second play
+into `tapes/recordings/<name>.gif`; goldens and GIFs without a tape are deleted. The text is what QA
+compares (the `cli` archetype's `check-outputs: [cli-tapes]` step), so GIF byte noise never fails
+QA. Since step images are ignored, `vhs`, `ttyd`, `ffmpeg` and a chromium must be on the ci-slot
+image's `PATH`; the script fails saying so when `vhs` is not.
 
 Until 2026-10-02 they were `ci-platform-event-*.yml` files in the wrapper, read at its `main` head
 per event: a fix shipped only with a wrapper release, which needs a person's approval. No repository

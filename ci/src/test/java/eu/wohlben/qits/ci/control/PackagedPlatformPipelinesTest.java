@@ -125,6 +125,7 @@ public class PackagedPlatformPipelinesTest {
             "ReleaseRequestAutomation",
             "ReleaseRequestAutomation",
             "ReleaseRequestAutomation",
+            "ReleaseRequestAutomation",
             "ReleaseRequestAutomation"),
         packaged().stream()
             .map(file -> triggerParser.parse(file.path(), file.content()).eventName())
