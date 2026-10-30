@@ -71,6 +71,17 @@ import java.util.regex.Pattern;
  * the wrapper's {@code -eu}, an {@code exit 0} ends the script rather than the step — and, here, it
  * cannot reassign {@code branch} or the staged paths the postlude spends.
  *
+ * <p><b>Every file the step writes lives in a directory of its own run</b> (qits-1563). The prelude
+ * makes it with {@code mktemp -d} under {@code ${TMPDIR:-/tmp}} before anything is written, and the
+ * kind's script, the commit paths, the message, the tickets, the composed commit message and the
+ * outside-paths list all go under it. They used to be fixed {@code /tmp/qits-automation*} paths,
+ * and bash reads a script as it runs it, seeking back to its offset after every command: a second
+ * composed step in the same container — this repository's own suite, run by a {@code
+ * golden-recordings-maven} automation — rewrote {@code /tmp/qits-automation.sh} under the running
+ * one, which resumed at its old offset in the new text and died on {@code syntax error near
+ * unexpected token}. The directory's name is a plain shell variable of the wrapper, never exported:
+ * the kind's script runs as a child and cannot move what the postlude reads.
+ *
  * <p>The <b>postlude</b> stages <b>only</b> the payload's {@code commitPaths} ({@code git add -A
  * --}), commits {@code chore(<item>): update <kind words>} (or the kind's own message, below)
  * unless the {@code
@@ -114,27 +125,29 @@ import java.util.regex.Pattern;
  * {@code bump(<item>): N dependencies}, the subject qits-maintenance and every reader of a
  * repository's log already know. A fixed template cannot count, so such a kind declares {@code
  * commit-type: bump} and writes the rest itself: the step exports {@value #MESSAGE_ENV} naming
- * {@value #MESSAGE_FILE}, the script writes the DESCRIPTION on its first line and, optionally, a body
- * after it, and the postlude commits {@code <type>(<item>): <description>} — {@code <type>:
- * <description>} with no item — with that body below a blank line. <b>The type and the scope stay
- * the platform's</b>: the type is the kind file's, the item is the prelude's, and a script can no
- * more pick either than it can pick the branch. A changed tree with no description is a failed
- * step naming the file, never a commit with an empty subject; the file is only read once the guard
- * has found something staged, so a run with nothing to commit needs no message at all.
+ * a file in the run's own directory, the script writes the DESCRIPTION there on its first line
+ * and, optionally, a body after it, and the postlude commits {@code <type>(<item>): <description>}
+ * — {@code <type>: <description>} with no item — with that body below a blank line. <b>The type
+ * and the scope stay the platform's</b>: the type is the kind file's, the item is the prelude's,
+ * and a script can no more pick either than it can pick the branch. A changed tree with no
+ * description is a failed step naming the variable, never a commit with an empty subject; the
+ * file is only read once the guard has found something staged, so a run with nothing to commit
+ * needs no message at all.
  *
  * <p><b>The tickets a commit carries head its subject</b> (qits-893). A dependency bump pulls in
  * internal releases, and their changelogs name the tickets that shipped in them: the bump commit
  * should be found by those tickets the way the work itself is. So the step also exports {@value
- * #TICKETS_ENV} naming {@value #TICKETS_FILE}, and a script that knows the tickets — {@code
- * dependency-bump} reads them off {@code qits changelog bump-message} — writes them there, separated
- * by single spaces. The postlude then commits {@code chore(<id>, <id>): <type>(<item>):
- * <description>} ({@code chore(<ids>): <type>: <description>} with no item): the tickets head the
- * subject, and <b>the type and the item stay the platform's</b>, untouched behind them. The file is
- * optional — absent or empty is the plain subject — but what it says is refused rather than
- * quoted: anything but work items ({@code [A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18}}) separated by
- * single spaces fails the step with a sentence naming the file. The commit is {@code
- * --cleanup=verbatim}, because a changelog body carries {@code # <version>} headings that git's
- * default cleanup would strip as comments.
+ * #TICKETS_ENV} naming a second file in the run's own directory, and a script that knows the
+ * tickets — {@code dependency-bump} reads them off {@code qits changelog bump-message} — writes
+ * them there, separated by single spaces. A script only ever names either file by its variable.
+ * The postlude then commits {@code chore(<id>, <id>): <type>(<item>): <description>} ({@code
+ * chore(<ids>): <type>: <description>} with no item): the tickets head the subject, and <b>the
+ * type and the item stay the platform's</b>, untouched behind them. The file is optional — absent
+ * or empty is the plain subject — but what it says is refused rather than quoted: anything but
+ * work items ({@code [A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18}}) separated by single spaces fails the
+ * step with a sentence naming the variable. The commit is {@code --cleanup=verbatim}, because a
+ * changelog body carries {@code # <version>} headings that git's default cleanup would strip as
+ * comments.
  *
  * <p>Every line of the mechanism is emitted only for a kind declaring the key, which is what keeps
  * every other kind's composed text byte-identical ({@code
@@ -182,14 +195,26 @@ public final class CiAutomationComposer {
   /** What a {@code commit-type} may spell: a conventional-commit type, nothing more. */
   static final Pattern COMMIT_TYPE = Pattern.compile("[a-z]+");
 
+  /**
+   * The wrapper's variable holding this run's private directory (qits-1563): {@code mktemp -d}'s
+   * answer, made in the prelude before anything is written. Not exported, so the kind's script —
+   * a child process — cannot move what the postlude reads.
+   */
+  static final String DIR_VAR = "qits_automation_dir";
+
+  /** The {@code mktemp -d} template of {@link #DIR_VAR}: under {@code $TMPDIR}, else /tmp. */
+  static final String DIR_TEMPLATE = "${TMPDIR:-/tmp}/qits-automation.XXXXXX";
+
+  // Every per-run file below is a double-quoted shell word under DIR_VAR, emitted as is.
+
   /** Where a {@code commit-type} kind's script writes its commit description and body. */
-  static final String MESSAGE_FILE = "/tmp/qits-automation-message";
+  static final String MESSAGE_FILE = "\"$" + DIR_VAR + "/message\"";
 
   /** The variable naming {@link #MESSAGE_FILE} to a {@code commit-type} kind's script. */
   static final String MESSAGE_ENV = "QITS_AUTOMATION_MESSAGE";
 
   /** Where a {@code commit-type} kind's script may write the tickets heading its subject. */
-  static final String TICKETS_FILE = "/tmp/qits-automation-tickets";
+  static final String TICKETS_FILE = "\"$" + DIR_VAR + "/tickets\"";
 
   /** The variable naming {@link #TICKETS_FILE} to a {@code commit-type} kind's script. */
   static final String TICKETS_ENV = "QITS_AUTOMATION_TICKETS";
@@ -199,22 +224,22 @@ public final class CiAutomationComposer {
       "[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18}( [A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18})*";
 
   /** Where the postlude composes a {@code commit-type} kind's whole message for {@code -F}. */
-  static final String COMMIT_MESSAGE = "/tmp/qits-automation-commit";
+  static final String COMMIT_MESSAGE = "\"$" + DIR_VAR + "/commit\"";
 
   /** Where the composed step writes the kind's script before running it. */
-  static final String KIND_SCRIPT = "/tmp/qits-automation.sh";
+  static final String KIND_SCRIPT = "\"$" + DIR_VAR + "/script.sh\"";
 
   /** The quoted heredoc delimiter. A script containing it as a line is refused. */
   static final String HEREDOC_DELIMITER = "QITS_AUTOMATION_EOF";
 
   /** Where the prelude writes the validated {@code commitPaths}, one per line, for the postlude. */
-  static final String COMMIT_PATHS = "/tmp/qits-automation-paths";
+  static final String COMMIT_PATHS = "\"$" + DIR_VAR + "/paths\"";
 
   /**
    * Where the postlude writes every path the run touched outside {@link #COMMIT_PATHS} and did
    * not stage, one per line as {@code git status --porcelain} printed it (qits-1687).
    */
-  static final String OUTSIDE_PATHS = "/tmp/qits-automation-outside";
+  static final String OUTSIDE_PATHS = "\"$" + DIR_VAR + "/outside\"";
 
   /** How many outside paths the postlude lists before it says {@code ... and N more}. */
   static final int OUTSIDE_PATHS_SHOWN = 20;
@@ -441,6 +466,18 @@ public final class CiAutomationComposer {
     out.append(
         "case \"$item\" in *[!0-9A-Za-z-]*) echo \"refusing an implausible work item: $item\""
             + " >&2; exit 1 ;; esac\n");
+    // This run's own directory, before anything is written (qits-1563): every file below lives
+    // in it, so a second composed step in the same container - a suite this step runs, say - can
+    // never rewrite the script bash is reading, nor the paths the postlude stages.
+    out.append(DIR_VAR)
+        .append("=$(mktemp -d \"")
+        .append(DIR_TEMPLATE)
+        .append("\") || {\n");
+    out.append(
+        "  echo \"qits-ci: no private directory could be made under ${TMPDIR:-/tmp} for this"
+            + " automation's files\" >&2\n");
+    out.append("  exit 1\n");
+    out.append("}\n");
     // The paths this run may commit, one per line for the postlude. A string carrying a newline
     // would become two lines, so it is refused with the rest.
     out.append("printf '%s' \"$QITS_EVENT_PAYLOAD\" | jq -r '\n");
@@ -509,10 +546,9 @@ public final class CiAutomationComposer {
       CiReleaseComposer.cliFetch(out, image, CiReleaseComposer.CliFetch.AUTOMATION);
     }
     if (commitType != null) {
-      // The kind writes its own description; a stale file from nobody is never read as one.
-      out.append("rm -f ").append(MESSAGE_FILE).append('\n');
+      // The kind writes its own description, into this run's fresh directory: a stale file from
+      // nobody is never read as one.
       out.append("export ").append(MESSAGE_ENV).append('=').append(MESSAGE_FILE).append('\n');
-      out.append("rm -f ").append(TICKETS_FILE).append('\n');
       out.append("export ").append(TICKETS_ENV).append('=').append(TICKETS_FILE).append('\n');
     }
     out.append("# --- the kind's script, run as data ---\n");
@@ -600,8 +636,8 @@ public final class CiAutomationComposer {
               shellQuote(
                   "the "
                       + kind
-                      + " script changed the tree but wrote no commit description to "
-                      + MESSAGE_FILE))
+                      + " script changed the tree but wrote no commit description to $"
+                      + MESSAGE_ENV))
           .append(" >&2\n");
       out.append("  exit 1\n");
       out.append("fi\n");
@@ -628,8 +664,8 @@ public final class CiAutomationComposer {
               shellQuote(
                   "the "
                       + kind
-                      + " script wrote tickets to "
-                      + TICKETS_FILE
+                      + " script wrote tickets to $"
+                      + TICKETS_ENV
                       + " that are not work items separated by single spaces"))
           .append(" >&2\n");
       out.append("    exit 1\n");

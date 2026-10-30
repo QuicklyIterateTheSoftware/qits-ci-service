@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -190,9 +191,10 @@ public class CiAutomationComposerTest {
   @Test
   public void theScreenshotBaselinesKindIsComposedByteIdenticallyToBefore() throws Exception {
     // composed/automation-screenshot-baselines.yml is the composition from before qits-cli: the
-    // key is additive, so a kind that does not set it must not move by a byte. It moved twice
-    // since, on purpose: qits-1253 put git_net into every kind's platform prelude and postlude,
-    // and qits-1687 named the fold on every ending and added the outside-paths report.
+    // key is additive, so a kind that does not set it must not move by a byte. It moved three
+    // times since, on purpose: qits-1253 put git_net into every kind's platform prelude and
+    // postlude, qits-1687 named the fold on every ending and added the outside-paths report, and
+    // qits-1563 moved every file the step writes into a mktemp directory of the run's own.
     String path = "ci/src/main/resources/platform-pipelines/automations/screenshot-baselines.yml";
     String kindFile = Files.readString(Path.of("..").resolve(path));
     try (var in =
@@ -407,6 +409,68 @@ public class CiAutomationComposerTest {
     assertTrue(run.output.contains("unchanged"), run.output);
     assertFalse(run.output.contains("changed outside the commit paths"), run.output);
     assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH), "nothing was pushed");
+  }
+
+  // --- each run's files are its own (qits-1563) --------------------------------------------------
+
+  /** The rest of the one output line starting {@code prefix}, failing when there is none. */
+  private static String lineAfter(String output, String prefix) {
+    return java.util.Arrays.stream(output.split("\n"))
+        .filter(line -> line.startsWith(prefix))
+        .map(line -> line.substring(prefix.length()))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("no line starting '" + prefix + "':\n" + output));
+  }
+
+  @Test
+  public void aStepRunInsideTheKindsScriptLeavesTheRunningScriptAlone(@TempDir Path dir)
+      throws Exception {
+    // The live failure: golden-recordings-maven's ./mvnw test composes and runs steps (this class)
+    // while its own composed step is executing the kind's script. With one fixed script path the
+    // inner step rewrote the file under the outer bash, which resumed at its old offset in the new
+    // text: "/tmp/qits-automation.sh: line 48: syntax error near unexpected token '{'". Here the
+    // kind's script runs a whole second composed step and then carries on. The second step goes
+    // through the same fence as the first, so a fixed path would be shared by both runs again -
+    // what separates them must be the composition, not this test's relocation.
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell));
+      // Longer than the outer kind's script, so an outer bash resuming in this text would land in
+      // the comments and never reach its own last line.
+      StringBuilder nestedScript = new StringBuilder("echo \"nested script: $0\"\n");
+      for (int i = 0; i < 40; i++) {
+        nestedScript.append("# the nested kind's script, longer than the one that runs it\n");
+      }
+      Path nested = scratch.root.resolve("nested-step.sh");
+      Files.writeString(
+          nested,
+          scratch.hermetic(
+              CiAutomationComposer.step(
+                  scratch.kind, "test-image", nestedScript.toString(), false, scratch.commitType)),
+          StandardCharsets.UTF_8);
+      String outerScript =
+          "echo \"outer script: $0\"\n"
+              + "\"$NESTED_SHELL\" \"$NESTED_STEP\"\n"
+              + "echo after-nested\n";
+
+      Result run =
+          scratch.run(
+              shell,
+              outerScript,
+              scratch.payload(BRANCH, scratch.fold, "\"out/**\""),
+              false,
+              null,
+              Map.of("NESTED_SHELL", shell, "NESTED_STEP", nested.toString()));
+
+      assertEquals(0, run.exit, shell + ":\n" + run.output);
+      assertTrue(run.output.contains("\nafter-nested\n"), shell + ":\n" + run.output);
+      String outer = lineAfter(run.output, "outer script: ");
+      String inner = lineAfter(run.output, "nested script: ");
+      assertNotEquals(outer, inner, shell + ": two runs shared one script file:\n" + run.output);
+      String tmpdir = scratch.root.toAbsolutePath() + "/";
+      assertTrue(outer.startsWith(tmpdir), shell + ": under $TMPDIR: " + outer);
+      assertTrue(inner.startsWith(tmpdir), shell + ": under $TMPDIR: " + inner);
+      assertTrue(run.output.contains("unchanged at fold"), shell + ":\n" + run.output);
+    }
   }
 
   @Test
@@ -761,16 +825,13 @@ public class CiAutomationComposerTest {
     String with = CiAutomationComposer.step("test-kind", IMAGE, "echo regenerate\n", false, "bump");
     assertEquals(without, CiAutomationComposer.step("test-kind", IMAGE, "echo regenerate\n", false, null));
     assertFalse(without.contains(CiAutomationComposer.MESSAGE_FILE), "a kind without the key pays nothing");
-    // The prelude is the same text up to the kind's script; the key adds the file, exported.
+    // The prelude is the same text up to the kind's script; the key adds the files, exported -
+    // both in the run's own fresh directory, so neither needs clearing first (qits-1563).
     String announce =
-        "rm -f "
-            + CiAutomationComposer.MESSAGE_FILE
-            + "\nexport "
+        "export "
             + CiAutomationComposer.MESSAGE_ENV
             + "="
             + CiAutomationComposer.MESSAGE_FILE
-            + "\nrm -f "
-            + CiAutomationComposer.TICKETS_FILE
             + "\nexport "
             + CiAutomationComposer.TICKETS_ENV
             + "="
@@ -889,8 +950,8 @@ public class CiAutomationComposerTest {
         assertEquals(1, run.exit, shell + " " + tickets + ":\n" + run.output);
         assertTrue(
             run.output.contains(
-                "wrote tickets to "
-                    + CiAutomationComposer.TICKETS_FILE
+                "wrote tickets to $"
+                    + CiAutomationComposer.TICKETS_ENV
                     + " that are not work items separated by single spaces"),
             shell + " " + tickets + ":\n" + run.output);
       }
@@ -905,7 +966,10 @@ public class CiAutomationComposerTest {
     Result run = scratch.run("bash", WRITES, scratch.payload(BRANCH, scratch.fold, "\"out/**\""));
 
     assertEquals(1, run.exit, run.output);
-    assertTrue(run.output.contains("wrote no commit description"), run.output);
+    assertTrue(
+        run.output.contains(
+            "wrote no commit description to $" + CiAutomationComposer.MESSAGE_ENV),
+        run.output);
     assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH), "nothing was pushed");
   }
 
@@ -1593,7 +1657,10 @@ public class CiAutomationComposerTest {
           + "]}";
     }
 
-    /** The prefix every fixed file of a composed step shares, kind script included (qits-1563). */
+    /**
+     * The prefix every fixed file of a composed step shared, kind script included, before each run
+     * got a directory of its own (qits-1563). Nothing composed carries it now; see {@link #runStep}.
+     */
     static final String AUTOMATION_FILES = "/tmp/qits-automation";
 
     Result run(String shell, String kindScript, String payload) throws Exception {
@@ -1620,26 +1687,45 @@ public class CiAutomationComposerTest {
       return runStep(shell, step, payload, extraEnv);
     }
 
+    /** Where {@link #hermetic} moves anything that would land on a fixed {@code /tmp} path. */
+    String automationFiles() {
+      // Not "qits-automation": a run's own mktemp directory under $TMPDIR (this root) starts with
+      // that, and the output rewrite in runStep would then rename it.
+      return root.resolve("fenced-qits-automation").toAbsolutePath().toString();
+    }
+
+    /**
+     * A step's text with every fixed host path moved into the scratch directory. The CLI goes
+     * there, never the host's /tmp/qits-bin (qits-1178): a QA step running these tests keeps the
+     * real CLI there for its output check. Any /tmp/qits-automation* path goes there too
+     * (qits-1563): a QA or automation step running these tests is itself executing a composed
+     * step, and bash reads a script as it runs, so rewriting its file mid-step breaks the step that
+     * runs the suite. A composed step names no such path any more — its files are in a mktemp
+     * directory under $TMPDIR, which {@link #runStep} points here — so this is a no-op today and a
+     * fence should one ever come back: the isolation test then sees two runs sharing the fenced
+     * path, rather than the host's /tmp being written.
+     */
+    String hermetic(String step) {
+      return step.replace(
+              CiReleaseComposer.CLI_DIR, root.resolve("qits-bin").toAbsolutePath().toString())
+          .replace(AUTOMATION_FILES, automationFiles());
+    }
+
     /** Runs a step's whole text, composed elsewhere — a packaged kind file's, say. */
     Result runStep(String shell, String step, String payload, Map<String, String> extraEnv)
         throws Exception {
       Path script = Files.createTempFile(root, "step", ".sh");
-      // The CLI goes into the scratch directory, never the host's /tmp/qits-bin (qits-1178): a QA
-      // step running these tests keeps the real CLI there for its output check.
-      // The step's fixed /tmp/qits-automation* files go there too (qits-1563): a QA or automation
-      // step running these tests is itself executing /tmp/qits-automation.sh, and bash reads a
-      // script as it runs, so rewriting that file mid-step breaks the step that runs the suite.
-      // The step's output names them by the shipped paths again, so assertions keep reading those.
-      String automationFiles = root.resolve("qits-automation").toAbsolutePath().toString();
-      String hermetic =
-          step.replace(CiReleaseComposer.CLI_DIR, root.resolve("qits-bin").toAbsolutePath().toString())
-              .replace(AUTOMATION_FILES, automationFiles);
-      Files.writeString(script, hermetic, StandardCharsets.UTF_8);
+      // The step's output names fenced paths by the shipped ones again, so assertions read those.
+      String automationFiles = automationFiles();
+      Files.writeString(script, hermetic(step), StandardCharsets.UTF_8);
       ProcessBuilder builder =
           new ProcessBuilder(shell, script.toString()).directory(work.toFile()).redirectErrorStream(true);
       Map<String, String> env = builder.environment();
       env.keySet().removeIf(name -> name.startsWith("QITS_") || name.startsWith("GIT_"));
       env.put("HOME", home.toString());
+      // The run's private directory is made under $TMPDIR (qits-1563): the scratch root, so a run
+      // leaves nothing in the host's /tmp.
+      env.put("TMPDIR", root.toAbsolutePath().toString());
       env.put("GIT_CONFIG_NOSYSTEM", "1");
       env.put("GIT_CONFIG_GLOBAL", "/dev/null");
       env.put("QITS_DOMAIN", "example.invalid");

@@ -59,17 +59,21 @@ steps:
         exit 1
       fi
       case "$item" in *[!0-9A-Za-z-]*) echo "refusing an implausible work item: $item" >&2; exit 1 ;; esac
+      qits_automation_dir=$(mktemp -d "${TMPDIR:-/tmp}/qits-automation.XXXXXX") || {
+        echo "qits-ci: no private directory could be made under ${TMPDIR:-/tmp} for this automation's files" >&2
+        exit 1
+      }
       printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r '
         .commitPaths
         | if type == "array" and length > 0 and all(.[]; type == "string" and (contains("\n") | not))
           then .[]
-          else error("refusing a payload whose commitPaths is not a non-empty array of paths") end' > /tmp/qits-automation-paths || exit 1
+          else error("refusing a payload whose commitPaths is not a non-empty array of paths") end' > "$qits_automation_dir/paths" || exit 1
       while IFS= read -r path; do
         rest=${path#':(glob)'}
         case "$rest" in
           ''|/*|-*|*..*|*[!0-9A-Za-z._/*-]*) echo "refusing an implausible commit path: $path" >&2; exit 1 ;;
         esac
-      done < /tmp/qits-automation-paths
+      done < "$qits_automation_dir/paths"
       # qits-1253: a git host answering 5xx, refusing or dropping a connection is a moment, not a
       # verdict - three attempts, 2s then 5s apart. A rejection, a missing ref or a 4xx is an
       # answer and is never retried. Callers read git_net_transient and git_net_last afterwards.
@@ -122,7 +126,7 @@ steps:
           | head -n 1)
       fi
       # --- the kind's script, run as data ---
-      cat > /tmp/qits-automation.sh <<'QITS_AUTOMATION_EOF'
+      cat > "$qits_automation_dir/script.sh" <<'QITS_AUTOMATION_EOF'
       if ! jq -e '.scripts["test:browser"]' package.json >/dev/null 2>&1; then
         echo "this repository has no test:browser script - there are no screenshot tests to render" >&2
         exit 1
@@ -152,9 +156,9 @@ steps:
       npm run --if-present screenshots:prune
       QITS_AUTOMATION_EOF
       if command -v bash > /dev/null 2>&1; then
-        bash -eu /tmp/qits-automation.sh
+        bash -eu "$qits_automation_dir/script.sh"
       else
-        sh -eu /tmp/qits-automation.sh
+        sh -eu "$qits_automation_dir/script.sh"
       fi
       # --- platform postlude: commit only the payload's paths, push plainly ---
       fold12=$(printf '%s' "$fold" | cut -c1-12)
@@ -163,17 +167,17 @@ steps:
         if [ -n "$(git ls-files --cached --others --exclude-standard -- "$path" | head -n 1)" ]; then
           set -- "$@" "$path"
         fi
-      done < /tmp/qits-automation-paths
+      done < "$qits_automation_dir/paths"
       if [ $# -gt 0 ]; then
         git add -A -- "$@"
       fi
       git status --porcelain --untracked-files=all --ignore-submodules=none \
-        | grep -v '^. ' | cut -c4- > /tmp/qits-automation-outside || true
+        | grep -v '^. ' | cut -c4- > "$qits_automation_dir/outside" || true
       qits_report_outside() {
-        if [ -s /tmp/qits-automation-outside ]; then
+        if [ -s "$qits_automation_dir/outside" ]; then
           echo 'changed outside the commit paths, not committed by this kind:'
-          sed -n '1,20p' /tmp/qits-automation-outside | sed 's/^/  /'
-          qits_outside_total=$(wc -l < /tmp/qits-automation-outside)
+          sed -n '1,20p' "$qits_automation_dir/outside" | sed 's/^/  /'
+          qits_outside_total=$(wc -l < "$qits_automation_dir/outside")
           if [ "$qits_outside_total" -gt 20 ]; then
             echo "  ... and $((qits_outside_total - 20)) more"
           fi
