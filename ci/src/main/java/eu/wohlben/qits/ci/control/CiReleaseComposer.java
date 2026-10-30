@@ -237,6 +237,14 @@ import java.util.Set;
  * stale. Nothing is regenerated or committed here. The check runs before the report hook, so the
  * hook still runs and reports the step's final code. A kind whose kind file declares {@code
  * qits-cli: true} gets the CLI as if the step had declared it.
+ *
+ * <h2>The QA consistency refusal (qits-1400)</h2>
+ *
+ * <p><b>A fold {@link CiReleaseConsistency} refuses composes a QA half that fails first.</b> The
+ * caller reads the fold's {@code deployments.yml} and hands the sentence in; the first QA step then
+ * prints it and exits 1 right after {@code set -eu}, before the prelude, the declared script or the
+ * report hook. The rest of the document is composed as usual, so the refusal is one readable block
+ * in the stored text rather than a different pipeline, and the release half is untouched.
  */
 public final class CiReleaseComposer {
 
@@ -502,7 +510,30 @@ public final class CiReleaseComposer {
    *     heredoc delimiter, {@code artifacts:} declared with no release steps to build them
    */
   public static Composed compose(CiRepoRef repo, CiReleaseSlots slots, CiReleaseSlots archetype) {
-    return compose(repo, slots, archetype, packagedOutputChecks());
+    return compose(repo, slots, archetype, packagedOutputChecks(), null);
+  }
+
+  /**
+   * {@link #compose(CiRepoRef, CiReleaseSlots, CiReleaseSlots)} for a fold that {@link
+   * CiReleaseConsistency} refuses (qits-1400): the QA half's first step prints {@code qaRefusal} and
+   * exits 1 before anything else runs, so the request's QA run is red with the sentence as its log
+   * and no tag is ever cut from the fold. The release half is unchanged — it never runs for a
+   * request whose QA is red.
+   *
+   * @param qaRefusal the sentence to refuse the fold's QA with, or null to compose it normally
+   */
+  public static Composed compose(
+      CiRepoRef repo, CiReleaseSlots slots, CiReleaseSlots archetype, String qaRefusal) {
+    return compose(repo, slots, archetype, packagedOutputChecks(), qaRefusal);
+  }
+
+  /** The seam a test runs a stub generator through, composing no refusal. */
+  static Composed compose(
+      CiRepoRef repo,
+      CiReleaseSlots slots,
+      CiReleaseSlots archetype,
+      Map<String, OutputCheck> outputChecks) {
+    return compose(repo, slots, archetype, outputChecks, null);
   }
 
   /**
@@ -514,7 +545,8 @@ public final class CiReleaseComposer {
       CiRepoRef repo,
       CiReleaseSlots slots,
       CiReleaseSlots archetype,
-      Map<String, OutputCheck> outputChecks) {
+      Map<String, OutputCheck> outputChecks,
+      String qaRefusal) {
     String selector = selector(repo);
     // WHOLE-SLOT OVERRIDE. A repository that declares a slot replaces the archetype's entirely, and
     // the file the steps came from travels with them so an error names the document a person edits.
@@ -543,7 +575,7 @@ public final class CiReleaseComposer {
     Slot release = declaredRelease != null ? declaredRelease : changelogOnlySlot(slots);
     Postlude postlude = new Postlude(artifacts, artifactsPath, contracts, selector);
     return new Composed(
-        qa == null ? null : qaDocument(slots, archetype, selector, qa, outputChecks),
+        qa == null ? null : qaDocument(slots, archetype, selector, qa, outputChecks, qaRefusal),
         releaseDocument(slots, archetype, selector, release, postlude));
   }
 
@@ -640,7 +672,8 @@ public final class CiReleaseComposer {
       CiReleaseSlots archetype,
       String selector,
       Slot qa,
-      Map<String, OutputCheck> outputChecks) {
+      Map<String, OutputCheck> outputChecks,
+      String refusal) {
     StringBuilder out = new StringBuilder();
     header(out, slots, archetype);
     out.append("event: ").append(RELEASE_REQUEST_EVENT).append('\n');
@@ -657,7 +690,7 @@ public final class CiReleaseComposer {
     out.append("checkout:\n");
     out.append("  branch: ").append(RELEASE_REQUEST_BRANCH_PATH).append('\n');
     out.append("  sha: ").append(RELEASE_REQUEST_SHA_PATH).append('\n');
-    steps(out, qa, false, null, outputChecks);
+    steps(out, qa, false, null, outputChecks, refusal);
     return out.toString();
   }
 
@@ -707,7 +740,7 @@ public final class CiReleaseComposer {
         out.append(" }\n");
       }
     }
-    steps(out, release, true, postlude, Map.of());
+    steps(out, release, true, postlude, Map.of(), null);
     return out.toString();
   }
 
@@ -739,7 +772,8 @@ public final class CiReleaseComposer {
       Slot slot,
       boolean releasePhase,
       Postlude postlude,
-      Map<String, OutputCheck> outputChecks) {
+      Map<String, OutputCheck> outputChecks,
+      String refusal) {
     List<CiStepDecl> declared = slot.pipeline().steps();
     // Every release phase's last step publishes — at the very least its changelog (qits-893) — so
     // the publish block's place is no longer conditional on what the repository declares.
@@ -777,7 +811,8 @@ public final class CiReleaseComposer {
               releasePhase ? postlude : null,
               i == last,
               slot.sourcePath(),
-              outputChecks),
+              outputChecks,
+              i == 0 ? refusal : null),
           "      ");
     }
   }
@@ -809,7 +844,8 @@ public final class CiReleaseComposer {
       Postlude release,
       boolean last,
       String sourcePath,
-      Map<String, OutputCheck> outputChecks) {
+      Map<String, OutputCheck> outputChecks,
+      String refusal) {
     List<OutputCheck> checks = new ArrayList<>();
     for (String kind : step.checkOutputs()) {
       OutputCheck check = outputChecks.get(kind);
@@ -827,6 +863,17 @@ public final class CiReleaseComposer {
     // unset injected variable must stop the step rather than resolve to nothing halfway through a
     // publish.
     out.append("set -eu\n");
+    if (refusal != null) {
+      // THE FOLD IS REFUSED (qits-1400): its release.yml and deployments.yml disagree about which
+      // application this is. First, so nothing is built for a fold that cannot ship; a red QA step
+      // is what turns the release request REJECTED, with this sentence as the reason.
+      out.append(
+          "# --- platform consistency check: release.yml and deployments.yml disagree -------\n");
+      out.append("echo ")
+          .append(shellQuote("qits-ci: this fold is refused: " + oneLine(refusal)))
+          .append(" >&2\n");
+      out.append("exit 1\n");
+    }
     out.append("# --- platform prelude ---------------------------------------------------------\n");
     // THE ONE ADDRESS INPUT (qits-731). Every platform address a step reaches is code under the
     // bare public domain — `registry.qits.<d>`, `mirror.qits.<d>` — so the domain is demanded of
@@ -1846,6 +1893,11 @@ public final class CiReleaseComposer {
         fi
         echo "qits-ci: migration versions checked ($lineages lineages)" >&2
         """;
+  }
+
+  /** A sentence for one shell line: every control character, a newline included, becomes a space. */
+  private static String oneLine(String value) {
+    return value.replaceAll("\\p{Cntrl}", " ");
   }
 
   private static String slotScript(String script, String sourcePath) {

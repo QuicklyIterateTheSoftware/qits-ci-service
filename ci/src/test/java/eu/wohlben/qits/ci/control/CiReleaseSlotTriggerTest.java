@@ -1173,4 +1173,133 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     assertEquals(composed, refired.triggerConfig, "byte for byte, the pipeline the source ran");
     assertEquals(CiRunStatus.SUCCESS, refired.status);
   }
+
+  // --- the QA consistency check (qits-1400): a fold that disagrees with itself is refused in QA ----
+
+  /** A slot file whose one docker entry names {@code image}, with a QA slot and a release slot. */
+  private static String dockerSlots(String image) {
+    return """
+        release-request:
+          - image: qits/build-images/ci-base:latest
+            script: echo qa-ran
+        release:
+          - image: qits/build-images/ci-base:latest
+            build: true
+            script: buildctl build
+        artifacts:
+          - { type: docker, name: %s, sbom: out/sbom.json }
+        """
+        .formatted(image);
+  }
+
+  private void seedDeployments(String content) {
+    fakeConfig.putFile(repoId, MERGED_SHA, CiReleaseConsistency.DEPLOYMENTS_PATH, content);
+    fakeConfig.putFile(repoId, RELEASED_SHA, CiReleaseConsistency.DEPLOYMENTS_PATH, content);
+  }
+
+  /** Every step really runs its composed script under {@code sh}, with nothing it is handed. */
+  private void runTheScripts() {
+    fakeRunner.answer(
+        spec -> {
+          try {
+            ProcessBuilder builder =
+                new ProcessBuilder("sh", "-c", spec.script()).redirectErrorStream(true);
+            builder.environment().clear();
+            builder.environment().put("PATH", System.getenv("PATH"));
+            Process process = builder.start();
+            String output =
+                new String(
+                    process.getInputStream().readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            process.waitFor();
+            return new CiStepRunner.StepResult(
+                process.exitValue(), false, CiStepRunner.StepOutcome.OK, output);
+          } catch (Exception e) {
+            throw new IllegalStateException(e);
+          }
+        });
+  }
+
+  @Test
+  public void aFoldWhoseDockerArtifactDisagreesWithItsApplicationIsRefusedByARedQaRun()
+      throws Exception {
+    seedSlots(dockerSlots("qits/qits-wrong"));
+    seedDeployments("application: qits-target\nroutes: /target\n");
+    runTheScripts();
+
+    deliver(releaseRequest());
+
+    List<CiRun> recorded = runService.runsFor(repoId);
+    assertEquals(1, recorded.size(), "the QA run is recorded — a refusal is a verdict, not silence");
+    CiRun run = recorded.get(0);
+    assertEquals(MERGED_SHA, run.commitSha, "at the fold, the commit both files were read at");
+    assertEquals(CiRunStatus.FAILED, run.status, "red, so the request is REJECTED before any tag");
+    assertTrue(
+        fakeConfig
+            .fileReads()
+            .contains(repoId + "@" + MERGED_SHA + "/" + CiReleaseConsistency.DEPLOYMENTS_PATH),
+        "deployments.yml is read at the fold: " + fakeConfig.fileReads());
+    assertEquals(1, fakeRunner.executed().size(), "the first QA step refuses; nothing after it runs");
+    String sentence =
+        "release.yml's docker artifact is `qits/qits-wrong` but deployments.yml's application is"
+            + " `qits-target`: they must move together (qits/qits-target)";
+    // The stored document carries it shell-quoted; what the step PRINTED is the sentence verbatim.
+    assertTrue(run.triggerConfig.contains("this fold is refused"), run.triggerConfig);
+    String output = runService.stepsFor(run.id).get(0).output;
+    assertTrue(output.contains("qits-ci: this fold is refused: " + sentence), output);
+    assertEquals(1, announcer.failed().size(), "BuildFailed is what qits-projects rejects on");
+    assertEquals(List.of(), announcer.announced(), "and nothing is announced as released");
+  }
+
+  @Test
+  public void aConsistentFoldComposesNoRefusal() throws Exception {
+    seedSlots(dockerSlots("qits/qits-target"));
+    seedDeployments("routes: /target\n"); // no application: — the repository name is the answer
+
+    deliver(releaseRequest());
+
+    CiRun run = runService.runsFor(repoId).get(0);
+    assertEquals(CiRunStatus.SUCCESS, run.status);
+    assertFalse(run.triggerConfig.contains("this fold is refused"), run.triggerConfig);
+  }
+
+  @Test
+  public void aRepositoryWithoutDeploymentsYmlIsSkipped() throws Exception {
+    // The same mismatch with no deployments.yml at all: nothing deploys, so nothing is compared.
+    seedSlots(dockerSlots("qits/qits-wrong"));
+
+    deliver(releaseRequest());
+
+    CiRun run = runService.runsFor(repoId).get(0);
+    assertEquals(CiRunStatus.SUCCESS, run.status);
+    assertFalse(run.triggerConfig.contains("this fold is refused"), run.triggerConfig);
+  }
+
+  @Test
+  public void anUnreadableDeploymentsYmlRecordsNoQaRunAndLeavesTheEventOwed() throws Exception {
+    // A blip must never compose the QA run WITHOUT the check: that is the one way a fold that
+    // disagrees with itself would go green.
+    seedSlots(dockerSlots("qits/qits-wrong"));
+    fakeConfig.putFileUnreachable(repoId, MERGED_SHA, CiReleaseConsistency.DEPLOYMENTS_PATH);
+
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(List.of(), runService.runsFor(repoId), "nothing was learned, so nothing ran");
+    assertTrue(stillOwed(arrival.eventId()), "owed, so a sweep asks the git host again");
+  }
+
+  @Test
+  public void theReleaseHalfNeverReadsDeploymentsYml() throws Exception {
+    seedSlots(dockerSlots("qits/qits-wrong"));
+    seedDeployments("application: qits-target\n");
+
+    deliver(release());
+
+    assertEquals(CiRunStatus.SUCCESS, runService.runsFor(repoId).get(0).status);
+    assertFalse(
+        fakeConfig.fileReads().stream()
+            .anyMatch(read -> read.endsWith(CiReleaseConsistency.DEPLOYMENTS_PATH)),
+        "the check is QA's, before the tag: " + fakeConfig.fileReads());
+  }
 }
