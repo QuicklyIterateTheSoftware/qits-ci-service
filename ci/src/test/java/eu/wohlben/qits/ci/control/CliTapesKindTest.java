@@ -161,8 +161,10 @@ public class CliTapesKindTest {
   public void withoutVhsTheScriptFailsSayingSo() throws Exception {
     Files.createDirectories(repo.resolve("tapes"));
     Files.writeString(repo.resolve("tapes/prepare.sh"), PREPARE);
-    Files.delete(bin.resolve("vhs"));
-    Result run = run(Map.of("PATH", "/usr/bin:/bin"));
+    // An empty PATH, not /usr/bin:/bin: a CI image that carries vhs (ci-slot does) would find it
+    // there. The script reaches the check through builtins alone.
+    Path nothing = Files.createDirectories(dir.resolve("empty-path"));
+    Result run = run(Map.of("PATH", nothing.toString()));
     assertNotEquals(0, run.exit, run.output);
     assertTrue(run.output.contains("vhs is not on PATH"), run.output);
   }
