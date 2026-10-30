@@ -41,6 +41,8 @@
 # repository's own documented contract. The gate runs the command the repository already holds itself
 # to rather than inventing a second one — so no `-DskipITs`, no `-Dit.test`, no `-Dquarkus.quinoa`.
 #
+# NO TAPE IS PLAYED BY THE FIRST STEP. The tapes check is a step of its own, below.
+#
 # `QITS_MAVEN_REPOSITORY_URL` IS EXPORTED, as maven-library's QA step does: a CLI's contract tests
 # read its providers' golden masters jars, which only the platform registry serves (qits-1149). A pom
 # with no qits dependency never dials it.
@@ -51,7 +53,25 @@
 # A CLI that grows a published artifact stops being this archetype: it declares `artifacts:` and a
 # `release:` slot that builds it, or moves to `daemon` if what it ships is a static binary the platform
 # downloads. A CLI whose suite needs a wider phase declares its own `release-request:` — declaring
-# the slot replaces this one entirely.
+# the slot replaces this one entirely, the tapes check included: such a repository adds the same
+# second step below (`build: true`, `check-outputs: [cli-tapes]`) to its own slot, or its goldens
+# go unchecked.
+#
+# ---------------------------------------------------------------------------------------------
+# THE TAPES CHECK (epic qits-881)
+#
+# The second step checks the CLI's VHS tapes: `tapes/*.tape`, each with a committed text golden
+# (`tapes/golden/<tape>.txt`) and a GIF (`tapes/recordings/<tape>.gif`). Its own script only says
+# what it checks; the check is `check-outputs: [cli-tapes]`, which runs the cli-tapes automation's
+# own generator (platform-pipelines/automations/cli-tapes.yml: source `tapes/prepare.sh`, play every
+# tape into its golden, render a GIF only for a changed golden or a missing GIF) and then fails the
+# step as stale on any change under `tapes/golden/` or `tapes/recordings/`, naming the regenerate
+# command (`qits release-request regenerate --kind cli-tapes`). Nothing is committed here. A
+# repository with no `tapes/prepare.sh` has no tapes, and the step is green.
+#
+# `build: true` because the generator's `tapes/prepare.sh` builds the native binary the tapes play
+# through the platform builder. A separate step rather than a key on the first, so a red unit suite
+# and a stale golden are told apart by the step that failed.
 
 release-request:
 
@@ -127,3 +147,13 @@ release-request:
       env "JAVA_TOOL_OPTIONS=${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }${jacoco_options:+$jacoco_options }$pact_options" \
         ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
         ${maven_repository_property:+"$maven_repository_property"}
+
+    # The tapes check (see THE TAPES CHECK above). `image:` is kept for the same reason as the
+    # first step's; the ci-slot runner ignores it (qits-1544).
+  - image: qits/build-images/vhs-base:latest
+    build: true
+    timeout-seconds: 3600
+    check-outputs: [cli-tapes]
+    script: |
+      # The check itself is the cli-tapes generator, run by `check-outputs` after this script.
+      echo "checking the VHS tapes: tapes/*.tape against tapes/golden/ and tapes/recordings/"

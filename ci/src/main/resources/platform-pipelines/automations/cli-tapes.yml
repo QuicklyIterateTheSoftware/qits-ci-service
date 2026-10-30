@@ -1,0 +1,133 @@
+# Play a release request's VHS tapes so the text goldens and the GIFs they write can be committed:
+# the `cli-tapes` kind of qits-maintenance's release-request automations (epic qits-881).
+#
+# A KIND FILE, not a pipeline. qits-ci's CiAutomationComposer composes it into a platform trigger
+# on `ReleaseRequestAutomation` selected by `kind: cli-tapes` (this file's name), and wraps the
+# script below in the platform's own prelude and postlude:
+#
+#   prelude   validates the payload, fetches the fold (`baseRef`) and refuses with
+#             "superseded before start" unless it is still `foldSha`; checks it out, gives the
+#             step a writable HOME and works out the commit subject's work item; and, because this
+#             file declares `build: true`, demands $BUILDKIT_HOST and writes the run's credential to
+#             /tmp/qits-client-id and /tmp/qits-client-secret - exactly what a slot step's
+#             `build: true` gets
+#   script    this file's, run as data in a child shell
+#   postlude  stages only the payload's `commitPaths`, commits `chore(<item>): update cli tapes`
+#             (or prints `unchanged` and exits 0), and makes a plain push to the payload's `branch`
+#
+# So nothing here touches a ref or makes a commit. The paths that get committed are the payload's -
+# `tapes/golden/` and `tapes/recordings/` for this kind - and anything else the run touches stays
+# out.
+#
+# THE REPOSITORY'S SIDE: `tapes/`. A tape is `tapes/<name>.tape` (<name> is [A-Za-z0-9._-]+), its
+# text golden `tapes/golden/<name>.txt`, its GIF `tapes/recordings/<name>.gif`. Before any tape
+# plays, the repository's hook `tapes/prepare.sh` is SOURCED - `. ./tapes/prepare.sh`, from the
+# repository root, by bash under `set -eu` - never executed, so that what it exports reaches every
+# tape. It builds the binary the tapes run and starts whatever they talk to (the qits CLI's: the
+# native binary and a fake platform), and it must leave:
+#
+#   PATH         exported, with the binary the tapes type first on it
+#   the rest     every other variable the tapes' commands read, exported (the qits CLI's
+#                QITS_URL_* addresses of its fake platform, say) - vhs passes this shell's
+#                environment to the terminal it records
+#
+# and it must not `exit` (that ends this whole script; fail with a non-zero command instead), must be
+# `set -u` safe, and must send the output of anything it leaves running in the background to a
+# file, never to this shell's stdout or stderr - a background process holding the step's output open
+# keeps the step from ending. It may `trap '...' EXIT` to stop what it started: this script sets no
+# trap of its own. A repository with no `tapes/prepare.sh` has no tapes; the run says so and is
+# green.
+#
+# TEXT FIRST, GIF SECOND. Each tape is played into its text golden first: a copy of the tape with
+# every `Output` line removed and the one `Output tapes/golden/<name>.txt` added, so the tape's own
+# Output lines never decide where anything lands. Only when that golden changed (or is new), or the
+# GIF is missing, is the tape played a second time into the GIF alone. The text is what is compared:
+# it is deterministic, so a golden that did not move means the tape did not, and an unchanged tape
+# costs no render. A GIF is never compared: its bytes move from run to run with no change to the
+# tape (frame timing, encoder noise), so a GIF that is re-rendered only when its text changed can
+# never fail QA by itself, and a re-rendered one is committed only beside the text change that
+# justified it. Goldens and GIFs whose tape no longer exists are deleted, so a renamed tape leaves no
+# orphan behind.
+#
+# THE SAME SCRIPT IS QA'S CHECK. A release-request step that declares `check-outputs: [cli-tapes]`
+# (the `cli` archetype's second step) runs this script, verbatim, after its own script, and then
+# `git status` on `tapes/golden/` and `tapes/recordings/`: a change there - a moved golden, a new
+# one, a missing GIF - fails QA as stale, naming this kind (`qits release-request regenerate --kind
+# cli-tapes`). A tape whose vhs run fails, or a prepare.sh that fails, fails the check like it fails
+# this run.
+#
+# It needs vhs, ttyd, ffmpeg and a chromium, which `qits/build-images/vhs-base` carries. Note that
+# `image:` is IGNORED (epic qits-1481): every step runs in the run's qits/build-images/ci-slot
+# container, so the tools must be on that image's PATH; a step without vhs fails here saying so.
+image: qits/build-images/vhs-base:latest
+build: true
+timeout-seconds: 3600
+script: |
+  if [ ! -f tapes/prepare.sh ]; then
+    echo "this repository has no tapes (no tapes/prepare.sh) - there is nothing to play"
+    exit 0
+  fi
+  if ! command -v vhs > /dev/null 2>&1; then
+    echo "cli-tapes: vhs is not on PATH in this step's container, so no tape can be played (it needs vhs, ttyd, ffmpeg and a chromium)" >&2
+    exit 1
+  fi
+  # A step container is no place for chromium's user-namespace sandbox.
+  export VHS_NO_SANDBOX="${VHS_NO_SANDBOX:-true}"
+
+  # The repository's hook, SOURCED: what it exports (PATH, QITS_URL_*) reaches every tape.
+  . ./tapes/prepare.sh
+
+  mkdir -p tapes/golden tapes/recordings
+  tapes_dir=$(mktemp -d "${TMPDIR:-/tmp}/qits-tapes.XXXXXX")
+
+  # A copy of tape $1 whose one Output is $2, written to $3.
+  retarget() {
+    printf 'Output %s\n' "$2" > "$3"
+    grep -Ev '^[[:space:]]*Output([[:space:]]|$)' "$1" >> "$3" || true
+  }
+
+  played=0
+  for tape in tapes/*.tape; do
+    [ -f "$tape" ] || continue
+    name=$(basename "$tape" .tape)
+    case "$name" in
+      ''|*[!A-Za-z0-9._-]*)
+        echo "cli-tapes: refusing the tape $tape - a tape is named [A-Za-z0-9._-]+.tape" >&2
+        exit 1 ;;
+    esac
+    golden="tapes/golden/$name.txt"
+    gif="tapes/recordings/$name.gif"
+
+    retarget "$tape" "$golden" "$tapes_dir/$name.text.tape"
+    echo "cli-tapes: playing $tape into $golden"
+    if ! vhs "$tapes_dir/$name.text.tape"; then
+      echo "cli-tapes: vhs failed playing $tape into $golden" >&2
+      exit 1
+    fi
+
+    if [ -n "$(git status --porcelain --untracked-files=all -- "$golden")" ] || [ ! -f "$gif" ]; then
+      retarget "$tape" "$gif" "$tapes_dir/$name.gif.tape"
+      echo "cli-tapes: $golden changed or $gif is missing - playing $tape into $gif"
+      if ! vhs "$tapes_dir/$name.gif.tape"; then
+        echo "cli-tapes: vhs failed playing $tape into $gif" >&2
+        exit 1
+      fi
+    else
+      echo "cli-tapes: $golden unchanged and $gif present - no GIF render"
+    fi
+    played=$((played + 1))
+  done
+
+  # Goldens and GIFs whose tape is gone. The postlude stages the deletions with the rest.
+  for output in tapes/golden/*.txt tapes/recordings/*.gif; do
+    [ -f "$output" ] || continue
+    name=$(basename "$output")
+    name=${name%.*}
+    if [ ! -f "tapes/$name.tape" ]; then
+      echo "cli-tapes: deleting $output - no tapes/$name.tape any more"
+      rm -f "$output"
+    fi
+  done
+
+  rm -rf "$tapes_dir"
+  echo "cli-tapes: played $played tape(s)"

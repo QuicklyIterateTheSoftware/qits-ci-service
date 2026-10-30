@@ -2334,6 +2334,41 @@ public class CiReleaseComposerTest {
   }
 
   @Test
+  public void aQaStepCheckingCliTapesRunsTheKindFilesGeneratorWithTheBuilder() {
+    String qa =
+        CiReleaseComposer.compose(
+                REPO,
+                slots(
+                    """
+                    release-request:
+                      - image: qits/build-images/vhs-base:latest
+                        build: true
+                        check-outputs: [cli-tapes]
+                        script: |
+                          echo checking the tapes
+                    """),
+                null)
+            .releaseRequestDocument();
+    assertEquals(
+        List.of(":(glob)tapes/golden/**", ":(glob)tapes/recordings/**"),
+        CiReleaseComposer.OUTPUT_CHECK_PATHS.get("cli-tapes"));
+    assertTrue(qa.contains("build: true\n"), qa);
+    assertTrue(qa.contains("${BUILDKIT_HOST:?"), qa);
+    // The generator is the kind file's: the hook sourced, every tape played into its golden.
+    assertTrue(qa.contains(". ./tapes/prepare.sh"), qa);
+    assertTrue(qa.contains("qits-ci: checking cli-tapes"), qa);
+    assertTrue(
+        qa.contains(
+            "git status --porcelain --untracked-files=all -- ':(glob)tapes/golden/**'"
+                + " ':(glob)tapes/recordings/**'"),
+        qa);
+    assertTrue(qa.contains("--kind cli-tapes"), qa);
+    // The builder is demanded before the declared script, and so before the generator.
+    assertTrue(qa.indexOf("${BUILDKIT_HOST:?") < qa.indexOf("echo checking the tapes"), qa);
+    assertTrue(qa.indexOf("echo checking the tapes") < qa.indexOf(". ./tapes/prepare.sh"), qa);
+  }
+
+  @Test
   public void theCheckedGeneratorsAreTheAutomationKindFilesScripts() {
     // One text for both: the check cannot disagree with the regeneration.
     for (var check : CiReleaseComposer.packagedOutputChecks().values()) {

@@ -37,6 +37,15 @@ import java.util.regex.Pattern;
  *       {@code golden-recordings-maven} kind (qits-1516) runs as maven-base's {@code build} user,
  *       exactly as java-service's QA step does. A kind without the key is composed exactly as if
  *       the key did not exist, and runs as the image's own user.
+ *   <li>{@code build} — optional, and only ever {@code true} (qits-1377): exactly what {@code build:
+ *       true} means on a slot step ({@link CiConfigSchema}'s {@code build}). The composed step
+ *       declares {@code build: true} itself, and its prelude carries {@link
+ *       CiReleaseComposer#buildEnvironment}'s text — the one a slot step gets, not a copy: {@code
+ *       $BUILDKIT_HOST} demanded before the kind's script runs, and the run's credential written to
+ *       {@code /tmp/qits-client-id} and {@code /tmp/qits-client-secret} for a buildctl {@code
+ *       --secret}. The {@code cli-tapes} kind needs it: the repository's {@code tapes/prepare.sh}
+ *       builds the native binary the tapes play through the platform builder. A kind without the
+ *       key is composed exactly as if the key did not exist.
  * </ul>
  *
  * <p>Anything else is a {@link CiConfigException} naming the file, and so a boot error: a kind file
@@ -182,9 +191,12 @@ public final class CiAutomationComposer {
 
   static final String USER_KEY = "user";
 
+  static final String BUILD_KEY = "build";
+
   /** The whole kind-file vocabulary. Anything else is an error naming the file. */
   static final Set<String> KEYS =
-      Set.of(IMAGE_KEY, TIMEOUT_KEY, SCRIPT_KEY, QITS_CLI_KEY, COMMIT_TYPE_KEY, USER_KEY);
+      Set.of(
+          IMAGE_KEY, TIMEOUT_KEY, SCRIPT_KEY, QITS_CLI_KEY, COMMIT_TYPE_KEY, USER_KEY, BUILD_KEY);
 
   /**
    * What a {@code user} may spell: {@link CiConfigSchema}'s own step {@code user:} charset, so the
@@ -349,7 +361,11 @@ public final class CiAutomationComposer {
     String image = root.get(IMAGE_KEY) instanceof String declared ? declared : null;
     int timeout = requireTimeout(root, configPath);
     String script = requireText(root, SCRIPT_KEY, configPath);
-    boolean qitsCli = optionalTrue(root, QITS_CLI_KEY, configPath);
+    boolean qitsCli =
+        optionalTrue(root, QITS_CLI_KEY, configPath, "a kind that needs no qits CLI");
+    boolean build =
+        optionalTrue(
+            root, BUILD_KEY, configPath, "a kind that builds nothing through the platform builder");
     String commitType = optionalCommitType(root, configPath);
     String user = optionalUser(root, configPath);
     for (String line : script.split("\n", -1)) {
@@ -375,8 +391,11 @@ public final class CiAutomationComposer {
     } else {
       out.append("  - timeout-seconds: ").append(timeout).append('\n');
     }
+    if (build) {
+      out.append("    build: true\n");
+    }
     out.append("    script: |\n");
-    block(out, step(kind, image, script, qitsCli, commitType), "      ");
+    block(out, step(kind, image, script, qitsCli, commitType, build), "      ");
     return out.toString();
   }
 
@@ -393,6 +412,21 @@ public final class CiAutomationComposer {
    */
   static String step(
       String kind, String image, String script, boolean qitsCli, String commitType) {
+    return step(kind, image, script, qitsCli, commitType, false);
+  }
+
+  /**
+   * The one step, with the kind file's {@code build} (qits-1377): true adds {@link
+   * CiReleaseComposer#buildEnvironment}'s text after the CLI fetch and before the kind's script,
+   * and nothing else.
+   */
+  static String step(
+      String kind,
+      String image,
+      String script,
+      boolean qitsCli,
+      String commitType,
+      boolean build) {
     String words = kind.replace('-', ' ');
     StringBuilder out = new StringBuilder();
     out.append("set -eu\n");
@@ -544,6 +578,10 @@ public final class CiAutomationComposer {
     if (qitsCli) {
       out.append("# --- the qits CLI, pinned, on PATH: this kind declares qits-cli: true ---\n");
       CiReleaseComposer.cliFetch(out, image, CiReleaseComposer.CliFetch.AUTOMATION);
+    }
+    if (build) {
+      out.append("# --- the platform builder: this kind declares build: true ---\n");
+      CiReleaseComposer.buildEnvironment(out, true, false);
     }
     if (commitType != null) {
       // The kind writes its own description, into this run's fresh directory: a stale file from
@@ -753,7 +791,8 @@ public final class CiAutomationComposer {
    * boot error naming the file: {@code false} would be a key nobody reads, and a string such as
    * {@code "true"} a decision the composer cannot tell apart from a typo.
    */
-  private static boolean optionalTrue(Map<?, ?> root, String key, String configPath) {
+  private static boolean optionalTrue(
+      Map<?, ?> root, String key, String configPath, String absentMeans) {
     if (!root.containsKey(key)) {
       return false;
     }
@@ -762,7 +801,9 @@ public final class CiAutomationComposer {
           configPath
               + ": '"
               + key
-              + "' may only be true (leave it out for a kind that needs no qits CLI), not '"
+              + "' may only be true (leave it out for "
+              + absentMeans
+              + "), not '"
               + root.get(key)
               + "'");
     }

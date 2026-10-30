@@ -236,6 +236,102 @@ public class CiAutomationComposerTest {
     }
   }
 
+  // --- build (qits-1377) --------------------------------------------------------------------------
+
+  /** The block a slot step's {@code build: true} gets: the shared emitter's text. */
+  private static String buildEnvironment() {
+    StringBuilder text = new StringBuilder();
+    CiReleaseComposer.buildEnvironment(text, true, false);
+    return text.toString();
+  }
+
+  @Test
+  public void buildTrueIsTheSlotStepsBuildModeAndNothingElseMoves() {
+    String without = CiAutomationComposer.compose("test-kind", PATH, MINIMAL);
+    String with = CiAutomationComposer.compose("test-kind", PATH, MINIMAL + "build: true\n");
+
+    // The runner is told, as it is for a slot step.
+    assertTrue(new CiEventTriggerParser().parse(PATH, with).pipeline().steps().get(0).build());
+    assertFalse(new CiEventTriggerParser().parse(PATH, without).pipeline().steps().get(0).build());
+
+    // The prelude carries the slot step's own text, verbatim: the builder demanded and the run's
+    // credential written for a buildctl --secret, after the fold is checked out and before the
+    // kind's script runs.
+    String env = buildEnvironment();
+    assertTrue(env.contains("${BUILDKIT_HOST:?"), env);
+    assertTrue(env.contains("/tmp/qits-client-id"), env);
+    assertTrue(env.contains("/tmp/qits-client-secret"), env);
+    String step = CiAutomationComposer.step("test-kind", IMAGE, "echo regenerate\n", false, null, true);
+    assertTrue(step.contains(env), step);
+    assertTrue(
+        step.indexOf(env) > step.indexOf("git checkout -q --detach FETCH_HEAD"), "after the fold");
+    assertTrue(
+        step.indexOf(env) < step.indexOf("cat > " + CiAutomationComposer.KIND_SCRIPT),
+        "before the kind's script");
+
+    // That block and the step's key are the ONLY difference the key makes.
+    String marker = "# --- the platform builder: this kind declares build: true ---\n";
+    assertEquals(
+        CiAutomationComposer.step("test-kind", IMAGE, "echo regenerate\n", false, null),
+        step.replace(marker + env, ""));
+    String indented = ("\n" + marker + env).replace("\n", "\n      ").substring(1);
+    indented = indented.substring(0, indented.length() - "      ".length());
+    assertEquals(without, with.replace("    build: true\n", "").replace(indented, ""));
+  }
+
+  @Test
+  public void buildTrueWithAUserKeepsBoth() {
+    String composed =
+        CiAutomationComposer.compose("test-kind", PATH, MINIMAL + "user: build\nbuild: true\n");
+    CiPipeline.CiStepDecl step = new CiEventTriggerParser().parse(PATH, composed).pipeline().steps().get(0);
+    assertEquals("build", step.user());
+    assertTrue(step.build());
+  }
+
+  @Test
+  public void anyBuildValueButTrueIsABootErrorNamingTheFile() {
+    for (String value : List.of("false", "yes please", "'true'", "1", "", "[true]")) {
+      CiConfigException error =
+          assertThrows(
+              CiConfigException.class,
+              () -> CiAutomationComposer.compose("test-kind", PATH, MINIMAL + "build: " + value + "\n"),
+              value);
+      assertTrue(error.getMessage().startsWith(PATH + ": "), error.getMessage());
+      assertTrue(error.getMessage().contains("'build'"), error.getMessage());
+      assertTrue(error.getMessage().contains("platform builder"), error.getMessage());
+    }
+  }
+
+  @Test
+  public void aBuildKindWithoutABuilderNeverRunsItsScript(@TempDir Path dir) throws Exception {
+    Scratch scratch = new Scratch(dir);
+    String step =
+        CiAutomationComposer.step(
+            "test-kind", "test-image", "echo kind-script-ran\n", false, null, true);
+    Result run =
+        scratch.runStep(
+            "bash",
+            step.replace("test-kind", scratch.kind),
+            scratch.payload(BRANCH, scratch.fold, "\":(glob)out/**\""),
+            // Empty is the kill switch, and overrides a builder the host running this suite has.
+            Map.of("BUILDKIT_HOST", ""));
+    assertNotEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains("the platform builder is off or not injected"), run.output);
+    assertFalse(run.output.contains("kind-script-ran"), run.output);
+  }
+
+  @Test
+  public void theCliTapesKindIsABuildKind() throws Exception {
+    String path = "ci/src/main/resources/platform-pipelines/automations/cli-tapes.yml";
+    String composed =
+        CiAutomationComposer.compose("cli-tapes", path, Files.readString(Path.of("..").resolve(path)));
+    CiPipeline.CiStepDecl step = new CiEventTriggerParser().parse(path, composed).pipeline().steps().get(0);
+    assertTrue(step.build(), composed);
+    assertEquals(3600, step.timeoutSeconds());
+    assertTrue(composed.contains("  - kind: { exact: 'cli-tapes' }\n"), composed);
+    assertTrue(composed.contains("${BUILDKIT_HOST:?"), composed);
+  }
+
   @Test
   public void theGoldenRecordingsMavenKindIsComposedAsItsFixture() throws Exception {
     // composed/automation-golden-recordings-maven.yml: the one packaged kind declaring `user:`, so

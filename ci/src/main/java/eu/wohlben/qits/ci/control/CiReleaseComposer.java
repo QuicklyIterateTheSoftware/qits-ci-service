@@ -404,6 +404,7 @@ public final class CiReleaseComposer {
     paths.put(
         "screenshot-baselines",
         List.of(":(glob)**/__screenshots__/**", ":(glob)**/testing/browser/renderer.txt"));
+    paths.put("cli-tapes", List.of(":(glob)tapes/golden/**", ":(glob)tapes/recordings/**"));
     return java.util.Collections.unmodifiableMap(paths);
   }
 
@@ -910,40 +911,7 @@ public final class CiReleaseComposer {
               : "# --- the qits CLI, pinned, on PATH: this step's output check needs it ---\n");
       cliFetch(out, step.image(), CliFetch.AUTOMATION);
     }
-    if (step.build()) {
-      // The platform builder, demanded loudly before anything is built. Unset means a
-      // qits-ci/runner pair too old to inject it; EMPTY is the kill switch. Either way a
-      // build-mode step must fail here, naming the cause, rather than reach for a socket it is not
-      // handed.
-      out.append(
-          ": \"${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only"
-              + " through it}\"\n");
-      // Where it pushes needs no line of its own: the registry is `registry.qits.$QITS_DOMAIN`
-      // (qits-731), and the domain is demanded at the top of every step's prelude.
-    }
-    if (step.build() || step.docker()) {
-      // The run's credential as two FILES, for a buildctl `--secret id=…,src=…` that writes no
-      // layer: a Dockerfile's `--secret id=qits-client-id`/`qits-client-secret` is consumed as
-      // `QITS_MAVEN_AUTH_USR`/`PSW` for the maven mirror. In a subshell, so `umask 077` bounds these
-      // two files and does not silently follow the whole script.
-      //
-      // The file NAMES are history: they carried a commissioned client's id and secret while a step
-      // ran on qits-net. A step holds `$QITS_TOKEN` and nothing else now (qits-515), so the id is
-      // `$QITS_TOKEN_SUBJECT` — this run's own subject, sent alongside the token by
-      // `CiSlotSpecs` — and the secret is the token, which is what the edge's Basic realm
-      // introspects. With no token the files are empty.
-      out.append("(\n");
-      out.append("  umask 077\n");
-      out.append("  if [ -n \"${QITS_TOKEN:-}\" ]; then\n");
-      out.append(
-          "    printf '%s' \"${QITS_TOKEN_SUBJECT:-qits-ci-run}\" > /tmp/qits-client-id\n");
-      out.append("    printf '%s' \"$QITS_TOKEN\" > /tmp/qits-client-secret\n");
-      out.append("  else\n");
-      out.append("    printf '' > /tmp/qits-client-id\n");
-      out.append("    printf '' > /tmp/qits-client-secret\n");
-      out.append("  fi\n");
-      out.append(")\n");
-    }
+    buildEnvironment(out, step.build(), step.docker());
     out.append("# --- the declared step, run as data -------------------------------------------\n");
     out.append("cat > ").append(SLOT_SCRIPT).append(" <<'").append(HEREDOC_DELIMITER).append("'\n");
     out.append(slotScript(step.script(), sourcePath));
@@ -1299,6 +1267,52 @@ public final class CiReleaseComposer {
     out.append("  PATH=\"").append(dir).append(":$PATH\"\n");
     out.append("  export PATH\n");
     out.append("fi\n");
+  }
+
+  /**
+   * The prelude text of a step that declares {@code build: true} (or {@code docker: true}): the
+   * platform builder demanded through {@code $BUILDKIT_HOST} before anything is built, then the
+   * run's credential written as {@code /tmp/qits-client-id} and {@code /tmp/qits-client-secret} for
+   * a buildctl {@code --secret}. Nothing at all for a step declaring neither.
+   *
+   * <p>Package-private for {@link CiAutomationComposer}: a kind file's {@code build: true} means
+   * exactly what it means on a slot step, so it is this text, not a copy of it.
+   */
+  static void buildEnvironment(StringBuilder out, boolean build, boolean docker) {
+    if (build) {
+      // The platform builder, demanded loudly before anything is built. Unset means a
+      // qits-ci/runner pair too old to inject it; EMPTY is the kill switch. Either way a
+      // build-mode step must fail here, naming the cause, rather than reach for a socket it is not
+      // handed.
+      out.append(
+          ": \"${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only"
+              + " through it}\"\n");
+      // Where it pushes needs no line of its own: the registry is `registry.qits.$QITS_DOMAIN`
+      // (qits-731), and the domain is demanded at the top of every step's prelude.
+    }
+    if (build || docker) {
+      // The run's credential as two FILES, for a buildctl `--secret id=…,src=…` that writes no
+      // layer: a Dockerfile's `--secret id=qits-client-id`/`qits-client-secret` is consumed as
+      // `QITS_MAVEN_AUTH_USR`/`PSW` for the maven mirror. In a subshell, so `umask 077` bounds these
+      // two files and does not silently follow the whole script.
+      //
+      // The file NAMES are history: they carried a commissioned client's id and secret while a step
+      // ran on qits-net. A step holds `$QITS_TOKEN` and nothing else now (qits-515), so the id is
+      // `$QITS_TOKEN_SUBJECT` — this run's own subject, sent alongside the token by
+      // `CiSlotSpecs` — and the secret is the token, which is what the edge's Basic realm
+      // introspects. With no token the files are empty.
+      out.append("(\n");
+      out.append("  umask 077\n");
+      out.append("  if [ -n \"${QITS_TOKEN:-}\" ]; then\n");
+      out.append(
+          "    printf '%s' \"${QITS_TOKEN_SUBJECT:-qits-ci-run}\" > /tmp/qits-client-id\n");
+      out.append("    printf '%s' \"$QITS_TOKEN\" > /tmp/qits-client-secret\n");
+      out.append("  else\n");
+      out.append("    printf '' > /tmp/qits-client-id\n");
+      out.append("    printf '' > /tmp/qits-client-secret\n");
+      out.append("  fi\n");
+      out.append(")\n");
+    }
   }
 
   /**
