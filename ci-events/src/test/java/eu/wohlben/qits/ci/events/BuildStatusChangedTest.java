@@ -71,7 +71,7 @@ class BuildStatusChangedTest {
     JsonNode json = CanonicalJson.parse(CanonicalJson.envelope(envelope));
 
     assertEquals(
-        List.of("description", "environment", "name", "occurredAt", "parentId", "payload"),
+        List.of("description", "environment", "name", "occurredAt", "parentId", "payload", "publisher"),
         json.properties().stream().map(Map.Entry::getKey).toList());
     assertEquals("BuildStatusChanged", json.get("name").asText());
     // The envelope is where the instant lives, and — see the payload assertion below — the only
