@@ -11,7 +11,8 @@ artifacts:
   - { type: 'maven', name: 'eu.wohlben.qits:qits-blobstore', publish: 'if-changed' }
   - { type: 'maven', name: 'eu.wohlben.qits:qits-registries-common', publish: 'if-changed' }
 steps:
-  - timeout-seconds: 1800
+  - name: 'publish jars'
+    timeout-seconds: 1800
     script: |
       set -eu
       # --- platform prelude ---------------------------------------------------------

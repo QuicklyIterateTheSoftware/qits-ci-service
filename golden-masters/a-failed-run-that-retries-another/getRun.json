@@ -33,7 +33,8 @@
       "exitCode": 0,
       "startedAt": "2026-01-01T00:00:00Z",
       "finishedAt": "2026-01-01T00:00:00Z",
-      "output": "Cloning into 'contract-service'...\n"
+      "output": "Cloning into 'contract-service'...\n",
+      "name": null
     },
     {
       "stepIndex": 1,
@@ -42,7 +43,8 @@
       "exitCode": 1,
       "startedAt": "2026-01-01T00:00:00Z",
       "finishedAt": "2026-01-01T00:00:00Z",
-      "output": "[ERROR] Tests run: 128, Failures: 1\n"
+      "output": "[ERROR] Tests run: 128, Failures: 1\n",
+      "name": null
     }
   ],
   "live": null,

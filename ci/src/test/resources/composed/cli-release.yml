@@ -7,7 +7,8 @@ checkout:
   branch: version
   sha: commitSha
 steps:
-  - timeout-seconds: 300
+  - name: 'changelog'
+    timeout-seconds: 300
     script: |
       set -eu
       # --- platform prelude ---------------------------------------------------------

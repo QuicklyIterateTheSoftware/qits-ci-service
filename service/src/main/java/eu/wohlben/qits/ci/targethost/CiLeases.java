@@ -257,12 +257,12 @@ public class CiLeases {
 
   /**
    * The ci-slot image a run's lease is asked with: the digest the run pinned at accept, or the tag
-   * when this deployment pins nothing.
+   * when it pinned nothing. Looked up under the bare tag, as spelled (qits-757); a run pinned under
+   * a registry host before that reads back under it too ({@link StepImages#decode}).
    */
-  String slotImageOf(CiRun row) {
-    String reference = runs.resolveStepImage(CiSlot.IMAGE_TAG);
-    String pinned = StepImages.decode(row.stepImages).get(reference);
-    return pinned != null ? pinned : reference;
+  static String slotImageOf(CiRun row) {
+    String pinned = StepImages.decode(row.stepImages).get(CiSlot.IMAGE_TAG);
+    return pinned != null ? pinned : CiSlot.IMAGE_TAG;
   }
 
   // --- following --------------------------------------------------------------------------------

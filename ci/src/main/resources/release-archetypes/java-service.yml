@@ -273,7 +273,8 @@ release-request:
   #
   # `image:` below is kept only for the qits-ci version that still judges this fold with the old
   # parser; the ci-slot runner that actually executes it ignores the key entirely (qits-1544).
-  - image: qits/build-images/node-docker-base:latest
+  - name: build image
+    image: qits/build-images/node-docker-base:latest
     build: true
     timeout-seconds: 3600
     script: |
@@ -391,7 +392,8 @@ release-request:
   # hard: no CLI means the step fails before anything runs.
   #
   # `image:` kept for the old parser only; the ci-slot runner ignores it (qits-1544).
-  - image: qits/build-images/maven-base:latest
+  - name: build and test
+    image: qits/build-images/maven-base:latest
     user: build
     timeout-seconds: 2400
     check-outputs: [entity-diagram]
@@ -661,7 +663,8 @@ release:
   # fetched the release tag and detached at it before this script runs.
   #
   # `image:` kept for the old parser only; the ci-slot runner ignores it (qits-1544).
-  - image: qits/build-images/node-docker-base:latest
+  - name: publish image
+    image: qits/build-images/node-docker-base:latest
     build: true
     timeout-seconds: 3600
     script: |
@@ -768,7 +771,8 @@ release:
   # `@apidocs`, contract publishes and SBOM presence checks ride on the last step whatever it built.
   #
   # `image:` kept for the old parser only; the ci-slot runner ignores it (qits-1544).
-  - image: qits/build-images/maven-base:latest
+  - name: publish jars
+    image: qits/build-images/maven-base:latest
     timeout-seconds: 1800
     script: |
       # THE MODULES, OUT OF THE DECLARATIONS THAT PUBLISH THEM — see the header. Comments go first,

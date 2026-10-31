@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.registry;
 
 import eu.wohlben.qits.ci.control.CiStepImagePins;
+import eu.wohlben.qits.ci.targethost.CiSlotAddresses;
 import eu.wohlben.qits.http.QitsHttpClients;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -32,16 +33,22 @@ import org.jboss.logging.Logger;
  * reason: a second key is a second thing to keep in step with the first, and a pin resolved against
  * one store and pulled from another is worse than no pin. It is the origin of {@code
  * qits.artifacts.maven.registry-url}, which is set on every live deployment. That origin and the {@code /v2} registry are one
- * service by construction: {@code qits.artifacts.registry-host}'s default is that same authority,
- * and the registry cannot be mounted anywhere else — docker resolves a reference against {@code
- * <host>/v2/} and accepts no path prefix.
+ * service by construction: the registry cannot be mounted anywhere else — docker resolves a
+ * reference against {@code <host>/v2/} and accepts no path prefix.
  *
- * <p><b>Two names, one registry, and each is used for what it is.</b> {@code
- * qits.artifacts.registry-host} is the host a pinned reference is built with and recognised by,
- * while what this process dials is the in-network origin above. A step's runner pulls the pinned
- * image from neither: {@code CiSlotAddresses} moves the reference to the registry's public name.
- * Resolving through one and pulling through another is correct and not a mismatch: a digest is
- * content-addressed, so the same digest names the same bytes at whichever address they are read.
+ * <p><b>Two names, one registry, and each is used for what it is — and neither is configured.</b>
+ * What this process dials is the in-network origin above. What a pinned reference is ADDRESSED
+ * under is the registry's public name, {@code registry.qits.<QITS_DOMAIN>}, derived by {@link
+ * CiSlotAddresses} exactly as every other address a lease is told — the name a target really pulls
+ * from. Resolving through one and pulling through another is correct and not a mismatch: a digest
+ * is content-addressed, so the same digest names the same bytes at whichever address they are read.
+ *
+ * <p><b>There is no registry host key any more (qits-757).</b> One used to name the host a pinned
+ * reference was built with and recognised by; its shipped default was a host-loopback machine name
+ * that ended up on every step tile. A reference is now this platform's when it is BARE with {@code
+ * qits.artifacts.image-repository} as its first path segment — {@code
+ * qits/build-images/ci-slot:latest}, the spelling every recipe and every step row uses — or when it
+ * names the derived public registry host.
  *
  * <p><b>No credential, deliberately.</b> qits-artifacts' {@code PublishGuard} guards the six
  * publish surfaces and lets every read through untouched, so a manifest read needs none — and
@@ -114,11 +121,14 @@ public class HttpImagePins implements CiStepImagePins {
   private HttpClient client;
 
   /**
-   * The registry as a pinned reference names it, and therefore what a pinned
-   * reference is built with. Also the test for whether a reference is ours at all.
+   * The platform's image namespace: a bare reference whose first path segment is this is ours —
+   * see {@link Ref#parse}.
    */
-  @ConfigProperty(name = "qits.artifacts.registry-host")
-  String artifactsRegistryHost;
+  @ConfigProperty(name = "qits.artifacts.image-repository")
+  String artifactsImageRepository;
+
+  /** Where the registry's public name comes from — {@code registry.qits.<QITS_DOMAIN>}. */
+  @Inject CiSlotAddresses addresses;
 
   /** {@code qits.artifacts.url} when a deployment set it — see {@link #registryApiOrigin}. */
   @ConfigProperty(name = "qits.artifacts.url")
@@ -146,7 +156,8 @@ public class HttpImagePins implements CiStepImagePins {
     if (reference.indexOf('@') >= 0) {
       return Pin.alreadyPinned(reference);
     }
-    Ref ref = Ref.parse(reference, artifactsRegistryHost);
+    String registry = publicRegistryHost();
+    Ref ref = Ref.parse(reference, artifactsImageRepository, registry);
     if (ref == null) {
       return Pin.foreign(reference);
     }
@@ -181,7 +192,7 @@ public class HttpImagePins implements CiStepImagePins {
             reference, "the registry answered 200 for " + url + " with no usable " + DIGEST_HEADER);
       }
       LOG.debugf("Pinned %s to %s", reference, digest);
-      return Pin.pinned(ref.host() + "/" + ref.name() + "@" + digest);
+      return Pin.pinned(ref.pinned(registry, digest));
     } catch (InterruptedException interrupted) {
       // Restore and answer "nothing learned", the arrangement every blocking helper on this call
       // path runs (IdpCommissioner, HttpGitConfigSource): locally correct here, and the claim
@@ -208,33 +219,57 @@ public class HttpImagePins implements CiStepImagePins {
   }
 
   /**
+   * The registry's public host, {@code registry.qits.<domain>}, or null when this qits-ci knows no
+   * public domain — derived, never configured, by the one derivation every lease address uses.
+   */
+  String publicRegistryHost() {
+    return addresses == null
+        ? null
+        : addresses.plane().map(CiSlotAddresses.Plane::registryHost).orElse(null);
+  }
+
+  /**
    * One reference split the way the registry addresses it, or null when it is not this platform's
    * to pin.
    *
-   * @param host the registry as a pull reference names it, carried through so the pinned reference
-   *     is addressed exactly as the floating one was
    * @param name the repository/image path — {@code qits/build-images/ci-base}
    * @param tag the tag, {@code latest} when the reference named none, which is what docker resolves
    */
-  record Ref(String host, String name, String tag) {
+  record Ref(String name, String tag) {
 
     /**
-     * <b>Ours is decided by the registry host and nothing else.</b> A reference that names {@code
-     * qits.artifacts.registry-host} is one this process can ask about; everything
-     * else — a bare official image, another registry, a mirror — is somebody else's store and is
-     * {@code FOREIGN}. The narrowness is the safety property, {@code CiStepImage}'s own argument:
-     * the only thing claimed here is what the platform published itself.
+     * <b>Ours is this platform's namespace, bare, or the platform's public registry host.</b> A
+     * bare reference whose first path segment is {@code qits.artifacts.image-repository} — {@code
+     * qits/build-images/ci-slot:latest} — is one this process can ask about, and so is one naming
+     * {@code registry.qits.<domain>}. Everything else — a bare official image, another namespace,
+     * another registry, a mirror — is somebody else's store and is {@code FOREIGN}. The narrowness
+     * is the safety property: the only thing claimed here is what the platform published itself.
+     *
+     * @param imageRepository {@code qits.artifacts.image-repository}
+     * @param registryHost the public registry host, or null when no domain is known
      */
-    static Ref parse(String reference, String artifactsRegistryHost) {
+    static Ref parse(String reference, String imageRepository, String registryHost) {
       int slash = reference.indexOf('/');
-      if (slash < 0) {
+      if (slash <= 0) {
         return null;
       }
-      String host = reference.substring(0, slash);
-      if (!isOurs(host, artifactsRegistryHost)) {
-        return null;
+      String first = reference.substring(0, slash);
+      String rest;
+      if (looksLikeHost(first)) {
+        // A reference that names its registry: ours only when it is the platform's public name.
+        if (!isOurs(first, registryHost)) {
+          return null;
+        }
+        rest = reference.substring(slash + 1);
+      } else {
+        // Bare: docker would resolve it against Docker Hub, and it is ours only in our namespace.
+        if (imageRepository == null
+            || imageRepository.isBlank()
+            || !first.equals(imageRepository.trim())) {
+          return null;
+        }
+        rest = reference;
       }
-      String rest = reference.substring(slash + 1);
       int colon = rest.lastIndexOf(':');
       // A colon before a slash is a port in a path segment, which no image name has — but the check
       // is cheap and the alternative is a name silently truncated into an unaskable one.
@@ -243,15 +278,29 @@ public class HttpImagePins implements CiStepImagePins {
       if (name.isBlank() || tag.isBlank()) {
         return null;
       }
-      return new Ref(host, name, tag);
+      return new Ref(name, tag);
     }
 
-    private static boolean isOurs(String host, String configured) {
+    /**
+     * The pinned reference: under the registry's public name, or — when this qits-ci knows no
+     * domain — bare, as spelled, which the lease's address plane would put under that name anyway.
+     */
+    String pinned(String registryHost, String digest) {
+      String path = name + "@" + digest;
+      return registryHost == null || registryHost.isBlank() ? path : registryHost + "/" + path;
+    }
+
+    /** A first segment carrying a {@code .} or a {@code :}, or {@code localhost}, is a registry. */
+    private static boolean looksLikeHost(String first) {
+      return first.indexOf('.') >= 0 || first.indexOf(':') >= 0 || "localhost".equals(first);
+    }
+
+    private static boolean isOurs(String host, String registryHost) {
       // Case-insensitively, because a registry authority is a hostname and DNS does not care —
       // while an image NAME does, which is why only this half is folded.
-      return configured != null
-          && !configured.isBlank()
-          && host.toLowerCase(Locale.ROOT).equals(configured.trim().toLowerCase(Locale.ROOT));
+      return registryHost != null
+          && !registryHost.isBlank()
+          && host.toLowerCase(Locale.ROOT).equals(registryHost.trim().toLowerCase(Locale.ROOT));
     }
   }
 }

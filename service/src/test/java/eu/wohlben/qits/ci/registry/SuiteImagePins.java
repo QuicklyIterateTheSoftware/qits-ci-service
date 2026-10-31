@@ -21,9 +21,10 @@ public class SuiteImagePins extends HttpImagePins {
   @Override
   public Pin pin(String reference) {
     if (reference != null && reference.indexOf('@') < 0) {
-      Ref ref = Ref.parse(reference, artifactsRegistryHost);
+      String registry = publicRegistryHost();
+      Ref ref = Ref.parse(reference, artifactsImageRepository, registry);
       if (ref != null) {
-        return Pin.pinned(ref.host() + "/" + ref.name() + "@" + DIGEST);
+        return Pin.pinned(ref.pinned(registry, DIGEST));
       }
     }
     return super.pin(reference);

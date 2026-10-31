@@ -51,8 +51,8 @@ public interface CiStepImagePins {
    * carry, so an infrastructure blip is an answer a caller can act on rather than an exception on a
    * trigger worker.
    *
-   * @param reference the step's image as it will be pulled — {@code CiStepImage.resolve}'s output,
-   *     so a platform image already carries the registry host
+   * @param reference the step's image as spelled — {@code qits/build-images/ci-slot:latest}, with no
+   *     registry host (qits-757); the implementation decides whether it is this platform's to pin
    */
   Pin pin(String reference);
 

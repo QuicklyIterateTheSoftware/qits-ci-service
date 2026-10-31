@@ -327,6 +327,8 @@ components:
           $ref: "#/components/schemas/Instant"
         output:
           type: string
+        name:
+          type: string
     CiStepStatus:
       type: string
       enum:

@@ -75,7 +75,8 @@ release-request:
   #
   # `image:` below is kept only for the qits-ci version that still judges this fold with the old
   # parser; the ci-slot runner that actually executes it ignores the key entirely (qits-1544).
-  - image: qits/build-images/ci-base:latest
+  - name: build image
+    image: qits/build-images/ci-base:latest
     build: true
     timeout-seconds: 3600
     script: |
@@ -94,7 +95,8 @@ release-request:
 release:
 
   # `image:` kept for the old parser only; the ci-slot runner ignores it (qits-1544).
-  - image: qits/build-images/ci-base:latest
+  - name: publish image
+    image: qits/build-images/ci-base:latest
     build: true
     timeout-seconds: 3600
     script: |

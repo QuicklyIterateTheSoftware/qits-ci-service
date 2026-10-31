@@ -55,6 +55,10 @@ import org.junit.jupiter.api.Test;
  */
 class DerivedEnvironmentAddressTest {
 
+  /** Retired in qits-757; no shipped file may state it in any profile. */
+  private static final String RETIRED_REGISTRY_HOST =
+      eu.wohlben.qits.ci.control.RetiredRegistryKeys.REGISTRY_HOST_KEY;
+
   /** Where a deployed Quarkus puts the deployable's {@code application.properties}. */
   private static final int APPLICATION_PROPERTIES_ORDINAL = 250;
 
@@ -173,7 +177,9 @@ class DerivedEnvironmentAddressTest {
     assertEquals("true", value(config, "qits.auth.machine.required"));
     assertEquals("true", value(config, "quarkus.oidc.tenant-enabled"));
     assertEquals("http://dev-qits-projects:8080", value(config, "qits.ci.projects-url"));
-    assertEquals("registry.dev.localhost:8080", value(config, "qits.artifacts.registry-host"));
+    // The registry host key is retired (qits-757): no shipped default states it, so the deployer's
+    // next update removes it from the container's environment.
+    assertTrue(config.getOptionalValue(RETIRED_REGISTRY_HOST, String.class).isEmpty());
     assertEquals("http://dev-qits-githost:8080", value(config, "qits.ci.git-host-url"));
     assertEquals(
         "http://dev-qits-artifacts:8080/artifacts/maven/maven",
@@ -183,8 +189,7 @@ class DerivedEnvironmentAddressTest {
 
     SmallRyeConfig staging = config("prod", Map.of("QITS_ENVIRONMENT", "staging"));
     assertEquals("http://staging-qits-projects:8080", value(staging, "qits.ci.projects-url"));
-    assertEquals(
-        "registry.staging.localhost:8080", value(staging, "qits.artifacts.registry-host"));
+    assertTrue(staging.getOptionalValue(RETIRED_REGISTRY_HOST, String.class).isEmpty());
   }
 
   @Test
@@ -194,8 +199,8 @@ class DerivedEnvironmentAddressTest {
       assertEquals("false", value(config, "qits.auth.machine.required"), profile);
       assertTrue(
           config.getOptionalValue("qits.ci.projects-url", String.class).isEmpty(), profile);
-      assertEquals(
-          "dev-qits-artifacts:8080", value(config, "qits.artifacts.registry-host"), profile);
+      assertTrue(
+          config.getOptionalValue(RETIRED_REGISTRY_HOST, String.class).isEmpty(), profile);
     }
   }
 }

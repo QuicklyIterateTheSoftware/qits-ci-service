@@ -1183,6 +1183,73 @@ public class CiReleaseComposerTest {
   }
 
   @Test
+  public void aStepsNameIsEmittedFirstAndRoundTrips() {
+    // qits-757: `name:` is what a run's step tile shows. The composer carries it through as the
+    // step's first key, and the composed document parses back to the same name. The synthesised
+    // changelog-only release step is named too.
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            REPO,
+            slots("archetype: spa-frontend\n"),
+            archetype(
+                "spa-frontend",
+                """
+                release-request:
+                  - name: "build and test"
+                    image: qits/build-images/node-base:latest
+                    timeout-seconds: 1800
+                    script: |
+                      npm ci
+                  - name: it's userflows
+                    script: |
+                      npm run e2e
+                  - script: |
+                      true
+                """));
+
+    String qa = composed.releaseRequestDocument();
+    assertTrue(qa.contains("\n  - name: 'build and test'\n    timeout-seconds: 1800\n"), qa);
+    assertTrue(qa.contains("\n  - name: 'it''s userflows'\n    script: |\n"), qa);
+    List<CiPipeline.CiStepDecl> steps =
+        new CiEventTriggerParser()
+            .parse(CiReleaseSlotParser.CONFIG_PATH, qa)
+            .pipeline()
+            .steps();
+    assertEquals("build and test", steps.get(0).name());
+    assertEquals("it's userflows", steps.get(1).name());
+    assertEquals(null, steps.get(2).name(), "an unnamed step stays unnamed");
+
+    List<CiPipeline.CiStepDecl> release =
+        new CiEventTriggerParser()
+            .parse(CiReleaseSlotParser.CONFIG_PATH, composed.releaseDocument())
+            .pipeline()
+            .steps();
+    assertEquals(
+        List.of(CiReleaseComposer.CHANGELOG_ONLY_NAME),
+        release.stream().map(CiPipeline.CiStepDecl::name).toList());
+  }
+
+  @Test
+  public void everyPackagedArchetypeStepIsNamedDistinctly() throws IOException {
+    // qits-757: the packaged recipes name every step, each name distinct within its slot, so the
+    // tiles of a run on any packaged recipe can be told apart.
+    for (String name :
+        List.of(
+            "app", "cli", "daemon", "java-service", "maven-library", "npm-library", "oci",
+            "spa-frontend")) {
+      CiReleaseSlots recipe = packaged(name);
+      for (CiPipeline pipeline :
+          java.util.stream.Stream.of(recipe.releaseRequest(), recipe.release())
+              .filter(java.util.Objects::nonNull)
+              .toList()) {
+        List<String> names = pipeline.steps().stream().map(CiPipeline.CiStepDecl::name).toList();
+        assertFalse(names.contains(null), name + ": every step is named: " + names);
+        assertEquals(names.size(), new java.util.HashSet<>(names).size(), name + ": " + names);
+      }
+    }
+  }
+
+  @Test
   public void aScriptCarryingTheHeredocDelimiterIsRefused() {
     // The one way out of a quoted heredoc, refused at composition and named after the file a person
     // edits — never a wrapper that ends halfway through and runs the rest as shell.

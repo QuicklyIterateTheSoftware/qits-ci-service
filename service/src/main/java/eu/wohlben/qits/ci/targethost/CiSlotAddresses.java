@@ -44,7 +44,7 @@ public class CiSlotAddresses {
   Optional<String> domain;
 
   /** A suite's way in: an instance composed for a given domain, with no CDI around it. */
-  static CiSlotAddresses forDomain(String domain) {
+  public static CiSlotAddresses forDomain(String domain) {
     CiSlotAddresses addresses = new CiSlotAddresses();
     addresses.domain = Optional.ofNullable(domain);
     return addresses;
@@ -134,8 +134,9 @@ public class CiSlotAddresses {
 
     /**
      * The ci-slot reference a lease is asked for, under the registry's public name: the run's pin
-     * ({@code <any registry host>/qits/build-images/ci-slot@sha256:…}) or, when this deployment pins
-     * nothing, the tag — its registry host replaced, its path, tag and digest kept. qits-system
+     * ({@code registry.qits.<d>/qits/build-images/ci-slot@sha256:…}, or a host an older run pinned
+     * under) or, when the run pinned nothing, the bare tag as spelled — any registry host replaced,
+     * its path, tag and digest kept. qits-system
      * refuses any image that does not start with {@code registry.qits.<d>/qits/build-images/ci-slot}.
      */
     public String slotImage(String reference) {

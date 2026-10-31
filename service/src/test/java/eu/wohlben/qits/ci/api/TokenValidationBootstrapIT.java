@@ -155,10 +155,13 @@ public class TokenValidationBootstrapIT {
       // stories need somewhere to ask for one: an in-memory stand-in for qits-system's lease
       // surface (stories/support/StorySystem), with the reconcile at a second so a lease the story
       // grants is noticed without an event bus. And the ci-slot image every step runs in is a
-      // platform image, which a run pins by digest at accept: no registry answers here, so the
-      // pin is off and the run names the tag — the shipped switch, and its documented off arm.
+      // platform image, which a run pins by digest at accept: no registry answers here, and there
+      // is no switch to turn the pin off any more (qits-757). So the platform's namespace is moved
+      // to one nothing is published under: qits/build-images/ci-slot then reads as somebody else's
+      // image, which a run launches at its tag with no pin recorded — the FOREIGN arm, the one a
+      // registry-less run can take.
       overrides.putAll(eu.wohlben.qits.ci.stories.support.StorySystem.configOverrides());
-      overrides.put("qits.ci.resolve-platform-step-images", "false");
+      overrides.put("qits.artifacts.image-repository", "story-unpublished");
       // THERE IS NO THIRD DIAL ANY MORE. This block used to carry a second switch —
       // qits.ci.daemon-autoadopt-enabled=false — because the daemon pin ladder's startup discovery
       // was a SEPARATE HTTP call to qits.events.url that the key above did not cover, and a launched

@@ -169,7 +169,7 @@ public class CiRunServiceTest extends CiTestSupport {
           (step.stepIndex == 0 ? CiSlot.STEP_IMAGES_IGNORED + "\n" : "") + "ok step " + step.stepIndex,
           step.output,
           "the declared image is ignored, and the run says so once");
-      assertEquals(service.resolveStepImage(CiSlot.IMAGE_TAG), step.image);
+      assertEquals(CiSlot.IMAGE_TAG, step.image);
       // Host-stamped at the two points the host knows about first-hand, and in that order.
       assertNotNull(step.startedAt, "a step that ran must carry a started_at");
       assertNotNull(step.finishedAt, "a step that ran must carry a finished_at");

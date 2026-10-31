@@ -33,7 +33,8 @@
       "exitCode": 0,
       "startedAt": "2026-01-01T00:00:00Z",
       "finishedAt": "2026-01-01T00:00:00Z",
-      "output": "Cloning into 'contract-service'...\n"
+      "output": "Cloning into 'contract-service'...\n",
+      "name": null
     }
   ],
   "live": {

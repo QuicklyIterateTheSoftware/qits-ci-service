@@ -152,7 +152,8 @@ release-request:
   # `image:` BELOW IS KEPT, NOT RESTORED. It is read only by the qits-ci version that still judges
   # this fold against the old parser; the ci-slot runner that will actually execute it ignores the
   # key entirely (qits-1544).
-  - image: qits/build-images/node-browser-base:latest
+  - name: build and test
+    image: qits/build-images/node-browser-base:latest
     timeout-seconds: 1800
     check-outputs: [screenshot-baselines]
     script: |
@@ -278,7 +279,8 @@ release:
   # it has already written /tmp/qits-client-id and /tmp/qits-client-secret under `umask 077`.
   #
   # `image:` kept for the old parser only; the ci-slot runner ignores it (qits-1544).
-  - image: qits/build-images/node-docker-base:latest
+  - name: publish image
+    image: qits/build-images/node-docker-base:latest
     build: true
     timeout-seconds: 3600
     script: |

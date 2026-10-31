@@ -132,6 +132,16 @@ final class CiConfigSchema {
   /** Who the step's container runs as. Legal in both file kinds; refused beside {@code docker}. */
   static final String USER_KEY = "user";
 
+  /** What a step does, in a person's words. Optional, legal at every scope (qits-757). */
+  static final String NAME_KEY = "name";
+
+  /**
+   * The longest {@code name:} a step may carry, which is also {@code ci_step.name}'s width (V40). A
+   * name is a tile's label, not a description; the cap is generous for that and keeps one
+   * repository's prose out of every listing.
+   */
+  public static final int MAX_STEP_NAME_LENGTH = 128;
+
   /**
    * What a {@code user:} may spell: a passwd name or a bare uid. Deliberately narrower than
    * anything docker accepts — a value here becomes an argv element, so it must not open with a
@@ -254,7 +264,8 @@ final class CiConfigSchema {
               build,
               optionalUser(step, i, docker),
               optionalQitsCli(step, i, scope, origin),
-              optionalCheckOutputs(step, i, scope, origin)));
+              optionalCheckOutputs(step, i, scope, origin),
+              optionalName(step, i, origin)));
     }
     return new CiPipeline(List.copyOf(steps));
   }
@@ -532,6 +543,70 @@ final class CiConfigSchema {
    * still carry the key need no change in the cutover release; a value that is not a string is
    * ignored the same way.
    */
+  /**
+   * The optional per-step {@code name:} (qits-757): what the step does, which is what a run's step
+   * tile shows. Absent means null, and the tile falls back to the step's image.
+   *
+   * <p>Held to the {@code timeout-seconds}/{@code user} standard: a value this parser knows and
+   * cannot read is a config error, never a quiet default. A blank or non-string name is refused
+   * rather than dropped, and so is one longer than {@link #MAX_STEP_NAME_LENGTH}, which is the
+   * column's width — truncating it silently would show a person a label nobody wrote. The value is
+   * trimmed, so surrounding whitespace in the YAML never reaches the record, and must be one line
+   * of printable text.
+   *
+   * <p>A qits-ci from before this key ignores it (unknown per-step keys are lenient), which is what
+   * lets a recipe gain names in the same fold the deployed qits-ci judges.
+   *
+   * <p><b>A stored snapshot is never refused over its name</b>, {@link #rejectGating}'s asymmetry
+   * for its reason: a trigger file that carried an unreadable {@code name:} before this key existed
+   * was accepted then, and re-parsing its stored text must not kill the run queued across the
+   * upgrade or a retry of it. Such a name is dropped instead — it labels nothing either way.
+   */
+  private static String optionalName(Map<?, ?> step, int index, Origin origin) {
+    if (!step.containsKey(NAME_KEY)) {
+      return null;
+    }
+    if (origin == Origin.STORED_SNAPSHOT) {
+      try {
+        return strictName(step.get(NAME_KEY), index);
+      } catch (CiConfigException unreadable) {
+        return null;
+      }
+    }
+    return strictName(step.get(NAME_KEY), index);
+  }
+
+  private static String strictName(Object value, int index) {
+    if (!(value instanceof String name) || name.isBlank()) {
+      throw new CiConfigException(
+          "Step "
+              + index
+              + ": '"
+              + NAME_KEY
+              + "' must be a non-blank string, got: "
+              + (value instanceof String ? "a blank string" : typeOf(value)));
+    }
+    String trimmed = name.trim();
+    if (trimmed.length() > MAX_STEP_NAME_LENGTH) {
+      throw new CiConfigException(
+          "Step "
+              + index
+              + ": '"
+              + NAME_KEY
+              + "' must be at most "
+              + MAX_STEP_NAME_LENGTH
+              + " characters, got "
+              + trimmed.length());
+    }
+    if (trimmed.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {
+      // A label is one line: a line break or a control character would not survive the composed
+      // document's single-quoted scalar, nor a tile.
+      throw new CiConfigException(
+          "Step " + index + ": '" + NAME_KEY + "' must be a single line of printable text");
+    }
+    return trimmed;
+  }
+
   private static String declaredImage(Map<?, ?> step) {
     Object value = step.get("image");
     return value instanceof String s && !s.isBlank() ? s : null;

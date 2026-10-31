@@ -114,6 +114,7 @@ erDiagram
     int exit_code
     instant finished_at
     string image "not null, length 512"
+    string name "length 128"
     text output
     string run_id "not null"
     instant started_at

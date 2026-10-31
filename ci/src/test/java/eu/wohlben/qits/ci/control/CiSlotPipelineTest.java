@@ -73,7 +73,7 @@ public class CiSlotPipelineTest extends CiTestSupport {
 
   @Test
   public void aStepImageIsIgnoredSaidOnceAndEveryStepRunsInThePinnedSlotImage() throws Exception {
-    String slotTag = runService.resolveStepImage(CiSlot.IMAGE_TAG);
+    String slotTag = CiSlot.IMAGE_TAG;
     fakeImagePins.pins(slotTag, DIGEST);
     String repo = "images-" + UUID.randomUUID();
     executePipeline(

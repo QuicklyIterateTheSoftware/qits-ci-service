@@ -64,16 +64,34 @@ public record CiPipeline(List<CiStepDecl> steps) {
       boolean build,
       String user,
       boolean qitsCli,
-      List<String> checkOutputs) {
+      List<String> checkOutputs,
+      String name) {
 
     /**
-     * {@code qitsCli}: the step asked for the pinned qits CLI on {@code PATH} ({@code qits-cli:
+     * {@code name}: what the step does, in a person's words ({@code name:}, optional, trimmed, at
+     * most {@link CiConfigSchema#MAX_STEP_NAME_LENGTH} characters) — the label a run's step tile
+     * shows. Null when the config declared none; it decides nothing about how the step runs.
+     *
+     * <p>{@code qitsCli}: the step asked for the pinned qits CLI on {@code PATH} ({@code qits-cli:
      * true}, release slots only). {@code checkOutputs}: the release outputs a QA step checks after
      * its script ({@code check-outputs:}, the {@code release-request:} slot only); empty when it
      * checks none. Both are composed by {@link CiReleaseComposer}; a trigger file refuses them.
      */
     public CiStepDecl {
       checkOutputs = checkOutputs == null ? List.of() : List.copyOf(checkOutputs);
+    }
+
+    /** A step with no {@code name:}. */
+    public CiStepDecl(
+        String image,
+        String script,
+        Integer timeoutSeconds,
+        boolean docker,
+        boolean build,
+        String user,
+        boolean qitsCli,
+        List<String> checkOutputs) {
+      this(image, script, timeoutSeconds, docker, build, user, qitsCli, checkOutputs, null);
     }
 
     /** A step that asks for neither the CLI nor an output check. */
@@ -84,7 +102,7 @@ public record CiPipeline(List<CiStepDecl> steps) {
         boolean docker,
         boolean build,
         String user) {
-      this(image, script, timeoutSeconds, docker, build, user, false, List.of());
+      this(image, script, timeoutSeconds, docker, build, user, false, List.of(), null);
     }
   }
 

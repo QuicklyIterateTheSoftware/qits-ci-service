@@ -83,7 +83,8 @@ release-request:
     # the checkout and /tmp, both of which that user owns. It is chosen at launch and not switched
     # to inside the script: a step container starts `--cap-drop=ALL`, so without CAP_SETUID and
     # CAP_SETGID `su` cannot switch user at all.
-  - image: qits/build-images/maven-base:latest
+  - name: build and test
+    image: qits/build-images/maven-base:latest
     user: build
     timeout-seconds: 1800
     script: |
@@ -150,7 +151,8 @@ release-request:
 
     # The tapes check (see THE TAPES CHECK above). `image:` is kept for the same reason as the
     # first step's; the ci-slot runner ignores it (qits-1544).
-  - image: qits/build-images/vhs-base:latest
+  - name: check tapes
+    image: qits/build-images/vhs-base:latest
     build: true
     timeout-seconds: 3600
     check-outputs: [cli-tapes]

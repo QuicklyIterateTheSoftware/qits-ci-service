@@ -10,7 +10,8 @@ checkout:
   branch: backingBranch
   sha: mergedSha
 steps:
-  - timeout-seconds: 3600
+  - name: 'build image'
+    timeout-seconds: 3600
     build: true
     script: |
       set -eu
@@ -266,7 +267,8 @@ steps:
       QITS_REPORT_HOOK
       sh /tmp/qits-report-hook.sh "$qits_step_exit" || echo "qits-ci: reports were not submitted; the step's verdict is unchanged" >&2
       exit "$qits_step_exit"
-  - timeout-seconds: 2400
+  - name: 'build and test'
+    timeout-seconds: 2400
     user: 'build'
     script: |
       set -eu

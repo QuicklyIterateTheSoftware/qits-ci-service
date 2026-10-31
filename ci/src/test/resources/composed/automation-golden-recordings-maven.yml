@@ -4,7 +4,8 @@ event: ReleaseRequestAutomation
 when:
   - kind: { exact: 'golden-recordings-maven' }
 steps:
-  - user: build
+  - name: 'golden-recordings-maven'
+    user: build
     timeout-seconds: 2400
     script: |
       set -eu

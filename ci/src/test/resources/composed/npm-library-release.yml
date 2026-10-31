@@ -10,7 +10,8 @@ artifacts:
   - { type: 'npm', name: '@qits/ui-components', publish: 'if-changed' }
   - { type: 'docs', name: '@qits/ui-components' }
 steps:
-  - timeout-seconds: 1800
+  - name: 'publish package'
+    timeout-seconds: 1800
     script: |
       set -eu
       # --- platform prelude ---------------------------------------------------------

@@ -53,7 +53,7 @@ public class CiRunExpectedDurationTest extends CiTestSupport {
    * whatever the step declared — so every staged sample names it.
    */
   private String image() {
-    return runService.resolveStepImage(CiSlot.IMAGE_TAG);
+    return CiSlot.IMAGE_TAG;
   }
 
   private static final String ONE_STEP =
@@ -118,6 +118,71 @@ public class CiRunExpectedDurationTest extends CiTestSupport {
         List.of(9_000L, 2_000L),
         ExpectedStepDurations.decode(accepted.expectedStepDurations),
         "one entry per planned step, in declaration order, each the p95 of that step's own history");
+  }
+
+  /**
+   * <b>History recorded under the retired registry host still predicts after V41</b> (qits-757).
+   * Until then a step row's image carried the host qits-ci prefixed; the image is recorded as
+   * spelled now, and the duration query matches on it — so without V41's rewrite every pipeline's
+   * history would have stopped predicting at the upgrade. The migration's own statement is re-run
+   * here against rows staged the old way; it is idempotent by construction.
+   */
+  @Test
+  public void historyRecordedUnderTheRetiredRegistryHostStillPredictsAfterV41() throws Exception {
+    String repoId = repo();
+    stage(repoId, 0, "registry.dev.localhost:8080/" + image(), 4_000, 4_000, 4_000);
+    String foreign = "ghcr.io/somebody/tool:1";
+    stage(repoId, 1, foreign, 1_000);
+
+    runV41();
+
+    List<CiStep> rewritten =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    steps
+                        .find(
+                            "runId in (select r.id from CiRun r where r.repoId = ?1)", repoId)
+                        .list());
+    assertEquals(4, rewritten.size());
+    for (CiStep step : rewritten) {
+      assertEquals(
+          step.stepIndex == 0 ? image() : foreign,
+          step.image,
+          "the host is stripped before qits/ and nowhere else");
+    }
+    CiRun accepted = accept(repoId, ONE_STEP);
+    assertEquals(List.of(4_000L), ExpectedStepDurations.decode(accepted.expectedStepDurations));
+  }
+
+  /** V41's statements, run as the migration runs them — comments dropped, over plain JDBC. */
+  private void runV41() throws Exception {
+    String sql;
+    try (java.io.InputStream in =
+        getClass()
+            .getClassLoader()
+            .getResourceAsStream("db/ci/migration/V41__step_image_as_spelled.sql")) {
+      assertNotNull(in, "V41 is packaged");
+      sql =
+          new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
+              .lines()
+              .filter(line -> !line.startsWith("--"))
+              .collect(java.util.stream.Collectors.joining("\n"));
+    }
+    String statements = sql;
+    QuarkusTransaction.requiringNew()
+        .run(
+            () ->
+                steps
+                    .getEntityManager()
+                    .unwrap(org.hibernate.Session.class)
+                    .doWork(
+                        connection -> {
+                          try (java.sql.Statement statement = connection.createStatement()) {
+                            statement.execute(statements);
+                          }
+                        }));
+    forgetLoadedEntities();
   }
 
   @Test

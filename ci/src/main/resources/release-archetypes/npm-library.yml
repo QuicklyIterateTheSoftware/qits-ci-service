@@ -72,7 +72,8 @@ release-request:
 
   # `image:` is kept only for the qits-ci version that judges this fold against the old parser; the
   # ci-slot runner that actually executes it ignores the key entirely (qits-1544).
-  - image: qits/build-images/node-base:latest
+  - name: build and test
+    image: qits/build-images/node-base:latest
     timeout-seconds: 1800
     script: |
       # THE RUN'S OWN BEARER, MINTED AT THE CALL SITE. qits-ci hands a step both a
@@ -248,7 +249,8 @@ release-request:
 release:
 
   # `image:` kept for the old parser only; the ci-slot runner ignores it (qits-1544).
-  - image: qits/build-images/node-base:latest
+  - name: publish package
+    image: qits/build-images/node-base:latest
     timeout-seconds: 1800
     script: |
       # Byte-identical to the QA step's preamble; read the rationale there.

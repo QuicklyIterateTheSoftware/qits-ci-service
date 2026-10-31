@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.control.CiStepImagePins.Pin;
 import eu.wohlben.qits.ci.control.CiStepImagePins.Status;
+import eu.wohlben.qits.ci.targethost.CiSlotAddresses;
 import eu.wohlben.qits.http.QitsHttpClients;
 import io.opentelemetry.api.OpenTelemetry;
 import io.vertx.core.Vertx;
@@ -36,7 +37,14 @@ import org.junit.jupiter.api.Test;
  */
 public class HttpImagePinsTest {
 
-  private static final String REGISTRY = "qits-artifacts.test:8080";
+  /** The platform's public domain here; the registry's public name is derived from it. */
+  private static final String DOMAIN = "example.org";
+
+  /** {@code registry.qits.<domain>}: what a pinned reference is addressed under (qits-757). */
+  private static final String REGISTRY = "registry.qits." + DOMAIN;
+
+  /** A platform image as every recipe and every step row spells it: bare, no registry host. */
+  private static final String BARE = "qits/build-images/ci-base:latest";
   private static final String DIGEST = "sha256:" + "f".repeat(64);
 
   private Vertx vertx;
@@ -81,14 +89,15 @@ public class HttpImagePinsTest {
 
   @Test
   public void aPlatformTagIsAskedAtTheV2ManifestRouteAndPinnedToWhatTheRegistryAnswers() {
-    Pin pin = pins().pin(REGISTRY + "/qits/build-images/ci-base:latest");
+    Pin pin = pins().pin(BARE);
 
     assertEquals(Status.PINNED, pin.status());
     assertEquals(
         REGISTRY + "/qits/build-images/ci-base@" + DIGEST,
         pin.reference(),
-        "pinned at the host a PULL names — the digest is content-addressed, so resolving through"
-            + " the in-network origin and pulling through the daemon's view is one image");
+        "pinned under the registry's derived public name, the host a PULL names — the digest is"
+            + " content-addressed, so resolving through the in-network origin and pulling through"
+            + " the public name is one image");
     assertEquals(List.of("/v2/qits/build-images/ci-base/manifests/latest"), paths);
     assertTrue(
         accepts.get(0).contains("application/vnd.oci.image.index.v1+json"),
@@ -99,7 +108,7 @@ public class HttpImagePinsTest {
   @Test
   public void aReferenceWithNoTagIsAskedAboutLatest() {
     // What docker resolves a bare name to, and therefore what the run would really have pulled.
-    pins().pin(REGISTRY + "/qits/build-images/ci-base");
+    pins().pin("qits/build-images/ci-base");
 
     assertEquals(List.of("/v2/qits/build-images/ci-base/manifests/latest"), paths);
   }
@@ -164,13 +173,14 @@ public class HttpImagePinsTest {
   @Test
   public void aDeploymentWithNoArtifactsOriginCannotAskAndSaysSo() {
     HttpImagePins pins = new HttpImagePins();
-    pins.artifactsRegistryHost = REGISTRY;
+    pins.artifactsImageRepository = "qits";
+    pins.addresses = CiSlotAddresses.forDomain(DOMAIN);
     pins.artifactsUrl = Optional.empty();
     pins.artifactsMavenRegistryUrl = "";
     pins.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
     pins.buildClient();
 
-    Pin pin = pins.pin(REGISTRY + "/qits/build-images/ci-base:latest");
+    Pin pin = pins.pin(BARE);
     assertEquals(
         Status.UNRESOLVED,
         pin.status(),
@@ -179,15 +189,49 @@ public class HttpImagePinsTest {
   }
 
   @Test
-  public void aHostThatIsNotTheConfiguredRegistryIsNotOursToPin() {
-    // Ours is qits.artifacts.registry-host and nothing else. The second spelling this class used
-    // to recognise, qits.ci.buildkit.registry-host, is deleted with the key (qits-515).
+  public void aHostThatIsNotThePublicRegistryIsNotOursToPin() {
+    // Ours is the platform's namespace, bare, or the derived public registry host — and no
+    // configured host at all (qits-757). The old internal and loopback spellings are foreign now.
     HttpImagePins pins = pins();
-    pins.artifactsRegistryHost = "somewhere-else:8080";
 
     assertEquals(
-        Status.FOREIGN, pins.pin(REGISTRY + "/qits/build-images/ci-base:latest").status());
+        Status.FOREIGN, pins.pin("somewhere-else:8080/qits/build-images/ci-base:latest").status());
+    assertEquals(
+        Status.FOREIGN,
+        pins.pin("registry.dev.localhost:8080/qits/build-images/ci-base:latest").status());
+    assertEquals(
+        Status.FOREIGN, pins.pin("dev-qits-artifacts:8080/qits/build-images/ci-base:latest").status());
     assertEquals(0, reads.get(), "and a foreign reference asks no registry");
+  }
+
+  @Test
+  public void aBareReferenceOutsideThePlatformNamespaceIsNotOursToPin() {
+    HttpImagePins pins = pins();
+
+    assertEquals(Status.FOREIGN, pins.pin("library/alpine:3").status());
+    assertEquals(Status.FOREIGN, pins.pin("somebody/qits:1").status());
+    assertEquals(0, reads.get(), "Docker Hub is somebody else's store");
+  }
+
+  @Test
+  public void aReferenceUnderThePublicRegistryNameIsOursAndPinnedUnderIt() {
+    Pin pin = pins().pin(REGISTRY.toUpperCase() + "/qits/build-images/ci-base:latest");
+
+    assertEquals(Status.PINNED, pin.status());
+    assertEquals(REGISTRY + "/qits/build-images/ci-base@" + DIGEST, pin.reference());
+    assertEquals(List.of("/v2/qits/build-images/ci-base/manifests/latest"), paths);
+  }
+
+  @Test
+  public void withNoPublicDomainABarePlatformImageIsPinnedAsSpelled() {
+    // No configured host to fall back to: the reference keeps its own spelling, and the lease's
+    // address plane would put it under the public name anyway.
+    HttpImagePins pins = pins();
+    pins.addresses = CiSlotAddresses.forDomain("");
+
+    Pin pin = pins.pin(BARE);
+    assertEquals(Status.PINNED, pin.status());
+    assertEquals("qits/build-images/ci-base@" + DIGEST, pin.reference());
   }
 
   @Test
@@ -195,7 +239,7 @@ public class HttpImagePinsTest {
     HttpImagePins pins = pins("http://127.0.0.1:1");
     pins.artifactsUrl = Optional.of("http://127.0.0.1:" + port + "/");
 
-    assertEquals(Status.PINNED, pins.pin(REGISTRY + "/qits/build-images/ci-base:latest").status());
+    assertEquals(Status.PINNED, pins.pin(BARE).status());
     assertEquals(
         List.of("/v2/qits/build-images/ci-base/manifests/latest"),
         paths,
@@ -214,7 +258,8 @@ public class HttpImagePinsTest {
    */
   private HttpImagePins pins(String origin) {
     HttpImagePins pins = new HttpImagePins();
-    pins.artifactsRegistryHost = REGISTRY;
+    pins.artifactsImageRepository = "qits";
+    pins.addresses = CiSlotAddresses.forDomain(DOMAIN);
     pins.artifactsUrl = Optional.empty();
     pins.artifactsMavenRegistryUrl = origin + "/artifacts/maven/maven";
     pins.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);

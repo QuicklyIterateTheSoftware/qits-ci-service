@@ -38,8 +38,16 @@ public class CiStep extends PanacheEntityBase {
   @Column(name = "step_index", nullable = false)
   public int stepIndex;
 
+  /**
+   * The image as spelled — {@code qits/build-images/ci-slot:latest} — with no registry host added
+   * (qits-757; V40 stripped the host older rows carried). What ran is the run's pin, not this.
+   */
   @Column(nullable = false, length = 512)
   public String image;
+
+  /** The step's declared {@code name:} (qits-757, V40), or null when it declared none. */
+  @Column(length = 128)
+  public String name;
 
   @Enumerated(EnumType.STRING)
   @Column(nullable = false, length = 32)

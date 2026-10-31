@@ -477,11 +477,11 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
   public void aRetryWhoseStepImageCannotBePinnedIsRefusedAndRecordsNoRun() throws Exception {
     // The registry answered when the source run was accepted, so the original really ran — then the
     // tag's digest becomes unresolvable before the retry re-pins it (CiStepImagePinTest's own
-    // registryReference arrangement: the platform namespace prefixed with the resolved registry
-    // host). A retry re-pins rather than copying, exactly so a broken registry is caught again.
+    // registryReference arrangement: the ci-slot tag as spelled, no registry host). A retry re-pins
+    // rather than copying, exactly so a broken registry is caught again.
     String repo = "consumer-" + UUID.randomUUID();
     // The one image a run pins is the ci-slot image (epic qits-1481), whatever its step declares.
-    String reference = service.resolveStepImage(CiSlot.IMAGE_TAG);
+    String reference = CiSlot.IMAGE_TAG;
     fakeImagePins.pins(reference, "sha256:" + "1".repeat(64));
     String original =
         service.onEventTrigger(

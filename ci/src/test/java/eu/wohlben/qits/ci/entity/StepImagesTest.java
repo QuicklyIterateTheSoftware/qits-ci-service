@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Test;
  */
 public class StepImagesTest {
 
-  private static final String REFERENCE = "registry:8080/qits/build-images/ci-base:latest";
+  private static final String REFERENCE = "qits/build-images/ci-base:latest";
   private static final String PINNED = "registry:8080/qits/build-images/ci-base@sha256:" + "a".repeat(64);
 
   @Test
@@ -29,6 +29,30 @@ public class StepImagesTest {
 
     String stored = StepImages.encode(pins);
     assertEquals(pins, StepImages.decode(stored));
+  }
+
+  @Test
+  public void aKeyStoredUnderTheRetiredRegistryHostReadsAsSpelled() {
+    // qits-757: runs accepted before the upgrade pinned under the host a retired configuration key
+    // prefixed; the lease is now asked under the bare tag, and must still find that run's pin.
+    String old = "{\"registry.dev.localhost:8080/qits/build-images/ci-slot:latest\":\"" + PINNED + "\","
+        + "\"dev-qits-artifacts:8080/qits/build-images/ci-base:latest\":\"" + PINNED + "\"}";
+    assertEquals(
+        Map.of(
+            "qits/build-images/ci-slot:latest", PINNED, "qits/build-images/ci-base:latest", PINNED),
+        StepImages.decode(old));
+  }
+
+  @Test
+  public void aKeyOutsideThePlatformNamespaceIsLeftAsItIs() {
+    String other = "ghcr.io/someone/tool:1";
+    String bareOfficial = "docker:28-dind";
+    String bareOurs = "qits/build-images/ci-slot:latest";
+    assertEquals(other, StepImages.asSpelled(other));
+    assertEquals(bareOfficial, StepImages.asSpelled(bareOfficial));
+    assertEquals(bareOurs, StepImages.asSpelled(bareOurs));
+    assertEquals(
+        Map.of(other, PINNED), StepImages.decode("{\"" + other + "\":\"" + PINNED + "\"}"));
   }
 
   @Test

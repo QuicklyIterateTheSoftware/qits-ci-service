@@ -27,7 +27,7 @@ public final class SlotFixtures {
   public static final String DAEMON_ID = "5b1f0c1e-6a43-4f3e-9d1a-0c8b2f7e1a11";
 
   public static final String PINNED =
-      "dev-qits-artifacts:8080/qits/build-images/ci-slot@sha256:" + "a".repeat(64);
+      "registry.qits.example.org/qits/build-images/ci-slot@sha256:" + "a".repeat(64);
 
   /** The run's {@code ci-run} token, as qits-idp answers one. */
   public static IdpCommissioner.CommissionedToken token() {

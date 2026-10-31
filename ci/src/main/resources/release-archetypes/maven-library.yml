@@ -88,7 +88,8 @@ release-request:
 
   # `image:` is kept only for the qits-ci version that judges this fold against the old parser; the
   # ci-slot runner that actually executes it ignores the key entirely (qits-1544).
-  - image: qits/build-images/maven-base:latest
+  - name: build and test
+    image: qits/build-images/maven-base:latest
     user: build
     timeout-seconds: 1800
     script: |
@@ -148,7 +149,8 @@ release-request:
 release:
 
   # `image:` kept for the old parser only; the ci-slot runner ignores it (qits-1544).
-  - image: qits/build-images/maven-base:latest
+  - name: publish jars
+    image: qits/build-images/maven-base:latest
     timeout-seconds: 1800
     script: |
       qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
