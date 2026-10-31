@@ -163,6 +163,11 @@ public class MigrationChecksumTest {
     PINS.put(
         "V39__run_leases.sql",
         "b783e5aaba10da857d898be149ff9298fb48657e69a6332ae6f1641ab0064154");
+    PINS.put(
+        "V40__step_name.sql", "5047e82fa08310c5e165a3ecbf8bc66bd22a60af983496d0487b758382104cb8");
+    PINS.put(
+        "V41__step_image_as_spelled.sql",
+        "7a6e06caf4a84f6d0bbec697769d304e3e65ae48f6dd31e029b7a5635a7ea312");
   }
 
   @Test

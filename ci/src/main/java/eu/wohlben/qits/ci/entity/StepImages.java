@@ -92,9 +92,41 @@ public final class StepImages {
         // reference with no usable pin simply launches as the recipe named it.
         continue;
       }
-      pins.put(reference, pinned.asText());
+      // putIfAbsent: one run never pinned one image under two spellings, but if a value ever held
+      // both, the first entry stands rather than whichever the normalisation happened to reach last.
+      pins.putIfAbsent(asSpelled(reference), pinned.asText());
     }
     return Map.copyOf(pins);
+  }
+
+  /** This platform's image namespace as a reference's path starts with it — see {@link #asSpelled}. */
+  static final String PLATFORM_NAMESPACE = "qits/";
+
+  /**
+   * A stored KEY as the image is spelled now (qits-757): a leading registry host stripped from a
+   * reference into this platform's own namespace, {@code registry.dev.localhost:8080/qits/…} read
+   * as {@code qits/…}.
+   *
+   * <p>Until qits-757 a run pinned its step image under the host a since-retired configuration key
+   * prefixed it with, and a lease is now asked under the bare tag.
+   * Without this, a run accepted before the upgrade and leased after it would miss its own pin and
+   * be asked for the floating tag. Done here rather than by rewriting the column, so a run an older
+   * instance accepted while this one was already up reads correctly too. V41 does the same to
+   * {@code ci_step.image}, which is queried in SQL.
+   *
+   * <p>A host is a first segment carrying a {@code .} or a {@code :}; a reference into any other
+   * namespace is left as it is. The VALUE — the pinned reference — is never rewritten: whichever
+   * host it names, the lease's address plane moves it to the registry's public name.
+   */
+  static String asSpelled(String reference) {
+    int slash = reference.indexOf('/');
+    if (slash <= 0) {
+      return reference;
+    }
+    String first = reference.substring(0, slash);
+    String rest = reference.substring(slash + 1);
+    boolean host = first.indexOf('.') >= 0 || first.indexOf(':') >= 0;
+    return host && rest.startsWith(PLATFORM_NAMESPACE) ? rest : reference;
   }
 
   /** A JSON string literal. Minimal and sufficient: the two structural characters and the C0 range. */

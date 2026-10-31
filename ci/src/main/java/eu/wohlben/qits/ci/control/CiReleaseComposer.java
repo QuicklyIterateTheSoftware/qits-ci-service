@@ -501,6 +501,9 @@ public final class CiReleaseComposer {
    */
   static final int CHANGELOG_ONLY_TIMEOUT_SECONDS = 300;
 
+  /** The synthesised release half's step name (qits-757): all it publishes is the changelog. */
+  static final String CHANGELOG_ONLY_NAME = "changelog";
+
   /**
    * Compiles one repository's release cycle.
    *
@@ -600,7 +603,15 @@ public final class CiReleaseComposer {
         new CiPipeline(
             List.of(
                 new CiStepDecl(
-                    CHANGELOG_ONLY_IMAGE, ":", CHANGELOG_ONLY_TIMEOUT_SECONDS, false, false, ""))),
+                    CHANGELOG_ONLY_IMAGE,
+                    ":",
+                    CHANGELOG_ONLY_TIMEOUT_SECONDS,
+                    false,
+                    false,
+                    "",
+                    false,
+                    List.of(),
+                    CHANGELOG_ONLY_NAME))),
         slots.configPath());
   }
 
@@ -786,6 +797,12 @@ public final class CiReleaseComposer {
       // declared image is ignored and the composed document does not repeat it. The step's first
       // key opens its list item instead.
       String lead = "  - ";
+      // The step's name first (qits-757): it is what the run's step tile shows, and the first thing
+      // a person reading the composed document looks for.
+      if (step.name() != null) {
+        out.append(lead).append("name: ").append(scalar(step.name())).append('\n');
+        lead = "    ";
+      }
       if (step.timeoutSeconds() != null) {
         out.append(lead).append("timeout-seconds: ").append(step.timeoutSeconds()).append('\n');
         lead = "    ";

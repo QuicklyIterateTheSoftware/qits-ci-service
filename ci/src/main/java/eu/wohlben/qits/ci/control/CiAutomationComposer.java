@@ -385,12 +385,19 @@ public final class CiAutomationComposer {
     out.append("when:\n");
     out.append("  - ").append(KIND_FIELD).append(": { exact: ").append(scalar(kind)).append(" }\n");
     out.append("steps:\n");
-    if (user != null) {
-      out.append("  - user: ").append(user).append('\n');
-      out.append("    timeout-seconds: ").append(timeout).append('\n');
-    } else {
-      out.append("  - timeout-seconds: ").append(timeout).append('\n');
+    // The one step is named after its kind (qits-757): that is what the run's step tile shows, and
+    // the kind is exactly what the step does. KIND has already bounded its characters to
+    // [a-z0-9-]+; a kind longer than a name may be simply goes unnamed.
+    String lead = "  - ";
+    if (kind.length() <= CiConfigSchema.MAX_STEP_NAME_LENGTH) {
+      out.append(lead).append("name: ").append(scalar(kind)).append('\n');
+      lead = "    ";
     }
+    if (user != null) {
+      out.append(lead).append("user: ").append(user).append('\n');
+      lead = "    ";
+    }
+    out.append(lead).append("timeout-seconds: ").append(timeout).append('\n');
     if (build) {
       out.append("    build: true\n");
     }

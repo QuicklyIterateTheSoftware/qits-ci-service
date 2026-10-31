@@ -72,6 +72,63 @@ public class CiEventTriggerParserTest {
         CiSlot.STEP_IMAGES_IGNORED);
   }
 
+  // --- name: what a step does, the label on its tile (qits-757) ---------------------------------
+
+  @Test
+  public void aStepNameIsOptionalAndTrimmed() {
+    CiEventTrigger trigger =
+        parser.parse(
+            PATH,
+            """
+            event: E
+            steps:
+              - name: "  build and test  "
+                script: ./verify.sh
+              - script: ./publish.sh
+            """);
+    assertEquals("build and test", trigger.pipeline().steps().get(0).name());
+    assertEquals(null, trigger.pipeline().steps().get(1).name(), "no name: the tile shows the image");
+  }
+
+  @Test
+  public void aNameOfExactlyTheLimitIsAccepted() {
+    String longest = "n".repeat(CiConfigSchema.MAX_STEP_NAME_LENGTH);
+    CiEventTrigger trigger =
+        parser.parse(PATH, "event: E\nsteps:\n  - name: " + longest + "\n    script: x\n");
+    assertEquals(longest, trigger.pipeline().steps().get(0).name());
+  }
+
+  @Test
+  public void aBlankNonStringTooLongOrMultiLineNameIsRefused() {
+    for (String name :
+        List.of(
+            "\"   \"",
+            "\"\"",
+            "42",
+            "true",
+            "[a, b]",
+            "~",
+            "n".repeat(CiConfigSchema.MAX_STEP_NAME_LENGTH + 1),
+            "\"two\\nlines\"")) {
+      CiConfigException refused =
+          assertThrows(
+              CiConfigException.class,
+              () -> parser.parse(PATH, "event: E\nsteps:\n  - name: " + name + "\n    script: x\n"),
+              name);
+      assertTrue(refused.getMessage().contains("'name'"), refused.getMessage());
+      assertTrue(refused.getMessage().startsWith("Step 0"), refused.getMessage());
+    }
+  }
+
+  @Test
+  public void aStoredSnapshotWithAnUnreadableNameParsesWithoutIt() {
+    // A trigger file that carried `name: 42` before the key existed was accepted then; the run it
+    // queued must survive the upgrade that made the key strict.
+    CiEventTrigger trigger =
+        parser.parseSnapshot(PATH, "event: E\nsteps:\n  - name: 42\n    script: x\n", "Run 0f2c");
+    assertEquals(null, trigger.pipeline().steps().get(0).name());
+  }
+
   @Test
   public void aFileLevelGatingIsAParseErrorWhateverItSays() {
     // The key is gone as a concept (ticket 9441bc6e): every step of a pipeline gates and a run's

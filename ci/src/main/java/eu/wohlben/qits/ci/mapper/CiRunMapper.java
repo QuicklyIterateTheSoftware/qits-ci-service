@@ -53,6 +53,8 @@ public interface CiRunMapper {
   @Mapping(target = "autoRetry", expression = "java(entity.retryReason != null)")
   CiRunDto toDto(CiRun entity);
 
+  // The step's declared name (qits-757), spelled out for `phase`'s reason.
+  @Mapping(target = "name", source = "name")
   CiStepDto toDto(CiStep entity);
 
   /**
@@ -70,6 +72,7 @@ public interface CiRunMapper {
    * they belong to, which is exactly what is left.
    */
   @Mapping(target = "output", ignore = true)
+  @Mapping(target = "name", source = "name")
   CiStepDto toDtoWithoutOutput(CiStep entity);
 
   /**

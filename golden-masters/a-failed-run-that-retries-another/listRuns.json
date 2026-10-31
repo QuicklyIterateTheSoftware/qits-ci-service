@@ -35,7 +35,8 @@
           "exitCode": 0,
           "startedAt": "2026-01-01T00:00:00Z",
           "finishedAt": "2026-01-01T00:00:00Z",
-          "output": null
+          "output": null,
+          "name": null
         },
         {
           "stepIndex": 1,
@@ -44,7 +45,8 @@
           "exitCode": 1,
           "startedAt": "2026-01-01T00:00:00Z",
           "finishedAt": "2026-01-01T00:00:00Z",
-          "output": null
+          "output": null,
+          "name": null
         }
       ],
       "live": null,
@@ -94,7 +96,8 @@
           "exitCode": 1,
           "startedAt": "2026-01-01T00:00:00Z",
           "finishedAt": "2026-01-01T00:00:00Z",
-          "output": null
+          "output": null,
+          "name": null
         }
       ],
       "live": null,

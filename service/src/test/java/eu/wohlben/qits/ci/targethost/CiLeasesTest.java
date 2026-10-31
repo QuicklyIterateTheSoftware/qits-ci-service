@@ -94,6 +94,33 @@ class CiLeasesTest {
   }
 
   @Test
+  void theSlotImageIsThePinRecordedUnderTheBareTag() {
+    // qits-757: a run's pin is keyed by the tag as spelled, with no registry host.
+    String digest = "@sha256:" + "c".repeat(64);
+    CiRun pinned = new CiRun();
+    pinned.stepImages =
+        eu.wohlben.qits.ci.entity.StepImages.encode(
+            java.util.Map.of(
+                eu.wohlben.qits.ci.control.CiSlot.IMAGE_TAG,
+                "registry.qits.example.org/qits/build-images/ci-slot" + digest));
+    assertEquals(
+        "registry.qits.example.org/qits/build-images/ci-slot" + digest,
+        CiLeases.slotImageOf(pinned));
+    // A run accepted before the upgrade pinned under the retired host, and still finds its pin.
+    CiRun older = new CiRun();
+    older.stepImages =
+        "{\"registry.dev.localhost:8080/qits/build-images/ci-slot:latest\":"
+            + "\"registry.dev.localhost:8080/qits/build-images/ci-slot"
+            + digest
+            + "\"}";
+    assertEquals(
+        "registry.dev.localhost:8080/qits/build-images/ci-slot" + digest,
+        CiLeases.slotImageOf(older),
+        "the pin is found; the address plane moves its host to the public name");
+    assertEquals(eu.wohlben.qits.ci.control.CiSlot.IMAGE_TAG, CiLeases.slotImageOf(new CiRun()));
+  }
+
+  @Test
   void theTokenIsMintedBeforeTheLeaseAndRidesInItsSpec() {
     leases.requestNow(RUN);
 
@@ -273,11 +300,6 @@ class CiLeasesTest {
     @Override
     public Optional<Reservation> leaseCandidate(String runId) {
       return Optional.of(new Reservation(row, request()));
-    }
-
-    @Override
-    public String resolveStepImage(String image) {
-      return "dev-qits-artifacts:8080/" + image;
     }
 
     @Override

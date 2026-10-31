@@ -71,8 +71,6 @@ public class CiQueueSurfaceTest {
   /** This class's own event name, so no other suite's trigger file is fired by one of these. */
   private static final String EVENT_NAME = "CiQueueEvent";
 
-  /** No slash, so {@code CiStepImage} leaves it alone and the staged history names what runs. */
-
   private static final String TRIGGER_FILE =
       """
       event: CiQueueEvent
@@ -456,7 +454,7 @@ public class CiQueueSurfaceTest {
                 step.stepIndex = stepIndex;
                 // What a step row records since epic qits-1481: the ci-slot image every step runs
                 // in, whatever the pipeline named — and what a prediction samples history by.
-                step.image = runService.resolveStepImage(eu.wohlben.qits.ci.control.CiSlot.IMAGE_TAG);
+                step.image = eu.wohlben.qits.ci.control.CiSlot.IMAGE_TAG;
                 step.status = CiStepStatus.SUCCESS;
                 step.exitCode = 0;
                 step.finishedAt = nextFinish;

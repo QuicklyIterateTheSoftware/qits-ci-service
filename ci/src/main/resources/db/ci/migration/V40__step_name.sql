@@ -1,0 +1,13 @@
+-- A step's declared name (qits-757): `name:` in a release.yml slot, an archetype recipe or a
+-- ci-event-*.yml trigger file, carried through the parser, the composed document and onto the row,
+-- and returned as CiStepDto.name. It is what a run's step tile shows. Before it, the tile had only
+-- the image to show, and since every step runs in the run's one ci-slot container (qits-1544) that
+-- image is the same for every step — the tiles could not be told apart.
+--
+-- varchar(128) because CiConfigSchema refuses a longer name (MAX_STEP_NAME_LENGTH): a name is a
+-- label, and the column and the parser state one limit.
+--
+-- NULLABLE, NO DEFAULT, NO BACKFILL, part of no constraint and carrying no index — V8's shape again.
+-- Null is the ordinary value: a step that declares no name, and every row written before this
+-- migration, whose document said nothing a name could be read from. A client shows the image then.
+alter table ci_step add column name varchar(128);

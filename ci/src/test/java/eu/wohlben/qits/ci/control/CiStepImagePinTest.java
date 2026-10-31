@@ -40,14 +40,11 @@ public class CiStepImagePinTest extends CiTestSupport {
   private static final String BARE = CiSlot.IMAGE_TAG;
 
   /**
-   * The registry the engine prefixes a platform reference with — the RESOLVED value of
-   * {@code qits.artifacts.registry-host}, which the shipped default derives as
-   * {@code ${QITS_ENVIRONMENT:dev}-qits-artifacts:8080}. Surefire gains no environment variable, so
-   * what the engine really prefixes here is the {@code dev} fallback. Spelled once: these cases are
-   * about the pin and the digest, and five loose copies of an address would make a change to that
-   * default read as five unrelated failures.
+   * The pinned spelling the fake answers with: the reference's path at the digest. The engine adds
+   * no registry host to anything (qits-757) — the production pin addresses it under the platform's
+   * public name, which is the service module's to assert.
    */
-  private static final String REGISTRY = "dev-qits-artifacts:8080";
+  private static final String PINNED_PATH = "qits/build-images/ci-slot@";
 
   private static final String DIGEST = "sha256:" + "1".repeat(64);
   private static final String OTHER_DIGEST = "sha256:" + "2".repeat(64);
@@ -61,9 +58,9 @@ public class CiStepImagePinTest extends CiTestSupport {
   void seedRepository() {
     repoId = "pinned-" + UUID.randomUUID().toString().substring(0, 8);
     fakeCandidates.set(repoId);
-    // The reference the engine really pins and launches: CiStepImage prefixes the platform's own
-    // namespace with the registry, and the pin is asked about what will be pulled.
-    registryReference = REGISTRY + "/" + BARE;
+    // The reference the engine really pins and launches: the tag AS SPELLED, with no registry host
+    // added (qits-757). Whether it is this platform's to pin is the pin seam's decision.
+    registryReference = BARE;
   }
 
   /**
@@ -88,7 +85,7 @@ public class CiStepImagePinTest extends CiTestSupport {
 
     List<CiStepRunner.StepSpec> launched = fakeRunner.executed();
     assertEquals(2, launched.size());
-    String pinned = REGISTRY + "/qits/build-images/ci-slot@" + DIGEST;
+    String pinned = PINNED_PATH + DIGEST;
     assertEquals(pinned, launched.get(0).image());
     assertEquals(
         pinned,
@@ -116,7 +113,7 @@ public class CiStepImagePinTest extends CiTestSupport {
 
     CiRun run = runService.runsFor(repoId).get(0);
     assertEquals(
-        Map.of(registryReference, REGISTRY + "/qits/build-images/ci-slot@" + DIGEST),
+        Map.of(registryReference, PINNED_PATH + DIGEST),
         StepImages.decode(run.stepImages),
         "archetype_rev says which recipe ran; this says which image it ran inside, and neither is"
             + " reconstructable afterwards by asking a registry what a moving tag used to be");
@@ -144,7 +141,7 @@ public class CiStepImagePinTest extends CiTestSupport {
           - image: %s
             script: "true"
         """
-            .formatted(REGISTRY + "/qits/build-images/ci-base@" + OTHER_DIGEST));
+            .formatted("registry.qits.example.org/qits/build-images/ci-base@" + OTHER_DIGEST));
 
     assertEquals(registryReference, fakeRunner.executed().get(0).image());
     assertEquals(registryReference, fakeRunner.executed().get(1).image());
@@ -233,7 +230,7 @@ public class CiStepImagePinTest extends CiTestSupport {
     assertEquals(List.of(), evaluation.repositoriesUnreadable(), "nothing is owed: " + evaluation);
     assertEquals(3, fakeImagePins.timesAsked(registryReference));
     assertEquals(
-        REGISTRY + "/qits/build-images/ci-slot@" + DIGEST, fakeRunner.executed().get(0).image());
+        PINNED_PATH + DIGEST, fakeRunner.executed().get(0).image());
   }
 
   /**

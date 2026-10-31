@@ -93,7 +93,8 @@
 event: MaintenanceBump
 qits-cli: true
 steps:
-  - timeout-seconds: 1800
+  - name: apply bump
+    timeout-seconds: 1800
     script: |
       set -eu
 

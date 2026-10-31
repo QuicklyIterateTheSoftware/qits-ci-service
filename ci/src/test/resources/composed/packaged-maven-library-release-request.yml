@@ -10,7 +10,8 @@ checkout:
   branch: backingBranch
   sha: mergedSha
 steps:
-  - timeout-seconds: 1800
+  - name: 'build and test'
+    timeout-seconds: 1800
     user: 'build'
     script: |
       set -eu

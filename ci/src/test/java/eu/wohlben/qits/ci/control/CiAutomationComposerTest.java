@@ -116,6 +116,9 @@ public class CiAutomationComposerTest {
     assertEquals(1, trigger.pipeline().steps().size());
     assertEquals(600, trigger.pipeline().steps().get(0).timeoutSeconds());
     assertEquals(null, trigger.pipeline().steps().get(0).image(), "a kind's image is ignored");
+    // qits-757: the one step is named after its kind — the label the run's step tile shows.
+    assertTrue(composed.contains("steps:\n  - name: 'test-kind'\n    timeout-seconds: 600\n"), composed);
+    assertEquals("test-kind", trigger.pipeline().steps().get(0).name());
   }
 
   // --- qits-cli ----------------------------------------------------------------------------------
@@ -213,7 +216,7 @@ public class CiAutomationComposerTest {
     String with = CiAutomationComposer.compose("test-kind", PATH, MINIMAL + "user: build\n");
     assertEquals(
         without.replace(
-            "  - timeout-seconds: 600\n", "  - user: build\n    timeout-seconds: 600\n"),
+            "    timeout-seconds: 600\n", "    user: build\n    timeout-seconds: 600\n"),
         with);
     CiEventTrigger trigger = new CiEventTriggerParser().parse(PATH, with);
     assertEquals("build", trigger.pipeline().steps().get(0).user());

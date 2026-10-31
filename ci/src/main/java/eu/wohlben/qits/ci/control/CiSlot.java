@@ -26,9 +26,9 @@ public final class CiSlot {
   public static final String IMAGE_REPOSITORY = "qits/build-images/ci-slot";
 
   /**
-   * The reference a run pins at accept, in the registry-host spelling every other platform image
-   * reference uses ({@code CiRunService.pinStepImages}); the lease is asked for its digest under the
-   * registry's public name.
+   * The reference a run pins at accept and every step row records, as spelled — no registry host
+   * (qits-757, {@code CiRunService.pinStepImages}); the lease is asked for its digest under the
+   * registry's public name, which the address plane adds.
    */
   public static final String IMAGE_TAG = IMAGE_REPOSITORY + ":latest";
 

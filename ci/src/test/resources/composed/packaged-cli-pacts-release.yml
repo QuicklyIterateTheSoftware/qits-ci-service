@@ -9,7 +9,8 @@ checkout:
 artifacts:
   - { type: 'maven', name: 'eu.wohlben.qits:qits-bootstrap-cli-pacts-qits-projects-service', publish: 'if-changed', section: 'contracts' }
 steps:
-  - timeout-seconds: 300
+  - name: 'changelog'
+    timeout-seconds: 300
     script: |
       set -eu
       # --- platform prelude ---------------------------------------------------------

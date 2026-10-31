@@ -514,35 +514,6 @@ public class CiRunService {
   Duration dbRetryDeadline;
 
   /**
-   * qits-platform-artifacts' coordinates, for resolving a step image a recipe named without a
-   * registry — see {@link CiStepImage} for the rule and for what it is worth. The registry the
-   * publish scripts compose as {@code registry.qits.$QITS_DOMAIN} and the namespace they read as
-   * {@code $QITS_IMAGE_REPOSITORY}, read here so a recipe keeps naming no deployment fact of its own. RECEIVER-NAMED, like every other reader
-   * of this pair.
-   */
-  @ConfigProperty(name = "qits.artifacts.registry-host")
-  String artifactsRegistryHost;
-
-  @ConfigProperty(name = "qits.artifacts.image-repository")
-  String artifactsImageRepository;
-
-  /**
-   * The kill switch for that resolution, and it exists because of what it costs to be wrong.
-   *
-   * <p>Resolving points every step at the registry, so a registry that does not hold these images
-   * yet breaks <b>every build in every repository at once</b> — and the pipeline that would publish
-   * them runs on one of them, so there is no run left that could fix it. That is not a hypothetical:
-   * on 2026-08-20 all five were absent from the registry <i>and</i> from the host, and an artifacts
-   * store has been re-seeded without them before. Off, a deployment falls back to the local store
-   * exactly as it always behaved, without rebuilding or redeploying this service.
-   *
-   * <p>Shipped ON, because the recoverable state is the one worth defaulting to and the failure is
-   * loud, immediate and reversible by one variable.
-   */
-  @ConfigProperty(name = "qits.ci.resolve-platform-step-images", defaultValue = "true")
-  boolean resolvePlatformStepImages;
-
-  /**
    * The waits between digest lookups of one step image that did not answer (qits-1183). One
    * registry blip used to refuse the run on the first try, and a caller with no ledger behind it —
    * qits-maintenance's trigger — then ended its automation FAILED. Each entry is one more try after
@@ -1376,6 +1347,7 @@ public class CiRunService {
                     step.runId = row.id;
                     step.stepIndex = i;
                     step.image = stepImage(declared.get(i));
+                    step.name = declared.get(i).name();
                     if (i == index) {
                       boolean inFlight =
                           row.inflightStepIndex != null && row.inflightStepIndex == i;
@@ -1606,74 +1578,34 @@ public class CiRunService {
   private record DeclaredRelease(List<CiArtifact> artifacts, String eventPayload) {}
 
   /**
-   * Where a declared step's image is really pulled from — see {@link CiStepImage}.
+   * The image a declared step's row records and its pin is keyed by: {@link CiSlot#IMAGE_TAG}, <b>as
+   * spelled</b> — {@code qits/build-images/ci-slot:latest}, with no registry host (qits-757).
    *
-   * <p><b>The resolved reference is what gets RECORDED</b>: a step row that showed the recipe's
-   * shorthand would leave the registry to be inferred, and a launch that fails on the image has to
-   * say which reference it could not pull.
+   * <p>A declared image is ignored (epic qits-1481): every step runs in the run's one ci-slot
+   * container, so every step row names that image — which also keeps the duration prediction
+   * sampling one image per step index, as before.
    *
-   * <p><b>It is no longer what gets STARTED, and the split is deliberate.</b> What starts is this
-   * reference pinned to a digest — {@link #pinnedImage}, out of the run's own {@code step_images} —
-   * because a tag asked twice in one build can answer twice. So {@code ci_step.image} is the
-   * reference the recipe named and the registry it resolves at, while {@code ci_run.step_images} is
-   * which bytes that reference meant for THIS run; the two together say what ran, and neither says
-   * it alone.
+   * <p><b>No host is added here, and none is configured anywhere.</b> Until qits-757 this prefixed
+   * the tag with a configured artifacts registry host (now retired), whose shipped default named a host-loopback
+   * machine name — and that string was what every step tile showed. The registry a lease really
+   * pulls from is the platform's derived public name, added where the lease is asked for
+   * ({@code CiSlotAddresses}); the pin is resolved against the in-network origin
+   * ({@code HttpImagePins}). Neither is a fact about the step.
    *
-   * <p><b>Keeping the tag on the step row is also what keeps the duration prediction working.</b>
-   * {@link #predictedStepDurations} samples history by {@code (repo, config path, step index,
-   * image)} — "a step that changed its image stops predicting", with no invalidation and no version
-   * column. Recording the digest there would make every publish of a build image a new image to
-   * that predicate, so every pipeline on the estate would lose its history the moment the toolchain
-   * moved, which is not what that rule means by a step changing its image.
+   * <p><b>What gets STARTED is not this</b>, and the split is deliberate: it is this reference pinned
+   * to a digest — {@link #pinnedImage}, out of the run's own {@code step_images} — because a tag
+   * asked twice in one build can answer twice. Keeping the tag on the step row is what keeps the
+   * duration prediction working: {@link #predictedStepDurations} samples history by {@code (repo,
+   * config path, step index, image)}, and a digest there would make every publish of a build image
+   * erase every pipeline's history.
    */
-  private String stepImage(CiPipeline.CiStepDecl decl) {
-    // A declared image is ignored (epic qits-1481): every step runs in the run's one ci-slot
-    // container, so every step row names that image — which also keeps the duration prediction
-    // sampling one image per step index, as before.
-    return resolveStepImage(CiSlot.IMAGE_TAG);
+  static String stepImage(CiPipeline.CiStepDecl decl) {
+    return CiSlot.IMAGE_TAG;
   }
 
   /** Whether a pipeline declares any step image — the one fact {@link CiSlot#STEP_IMAGES_IGNORED} is about. */
   static boolean declaresStepImages(CiPipeline pipeline) {
     return pipeline.steps().stream().anyMatch(step -> step.image() != null);
-  }
-
-  /**
-   * A step image as a run resolves it — {@link CiStepImage#resolve} against this platform's
-   * registry, unless {@code qits.ci.resolve-platform-step-images} is off — and unpinned: what
-   * {@code ci_step.image} records. What a step is STARTED with is {@link #launchStepImage}.
-   */
-  public String resolveStepImage(String image) {
-    return resolvePlatformStepImages
-        ? CiStepImage.resolve(image, artifactsRegistryHost, artifactsImageRepository)
-        : image;
-  }
-
-  /**
-   * <b>The reference a run accepted NOW would start {@code image} with</b>: {@link
-   * #resolveStepImage}, then the one pin {@link #pinStepImages} would record for it and {@link
-   * #pinnedImage} would launch — the digest form for a platform image, the reference as named for a
-   * foreign one or one that already carries a digest. What a runner's node health check is told to
-   * look for (qits-896), so its {@code stepImage} check asks the node for the bytes its next
-   * pseudo-build pulls rather than a tag no launch ever names.
-   *
-   * <p><b>Where accept would refuse, this answers the resolved tag</b> — the registry did not answer,
-   * or this deployment states no address for it. A diagnosis asking about the tag is still a
-   * diagnosis; a run started on it would not be, which is why only accept refuses. One registry
-   * {@code HEAD}, bounded by the pin seam's own timeouts. Never throws.
-   */
-  public String launchStepImage(String image) {
-    String resolved = resolveStepImage(image);
-    if (resolved == null || resolved.isBlank()) {
-      return resolved;
-    }
-    try {
-      CiStepImagePins.Pin pin = imagePins.pin(resolved);
-      return pin.status() == CiStepImagePins.Status.UNRESOLVED ? resolved : pin.reference();
-    } catch (RuntimeException e) {
-      LOG.debugf("Could not pin %s: %s", resolved, e.getMessage());
-      return resolved;
-    }
   }
 
   /**
@@ -1916,6 +1848,7 @@ public class CiRunService {
             run.id,
             index,
             stepImage(decl),
+            decl.name(),
             ok
                 ? CiStepStatus.SUCCESS
                 : stepTimedOut ? CiStepStatus.TIMED_OUT : CiStepStatus.FAILED,
@@ -1947,6 +1880,7 @@ public class CiRunService {
             run.id,
             index,
             stepImage(declared.get(index)),
+            declared.get(index).name(),
             CiStepStatus.FAILED,
             null,
             "[the step could not be executed: " + e + "]",
@@ -1963,6 +1897,7 @@ public class CiRunService {
           run.id,
           skipped,
           stepImage(declared.get(skipped)),
+          declared.get(skipped).name(),
           CiStepStatus.SKIPPED,
           null,
           null,
@@ -2393,6 +2328,7 @@ public class CiRunService {
                       step.runId = row.id;
                       step.stepIndex = i;
                       step.image = stepImage(declared.get(i));
+                      step.name = declared.get(i).name();
                       if (i == failing) {
                         step.status = CiStepStatus.FAILED;
                         step.exitCode = -1;
@@ -3271,6 +3207,7 @@ public class CiRunService {
       String runId,
       int stepIndex,
       String image,
+      String name,
       CiStepStatus status,
       Integer exitCode,
       String output,
@@ -3284,6 +3221,7 @@ public class CiRunService {
               step.runId = runId;
               step.stepIndex = stepIndex;
               step.image = image;
+              step.name = name;
               step.status = status;
               step.exitCode = exitCode;
               step.output = output;
@@ -4032,8 +3970,12 @@ public class CiRunService {
     if (!recomposed.document().equals(source.triggerConfig)) {
       // Worth one line at INFO: the retry is deliberately not the same bytes as the run it re-fires,
       // and that is the difference somebody comparing the two rows will otherwise have to guess at.
+      // A difference is NEVER a reason to refuse: a run composed before step names existed
+      // (qits-757) re-composes with `name:` lines it never had, and retries like any other — the
+      // carry-over compares step count and image, never the document.
       LOG.infof(
-          "Retry of run %s re-composes %s at %s — the platform prelude has moved since that run",
+          "Retry of run %s re-composes %s at %s — the composed document (platform prelude, recipe"
+              + " or step names) has moved since that run",
           source.id, source.configPath, source.commitSha);
     }
     return new RetriedPipeline(recomposed.document(), recomposed.archetype());
@@ -4060,7 +4002,7 @@ public class CiRunService {
   }
 
   /** One carried step: what its row on the retry says, copied from the source's row. */
-  record CarriedStep(int index, String image, Integer exitCode, String output) {}
+  record CarriedStep(int index, String image, String name, Integer exitCode, String output) {}
 
   /**
    * <b>A retry of a RELEASE run resumes at the first step that did not succeed in the run it
@@ -4128,7 +4070,14 @@ public class CiRunService {
         return Carry.NONE;
       }
       carried.add(
-          new CarriedStep(i, step.image, step.exitCode, carriedOutput(source.id, step.output)));
+          new CarriedStep(
+              i,
+              step.image,
+              // The retry's own declaration names the step (qits-757): a source run from before
+              // names existed carries none, and its re-composed retry does.
+              retried.get(i).name(),
+              step.exitCode,
+              carriedOutput(source.id, step.output)));
     }
     LOG.infof(
         "Retry of release run %s carries step(s) 0..%d over as succeeded and resumes at step %d%s",
@@ -4268,6 +4217,7 @@ public class CiRunService {
       step.runId = retry.id;
       step.stepIndex = carried.index();
       step.image = carried.image();
+      step.name = carried.name();
       step.status = CiStepStatus.SUCCESS;
       step.exitCode = carried.exitCode();
       step.output = carried.output();

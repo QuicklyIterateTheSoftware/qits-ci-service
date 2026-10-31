@@ -441,12 +441,12 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
    * of that run, so a build can no longer straddle two versions of one tool, and this column is
    * what makes that readable afterwards.
    *
-   * <p><b>Null is the ordinary value and it means three things, none of them "unknown".</b> A
+   * <p><b>Null is the ordinary value and it means two things, neither of them "unknown".</b> A
    * pipeline whose every step names an image this platform does not publish ({@code alpine:3},
    * {@code docker:28-dind}) pins nothing — qits-ci holds no credential for another registry and
-   * says so by recording no pin rather than by inventing one. A deployment with {@code
-   * qits.ci.resolve-platform-step-images=false} resolves no platform image at all, which is that
-   * switch's whole point. And every row written before this column existed genuinely does not know,
+   * says so by recording no pin rather than by inventing one. (A third, a deployment that switched
+   * platform-image resolution off, went with the switch in qits-757.) And every row written before
+   * this column existed genuinely does not know,
    * which is why there is no backfill: a digest asserted for a run that happened is a claim about
    * bytes nobody can now check.
    *
@@ -455,6 +455,9 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
    * an execution that is about to happen is the one the registry gives now. A differing pin beside
    * an identical {@code commitSha} is then the record of the toolchain having moved between two
    * attempts at one commit — the same question {@code archetypeRev} answers about the recipe.
+   *
+   * <p>Its keys are the image as spelled, {@code qits/build-images/ci-slot:latest}; a key an older
+   * run stored under a registry host reads back without it ({@link StepImages#decode}, qits-757).
    *
    * <p>Part of no constraint, carrying no index, read whole and queried into by nothing — {@code
    * downstream_repos}' storage decision, for its reason. See {@link StepImages}.

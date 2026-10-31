@@ -9,7 +9,8 @@ checkout:
 artifacts:
   - { type: 'docker', name: 'qits/qits-landing' }
 steps:
-  - timeout-seconds: 3600
+  - name: 'publish image'
+    timeout-seconds: 3600
     build: true
     script: |
       set -eu

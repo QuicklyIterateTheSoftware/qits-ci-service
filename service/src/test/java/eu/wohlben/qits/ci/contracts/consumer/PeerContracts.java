@@ -89,8 +89,11 @@ final class PeerContracts {
 
   static final String IDP_CLIENT_SECRET = "test-broad-secret";
 
-  /** The registry host a step image names; the digest is asked of the artifacts origin. */
-  static final String REGISTRY_HOST = "registry.qits.contract.invalid";
+  /** The platform's public domain; a step image's registry is {@code registry.qits.<it>}. */
+  static final String PLATFORM_DOMAIN = "contract.invalid";
+
+  /** The registry's public name a step image names; the digest is asked of the artifacts origin. */
+  static final String PUBLIC_REGISTRY = "registry.qits." + PLATFORM_DOMAIN;
 
   /** The real client, pointed at the mock server's url, making the call and asserting the answer. */
   @FunctionalInterface
@@ -458,9 +461,9 @@ final class PeerContracts {
             "pin",
             (url, recorded) -> {
               CiStepImagePins.Pin pin =
-                  RegistryClients.imagePins(REGISTRY_HOST, url)
+                  RegistryClients.imagePins(PLATFORM_DOMAIN, url)
                       .pin(
-                          REGISTRY_HOST
+                          PUBLIC_REGISTRY
                               + "/"
                               + recorded.params().get("name")
                               + ":"

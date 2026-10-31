@@ -12,10 +12,14 @@ public final class RegistryClients {
 
   private RegistryClients() {}
 
-  /** {@link HttpImagePins} for images under {@code registryHost}, asking {@code artifactsUrl}. */
-  public static HttpImagePins imagePins(String registryHost, String artifactsUrl) {
+  /**
+   * {@link HttpImagePins} for a platform whose public domain is {@code domain} — images bare under
+   * {@code qits/} or under {@code registry.qits.<domain>} — asking {@code artifactsUrl}.
+   */
+  public static HttpImagePins imagePins(String domain, String artifactsUrl) {
     HttpImagePins pins = new HttpImagePins();
-    pins.artifactsRegistryHost = registryHost;
+    pins.artifactsImageRepository = "qits";
+    pins.addresses = eu.wohlben.qits.ci.targethost.CiSlotAddresses.forDomain(domain);
     pins.artifactsUrl = Optional.of(artifactsUrl);
     pins.artifactsMavenRegistryUrl = "";
     pins.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);

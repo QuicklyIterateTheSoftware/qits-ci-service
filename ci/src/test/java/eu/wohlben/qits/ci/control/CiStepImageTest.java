@@ -1,79 +1,52 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import org.junit.jupiter.api.Test;
 
 /**
- * The prefix rule, at its edges. Every recipe on the platform depends on this being right, so the
- * cases that must NOT be rewritten are worth as much space as the one that must.
+ * <b>A step's image is recorded as spelled, and qits-ci adds no registry host to it</b> (qits-757).
+ *
+ * <p>The regression this pins: a bare {@code qits/build-images/…} reference used to be prefixed with
+ * a configured registry host, whose shipped default was {@code registry.dev.localhost:8080} — and
+ * that string was the label on every step tile of every run. The image a step row records, a pin is
+ * keyed by and a client falls back to is now the ci-slot tag exactly as {@link CiSlot} spells it,
+ * whatever the step declared.
  */
 class CiStepImageTest {
 
-  private static final String REGISTRY = "qits-platform-artifacts:8080";
-  private static final String REPOSITORY = "qits";
-
-  private static String resolve(String image) {
-    return CiStepImage.resolve(image, REGISTRY, REPOSITORY);
+  @Test
+  void aPlatformStepImageGainsNoRegistryHost() {
+    String image =
+        CiRunService.stepImage(
+            new CiPipeline.CiStepDecl(
+                "qits/build-images/maven-base:latest", "true", null, false, false, ""));
+    assertEquals("qits/build-images/ci-slot:latest", image);
+    assertEquals(CiSlot.IMAGE_TAG, image);
+    assertFalse(image.contains("localhost"), image);
+    assertFalse(image.substring(0, image.indexOf('/')).contains("."), "no host segment: " + image);
   }
 
   @Test
-  void aPlatformImageGainsTheRegistry() {
-    // The reference every recipe on the platform opens with.
+  void everyStepRecordsTheCiSlotTagWhateverItDeclares() {
+    // A declared image is ignored (epic qits-1481): one container runs every step.
     assertEquals(
-        "qits-platform-artifacts:8080/qits/build-images/ci-base:latest",
-        resolve("qits/build-images/ci-base:latest"));
+        CiSlot.IMAGE_TAG,
+        CiRunService.stepImage(new CiPipeline.CiStepDecl(null, "true", null, false, false, "")));
     assertEquals(
-        "qits-platform-artifacts:8080/qits/build-images/maven-base:latest",
-        resolve("qits/build-images/maven-base:latest"));
-    // A CalVer pin resolves the same way; the tag is not read.
+        CiSlot.IMAGE_TAG,
+        CiRunService.stepImage(
+            new CiPipeline.CiStepDecl("alpine:3", "true", null, false, false, "")));
     assertEquals(
-        "qits-platform-artifacts:8080/qits/build-images/node-base:2026.820.131511",
-        resolve("qits/build-images/node-base:2026.820.131511"));
-  }
-
-  @Test
-  void anImageThatAlreadyNamesARegistryIsLeftAlone() {
-    // The recipe made a decision; the platform does not overrule it.
-    assertEquals(
-        "mirror.dev.localhost:8080/qits/build-images/ci-base:latest",
-        resolve("mirror.dev.localhost:8080/qits/build-images/ci-base:latest"));
-    assertEquals(
-        "qits-platform-artifacts:8080/qits/build-images/ci-base:latest",
-        resolve("qits-platform-artifacts:8080/qits/build-images/ci-base:latest"));
-    // localhost carries neither a dot nor a colon, so it is named explicitly or it would read as a
-    // path segment and be prefixed.
-    assertEquals("localhost/qits/thing:latest", resolve("localhost/qits/thing:latest"));
-    assertEquals("localhost:8081/qits/thing:latest", resolve("localhost:8081/qits/thing:latest"));
-  }
-
-  @Test
-  void anOfficialImageIsLeftAlone() {
-    // What these Dockerfiles are built FROM. A single segment is never ours.
-    assertEquals("docker:cli", resolve("docker:cli"));
-    assertEquals("alpine:3", resolve("alpine:3"));
-    assertEquals("postgres:18", resolve("postgres:18"));
-  }
-
-  @Test
-  void anotherNamespaceIsLeftAlone() {
-    // Only the platform's own repository name is claimed.
-    assertEquals("library/postgres:18", resolve("library/postgres:18"));
-    assertEquals("someoneelse/build-images/ci-base:latest",
-        resolve("someoneelse/build-images/ci-base:latest"));
-    // A near-miss on the namespace is still somebody else's.
-    assertEquals("qits-extra/thing:latest", resolve("qits-extra/thing:latest"));
-  }
-
-  @Test
-  void nothingToResolveAgainstLeavesTheImageAsItWas() {
-    assertEquals(null, resolve(null));
-    assertEquals("", resolve(""));
-    assertEquals(
-        "qits/build-images/ci-base:latest",
-        CiStepImage.resolve("qits/build-images/ci-base:latest", null, REPOSITORY));
-    assertEquals(
-        "qits/build-images/ci-base:latest",
-        CiStepImage.resolve("qits/build-images/ci-base:latest", REGISTRY, ""));
+        CiSlot.IMAGE_TAG,
+        CiRunService.stepImage(
+            new CiPipeline.CiStepDecl(
+                "registry.qits.example.org/qits/build-images/ci-base:latest",
+                "true",
+                null,
+                false,
+                false,
+                "")));
   }
 }

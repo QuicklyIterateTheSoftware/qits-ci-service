@@ -58,8 +58,6 @@ public class CiRunProgressSurfaceTest {
   /** This class's own event name, so no other suite's trigger file can be fired by one of these. */
   private static final String EVENT_NAME = "CiProgressEvent";
 
-  /** No slash, so {@code CiStepImage} leaves it alone and the staged history names what runs. */
-
   private static final String TRIGGER_FILE =
       """
       event: CiProgressEvent
@@ -223,7 +221,7 @@ public class CiRunProgressSurfaceTest {
                 step.stepIndex = stepIndex;
                 // A step row records the ci-slot image every step runs in (epic qits-1481), and the
                 // prediction samples history by it.
-                step.image = runService.resolveStepImage(eu.wohlben.qits.ci.control.CiSlot.IMAGE_TAG);
+                step.image = eu.wohlben.qits.ci.control.CiSlot.IMAGE_TAG;
                 step.status = CiStepStatus.SUCCESS;
                 step.exitCode = 0;
                 step.finishedAt = nextFinish;
