@@ -2231,8 +2231,8 @@ a repository's own listing will show.
   `QITS_CI_DAEMON_BINARY_URL_TEMPLATE`, `QITS_ARTIFACTS_NPM_HOSTED_URL`, `QITS_ARTIFACTS_DOCS_URL`,
   `QITS_MIRROR_MAVEN_CENTRAL_BUILD_URL`, `QITS_MIRROR_MAVEN_CENTRAL_STEP_URL`,
   `QITS_CI_RUNNER_INTERNAL_URL` and `QITS_CI_RUNNER_ARTIFACTS_INTERNAL_URL`. Each spelled a qits-net
-  address for a step or a runner. `.config/qits/configuration.yml` no longer declares them, so
-  qits-configuration shows a stored one as orphaned.
+  address for a step or a runner. The application declares none of them any more, so a deployer
+  that still sets one is carrying a stale extra.
 - **Give the process its two databases, and the deployment spec is how.**
   `.config/qits/deployments.yml` declares
 

@@ -2768,8 +2768,8 @@ process with the client off commissions nothing and launches no step.
 
 **Two other client NAMES still ship keys, and they are neutralisation rather than dead stubs.** The
 container still carries `QUARKUS_OIDC_CLIENT_*` (the old unnamed default client, five keys) and the
-whole `QUARKUS_OIDC_CLIENT_GITHOST_*` family — nothing reads them and
-`.config/qits/configuration.yml` no longer declares them, but **one such variable mints the map
+whole `QUARKUS_OIDC_CLIENT_GITHOST_*` family — nothing reads them and the application declares
+neither, but **one such variable mints the map
 key**: both clients exist at runtime whatever `application.properties` leaves out, with
 `client-enabled` and `discovery-enabled` defaulting to true. An enabled client is resolved during
 **runtime init** — `initOidcClients` awaits `createOidcClient` per client before the HTTP listener
