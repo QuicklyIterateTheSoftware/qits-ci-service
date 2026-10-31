@@ -75,7 +75,7 @@
              into a release request and gated by this repository's own CI like any other content.
              Do NOT hand-edit it to chase a release you just made: a hand-written pin asserts a
              pairing nobody gated, and the next bump overwrites it regardless. -->
-        <qits.ci-daemon-protocol.version>2026.1029.50243</qits.ci-daemon-protocol.version>
+        <qits.ci-daemon-protocol.version>2026.1031.175830</qits.ci-daemon-protocol.version>
         <qits.eventstream.version>2026.1031.131702</qits.eventstream.version>
         <!-- qits-githost's event vocabulary: the SCM records a push announces. qits-ci consumes
              SCMPublishCommit and nothing else, but the jar is the whole vocabulary — it is a data
