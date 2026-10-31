@@ -382,12 +382,6 @@
         </dependency>
         <dependency>
             <groupId>eu.wohlben.qits</groupId>
-            <artifactId>qits-configuration-frontend-pacts-qits-ci-service</artifactId>
-            <version>${qits.configuration-frontend-pacts-qits-ci-service.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>eu.wohlben.qits</groupId>
             <artifactId>qits-deployments-frontend-pacts-qits-ci-service</artifactId>
             <version>${qits.deployments-frontend-pacts-qits-ci-service.version}</version>
             <scope>test</scope>

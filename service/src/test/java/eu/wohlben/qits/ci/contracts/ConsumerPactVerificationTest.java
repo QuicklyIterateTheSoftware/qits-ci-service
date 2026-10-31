@@ -38,15 +38,15 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * eu.wohlben.qits:qits-artifacts-service-pacts-qits-ci-service}), qits-bootstrap-cli,
  * qits-maintenance-service, qits-orchestrator-service, qits-platform-access-cli and
  * qits-projects-service (each {@code eu.wohlben.qits:<consumer>-pacts-qits-ci-service}), all
- * test-scoped in {@code service/pom.xml}. Thirteen since qits-1284, one per frontend whose
+ * test-scoped in {@code service/pom.xml}. Twelve since qits-1284, one per frontend whose
  * {@code @qits/ui-components} calls qits-ci on its behalf: qits-ci-frontend, qits-projects-frontend,
  * qits-docs-frontend, qits-events-frontend, qits-githost-frontend, qits-maintenance-frontend,
- * qits-artifacts-frontend, qits-configuration-frontend, qits-deployments-frontend,
+ * qits-artifacts-frontend, qits-deployments-frontend,
  * qits-mirror-frontend, qits-observability-frontend, qits-orchestrator-frontend and
  * qits-system-frontend (each {@code eu.wohlben.qits:<frontend>-pacts-qits-ci-service}, holding
  * {@code pacts/<frontend>_qits-ui-components-jslib_qits-ci-service.json} — the library sits in the
  * middle of the name, and the loader matches only the {@code _qits-ci-service.json} suffix). All
- * thirteen ask {@code listActiveRuns} under {@code a commit with a run in flight}; qits-ci-frontend
+ * twelve ask {@code listActiveRuns} under {@code a commit with a run in flight}; qits-ci-frontend
  * and qits-projects-frontend also open a run's reports ({@code listRunReports}, {@code
  * getRunReport}, {@code listRunBaselineReports}) under {@code a run with reports: failing tests and
  * coverage}. Every state {@link ProviderStates} answers has its {@code @State} method below,
