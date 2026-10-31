@@ -138,7 +138,10 @@ has warm. So phase 1's container is kept for phase 2 where it can be:
   token from then on), and the daemon is sent
   `Continue{runId, branch: <version>, sha: <tag commit>, token, env}` (`env` is
   `CiSlotSpecs.runEnv`, the run-scoped subset of the lease spec).
-- **`Continued`** moves the worktree to the tag. The phase-1 token is revoked and the run is driven
+- **`Continued`** moves the worktree to the tag and the daemon re-points the credentials its
+  bootstrap baked (docker config, maven settings, `.npmrc`, `QITS_PUBLISH_TOKEN`) at the new token.
+  The phase-1 token stays valid until the lease is torn down (the target's shared buildkit may hold
+  an authorizer made with it), and the run is driven
   on its `ci-run-<runId>` thread from step **0** — the daemon counts the new run's steps afresh, the
   output `seq` goes on counting. Phase 2 closes the lease at its end as any run does, and is never
   held itself.

@@ -394,7 +394,9 @@ class CiSlotHoldTest {
     assertEquals(lease, launch.leaseId(), "the same lease");
     assertEquals(next.env().get("QITS_TOKEN_SUBJECT"), launch.tokenSubject());
     assertEquals(List.of(RELEASE_RUN + " " + launch.daemonId()), recordedLaunches);
-    assertTrue(idp.deletedTokens.contains("token-1"), "the phase-1 token goes on Continued");
+    assertFalse(
+        idp.deletedTokens.contains("token-1"),
+        "the phase-1 token outlives Continued: the shared builder may hold an authorizer made with it");
     assertFalse(idp.deletedTokens.contains("token-2"));
 
     // The daemon counts the release run's steps from 0 again, and so does the host.
@@ -413,6 +415,7 @@ class CiSlotHoldTest {
     assertEquals(
         1, calls.stream().filter(("DELETE " + lease)::equals).count(), "one DELETE, after phase 2");
     assertTrue(idp.deletedTokens.contains("token-2"), "and the release run's token with it");
+    assertTrue(idp.deletedTokens.contains("token-1"), "the phase-1 token goes with the lease");
     assertEquals(0, registry.size());
   }
 

@@ -370,8 +370,9 @@ and it is never `QUEUED`; a run that is not accepted gives the slot back (`giveB
 lease ended). `continueOnHeldSlot` then runs on the run's `ci-run-<id>` driver: mint the run's token,
 `CiDaemonRegistry.rekeyLaunch` (the old subject stays admitted until the daemon answers),
 `CiLeases.adopt`, `recordContinuedLaunch` for a restart, `Continue{env: CiSlotSpecs.runEnv}`, await
-the answer under `qits.ci.daemon-init-timeout-seconds`. `Continued` revokes the phase-1 token and
-drives the run from step 0 (`executeAdopted`); anything else ends the held lease, revokes both
+the answer under `qits.ci.daemon-init-timeout-seconds`. `Continued` drives the run from step 0
+(`executeAdopted`) and keeps the phase-1 token until the lease is torn down, because the target's
+shared buildkit may hold a registry authorizer made with it; anything else ends the held lease, revokes both
 tokens and `requeueAdopted` puts the run back `QUEUED` with no lease, target, pin or
 `continued_from_run_id` — no verdict, no retry counted. `CiSlotSpecs.runEnv` is the one definition of
 the run-scoped keys and `compose` reads it. `CiRunDto.continuedFromRunId` exposes the link.

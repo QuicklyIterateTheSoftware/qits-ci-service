@@ -127,6 +127,14 @@ public class LeaseStepRunner implements CiStepRunner {
   /** Runs whose daemon has reported its worktree ready in this process. */
   private final Set<String> initialized = ConcurrentHashMap.newKeySet();
 
+  /**
+   * A continued run's phase-1 run (qits-732), whose token outlives the {@code Continue} until this
+   * run's lease is torn down: the target's shared buildkit caches registry authorizers per host and
+   * scope across sessions, so a token revoked while its container still lives can fail another
+   * session's token fetch. Revoked in {@link #runClosed}, beside the run's own.
+   */
+  private final ConcurrentHashMap<String, String> phaseOneOf = new ConcurrentHashMap<>();
+
   /** Runs inherited but not yet taken back — a check finishing late registers nothing that stays. */
   private final Set<String> givenUp = ConcurrentHashMap.newKeySet();
 
@@ -611,6 +619,10 @@ public class LeaseStepRunner implements CiStepRunner {
     commissions.endAdoption(runId);
     commissions.release(runId);
     commissions.revokeOrphaned(runId);
+    String phaseOne = phaseOneOf.remove(runId);
+    if (phaseOne != null) {
+      revokePhaseOne(phaseOne);
+    }
   }
 
   /**
@@ -690,8 +702,8 @@ public class LeaseStepRunner implements CiStepRunner {
    * launch handed to the run (in the daemon registry, re-keyed to the new token's subject, and in
    * {@link CiLeases}), the frame sent, and its answer awaited under {@code
    * qits.ci.daemon-init-timeout-seconds} — the budget a daemon has to make a worktree, which is what
-   * moving one is. {@code Continued}: the phase-1 token is revoked and the run is driven ({@code
-   * continued}), its first {@code RunStep} index 0, since the daemon counts the new run's steps from
+   * moving one is. {@code Continued}: the run is driven ({@code continued}) and the phase-1 token is
+   * kept until this run's lease is torn down ({@link #phaseOneOf}), its first {@code RunStep} index 0, since the daemon counts the new run's steps from
    * nothing. Anything else: {@link #abandon} and {@code failed}.
    */
   @Override
@@ -768,7 +780,7 @@ public class LeaseStepRunner implements CiStepRunner {
     // The daemon is the new run's: its worktree is at the tag, its bearer the new token.
     initialized.add(runId);
     startOf(runId).complete(Instant.now());
-    revokePhaseOne(hold.heldFromRunId());
+    phaseOneOf.put(runId, hold.heldFromRunId());
     LOG.infof("CI run %s continued on held lease %s (daemon %s)", runId, hold.leaseId(), daemonId);
     continued.run();
   }
