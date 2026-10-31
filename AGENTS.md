@@ -588,10 +588,15 @@ launched with `pinnedImage(...)`. Two steps naming one tag get one digest by con
   would be a credential offered where the store asks for none.
 - **The address is derived, never configured**, `IdpCommissioner`'s rule: the origin of
   `qits.artifacts.maven.registry-url` (or `qits.artifacts.url` when a deployment sets it) — where
-  qits-ci itself reaches the store from inside the swarm. The *pinned reference* is built with
-  `qits.artifacts.registry-host`, and `CiSlotAddresses` moves that host to the registry's public
-  name for the target's pull. Resolving through one address and pulling through another is sound
-  rather than sloppy: a digest is content-addressed.
+  qits-ci itself reaches the store from inside the swarm. The *pinned reference* is addressed under
+  the registry's public name, `registry.qits.<QITS_DOMAIN>`, which `CiSlotAddresses` derives exactly
+  as every other lease address; that is also the name the target pulls from. Resolving through one
+  address and pulling through another is sound rather than sloppy: a digest is content-addressed.
+- **Ours is the namespace, not a configured host** (qits-757). A reference is this platform's when
+  it is bare with `qits.artifacts.image-repository` as its first path segment
+  (`qits/build-images/ci-slot:latest`) or names the derived public registry host. There is no
+  registry host key: its shipped default was a host-loopback name (`registry.dev.localhost:8080`)
+  that ended up on every step tile. `RetiredRegistryKeys` WARNs at boot if a deployment still sets it.
 - **Four answers, and `UNRESOLVED` must never be collapsed into `FOREIGN`** — `commitHeld`'s
   `UNKNOWN`/`GONE` rule one seam over. Pinned; already pinned by the author (no registry is asked,
   because re-resolving a deliberate pin is this defect wearing the fix's name); foreign, which is
@@ -604,7 +609,7 @@ launched with `pinnedImage(...)`. Two steps naming one tag get one digest by con
   `repositoriesUnreadable`, and a sweep asks a registry that has probably come back. A blip delays a
   run rather than floating it, and a release request is never left waiting on a verdict nothing
   would record again.
-- **`ci_step.image` keeps the TAG and that is deliberate.** It is what
+- **`ci_step.image` keeps the TAG, as spelled with no registry host, and that is deliberate.** It is what
   `predictedStepDurations` samples history by — "a step that changed its image stops predicting" —
   and a digest there would make every build-image publish erase every pipeline's history, which is
   not what that rule means. The step row is the reference, the run row is the bytes, and neither says
@@ -612,9 +617,10 @@ launched with `pinnedImage(...)`. Two steps naming one tag get one digest by con
 - **A retry re-pins rather than copying**, the prediction's arm rather than `priority`'s: the pin
   says which bytes this execution will use, and a retry that inherited a months-old digest could
   never be healed by fixing a build image — which is the loop `qits ci retry` exists to close.
-- `qits.ci.resolve-platform-step-images=false` turns the whole thing off, digest and registry prefix
-  together. No second key: that switch's argument (shipped ON, one variable reverses it) already
-  covers exactly this blast radius, and a second one would be a second thing to be wrong about.
+- **There is no switch turning this off any more** (qits-757): the old one turned the registry
+  prefix off with the pin, and the prefix is gone. V41 stripped the host older `ci_step.image` rows
+  carried, and `StepImages.decode` reads an older run's `step_images` key without its host, so the
+  duration prediction, a release retry's carry-over and a run queued across the upgrade keep working.
 
 ### The queue is the table, and qits-system grants out of it
 
@@ -2579,8 +2585,8 @@ recipe composed the pipeline a run executed, this records which image that pipel
 inside, and a run row then says what it was built from on both axes. `text` and read whole is
 `downstream_repos`' decision for its reason; nothing queries into the value. **Null means three
 things and none of them is a value that could be filled in**: a pipeline whose every step names an
-image this platform does not publish pins nothing, a deployment with
-`qits.ci.resolve-platform-step-images=false` pins nothing by design, and every row older than the
+image this platform does not publish pins nothing, a deployment with the resolution switch (retired
+in qits-757) off pinned nothing by design, and every row older than the
 column genuinely does not know — a digest written for a run that already happened would be a claim
 about bytes nobody can now check. What is *not* a null is a platform image the registry would not
 answer about: that refuses the accept outright, so there is no row. See "A run is fixed to one
@@ -2610,6 +2616,22 @@ partial index) and `ci_run.target_id`, both nullable, no backfill: a run before 
 no lease. `ci_run.purpose` stays — `HEALTHCHECK` is history on old rows, and `CiRunPurpose` keeps
 the constant for them; every repository-scoped read still filters `purpose = BUILD`. The earlier
 files are not edited, for V18's reason below.
+
+`V40__step_name.sql` is V8's shape again (qits-757): `ci_step.name varchar(128)`, nullable, no
+default, no backfill — a step's declared `name:` (`CiConfigSchema` trims it and refuses blank,
+non-string, multi-line or longer than 128), carried by `CiStepDecl`, emitted first by the composers
+(`CiReleaseComposer` names the synthesised changelog-only step `changelog`, `CiAutomationComposer`
+names an automation's one step after its kind), copied onto every step row a run or a retry's
+carry-over writes, and returned as `CiStepDto.name`. **`V41__step_image_as_spelled.sql` is the
+second backfill in this lineage, and it is one for a reason**: `ci_step.image` is a key, not a
+caption — the duration prediction samples by it and a release retry's carry-over compares it — so
+when the image stopped carrying a registry host the old rows had to lose theirs too, or every
+pipeline's history and every pending release retry would have broken at the upgrade. It strips a
+leading `<host>/` (a first segment with a `.` or `:`) only before `qits/`. `ci_run.step_images` is
+normalised where it is decoded instead (`StepImages.asSpelled`), which also covers a run an older
+instance accepted mid-roll. **A retry of a run composed before names existed still retries**: the
+re-composed document differs (it has `name:` lines) and that is only ever logged, never refused —
+the carry-over compares the step count and the image, not the document.
 
 `V29__release_announcement_if_published.sql` is V10's shape twice (qits-561):
 `ci_release_announcement.announce` (the entry's policy, `if-published` or null for `always`) and
@@ -2943,8 +2965,10 @@ contract, tested where it lives.
   behind it: otel dark and the bus dark. **No readiness key is among them**: the story asserts
   `/ci/q/health/ready` answers 200 with nothing set, because no readiness check depends on a target or
   a connection. For the build stories the profile also points `qits.system.url` at
-  `stories/support/StorySystem`, sets the lease reconcile to a second, and turns
-  `qits.ci.resolve-platform-step-images` off (no registry answers there).
+  `stories/support/StorySystem`, sets the lease reconcile to a second, and moves
+  `qits.artifacts.image-repository` to a namespace nothing is published under, so the ci-slot image
+  reads as foreign and is launched at its tag (no registry answers there, and the switch that used to
+  turn the pin off is retired, qits-757).
   **<br>It used to set two more and needs neither.** `qits.ci.daemon-autoadopt-enabled=false`
   darkened a *second* dial to `qits.events.url` that `qits.eventstream.enabled` did not cover — the
   daemon pin ladder's startup discovery — and had to be repeated here because a launched artifact

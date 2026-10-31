@@ -138,7 +138,7 @@ rest of qits it reaches over a URL it is configured with:
 | out | `GET/DELETE /idp/api/clients` and `/idp/api/tokens` once at boot (`LegacyRunnerClients`) — the retired runners' `ci-runner` clients and `ci-runner-registration` tokens given back. A run commissions no client (qits-515) | the same keys as the row above |
 | out | `POST/GET/DELETE /system/api/leases` on qits-system — a run's one CI lease (`targethost/SystemLeases`), with this service's `qits` client bearer | `qits.system.url` |
 | in | `TargetLeaseChanged` off qits-events, owner `qits-ci`, slot `CI` — a lease moved (`targethost/TargetLeaseEvents`); a reconcile every `qits.ci.target-leases.reconcile-interval` covers a missed one | the bus keys |
-| out | `HEAD <origin>/v2/<name>/manifests/<tag>` on qits-artifacts — the digest a run's step image is pinned to, asked by this process from inside the swarm | `qits.artifacts.url`, else the origin of `qits.artifacts.maven.registry-url`; the pinned reference is addressed under `qits.artifacts.registry-host` |
+| out | `HEAD <origin>/v2/<name>/manifests/<tag>` on qits-artifacts — the digest a run's step image is pinned to, asked by this process from inside the swarm | `qits.artifacts.url`, else the origin of `qits.artifacts.maven.registry-url`; the pinned reference is addressed under the derived public name `registry.qits.<qits.ci.domain>` |
 | out | the platform's public domain itself, bare, as `$QITS_DOMAIN` in **every** step container — the address input a recipe derives the platform's other addresses from (qits-731). `registry.qits.$QITS_DOMAIN` (the image registry, the hosted npm `/artifacts/npm/npm/` root, the docs store `/artifacts/docs/docs`, the daemons store the prelude fetches the qits CLI from) and `mirror.qits.$QITS_DOMAIN` (npmjs `/npm/npmjs/`) are code, spelled from it with those constant paths, and **no URL variable carries either**: `$QITS_REGISTRY`, `$QITS_BUILD_REGISTRY`, `$QITS_NPM_REGISTRY_URL`, `$QITS_NPM_PROXY_URL`, `$QITS_DOCS_URL` and `$QITS_ARTIFACTS_URL` are no longer sent. The hosted **maven** `/artifacts/maven/maven` root and Maven Central's cache `/mirror/maven/central` are the one pair that IS sent, as `$QITS_MAVEN_REPOSITORY_URL`/`$QITS_MAVEN_CENTRAL_URL` (qits-896) — still composed in code from this same domain by `CiSlotAddresses`, never from configuration, because every repository's committed `.qits-maven-settings.xml` already reads exactly those two names and a repository overriding an archetype's slots would otherwise re-derive both by hand; `qits.mirror.maven-central.enabled`, the old empty-string kill switch for them, stays gone | `qits.ci.domain` |
 | out | the namespace a published image goes under, as `$QITS_IMAGE_REPOSITORY` in **every** step container; the image is `registry.qits.$QITS_DOMAIN/$QITS_IMAGE_REPOSITORY/<application>:$QITS_VERSION` | `qits.artifacts.image-repository` |
 | out | qits-workspaces, as `$QITS_WORKSPACES_URL` (`https://workspaces.qits.<domain>`) in **every** step container | `qits.ci.domain` |
@@ -590,12 +590,13 @@ Four answers, and each is a different sentence about the run:
   this closes. A registry blip therefore delays a run instead of silently floating it — the same
   trade an unreadable `release.yml` already makes.
 
-`ci_step.image` keeps the reference the recipe named, deliberately: it is what the duration
-prediction samples history by, and a digest there would reset every pipeline's history on every
-build-image publish. The step row is the reference, the run row is the bytes.
-
-`qits.ci.resolve-platform-step-images=false` turns the whole platform-image resolution off, digest
-and registry prefix together — the escape hatch it always was, and still one variable.
+`ci_step.image` keeps the reference **as spelled** — `qits/build-images/ci-slot:latest`, no
+registry host (qits-757) — deliberately: it is what the duration prediction samples history by, and
+a digest there would reset every pipeline's history on every build-image publish. The step row is
+the reference, the run row is the bytes. A bare reference is this platform's when its first path
+segment is `qits.artifacts.image-repository`; its pin is addressed under the derived public name
+`registry.qits.<domain>`. There is no registry host key and no switch turning resolution off any
+more (qits-757); V41 stripped the host older step rows carried.
 
 ### Running a step as somebody
 
@@ -2206,10 +2207,13 @@ a repository's own listing will show.
   `QITS_EVENTS_URL` and `QITS_EVENTSTREAM_ENABLED` below, plus a deployer that is subscribing, plus a
   pipeline that publishes something. The deployer's HTTP intake still exists for a manual replay, at
   `/events/software-released`; nothing here calls it.
-- `qits.artifacts.registry-host` is the host a run's pinned step image is addressed under and
-  recognised by; `qits.artifacts.image-repository` is the image namespace a step reads as
-  `$QITS_IMAGE_REPOSITORY`. Neither is an address a step dials: a step is told the registry's public
-  name, and its target pulls the pinned ci-slot image from that public name.
+- `qits.artifacts.image-repository` is the image namespace a step reads as
+  `$QITS_IMAGE_REPOSITORY`, and the namespace a bare step image is recognised as this platform's by.
+  It is not an address: a step is told the registry's public name, and its target pulls the pinned
+  ci-slot image from that public name. **There is no registry host key** (qits-757): a pinned
+  reference is addressed under `registry.qits.<QITS_DOMAIN>`, derived like every other public name.
+  A deployment still stating the retired key is told at boot that nothing reads it
+  (`control/RetiredRegistryKeys`).
 - `qits.artifacts.maven.registry-url` (and `qits.artifacts.url`, blank by default) is where qits-ci
   **itself** asks the registry for a step image's digest, from inside the swarm; the shipped default
   is qits-artifacts' alias. It is not handed to a step.
