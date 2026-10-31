@@ -77,6 +77,8 @@ class CiLeasesTest {
     leases.settings.pins = new CiDaemonPins();
     leases.settings.pins.versionOverride = Optional.empty();
     leases.addresses = CiSlotAddresses.forDomain(SlotFixtures.DOMAIN);
+    // Holding nothing: a hold is CiSlotHoldTest's (epic qits-732).
+    leases.holds = new CiSlotHolds();
 
     steps = new LeaseStepRunner();
     steps.daemons = registry;

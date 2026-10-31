@@ -77,7 +77,7 @@ public class EventstreamDarknessTest {
   }
 
   @Test
-  public void allFourDurableListenersAreRegisteredBeans() {
+  public void allSixDurableListenersAreRegisteredBeans() {
     Set<Class<?>> registered =
         StreamSupport.stream(listeners.spliterator(), false)
             .map(listener -> (Class<?>) ClientProxy.unwrap(listener).getClass())
@@ -88,7 +88,9 @@ public class EventstreamDarknessTest {
                 BuildSuccessfulListener.class,
                 CiEventTriggerListener.class,
                 ScmReleaseListener.class,
-                RepositoryRenamedListener.class)),
+                RepositoryRenamedListener.class,
+                ReleaseRequestStateChangedListener.class,
+                ApprovalRequirementChangedListener.class)),
         "a listener removed as unused subscribes to nothing and is never swept: " + registered);
   }
 
@@ -98,8 +100,10 @@ public class EventstreamDarknessTest {
     assertEquals("ci-event-triggers", CiEventTriggerListener.CONSUMER_ID);
     assertEquals("ci-release-facts", ScmReleaseListener.CONSUMER_ID);
     assertEquals("ci-repository-rename", RepositoryRenamedListener.CONSUMER_ID);
+    assertEquals("ci-slot-hold-release-request", ReleaseRequestStateChangedListener.CONSUMER_ID);
+    assertEquals("ci-slot-hold-approval", ApprovalRequirementChangedListener.CONSUMER_ID);
     assertEquals(
-        4,
+        6,
         StreamSupport.stream(listeners.spliterator(), false)
             .map(QitsDurableEventListener::consumerId)
             .distinct()

@@ -73,6 +73,12 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * jar changes nothing: the registration is a statement about this image, exactly as it is for {@link
  * SCMPublishCommit}.
  *
+ * <p><b>{@link ReleaseRequestStateChanged} and {@link ApprovalRequirementChanged} are two more of
+ * qits-projects' events bound the same way</b> (epic qits-732): their listeners end a CI slot held for
+ * a release whose request will not release, or now waits on a person. Unregistered, every bind would
+ * fail in the binary and every held slot would sit out its window instead of ending at its gate —
+ * slower, never wrong, and silent, which is the reason they are here.
+ *
  * <p><b>{@link BuildStatusChanged} is the publish-only case at its most expensive</b>, which is why
  * it is named rather than left to the paragraph below. It is serialized on the way out and never
  * read back here, exactly like {@link SoftwareRelease} — but where a green build publishes one event
@@ -133,6 +139,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       SoftwareRelease.class,
       SCMPublishCommit.class,
       RepositoryRenamed.class,
+      ReleaseRequestStateChanged.class,
+      ApprovalRequirementChanged.class,
       TargetLeaseChanged.class,
       EventEnvelope.class,
       EventFrame.class

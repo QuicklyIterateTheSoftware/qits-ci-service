@@ -81,6 +81,8 @@ public class LeaseStepRunner implements CiStepRunner {
 
   @Inject CiLeases leases;
 
+  @Inject CiSlotHolds holds;
+
   @ConfigProperty(name = "qits.ci.daemon-register-timeout-seconds")
   long registerTimeoutSeconds;
 
@@ -606,6 +608,49 @@ public class LeaseStepRunner implements CiStepRunner {
     commissions.endAdoption(runId);
     commissions.release(runId);
     commissions.revokeOrphaned(runId);
+  }
+
+  /**
+   * The slot's half of holding a green QA run's slot for its release (epic qits-732): with the
+   * switch on, the run's launch still held here and alive — its daemon connected or inside its
+   * reconnect grace, its lease not seen ended — and its daemon having announced capability {@value
+   * CiSlotHolds#MIN_CAPABILITY} or more in its {@code Hello}. A capability-2 daemon cannot be told to
+   * continue, so its run closes as ever. When {@link CiSlotHolds#enter} holds it, the launch moves
+   * from the run to the hold and the run's own bookkeeping here goes; the daemon, the lease and the
+   * token are the hold's to give back.
+   */
+  @Override
+  public boolean holdSlot(SlotHold hold) {
+    if (!holds.enabled() || stopping) {
+      return false;
+    }
+    String runId = hold.runId();
+    Optional<CiLeases.Launch> launch = leases.launchOf(runId);
+    if (launch.isEmpty() || endedLeases.containsKey(runId)) {
+      return false;
+    }
+    String daemonId = launch.get().daemonId();
+    Integer capability = daemons.capabilityVersionOf(daemonId);
+    if (capability == null || capability < CiSlotHolds.MIN_CAPABILITY) {
+      LOG.debugf(
+          "CI run %s: its ci-daemon %s announced capability %s; its slot is not held",
+          runId, daemonId, capability);
+      return false;
+    }
+    if (daemons.phaseOf(daemonId) != CiDaemonRegistry.Phase.INITIALIZED || daemons.lost(daemonId)) {
+      return false;
+    }
+    if (!holds.enter(hold, launch.get())) {
+      return false;
+    }
+    leases.forgetLaunch(runId);
+    relay.drop(runId);
+    inFlight.remove(runId);
+    initialized.remove(runId);
+    givenUp.remove(runId);
+    endedLeases.remove(runId);
+    leaseStarts.remove(runId);
+    return true;
   }
 
   // --- internals --------------------------------------------------------------------------------

@@ -1,7 +1,9 @@
 package eu.wohlben.qits.ci.contracts.consumer;
 
+import eu.wohlben.qits.ci.bus.ApprovalRequirementChangedListener;
 import eu.wohlben.qits.ci.bus.BuildSuccessfulListener;
 import eu.wohlben.qits.ci.bus.CiEventTriggerListener;
+import eu.wohlben.qits.ci.bus.ReleaseRequestStateChangedListener;
 import eu.wohlben.qits.ci.bus.RepositoryRenamedListener;
 import eu.wohlben.qits.ci.bus.ScmReleaseListener;
 import eu.wohlben.qits.eventstream.contracts.EventstreamPact;
@@ -27,7 +29,9 @@ class EventstreamPactTest {
               new BuildSuccessfulListener(),
               new CiEventTriggerListener(),
               new RepositoryRenamedListener(),
-              new ScmReleaseListener())
+              new ScmReleaseListener(),
+              new ReleaseRequestStateChangedListener(),
+              new ApprovalRequirementChangedListener())
           .publishes(true)
           .guard(Path.of("target/classes"));
 

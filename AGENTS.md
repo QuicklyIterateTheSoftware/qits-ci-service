@@ -108,8 +108,10 @@ package:
   `CiSlotSpecs`/`CiSlotSettings`/`CiSlotAddresses` (the spec: the pinned ci-slot image, the env, user
   1001, `qits.ci.slot.*` limits, every address a public name under `qits.ci.domain`),
   `LeaseStepRunner` (every step a `RunStep` over the one daemon connection, then `Close`),
-  `TargetLeaseEvents` (`TargetLeaseChanged`, owner `qits-ci`) and `LegacyRunnerClients` (a boot
-  one-shot giving back the retired `ci-runner` clients and registration tokens).
+  `TargetLeaseEvents` (`TargetLeaseChanged`, owner `qits-ci`), `LegacyRunnerClients` (a boot
+  one-shot giving back the retired `ci-runner` clients and registration tokens) and
+  `CiSlotHolds`/`CiSlotHoldRows` (a green release-request QA run's slot held for its release —
+  see "A green QA run may hold its slot for the release").
 - `ci-events/` — the event classes qits-ci emits, `eu.wohlben.qits.ci.events`. Under this repo's own
   namespace because it *is* this repo's vocabulary; depends on `eventstream` and nothing else.
 
@@ -331,6 +333,37 @@ Four things bite:
   `FAILED` or `EXITED` before the daemon said `Initialized` is the first step's `LAUNCH_FAILED` with
   the lease's detail; a lease no live run names is ended by the reconcile. Do not reintroduce a
   docker or orchestrator call here: the target owns its host.
+
+### A green QA run may hold its slot for the release
+
+Epic qits-732, phase 1 of 2 (qits-1788; the adoption is qits-1789). A release request's QA run
+that settles `SUCCESS`, composed from `release.yml` (whose composition always has a release half,
+qits-893), on a daemon whose `Hello` announced capability 3 or more, with its lease still alive and
+`qits.ci.release-hold.enabled` on, keeps its lease: no `Close`, no lease ended, the phase-1 token
+kept. `CiRunService` offers it to the seam (`CiStepRunner.holdSlot`) after the terminal row and
+**before** `BuildSuccessful`, so a gate event answering the verdict always finds the hold; a held
+run's close is skipped. `LeaseStepRunner.holdSlot` checks the slot's half and `CiSlotHolds.enter`
+writes the `ci_slot_hold` row (V42) and moves the launch from the run to the hold. **The hold is no
+run status**: the run is `SUCCESS` and announced as ever, and `/runs/active` never lists it —
+qits-projects holds a request while that listing names a run of its fold.
+
+`CiSlotHolds.release(leaseId, reason)` is the one way out — the run's close, late, idempotent, one
+INFO line `CI slot hold <lease> of <request> released: <reason>` — on the first of
+`gates-unmet:<STATE>` (`ReleaseRequestStateChanged` REJECTED/FAILED/CONFLICTED/WITHDRAWN/OBSOLETE),
+`approval-pending` (`ApprovalRequirementChanged` OPEN on the held `merged_sha`), `timeout`
+(`qits.ci.release-hold.timeout`, swept every 5s), `lease-ended` (the lease seen
+EXITED/FAILED/ENDING/ENDED, or gone from qits-system's listing), `daemon-lost` (past the reconnect
+grace), `restart` (every row a starting process finds) and `superseded` (a newer hold of the same
+request). `CiSlotHolds.take` is the adoption's door and does no teardown.
+
+Three bookkeeping rules hold it up. `CiLeases.observe` resolves a lease by **id first** — the run
+whose launch this process holds on it, else the hold, and only then the `ownerRef`, which stays the
+phase-1 run for the lease's whole life. The reconcile counts every held lease as named, so the
+two-minute orphan sweep never ends one. And `CiDaemonRegistry` answers a `Hello` with an `Ack` of
+the daemon's own capability (2 or 3), because a v2 daemon from a lease asked before the deploy
+exits on an Ack version it does not know; a v2 launch is never held. `Continued`/`ContinueFailed`
+are only logged until the adoption sends a `Continue`. `CiSlotHoldTest` (the seam) and the `ci`
+module's `CiSlotHoldOfferTest` (the run's half) are the cases.
 
 This is the execution path, not a plan for one. `LeaseStepRunner` is the only implementation of
 `CiStepRunner`, and the
@@ -1033,6 +1066,15 @@ delay rather than a hole. `event-delivery-guarantees-plan.md` in the superprojec
 | `BuildSuccessfulListener` | `ci-release-train` | `BuildSuccessful` | default |
 | `ScmReleaseListener` | `ci-release-facts` | `SCMRelease` | default |
 | `RepositoryRenamedListener` | `ci-repository-rename` | `RepositoryRenamed` | default |
+| `ReleaseRequestStateChangedListener` | `ci-slot-hold-release-request` | `ReleaseRequestStateChanged` | `state` in `CiSlotHolds.GATES_UNMET` |
+| `ApprovalRequirementChangedListener` | `ci-slot-hold-approval` | `ApprovalRequirementChanged` | `state == OPEN` |
+
+The last two (epic qits-732) end a held CI slot (below) and are the only ones that narrow:
+their predicate is one read of the payload's `state`, pure and cheap, and every other state of
+every request on the platform is traffic they have no use for. Both bind a local transcription of
+qits-projects' record (`@JsonIgnoreProperties(ignoreUnknown = true)`, so a component added over
+there costs nothing here), both are on `EventWireReflection`'s list, and
+`ReleaseRequestStateChangedContractTest`/`ApprovalRequirementChangedContractTest` pin the key sets.
 
 There were five. `DaemonReleaseListener` (`ci-daemon-adopt`, `SoftwareRelease`, selecting the
 daemon's own releases) adopted the version named on a daemon release and had it probed in a
@@ -2632,6 +2674,12 @@ normalised where it is decoded instead (`StepImages.asSpelled`), which also cove
 instance accepted mid-roll. **A retry of a run composed before names existed still retries**: the
 re-composed document differs (it has `name:` lines) and that is only ever logged, never refused —
 the carry-over compares the step count and the image, not the document.
+
+`V42__slot_holds.sql` (epic qits-732) adds `ci_slot_hold` — one row per held lease, keyed by
+`lease_id`, unique per `(repo_id, release_request_id)`, the types `ci_run`'s for the same values, no
+foreign key — and `ci_run.continued_from_run_id`, V8's shape, written only by the adoption. A row is
+not a run and the table is empty in a process that holds nothing; every row a starting process finds
+is released. See "A green QA run may hold its slot for the release".
 
 `V29__release_announcement_if_published.sql` is V10's shape twice (qits-561):
 `ci_release_announcement.announce` (the entry's policy, `if-published` or null for `always`) and

@@ -83,12 +83,15 @@ public class EventWireReflectionTest {
             SoftwareRelease.class,
             SCMPublishCommit.class,
             RepositoryRenamed.class,
+            ReleaseRequestStateChanged.class,
+            ApprovalRequirementChanged.class,
             eu.wohlben.qits.ci.targethost.TargetLeaseChanged.class,
             EventEnvelope.class,
             EventFrame.class),
         Set.of(registration.targets()),
-        "the four build events out, the push, the rename and qits-system's lease event in, the PUT"
-            + " body, the frame — a tenth wire type is added here");
+        "the four build events out, the push, the rename, the two release-request gate events and"
+            + " qits-system's lease event in, the PUT body, the frame — a twelfth wire type is added"
+            + " here");
   }
 
   /**

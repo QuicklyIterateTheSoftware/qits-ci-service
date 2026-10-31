@@ -6,6 +6,9 @@ import eu.wohlben.qits.cidaemon.protocol.Cancel;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonMessage;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonProtocol;
 import eu.wohlben.qits.cidaemon.protocol.Close;
+import eu.wohlben.qits.cidaemon.protocol.Continue;
+import eu.wohlben.qits.cidaemon.protocol.ContinueFailed;
+import eu.wohlben.qits.cidaemon.protocol.Continued;
 import eu.wohlben.qits.cidaemon.protocol.Heartbeat;
 import eu.wohlben.qits.cidaemon.protocol.Hello;
 import eu.wohlben.qits.cidaemon.protocol.InitFailed;
@@ -640,6 +643,36 @@ public class CiDaemonRegistry {
   }
 
   /**
+   * The version the {@link Ack} answering a {@link Hello} carries: the daemon's own, when this host
+   * speaks it too — a capability-2 daemon from a lease asked before this host was deployed exits on
+   * an Ack version it does not know, and must keep running its run — and this host's otherwise. Only
+   * a launch whose daemon announced capability 3 or more is ever held for a release (epic qits-732).
+   */
+  static int ackVersion(int announced) {
+    return announced >= MIN_ACK_VERSION && announced <= CiDaemonProtocol.CAPABILITY_VERSION
+        ? announced
+        : CiDaemonProtocol.CAPABILITY_VERSION;
+  }
+
+  /** The oldest capability this host still answers in kind: the lease protocol's (epic qits-1481). */
+  static final int MIN_ACK_VERSION = 2;
+
+  /**
+   * Whether the launch is lost: its daemon's socket went away and did not come back within {@link
+   * #reconnectGrace()}, or it was reaped. True for a launch that is unknown here, too — there is
+   * nothing to reach. What a held slot asks of its daemon (epic qits-732).
+   */
+  public boolean lost(String daemonId) {
+    Launch launch = launches.get(daemonId);
+    if (launch == null) {
+      return true;
+    }
+    synchronized (launch) {
+      return launch.lost || launch.phase == Phase.DONE;
+    }
+  }
+
+  /**
    * The capability version this launch's {@link Hello} announced, or {@code null} when none has
    * arrived yet (or the launch is unknown, or already reaped). Observational only, and racy for a
    * caller that needs to know what the daemon announced: reading this straight after {@link
@@ -812,13 +845,13 @@ public class CiDaemonRegistry {
         launch.capabilityVersion = hello.capabilityVersion();
         launch.helloReceived.complete(hello.capabilityVersion());
         if (hello.capabilityVersion() != CiDaemonProtocol.CAPABILITY_VERSION) {
-          // Logged, not refused: the Ack carries the host's version and the daemon is the side that
-          // decides it cannot speak it (it exits nonzero, and its container log is the diagnosis).
+          // Logged, not refused: the daemon is the side that decides it cannot speak the Ack's
+          // version (it exits nonzero, and its container log is the diagnosis).
           LOG.warnf(
               "ci-daemon %s announced capability %d, this host speaks %d",
               daemonId, hello.capabilityVersion(), CiDaemonProtocol.CAPABILITY_VERSION);
         }
-        send(launch, new Ack(CiDaemonProtocol.CAPABILITY_VERSION));
+        send(launch, new Ack(ackVersion(hello.capabilityVersion())));
         resume(launch);
       }
       case AckReceived ignored -> {
@@ -860,7 +893,19 @@ public class CiDaemonRegistry {
           }
         }
       }
+      // Answers to a Continue (capability 3, epic qits-732). Nothing sends a Continue yet — the
+      // adoption of a held slot is qits-1789's — so one arriving now answers nothing and is logged.
+      case Continued continued ->
+          LOG.infof(
+              "ci-daemon %s of run %s said Continued for run %s; nothing here asked it to continue",
+              daemonId, launch.runId, continued.runId());
+      case ContinueFailed failed ->
+          LOG.warnf(
+              "ci-daemon %s of run %s said ContinueFailed for run %s (%s: %s); nothing here asked it"
+                  + " to continue",
+              daemonId, launch.runId, failed.runId(), failed.reason(), failed.detail());
       // Host → daemon messages are never received here; ignore defensively.
+      case Continue ignored -> {}
       case Ack ignored -> {}
       case RunStep ignored -> {}
       case Cancel ignored -> {}

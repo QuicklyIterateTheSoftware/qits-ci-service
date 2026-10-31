@@ -54,13 +54,18 @@ public final class ScriptedLeaseDaemon implements AutoCloseable {
 
   /** Dials {@code daemonId}'s launch as {@code subject}, says Hello and Initialized. */
   public static ScriptedLeaseDaemon dial(CiDaemonRegistry registry, String daemonId, String subject) {
+    return dial(registry, daemonId, subject, CiDaemonProtocol.CAPABILITY_VERSION);
+  }
+
+  /** {@link #dial(CiDaemonRegistry, String, String)}, announcing {@code capability} in its Hello. */
+  public static ScriptedLeaseDaemon dial(
+      CiDaemonRegistry registry, String daemonId, String subject, int capability) {
     ScriptedLeaseDaemon daemon = new ScriptedLeaseDaemon(registry, daemonId);
     if (registry.admitByToken(daemonId, subject, daemon.connection)
         != CiDaemonRegistry.Admission.ADMITTED) {
       throw new IllegalStateException("not admitted");
     }
-    registry.onMessage(
-        daemonId, daemon.connection, new Hello(daemonId, CiDaemonProtocol.CAPABILITY_VERSION));
+    registry.onMessage(daemonId, daemon.connection, new Hello(daemonId, capability));
     registry.onMessage(daemonId, daemon.connection, new Initialized());
     return daemon;
   }

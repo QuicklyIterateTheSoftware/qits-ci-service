@@ -108,6 +108,8 @@ public class CiLeases {
 
   @Inject LeaseStepRunner steps;
 
+  @Inject CiSlotHolds holds;
+
   /** One run's lease and the launch its daemon names. */
   public record Launch(UUID leaseId, String daemonId, String tokenSubject) {}
 
@@ -290,12 +292,31 @@ public class CiLeases {
     }
   }
 
-  /** What one lease of this service's says now — from the event, the reconcile or a read. */
+  /**
+   * What one lease of this service's says now — from the event, the reconcile or a read.
+   *
+   * <p><b>Resolved by the lease id first, the owner ref last</b> (epic qits-732). A lease's {@code
+   * ownerRef} is the run it was asked for and stays that for the lease's whole life, while a slot
+   * held for a release ({@link CiSlotHolds}) outlives that run, and the run a held slot is adopted
+   * by is another. So: the run whose launch this process holds on that lease; else the hold of it,
+   * whose own death handling answers ({@link CiSlotHolds#leaseObserved}); and only when neither
+   * exists the owner ref, which is every lease a run asked for and nothing has claimed yet.
+   */
   void observe(SystemLeases.LeaseView lease) {
-    if (lease == null || lease.ownerRef() == null || lease.id() == null) {
+    if (lease == null || lease.id() == null) {
       return;
     }
-    String runId = lease.ownerRef();
+    String runId = runHolding(lease.id());
+    if (runId == null) {
+      if (holds.holds(lease.id())) {
+        holds.leaseObserved(lease);
+        return;
+      }
+      runId = lease.ownerRef();
+    }
+    if (runId == null) {
+      return;
+    }
     State state = State.parse(lease.state());
     if (state == null) {
       LOG.debugf("Lease %s of run %s reports an unknown state %s", lease.id(), runId, lease.state());
@@ -312,6 +333,16 @@ public class CiLeases {
       }
       case EXITED, FAILED, ENDED -> ended(runId, lease.id(), describe(lease));
     }
+  }
+
+  /** The run whose launch this process holds on {@code leaseId}, or null. */
+  private String runHolding(UUID leaseId) {
+    for (Map.Entry<String, Launch> each : launches.entrySet()) {
+      if (leaseId.equals(each.getValue().leaseId())) {
+        return each.getKey();
+      }
+    }
+    return null;
   }
 
   /**
@@ -509,6 +540,17 @@ public class CiLeases {
       }
     }
     Map<UUID, String> named = new HashMap<>();
+    // A slot held for a release names its lease, so the orphan sweep below never ends it, and a held
+    // lease qits-system no longer lists is a slot that is gone (epic qits-732).
+    for (UUID heldLease : holds.heldLeases()) {
+      SystemLeases.LeaseView lease = byId.get(heldLease);
+      if (lease == null) {
+        holds.release(heldLease, CiSlotHolds.LEASE_ENDED);
+      } else {
+        named.put(heldLease, lease.ownerRef());
+        holds.leaseObserved(lease);
+      }
+    }
     for (CiRun run : runs.leasedRuns()) {
       named.put(run.leaseId, run.id);
       SystemLeases.LeaseView lease = byId.get(run.leaseId);

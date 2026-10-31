@@ -204,6 +204,18 @@ public class FakeCiStepRunner implements CiStepRunner {
     relay.drop(runId);
   }
 
+  /**
+   * A scripted run holds no slot — it has no lease — and every other run asks the real seam, which
+   * is what decides whether a slot is held for its release (epic qits-732).
+   */
+  @Override
+  public boolean holdSlot(SlotHold hold) {
+    if (scripted(hold.runId())) {
+      return false;
+    }
+    return real.holdSlot(hold);
+  }
+
   private static Script green(int stepIndex) {
     String text = "step " + stepIndex + " ran";
     return Script.of(new StepResult(0, false, StepOutcome.OK, text), text);
