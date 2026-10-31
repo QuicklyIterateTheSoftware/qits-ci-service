@@ -385,11 +385,17 @@ release-request:
   # passwd-backed non-root user — maven-base carries one (uid 1001). A step container starts
   # `--cap-drop=ALL`, so `su` could not have switched user from inside at all.
   #
+  # `qits-cli: true` (qits-1765): the script below calls `qits artifacts fetch deployed-pacts` in a
+  # pact provider, before the verify. The entity-diagram check already brings the CLI, but only as
+  # a side effect of that key. This key says the script itself needs the CLI, and it makes the fetch
+  # hard: no CLI means the step fails before anything runs.
+  #
   # `image:` kept for the old parser only; the ci-slot runner ignores it (qits-1544).
   - image: qits/build-images/maven-base:latest
     user: build
     timeout-seconds: 2400
     check-outputs: [entity-diagram]
+    qits-cli: true
     script: |
       # The platform registry: the poms' default names a host-published address unreachable from a
       # step container, and the exact-id mirror in .qits-maven-settings.xml is what passes Maven's
@@ -476,12 +482,93 @@ release-request:
       # built from both parts rather than from one living inside the other's branch.
       pact_options="-Dpact.verification.reports=json -Dpact.verification.reportDir=$PWD/.qits-reports/pact-verification"
 
+      # EVERY DEPLOYED CONSUMER'S PACT, NOT ONLY THE POM'S (qits-1765). The pinned consumer jars
+      # above are ONE version per consumer: whatever the last bump moved the pom to. But a provider
+      # is held to every consumer version that is serving right now, and to every one a deployment
+      # would roll back to, and those are often older than the pin. A provider change that breaks
+      # only an older version would pass a gate that verifies the pin alone. Then it would break a
+      # consumer that is live, or one the next rollback brings back. So a PROVIDER also asks
+      # qits-maintenance which consumer versions are deployed (`GET
+      # /maintenance/api/deployed-pacts?provider=`, behind `qits artifacts fetch deployed-pacts`),
+      # and its verifier checks each of those pacts as a source of its own.
+      #
+      # WHO IS A PROVIDER: a repository whose poms depend on a consumer pact package, an artifactId
+      # `<consumer>-pacts-<this repository>` (CiContracts' naming, keyed by the provider's REPOSITORY
+      # name, which is $QITS_CI_REPO_NAME and not the image or application name). The poms already
+      # declare which pacts the verifier reads, so this check needs no extra key in release.yml.
+      # The scan also collects each declared `<consumer>`, which the filter after the fetch uses.
+      # A repository that verifies no pact makes no fetch and gets no variable, and its verify is
+      # the same as before. `target/` and `node_modules/` hold build output and installed
+      # packages, so neither is searched. A pom that cannot be read fails the step: a provider that
+      # silently skips this fetch would pass a gate it should not pass.
+      #
+      # FAIL-CLOSED, AND NO FALLBACK FOR A CLI WITHOUT THE VERB. The CLI exits 1 on any failure: the
+      # store does not answer, a pact cannot be fetched, or the archive does not unpack. That ends
+      # this step red. "No deployed consumer pacts" is exit 0 and an empty directory. The CLI here
+      # is the one qits-ci pins (`qits.platform-access-cli-binary.version` in its root pom), and the
+      # verb exists only from the CLI release that pin names since this change. A CLI that does not
+      # know the verb is a red step as well, never a quiet skip: a gate that skipped the check would
+      # look the same as one that ran it.
+      #
+      # AN ABSOLUTE PATH, IN A FRESH DIRECTORY, HANDED ONLY TO THE VERIFY. Surefire may fork its test
+      # JVM in a module directory, so a relative path would point at the wrong place. The directory
+      # is emptied first, so a pact left over from an earlier attempt cannot be verified as if it
+      # were deployed now. The variable reaches every forked JVM through the environment, like
+      # JAVA_TOOL_OPTIONS below. Each provider's `ClasspathPactLoader` reads it and refuses a
+      # directory that is set but missing. `qits` is on PATH because this step declares
+      # `qits-cli: true`.
+      repo=${QITS_CI_REPO_NAME:?this step was told no QITS_CI_REPO_NAME}
+      deployed_pacts_dir=""
+      declared_consumers=""
+      poms=$(find . -name pom.xml -not -path '*/target/*' -not -path '*/node_modules/*')
+      for pom in $poms; do
+        found=$(sed -n "s|.*<artifactId>\([A-Za-z0-9._-]*\)-pacts-$repo</artifactId>.*|\1|p" "$pom") || {
+          echo "deployed pacts: could not read $pom to tell whether $repo is a pact provider" >&2
+          exit 1
+        }
+        declared_consumers="$declared_consumers $found"
+      done
+      declared_consumers=" $(printf '%s' "$declared_consumers" | tr '\n' ' ') "
+      case "$declared_consumers" in
+        *[!\ ]*) deployed_pacts_dir="$PWD/target/deployed-pacts" ;;
+      esac
+      if [ -n "$deployed_pacts_dir" ]; then
+        rm -rf "$deployed_pacts_dir"
+        mkdir -p "$deployed_pacts_dir"
+        echo "deployed pacts: $repo is a pact provider; fetching every deployed consumer's pact"
+        qits artifacts fetch deployed-pacts --provider "$repo" --out "$deployed_pacts_dir" || {
+          echo "deployed pacts: could not fetch the deployed consumers' pacts for $repo, so this" \
+            "gate cannot verify them" >&2
+          exit 1
+        }
+        # THE POM DECIDES WHICH CONSUMERS; DEPLOYMENTS DECIDE WHICH VERSIONS (qits-1765). The store
+        # answers with the newest pact at or below each deployed consumer version. It cannot tell a
+        # consumer that stopped calling this provider: removing a pact publishes nothing, so the
+        # last pact that consumer ever published comes back as if it were still in force. Measured
+        # live: qits-landing-app's 2026.1003 pact came back for qits-events-service, which pins no
+        # landing pact any more. The poms are where this repository says which consumers it still
+        # verifies, and the scan above has collected them. So a consumer directory whose name no
+        # pom declares (`<consumer>-pacts-<this repository>`) is removed here, before the verify,
+        # with one line naming it.
+        for consumer_dir in "$deployed_pacts_dir"/*/; do
+          [ -d "$consumer_dir" ] || continue
+          consumer=$(basename "$consumer_dir")
+          case "$declared_consumers" in
+            *" $consumer "*) ;;
+            *)
+              rm -rf "$consumer_dir"
+              echo "deployed pacts: $consumer is not a consumer this repository pins; not verified" ;;
+          esac
+        done
+      fi
+
       # Quinoa off: the client is the build step's business, and the stories assert nothing about
       # the SPA. It is also what keeps this step from needing the submodule at all — the daemon's
       # clone does not recurse, so the webui directory is empty here, which is the one state Quinoa
       # calls a misconfiguration.
       verify_status=0
       env "JAVA_TOOL_OPTIONS=${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }${jacoco_options:+$jacoco_options }$pact_options" \
+        ${deployed_pacts_dir:+"QITS_DEPLOYED_PACTS_DIR=$deployed_pacts_dir"} \
         ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
         -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
         -Dquarkus.quinoa=false \

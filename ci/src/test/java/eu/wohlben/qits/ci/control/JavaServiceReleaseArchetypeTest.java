@@ -232,6 +232,218 @@ public class JavaServiceReleaseArchetypeTest {
     }
   }
 
+  // --- the QA verify step: every deployed consumer's pact (qits-1765) ----------------------------
+
+  /** A provider's module pom: it pins a consumer's pact package for this repository. */
+  private static final String PROVIDER_POM =
+      """
+      <project>
+        <dependencies>
+          <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-projects-service-pacts-qits-githost-service</artifactId>
+          </dependency>
+        </dependencies>
+      </project>
+      """;
+
+  /** A consumer's: golden masters and a pact package naming ANOTHER provider, never this one. */
+  private static final String CONSUMER_POM =
+      """
+      <project>
+        <dependencies>
+          <dependency><artifactId>qits-projects-service-golden-masters</artifactId></dependency>
+          <dependency><artifactId>qits-ci-service-pacts-qits-projects-service</artifactId></dependency>
+        </dependencies>
+      </project>
+      """;
+
+  @Test
+  public void theVerifyStepDeclaresTheQitsCli() throws Exception {
+    List<CiStepDecl> steps = recipe().releaseRequest().steps();
+    CiStepDecl verify = steps.get(steps.size() - 1);
+    assertTrue(verify.qitsCli(), "the verify step calls qits, so it asks for the CLI itself");
+    assertTrue(verify.script().contains("qits artifacts fetch deployed-pacts"), verify.script());
+  }
+
+  @Test
+  public void aProviderFetchesTheDeployedPactsIntoAFreshAbsoluteDirAndHandsItToTheVerify(
+      @TempDir Path dir) throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Path tree = dir.resolve(shell);
+      Files.createDirectories(tree.resolve("service"));
+      Files.writeString(tree.resolve("pom.xml"), "<project/>\n");
+      Files.writeString(tree.resolve("service/pom.xml"), PROVIDER_POM);
+      // Left over from an earlier attempt in the same checkout: it must not be verified as deployed.
+      Path stale = tree.resolve("target/deployed-pacts/old-consumer/1/old_qits-githost-service.json");
+      Files.createDirectories(stale.getParent());
+      Files.writeString(stale, "{}");
+
+      VerifyRun run = verify(tree, shell, 0);
+
+      Path out = tree.toRealPath().resolve("target/deployed-pacts");
+      assertEquals(
+          List.of(
+              "artifacts fetch deployed-pacts --provider qits-githost-service --out " + out),
+          run.qits(),
+          shell + ":\n" + run.output());
+      // PROVIDER_POM declares only qits-projects-service, so the other two fetched consumers go.
+      assertEquals(
+          List.of(
+              "QITS_DEPLOYED_PACTS_DIR=" + out,
+              "files=./qits-projects-service/2026.1.1/qits-projects-service_qits-githost-service.json"),
+          run.mvnw(),
+          shell + ":\n" + run.output());
+      assertEquals(7, run.exit(), "the step ends with the verify's own code:\n" + run.output());
+    }
+  }
+
+  @Test
+  public void aFetchedConsumerNoPomDeclaresIsRemovedBeforeTheVerifyAndADeclaredOneStays(
+      @TempDir Path dir) throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Path tree = dir.resolve(shell);
+      Files.createDirectories(tree.resolve("service"));
+      // Two poms, two declared consumers: the scan collects them across the whole reactor.
+      Files.writeString(
+          tree.resolve("pom.xml"),
+          "<project><dependencyManagement><dependencies><dependency>"
+              + "<artifactId>qits-deploy-app-pacts-qits-githost-service</artifactId>"
+              + "</dependency></dependencies></dependencyManagement></project>\n");
+      Files.writeString(tree.resolve("service/pom.xml"), PROVIDER_POM);
+
+      VerifyRun run = verify(tree, shell, 0);
+
+      assertEquals(
+          List.of(
+              "QITS_DEPLOYED_PACTS_DIR=" + tree.toRealPath().resolve("target/deployed-pacts"),
+              "files=./qits-deploy-app/2026.1.1/qits-deploy-app_qits-githost-service.json"
+                  + " ./qits-projects-service/2026.1.1/qits-projects-service_qits-githost-service.json"),
+          run.mvnw(),
+          shell + ":\n" + run.output());
+      // A consumer that stopped calling this provider: its last pact is fetched, never verified.
+      assertTrue(
+          run.output()
+              .contains(
+                  "deployed pacts: qits-landing-app is not a consumer this repository pins; not"
+                      + " verified"),
+          run.output());
+      assertFalse(run.output().contains("qits-deploy-app is not a consumer"), run.output());
+      assertFalse(run.output().contains("qits-projects-service is not a consumer"), run.output());
+    }
+  }
+
+  @Test
+  public void aRepositoryThatVerifiesNoPactOfItsOwnFetchesNothingAndSetsNoVariable(
+      @TempDir Path dir) throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Path tree = dir.resolve(shell);
+      Files.createDirectories(tree.resolve("service/target"));
+      Files.writeString(tree.resolve("pom.xml"), CONSUMER_POM);
+      // Build output is not a declaration: a copied pom under target/ does not make a provider.
+      Files.writeString(tree.resolve("service/target/pom.xml"), PROVIDER_POM);
+
+      VerifyRun run = verify(tree, shell, 0);
+
+      assertEquals(List.of(), run.qits(), shell + ":\n" + run.output());
+      assertEquals(
+          List.of("QITS_DEPLOYED_PACTS_DIR=<unset>", "files="), run.mvnw(), shell + ":\n" + run.output());
+      assertFalse(Files.exists(tree.resolve("target/deployed-pacts")), shell);
+    }
+  }
+
+  @Test
+  public void aFailedFetchFailsTheStepBeforeTheVerifyRuns(@TempDir Path dir) throws Exception {
+    for (String shell : List.of("bash", "sh")) {
+      Path tree = dir.resolve(shell);
+      Files.createDirectories(tree);
+      Files.writeString(tree.resolve("pom.xml"), PROVIDER_POM);
+
+      // 1 is the CLI's failure code; an unknown verb (a CLI older than the fetch) fails the same way.
+      VerifyRun run = verify(tree, shell, 1);
+
+      assertEquals(1, run.exit(), shell + ":\n" + run.output());
+      assertEquals(List.of(), run.mvnw(), "no verify without the deployed pacts");
+      assertTrue(
+          run.output().contains("could not fetch the deployed consumers' pacts for qits-githost-service"),
+          run.output());
+    }
+  }
+
+  private record VerifyRun(int exit, String output, List<String> qits, List<String> mvnw) {}
+
+  /**
+   * The recipe's QA verify step, run as the composed runner runs it — {@code <shell> -eu} on the
+   * declared text — with stubs on {@code PATH}: {@code qits} records its arguments and, exiting
+   * {@code qitsExit}, writes one pact each for three consumers into {@code --out} first
+   * ({@code qits-projects-service}, {@code qits-deploy-app}, {@code qits-landing-app}); {@code curl}/{@code wget} fail, so no
+   * coverage agent is fetched. {@code ./mvnw} records the variable and the files it can see, then
+   * exits 7, which ends the step before the userflow bundle.
+   */
+  private VerifyRun verify(Path tree, String shell, int qitsExit) throws Exception {
+    List<CiStepDecl> steps = recipe().releaseRequest().steps();
+    CiStepDecl verify = steps.get(steps.size() - 1);
+    Path bin = Files.createDirectories(tree.resolveSibling(tree.getFileName() + "-bin"));
+    Path qitsCalls = bin.resolve("qits-calls");
+    Path mvnwCalls = bin.resolve("mvnw-calls");
+    Path qits = bin.resolve("qits");
+    Files.writeString(
+        qits,
+        "#!/bin/sh\n"
+            + "echo \"$*\" >> \""
+            + qitsCalls
+            + "\"\n"
+            + "[ \"$6\" = --out ] || exit 2\n"
+            + "for c in qits-projects-service qits-deploy-app qits-landing-app; do\n"
+            + "  mkdir -p \"$7/$c/2026.1.1\"\n"
+            + "  echo '{}' > \"$7/$c/2026.1.1/${c}_qits-githost-service.json\"\n"
+            + "done\n"
+            + "exit "
+            + qitsExit
+            + "\n");
+    for (String fetcher : List.of("curl", "wget")) {
+      Files.writeString(bin.resolve(fetcher), "#!/bin/sh\nexit 1\n");
+      assertTrue(bin.resolve(fetcher).toFile().setExecutable(true));
+    }
+    assertTrue(qits.toFile().setExecutable(true));
+    Path mvnw = tree.resolve("mvnw");
+    Files.writeString(
+        mvnw,
+        "#!/bin/sh\n"
+            + "{\n"
+            + "  echo \"QITS_DEPLOYED_PACTS_DIR=${QITS_DEPLOYED_PACTS_DIR-<unset>}\"\n"
+            + "  if [ -n \"${QITS_DEPLOYED_PACTS_DIR:-}\" ]; then\n"
+            + "    echo \"files=$(cd \"$QITS_DEPLOYED_PACTS_DIR\" && find . -type f | sort | tr '\\n' ' ' | sed 's/ $//')\"\n"
+            + "  else\n"
+            + "    echo files=\n"
+            + "  fi\n"
+            + "} >> \""
+            + mvnwCalls
+            + "\"\n"
+            + "exit 7\n");
+    assertTrue(mvnw.toFile().setExecutable(true));
+    Path script = tree.resolveSibling(tree.getFileName() + "-step.sh");
+    Files.writeString(script, verify.script());
+    ProcessBuilder builder =
+        new ProcessBuilder(shell, "-eu", script.toString())
+            .directory(tree.toFile())
+            .redirectErrorStream(true);
+    builder.environment().keySet().removeIf(key -> key.startsWith("QITS_"));
+    builder.environment().remove("JAVA_TOOL_OPTIONS");
+    builder.environment().remove("PWD");
+    builder.environment().put("QITS_DOMAIN", "example.invalid");
+    builder.environment().put("QITS_CI_REPO_NAME", "qits-githost-service");
+    builder.environment().put("PATH", bin + ":" + builder.environment().get("PATH"));
+    Process process = builder.start();
+    String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    assertTrue(process.waitFor(30, TimeUnit.SECONDS), shell + " did not return");
+    return new VerifyRun(
+        process.exitValue(),
+        output,
+        Files.exists(qitsCalls) ? Files.readAllLines(qitsCalls) : List.of(),
+        Files.exists(mvnwCalls) ? Files.readAllLines(mvnwCalls) : List.of());
+  }
+
   private record Run(int exit, String output, List<String> mvnw) {}
 
   /**
