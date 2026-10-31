@@ -56,12 +56,10 @@ import org.jboss.logging.Logger;
  *
  * <p>It presents {@code X-Qits-User}/{@code X-Qits-Roles: qits:system} — the same forward-auth
  * identity {@code githost/HttpGitHostRepoListing} presents for the same kind of in-network read, and
- * exactly the role the endpoint's contract asks for. No bearer: qits-ci's OIDC clients were
- * audience-bound to other services, and presenting either here would be a token
- * addressed to another service — worse than none, since a request carrying no {@code Authorization}
- * falls through to the header mechanism while one carrying a wrong-audience bearer is refused. An
- * audience-bound client for this hop is a deployment-config change, and it belongs in the campaign's
- * wiring work rather than here.
+ * exactly the role the endpoint's contract asks for. No bearer: the shared {@code qits} named
+ * client, audience {@code qits-platform}, is not wired in for this hop, and a request carrying no
+ * {@code Authorization} falls through to the header mechanism. Wiring it in is an application
+ * change, and it belongs in the campaign's wiring work rather than here.
  *
  * <h2>The timeouts and the cache</h2>
  *
