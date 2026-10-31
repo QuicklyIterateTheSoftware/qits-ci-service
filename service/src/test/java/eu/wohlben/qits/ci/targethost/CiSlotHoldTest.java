@@ -384,7 +384,10 @@ class CiSlotHoldTest {
     assertEquals(VERSION, next.branch(), "the version is the release run's ref");
     assertEquals(TAG_SHA, next.sha());
     // The frame's map comes back from the codec unordered: the keys, as a set.
-    assertEquals(Set.copyOf(CiSlotSpecs.RUN_SCOPED_KEYS), next.env().keySet());
+    java.util.Set<String> expectedKeys = new java.util.HashSet<>(CiSlotSpecs.RUN_SCOPED_KEYS);
+    expectedKeys.add("QITS_VERSION");
+    assertEquals(expectedKeys, next.env().keySet(), "the run-scoped keys and the run's own extras");
+    assertEquals(VERSION, next.env().get("QITS_VERSION"), "the release run's version, not the QA run's blank");
     assertEquals(RELEASE_RUN, next.env().get("QITS_CI_RUN_ID"));
     assertEquals(next.token(), next.env().get("QITS_TOKEN"), "the release run's own token");
     CiLeases.Launch launch = leases.launchOf(RELEASE_RUN).orElseThrow();

@@ -741,8 +741,13 @@ public class LeaseStepRunner implements CiStepRunner {
             continuation.branch(),
             continuation.sha(),
             token.token(),
-            CiSlotSpecs.runEnv(
-                plane.get(), runId, continuation.branch(), continuation.sha(), token));
+            CiSlotSpecs.continueEnv(
+                plane.get(),
+                runId,
+                continuation.branch(),
+                continuation.sha(),
+                token,
+                continuation.runEnv() == null ? Map.of() : continuation.runEnv()));
     CiDaemonRegistry.Continuation answer =
         daemons.sendContinue(daemonId, next)
             ? daemons.awaitContinued(daemonId, Duration.ofSeconds(initTimeoutSeconds))

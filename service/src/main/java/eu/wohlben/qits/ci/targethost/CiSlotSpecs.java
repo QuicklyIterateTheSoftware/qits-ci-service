@@ -188,6 +188,28 @@ public final class CiSlotSpecs {
   }
 
   /**
+   * What a {@code Continue} carries (qits-732): {@link #runEnv} and then the run's own extras — the
+   * {@code QITS_EVENT_*} of its trigger and {@code QITS_VERSION} — in the order and under the same
+   * policy-key guard {@link #compose} writes them. Leaving the extras out handed a release run the
+   * held QA run's event, with a blank {@code QITS_VERSION}, and every release step failed on it.
+   */
+  public static Map<String, String> continueEnv(
+      CiSlotAddresses.Plane plane,
+      String runId,
+      String branch,
+      String sha,
+      IdpCommissioner.CommissionedToken token,
+      Map<String, String> extras) {
+    Map<String, String> env = new LinkedHashMap<>(runEnv(plane, runId, branch, sha, token));
+    for (Map.Entry<String, String> extra : new TreeMap<>(extras).entrySet()) {
+      if (!POLICY_ENV.contains(extra.getKey())) {
+        env.put(extra.getKey(), value(extra.getValue()));
+      }
+    }
+    return env;
+  }
+
+  /**
    * The part of a step's environment that is the step's own, sent in its {@code RunStep} and laid
    * over the lease's for that step's child only: its index (qits-754's {@code QITS_CI_STEP_INDEX},
    * which the QA report hook reads to say which step its reports belong to).
