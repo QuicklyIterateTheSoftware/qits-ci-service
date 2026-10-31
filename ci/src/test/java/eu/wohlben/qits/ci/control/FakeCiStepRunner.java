@@ -260,6 +260,8 @@ public class FakeCiStepRunner implements CiStepRunner {
     inheritances.clear();
     reattached.clear();
     revoked.clear();
+    slotHolds.clear();
+    holdsSlots = false;
     captureInheritance = false;
     reattachResult = null;
     launchDaemonId = null;
@@ -339,6 +341,34 @@ public class FakeCiStepRunner implements CiStepRunner {
   public void runClosed(String runId) {
     held.remove(runId);
     closed.add(runId);
+  }
+
+  /** One {@link #holdSlot} offer, with how many verdicts had been announced when it was made. */
+  public record SlotHoldOffer(SlotHold hold, int announcedBefore) {}
+
+  private final List<SlotHoldOffer> slotHolds =
+      java.util.Collections.synchronizedList(new ArrayList<>());
+
+  private volatile boolean holdsSlots;
+
+  @jakarta.inject.Inject jakarta.enterprise.inject.Instance<FakeRunAnnouncer> announcer;
+
+  /** Answer every {@link #holdSlot} offer with {@code holds} (false until said otherwise). */
+  public void holdsSlots(boolean holds) {
+    holdsSlots = holds;
+  }
+
+  /** Every slot offered to be held for a release (epic qits-732), in order. */
+  public List<SlotHoldOffer> slotHolds() {
+    return slotHolds;
+  }
+
+  @Override
+  public boolean holdSlot(SlotHold hold) {
+    int announced =
+        announcer.isResolvable() ? announcer.get().announced().size() : -1;
+    slotHolds.add(new SlotHoldOffer(hold, announced));
+    return holdsSlots;
   }
 
   private static Script greenStep(int stepIndex) {

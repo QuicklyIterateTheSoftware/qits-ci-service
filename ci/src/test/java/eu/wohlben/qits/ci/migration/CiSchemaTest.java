@@ -378,6 +378,41 @@ public class CiSchemaTest {
     }
   }
 
+  @Test
+  public void aSlotHoldIsOneRowPerLeaseAndOnePerReleaseRequest() throws SQLException {
+    // V42 (epic qits-732). The lease id is the key, the request is unique, and the types are
+    // ci_run's for the same values; the run gains continued_from_run_id, nullable.
+    assertEquals("uuid", columnType("ci_slot_hold", "lease_id"));
+    assertEquals("uuid", columnType("ci_slot_hold", "target_id"));
+    assertEquals("character varying", columnType("ci_slot_hold", "held_from_run_id"));
+    assertEquals("timestamp with time zone", columnType("ci_slot_hold", "expires_at"));
+    assertEquals("character varying", columnType("ci_run", "continued_from_run_id"));
+    assertEquals(List.of(), constraints("ci_slot_hold", 'f'), "no foreign key, to ci_run or else");
+    try (Connection connection = ci.getConnection()) {
+      connection.setAutoCommit(false);
+      String insert =
+          "insert into ci_slot_hold (lease_id, repo_id, release_request_id, held_from_run_id,"
+              + " daemon_id, merged_sha, held_at, expires_at) values (cast(? as uuid),"
+              + " 'schema-probe', 'rr-1', 'run-1', 'ci-daemon-1', 'b', current_timestamp,"
+              + " current_timestamp)";
+      try (PreparedStatement row = connection.prepareStatement(insert)) {
+        row.setString(1, "00000000-0000-4000-8000-000000000732");
+        row.executeUpdate();
+      }
+      try (PreparedStatement again = connection.prepareStatement(insert)) {
+        again.setString(1, "00000000-0000-4000-8000-000000000733");
+        SQLException refused = null;
+        try {
+          again.executeUpdate();
+        } catch (SQLException e) {
+          refused = e;
+        }
+        assertTrue(refused != null, "a second hold of one request must be refused");
+      }
+      connection.rollback();
+    }
+  }
+
   private List<String> constraints(String table, char type) throws SQLException {
     List<String> names = new ArrayList<>();
     try (Connection connection = ci.getConnection();

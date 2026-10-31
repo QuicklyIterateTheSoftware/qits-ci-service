@@ -482,6 +482,16 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   public UUID targetId;
 
   /**
+   * The phase-1 run whose held CI slot this run continued in, or null (epic qits-732, {@code
+   * V42__slot_holds.sql}). A green release-request QA run may keep its lease open for the release
+   * that follows ({@code ci_slot_hold}); a phase-2 run adopted into that lease names the run it
+   * continued from here. Written by the adoption alone; null on every run that started in a lease of
+   * its own. No foreign key, for {@link #leaseId}'s reason one table over.
+   */
+  @Column(name = "continued_from_run_id", length = 255)
+  public String continuedFromRunId;
+
+  /**
    * The run's launch and the step it has in flight, so that a restarted qits-ci can take the run back
    * instead of starting it again (qits-1192, {@code V37__run_inflight_launch.sql}). Since a run is
    * one lease (epic qits-1481) the launch is the lease's daemon: {@link #inflightDaemonId} and

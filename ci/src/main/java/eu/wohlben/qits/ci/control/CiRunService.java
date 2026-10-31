@@ -1186,6 +1186,9 @@ public class CiRunService {
 
   private void executeClaimed(CiRun run, EventRun request, Resume resume) {
     boolean leftRunning = false;
+    // A green release-request QA run whose seam held its slot for the release (epic qits-732): the
+    // run is settled and announced as ever, and its close is the hold's to make, later.
+    boolean held = false;
     try {
       DaemonPin pin;
       if (run.daemonVersion != null) {
@@ -1197,13 +1200,14 @@ public class CiRunService {
         pinDaemonVersion(run.id, pin.version());
         run.daemonVersion = pin.version();
       }
-      runSteps(
-          run,
-          request.trigger().pipeline(),
-          pin,
-          eventEnv(request),
-          declaredRelease(request),
-          resume);
+      held =
+          runSteps(
+              run,
+              request.trigger().pipeline(),
+              pin,
+              eventEnv(request),
+              declaredRelease(request),
+              resume);
     } catch (CiStepRunner.ProcessStopping stopping) {
       // The process is going away under a step that has not ended. The step's container keeps
       // running in its lease and the successor takes it back: nothing is settled, nothing given
@@ -1218,7 +1222,7 @@ public class CiRunService {
       throw fatal;
     } finally {
       cancelled.remove(run.id);
-      if (!leftRunning) {
+      if (!leftRunning && !held) {
         closeWith(run);
       }
     }
@@ -1750,7 +1754,7 @@ public class CiRunService {
    * the same failure stops the run, leaves it {@code FAILED} and skips the remainder — because none
    * of that was ever the flag's; only the announcement's classification was.
    */
-  private void runSteps(
+  private boolean runSteps(
       CiRun run,
       CiPipeline pipeline,
       DaemonPin pin,
@@ -1827,7 +1831,7 @@ public class CiRunService {
             LOG.infof(
                 "CI run %s: %s is no longer reachable — discarding the run", run.id, run.commitSha);
             discardRun(run.id);
-            return;
+            return false;
           }
           LOG.infof(
               "CI run %s: step %d could not check out %s though the commit is still reachable: %s",
@@ -1923,12 +1927,64 @@ public class CiRunService {
         outcome == CiRunStatus.FAILED && infraResult != null && retriesSafely(run, release, infraResult)
             ? autoRetry(run, infraStep, infraResult)
             : null;
+    // BEFORE the verdict too (epic qits-732): a slot held for the release is recorded before
+    // BuildSuccessful leaves, so a gate event answering that verdict always finds the hold to end.
+    boolean held = outcome == CiRunStatus.SUCCESS && holdSlot(run);
     if (outcome == CiRunStatus.SUCCESS) {
       announceRun(run, finishedAt);
       announceRelease(run, finishedAt, release);
     } else if (outcome != CiRunStatus.CANCELLED && autoRetried == null) {
       announceFailedRun(run, finishedAt, outcome);
     }
+    return held;
+  }
+
+  /**
+   * Offers a green run's slot to its seam to hold for the release that follows (epic qits-732), when
+   * the run is one {@link #slotHoldOf} says may be held. Whether the seam holds it is the seam's —
+   * the switch, the daemon's capability, the lease still running. Never throws: a hold that could
+   * not be made is a run that closes as it always did.
+   *
+   * @return true when the slot is held, and the run's close is then not made
+   */
+  private boolean holdSlot(CiRun run) {
+    java.util.Optional<CiStepRunner.SlotHold> candidate = slotHoldOf(run, CiRunStatus.SUCCESS);
+    if (candidate.isEmpty()) {
+      return false;
+    }
+    try {
+      return stepRunnerFor(run).holdSlot(candidate.get());
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "CI run %s: its slot could not be held for the release; it closes", run.id);
+      return false;
+    }
+  }
+
+  /**
+   * The run's half of whether its slot may be held for its release (epic qits-732): a release
+   * request's QA run (phase {@link CiRunPhase#RELEASE_REQUEST}, a request id on the row) that settled
+   * {@code SUCCESS}, from a pipeline composed out of {@code release.yml} — the one source whose
+   * composition always has a release half to continue in (qits-893). A QA run from a hand-written
+   * {@code ci-event-*.yml} has no composed release of its own and is never held. Empty for every
+   * other run.
+   */
+  static java.util.Optional<CiStepRunner.SlotHold> slotHoldOf(CiRun run, CiRunStatus outcome) {
+    if (outcome != CiRunStatus.SUCCESS
+        || run.phase != CiRunPhase.RELEASE_REQUEST
+        || run.releaseRequestId == null
+        || run.releaseRequestId.isBlank()
+        || !CiReleaseSlotParser.CONFIG_PATH.equals(run.configPath)) {
+      return java.util.Optional.empty();
+    }
+    return java.util.Optional.of(
+        new CiStepRunner.SlotHold(
+            run.id,
+            run.repoId,
+            run.releaseRequestId,
+            run.releaseRequestQualifiedId,
+            run.commitSha,
+            run.targetId,
+            run.daemonVersion));
   }
 
   /**

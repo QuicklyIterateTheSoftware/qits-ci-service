@@ -277,4 +277,31 @@ public interface CiStepRunner {
    * still held for it — the daemon is told {@code Close}, the lease is ended, the token deleted.
    */
   void runClosed(String runId);
+
+  /**
+   * What a green release-request QA run offers its seam to hold (epic qits-732): the run, the
+   * request its slot would be held for, and the fold it built. {@link CiRunService} decides the
+   * run's half of the question — phase {@code RELEASE_REQUEST}, {@code SUCCESS}, a request id, and a
+   * pipeline composed from {@code release.yml}, whose composition always has a release half
+   * (qits-893) — and the seam decides the slot's half.
+   */
+  record SlotHold(
+      String runId,
+      String repoId,
+      String releaseRequestId,
+      String releaseRequestQualifiedId,
+      String mergedSha,
+      UUID targetId,
+      String daemonVersion) {}
+
+  /**
+   * Keep the run's slot for its release instead of closing it (epic qits-732). Asked once, after the
+   * run's terminal row is written and BEFORE its verdict is announced, so a gate event answering the
+   * verdict always finds the hold. True when the slot is now held: the run's close ({@link
+   * #runClosed}) is then <b>not</b> made, and ending the hold is the seam's own. False — the default
+   * and every seam that cannot hold — and the run closes exactly as it always did. Never throws.
+   */
+  default boolean holdSlot(SlotHold hold) {
+    return false;
+  }
 }
