@@ -262,6 +262,10 @@ public class FakeCiStepRunner implements CiStepRunner {
     revoked.clear();
     slotHolds.clear();
     holdsSlots = false;
+    heldSlot = null;
+    givenBack.clear();
+    continuations.clear();
+    continues = true;
     captureInheritance = false;
     reattachResult = null;
     launchDaemonId = null;
@@ -361,6 +365,53 @@ public class FakeCiStepRunner implements CiStepRunner {
   /** Every slot offered to be held for a release (epic qits-732), in order. */
   public List<SlotHoldOffer> slotHolds() {
     return slotHolds;
+  }
+
+  // --- a release run continuing in a held slot (epic qits-732) ------------------------------------
+
+  private volatile HeldSlot heldSlot;
+
+  private volatile boolean continues = true;
+
+  private final List<String> givenBack = java.util.Collections.synchronizedList(new ArrayList<>());
+
+  private final List<Continuation> continuations =
+      java.util.Collections.synchronizedList(new ArrayList<>());
+
+  /** The slot the next {@link #takeHeldSlot} hands out — once — or null for none. */
+  public void holdsSlot(HeldSlot slot) {
+    heldSlot = slot;
+  }
+
+  /** Whether a continuation answers {@code Continued} (true, the default) or fails. */
+  public void continues(boolean answer) {
+    continues = answer;
+  }
+
+  public List<String> givenBack() {
+    return givenBack;
+  }
+
+  public List<Continuation> continuations() {
+    return continuations;
+  }
+
+  @Override
+  public java.util.Optional<HeldSlot> takeHeldSlot(String repoId, String releaseRequestId) {
+    HeldSlot slot = heldSlot;
+    heldSlot = null;
+    return java.util.Optional.ofNullable(slot);
+  }
+
+  @Override
+  public void giveBackHeldSlot(HeldSlot slot, String reason) {
+    givenBack.add(slot.leaseId() + " " + reason);
+  }
+
+  @Override
+  public void continueOnHeldSlot(Continuation continuation, Runnable continued, Runnable failed) {
+    continuations.add(continuation);
+    (continues ? continued : failed).run();
   }
 
   @Override

@@ -36,7 +36,17 @@ public final class ScriptedLeaseDaemon implements AutoCloseable {
   private final ExecutorService replies = Executors.newSingleThreadExecutor();
   private final AtomicLong seq = new AtomicLong();
   private volatile boolean open = true;
-  private final WebSocketConnection connection;
+  private volatile WebSocketConnection connection;
+
+  /** How many connections this daemon has dialled; above one is a re-dial. */
+  private final java.util.concurrent.atomic.AtomicInteger dials = new java.util.concurrent.atomic.AtomicInteger();
+
+  /**
+   * What this daemon answers a {@code Continue} with (epic qits-732): {@code Continued} unless a
+   * suite says otherwise; null answers nothing at all.
+   */
+  private volatile java.util.function.Function<eu.wohlben.qits.cidaemon.protocol.Continue, CiDaemonMessage>
+      continueAnswer = next -> new eu.wohlben.qits.cidaemon.protocol.Continued(next.runId());
 
   /** A registry wired the way the application wires it, with {@code grace} as its reconnect grace. */
   public static CiDaemonRegistry registry(Duration grace) {
@@ -74,14 +84,19 @@ public final class ScriptedLeaseDaemon implements AutoCloseable {
     this.registry = registry;
     this.daemonId = daemonId;
     this.codec = codec();
-    this.connection =
+    this.connection = newConnection();
+  }
+
+  private WebSocketConnection newConnection() {
+    String id = "scripted-" + daemonId + (dials.getAndIncrement() == 0 ? "" : "-" + dials.get());
+    return
         (WebSocketConnection)
             Proxy.newProxyInstance(
                 WebSocketConnection.class.getClassLoader(),
                 new Class<?>[] {WebSocketConnection.class},
                 (proxy, method, args) ->
                     switch (method.getName()) {
-                      case "id" -> "scripted-" + daemonId;
+                      case "id" -> id;
                       case "isOpen" -> open;
                       case "isClosed" -> !open;
                       case "sendText" -> {
@@ -99,8 +114,38 @@ public final class ScriptedLeaseDaemon implements AutoCloseable {
                     });
   }
 
+  /** Answer every later {@code Continue} with {@code answer}; null answers nothing. */
+  public void answerContinue(
+      java.util.function.Function<eu.wohlben.qits.cidaemon.protocol.Continue, CiDaemonMessage>
+          answer) {
+    this.continueAnswer = answer;
+  }
+
+  /**
+   * Dial again as {@code subject} on a fresh connection — what the daemon does after a drop, with
+   * the token it holds now — and say Hello on it when admitted. Answers the admission.
+   */
+  public CiDaemonRegistry.Admission redial(String subject) {
+    WebSocketConnection fresh = newConnection();
+    CiDaemonRegistry.Admission admission = registry.admitByToken(daemonId, subject, fresh);
+    if (admission == CiDaemonRegistry.Admission.ADMITTED) {
+      connection = fresh;
+      registry.onMessage(daemonId, fresh, new Hello(daemonId, CiDaemonProtocol.CAPABILITY_VERSION));
+    }
+    return admission;
+  }
+
   private void received(CiDaemonMessage message) {
     received.add(message);
+    if (message instanceof eu.wohlben.qits.cidaemon.protocol.Continue next) {
+      java.util.function.Function<eu.wohlben.qits.cidaemon.protocol.Continue, CiDaemonMessage>
+          answer = continueAnswer;
+      CiDaemonMessage reply = answer == null ? null : answer.apply(next);
+      if (reply != null) {
+        replies.execute(() -> registry.onMessage(daemonId, connection, reply));
+      }
+      return;
+    }
     if (message instanceof RunStep step) {
       replies.execute(
           () -> {

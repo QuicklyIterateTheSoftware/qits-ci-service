@@ -125,6 +125,28 @@ public class CiRunOrderingTest {
         List.of("release", "request"), order(withPriority(run("request", 10), "BLOCKING"), release));
   }
 
+  @Test
+  public void aReleaseRunQueuedAfterItsHeldSlotWasReleasedStillGoesFirst() {
+    // Epic qits-732: a release run whose request's held slot was released (or could not be
+    // continued in) queues for a lease of its own. Nothing about the hold reaches the ordering, so
+    // it is an ordinary release run: ahead of every phase-1 run, however old or urgent, and leased in
+    // the release tier.
+    CiRun release = run("release", 120);
+    release.triggerEventName = ReleaseJoin.RELEASE_EVENT_NAME;
+    release.phase = eu.wohlben.qits.ci.entity.CiRunPhase.RELEASE;
+
+    assertEquals(
+        List.of("release", "blocking", "older"),
+        order(
+            withPriority(run("older", 1), "HIGH"),
+            withPriority(run("blocking", 5), "BLOCKING"),
+            release));
+    assertTrue(CiRunOrdering.leasePriority(release) >= 100, "the release tier");
+    assertTrue(
+        CiRunOrdering.leasePriority(release)
+            > CiRunOrdering.leasePriority(withPriority(run("blocking", 5), "BLOCKING")));
+  }
+
   // --- topology -----------------------------------------------------------------------------------
 
   @Test

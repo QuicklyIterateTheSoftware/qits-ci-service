@@ -190,7 +190,10 @@ table, the quarantine and health check, the runner lifecycle events and the `ci-
   lease for a queued run that has none.
 - **`LeaseStepRunner`** is the step seam: every step is a `RunStep` over the one daemon connection,
   and the run's close is `Close`, the lease ended (`DELETE /system/api/leases/{id}`) and the token
-  deleted.
+  deleted — **except after a green release-request QA run whose slot can be held** (epic qits-732):
+  that lease stays open, its token kept, for at most `qits.ci.release-hold.timeout`, and the release
+  run that follows continues in it (`Continue`) and closes it at its own end. See "Holding the slot
+  between the phases" in [`docs/step-execution-flow.md`](docs/step-execution-flow.md).
 - **`LegacyRunnerClients`** is a boot one-shot that gives back every `ci-runner` client and
   `ci-runner-registration` token this service still owns at qits-idp.
 
@@ -1884,7 +1887,14 @@ the next. The run:
 6. **Persist at finish.** Chunks feed a bounded in-memory relay that `GET /ci/api/runs/{runId}`
    exposes as `live`; the step's **row is written once, already terminal**.
 7. **Close.** After the last step — or the first red one, the rest recorded `SKIPPED` — qits-ci
-   sends `Close`, ends the lease and deletes the run's token.
+   sends `Close`, ends the lease and deletes the run's token. **One exception** (epic qits-732): a
+   green release-request QA run on a capability-3 daemon, whose repository's `release.yml`
+   composition has a release half, is *held* instead — no `Close`, the lease and token kept, a
+   `ci_slot_hold` row written before `BuildSuccessful` — until its release run continues in the
+   same container (`Continue` → `Continued`, then steps from index 0, and that run's own close
+   ends the lease) or a release trigger ends the hold. The QA run is `SUCCESS` and announced as
+   ever either way; the hold is no run status. `qits.ci.release-hold.enabled=false` closes after
+   every run.
 
 The same flow as diagrams is in [`docs/step-execution-flow.md`](docs/step-execution-flow.md). The
 prose above stays the contract; the diagrams illustrate it.

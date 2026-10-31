@@ -209,6 +209,21 @@ public class FakeCiStepRunner implements CiStepRunner {
    * is what decides whether a slot is held for its release (epic qits-732).
    */
   @Override
+  public java.util.Optional<HeldSlot> takeHeldSlot(String repoId, String releaseRequestId) {
+    return real.takeHeldSlot(repoId, releaseRequestId);
+  }
+
+  @Override
+  public void giveBackHeldSlot(HeldSlot slot, String reason) {
+    real.giveBackHeldSlot(slot, reason);
+  }
+
+  @Override
+  public void continueOnHeldSlot(Continuation continuation, Runnable continued, Runnable failed) {
+    real.continueOnHeldSlot(continuation, continued, failed);
+  }
+
+  @Override
   public boolean holdSlot(SlotHold hold) {
     if (scripted(hold.runId())) {
       return false;

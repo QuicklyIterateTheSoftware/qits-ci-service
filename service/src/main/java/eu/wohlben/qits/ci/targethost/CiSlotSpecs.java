@@ -77,17 +77,20 @@ public final class CiSlotSpecs {
       LeaseRun run,
       IdpCommissioner.CommissionedToken token) {
     Objects.requireNonNull(token, "a lease is never composed without its run's token");
+    // The run-scoped keys, from the one place a Continue's env is made too (epic qits-732), so the
+    // two can never drift; laid in at their own positions below.
+    Map<String, String> runScoped = runEnv(plane, run.runId(), run.branch(), run.sha(), token);
     Map<String, String> env = new LinkedHashMap<>();
     // The daemon's contract, as environment: it needs all of it before a socket exists.
     env.put("QITS_CI_DAEMON_ID", value(run.daemonId()));
     env.put("QITS_CI_DAEMON_URL", plane.daemonUrl());
     env.put("QITS_CI_DAEMON_BINARY_URL", plane.daemonBinaryUrl(run.daemonBinaryPath()));
     env.put("QITS_CI_REPOSITORY_URL", cloneUrl(plane.gitBaseUrl(), run.repo()));
-    env.put("QITS_CI_BRANCH", value(run.branch()));
-    env.put("QITS_CI_SHA", value(run.sha()));
+    env.put("QITS_CI_BRANCH", runScoped.get("QITS_CI_BRANCH"));
+    env.put("QITS_CI_SHA", runScoped.get("QITS_CI_SHA"));
     // Which run (qits-754; required by the daemon since capability 2: its worktree is
     // /work/<runId>). The step index is each step's own and arrives in its RunStep (stepEnv).
-    env.put("QITS_CI_RUN_ID", value(run.runId()));
+    env.put("QITS_CI_RUN_ID", runScoped.get("QITS_CI_RUN_ID"));
     // The repository, in both coordinate systems — the public pair names the daemon's warm mirror,
     // /cache/git/<projectId>/<repoName>.git. Empty, never absent, on an id-addressed run.
     env.put("QITS_CI_REPO_ID", value(run.repo().repoId()));
@@ -107,10 +110,10 @@ public final class CiSlotSpecs {
     // THE RUN'S CREDENTIAL, and the only one: its ci-run token, minted when the run was accepted and
     // deleted when it closes (CiLeases). BOOTSTRAP turns it into a git helper, a publish command,
     // maven settings and an npmrc; QITS_MAVEN_AUTH_* are the pair a repository's own settings read.
-    env.put("QITS_TOKEN", value(token.token()));
-    env.put("QITS_TOKEN_SUBJECT", value(token.subject()));
-    env.put("QITS_MAVEN_AUTH_USR", value(token.subject()));
-    env.put("QITS_MAVEN_AUTH_PSW", value(token.token()));
+    env.put("QITS_TOKEN", runScoped.get("QITS_TOKEN"));
+    env.put("QITS_TOKEN_SUBJECT", runScoped.get("QITS_TOKEN_SUBJECT"));
+    env.put("QITS_MAVEN_AUTH_USR", runScoped.get("QITS_MAVEN_AUTH_USR"));
+    env.put("QITS_MAVEN_AUTH_PSW", runScoped.get("QITS_MAVEN_AUTH_PSW"));
     env.put("GIT_CONFIG_GLOBAL", "/tmp/qits-gitconfig");
     env.put("QITS_PUBLISH_TOKEN_COMMAND", CiSlotSettings.PUBLISH_TOKEN_COMMAND);
     // THE BUILD-MODE ENVIRONMENT, for every lease: every CI lease is given the target's buildkitd
@@ -120,9 +123,7 @@ public final class CiSlotSpecs {
     // DOCKER_CONFIG, outside the worktree. It used to be given only to a `build:`/`docker:` step's
     // container; a lease is the whole run's, and its token is already in this environment raw.
     env.put("DOCKER_CONFIG", CiSlotSettings.REGISTRY_AUTH_DIR);
-    env.put(
-        "QITS_CI_REGISTRY_AUTH_CONFIG",
-        registryAuthConfig(TOKEN_LOGIN, token.token(), plane.authHosts()));
+    env.put("QITS_CI_REGISTRY_AUTH_CONFIG", runScoped.get("QITS_CI_REGISTRY_AUTH_CONFIG"));
     // Run-scoped extras, LAST and in sorted key order: the QITS_EVENT_* of the trigger and
     // QITS_VERSION. None of them is repository-authored, and none may shadow a policy key.
     for (Map.Entry<String, String> extra : new TreeMap<>(run.env()).entrySet()) {
@@ -144,6 +145,46 @@ public final class CiSlotSpecs {
             settings.pidsLimit(),
             settings.cpus(),
             settings.oomScoreAdj()));
+  }
+
+  /** The keys of {@link #runEnv}, in the order it writes them. */
+  public static final List<String> RUN_SCOPED_KEYS =
+      List.of(
+          "QITS_CI_BRANCH",
+          "QITS_CI_SHA",
+          "QITS_CI_RUN_ID",
+          "QITS_TOKEN",
+          "QITS_TOKEN_SUBJECT",
+          "QITS_MAVEN_AUTH_USR",
+          "QITS_MAVEN_AUTH_PSW",
+          "QITS_CI_REGISTRY_AUTH_CONFIG");
+
+  /**
+   * The run-scoped part of a lease's environment (epic qits-732): exactly the keys {@link #compose}
+   * writes that change from one run to the next on the same container — which run, which ref and
+   * commit, and the run's token in every form it is spent in. A {@code Continue} carries this map to
+   * a held slot's daemon, which lays it over the lease's environment for the next run's steps;
+   * {@link #compose} reads its values from here, so the two are one definition.
+   */
+  public static Map<String, String> runEnv(
+      CiSlotAddresses.Plane plane,
+      String runId,
+      String branch,
+      String sha,
+      IdpCommissioner.CommissionedToken token) {
+    Objects.requireNonNull(token, "a run's environment is never made without its token");
+    Map<String, String> env = new LinkedHashMap<>();
+    env.put("QITS_CI_BRANCH", value(branch));
+    env.put("QITS_CI_SHA", value(sha));
+    env.put("QITS_CI_RUN_ID", value(runId));
+    env.put("QITS_TOKEN", value(token.token()));
+    env.put("QITS_TOKEN_SUBJECT", value(token.subject()));
+    env.put("QITS_MAVEN_AUTH_USR", value(token.subject()));
+    env.put("QITS_MAVEN_AUTH_PSW", value(token.token()));
+    env.put(
+        "QITS_CI_REGISTRY_AUTH_CONFIG",
+        registryAuthConfig(TOKEN_LOGIN, token.token(), plane.authHosts()));
+    return env;
   }
 
   /**

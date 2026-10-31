@@ -336,7 +336,7 @@ Four things bite:
 
 ### A green QA run may hold its slot for the release
 
-Epic qits-732, phase 1 of 2 (qits-1788; the adoption is qits-1789). A release request's QA run
+Epic qits-732 (qits-1788 the hold, qits-1789 the adoption). A release request's QA run
 that settles `SUCCESS`, composed from `release.yml` (whose composition always has a release half,
 qits-893), on a daemon whose `Hello` announced capability 3 or more, with its lease still alive and
 `qits.ci.release-hold.enabled` on, keeps its lease: no `Close`, no lease ended, the phase-1 token
@@ -361,9 +361,22 @@ whose launch this process holds on it, else the hold, and only then the `ownerRe
 phase-1 run for the lease's whole life. The reconcile counts every held lease as named, so the
 two-minute orphan sweep never ends one. And `CiDaemonRegistry` answers a `Hello` with an `Ack` of
 the daemon's own capability (2 or 3), because a v2 daemon from a lease asked before the deploy
-exits on an Ack version it does not know; a v2 launch is never held. `Continued`/`ContinueFailed`
-are only logged until the adoption sends a `Continue`. `CiSlotHoldTest` (the seam) and the `ci`
-module's `CiSlotHoldOfferTest` (the run's half) are the cases.
+exits on an Ack version it does not know; a v2 launch is never held.
+
+**The adoption.** `CiRunService.onEventTrigger` takes the hold for a phase-2 (`SCMRelease`) run
+BEFORE the insert (`CiStepRunner.takeHeldSlot` → `CiSlotHolds.take`), so `insertEventRun` writes the
+row `RUNNING` on the held lease (`lease_id`, `target_id`, `daemon_version`, `continued_from_run_id`)
+and it is never `QUEUED`; a run that is not accepted gives the slot back (`giveBackHeldSlot`, the
+lease ended). `continueOnHeldSlot` then runs on the run's `ci-run-<id>` driver: mint the run's token,
+`CiDaemonRegistry.rekeyLaunch` (the old subject stays admitted until the daemon answers),
+`CiLeases.adopt`, `recordContinuedLaunch` for a restart, `Continue{env: CiSlotSpecs.runEnv}`, await
+the answer under `qits.ci.daemon-init-timeout-seconds`. `Continued` revokes the phase-1 token and
+drives the run from step 0 (`executeAdopted`); anything else ends the held lease, revokes both
+tokens and `requeueAdopted` puts the run back `QUEUED` with no lease, target, pin or
+`continued_from_run_id` — no verdict, no retry counted. `CiSlotSpecs.runEnv` is the one definition of
+the run-scoped keys and `compose` reads it. `CiRunDto.continuedFromRunId` exposes the link.
+`CiSlotHoldTest` (the seam), the `ci` module's `CiSlotHoldOfferTest` (the run's half) and
+`CiSlotSpecsTest` (runEnv against compose) are the cases.
 
 This is the execution path, not a plan for one. `LeaseStepRunner` is the only implementation of
 `CiStepRunner`, and the

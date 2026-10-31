@@ -1066,13 +1066,158 @@ public class CiRunService {
     if (gating != null) {
       return gating;
     }
-    CiRun run = acceptEventRun(request);
+    // A release run whose request's QA slot is still held continues in it (epic qits-732): the slot
+    // is taken BEFORE the insert, so the row is written RUNNING on the held lease and never queued.
+    java.util.Optional<CiStepRunner.HeldSlot> held = heldSlotFor(request);
+    CiRun run;
+    try {
+      run = acceptEventRun(request, held.orElse(null));
+    } catch (RuntimeException e) {
+      held.ifPresent(slot -> giveBack(slot, "its release run could not be accepted"));
+      throw e;
+    }
     if (run == null) {
+      held.ifPresent(slot -> giveBack(slot, "its release run was already triggered"));
       // Another accept of the same event won the race to the insert: its run is the answer.
       return triggeredRunId(request);
     }
+    if (held.isPresent()) {
+      if (run.status == CiRunStatus.RUNNING && held.get().leaseId().equals(run.leaseId)) {
+        continueAdopted(run, request, held.get());
+        return run.id;
+      }
+      giveBack(held.get(), "its release run was settled at accept");
+    }
     announceQueued(run.id);
     return run.id;
+  }
+
+  // --- a release run continuing in its request's held slot (epic qits-732) -----------------------
+
+  /**
+   * The slot held for this event's release request, taken — only for a release run ({@link
+   * CiRunPhase#RELEASE}, an {@code SCMRelease} naming its request) and only while this process is
+   * not draining. Empty for everything else, and for a release run whose request holds nothing, which
+   * then queues exactly as it always did. Never throws.
+   */
+  private java.util.Optional<CiStepRunner.HeldSlot> heldSlotFor(EventRun request) {
+    String releaseRequestId = releaseRequestOf(request);
+    if (draining || phaseOf(request, releaseRequestId) != CiRunPhase.RELEASE) {
+      return java.util.Optional.empty();
+    }
+    try {
+      return stepRunnerFor(request.repo().repoId()).takeHeldSlot(
+          request.repo().repoId(), releaseRequestId);
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "No held slot could be taken for release request %s", releaseRequestId);
+      return java.util.Optional.empty();
+    }
+  }
+
+  /** A taken slot no run continues in, given back: its lease is ended. Never throws. */
+  private void giveBack(CiStepRunner.HeldSlot slot, String reason) {
+    try {
+      stepRunnerFor(slot.heldFromRunId()).giveBackHeldSlot(slot, reason);
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Held lease %s could not be given back", slot.leaseId());
+    }
+  }
+
+  /**
+   * The adoption's second half: the run is accepted {@code RUNNING} on the held lease, and its seam
+   * now hands the slot's daemon to it ({@code Continue}). On {@code Continued} the run is driven on
+   * its own thread exactly as a claimed run is ({@link #executeAdopted}); on anything else it goes
+   * back to the queue for a fresh lease ({@link #requeueAdopted}) — not a failure, no verdict, no
+   * automatic-retry count.
+   */
+  private void continueAdopted(CiRun run, EventRun request, CiStepRunner.HeldSlot slot) {
+    LOG.infof(
+        "CI run %s continues on held lease %s of %s (from run %s)",
+        run.id, slot.leaseId(), slot.releaseRequestName(), slot.heldFromRunId());
+    String runId = run.id;
+    CiStepRunner.Continuation continuation =
+        new CiStepRunner.Continuation(
+            runId, request.repo(), run.branch, run.commitSha, runEnv(request), slot);
+    try {
+      stepRunnerFor(run)
+          .continueOnHeldSlot(
+              continuation, () -> executeAdopted(runId), () -> requeueAdopted(runId, slot));
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "CI run %s could not continue on held lease %s", runId, slot.leaseId());
+      requeueAdopted(runId, slot);
+    }
+  }
+
+  /**
+   * A run its held slot's daemon continued as: driven to its end from step 0 on the caller's thread —
+   * the run's driver — like any claimed run. A run settled meanwhile is only closed.
+   */
+  void executeAdopted(String runId) {
+    CiRun run = QuarkusTransaction.requiringNew().call(() -> runs.findById(runId));
+    if (run == null || run.status != CiRunStatus.RUNNING) {
+      closeWith(runId);
+      return;
+    }
+    EventRun request;
+    try {
+      request = reconstructEventRun(run);
+    } catch (RuntimeException unreadable) {
+      try {
+        settleUnexpectedly(run, unreadable);
+      } finally {
+        closeWith(run);
+      }
+      return;
+    }
+    executeClaimed(run, request);
+  }
+
+  /**
+   * A run whose held slot could not be continued in, put back: {@code QUEUED} again with no lease,
+   * no target, no daemon pin and no {@code continued_from_run_id} — it did not continue, and the row
+   * says what really happened — then handed to the seam for a fresh lease. No verdict is announced
+   * and no retry is counted: nothing ran. A run cancelled meanwhile is settled instead, by the same
+   * driver path a claimed run takes ({@link #executeAdopted}), which records it {@code CANCELLED}.
+   */
+  void requeueAdopted(String runId, CiStepRunner.HeldSlot slot) {
+    if (cancelled.contains(runId)) {
+      executeAdopted(runId);
+      return;
+    }
+    CiRun requeued;
+    try {
+      requeued =
+          QuarkusTransaction.requiringNew()
+              .call(
+                  () -> {
+                    CiRun row = runs.findById(runId);
+                    if (row == null
+                        || row.status != CiRunStatus.RUNNING
+                        || !slot.leaseId().equals(row.leaseId)
+                        || steps.count("runId = ?1", runId) > 0) {
+                      return null;
+                    }
+                    row.status = CiRunStatus.QUEUED;
+                    row.leaseId = null;
+                    row.targetId = null;
+                    row.startedAt = null;
+                    row.daemonVersion = null;
+                    row.continuedFromRunId = null;
+                    clearInFlight(row);
+                    return row;
+                  });
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "CI run %s could not be put back in the queue after its held slot", runId);
+      return;
+    }
+    if (requeued == null) {
+      return;
+    }
+    LOG.infof(
+        "CI run %s did not continue on held lease %s; it is queued for a lease of its own",
+        runId, slot.leaseId());
+    announceStatus(requeued, CiRunStatus.QUEUED, CiRunStatus.RUNNING, requeued.createdAt);
+    announceQueued(runId);
   }
 
   /**
@@ -2473,6 +2618,34 @@ public class CiRunService {
     return java.util.Optional.of(claimed);
   }
 
+  /**
+   * Records the launch a run adopted with its held slot (epic qits-732) — the slot's daemon and the
+   * subject of the run's own new token — so a successor can take the run back after a restart, as
+   * {@link #recordLease} does for a lease the run asked for. Only while the row is {@code RUNNING} on
+   * that lease. Best effort: answers whether it wrote.
+   */
+  public boolean recordContinuedLaunch(
+      String runId, UUID leaseId, String daemonId, String tokenSubject) {
+    try {
+      return QuarkusTransaction.requiringNew()
+          .call(
+              () -> {
+                CiRun row = runs.findById(runId);
+                if (row == null
+                    || row.status != CiRunStatus.RUNNING
+                    || !leaseId.equals(row.leaseId)) {
+                  return false;
+                }
+                row.inflightDaemonId = daemonId;
+                row.inflightTokenSubject = tokenSubject;
+                return true;
+              });
+    } catch (RuntimeException e) {
+      LOG.warnf("CI run %s: its continued launch could not be recorded: %s", runId, e.getMessage());
+      return false;
+    }
+  }
+
   /** Every run that holds a lease and is not finished — what the lease reconcile walks. */
   public List<CiRun> leasedRuns() {
     return QuarkusTransaction.requiringNew().call(runs::listLeased);
@@ -2568,7 +2741,7 @@ public class CiRunService {
    */
   private record Accepted(CiRun run, List<CiRun> superseded, List<String> stillRunning) {}
 
-  private CiRun acceptEventRun(EventRun request) {
+  private CiRun acceptEventRun(EventRun request, CiStepRunner.HeldSlot held) {
     String configPath = request.trigger().configPath();
     // Computed BEFORE the insert bracket rather than inside it, and that placement is the whole of
     // how "the prediction never costs a run" is made true. It is a read against ci_step, so a broken
@@ -2587,7 +2760,7 @@ public class CiRunService {
       accepted =
           DbRetry.inNewTx(
               "event run accept",
-              () -> insertEventRun(request, configPath, expected, pins),
+              () -> insertEventRun(request, configPath, expected, pins, held),
               retryDeadline());
     } catch (RuntimeException e) {
       if (!isUniqueViolation(e)) {
@@ -2639,7 +2812,9 @@ public class CiRunService {
         run,
         run.status,
         null,
-        run.status == CiRunStatus.QUEUED ? run.createdAt : run.finishedAt);
+        run.status == CiRunStatus.QUEUED
+            ? run.createdAt
+            : run.status == CiRunStatus.RUNNING ? run.startedAt : run.finishedAt);
     for (CiRun loser : accepted.superseded()) {
       announceStatus(loser, loser.status, CiRunStatus.QUEUED, loser.finishedAt);
     }
@@ -2667,7 +2842,11 @@ public class CiRunService {
    * report a cancellation the database never took. See {@link Accepted}.
    */
   private Accepted insertEventRun(
-      EventRun request, String configPath, String expectedStepDurations, String stepImages) {
+      EventRun request,
+      String configPath,
+      String expectedStepDurations,
+      String stepImages,
+      CiStepRunner.HeldSlot held) {
     if (runs.alreadyTriggered(request.eventId(), request.repo().repoId(), configPath)) {
       return null;
     }
@@ -2714,6 +2893,17 @@ public class CiRunService {
     // The toolchain this run is fixed to, resolved once outside this bracket and spent by every
     // step below — see pinStepImages and CiRun.stepImages.
     run.stepImages = stepImages;
+    // A release run adopted into its request's held slot (epic qits-732) is RUNNING from its first
+    // instant, on that lease and its target, pinned to the daemon its container already runs — never
+    // QUEUED, so neither the ordering nor a lease request ever sees it.
+    if (held != null && run.phase == CiRunPhase.RELEASE) {
+      run.status = CiRunStatus.RUNNING;
+      run.startedAt = Instant.now();
+      run.leaseId = held.leaseId();
+      run.targetId = held.targetId();
+      run.daemonVersion = held.daemonVersion();
+      run.continuedFromRunId = held.heldFromRunId();
+    }
     runs.persist(run);
     runs.flush();
     supersedeByVersion(run, request, superseded);

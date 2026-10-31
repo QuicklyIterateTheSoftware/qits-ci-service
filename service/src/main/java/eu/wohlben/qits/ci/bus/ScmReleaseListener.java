@@ -17,7 +17,9 @@ import org.jboss.logging.Logger;
  * <p><b>Why this listener exists at all.</b> qits-ci used to announce a {@code SoftwareRelease} for
  * every green release-recipe run whatever triggered it, so a bootstrap replay — which restores a
  * release tag and nothing else — impersonated a release and woke the train against a half-deployed
- * platform. Only qits-workspaces publishes {@code SCMRelease}, and only a real release produces one,
+ * platform. Only qits-projects publishes {@code SCMRelease} (it took the event over from
+ * qits-workspaces, which published it until the release-request cutover), and only a real release
+ * produces one,
  * so this is the fact that tells the two apart. {@link ReleaseJoin} is the rule; this bean is the
  * arrival.
  *
@@ -30,7 +32,8 @@ import org.jboss.logging.Logger;
  * <p>{@code repository}, {@code repositoryName}, {@code version}, {@code priority}, {@code
  * releaseRequestId} and {@code commitSha} are read out of the payload with a {@code readTree} walk,
  * the trigger engine's own precedent — no binding, so no native-image reflection metadata and no
- * dependency on qits-workspaces' vocabulary jar, which is on neither module's classpath here. That
+ * dependency on a vocabulary jar — qits-projects publishes none, as qits-workspaces published none
+ * before it. That
  * is also the one guard this path does not have: unlike {@code SCMPublishTag}, whose field names
  * {@code ScmPublishTagContractTest} resolves against the real record, a rename over there would stop
  * the join closing rather than fail a build here.

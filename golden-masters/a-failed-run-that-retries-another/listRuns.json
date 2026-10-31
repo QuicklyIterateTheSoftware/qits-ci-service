@@ -59,7 +59,8 @@
       "leaseId": null,
       "targetId": null,
       "retryReason": "the runner lost its connection during step 1",
-      "autoRetry": true
+      "autoRetry": true,
+      "continuedFromRunId": null
     },
     {
       "id": "00000000-0000-4000-8000-000000000002",
@@ -110,7 +111,8 @@
       "leaseId": null,
       "targetId": null,
       "retryReason": null,
-      "autoRetry": false
+      "autoRetry": false,
+      "continuedFromRunId": null
     }
   ]
 }

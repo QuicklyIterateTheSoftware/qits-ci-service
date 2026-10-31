@@ -171,6 +171,21 @@ class CiSlotSpecsTest {
   }
 
   @Test
+  void theRunScopedEnvironmentIsExactlyTheRunScopedSubsetOfTheSpec() {
+    // A Continue (epic qits-732) carries runEnv to a held slot's daemon; compose reads the same map.
+    Map<String, String> spec = SlotFixtures.compose().env();
+    CiSlotSpecs.LeaseRun run = SlotFixtures.sampleRun();
+    Map<String, String> runEnv =
+        CiSlotSpecs.runEnv(
+            SlotFixtures.plane(), run.runId(), run.branch(), run.sha(), SlotFixtures.token());
+
+    assertEquals(CiSlotSpecs.RUN_SCOPED_KEYS, java.util.List.copyOf(runEnv.keySet()));
+    for (Map.Entry<String, String> entry : runEnv.entrySet()) {
+      assertEquals(spec.get(entry.getKey()), entry.getValue(), entry.getKey());
+    }
+  }
+
+  @Test
   void aStepsOwnEnvironmentIsItsIndex() {
     assertEquals(Map.of("QITS_CI_STEP_INDEX", "2"), CiSlotSpecs.stepEnv(2));
   }

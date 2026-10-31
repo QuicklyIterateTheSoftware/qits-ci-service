@@ -4,7 +4,9 @@ import eu.wohlben.qits.ci.control.CiIdentifiers;
 import eu.wohlben.qits.ci.control.CiStepRunner;
 import eu.wohlben.qits.ci.daemonhost.CiDaemonRegistry;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
+import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
+import eu.wohlben.qits.cidaemon.protocol.Continue;
 import eu.wohlben.qits.cidaemon.protocol.InitFailed;
 import io.quarkus.runtime.ShutdownEvent;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -16,6 +18,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -651,6 +654,150 @@ public class LeaseStepRunner implements CiStepRunner {
     endedLeases.remove(runId);
     leaseStarts.remove(runId);
     return true;
+  }
+
+  // --- continuing in a held slot (epic qits-732) ------------------------------------------------
+
+  /** Slots taken for a phase-2 run and not yet continued in or given back, by lease. */
+  private final ConcurrentHashMap<UUID, CiSlotHolds.Hold> taken = new ConcurrentHashMap<>();
+
+  @Override
+  public Optional<HeldSlot> takeHeldSlot(String repoId, String releaseRequestId) {
+    return holds
+        .take(repoId, releaseRequestId)
+        .map(
+            hold -> {
+              taken.put(hold.leaseId(), hold);
+              return new HeldSlot(
+                  hold.leaseId(),
+                  hold.targetId(),
+                  hold.daemonVersion(),
+                  hold.heldFromRunId(),
+                  hold.requestName());
+            });
+  }
+
+  @Override
+  public void giveBackHeldSlot(HeldSlot slot, String reason) {
+    CiSlotHolds.Hold hold = taken.remove(slot.leaseId());
+    if (hold != null) {
+      holds.teardown(hold, reason);
+    }
+  }
+
+  /**
+   * The {@code Continue}, on the phase-2 run's own driver thread: the run's token minted, the slot's
+   * launch handed to the run (in the daemon registry, re-keyed to the new token's subject, and in
+   * {@link CiLeases}), the frame sent, and its answer awaited under {@code
+   * qits.ci.daemon-init-timeout-seconds} — the budget a daemon has to make a worktree, which is what
+   * moving one is. {@code Continued}: the phase-1 token is revoked and the run is driven ({@code
+   * continued}), its first {@code RunStep} index 0, since the daemon counts the new run's steps from
+   * nothing. Anything else: {@link #abandon} and {@code failed}.
+   */
+  @Override
+  public void continueOnHeldSlot(Continuation continuation, Runnable continued, Runnable failed) {
+    CiSlotHolds.Hold hold = taken.remove(continuation.slot().leaseId());
+    if (hold == null) {
+      failed.run();
+      return;
+    }
+    leases.driveContinued(
+        continuation.runId(), () -> continueNow(continuation, hold, continued, failed));
+  }
+
+  private void continueNow(
+      Continuation continuation, CiSlotHolds.Hold hold, Runnable continued, Runnable failed) {
+    String runId = continuation.runId();
+    String daemonId = hold.daemonId();
+    if (stopping
+        || daemons.phaseOf(daemonId) != CiDaemonRegistry.Phase.INITIALIZED
+        || daemons.lost(daemonId)) {
+      abandon(runId, hold, "its daemon is gone or busy");
+      failed.run();
+      return;
+    }
+    Optional<CiSlotAddresses.Plane> plane = leases.plane();
+    IdpCommissioner.CommissionedToken token = null;
+    try {
+      token = plane.isEmpty() ? null : commissions.forRun(runId, continuation.runEnv());
+    } catch (IdpCommissioner.CommissionFailedException notCommissioned) {
+      LOG.warnf("CI run %s: %s", runId, notCommissioned.getMessage());
+    }
+    if (token == null) {
+      abandon(runId, hold, "no token could be commissioned for the run");
+      failed.run();
+      return;
+    }
+    if (!daemons.rekeyLaunch(daemonId, runId, token.subject())) {
+      abandon(runId, hold, "its daemon's launch is gone");
+      failed.run();
+      return;
+    }
+    leases.adopt(runId, hold.leaseId(), daemonId, token.subject());
+    leases.recordContinuedLaunch(runId, hold.leaseId(), daemonId, token.subject());
+    Continue next =
+        new Continue(
+            runId,
+            continuation.branch(),
+            continuation.sha(),
+            token.token(),
+            CiSlotSpecs.runEnv(
+                plane.get(), runId, continuation.branch(), continuation.sha(), token));
+    CiDaemonRegistry.Continuation answer =
+        daemons.sendContinue(daemonId, next)
+            ? daemons.awaitContinued(daemonId, Duration.ofSeconds(initTimeoutSeconds))
+            : new CiDaemonRegistry.Continuation(
+                CiDaemonRegistry.Continuation.Status.CONNECTION_LOST, null, null);
+    if (answer.status() != CiDaemonRegistry.Continuation.Status.CONTINUED) {
+      LOG.warnf(
+          "CI run %s: the daemon %s did not continue on held lease %s (%s%s)",
+          runId,
+          daemonId,
+          hold.leaseId(),
+          answer.status(),
+          answer.reason() == null ? "" : ": " + answer.reason() + " " + answer.detail());
+      abandon(runId, hold, "Continue answered " + answer.status());
+      failed.run();
+      return;
+    }
+    // The daemon is the new run's: its worktree is at the tag, its bearer the new token.
+    initialized.add(runId);
+    startOf(runId).complete(Instant.now());
+    revokePhaseOne(hold.heldFromRunId());
+    LOG.infof("CI run %s continued on held lease %s (daemon %s)", runId, hold.leaseId(), daemonId);
+    continued.run();
+  }
+
+  /**
+   * A held slot nothing continues in, after it was taken: {@code Close}, the launch reaped and
+   * forgotten, the lease ended, the new run's token and the phase-1 run's both given back. The new
+   * run goes back to the queue (its caller's {@code failed}).
+   */
+  private void abandon(String runId, CiSlotHolds.Hold hold, String why) {
+    LOG.infof("Held lease %s is not continued in by run %s: %s", hold.leaseId(), runId, why);
+    try {
+      daemons.sendClose(hold.daemonId());
+      daemons.reap(hold.daemonId());
+    } catch (RuntimeException e) {
+      LOG.debugf("Held lease %s: its daemon could not be closed: %s", hold.leaseId(), e.getMessage());
+    }
+    Optional<CiLeases.Launch> launch = leases.launchOf(runId);
+    if (launch.isPresent() && launch.get().leaseId().equals(hold.leaseId())) {
+      leases.forgetLaunch(runId);
+    }
+    leases.endLease(hold.leaseId());
+    initialized.remove(runId);
+    leaseStarts.remove(runId);
+    endedLeases.remove(runId);
+    commissions.endAdoption(runId);
+    commissions.release(runId);
+    revokePhaseOne(hold.heldFromRunId());
+  }
+
+  private void revokePhaseOne(String phaseOneRunId) {
+    commissions.endAdoption(phaseOneRunId);
+    commissions.release(phaseOneRunId);
+    commissions.revokeOrphaned(phaseOneRunId);
   }
 
   // --- internals --------------------------------------------------------------------------------

@@ -51,6 +51,13 @@ class CiSlotHoldTest {
 
   private static final String NEWER_RUN = "8e1f0a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5c";
 
+  /** The release run (phase 2) that continues in the held slot. */
+  private static final String RELEASE_RUN = "8e1f0a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5d";
+
+  private static final String VERSION = "2026.1031.120000";
+
+  private static final String TAG_SHA = "e".repeat(40);
+
   private static final String REPO = "5ca0e7e9-repo";
 
   private static final String REQUEST = "6c1f9a52-0000-4000-8000-000000000042";
@@ -82,6 +89,14 @@ class CiSlotHoldTest {
   private CiDaemonRegistry registry;
 
   private final List<ScriptedLeaseDaemon> daemons = new ArrayList<>();
+
+  /** The held launch's token subject and daemon id, as {@link #held} found them. */
+  private String phaseOneSubject;
+
+  private String holdRowsDaemon;
+
+  /** What the run table was asked to record about a continued launch: "<runId> <daemonId>". */
+  private final List<String> recordedLaunches = Collections.synchronizedList(new ArrayList<>());
 
   @BeforeEach
   void wire() {
@@ -116,6 +131,8 @@ class CiSlotHoldTest {
     steps.settings = leases.settings;
     steps.leases = leases;
     steps.holds = holds;
+    steps.initTimeoutSeconds = 5;
+    steps.stepTimeoutGraceSeconds = 5;
     leases.steps = steps;
 
     rows.put(RUN, queuedRun(RUN));
@@ -348,6 +365,191 @@ class CiSlotHoldTest {
     assertFalse(holds.release(lease, "late"), "and nothing is left to release");
   }
 
+  // --- continuing in the held slot (qits-1789) ----------------------------------------------------
+
+  @Test
+  public void aReleaseRunContinuesOnTheHeldLeaseAndClosesItOnceAtItsEnd() throws Exception {
+    ScriptedLeaseDaemon daemon = held(RUN);
+    UUID lease = leaseOf.get(RUN);
+
+    CiStepRunner.HeldSlot slot = steps.takeHeldSlot(REPO, REQUEST).orElseThrow();
+    assertEquals(lease, slot.leaseId());
+    assertEquals(RUN, slot.heldFromRunId());
+    assertFalse(holds.holds(lease), "taken: no reason to release it can reach it any more");
+
+    assertEquals("continued", continueOn(slot));
+
+    eu.wohlben.qits.cidaemon.protocol.Continue next = sentContinue(daemon);
+    assertEquals(RELEASE_RUN, next.runId());
+    assertEquals(VERSION, next.branch(), "the version is the release run's ref");
+    assertEquals(TAG_SHA, next.sha());
+    // The frame's map comes back from the codec unordered: the keys, as a set.
+    assertEquals(Set.copyOf(CiSlotSpecs.RUN_SCOPED_KEYS), next.env().keySet());
+    assertEquals(RELEASE_RUN, next.env().get("QITS_CI_RUN_ID"));
+    assertEquals(next.token(), next.env().get("QITS_TOKEN"), "the release run's own token");
+    CiLeases.Launch launch = leases.launchOf(RELEASE_RUN).orElseThrow();
+    assertEquals(lease, launch.leaseId(), "the same lease");
+    assertEquals(next.env().get("QITS_TOKEN_SUBJECT"), launch.tokenSubject());
+    assertEquals(List.of(RELEASE_RUN + " " + launch.daemonId()), recordedLaunches);
+    assertTrue(idp.deletedTokens.contains("token-1"), "the phase-1 token goes on Continued");
+    assertFalse(idp.deletedTokens.contains("token-2"));
+
+    // The daemon counts the release run's steps from 0 again, and so does the host.
+    CiStepRunner.StepResult result = steps.run(step(RELEASE_RUN, 0), new Quiet());
+    assertEquals(CiStepRunner.StepOutcome.OK, result.outcome());
+    List<CiDaemonMessage> afterContinue =
+        sent(daemon).subList(sent(daemon).indexOf(next), sent(daemon).size());
+    assertEquals(
+        List.of(0),
+        afterContinue.stream()
+            .filter(eu.wohlben.qits.cidaemon.protocol.RunStep.class::isInstance)
+            .map(m -> ((eu.wohlben.qits.cidaemon.protocol.RunStep) m).stepIndex())
+            .toList());
+
+    steps.runClosed(RELEASE_RUN);
+    assertEquals(
+        1, calls.stream().filter(("DELETE " + lease)::equals).count(), "one DELETE, after phase 2");
+    assertTrue(idp.deletedTokens.contains("token-2"), "and the release run's token with it");
+    assertEquals(0, registry.size());
+  }
+
+  @Test
+  public void theDaemonsRedialWithTheNewTokenIsAdmittedAfterContinue() throws Exception {
+    ScriptedLeaseDaemon daemon = held(RUN);
+    String oldSubject = phaseOneSubject;
+    CiStepRunner.HeldSlot slot = steps.takeHeldSlot(REPO, REQUEST).orElseThrow();
+
+    assertEquals("continued", continueOn(slot));
+
+    String newSubject = leases.launchOf(RELEASE_RUN).orElseThrow().tokenSubject();
+    assertEquals(CiDaemonRegistry.Admission.WRONG_RUN, daemon.redial(oldSubject),
+        "the phase-1 token opens nothing once the daemon continued");
+    assertEquals(CiDaemonRegistry.Admission.ADMITTED, daemon.redial(newSubject));
+  }
+
+  @Test
+  public void aContinueFailedEndsTheHeldLeaseAndHandsTheRunBack() throws Exception {
+    ScriptedLeaseDaemon daemon = held(RUN);
+    daemon.answerContinue(
+        next ->
+            new eu.wohlben.qits.cidaemon.protocol.ContinueFailed(
+                next.runId(),
+                eu.wohlben.qits.cidaemon.protocol.ContinueFailed.Reason.FETCH_FAILED,
+                "no such tag"));
+    CiStepRunner.HeldSlot slot = steps.takeHeldSlot(REPO, REQUEST).orElseThrow();
+
+    assertEquals("failed", continueOn(slot));
+
+    assertAbandoned(slot, daemon);
+  }
+
+  @Test
+  public void noAnswerWithinTheInitTimeoutEndsTheHeldLeaseAndHandsTheRunBack() throws Exception {
+    steps.initTimeoutSeconds = 1;
+    ScriptedLeaseDaemon daemon = held(RUN);
+    daemon.answerContinue(null);
+    CiStepRunner.HeldSlot slot = steps.takeHeldSlot(REPO, REQUEST).orElseThrow();
+
+    assertEquals("failed", continueOn(slot));
+
+    assertAbandoned(slot, daemon);
+  }
+
+  @Test
+  public void aDaemonLostBetweenTheTakeAndTheContinueHandsTheRunBack() throws Exception {
+    ScriptedLeaseDaemon daemon = held(RUN);
+    CiStepRunner.HeldSlot slot = steps.takeHeldSlot(REPO, REQUEST).orElseThrow();
+    registry.reap(holdRowsDaemon);
+
+    assertEquals("failed", continueOn(slot));
+
+    assertTrue(calls.contains("DELETE " + slot.leaseId()), calls.toString());
+    assertTrue(idp.deletedTokens.contains("token-1"));
+    assertFalse(
+        sent(daemon).stream().anyMatch(eu.wohlben.qits.cidaemon.protocol.Continue.class::isInstance));
+  }
+
+  @Test
+  public void aReleaseRunWhoseRequestHoldsNothingTakesNothing() {
+    leasedAndDialled(RUN, 3);
+
+    assertTrue(steps.takeHeldSlot(REPO, REQUEST).isEmpty(), "not held: it queues as ever");
+  }
+
+  @Test
+  public void aTakenSlotGivenBackEndsItsLease() {
+    held(RUN);
+    CiStepRunner.HeldSlot slot = steps.takeHeldSlot(REPO, REQUEST).orElseThrow();
+
+    steps.giveBackHeldSlot(slot, "its release run was already triggered");
+
+    assertTrue(calls.contains("DELETE " + slot.leaseId()), calls.toString());
+    assertTrue(idp.deletedTokens.contains("token-1"));
+  }
+
+  private void assertAbandoned(CiStepRunner.HeldSlot slot, ScriptedLeaseDaemon daemon) {
+    assertTrue(calls.contains("DELETE " + slot.leaseId()), "the held lease is ended: " + calls);
+    assertTrue(sent(daemon).stream().anyMatch(Close.class::isInstance), "Close after the Continue");
+    assertTrue(daemon.closed());
+    assertTrue(leases.launchOf(RELEASE_RUN).isEmpty(), "no launch left for the run to find");
+    assertTrue(idp.deletedTokens.contains("token-1"), "the phase-1 token is revoked");
+    assertTrue(idp.deletedTokens.contains("token-2"), "and the release run's new one");
+  }
+
+  /** Continues the release run on {@code slot}; "continued" or "failed", whichever it answers. */
+  private String continueOn(CiStepRunner.HeldSlot slot) throws Exception {
+    java.util.concurrent.CompletableFuture<String> outcome =
+        new java.util.concurrent.CompletableFuture<>();
+    steps.continueOnHeldSlot(
+        new CiStepRunner.Continuation(
+            RELEASE_RUN,
+            CiRepoRef.of(REPO, "qits", "qits-ci-service"),
+            VERSION,
+            TAG_SHA,
+            Map.of("QITS_VERSION", VERSION),
+            slot),
+        () -> outcome.complete("continued"),
+        () -> outcome.complete("failed"));
+    return outcome.get(20, java.util.concurrent.TimeUnit.SECONDS);
+  }
+
+  private static eu.wohlben.qits.cidaemon.protocol.Continue sentContinue(ScriptedLeaseDaemon daemon) {
+    return sent(daemon).stream()
+        .filter(eu.wohlben.qits.cidaemon.protocol.Continue.class::isInstance)
+        .map(eu.wohlben.qits.cidaemon.protocol.Continue.class::cast)
+        .findFirst()
+        .orElseThrow();
+  }
+
+  private static CiStepRunner.StepSpec step(String runId, int index) {
+    return new CiStepRunner.StepSpec(
+        runId,
+        index,
+        CiRepoRef.of(REPO, "qits", "qits-ci-service"),
+        VERSION,
+        TAG_SHA,
+        SlotFixtures.PINNED,
+        "echo release",
+        "/artifacts/daemons/qits-ci-daemon/2026.1",
+        60,
+        false,
+        false,
+        "",
+        Map.of());
+  }
+
+  /** A step listener that records nothing. */
+  private static final class Quiet implements CiStepRunner.StepListener {
+    @Override
+    public void onStarted() {}
+
+    @Override
+    public void onChunk(String text) {}
+
+    @Override
+    public void onFinished() {}
+  }
+
   // --- helpers ----------------------------------------------------------------------------------
 
   /** A run leased, its daemon dialled announcing {@code capability}, and its worktree ready. */
@@ -363,6 +565,9 @@ class CiSlotHoldTest {
   /** {@link #leasedAndDialled} on capability 3, then held. */
   private ScriptedLeaseDaemon held(String runId) {
     ScriptedLeaseDaemon daemon = leasedAndDialled(runId, 3);
+    CiLeases.Launch launch = leases.launchOf(runId).orElseThrow();
+    phaseOneSubject = launch.tokenSubject();
+    holdRowsDaemon = launch.daemonId();
     assertTrue(steps.holdSlot(candidate(runId)));
     calls.removeIf(call -> call.startsWith("DELETE"));
     return daemon;
@@ -452,6 +657,13 @@ class CiSlotHoldTest {
     @Override
     public CiRun runRow(String runId) {
       return rows.get(runId);
+    }
+
+    @Override
+    public boolean recordContinuedLaunch(
+        String runId, UUID leaseId, String daemonId, String tokenSubject) {
+      recordedLaunches.add(runId + " " + daemonId);
+      return true;
     }
 
     @Override

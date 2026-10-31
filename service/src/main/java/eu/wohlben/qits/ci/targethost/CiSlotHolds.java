@@ -282,8 +282,11 @@ public class CiSlotHolds {
     return true;
   }
 
-  /** What {@code LeaseStepRunner.runClosed} does for a run, for a hold. Never throws. */
-  private void teardown(Hold hold, String reason) {
+  /**
+   * What {@code LeaseStepRunner.runClosed} does for a run, for a hold — also for one {@link #take}
+   * handed out that is given back unused. Never throws.
+   */
+  void teardown(Hold hold, String reason) {
     try {
       daemons.sendClose(hold.daemonId());
       daemons.reap(hold.daemonId());

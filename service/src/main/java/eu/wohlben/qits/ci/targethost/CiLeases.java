@@ -453,6 +453,29 @@ public class CiLeases {
     driver.start();
   }
 
+  /**
+   * A run continuing in a held slot (epic qits-732): {@code work} — the {@code Continue} and, once
+   * answered, the run itself — on the run's own driver thread, {@code ci-run-<runId>}.
+   */
+  void driveContinued(String runId, Runnable work) {
+    driveOn(runId, work);
+  }
+
+  /** Ends one lease at qits-system by its id. Never throws: the reconcile ends what this could not. */
+  void endLease(UUID leaseId) {
+    endQuietly(leaseId);
+  }
+
+  /** {@link CiRunService#recordContinuedLaunch}, for the seam. */
+  boolean recordContinuedLaunch(String runId, UUID leaseId, String daemonId, String tokenSubject) {
+    return runs.recordContinuedLaunch(runId, leaseId, daemonId, tokenSubject);
+  }
+
+  /** The address plane a lease's environment is composed from, or empty with no public domain. */
+  Optional<CiSlotAddresses.Plane> plane() {
+    return addresses.plane();
+  }
+
   /** Whether a driver of this process holds the run. */
   public boolean drives(String runId) {
     return drivers.containsKey(runId);

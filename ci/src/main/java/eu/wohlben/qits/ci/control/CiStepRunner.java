@@ -304,4 +304,53 @@ public interface CiStepRunner {
   default boolean holdSlot(SlotHold hold) {
     return false;
   }
+
+  /**
+   * A slot held for a release, taken for the phase-2 run that continues in it (epic qits-732): the
+   * lease, the target it runs on, the daemon build its container downloaded, the phase-1 run it was
+   * held from, and the request as a person reads it.
+   */
+  record HeldSlot(
+      UUID leaseId,
+      UUID targetId,
+      String daemonVersion,
+      String heldFromRunId,
+      String releaseRequestName) {}
+
+  /**
+   * Take the slot held for {@code (repoId, releaseRequestId)}, atomically, for a phase-2 run about to
+   * be accepted; empty when nothing is held for it. A taken slot is the caller's: it is spent by
+   * {@link #continueOnHeldSlot} or given back by {@link #giveBackHeldSlot}, never neither.
+   */
+  default java.util.Optional<HeldSlot> takeHeldSlot(String repoId, String releaseRequestId) {
+    return java.util.Optional.empty();
+  }
+
+  /** A taken slot no run will continue in — the run was not accepted: the lease is ended. */
+  default void giveBackHeldSlot(HeldSlot slot, String reason) {}
+
+  /**
+   * What a phase-2 run continues on a held slot with: the run, its repository, the version it builds
+   * (its branch) and the tag's commit, its run-scoped environment ({@code QITS_EVENT_*}, {@code
+   * QITS_VERSION}) for the token's commission, and the slot.
+   */
+  record Continuation(
+      String runId,
+      CiRepoRef repo,
+      String branch,
+      String sha,
+      Map<String, String> runEnv,
+      HeldSlot slot) {}
+
+  /**
+   * Continue {@code continuation}'s run in its held slot (epic qits-732): mint the run's token, hand
+   * the slot's launch to the run, send its daemon {@code Continue}, and on {@code Continued} run
+   * {@code continued} on the run's own driver thread. On anything else — {@code ContinueFailed}, no
+   * answer in time, the daemon or the lease gone — the slot's lease is ended, both tokens revoked,
+   * and {@code failed} runs: the run goes back to the queue. Never throws; the default, for a seam
+   * that cannot continue, is {@code failed}.
+   */
+  default void continueOnHeldSlot(Continuation continuation, Runnable continued, Runnable failed) {
+    failed.run();
+  }
 }

@@ -87,15 +87,23 @@ sequenceDiagram
         Ci->>Ci: write the step row ONCE, already terminal
     end
 
-    Ci-->>Slot: Close — the daemon exits
-    Ci->>Sys: DELETE /system/api/leases/{leaseId}
-    Ci->>Idp: DELETE /idp/api/tokens/{tokenId}
-    Ci->>Bus: BuildSuccessful on SUCCESS; BuildFailed with the terminal word otherwise
+    alt a green release-request QA run whose slot can be held (qits-732)
+        Ci->>Ci: ci_slot_hold row — no Close, the lease and the token kept
+        Ci->>Bus: BuildSuccessful
+        Note over Ci,Slot: until SCMRelease adopts the slot (Continue, below) or a release trigger ends the hold
+    else every other run
+        Ci-->>Slot: Close — the daemon exits
+        Ci->>Sys: DELETE /system/api/leases/{leaseId}
+        Ci->>Idp: DELETE /idp/api/tokens/{tokenId}
+        Ci->>Bus: BuildSuccessful on SUCCESS; BuildFailed with the terminal word otherwise
+    end
 ```
 
 Four things the diagram is deliberately precise about:
 
-- **One lease, one container, one connection per run.** The clone happens once, and every step
+- **One lease, one container, one connection per run — per release request where it can be held**
+  (epic qits-732: a green QA run's slot is held for the release run, which continues in it; see
+  "Holding the slot between the phases" below). The clone happens once, and every step
   sees what the steps before it left in the worktree. The `seq` of the output chunks runs across
   the whole lease, and the daemon ignores a `RunStep` naming an index it has already run, which is
   what makes a resend after a reconnect safe.
@@ -106,6 +114,67 @@ Four things the diagram is deliberately precise about:
   when the run closes, or as soon as the lease is seen to have ended, whichever comes first.
 - **The row is written once, terminal.** While a step runs it has no row; `live` is what makes that
   legible.
+
+## Holding the slot between the phases (qits-732)
+
+A release request has two CI phases: QA on the fold (`ReleaseRequestChanged`, phase 1) and the tag
+build (`SCMRelease`, phase 2). The tag is the fold plus a version commit, so a fresh lease for phase
+2 pulls the same multi-GB image, clones the same tree and rebuilds what phase 1's container already
+has warm. So phase 1's container is kept for phase 2 where it can be:
+
+- **The hold.** A QA run that settles `SUCCESS`, composed from `release.yml` (every such composition
+  has a release half), on a daemon whose `Hello` announced capability 3, with its lease alive and
+  `qits.ci.release-hold.enabled` on, is not closed. A `ci_slot_hold` row is written **before**
+  `BuildSuccessful` leaves; the lease, the daemon and the phase-1 token stay as they are.
+- **Why the QA run still settles.** qits-projects holds a release request while
+  `GET /ci/api/runs/active` lists a run of its `(repoId, commitSha)` (`HttpActiveBuilds`). The hold
+  is therefore no run status: the QA run is `SUCCESS`, announced, and gone from `/runs/active` as
+  ever, or the request would wait on its own held slot forever.
+- **Adoption.** When `SCMRelease` accepts the phase-2 run and a hold exists for its
+  `(repoId, releaseRequestId)`, the hold is taken atomically and the run is inserted `RUNNING` on the
+  held lease — `lease_id`, `target_id`, `daemon_version` copied, `continued_from_run_id` set — never
+  `QUEUED`, so no ordering and no lease request ever sees it. Its own `ci-run` token is minted, the
+  launch is re-keyed to the run and the new token's subject (the daemon's re-dials present the new
+  token from then on), and the daemon is sent
+  `Continue{runId, branch: <version>, sha: <tag commit>, token, env}` (`env` is
+  `CiSlotSpecs.runEnv`, the run-scoped subset of the lease spec).
+- **`Continued`** moves the worktree to the tag. The phase-1 token is revoked and the run is driven
+  on its `ci-run-<runId>` thread from step **0** — the daemon counts the new run's steps afresh, the
+  output `seq` goes on counting. Phase 2 closes the lease at its end as any run does, and is never
+  held itself.
+- **`ContinueFailed`**, no answer within `qits.ci.daemon-init-timeout-seconds`, or the daemon or the
+  lease gone before the answer: the held lease is ended (`Close`, `DELETE`, both tokens revoked) and
+  the run goes back to `QUEUED` with no lease, target, pin or `continued_from_run_id`, and asks a
+  lease of its own. No verdict is announced and no automatic retry is counted — nothing ran.
+- **Release triggers.** A hold nothing adopts ends on the first of: `ReleaseRequestStateChanged` in
+  REJECTED/FAILED/CONFLICTED/WITHDRAWN/OBSOLETE, `ApprovalRequirementChanged` OPEN on the held fold,
+  `qits.ci.release-hold.timeout` (PT60S), the lease seen ended, the daemon lost past its reconnect
+  grace, a newer hold of the same request, or a qits-ci restart.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Proj as qits-projects
+    participant Ci as qits-ci
+    participant Slot as held ci-slot container
+    participant Sys as qits-system
+
+    Ci->>Ci: QA SUCCESS → ci_slot_hold (no Close)
+    Ci-->>Proj: BuildSuccessful
+    Proj->>Ci: SCMRelease{version, commitSha, releaseRequestId}
+    Ci->>Ci: take the hold, insert the release run RUNNING on the held lease
+    Ci-->>Slot: Continue{runId, version, tag sha, new token, env}
+    alt Continued
+        Slot-->>Ci: Continued
+        Ci-->>Slot: RunStep{stepIndex 0} …
+        Ci-->>Slot: Close
+        Ci->>Sys: DELETE /system/api/leases/{leaseId} — once, after phase 2
+    else ContinueFailed / no answer
+        Ci-->>Slot: Close
+        Ci->>Sys: DELETE the held lease
+        Ci->>Ci: the run QUEUED again, a fresh lease asked for
+    end
+```
 
 ## When the lease does not get that far
 

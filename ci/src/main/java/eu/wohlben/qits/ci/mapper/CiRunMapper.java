@@ -51,6 +51,8 @@ public interface CiRunMapper {
   // The automatic-retry marker (qits-440): the column, and the flag that is nothing but its presence.
   @Mapping(target = "retryReason", source = "retryReason")
   @Mapping(target = "autoRetry", expression = "java(entity.retryReason != null)")
+  // The phase-1 run a held slot was continued from (epic qits-732), spelled out for `phase`'s reason.
+  @Mapping(target = "continuedFromRunId", source = "continuedFromRunId")
   CiRunDto toDto(CiRun entity);
 
   // The step's declared name (qits-757), spelled out for `phase`'s reason.

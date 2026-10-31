@@ -47,5 +47,6 @@
   "leaseId": null,
   "targetId": null,
   "retryReason": null,
-  "autoRetry": false
+  "autoRetry": false,
+  "continuedFromRunId": null
 }

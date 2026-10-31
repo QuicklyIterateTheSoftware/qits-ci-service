@@ -534,6 +534,80 @@ public class CiDaemonRegistry {
   }
 
   /**
+   * What a {@code Continue} came back as (epic qits-732): the daemon moved its worktree and is the
+   * new run's ({@code CONTINUED}), it could not ({@code FAILED}, with its reason), it said nothing in
+   * time ({@code NO_ANSWER}), or its launch is gone ({@code CONNECTION_LOST}).
+   */
+  public record Continuation(Status status, ContinueFailed.Reason reason, String detail) {
+    public enum Status {
+      CONTINUED,
+      FAILED,
+      NO_ANSWER,
+      CONNECTION_LOST
+    }
+
+    static Continuation continued() {
+      return of(Status.CONTINUED);
+    }
+
+    static Continuation of(Status status) {
+      return new Continuation(status, null, null);
+    }
+
+    static Continuation failed(ContinueFailed failed) {
+      return new Continuation(Status.FAILED, failed.reason(), failed.detail());
+    }
+  }
+
+  /**
+   * Hand a launch to the next run of its release request (epic qits-732): from now on it is {@code
+   * runId}'s, admitted as {@code tokenSubject} — the new run's token, which the daemon presents on
+   * every re-dial after the {@code Continue}. The old subject is admitted too until the daemon
+   * answers. The step bookkeeping starts over, because the daemon counts the next run's steps from 0;
+   * the output {@code seq} does not, since the daemon's goes on counting across the lease.
+   *
+   * @return false when the launch is unknown or lost: there is nothing to continue
+   */
+  public boolean rekeyLaunch(String daemonId, String runId, String tokenSubject) {
+    Objects.requireNonNull(tokenSubject, "a launch is bound to its run's token subject");
+    Launch launch = launches.get(daemonId);
+    if (launch == null) {
+      return false;
+    }
+    synchronized (launch) {
+      if (launch.lost || launch.phase == Phase.DONE) {
+        return false;
+      }
+      launch.previousSubject = launch.tokenSubject;
+      launch.tokenSubject = tokenSubject;
+      launch.runId = runId;
+      launch.runStep = null;
+      launch.cancelPending = false;
+      launch.stepIndex = -1;
+      launch.correlationId = null;
+      launch.listener = null;
+      launch.continuation = new CompletableFuture<>();
+    }
+    LOG.infof("ci-daemon %s now serves run %s", daemonId, runId);
+    return true;
+  }
+
+  /** Send a re-keyed launch's daemon its {@code Continue}; whether it went out on a live socket. */
+  public boolean sendContinue(String daemonId, Continue next) {
+    Launch launch = launches.get(daemonId);
+    return launch != null && send(launch, next);
+  }
+
+  /** Block until the {@code Continue} in flight is answered, the launch is lost, or the deadline. */
+  public Continuation awaitContinued(String daemonId, Duration timeout) {
+    Launch launch = launches.get(daemonId);
+    if (launch == null) {
+      return Continuation.of(Continuation.Status.CONNECTION_LOST);
+    }
+    return await(launch.continuation, timeout, Continuation.of(Continuation.Status.NO_ANSWER));
+  }
+
+  /**
    * Tell the daemon the run is over: it kills a step still running, removes the run's worktree and
    * exits 0. There is no answer frame; the socket closing is the answer, and the lease is ended
    * after this. Best effort: a daemon with no live socket is not owed it — ending the lease removes
@@ -745,7 +819,8 @@ public class CiDaemonRegistry {
     }
     WebSocketConnection superseded = null;
     synchronized (launch) {
-      if (!launch.tokenSubject.equals(runSubject)) {
+      if (!launch.tokenSubject.equals(runSubject)
+          && !(launch.previousSubject != null && launch.previousSubject.equals(runSubject))) {
         LOG.warnf(
             "ci-daemon %s of run %s was dialled as subject '%s', and the run's ci-run token"
                 + " is '%s' — refused WRONG_RUN",
@@ -895,15 +970,28 @@ public class CiDaemonRegistry {
       }
       // Answers to a Continue (capability 3, epic qits-732). Nothing sends a Continue yet — the
       // adoption of a held slot is qits-1789's — so one arriving now answers nothing and is logged.
-      case Continued continued ->
+      case Continued continued -> {
+        if (continued.runId() != null && continued.runId().equals(launch.runId)) {
+          synchronized (launch) {
+            launch.previousSubject = null;
+          }
+          launch.continuation.complete(Continuation.continued());
+        } else {
           LOG.infof(
               "ci-daemon %s of run %s said Continued for run %s; nothing here asked it to continue",
               daemonId, launch.runId, continued.runId());
-      case ContinueFailed failed ->
+        }
+      }
+      case ContinueFailed failed -> {
+        if (failed.runId() != null && failed.runId().equals(launch.runId)) {
+          launch.continuation.complete(Continuation.failed(failed));
+        } else {
           LOG.warnf(
               "ci-daemon %s of run %s said ContinueFailed for run %s (%s: %s); nothing here asked it"
                   + " to continue",
               daemonId, launch.runId, failed.runId(), failed.reason(), failed.detail());
+        }
+      }
       // Host → daemon messages are never received here; ignore defensively.
       case Continue ignored -> {}
       case Ack ignored -> {}
@@ -1080,6 +1168,7 @@ public class CiDaemonRegistry {
     launch.ackConfirmed.complete(Boolean.FALSE);
     launch.initialized.complete(Initialization.of(Initialization.Status.CONNECTION_LOST));
     launch.stepFinished.complete(Completion.of(Completion.Status.CONNECTION_LOST));
+    launch.continuation.complete(Continuation.of(Continuation.Status.CONNECTION_LOST));
   }
 
   /**
@@ -1201,10 +1290,21 @@ public class CiDaemonRegistry {
 
     private final String daemonId;
 
-    private final String runId;
+    /** The run the lease serves now: the launch's own, until a {@code Continue} re-keys it. */
+    private volatile String runId;
 
     /** The subject of the run's ci-run token, which the daemon's connection must arrive as. */
-    private final String tokenSubject;
+    private volatile String tokenSubject;
+
+    /**
+     * The subject the launch was bound to before a {@code Continue} re-keyed it, admitted beside the
+     * new one until the daemon answers — a re-dial racing the {@code Continue} still presents the
+     * old run's token. Null otherwise; guarded by the launch.
+     */
+    private String previousSubject;
+
+    /** The answer to the {@code Continue} in flight, replaced by every {@link #rekeyLaunch}. */
+    private volatile CompletableFuture<Continuation> continuation = new CompletableFuture<>();
 
     private volatile WebSocketConnection connection;
     private volatile Phase phase = Phase.LAUNCHED;

@@ -39,7 +39,8 @@
       "leaseId": "00000000-0000-4000-8000-000000000001",
       "targetId": "00000000-0000-4000-8000-000000000005",
       "retryReason": null,
-      "autoRetry": false
+      "autoRetry": false,
+      "continuedFromRunId": null
     }
   ],
   "queued": [
@@ -88,7 +89,8 @@
       "leaseId": null,
       "targetId": null,
       "retryReason": null,
-      "autoRetry": false
+      "autoRetry": false,
+      "continuedFromRunId": null
     }
   ]
 }

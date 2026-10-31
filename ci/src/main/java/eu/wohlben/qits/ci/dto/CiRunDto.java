@@ -199,6 +199,11 @@ import java.util.UUID;
  * <p>{@code queuePosition} and {@code ordering} are narrower still, and only a {@code QUEUED} run
  * has them: a {@code RUNNING} run is past being ordered, and reporting its place in a queue it has
  * left would be a number about nothing.
+ *
+ * <p><b>{@code continuedFromRunId} names the phase-1 run whose held CI slot this run continued in</b>
+ * (epic qits-732): a release run adopted into its release request's QA lease rather than leasing a
+ * container of its own. Null for every run that started in a lease of its own, which is every run
+ * but those.
  */
 public record CiRunDto(
     String id,
@@ -238,7 +243,8 @@ public record CiRunDto(
     UUID leaseId,
     UUID targetId,
     String retryReason,
-    boolean autoRetry) {
+    boolean autoRetry,
+    String continuedFromRunId) {
 
   /**
    * This run with its steps and its live step attached — the single-run shape.
@@ -286,7 +292,8 @@ public record CiRunDto(
         leaseId,
         targetId,
         retryReason,
-        autoRetry);
+        autoRetry,
+        continuedFromRunId);
   }
 
   /**
@@ -344,6 +351,7 @@ public record CiRunDto(
         leaseId,
         targetId,
         retryReason,
-        autoRetry);
+        autoRetry,
+        continuedFromRunId);
   }
 }

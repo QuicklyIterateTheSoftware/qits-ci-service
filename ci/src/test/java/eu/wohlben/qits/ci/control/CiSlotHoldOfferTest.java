@@ -133,6 +133,120 @@ public class CiSlotHoldOfferTest extends CiTestSupport {
     assertTrue(CiRunService.slotHoldOf(qa, CiRunStatus.SUCCESS).isEmpty());
   }
 
+  // --- the release run continuing in the held slot (qits-1789) ---------------------------------
+
+  private static final String VERSION = "2026.1031.120000";
+
+  private static final String TAG_SHA = "c".repeat(40);
+
+  private static final java.util.UUID HELD_LEASE =
+      java.util.UUID.fromString("00000000-0000-4000-8000-000000000789");
+
+  private static final java.util.UUID HELD_TARGET =
+      java.util.UUID.fromString("00000000-0000-4000-8000-000000000790");
+
+  private static CiStepRunner.HeldSlot heldSlot() {
+    return new CiStepRunner.HeldSlot(
+        HELD_LEASE, HELD_TARGET, "2026.1031.175830", "qa-run-1", "qits-target-rr-42");
+  }
+
+  @Test
+  public void aReleaseRunWithAHeldSlotIsAcceptedRunningOnItAndNeverQueued() throws Exception {
+    fakeRunner.holdsSlot(heldSlot());
+
+    String runId = release();
+
+    CiRun row = runService.runRow(runId);
+    assertEquals(CiRunPhase.RELEASE, row.phase);
+    assertEquals(HELD_LEASE, row.leaseId, "the held lease");
+    assertEquals(HELD_TARGET, row.targetId);
+    assertEquals("qa-run-1", row.continuedFromRunId);
+    assertEquals("2026.1031.175830", row.daemonVersion, "the daemon the container already runs");
+    assertEquals(CiRunStatus.SUCCESS, row.status, "driven to its end once it continued");
+    assertFalse(fakeRunner.queuedRuns().contains(runId), "never handed to a lease request");
+    assertEquals(
+        List.of("RUNNING", "SUCCESS"),
+        announcer.statusesOf(runId),
+        "never QUEUED, so never seen by the ordering or the queue");
+    assertEquals(1, fakeRunner.continuations().size());
+    CiStepRunner.Continuation continuation = fakeRunner.continuations().get(0);
+    assertEquals(runId, continuation.runId());
+    assertEquals(VERSION, continuation.branch());
+    assertEquals(TAG_SHA, continuation.sha());
+    assertEquals(VERSION, continuation.runEnv().get("QITS_VERSION"));
+    assertEquals(0, fakeRunner.executed().get(0).stepIndex(), "its steps start at 0");
+    assertTrue(fakeRunner.closed().contains(runId), "phase 2 closes its lease as ever");
+    assertEquals(List.of(), fakeRunner.slotHolds(), "and phase 2 is never held");
+  }
+
+  @Test
+  public void aReleaseRunWhoseSlotDidNotContinueIsQueuedForALeaseOfItsOwn() throws Exception {
+    fakeRunner.holdsSlot(heldSlot());
+    fakeRunner.continues(false);
+
+    String runId = release();
+
+    CiRun row = runService.runRow(runId);
+    assertTrue(fakeRunner.queuedRuns().contains(runId), "a fresh lease is asked for");
+    assertFalse(HELD_LEASE.equals(row.leaseId), "not the held lease");
+    assertEquals(null, row.continuedFromRunId, "it did not continue, and the row says so");
+    assertEquals(CiRunStatus.SUCCESS, row.status, "and it ran on its own lease");
+    assertEquals(List.of(), announcer.failed(), "no BuildFailed: nothing failed");
+    assertEquals(null, row.retryOfRunId, "and no retry was counted");
+  }
+
+  @Test
+  public void aReleaseRunWhoseRequestHoldsNothingQueuesAsToday() throws Exception {
+    String runId = release();
+
+    CiRun row = runService.runRow(runId);
+    assertTrue(fakeRunner.queuedRuns().contains(runId));
+    assertEquals(null, row.continuedFromRunId);
+    assertEquals(List.of(), fakeRunner.continuations());
+    assertEquals(CiRunStatus.SUCCESS, row.status);
+  }
+
+  /** One release run (phase 2) of the request, executed to its end; its id. */
+  private String release() throws Exception {
+    String payload =
+        "{\"repository\":\""
+            + repoId
+            + "\",\"version\":\""
+            + VERSION
+            + "\",\"commitSha\":\""
+            + TAG_SHA
+            + "\",\"releaseRequestId\":\""
+            + REQUEST_ID
+            + "\",\"releaseRequestQualifiedId\":\"qits-target-rr-42\"}";
+    CiRunService.EventRun request =
+        new CiRunService.EventRun(
+            CiRepoRef.of(repoId, "qits", "qits-target"),
+            VERSION,
+            TAG_SHA,
+            triggerParser.parse(CiReleaseSlotParser.CONFIG_PATH, RELEASE_TRIGGER),
+            UUID.randomUUID().toString(),
+            "SCMRelease",
+            Instant.parse("2026-10-31T12:00:00Z"),
+            payload,
+            RELEASE_TRIGGER,
+            null);
+    String runId = runService.onEventTrigger(request);
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    return runId;
+  }
+
+  private static final String RELEASE_TRIGGER =
+      """
+      event: SCMRelease
+      checkout:
+        branch: version
+        sha: commitSha
+      steps:
+        - image: alpine:3
+          script: echo release
+      """;
+
   /** One release-request run of {@code configPath}, executed to its end; its id. */
   private String run(String configPath, String eventName) throws Exception {
     String payload =

@@ -57,5 +57,6 @@
   "leaseId": null,
   "targetId": null,
   "retryReason": "the runner lost its connection during step 1",
-  "autoRetry": true
+  "autoRetry": true,
+  "continuedFromRunId": null
 }

@@ -256,6 +256,8 @@ components:
           type: string
         autoRetry:
           type: boolean
+        continuedFromRunId:
+          type: string
     CiRunOrderingDto:
       type: object
       properties:
