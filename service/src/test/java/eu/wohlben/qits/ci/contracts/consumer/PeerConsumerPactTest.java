@@ -19,7 +19,9 @@ import org.junit.jupiter.api.TestFactory;
  * <b>The consumer half of qits-ci's pacts against qits-projects, qits-githost, qits-artifacts and
  * qits-idp</b> (qits-1149): every row of {@link PeerContracts}, its real client against a pact
  * mock server answering that row's recorded interaction and nothing else, plus each committed pact
- * file and its references. Plain JUnit: every client is a hand-rolled {@code java.net.http} one.
+ * file and its references. Plain JUnit: every client is a hand-rolled {@code java.net.http} one, and
+ * the quarkus-oidc tenant's two framework rows (discovery and JWKS, qits-708) are read here as
+ * quarkus-oidc reads them, the discovery {@code issuer} compared by value.
  *
  * <p>A row whose provider state is not recorded is reported skipped, naming the state it needs. The
  * token mint is the one row run elsewhere ({@code IdpTokenMintPactTest}): its client is

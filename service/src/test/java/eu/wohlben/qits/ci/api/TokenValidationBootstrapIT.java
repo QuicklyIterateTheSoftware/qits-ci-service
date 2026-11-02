@@ -25,14 +25,16 @@ import org.junit.jupiter.api.TestMethodOrder;
 
 /**
  * The whole service as it is <b>packaged</b> — like {@link CiPackagedSurfaceIT} beside it, but with
- * the OIDC tenant <b>on</b>, which no {@code @QuarkusTest} here can prove. The shipped tenant is
- * gated: {@code quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}}, and every suite in
- * this repository leaves that gate shut — {@code MachineGuardTest} comes closest and stops exactly
+ * the OIDC tenant <b>on</b>, which no {@code @QuarkusTest} here can prove of the artifact. The
+ * shipped tenant is gated: {@code quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}},
+ * and every suite in this repository but {@code BearerIssuerTest} (the in-JVM issuer pin, qits-708)
+ * leaves that gate shut — {@code MachineGuardTest} comes closest and stops exactly
  * where this one starts, because it flips the gate but installs its identity with
  * {@code @TestSecurity} + {@code @OidcSecurity} claims, so nothing there ever fetches a key or
- * validates a signature. The block this service actually deploys with (auth-server-url plus {@code
- * jwks-path=jwks} against a real listener, audience enforcement, the {@code groups} claim becoming
- * roles) is therefore exercised nowhere else. The far side is {@link MockIdp}, whose recordings make
+ * validates a signature. The block this service actually deploys with (auth-server-url, the
+ * discovery document read from it and the JWKS that document names, against a real listener;
+ * audience enforcement; the {@code groups} claim becoming roles) is exercised on the packaged
+ * artifact nowhere else — {@code BearerIssuerTest} covers the issuer refusal in-JVM. The far side is {@link MockIdp}, whose recordings make
  * the interaction assertable on <b>both ends</b>.
  *
  * <p>It is also this repo's <b>first</b> userflow — the rest of the catalogue is under {@code
@@ -136,7 +138,8 @@ public class TokenValidationBootstrapIT {
       // the derived key directly would prove the tenant and skip the seam.
       overrides.put("qits.auth.machine.required", "true");
       // The one seam this test MOVES: where the idp is. A runtime key, so the packaged artifact is
-      // otherwise exactly what ships — discovery stays off and `jwks-path=jwks` is joined onto it.
+      // otherwise exactly what ships — discovery on, the issuer and the JWKS address taken from the
+      // mock's discovery document (qits-708).
       overrides.put("quarkus.oidc.auth-server-url", idp.baseUrl());
 
       // --- the three dials a host-run process has no deployment behind --------------------------
@@ -228,9 +231,8 @@ public class TokenValidationBootstrapIT {
   @UserStoryDescription(
       """
       A freshly deployed qits-ci must validate service bearers before any caller arrives: at
-      startup it fetches the signing keys (JWKS) from qits-idp — discovery stays off,
-      the path is configured — so the very first machine request is judged on the platform's own
-      keys. The callers that depend on it are the ones that cannot log in: the platform
+      startup it reads qits-idp's discovery document and fetches the signing keys (JWKS) it
+      names, so the very first machine request is judged on the platform's own keys and issuer. The callers that depend on it are the ones that cannot log in: the platform
       orchestrator polling what CI is doing, and the chrome asking a repository for its runs.
       """)
   @Order(1)
@@ -245,6 +247,10 @@ public class TokenValidationBootstrapIT {
     // first bearer, would look identical from this end and fail its first caller after a restart —
     // which is exactly what quarkus.oidc.connection-delay=30S exists to prevent, and what a
     // bootstrap's first trigger once paid for.
+    assertTrue(
+        idp.recordedRequests().stream()
+            .anyMatch(r -> "/idp/.well-known/openid-configuration".equals(r.path())),
+        "the packaged service never read the idp's discovery document at startup");
     assertTrue(
         idp.recordedRequests().stream().anyMatch(r -> "/idp/jwks".equals(r.path())),
         "the packaged service never fetched /idp/jwks at startup");

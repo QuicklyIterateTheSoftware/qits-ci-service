@@ -2,8 +2,11 @@ package eu.wohlben.qits.ci.contracts.consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.ci.control.CiArtifact;
 import eu.wohlben.qits.ci.control.CiArtifactPresence.Verdict;
 import eu.wohlben.qits.ci.control.CiConfigSource.CommitHeld;
@@ -30,10 +33,17 @@ import eu.wohlben.qits.pact.consumer.GoldenInteraction;
 import eu.wohlben.qits.pact.consumer.GoldenMasters;
 import eu.wohlben.qits.pact.consumer.GoldenMasters.Operation;
 import eu.wohlben.qits.pact.consumer.Trigger;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.jose4j.jwk.JsonWebKey;
+import org.jose4j.jwk.JsonWebKeySet;
+import org.jose4j.jwk.RsaJsonWebKey;
 
 /**
  * <b>What qits-ci asks the qits services other than qits-events, and why</b> (qits-1149): one table
@@ -55,8 +65,14 @@ import java.util.Set;
  *       ({@code registry/HttpImagePins}); a release artifact's presence and newest version ({@code
  *       registry/HttpArtifactPresence}).
  *   <li><b>qits-idp</b>: commissioned clients and tokens ({@code idp/IdpCommissioner}, Basic auth as
- *       qits-ci's own client), and the client-credentials token mint quarkus-oidc-client makes for
- *       the {@code qits} client ({@code githost/IdpGitHostBearer}).
+ *       qits-ci's own client), the client-credentials token mint quarkus-oidc-client makes for
+ *       the {@code qits} client ({@code githost/IdpGitHostBearer}), and the two reads the
+ *       quarkus-oidc TENANT makes at startup once the machine gate turns it on (qits-708): the
+ *       discovery document, whose {@code issuer} is what every bearer's {@code iss} is checked
+ *       against and is therefore bound by value, and the JWKS its {@code jwks_uri} names. Those two
+ *       rows are {@linkplain Bound#framework framework rows}: no class of this source tree makes
+ *       the call, so {@code ClientCallGuardTest} holds them to the shipped tenant configuration
+ *       instead of to a client method.
  *   <li><b>qits-system</b> (epic qits-1481): a run's CI lease — {@code createLease}, {@code
  *       getLease}, {@code listLeases} and {@code endLease} ({@code targethost/SystemLeases}). Every
  *       row is <b>pending</b> until this repository pins qits-system's golden masters, which do not
@@ -89,6 +105,29 @@ final class PeerContracts {
 
   static final String IDP_CLIENT_SECRET = "test-broad-secret";
 
+  /** The qits-idp state that records the discovery document and the JWKS. */
+  static final String IDP_SIGNING_KEY_STATE = "a published signing key";
+
+  /** The quarkus-oidc tenant's startup reads, as qits-idp's consumers trigger them. */
+  private static final Trigger STARTUP = Trigger.event("StartupEvent");
+
+  /**
+   * The discovery document: the issuer the tenant checks every bearer's {@code iss} against, and
+   * where the keys are. The issuer is bound BY VALUE ({@code exact}): an idp answering another
+   * issuer refuses every token this service accepts, so its type alone is not the contract.
+   */
+  static final GoldenInteraction IDP_DISCOVERY =
+      GoldenInteraction.of(STARTUP, IDP_SIGNING_KEY_STATE, "getOpenIdConfiguration")
+          .consumes("issuer", "jwks_uri", "token_endpoint")
+          .exact("issuer");
+
+  /** The JWKS: each key with what quarkus-oidc needs to build it and to pick it by {@code kid}. */
+  static final GoldenInteraction IDP_JWKS =
+      GoldenInteraction.of(STARTUP, IDP_SIGNING_KEY_STATE, "getJwks")
+          .consumes("keys[].kid", "keys[].kty", "keys[].n", "keys[].e", "keys[].alg", "keys[].use");
+
+  private static final ObjectMapper JSON = new ObjectMapper();
+
   /** The platform's public domain; a step image's registry is {@code registry.qits.<it>}. */
   static final String PLATFORM_DOMAIN = "contract.invalid";
 
@@ -120,6 +159,20 @@ final class PeerContracts {
 
     Bound(GoldenMasters provider, GoldenInteraction row, Class<?> client, String method, Call call) {
       this(provider, row, List.of(), client, method, call);
+    }
+
+    /**
+     * A call the FRAMEWORK makes rather than a class of this source tree — the quarkus-oidc
+     * tenant's discovery and JWKS reads. {@link #client} and {@link #method} are null, and {@code
+     * call} reads the answer as quarkus-oidc does.
+     */
+    static Bound framework(GoldenMasters provider, GoldenInteraction row, Call call) {
+      return new Bound(provider, row, List.of(), null, null, call);
+    }
+
+    /** Whether this is a {@link #framework} row. */
+    boolean isFramework() {
+      return client == null;
     }
 
     /** {@code row} and then {@link #with}, in the order the call makes them. */
@@ -569,6 +622,25 @@ final class PeerContracts {
             IdpGitHostBearer.class,
             "token",
             null));
+    // The quarkus-oidc tenant's two reads at startup (qits-708, the qits-1149 pattern), made only
+    // when the machine gate turns the tenant on: the discovery document read from auth-server-url,
+    // then the JWKS at the jwks_uri it names. Both bind qits-idp's `a published signing key` state.
+    rows.add(Bound.framework(IDP, IDP_DISCOVERY, (url, recorded) -> {
+      JsonNode document = JSON.readTree(get(url + recorded.path()));
+      assertEquals(
+          IDP.json(IDP_SIGNING_KEY_STATE, "getOpenIdConfiguration").path("issuer").asText(),
+          document.path("issuer").asText(),
+          "the issuer every bearer's iss is checked against");
+      URI.create(document.path("jwks_uri").asText());
+      URI.create(document.path("token_endpoint").asText());
+    }));
+    rows.add(Bound.framework(IDP, IDP_JWKS, (url, recorded) -> {
+      JsonWebKeySet keys = new JsonWebKeySet(get(url + recorded.path()));
+      JsonWebKey key =
+          keys.findJsonWebKey(recorded.params().get("kid"), RsaJsonWebKey.KEY_TYPE, "sig", "RS256");
+      assertNotNull(key, () -> "an RSA RS256 signing key named by the state's kid in " + keys.getJsonWebKeys());
+      assertNotNull(((RsaJsonWebKey) key).getRsaPublicKey().getModulus());
+    }));
     // --- qits-system (epic qits-1481): every row pending until its golden masters are pinned ----
     Trigger lease = Trigger.schedule("CiLeases.request (a queued run's lease)");
     Trigger follow = Trigger.schedule("CiLeases.reconcile");
@@ -646,6 +718,17 @@ final class PeerContracts {
                 system(url, recorded)
                     .end(java.util.UUID.fromString(recorded.params().get("leaseId")))));
     return List.copyOf(rows);
+  }
+
+  /** A plain GET of the mock server, as quarkus-oidc's own reads are: 200 and the body. */
+  private static String get(String url) throws Exception {
+    HttpResponse<String> answer =
+        HttpClient.newHttpClient()
+            .send(
+                HttpRequest.newBuilder(URI.create(url)).header("Accept", "application/json").build(),
+                HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, answer.statusCode(), answer.body());
+    return answer.body();
   }
 
   private static void assertToken(IdpCommissioner.CommissionedToken token) {

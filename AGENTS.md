@@ -2804,8 +2804,11 @@ is what `MachineIdentity.isMachine` reads and what makes an anonymous *user* and
 two different facts.
 
 **Machines** are a bearer, and the guard is `MachineAuth`. qits-idp mints the token; quarkus-oidc
-validates its signature, issuer and expiry; `MachineAuth` then asks the two questions this service
-owns — is it addressed here (`aud` contains `qits.auth.machine.platform-audience`, which the
+validates its signature, issuer and expiry — the issuer being the one qits-idp's discovery document
+publishes, since discovery is on and no issuer is configured anywhere (qits-708; with discovery off
+and no `token.issuer`, as shipped before, quarkus-oidc checks no `iss` at all); `MachineAuth` then
+asks the two questions this service owns — is it addressed here (`aud` contains
+`qits.auth.machine.platform-audience`, which the
 library itself ships as `qits-platform`, the one audience qits-idp puts on every token it mints; it
 is a fact about the platform and not about a deployment, so nothing here sets it), and does its
 `project` claim cover the target. A missing claim is a mismatch, never a wildcard; `project=*` on the **token** covers everything, but `"*"` as the *target* is compared like
@@ -3011,12 +3014,15 @@ contract, tested where it lives.
   know and asserts the **upgrade succeeds and the server then closes 1008** — a missing route fails
   the upgrade with a 404 instead.
 - **`api/TokenValidationBootstrapIT` is the second test against the artifact, and it is the only
-  place the OIDC tenant is ever ON.** The shipped tenant is gated —
-  `quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}` — and every suite here leaves
-  that gate shut, so the block this service deploys with (auth-server-url + `jwks-path=jwks` against
-  a real listener, audience enforcement, the `groups` claim becoming roles) is exercised nowhere
-  else. `MachineGuardTest` comes closest and stops exactly where this one starts: it flips the same
-  gate but installs its identity with `@TestSecurity` + `@OidcSecurity` claims, so nothing there
+  place the OIDC tenant is ever ON in a packaged process.** The shipped tenant is gated —
+  `quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}` — and every suite here but
+  `api/BearerIssuerTest` leaves that gate shut, so the block this service deploys with (auth-server-url, the discovery document
+  read from it and the JWKS it names, against a real listener; audience enforcement; the `groups`
+  claim becoming roles) is exercised nowhere else on the artifact. In-JVM, `api/BearerIssuerTest`
+  points the same discovery-on tenant at `MockIdp` and holds the issuer pin: a bearer whose `iss` is
+  not the published issuer is a 401 however well it is signed (qits-708). `MachineGuardTest` comes
+  closest and stops exactly where this one starts: it flips the same gate but installs its
+  identity with `@TestSecurity` + `@OidcSecurity` claims, so nothing there
   fetches a key or validates a signature. The far side is qits-service-mock's `MockIdp`, which
   serves a real JWKS for a generated keypair, mints RS256 bearers against it and **records what it
   answered** — so "the service fetched the keys at startup" is an assertion and not an inference.
