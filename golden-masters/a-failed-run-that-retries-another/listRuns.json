@@ -60,7 +60,9 @@
       "targetId": null,
       "retryReason": "the runner lost its connection during step 1",
       "autoRetry": true,
-      "continuedFromRunId": null
+      "continuedFromRunId": null,
+      "oomKills": null,
+      "oomScope": null
     },
     {
       "id": "00000000-0000-4000-8000-000000000002",
@@ -112,7 +114,9 @@
       "targetId": null,
       "retryReason": null,
       "autoRetry": false,
-      "continuedFromRunId": null
+      "continuedFromRunId": null,
+      "oomKills": null,
+      "oomScope": null
     }
   ]
 }

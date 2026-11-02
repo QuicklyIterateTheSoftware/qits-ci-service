@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import eu.wohlben.qits.ci.control.CiDaemonPins;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiRunService;
+import eu.wohlben.qits.ci.control.CiStepRunner;
 import eu.wohlben.qits.ci.daemonhost.CiDaemonRegistry;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import eu.wohlben.qits.ci.daemonhost.ScriptedLeaseDaemon;
@@ -53,6 +54,9 @@ class CiLeasesTest {
 
   private final CompletableFuture<String> executed = new CompletableFuture<>();
 
+  /** Every rise the stand-in run table recorded. */
+  private final List<Long> oomRises = Collections.synchronizedList(new ArrayList<>());
+
   private CiLeases leases;
 
   private LeaseStepRunner steps;
@@ -82,10 +86,15 @@ class CiLeasesTest {
 
     steps = new LeaseStepRunner();
     steps.daemons = registry;
-    steps.relay = new CiStepRelay();
+    steps.relay = ScriptedLeaseDaemon.relay(4096);
     steps.commissions = commissions;
     steps.settings = leases.settings;
     steps.leases = leases;
+    steps.registerTimeoutSeconds = 5;
+    steps.leaseStartTimeoutSeconds = 5;
+    steps.initTimeoutSeconds = 5;
+    steps.stepTimeoutGraceSeconds = 5;
+    steps.builderWaitMaxSeconds = 60;
     leases.steps = steps;
   }
 
@@ -294,6 +303,163 @@ class CiLeasesTest {
     assertNull(CiLeases.State.parse("BOGUS"));
   }
 
+  // --- out-of-memory kills (qits-1818) -----------------------------------------------------------
+
+  @Test
+  void aRunningLeasesOutOfMemoryKillsAreRecordedOnItsRun() throws Exception {
+    leases.requestNow(RUN);
+
+    leases.observe(running(2L, "NODE"));
+
+    assertEquals(2L, row.oomKills);
+    assertEquals("NODE", row.oomScope);
+    assertEquals(RUN, executed.get(10, TimeUnit.SECONDS), "and the run is claimed as ever");
+  }
+
+  @Test
+  void aLowerLaterReadingDoesNotLowerTheRunsCount() {
+    leases.requestNow(RUN);
+    leases.observe(running(2L, "NODE"));
+
+    leases.observe(running(1L, "LEASE"));
+    leases.observe(
+        new SystemLeases.LeaseView(
+            LEASE, RUN, "EXITED", TARGET, 137, null, null, 2L, "lease"));
+
+    assertEquals(2L, row.oomKills);
+    assertEquals("NODE", row.oomScope, "the scope follows the reading that raised the count");
+    assertEquals(List.of(2L), oomRises, "only the first reading raised anything");
+  }
+
+  @Test
+  void aLeaseReportingNoKillsChangesNothing() {
+    leases.requestNow(RUN);
+
+    leases.observe(running(null, null));
+    leases.observe(running(0L, null));
+    leases.observe(new SystemLeases.LeaseView(LEASE, RUN, "RUNNING", TARGET, null, null, null));
+
+    assertNull(row.oomKills);
+    assertNull(row.oomScope);
+    assertTrue(oomRises.isEmpty());
+    assertFalse(calls.stream().anyMatch(call -> call.startsWith("oom")), calls.toString());
+  }
+
+  @Test
+  void aRiseWhileAStepRunsIsNotedOnThatStep() throws Exception {
+    leases.requestNow(RUN);
+    leases.observe(running(null, null));
+    CiLeases.Launch launch = leases.launchOf(RUN).orElseThrow();
+    try (ScriptedLeaseDaemon daemon =
+        ScriptedLeaseDaemon.dial(registry, launch.daemonId(), launch.tokenSubject())) {
+      daemon.holdSteps();
+      CompletableFuture<CiStepRunner.StepResult> result =
+          CompletableFuture.supplyAsync(() -> steps.run(step(0), new Quiet()));
+      awaitLive("step 0 ran");
+
+      leases.observe(running(2L, "NODE"));
+      String note = "[the out-of-memory killer killed 2 processes in this run's lease (scope NODE)]";
+      assertTrue(liveOutput().contains(note), "a live read shows it at once: " + liveOutput());
+
+      daemon.releaseSteps();
+      CiStepRunner.StepResult finished = result.get(10, TimeUnit.SECONDS);
+      assertEquals("step 0 ran\n" + note + "\n", finished.output(), "and the step's row keeps it");
+
+      // Between steps nothing is in flight: a later rise is the run's alone.
+      leases.observe(running(3L, "LEASE"));
+      assertEquals(3L, row.oomKills);
+      assertEquals("LEASE", row.oomScope);
+      assertFalse(steps.noteInFlight(RUN, "[anything]"));
+    }
+  }
+
+  @Test
+  void aLeaseWithoutTheFieldsReadsThemNull() throws Exception {
+    com.fasterxml.jackson.databind.ObjectMapper mapper =
+        new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+    SystemLeases.LeaseView older =
+        mapper.readValue(
+            "{\"id\":\"" + LEASE + "\",\"ownerRef\":\"" + RUN + "\",\"state\":\"RUNNING\"}",
+            SystemLeases.LeaseView.class);
+    assertNull(older.oomKills());
+    assertNull(older.oomScope());
+    SystemLeases.LeaseView newer =
+        mapper.readValue(
+            "{\"id\":\"" + LEASE + "\",\"state\":\"RUNNING\",\"oomKills\":2,\"oomScope\":\"NODE\","
+                + "\"memoryPeakBytes\":1024,\"oomKilled\":false}",
+            SystemLeases.LeaseView.class);
+    assertEquals(2L, newer.oomKills());
+    assertEquals("NODE", newer.oomScope());
+  }
+
+  @Test
+  void theLeaseDescribesItsOutOfMemoryKills() {
+    assertEquals(
+        "lease " + LEASE + " EXITED (exit 137) on target " + TARGET
+            + ", the out-of-memory killer killed 2 processes (scope NODE): the daemon exited",
+        CiLeases.describe(
+            new SystemLeases.LeaseView(
+                LEASE, RUN, "EXITED", TARGET, 137, "the daemon exited", null, 2L, "NODE")));
+    assertEquals(
+        "lease " + LEASE + " FAILED, the out-of-memory killer killed 1 process",
+        CiLeases.describe(
+            new SystemLeases.LeaseView(LEASE, RUN, "FAILED", null, null, null, null, 1L, null)));
+    assertEquals(
+        "[the out-of-memory killer killed 1 process in this run's lease (scope LEASE)]",
+        CiLeases.oomNote(1, "LEASE"));
+  }
+
+  private static SystemLeases.LeaseView running(Long oomKills, String oomScope) {
+    return new SystemLeases.LeaseView(
+        LEASE, RUN, "RUNNING", TARGET, null, null, null, oomKills, oomScope);
+  }
+
+  private static CiStepRunner.StepSpec step(int index) {
+    return new CiStepRunner.StepSpec(
+        RUN,
+        index,
+        CiRepoRef.of("5ca0e7e9-repo", "qits", "qits-ci-service"),
+        "main",
+        "d".repeat(40),
+        SlotFixtures.PINNED,
+        "./verify.sh",
+        "/artifacts/daemons/qits-ci-daemon/2026.1",
+        60,
+        false,
+        false,
+        "",
+        java.util.Map.of());
+  }
+
+  private String liveOutput() {
+    return steps.relay.snapshot(RUN).map(CiStepRelay.Snapshot::output).orElse("");
+  }
+
+  private void awaitLive(String text) throws InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (!liveOutput().contains(text)) {
+      if (System.nanoTime() > deadline) {
+        throw new AssertionError("the step never printed " + text + ": " + liveOutput());
+      }
+      Thread.sleep(20);
+    }
+  }
+
+  /** A step listener that records nothing. */
+  private static final class Quiet implements CiStepRunner.StepListener {
+    @Override
+    public void onStarted() {}
+
+    @Override
+    public void onChunk(String text) {}
+
+    @Override
+    public void onFinished() {}
+
+    @Override
+    public void onLaunched(String daemonId, String tokenSubject) {}
+  }
+
   // --- stand-ins --------------------------------------------------------------------------------
 
   private static CiRun queuedRun() {
@@ -386,6 +552,23 @@ class CiLeasesTest {
     @Override
     public CiRun runRow(String runId) {
       return row;
+    }
+
+    /** {@link CiRunService#recordOomKills}'s contract on the one row: raised only, this lease only. */
+    @Override
+    public synchronized long recordOomKills(String runId, UUID leaseId, long kills, String scope) {
+      calls.add("oom " + kills + " " + scope);
+      if (!RUN.equals(runId) || !leaseId.equals(row.leaseId)) {
+        return 0;
+      }
+      long seen = row.oomKills == null ? 0 : row.oomKills;
+      if (kills <= seen) {
+        return 0;
+      }
+      row.oomKills = kills;
+      row.oomScope = scope;
+      oomRises.add(kills - seen);
+      return kills - seen;
     }
 
     private EventRun request() {

@@ -147,7 +147,12 @@ public class SystemLeases {
   public record Limits(
       String memory, String memorySwap, Long pidsLimit, String cpus, Integer oomScoreAdj) {}
 
-  /** qits-system's {@code Lease}, narrowed to what this service reads. */
+  /**
+   * qits-system's {@code Lease}, narrowed to what this service reads. {@code oomKills} and {@code
+   * oomScope} (qits-1818) are the lease's out-of-memory kills and which killer made them ({@code
+   * LEASE} or {@code NODE}); a qits-system that does not report them leaves them out, and they read
+   * null.
+   */
   @JsonIgnoreProperties(ignoreUnknown = true)
   public record LeaseView(
       UUID id,
@@ -156,7 +161,22 @@ public class SystemLeases {
       UUID targetId,
       Integer exitCode,
       String detail,
-      Instant requestedAt) {}
+      Instant requestedAt,
+      Long oomKills,
+      String oomScope) {
+
+    /** A lease that reports no out-of-memory kills. */
+    public LeaseView(
+        UUID id,
+        String ownerRef,
+        String state,
+        UUID targetId,
+        Integer exitCode,
+        String detail,
+        Instant requestedAt) {
+      this(id, ownerRef, state, targetId, exitCode, detail, requestedAt, null, null);
+    }
+  }
 
   /**
    * {@code POST /system/api/leases}: a CI slot for the run, QUEUED until qits-system grants it.

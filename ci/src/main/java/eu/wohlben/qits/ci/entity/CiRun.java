@@ -482,6 +482,24 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   public UUID targetId;
 
   /**
+   * How many processes of the run's current lease the out-of-memory killer killed, as qits-system
+   * last reported it (qits-1818, {@code V43__run_oom_kills.sql}) — the lease container's cgroup
+   * {@code memory.events oom_kill}. <b>Only ever raised</b> ({@code CiRunRepository#raiseOomKills}),
+   * so a later, lower reading changes nothing; a fresh lease for a queued run starts it over. Null
+   * is "no kill seen": every lease on a qits-system that does not report it, and every older row.
+   */
+  @Column(name = "oom_kills")
+  public Long oomKills;
+
+  /**
+   * Which killer it was, as the reading that raised {@link #oomKills} said: {@code LEASE} (the lease
+   * hit its own memory limit) or {@code NODE} (the node ran out and the killer picked a process in
+   * this lease). Null with {@link #oomKills}, and when qits-system named no scope.
+   */
+  @Column(name = "oom_scope", length = 8)
+  public String oomScope;
+
+  /**
    * The phase-1 run whose held CI slot this run continued in, or null (epic qits-732, {@code
    * V42__slot_holds.sql}). A green release-request QA run may keep its lease open for the release
    * that follows ({@code ci_slot_hold}); a phase-2 run adopted into that lease names the run it

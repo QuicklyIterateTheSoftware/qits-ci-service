@@ -420,6 +420,22 @@ public class LeaseStepRunner implements CiStepRunner {
     };
   }
 
+  /**
+   * A bracketed line about the run's lease, put on the step it has in flight (qits-1818): appended
+   * to the relay, so a live read shows it at once and the step's row carries it — the row's output
+   * is the relay's tail when the step ends. Answers whether a step was in flight; with none the line
+   * is dropped, and whatever it reported stays on the run alone — a line arriving between two steps
+   * is not carried onto the next one.
+   */
+  boolean noteInFlight(String runId, String line) {
+    if (runId == null || line == null || !inFlight.containsKey(runId)) {
+      return false;
+    }
+    String tail = tail(runId);
+    relay.append(runId, (tail.isEmpty() || tail.endsWith("\n") ? "" : "\n") + line + "\n");
+    return true;
+  }
+
   /** {@link ProcessStopping}, thrown from the step's own waits once the process is stopping. */
   private void abandonIfStopping(StepSpec spec) {
     if (stopping) {

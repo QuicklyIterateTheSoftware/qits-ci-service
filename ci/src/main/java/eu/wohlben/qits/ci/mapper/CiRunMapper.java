@@ -53,6 +53,9 @@ public interface CiRunMapper {
   @Mapping(target = "autoRetry", expression = "java(entity.retryReason != null)")
   // The phase-1 run a held slot was continued from (epic qits-732), spelled out for `phase`'s reason.
   @Mapping(target = "continuedFromRunId", source = "continuedFromRunId")
+  // The lease's out-of-memory kills (qits-1818), spelled out for `phase`'s reason.
+  @Mapping(target = "oomKills", source = "oomKills")
+  @Mapping(target = "oomScope", source = "oomScope")
   CiRunDto toDto(CiRun entity);
 
   // The step's declared name (qits-757), spelled out for `phase`'s reason.

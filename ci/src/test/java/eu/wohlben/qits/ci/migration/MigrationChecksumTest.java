@@ -170,6 +170,9 @@ public class MigrationChecksumTest {
         "7a6e06caf4a84f6d0bbec697769d304e3e65ae48f6dd31e029b7a5635a7ea312");
     PINS.put(
         "V42__slot_holds.sql", "c58b604329b762bdfdab5bf96d0373a7d1f5e6f598680d33663de579cad86889");
+    PINS.put(
+        "V43__run_oom_kills.sql",
+        "832ecd2d92382f2cf6211170da99b93d3a04f78457c785c559b119fc63c5832e");
   }
 
   @Test

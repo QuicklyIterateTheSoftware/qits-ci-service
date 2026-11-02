@@ -2588,6 +2588,35 @@ public class CiRunService {
   }
 
   /**
+   * <b>The run's lease reported {@code kills} out-of-memory kills</b> (qits-1818): recorded on the
+   * row when it raises the count the row holds for that lease — only while the row still names
+   * {@code leaseId}, and never lowered ({@link CiRunRepository#raiseOomKills}). Answers by how much
+   * this reading raised the count, 0 when it raised nothing — which is what the caller notes on the
+   * step in flight.
+   */
+  public long recordOomKills(String runId, UUID leaseId, long kills, String scope) {
+    if (runId == null || leaseId == null || kills <= 0) {
+      return 0;
+    }
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () -> {
+              CiRun row = runs.findById(runId);
+              if (row == null || !leaseId.equals(row.leaseId)) {
+                return 0L;
+              }
+              Long seen = row.oomKills;
+              if (seen != null && seen >= kills) {
+                return 0L;
+              }
+              if (runs.raiseOomKills(runId, leaseId, seen, kills, scope) == 0) {
+                return 0L;
+              }
+              return kills - (seen == null ? 0L : seen);
+            });
+  }
+
+  /**
    * <b>A granted lease's run, claimed</b>: one conditional UPDATE from {@code QUEUED} to {@code
    * RUNNING} that writes the target it runs on, only while the row still names {@code leaseId} — so
    * an event and a reconcile racing for one grant are settled by the database, and a run cancelled

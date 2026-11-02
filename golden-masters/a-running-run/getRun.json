@@ -52,5 +52,7 @@
   "targetId": null,
   "retryReason": null,
   "autoRetry": false,
-  "continuedFromRunId": null
+  "continuedFromRunId": null,
+  "oomKills": null,
+  "oomScope": null
 }

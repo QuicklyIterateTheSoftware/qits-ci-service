@@ -204,6 +204,15 @@ import java.util.UUID;
  * (epic qits-732): a release run adopted into its release request's QA lease rather than leasing a
  * container of its own. Null for every run that started in a lease of its own, which is every run
  * but those.
+ *
+ * <p><b>{@code oomKills} and {@code oomScope} say the run's lease lost a process to the
+ * out-of-memory killer</b> (qits-1818): how many processes of the run's current lease it killed —
+ * the highest count qits-system reported, never lowered — and which killer, {@code LEASE} (the lease
+ * hit its own memory limit) or {@code NODE} (the node ran out and the killer picked a process in this
+ * lease). This is what tells a step that ended {@code 137} because the kernel killed it from one that
+ * exited {@code 137} itself; the step that was running when the count rose also carries a bracketed
+ * line saying so. Both null when no kill was seen — including every run on a qits-system that does
+ * not report the count, so null is "none seen", never "none happened".
  */
 public record CiRunDto(
     String id,
@@ -244,7 +253,9 @@ public record CiRunDto(
     UUID targetId,
     String retryReason,
     boolean autoRetry,
-    String continuedFromRunId) {
+    String continuedFromRunId,
+    Long oomKills,
+    String oomScope) {
 
   /**
    * This run with its steps and its live step attached — the single-run shape.
@@ -293,7 +304,9 @@ public record CiRunDto(
         targetId,
         retryReason,
         autoRetry,
-        continuedFromRunId);
+        continuedFromRunId,
+        oomKills,
+        oomScope);
   }
 
   /**
@@ -352,6 +365,8 @@ public record CiRunDto(
         targetId,
         retryReason,
         autoRetry,
-        continuedFromRunId);
+        continuedFromRunId,
+        oomKills,
+        oomScope);
   }
 }

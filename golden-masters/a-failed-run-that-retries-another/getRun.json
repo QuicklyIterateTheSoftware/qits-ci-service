@@ -58,5 +58,7 @@
   "targetId": null,
   "retryReason": "the runner lost its connection during step 1",
   "autoRetry": true,
-  "continuedFromRunId": null
+  "continuedFromRunId": null,
+  "oomKills": null,
+  "oomScope": null
 }

@@ -40,7 +40,9 @@
       "targetId": "00000000-0000-4000-8000-000000000005",
       "retryReason": null,
       "autoRetry": false,
-      "continuedFromRunId": null
+      "continuedFromRunId": null,
+      "oomKills": null,
+      "oomScope": null
     }
   ],
   "queued": [
@@ -90,7 +92,9 @@
       "targetId": null,
       "retryReason": null,
       "autoRetry": false,
-      "continuedFromRunId": null
+      "continuedFromRunId": null,
+      "oomKills": null,
+      "oomScope": null
     }
   ]
 }

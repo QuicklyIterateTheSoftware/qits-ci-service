@@ -78,6 +78,8 @@ import org.jboss.logging.Logger;
  *       told ({@link LeaseStepRunner#leaseEnded}). A run that was still waiting is claimed anyway, so
  *       its first step answers {@code LAUNCH_FAILED} with the lease's detail and the run is settled
  *       — and retried automatically — like any infra failure.
+ *   <li>In any state, a positive {@code oomKills} (qits-1818): the run records the highest count
+ *       seen for its lease and the scope that raised it, and a rise is noted on the step in flight.
  * </ul>
  *
  * <h2>Ending ({@link #end})</h2>
@@ -317,6 +319,7 @@ public class CiLeases {
     if (runId == null) {
       return;
     }
+    recordOomKills(runId, lease);
     State state = State.parse(lease.state());
     if (state == null) {
       LOG.debugf("Lease %s of run %s reports an unknown state %s", lease.id(), runId, lease.state());
@@ -333,6 +336,61 @@ public class CiLeases {
       }
       case EXITED, FAILED, ENDED -> ended(runId, lease.id(), describe(lease));
     }
+  }
+
+  /**
+   * <b>The lease's out-of-memory kills, onto its run</b> (qits-1818). Whatever state the lease
+   * reports — a running lease's count moves while it runs, and an exited one keeps its last sample —
+   * a positive count is recorded on the run that holds the lease when it raises what the row holds
+   * ({@link CiRunService#recordOomKills}: never lowered, only for the lease the row still names).
+   * A rise is also noted on the run's step in flight ({@link LeaseStepRunner#noteInFlight}), so the
+   * step that ended {@code 137} says why; a rise between steps or after the last one is on the run
+   * alone. Never throws: the next event or reconcile reports the count again.
+   */
+  private void recordOomKills(String runId, SystemLeases.LeaseView lease) {
+    Long kills = lease.oomKills();
+    if (kills == null || kills <= 0) {
+      return;
+    }
+    String scope = oomScopeOf(lease.oomScope());
+    long rise;
+    try {
+      rise = runs.recordOomKills(runId, lease.id(), kills, scope);
+    } catch (RuntimeException e) {
+      LOG.debugf(
+          "CI run %s: lease %s's %d out-of-memory kills could not be recorded (%s); the next report"
+              + " records them",
+          runId, lease.id(), kills, e.getMessage());
+      return;
+    }
+    if (rise <= 0) {
+      return;
+    }
+    String note = oomNote(rise, scope);
+    LOG.infof("CI run %s: lease %s %s", runId, lease.id(), note);
+    steps.noteInFlight(runId, note);
+  }
+
+  /** The line a rise of {@code rise} out-of-memory kills puts on the step in flight. */
+  static String oomNote(long rise, String scope) {
+    return "[the out-of-memory killer killed "
+        + rise
+        + (rise == 1 ? " process" : " processes")
+        + " in this run's lease (scope "
+        + (scope == null ? "unknown" : scope)
+        + ")]";
+  }
+
+  /**
+   * qits-system's scope word as the run records it: {@code LEASE} or {@code NODE}, in any case;
+   * anything else, or nothing, is null — the column holds a word this service can read back.
+   */
+  static String oomScopeOf(String scope) {
+    if (scope == null) {
+      return null;
+    }
+    String word = scope.strip().toUpperCase(java.util.Locale.ROOT);
+    return word.equals("LEASE") || word.equals("NODE") ? word : null;
   }
 
   /** The run whose launch this process holds on {@code leaseId}, or null. */
@@ -391,6 +449,16 @@ public class CiLeases {
     }
     if (lease.targetId() != null) {
       words.append(" on target ").append(lease.targetId());
+    }
+    if (lease.oomKills() != null && lease.oomKills() > 0) {
+      words
+          .append(", the out-of-memory killer killed ")
+          .append(lease.oomKills())
+          .append(lease.oomKills() == 1 ? " process" : " processes");
+      String scope = oomScopeOf(lease.oomScope());
+      if (scope != null) {
+        words.append(" (scope ").append(scope).append(')');
+      }
     }
     if (lease.detail() != null && !lease.detail().isBlank()) {
       words.append(": ").append(lease.detail().strip());

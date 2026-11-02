@@ -2700,6 +2700,17 @@ foreign key — and `ci_run.continued_from_run_id`, V8's shape, written only by 
 not a run and the table is empty in a process that holds nothing; every row a starting process finds
 is released. See "A green QA run may hold its slot for the release".
 
+`V43__run_oom_kills.sql` (qits-1818) is V8's shape twice: `ci_run.oom_kills bigint` and
+`ci_run.oom_scope varchar(8)`, nullable, no backfill. qits-system reports a lease's out-of-memory
+kills (`oomKills`, `oomScope` `LEASE`/`NODE`) on `TargetLeaseChanged` and its lease reads;
+`CiLeases.observe` records them on the run holding the lease in any state, through
+`CiRunRepository.raiseOomKills` — a compare-and-set that only raises, for the lease the row still
+names, so the scope is the reading that raised it. `recordLease`/`forgetLease` clear both, so the
+count is the current lease's. A rise while a step is in flight is also appended to the relay as
+`[the out-of-memory killer killed N process(es) in this run's lease (scope …)]`, so the live read and
+the step's row both carry it; a rise between steps is on the run alone. `CiRunDto.oomKills`/`oomScope`
+expose them.
+
 `V29__release_announcement_if_published.sql` is V10's shape twice (qits-561):
 `ci_release_announcement.announce` (the entry's policy, `if-published` or null for `always`) and
 `ci_release_announcement.skip_reason` (`ABSENT`/`UNVERIFIED` for a row settled without an

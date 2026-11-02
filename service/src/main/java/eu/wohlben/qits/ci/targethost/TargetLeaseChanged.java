@@ -16,6 +16,13 @@ import java.util.UUID;
  * <p>Published on every state change of a lease. {@code targetId} is null while QUEUED, {@code
  * exitCode} is set for EXITED, {@code detail} names why a lease waits or failed. Only the leases whose
  * owner is {@code qits-ci} are this service's ({@link TargetLeaseEvents}).
+ *
+ * <p>{@code oomKills} and {@code oomScope} (qits-1818) are how many processes of the lease the
+ * out-of-memory killer killed (the lease container's cgroup {@code memory.events oom_kill}, the last
+ * sample kept after exit) and which killer — {@code LEASE}, its own memory limit, or {@code NODE},
+ * the node ran out. qits-system publishes the event again when the count moves on a running lease.
+ * Both are null on a qits-system or a runner that does not report them, and {@code oomScope} is
+ * null while the count is null or 0, so absence reads as "none seen".
  */
 public record TargetLeaseChanged(
     UUID eventId,
@@ -27,5 +34,7 @@ public record TargetLeaseChanged(
     String state,
     Integer exitCode,
     String detail,
+    Long oomKills,
+    String oomScope,
     Instant occurredAt)
     implements QitsEvent {}

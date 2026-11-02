@@ -51,7 +51,9 @@ public class TargetLeaseEvents implements QitsEventListener<TargetLeaseChanged> 
               uuid(event.targetId()),
               event.exitCode(),
               event.detail(),
-              null));
+              null,
+              event.oomKills(),
+              event.oomScope()));
     } catch (RuntimeException e) {
       // The reconcile tells the run the same thing within an interval.
       LOG.warnf(e, "Could not apply lease %s's %s; the reconcile will", leaseId, event.state());

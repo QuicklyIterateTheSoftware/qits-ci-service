@@ -258,6 +258,11 @@ components:
           type: boolean
         continuedFromRunId:
           type: string
+        oomKills:
+          type: integer
+          format: int64
+        oomScope:
+          type: string
     CiRunOrderingDto:
       type: object
       properties:

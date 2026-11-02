@@ -48,6 +48,32 @@ public final class ScriptedLeaseDaemon implements AutoCloseable {
   private volatile java.util.function.Function<eu.wohlben.qits.cidaemon.protocol.Continue, CiDaemonMessage>
       continueAnswer = next -> new eu.wohlben.qits.cidaemon.protocol.Continued(next.runId());
 
+  /**
+   * While set, every step is answered with its chunk at once and its {@link StepFinished} only once
+   * the latch opens — a step held mid-flight, for a suite that acts while it runs (qits-1818).
+   */
+  private volatile java.util.concurrent.CountDownLatch stepGate;
+
+  /** Holds every later step after its chunk until {@link #releaseSteps}. */
+  public void holdSteps() {
+    stepGate = new java.util.concurrent.CountDownLatch(1);
+  }
+
+  /** Lets every held step finish. */
+  public void releaseSteps() {
+    java.util.concurrent.CountDownLatch gate = stepGate;
+    if (gate != null) {
+      gate.countDown();
+    }
+  }
+
+  /** A relay keeping {@code outputMaxChars} of a step's tail, as {@code qits.ci.output-max-chars} does. */
+  public static CiStepRelay relay(int outputMaxChars) {
+    CiStepRelay relay = new CiStepRelay();
+    relay.outputMaxChars = outputMaxChars;
+    return relay;
+  }
+
   /** A registry wired the way the application wires it, with {@code grace} as its reconnect grace. */
   public static CiDaemonRegistry registry(Duration grace) {
     CiDaemonRegistry registry = new CiDaemonRegistry();
@@ -157,6 +183,15 @@ public final class ScriptedLeaseDaemon implements AutoCloseable {
                     seq.getAndIncrement(),
                     Stream.OUT,
                     "step " + step.stepIndex() + " ran\n"));
+            java.util.concurrent.CountDownLatch gate = stepGate;
+            if (gate != null) {
+              try {
+                gate.await(30, java.util.concurrent.TimeUnit.SECONDS);
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+              }
+            }
             registry.onMessage(
                 daemonId,
                 connection,

@@ -107,13 +107,15 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   /**
    * Records a queued run's lease and its launch, as one conditional UPDATE — only while the row is
    * still {@code QUEUED}, so a cancellation committing in between is never overwritten by a write
-   * that read the row before it.
+   * that read the row before it. A new lease starts the run's out-of-memory count over ({@link
+   * #raiseOomKills}): the count is the current lease's.
    */
   public int recordLease(
       String runId, UUID leaseId, String daemonId, String tokenSubject, String daemonVersion) {
     return update(
         "leaseId = ?1, targetId = null, daemonVersion = ?2, inflightStepIndex = null,"
-            + " inflightDaemonId = ?3, inflightTokenSubject = ?4, inflightStartedAt = null"
+            + " inflightDaemonId = ?3, inflightTokenSubject = ?4, inflightStartedAt = null,"
+            + " oomKills = null, oomScope = null"
             + " where id = ?5 and status = ?6",
         leaseId,
         daemonVersion,
@@ -123,11 +125,40 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
         CiRunStatus.QUEUED);
   }
 
+  /**
+   * <b>Raises the run's out-of-memory kill count</b> (qits-1818), as one conditional UPDATE: to
+   * {@code kills}, with the scope of the reading that raised it, only while the row still names
+   * {@code leaseId} and still holds {@code seen} — the count the caller read — and only when {@code
+   * kills} is higher. A compare-and-set rather than a bare "less than", so the caller knows exactly
+   * how far its own write raised the count: one row changed is a rise of {@code kills - seen}, zero
+   * is a reading that raised nothing (a lower or equal one, another lease's, or a second observer
+   * that got there first).
+   */
+  public int raiseOomKills(String runId, UUID leaseId, Long seen, long kills, String scope) {
+    if (seen == null) {
+      return update(
+          "oomKills = ?1, oomScope = ?2 where id = ?3 and leaseId = ?4 and oomKills is null",
+          kills,
+          scope,
+          runId,
+          leaseId);
+    }
+    return update(
+        "oomKills = ?1, oomScope = ?2 where id = ?3 and leaseId = ?4 and oomKills = ?5"
+            + " and oomKills < ?1",
+        kills,
+        scope,
+        runId,
+        leaseId,
+        seen);
+  }
+
   /** Forgets a queued run's lease, conditionally like {@link #recordLease}. */
   public int forgetLease(String runId, UUID leaseId) {
     return update(
         "leaseId = null, targetId = null, daemonVersion = null, inflightStepIndex = null,"
-            + " inflightDaemonId = null, inflightTokenSubject = null, inflightStartedAt = null"
+            + " inflightDaemonId = null, inflightTokenSubject = null, inflightStartedAt = null,"
+            + " oomKills = null, oomScope = null"
             + " where id = ?1 and status = ?2 and leaseId = ?3",
         runId,
         CiRunStatus.QUEUED,
