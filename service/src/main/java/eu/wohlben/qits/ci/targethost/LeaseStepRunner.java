@@ -124,6 +124,12 @@ public class LeaseStepRunner implements CiStepRunner {
   /** Why each run's lease ended before its run did — {@link #leaseEnded}. */
   private final ConcurrentHashMap<String, String> endedLeases = new ConcurrentHashMap<>();
 
+  /**
+   * Runs whose first step ended {@code NEVER_STARTED} — their lease ran and its daemon never dialled
+   * back — so the run's close ends the lease with {@link SystemLeases#NEVER_DIALLED_BACK} (qits-1809).
+   */
+  private final Set<String> neverDialledBack = ConcurrentHashMap.newKeySet();
+
   /** Runs whose daemon has reported its worktree ready in this process. */
   private final Set<String> initialized = ConcurrentHashMap.newKeySet();
 
@@ -240,6 +246,7 @@ public class LeaseStepRunner implements CiStepRunner {
       if (ended != null) {
         return failed(StepOutcome.LAUNCH_FAILED, ended);
       }
+      neverDialledBack.add(spec.runId());
       return failed(
           StepOutcome.NEVER_STARTED,
           "the run's lease container never dialled back within "
@@ -598,7 +605,8 @@ public class LeaseStepRunner implements CiStepRunner {
 
   /**
    * Everything the run held, given back: the relay's buffer and the in-flight record; the daemon,
-   * told {@code Close} so it removes its worktree, then forgotten; the lease, ended; and the run's
+   * told {@code Close} so it removes its worktree, then forgotten; the lease, ended — with {@link
+   * SystemLeases#NEVER_DIALLED_BACK} when its daemon never dialled back (qits-1809); and the run's
    * {@code ci-run} token, deleted — with any a previous process or an earlier lease of the run left.
    */
   @Override
@@ -613,7 +621,7 @@ public class LeaseStepRunner implements CiStepRunner {
           daemons.sendClose(held.daemonId());
           daemons.reap(held.daemonId());
         });
-    leases.end(runId);
+    leases.end(runId, neverDialledBack.remove(runId) ? SystemLeases.NEVER_DIALLED_BACK : null);
     endedLeases.remove(runId);
     leaseStarts.remove(runId);
     commissions.endAdoption(runId);

@@ -163,6 +163,57 @@ class CiLeasesTest {
     assertEquals(0, registry.size(), "and the launch is forgotten");
   }
 
+  /**
+   * qits-1809: a run whose daemon never dialled back has its lease ended with that reason, which
+   * qits-system counts against the target; every other end of a lease names none.
+   */
+  @Test
+  void aLeaseIsEndedWithAReasonOnlyWhenItsDaemonNeverDialledBack() {
+    leases.requestNow(RUN);
+
+    leases.end(RUN, SystemLeases.NEVER_DIALLED_BACK);
+
+    assertTrue(
+        calls.contains("DELETE /system/api/leases/" + LEASE + "?reason=never-dialled-back"),
+        calls.toString());
+    assertFalse(calls.contains("DELETE /system/api/leases/" + LEASE), calls.toString());
+  }
+
+  /** The reason travels as {@code ?reason=}, and a bare end sends no query at all. */
+  @Test
+  void theReasonIsTheEndsQueryAndABareEndSendsNone() throws Exception {
+    List<String> requested = Collections.synchronizedList(new ArrayList<>());
+    com.sun.net.httpserver.HttpServer server =
+        com.sun.net.httpserver.HttpServer.create(
+            new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext(
+        "/",
+        exchange -> {
+          requested.add(exchange.getRequestMethod() + " " + exchange.getRequestURI());
+          exchange.sendResponseHeaders(404, -1);
+          exchange.close();
+        });
+    server.start();
+    try {
+      SystemLeases client =
+          SystemLeasesClients.against(
+              "http://127.0.0.1:" + server.getAddress().getPort(), Optional.empty());
+
+      assertTrue(client.end(LEASE, SystemLeases.NEVER_DIALLED_BACK).isEmpty());
+      assertTrue(client.end(LEASE).isEmpty());
+      assertTrue(client.end(LEASE, null).isEmpty());
+    } finally {
+      server.stop(0);
+    }
+
+    assertEquals(
+        List.of(
+            "DELETE /system/api/leases/" + LEASE + "?reason=never-dialled-back",
+            "DELETE /system/api/leases/" + LEASE,
+            "DELETE /system/api/leases/" + LEASE),
+        requested);
+  }
+
   @Test
   void aGrantedLeaseClaimsTheRunAndDrivesIt() throws Exception {
     leases.requestNow(RUN);
@@ -291,6 +342,12 @@ class CiLeasesTest {
     @Override
     public Optional<LeaseView> end(UUID leaseId) {
       calls.add("DELETE /system/api/leases/" + leaseId);
+      return Optional.empty();
+    }
+
+    @Override
+    public Optional<LeaseView> end(UUID leaseId, String reason) {
+      calls.add("DELETE /system/api/leases/" + leaseId + "?reason=" + reason);
       return Optional.empty();
     }
   }

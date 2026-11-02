@@ -69,6 +69,14 @@ public class SystemLeases {
   /** The owner qits-system names this service's leases by. */
   public static final String OWNER = "qits-ci";
 
+  /**
+   * The {@code reason} a lease is ended with when its run's step was {@code NEVER_STARTED}: the
+   * lease ran, and its daemon never dialled back within the register deadline (qits-1809).
+   * qits-system counts these per target, so a target whose leases keep failing that way is
+   * quarantined rather than fed more runs. Every other end sends no reason.
+   */
+  public static final String NEVER_DIALLED_BACK = "never-dialled-back";
+
   @ConfigProperty(name = "qits.system.url")
   String systemUrl;
 
@@ -222,9 +230,21 @@ public class SystemLeases {
    * it), or empty when qits-system holds none by that id — which is the state that was asked for.
    */
   public Optional<LeaseView> end(UUID leaseId) {
-    String what = "DELETE /system/api/leases/" + leaseId;
+    return end(leaseId, null);
+  }
+
+  /**
+   * {@link #end(UUID)} with the owner's {@code reason} as {@code ?reason=} — only ever {@link
+   * #NEVER_DIALLED_BACK} (qits-1809); a null or blank reason sends the bare {@code DELETE}.
+   */
+  public Optional<LeaseView> end(UUID leaseId, String reason) {
+    String query =
+        reason == null || reason.isBlank()
+            ? ""
+            : "?reason=" + java.net.URLEncoder.encode(reason, StandardCharsets.UTF_8);
+    String what = "DELETE /system/api/leases/" + leaseId + query;
     HttpResponse<String> response =
-        send(what, base().uri(URI.create(leasesUrl() + "/" + leaseId)).DELETE());
+        send(what, base().uri(URI.create(leasesUrl() + "/" + leaseId + query)).DELETE());
     if (response.statusCode() == 404) {
       return Optional.empty();
     }

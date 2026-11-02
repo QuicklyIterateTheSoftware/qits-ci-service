@@ -506,6 +506,14 @@ public class CiLeases {
    * that could not be ended is the reconcile's, which ends every lease no live run names.
    */
   public void end(String runId) {
+    end(runId, null);
+  }
+
+  /**
+   * {@link #end(String)}, telling qits-system why: {@link SystemLeases#NEVER_DIALLED_BACK} when the
+   * run's daemon never dialled back (qits-1809), null for every other end.
+   */
+  public void end(String runId, String reason) {
     Launch launch = launches.remove(runId);
     UUID leaseId = launch == null ? null : launch.leaseId();
     if (leaseId == null) {
@@ -517,13 +525,21 @@ public class CiLeases {
       }
     }
     if (leaseId != null) {
-      endQuietly(leaseId);
+      endQuietly(leaseId, reason);
     }
   }
 
   private void endQuietly(UUID leaseId) {
+    endQuietly(leaseId, null);
+  }
+
+  private void endQuietly(UUID leaseId, String reason) {
     try {
-      system.end(leaseId);
+      if (reason == null) {
+        system.end(leaseId);
+      } else {
+        system.end(leaseId, reason);
+      }
     } catch (RuntimeException e) {
       LOG.warnf("Could not end lease %s (%s); the reconcile ends it", leaseId, e.getMessage());
     }

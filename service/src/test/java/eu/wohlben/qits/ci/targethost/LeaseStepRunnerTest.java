@@ -44,6 +44,9 @@ class LeaseStepRunnerTest {
 
   private final List<String> ended = new ArrayList<>();
 
+  /** The reason each ended lease was ended with, "none" for a bare end (qits-1809). */
+  private final List<String> endReasons = new ArrayList<>();
+
   private final StandInLeases leases = new StandInLeases();
 
   private final LeaseStepRunner runner = runner();
@@ -60,8 +63,9 @@ class LeaseStepRunnerTest {
     }
 
     @Override
-    public void end(String runId) {
+    public void end(String runId, String reason) {
       ended.add(runId);
+      endReasons.add(reason == null ? "none" : reason);
     }
 
     @Override
@@ -178,6 +182,7 @@ class LeaseStepRunnerTest {
     assertTrue(daemon.closed(), "and its connection is let go");
     assertEquals(0, registry.size());
     assertEquals(List.of(RUN), ended, "and the lease is ended");
+    assertEquals(List.of("none"), endReasons, "with no reason: its daemon dialled");
   }
 
   @Test
@@ -283,6 +288,25 @@ class LeaseStepRunnerTest {
     assertEquals(CiStepRunner.StepOutcome.NEVER_STARTED, first.outcome());
     assertTrue(first.output().contains("of its lease running"), first.output());
     assertTrue(tookMillis >= 900 && tookMillis < 5_000, "counted from RUNNING: " + tookMillis);
+
+    // qits-1809: the run's close tells qits-system why, so the target can be held to account.
+    runner.runClosed(RUN);
+    assertEquals(List.of(RUN), ended);
+    assertEquals(List.of(SystemLeases.NEVER_DIALLED_BACK), endReasons);
+  }
+
+  @Test
+  void aLeaseThatFailedBeforeItsDaemonDialledIsEndedWithNoReason() {
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+
+    runner.leaseEnded(RUN, "lease " + LEASE + " FAILED: image not allowed");
+    assertEquals(
+        CiStepRunner.StepOutcome.LAUNCH_FAILED,
+        runner.run(step(0, "./verify.sh"), new Listened()).outcome());
+    runner.runClosed(RUN);
+
+    assertEquals(List.of("none"), endReasons, "LAUNCH_FAILED is the lease's own failure");
   }
 
   @Test

@@ -74,10 +74,12 @@ import org.jose4j.jwk.RsaJsonWebKey;
  *       the call, so {@code ClientCallGuardTest} holds them to the shipped tenant configuration
  *       instead of to a client method.
  *   <li><b>qits-system</b> (epic qits-1481): a run's CI lease — {@code createLease}, {@code
- *       getLease}, {@code listLeases} and {@code endLease} ({@code targethost/SystemLeases}). Every
- *       row is <b>pending</b> until this repository pins qits-system's golden masters, which do not
- *       record the targets module's states yet; the rows name the states qits-system-service records
- *       on its epic branch ({@code no target}, {@code a queued lease}).
+ *       getLease}, {@code listLeases} and {@code endLease} ({@code targethost/SystemLeases}), the last
+ *       also with {@code ?reason=never-dialled-back} for a run whose daemon never dialled back
+ *       (qits-1809). Every row is <b>pending</b> until this repository pins qits-system's golden
+ *       masters, which do not record the targets module's states yet; the rows name the states
+ *       qits-system-service records on its epic branch ({@code no target}, {@code a queued lease})
+ *       and one it is to record ({@code a running CI lease}).
  * </ul>
  *
  * <p><b>A row whose state its provider has not recorded is pending</b>: it stays in the table, is left
@@ -717,6 +719,25 @@ final class PeerContracts {
             (url, recorded) ->
                 system(url, recorded)
                     .end(java.util.UUID.fromString(recorded.params().get("leaseId")))));
+    // qits-1809: a run whose daemon never dialled back ends its RUNNING lease with
+    // ?reason=never-dialled-back, which qits-system counts against the target.
+    rows.add(
+        new Bound(
+            SYSTEM,
+            GoldenInteraction.of(
+                    Trigger.schedule(
+                        "LeaseStepRunner.runClosed (a run whose daemon never dialled back)"),
+                    "a running CI lease",
+                    "endLease")
+                .header("Authorization", "{authorization}")
+                .consumes("id", "state"),
+            SystemLeases.class,
+            "end",
+            (url, recorded) ->
+                system(url, recorded)
+                    .end(
+                        java.util.UUID.fromString(recorded.params().get("leaseId")),
+                        SystemLeases.NEVER_DIALLED_BACK)));
     return List.copyOf(rows);
   }
 
