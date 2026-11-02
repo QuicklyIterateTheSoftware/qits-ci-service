@@ -1782,7 +1782,11 @@ public final class CiReleaseComposer {
    * <p><b>{@code find}, not {@code git ls-files}</b>, because a submodule's files are not tracked by
    * the repository that holds the gitlink: a lockfile under {@code service/src/main/webui} is in the
    * tree once the submodule is materialised and in no index the parent can list. {@code
-   * node_modules} is skipped — an installed package's own lockfile is that package's business.
+   * node_modules}, {@code target} and {@code .git} are pruned. An installed package's own lockfile
+   * is that package's business. {@code target} — Maven's build output — is pruned because a run
+   * continuing on a held lease (qits-732) keeps the previous run's uncleaned {@code target}, where a
+   * test may have written its own lockfile naming an in-test registry; no committed lockfile lives
+   * under a {@code target} directory in the first place (qits-1802).
    *
    * <p><b>Only a value carrying {@code ://} is an address.</b> npm also writes {@code resolved} for a
    * workspace or {@code file:} link, as a relative path; that names no host and is left alone. A
@@ -1806,7 +1810,7 @@ public final class CiReleaseComposer {
         : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so no lockfile origin can be checked}"
         registry="https://registry.qits.$QITS_DOMAIN/"
         mirror="https://mirror.qits.$QITS_DOMAIN/"
-        find . -name package-lock.json ! -path '*/node_modules/*' | {
+        find . \\( -name target -o -name node_modules -o -name .git \\) -prune -o -name package-lock.json -print | {
           refused=0
           while IFS= read -r lock; do
             foreign=$(grep -o '"resolved": *"[^"]*"' "$lock" \\

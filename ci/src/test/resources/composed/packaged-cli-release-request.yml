@@ -34,7 +34,7 @@ steps:
       : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so no lockfile origin can be checked}"
       registry="https://registry.qits.$QITS_DOMAIN/"
       mirror="https://mirror.qits.$QITS_DOMAIN/"
-      find . -name package-lock.json ! -path '*/node_modules/*' | {
+      find . \( -name target -o -name node_modules -o -name .git \) -prune -o -name package-lock.json -print | {
         refused=0
         while IFS= read -r lock; do
           foreign=$(grep -o '"resolved": *"[^"]*"' "$lock" \
@@ -255,7 +255,7 @@ steps:
       : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so no lockfile origin can be checked}"
       registry="https://registry.qits.$QITS_DOMAIN/"
       mirror="https://mirror.qits.$QITS_DOMAIN/"
-      find . -name package-lock.json ! -path '*/node_modules/*' | {
+      find . \( -name target -o -name node_modules -o -name .git \) -prune -o -name package-lock.json -print | {
         refused=0
         while IFS= read -r lock; do
           foreign=$(grep -o '"resolved": *"[^"]*"' "$lock" \
