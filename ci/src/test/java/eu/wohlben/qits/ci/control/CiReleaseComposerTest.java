@@ -675,6 +675,43 @@ public class CiReleaseComposerTest {
     assertTrue(output.contains("this step was told no QITS_DOMAIN"), output);
   }
 
+  // qits-1802: a run continuing on a held lease (qits-732) keeps the previous run's uncleaned
+  // target/, where QA's own tests may have written a lockfile naming their own in-test registry;
+  // no committed lockfile lives under a target directory, so the check must not read one there.
+  @Test
+  public void theLockfileCheckIgnoresBuildOutputUnderTarget(@org.junit.jupiter.api.io.TempDir Path work)
+      throws Exception {
+    Path tree = Files.createDirectories(work.resolve("tree"));
+    Files.writeString(
+        tree.resolve("package-lock.json"),
+        lockfile(
+            lockEntry("left-pad", "https://mirror.qits.example.org/npm/npmjs/left-pad/-/left-pad-1.0.0.tgz")));
+    String foreign =
+        "http://localhost:39593/artifacts/npm/npmjs/story-npm-install/-/story-npm-install-2.1.0.tgz";
+    Path coldBuild =
+        Files.createDirectories(tree.resolve("target/userstories-work/npm/a-story/cold-build"));
+    Files.writeString(
+        coldBuild.resolve("package-lock.json"), lockfile(lockEntry("story-npm-install", foreign)));
+    Path nestedModuleTarget = Files.createDirectories(tree.resolve("service/target/x"));
+    Files.writeString(
+        nestedModuleTarget.resolve("package-lock.json"), lockfile(lockEntry("story-npm-install", foreign)));
+
+    Map.Entry<Integer, String> clean = runLockfileCheck(tree);
+    assertEquals(0, clean.getKey(), clean.getValue());
+    assertEquals("", clean.getValue(), "lockfiles under target/ are pruned, not read");
+
+    // A real, committed lockfile outside target/ is still checked.
+    Path webui = Files.createDirectories(tree.resolve("service/src/main/webui"));
+    Files.writeString(
+        webui.resolve("package-lock.json"), lockfile(lockEntry("story-npm-install", foreign)));
+
+    Map.Entry<Integer, String> result = runLockfileCheck(tree);
+    String output = result.getValue();
+    assertEquals(1, result.getKey(), output);
+    assertTrue(output.contains("./service/src/main/webui/package-lock.json"), output);
+    assertFalse(output.contains("target/"), "no target/ path is named:\n" + output);
+  }
+
   // --- the migration version check (qits-1669) ------------------------------------------------
 
   private static final String MIGRATIONS = "svc/src/main/resources/db/things/migration/";

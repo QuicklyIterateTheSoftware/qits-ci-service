@@ -747,6 +747,212 @@
         "status": 204
       },
       "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-idp-service",
+            "operationId": "getJwks"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "event": "StartupEvent",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "StartupEvent: getJwks",
+      "key": "30aa1a6f",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a published signing key",
+          "params": {
+            "kid": "contract-signing-key"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/idp/jwks"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "keys": [
+              {
+                "alg": "RS256",
+                "e": "AQAB",
+                "kid": "contract-signing-key",
+                "kty": "RSA",
+                "n": "w22O_ObglnNG60PveaNoDYurV2UhwvgMnL91tE4wBuWFY1yaEujIejjq2Qy-zvOuwYm2QKvHU-KhQ4nXWGJ8I-lXRaCPlmoFYXFXelBMp7abSkerNqBf_Bpc_Zj_cW7r4e69gDkK-3cChOTpsUhXzyuNanKh-h840YqhAPld9lz2Akr4T5hTMlgjjOagWaX_BkIMPmudiMQ8Uv5ppR2pETcAUi2D35L2OwVMBzqjQyykBcIIZgHM9qNUSQmJy-NjdSM4MJfjguxR23Yn4Dpp5HknGbhTOQ-Z90_neU8UVOKhhzDl_tUbpT9Q9ihqJmRmXsIySx2hXECmChLIoOqMlw",
+                "use": "sig"
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.keys": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            },
+            "$.keys[*].alg": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.keys[*].e": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.keys[*].kid": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.keys[*].kty": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.keys[*].n": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.keys[*].use": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-idp-service",
+            "operationId": "getOpenIdConfiguration"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-service",
+            "event": "StartupEvent",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "StartupEvent: getOpenIdConfiguration",
+      "key": "b2edec1",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a published signing key",
+          "params": {
+            "kid": "contract-signing-key"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/idp/.well-known/openid-configuration"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "issuer": "https://idp.qits.localhost",
+            "jwks_uri": "http://dev-qits-idp:8080/idp/jwks",
+            "token_endpoint": "http://dev-qits-idp:8080/idp/token"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.jwks_uri": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.token_endpoint": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
     }
   ],
   "metadata": {
