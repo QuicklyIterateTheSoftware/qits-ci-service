@@ -143,6 +143,29 @@ public class CiAutoRetryTest extends CiTestSupport {
   }
 
   @Test
+  public void anAutomationRunsInfraFailureIsStillRetriedAutomatically() throws Exception {
+    // qits-1816 refuses a PERSON's retry of an automation run; qits-ci's own re-fire of an infra
+    // failure is one of the run ids qits-maintenance follows, and must keep happening.
+    String repo = "auto-" + UUID.randomUUID();
+    fakeRunner.scriptSequence(0, LOST);
+
+    String original =
+        service.onEventTrigger(CiRunCancelAndRetryTest.automationRun(repo));
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+
+    List<CiRun> all = chain(repo);
+    assertEquals(2, all.size(), "exactly one automatic retry");
+    assertEquals(original, all.get(0).id);
+    assertEquals(CiRunStatus.FAILED, all.get(0).status);
+    CiRun retry = all.get(1);
+    assertEquals(original, retry.retryOfRunId);
+    assertEquals(CiAutomationComposer.EVENT, retry.triggerEventName);
+    assertTrue(retry.retryReason.endsWith("automatic retry 1 of 2"), retry.retryReason);
+    assertEquals(CiRunStatus.SUCCESS, retry.status);
+  }
+
+  @Test
   public void aStepExitCodeFailureIsNotRetriedOom137Included() throws Exception {
     String repo = "auto-" + UUID.randomUUID();
     fakeRunner.script(0, new StepResult(137, false, StepOutcome.OK, "Killed"));

@@ -513,6 +513,40 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
         "the pin is asked before any row of the retry exists, so a refusal writes nothing");
   }
 
+  // --- a release-request automation's run is regenerated, not retried (qits-1816) ---------------
+
+  @Test
+  public void aPersonsRetryOfAnAutomationRunIsRefusedWithTheRegenerateCommandAndWritesNothing()
+      throws Exception {
+    // qits-maintenance follows only its own run ids and qits-ci's automatic retries of them, so a
+    // person's re-fire never counted: it pushed a stray commit and left the request REJECTED.
+    String repo = "target-" + UUID.randomUUID();
+    String automation = service.onEventTrigger(automationRun(repo));
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    assertEquals(CiRunStatus.SUCCESS, service.requireRun(automation).status);
+
+    ConflictException refused =
+        assertThrows(ConflictException.class, () -> service.retry(automation));
+    assertTrue(
+        refused.getMessage().contains("qits release-request regenerate --kind dependency-bump"),
+        "the refusal names the command that does what was meant: " + refused.getMessage());
+    assertTrue(refused.getMessage().contains(automation), refused.getMessage());
+    assertEquals(1, service.runsFor(repo).size(), "a refused retry records nothing");
+  }
+
+  @Test
+  public void anAutomationRunsKindFallsBackToItsPayloadThenToAPlaceholder() {
+    CiRun run = new CiRun();
+    run.configPath = "ci/src/main/resources/platform-pipelines/automations/cli-tapes.yml";
+    assertEquals("cli-tapes", CiRunService.automationKindOf(run));
+    run.configPath = null;
+    run.triggerEventPayload = "{\"kind\":\"entity-diagram\"}";
+    assertEquals("entity-diagram", CiRunService.automationKindOf(run));
+    run.triggerEventPayload = "not json";
+    assertEquals("<kind>", CiRunService.automationKindOf(run));
+  }
+
   // --- fixture -----------------------------------------------------------------------------------
 
   private FakeRunAnnouncer.Announced announcedFor(String runId) {
@@ -585,6 +619,36 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
             + "\",\"releaseRequestId\":\""
             + requestId
             + "\"}",
+        trigger,
+        null);
+  }
+
+  /** The dependency-bump automation's run, as qits-maintenance's event starts it: main's head. */
+  static CiRunService.EventRun automationRun(String repoId) {
+    String path = "ci/src/main/resources/platform-pipelines/automations/dependency-bump.yml";
+    String trigger =
+        """
+        event: ReleaseRequestAutomation
+        steps:
+          - image: alpine:3
+            script: ./bump.sh
+        """;
+    return new CiRunService.EventRun(
+        CiRepoRef.of(repoId, "qits", "qits-target"),
+        "main",
+        "d".repeat(40),
+        new CiEventTrigger(
+            path,
+            CiAutomationComposer.EVENT,
+            null,
+            new CiPipeline(
+                List.of(new CiPipeline.CiStepDecl("alpine:3", "./bump.sh", null, false, false, ""))),
+            List.of(),
+            null),
+        UUID.randomUUID().toString(),
+        CiAutomationComposer.EVENT,
+        Instant.parse("2026-11-02T09:00:00Z"),
+        "{\"kind\":\"dependency-bump\",\"repository\":\"qits-target\",\"requestId\":\"abc\"}",
         trigger,
         null);
   }
