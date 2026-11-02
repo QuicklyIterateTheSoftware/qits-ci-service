@@ -3821,13 +3821,68 @@ public class CiRunService {
    * whole body, so a read in there would be re-issued per attempt and could poison the session it
    * was meant to serve.
    *
+   * <p><b>A release-request automation's run is refused</b> (qits-1816), with a 409 naming the
+   * command that does what the caller meant. A {@code ReleaseRequestAutomation} run belongs to
+   * qits-maintenance, which follows exactly the run ids it was handed back for its own event and
+   * the automatic retries qits-ci fires for them — nothing else — and finishes its automation row
+   * {@code FAILED} once a red verdict has stood for its 60 s grace. A person's retry therefore
+   * always arrived after the request had stopped listening: it built, pushed a stray commit onto
+   * the automation branch nobody would read, and left the request {@code REJECTED} while looking
+   * like the fix. {@code qits release-request regenerate --kind <kind>} is that fix — it re-asks
+   * the kind on the request's CURRENT fold, through qits-maintenance, so the answer is one it
+   * counts. The refusal lives here, on the person's door, and not in {@link #refire}: {@link
+   * #autoRetry} re-fires through that same path, and an automation run the infrastructure failed
+   * must keep being re-asked automatically — those retries are the ones qits-maintenance follows.
+   * The status check comes first, so a run still in flight keeps its "has not finished" answer;
+   * either refusal is raised before any row exists.
+   *
    * @return the new run, already {@code QUEUED} and announced to the runners
+   * @throws ConflictException when the run has not finished, is a retired runner's health check, or
+   *     is a release-request automation's run (qits-1816) — nothing is written
    * @throws UnavailableException when the retry's re-pin of a platform step image could not be had
    *     — no row is written, and the caller's next attempt asks a registry that has probably come
    *     back
    */
   public CiRun retry(String runId) {
+    CiRun source = requireRun(runId);
+    if (CiAutomationComposer.EVENT.equals(source.triggerEventName)
+        && source.status != CiRunStatus.QUEUED
+        && source.status != CiRunStatus.RUNNING) {
+      String kind = automationKindOf(source);
+      throw new ConflictException(
+          "CI run "
+              + runId
+              + " is the "
+              + kind
+              + " automation's run for a release request — a retry would not count for the"
+              + " request; run it again with: qits release-request regenerate --kind "
+              + kind);
+    }
     return refire(runId, null);
+  }
+
+  /**
+   * The automation kind an automation run ran: its kind file's name ({@code
+   * platform-pipelines/automations/<kind>.yml}), else the {@code kind} its trigger payload named,
+   * else the literal {@code <kind>} — a refusal's message must never fail to be written.
+   */
+  static String automationKindOf(CiRun run) {
+    String path = run.configPath;
+    if (path != null && path.endsWith(".yml")) {
+      String kind = path.substring(path.lastIndexOf('/') + 1, path.length() - ".yml".length());
+      if (CiAutomationComposer.KIND.matcher(kind).matches()) {
+        return kind;
+      }
+    }
+    JsonNode named =
+        CiEventSelectionEvaluator.resolve(
+            CiEventSelectionEvaluator.parsePayload(run.triggerEventPayload),
+            CiAutomationComposer.KIND_FIELD);
+    if (named != null && named.isTextual()
+        && CiAutomationComposer.KIND.matcher(named.textValue()).matches()) {
+      return named.textValue();
+    }
+    return "<kind>";
   }
 
   /**
