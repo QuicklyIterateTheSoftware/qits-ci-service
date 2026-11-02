@@ -203,8 +203,10 @@ class CiSlotSpecsTest {
   }
 
   @Test
-  void aStepsOwnEnvironmentIsItsIndex() {
-    assertEquals(Map.of("QITS_CI_STEP_INDEX", "2"), CiSlotSpecs.stepEnv(2));
+  void aStepsOwnEnvironmentIsItsIndexAndTheBuilderWaitMax() {
+    assertEquals(
+        Map.of("QITS_CI_STEP_INDEX", "2", "QITS_CI_BUILDER_WAIT_MAX_SECONDS", "3600"),
+        CiSlotSpecs.stepEnv(2, 3600));
   }
 
   @Test

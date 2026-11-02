@@ -85,6 +85,7 @@ class LeaseStepRunnerTest {
     runner.leaseStartTimeoutSeconds = 5;
     runner.initTimeoutSeconds = 5;
     runner.stepTimeoutGraceSeconds = 5;
+    runner.builderWaitMaxSeconds = 3600;
     return runner;
   }
 
@@ -141,6 +142,15 @@ class LeaseStepRunnerTest {
   }
 
   @Test
+  void theBackstopIsTheStepsTimeoutPlusTheBuilderWaitMaxPlusTheGrace() {
+    // step(2, …) declares a 60s timeout; the fixture's grace is 5s and builderWaitMaxSeconds 3600s
+    // (qits-1807): the host's backstop must cover a daemon legitimately paused at the target's
+    // shared builder, not just the daemon's own shutdown.
+    assertEquals(
+        Duration.ofSeconds(60 + 3600 + 5), runner.backstopOf(step(2, "./step-2.sh")));
+  }
+
+  @Test
   void threeStepsRunOverOneDaemonConnectionAndTheCloseEndsTheLease() {
     String daemonId = registry.registerLaunch(RUN, SUBJECT);
     leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
@@ -171,7 +181,10 @@ class LeaseStepRunnerTest {
         sent.stream().map(RunStep::script).toList());
     for (RunStep each : sent) {
       assertEquals(
-          Map.of("QITS_CI_STEP_INDEX", String.valueOf(each.stepIndex())), each.env());
+          Map.of(
+              "QITS_CI_STEP_INDEX", String.valueOf(each.stepIndex()),
+              "QITS_CI_BUILDER_WAIT_MAX_SECONDS", "3600"),
+          each.env());
     }
     assertEquals(1, registry.size(), "one launch for the whole run, not one per step");
 

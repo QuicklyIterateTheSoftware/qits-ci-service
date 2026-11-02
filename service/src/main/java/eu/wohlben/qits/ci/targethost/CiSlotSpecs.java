@@ -214,10 +214,19 @@ public final class CiSlotSpecs {
   /**
    * The part of a step's environment that is the step's own, sent in its {@code RunStep} and laid
    * over the lease's for that step's child only: its index (qits-754's {@code QITS_CI_STEP_INDEX},
-   * which the QA report hook reads to say which step its reports belong to).
+   * which the QA report hook reads to say which step its reports belong to) and, since qits-1807,
+   * {@code QITS_CI_BUILDER_WAIT_MAX_SECONDS} — {@code qits.ci.builder-wait-max-seconds}, the most
+   * qits-ci-daemon may pause this step's own deadline while a {@code buildctl build} of it waits at
+   * the target's shared builder gate rather than building. This is the one place every lease step's
+   * {@code RunStep} env is assembled — the run, the reattach and the inherited-step paths in {@link
+   * LeaseStepRunner} all call it — and it is never a repository's to declare, so there is nothing for
+   * one to shadow.
    */
-  public static Map<String, String> stepEnv(int stepIndex) {
-    return Map.of("QITS_CI_STEP_INDEX", String.valueOf(stepIndex));
+  public static Map<String, String> stepEnv(int stepIndex, long builderWaitMaxSeconds) {
+    Map<String, String> env = new LinkedHashMap<>();
+    env.put("QITS_CI_STEP_INDEX", String.valueOf(stepIndex));
+    env.put("QITS_CI_BUILDER_WAIT_MAX_SECONDS", String.valueOf(builderWaitMaxSeconds));
+    return env;
   }
 
   /**

@@ -37,8 +37,12 @@ import org.jboss.logging.Logger;
  * and its daemon to dial in, and then for the daemon to report its worktree ready ({@code
  * qits.ci.daemon-init-timeout-seconds}); every step, the first included, is then one
  * {@code RunStep{stepIndex, script, timeoutSeconds, env}} on that connection, answered by {@code
- * StepChunk}s and a {@code StepFinished} naming the step, with the host's backstop {@code
- * qits.ci.step-timeout-grace-seconds} behind the daemon's own deadline. {@link #runClosed} tells the
+ * StepChunk}s and a {@code StepFinished} naming the step, with the host's backstop behind the
+ * daemon's own deadline: {@code qits.ci.step-timeout-grace-seconds}, widened since qits-1807 by
+ * {@code qits.ci.builder-wait-max-seconds} — see {@link #finish} — because the daemon may pause its
+ * own deadline for up to that long while the step's {@code buildctl build} waits at the target's
+ * shared builder gate rather than running at all, and the host must not mistake that pause for a
+ * daemon that stopped answering. {@link #runClosed} tells the
  * daemon {@code Close}, ends the lease and deletes the run's token. No container is started or
  * removed here: the lease's container is the target's.
  *
@@ -97,6 +101,9 @@ public class LeaseStepRunner implements CiStepRunner {
 
   @ConfigProperty(name = "qits.ci.step-timeout-grace-seconds")
   long stepTimeoutGraceSeconds;
+
+  @ConfigProperty(name = "qits.ci.builder-wait-max-seconds")
+  long builderWaitMaxSeconds;
 
   /** Package-private for a suite that cannot wait out the real 180s register deadline. */
   void registerTimeoutSeconds(long seconds) {
@@ -216,7 +223,7 @@ public class LeaseStepRunner implements CiStepRunner {
           spec.stepIndex(),
           spec.script(),
           spec.timeoutSeconds(),
-          CiSlotSpecs.stepEnv(spec.stepIndex()),
+          CiSlotSpecs.stepEnv(spec.stepIndex(), builderWaitMaxSeconds),
           (stream, seq, text) -> {
             relay.append(spec.runId(), text);
             listener.onChunk(text);
@@ -359,9 +366,30 @@ public class LeaseStepRunner implements CiStepRunner {
     startOf(runId).complete(Instant.now());
   }
 
-  /** The step's end, from its terminal frame or the backstop. */
+  /**
+   * The backstop duration itself, pulled out so a suite can assert the arithmetic without waiting
+   * one out: the step's own deadline, {@code builderWaitMaxSeconds} and the grace, in that order.
+   */
+  Duration backstopOf(StepSpec spec) {
+    return Duration.ofSeconds(
+        spec.timeoutSeconds() + builderWaitMaxSeconds + stepTimeoutGraceSeconds);
+  }
+
+  /**
+   * The step's end, from its terminal frame or the backstop.
+   *
+   * <p>The backstop is the step's own deadline, plus {@code qits.ci.builder-wait-max-seconds}
+   * (qits-1807), plus the grace. The middle term exists because the daemon enforces the step's
+   * deadline against the step's OWN running time, and since qits-1807 it may pause that clock —
+   * for at most {@code builderWaitMaxSeconds} — while a {@code buildctl build} inside the step
+   * waits at the target's shared, target-wide builder gate rather than actually building: time the
+   * step spent queued, not time it spent hung. Without the widening the host's own backstop would
+   * fire mid-queue, on a daemon that is behaving exactly as designed, and cancel a step that was
+   * simply waiting its turn at the builder. The grace stays last and unchanged: it is still only
+   * the daemon's SIGTERM/SIGKILL and one frame's flight once the daemon itself gives up.
+   */
   private StepResult finish(StepSpec spec, StepListener listener, String daemonId) {
-    Duration backstop = Duration.ofSeconds(spec.timeoutSeconds() + stepTimeoutGraceSeconds);
+    Duration backstop = backstopOf(spec);
     CiDaemonRegistry.Completion completion = daemons.awaitFinished(daemonId, backstop);
     if (completion.status() != CiDaemonRegistry.Completion.Status.FINISHED) {
       // Before the NO_ANSWER branch below cancels anything: an await the shutdown cut short is not
@@ -487,7 +515,7 @@ public class LeaseStepRunner implements CiStepRunner {
                 step.stepIndex(),
                 step.script(),
                 step.timeoutSeconds(),
-                CiSlotSpecs.stepEnv(step.stepIndex()));
+                CiSlotSpecs.stepEnv(step.stepIndex(), builderWaitMaxSeconds));
       }
     }
     daemons.reattachLaunch(
@@ -549,7 +577,7 @@ public class LeaseStepRunner implements CiStepRunner {
                   spec.stepIndex(),
                   spec.script(),
                   spec.timeoutSeconds(),
-                  CiSlotSpecs.stepEnv(spec.stepIndex()),
+                  CiSlotSpecs.stepEnv(spec.stepIndex(), builderWaitMaxSeconds),
                   (stream, seq, text) -> relay.append(spec.runId(), text));
             }
             case INIT_FAILED -> {
