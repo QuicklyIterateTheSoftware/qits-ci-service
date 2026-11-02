@@ -73,6 +73,8 @@ erDiagram
     int inflight_step_index
     string inflight_token_subject "length 255"
     uuid lease_id
+    long oom_kills
+    string oom_scope "length 8"
     enum phase
     string priority "length 32"
     string project_id "length 255"
