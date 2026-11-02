@@ -894,6 +894,14 @@ public class CiRunController {
    * like it does after a trigger. Retrying a run that has not finished is a 409 — the question is
    * still being answered, and two runs racing for one verdict is not what was asked for.
    *
+   * <p><b>A release-request automation's run is a 409 too</b> (qits-1816), whose message names
+   * {@code qits release-request regenerate --kind <kind>}. qits-maintenance follows only the run ids
+   * its own {@code ReleaseRequestAutomation} produced and the automatic retries qits-ci fires for
+   * them, so a run re-fired here never counted for the request — it pushed a stray commit to the
+   * automation branch and left the request {@code REJECTED}. Regenerate re-asks the kind on the
+   * request's current fold, through the service that reads the answer. qits-ci's own automatic
+   * retry of such a run's infrastructure failure is untouched — see {@code CiRunService.retry}.
+   *
    * <p><b>A release run's retry resumes rather than starting over</b> (qits-1222). Its steps that
    * succeeded in the run being retried published under a version that cannot move, so they are
    * carried onto the new run as succeeded, are never executed again, and the new run starts at the
@@ -946,7 +954,12 @@ public class CiRunController {
           "The token covers this run's repository for nobody — no project claim and no platform-wide"
               + " role, or a project claim this instance cannot place the repository in")
   @APIResponse(responseCode = "404", description = "No such run")
-  @APIResponse(responseCode = "409", description = "The run has not finished, so there is nothing to retry yet")
+  @APIResponse(
+      responseCode = "409",
+      description =
+          "The run has not finished, so there is nothing to retry yet; or it is a release-request"
+              + " automation's run, which a retry would not count for — run `qits release-request"
+              + " regenerate --kind <kind>` instead")
   @APIResponse(
       responseCode = "503",
       description = "A step image's digest could not be resolved; ask again")
