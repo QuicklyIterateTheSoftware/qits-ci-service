@@ -187,7 +187,12 @@ deploys `stop-first`, so it refuses connections for a window on every deploy. Th
 shell (busybox `wget` has no retry) and its literals stay typed into the text. Ten attempts twelve
 seconds apart is ~108s against a refused connection, which is why
 `qits.ci.daemon-register-timeout-seconds` is 180: the in-container budget has to fit inside the
-host's deadline for the daemon to dial, and the two numbers move together.
+host's deadline for the daemon to dial, and the two numbers move together. A moving transfer is
+never cut off (qits-1809): curl aborts only a stalled one (`--speed-limit 10240 --speed-time 30`,
+never `--max-time`), so the host's 180s is the only total bound. And the daemon is cached per
+version on the target's `/caches/ci-daemon` volume when it is mounted writable, keyed by the
+lease's `$QITS_CI_DAEMON_VERSION`, so a target downloads each version once; it still runs from
+`/tmp`. `CiDaemonBootstrapFetchTest` runs the miss, the hit, no volume and a slow stream.
 
 **The bootstrap is also the only way to hand the slot a FILE.** The spec has no file field and
 qits-ci shares no volume with the slot, so a file can only be a value the container writes for

@@ -13,6 +13,13 @@ import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -48,14 +55,16 @@ import org.junit.jupiter.api.condition.OS;
  * — a message that hid its own cause. (A {@code #!/bin/sh} script at that path is NOT protected
  * this way, which is why a developer sandbox with nothing running from there passed.)
  *
- * <p>The substitution is a single guarded {@code replace} of that one literal with a path under
- * this test's own temp directory, and it is the <b>only</b> edit made to the shipped text:
- * the downloader probe, the retry loop, the per-attempt timeouts, the sleep, the give-up arm, the
+ * <p>The substitution is a guarded {@code replace} of that literal with a path under this test's
+ * own temp directory, and of the target's daemon cache volume {@code /caches/ci-daemon}
+ * (qits-1809) likewise — a step container mounts the real one, shared with every lease on its
+ * target. Those two are the <b>only</b> edits made to the shipped text: the cache arms, the
+ * downloader probe, the retry loop, the per-attempt timeouts, the sleep, the give-up arm, the
  * {@code chmod +x} and the {@code exec} are all run verbatim. What keeps that honest is the
- * occurrence count asserted before the replace — if somebody changes the path or adds another use
- * of it, this test fails loudly instead of quietly exercising a text that no longer ships. The
- * substituted copy is local to this method; every other test in this class asserts on the
- * unmodified constant.
+ * occurrence counts asserted before the replace — if somebody changes a path or adds another use
+ * of one, this test fails loudly instead of quietly exercising a text that no longer ships. The one
+ * deliberate exception is the demonstration in {@link #aSlowButMovingDownloadIsNeverCutOff}, which
+ * puts the retired {@code --max-time} back to show what it did.
  */
 public class CiDaemonBootstrapFetchTest {
 
@@ -70,11 +79,25 @@ public class CiDaemonBootstrapFetchTest {
   /** The output path typed into BOOTSTRAP, and how many times the real text spells it. */
   private static final String SHIPPED_OUTPUT_PATH = "/tmp/qits-ci-daemon";
 
-  private static final int SHIPPED_OUTPUT_PATH_USES = 4;
+  private static final int SHIPPED_OUTPUT_PATH_USES = 6;
+
+  /**
+   * The target's daemon cache volume (qits-1809), typed into BOOTSTRAP, and how many times the real
+   * text spells it. Moved under the test's own directory for the same reason as {@link
+   * #SHIPPED_OUTPUT_PATH}: a qits-ci step container mounts the real one, shared with every other
+   * lease on its target.
+   */
+  private static final String SHIPPED_CACHE_DIR = "/caches/ci-daemon";
+
+  private static final int SHIPPED_CACHE_DIR_USES = 5;
+
+  /** The version the cache tests' leases are told, {@code $QITS_CI_DAEMON_VERSION}. */
+  private static final String VERSION = "2026.1102.1";
 
   /**
    * Room per attempt on top of {@link #REFUSED_BUDGET_SECONDS} for the attempts themselves — the
-   * connect, and on a host that answers slowly the {@code -T 20} / {@code --max-time 120} deadlines.
+   * connect, and on a host that answers slowly the {@code -T 20} / {@code --connect-timeout 10}
+   * deadlines.
    */
   private static final long PER_ATTEMPT_ALLOWANCE_SECONDS = 8;
 
@@ -100,16 +123,8 @@ public class CiDaemonBootstrapFetchTest {
     Path out = work.resolve("stdout");
     Path err = work.resolve("stderr");
 
-    // The one edit to the shipped text — see this class's javadoc. The count is asserted first so
-    // that a change to the path, or a fifth use of it, fails here rather than silently leaving an
-    // occurrence pointing at the running daemon.
-    String shipped = CiSlotSettings.BOOTSTRAP;
-    assertEquals(
-        SHIPPED_OUTPUT_PATH_USES,
-        occurrences(shipped, SHIPPED_OUTPUT_PATH),
-        "BOOTSTRAP no longer spells " + SHIPPED_OUTPUT_PATH + " the expected number of times");
-    Path daemonPath = work.resolve("qits-ci-daemon");
-    String bootstrap = shipped.replace(SHIPPED_OUTPUT_PATH, daemonPath.toString());
+    // The one edit to the shipped text — see this class's javadoc.
+    String bootstrap = underTemp(work);
 
     // Bound about a second in, so attempt 1 is refused and attempt 2 (at ~12s) succeeds. A thread
     // rather than a scheduler: there is exactly one thing to do and one place it can fail.
@@ -189,7 +204,7 @@ public class CiDaemonBootstrapFetchTest {
   @Test
   public void theBootstrapRetriesItsFetchAndSaysHowManyTimes() {
     String bootstrap = CiSlotSettings.BOOTSTRAP;
-    assertTrue(bootstrap.contains("while :; do"), bootstrap);
+    assertTrue(bootstrap.contains("while [ -n \"$daemon_out\" ]; do"), bootstrap);
     assertTrue(bootstrap.contains("attempt=$((attempt + 1))"), bootstrap);
     assertTrue(bootstrap.contains("sleep " + PAUSE_SECONDS), bootstrap);
     assertTrue(bootstrap.contains("[ \"$attempt\" -ge " + ATTEMPTS + " ]"), bootstrap);
@@ -199,8 +214,189 @@ public class CiDaemonBootstrapFetchTest {
     // A per-attempt timeout on each arm, or a hung attempt makes the whole budget meaningless.
     // "$@" is the edge plane's bearer (qits-441) and expands to nothing on an internal step.
     assertTrue(bootstrap.contains("wget -q -T 20 \"$@\" -O"), bootstrap);
-    assertTrue(bootstrap.contains("--connect-timeout 10 --max-time 120"), bootstrap);
+    // qits-1809: curl aborts a STALLED transfer only, never a moving one; no total cap.
+    assertTrue(
+        bootstrap.contains("--connect-timeout 10 --speed-limit 10240 --speed-time 30"), bootstrap);
+    assertFalse(bootstrap.contains("--max-time"), bootstrap);
   }
+
+  // --- the daemon cache (qits-1809) --------------------------------------------------------------
+
+  /**
+   * A miss: the lease downloads the daemon once, renames it into the cache under its version, runs
+   * the copy in {@code /tmp}, and prunes what has not been used for 14 days — a stale version and a
+   * part file a dead lease left.
+   */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  public void aCacheMissDownloadsOnceAndCachesTheVersion() throws Exception {
+    assumeShell();
+    Path work = Files.createTempDirectory("ci-bootstrap-cache-miss");
+    Path cache = Files.createDirectories(work.resolve("caches-ci-daemon"));
+    Path stale = Files.writeString(cache.resolve("qits-ci-daemon-2026.101.1"), "old");
+    Path deadPart = Files.writeString(cache.resolve("qits-ci-daemon-2026.101.1.part.abc123"), "x");
+    Path recent = Files.writeString(cache.resolve("qits-ci-daemon-2026.1101.1"), "recent");
+    FileTime monthAgo = FileTime.from(Instant.now().minus(Duration.ofDays(30)));
+    Files.setLastModifiedTime(stale, monthAgo);
+    Files.setLastModifiedTime(deadPart, monthAgo);
+
+    try (Daemons daemons = new Daemons(work)) {
+      Result result = run(work, daemons.url(), VERSION);
+
+      assertEquals(0, result.exitCode, result.diagnosis());
+      assertEquals(1, daemons.requests.size(), result.diagnosis());
+      assertEquals("ran", Files.readString(work.resolve("marker")).strip(), "the daemon was exec'd");
+      Path cached = cache.resolve("qits-ci-daemon-" + VERSION);
+      assertEquals(daemons.script(), Files.readString(cached), "the version is cached whole");
+      assertTrue(
+          result.stderr.contains("qits-ci: fetched ci daemon " + VERSION + " and cached it"),
+          result.diagnosis());
+      assertFalse(Files.exists(stale), "a version unused for 14 days is pruned");
+      assertFalse(Files.exists(deadPart), "a dead lease's part file is pruned");
+      assertTrue(Files.exists(recent), "a recently used version is kept");
+      try (var listing = Files.list(cache)) {
+        assertTrue(
+            listing.noneMatch(file -> file.getFileName().toString().contains(".part.")),
+            "no part file is left behind");
+      }
+    }
+  }
+
+  /** A hit: the cached version is copied and run, with no request to qits-artifacts at all. */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  public void aCacheHitRunsTheCachedDaemonWithoutARequest() throws Exception {
+    assumeShell();
+    Path work = Files.createTempDirectory("ci-bootstrap-cache-hit");
+    Path cache = Files.createDirectories(work.resolve("caches-ci-daemon"));
+    Path cached =
+        Files.writeString(
+            cache.resolve("qits-ci-daemon-" + VERSION),
+            "#!/bin/sh\necho cached > " + work.resolve("marker") + "\nexit 0\n");
+    FileTime weekAgo = FileTime.from(Instant.now().minus(Duration.ofDays(7)));
+    Files.setLastModifiedTime(cached, weekAgo);
+
+    try (Daemons daemons = new Daemons(work)) {
+      Result result = run(work, daemons.url(), VERSION);
+
+      assertEquals(0, result.exitCode, result.diagnosis());
+      assertEquals(List.of(), daemons.requests, "a hit makes no request");
+      assertEquals("cached", Files.readString(work.resolve("marker")).strip());
+      assertTrue(
+          result.stderr.contains("qits-ci: using cached ci daemon " + VERSION), result.diagnosis());
+      assertTrue(
+          Files.getLastModifiedTime(cached).compareTo(weekAgo) > 0,
+          "a hit is touched, so the prune keeps what is in use");
+    }
+  }
+
+  /** No cache volume: the daemon is fetched straight to {@code /tmp}, as before qits-1809. */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  public void withoutTheCacheVolumeTheDaemonIsFetchedAsBefore() throws Exception {
+    assumeShell();
+    Path work = Files.createTempDirectory("ci-bootstrap-no-cache");
+
+    try (Daemons daemons = new Daemons(work)) {
+      Result result = run(work, daemons.url(), VERSION);
+
+      assertEquals(0, result.exitCode, result.diagnosis());
+      assertEquals(1, daemons.requests.size(), result.diagnosis());
+      assertEquals("ran", Files.readString(work.resolve("marker")).strip());
+      assertFalse(result.stderr.contains("cache"), result.diagnosis());
+      assertFalse(Files.exists(work.resolve("caches-ci-daemon")), "nothing made the volume");
+    }
+  }
+
+  /** A lease told no version cannot key the cache, and fetches as before even with the volume. */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  public void aLeaseWithNoVersionLeavesTheCacheAlone() throws Exception {
+    assumeShell();
+    Path work = Files.createTempDirectory("ci-bootstrap-no-version");
+    Path cache = Files.createDirectories(work.resolve("caches-ci-daemon"));
+
+    try (Daemons daemons = new Daemons(work)) {
+      Result result = run(work, daemons.url(), null);
+
+      assertEquals(0, result.exitCode, result.diagnosis());
+      assertEquals(1, daemons.requests.size(), result.diagnosis());
+      assertEquals("ran", Files.readString(work.resolve("marker")).strip());
+      try (var listing = Files.list(cache)) {
+        assertEquals(0, listing.count(), "nothing is cached without a version");
+      }
+    }
+  }
+
+  /** A cache directory the build user cannot write is left alone, as if absent. */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  public void anUnwritableCacheVolumeIsIgnored() throws Exception {
+    assumeShell();
+    assumeTrue(!"root".equals(System.getProperty("user.name")), "root writes a 0555 directory");
+    Path work = Files.createTempDirectory("ci-bootstrap-unwritable-cache");
+    Path cache = Files.createDirectories(work.resolve("caches-ci-daemon"));
+    Files.setPosixFilePermissions(cache, PosixFilePermissions.fromString("r-xr-xr-x"));
+
+    try (Daemons daemons = new Daemons(work)) {
+      Result result = run(work, daemons.url(), VERSION);
+
+      assertEquals(0, result.exitCode, result.diagnosis());
+      assertEquals(1, daemons.requests.size(), result.diagnosis());
+      assertEquals("ran", Files.readString(work.resolve("marker")).strip());
+      assertFalse(result.stderr.contains("cache"), result.diagnosis());
+    } finally {
+      Files.setPosixFilePermissions(cache, PosixFilePermissions.fromString("rwxr-xr-x"));
+    }
+  }
+
+  // --- a slow but moving download (qits-1809) -----------------------------------------------------
+
+  /**
+   * A body streamed steadily over more than three seconds is fetched and the daemon starts: curl
+   * aborts only a stalled transfer. The same text with the old total cap put back — {@code
+   * --max-time 2} for the speed limit, and one attempt rather than ten so the demonstration does
+   * not sleep through the retry budget — fails on the same stream, which is the regression on
+   * 2026-11-02 at a scale a test can wait for (a 39 MB binary at ~300 KB/s against 120 s).
+   */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  public void aSlowButMovingDownloadIsNeverCutOff() throws Exception {
+    assumeShell();
+    Path work = Files.createTempDirectory("ci-bootstrap-slow");
+
+    try (Daemons daemons = new Daemons(work, SLOW_BODY_BYTES, SLOW_CHUNKS, SLOW_PAUSE)) {
+      long began = System.nanoTime();
+      Result result = run(work, daemons.url(), null);
+      long tookMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - began);
+
+      assertEquals(0, result.exitCode, result.diagnosis());
+      assertEquals("ran", Files.readString(work.resolve("marker")).strip());
+      assertTrue(tookMillis > 3_000, "the stream really took over 3s: " + tookMillis);
+      assertFalse(result.stderr.contains("could not fetch"), result.diagnosis());
+
+      if (onPath("wget")) {
+        return; // the demonstration is curl's: an image with wget never reaches the curl arm
+      }
+      String speedLimit = "--speed-limit 10240 --speed-time 30";
+      String giveUp = "[ \"$attempt\" -ge " + ATTEMPTS + " ]";
+      String shipped = underTemp(work);
+      assertEquals(1, occurrences(shipped, speedLimit), shipped);
+      assertEquals(1, occurrences(shipped, giveUp), shipped);
+      String capped =
+          shipped.replace(speedLimit, "--max-time 2").replace(giveUp, "[ \"$attempt\" -ge 1 ]");
+      Result old = run(capped, work, daemons.url(), null);
+      assertEquals(1, old.exitCode, "a total cap cuts the moving download off: " + old.diagnosis());
+      assertTrue(old.stderr.contains("could not fetch"), old.diagnosis());
+    }
+  }
+
+  /** The slow stream: 2 MB in 40 chunks 90 ms apart, so ~3.6s at ~570 KB/s — never stalled. */
+  private static final int SLOW_BODY_BYTES = 2 * 1024 * 1024;
+
+  private static final int SLOW_CHUNKS = 40;
+
+  private static final long SLOW_PAUSE = 90;
 
   /**
    * <b>The guard that stops the two numbers drifting apart.</b> The in-container retry budget and the
@@ -220,6 +416,132 @@ public class CiDaemonBootstrapFetchTest {
             + "s, which does not outlast BOOTSTRAP's "
             + REFUSED_BUDGET_SECONDS
             + "s of retrying against a refused connection");
+  }
+
+  /**
+   * The shipped text with its two path literals moved under {@code work}: {@code /tmp/qits-ci-daemon}
+   * to {@code work/qits-ci-daemon} and the cache volume to {@code work/caches-ci-daemon}. The counts
+   * are asserted first, so a change to either path, or another use of one, fails here rather than
+   * silently leaving an occurrence pointing at the running daemon or the target's real cache.
+   */
+  private static String underTemp(Path work) {
+    String shipped = CiSlotSettings.BOOTSTRAP;
+    assertEquals(
+        SHIPPED_OUTPUT_PATH_USES,
+        occurrences(shipped, SHIPPED_OUTPUT_PATH),
+        "BOOTSTRAP no longer spells " + SHIPPED_OUTPUT_PATH + " the expected number of times");
+    assertEquals(
+        SHIPPED_CACHE_DIR_USES,
+        occurrences(shipped, SHIPPED_CACHE_DIR),
+        "BOOTSTRAP no longer spells " + SHIPPED_CACHE_DIR + " the expected number of times");
+    return shipped
+        .replace(SHIPPED_OUTPUT_PATH, work.resolve("qits-ci-daemon").toString())
+        .replace(SHIPPED_CACHE_DIR, work.resolve("caches-ci-daemon").toString());
+  }
+
+  private static Result run(Path work, String url, String version) throws Exception {
+    return run(underTemp(work), work, url, version);
+  }
+
+  /** {@code bootstrap} under {@code /bin/sh}, hermetic but for the url and, if any, the version. */
+  private static Result run(String bootstrap, Path work, String url, String version)
+      throws Exception {
+    Path out = work.resolve("stdout");
+    Path err = work.resolve("stderr");
+    ProcessBuilder builder = new ProcessBuilder("/bin/sh", "-c", bootstrap);
+    builder.redirectOutput(out.toFile());
+    builder.redirectError(err.toFile());
+    Map<String, String> env = HermeticEnvironment.of(builder);
+    env.put("QITS_CI_DAEMON_BINARY_URL", url);
+    if (version != null) {
+      env.put("QITS_CI_DAEMON_VERSION", version);
+    }
+    Process process = builder.start();
+    if (!process.waitFor(PROCESS_WAIT_SECONDS, TimeUnit.SECONDS)) {
+      process.destroyForcibly();
+      throw new AssertionError(
+          "the bootstrap never exited\nstdout:\n" + read(out) + "\nstderr:\n" + read(err));
+    }
+    return new Result(process.exitValue(), read(out), read(err));
+  }
+
+  private record Result(int exitCode, String stdout, String stderr) {
+    String diagnosis() {
+      return "exit " + exitCode + "\nstdout:\n" + stdout + "\nstderr:\n" + stderr;
+    }
+  }
+
+  /**
+   * qits-artifacts' daemons store, serving one stand-in daemon — a script that writes {@code ran}
+   * to {@code work/marker}, padded with comment lines to the body's size — and recording each
+   * request. Streamed in chunks with a pause between them when asked to be slow.
+   */
+  private static final class Daemons implements AutoCloseable {
+    final List<String> requests = Collections.synchronizedList(new ArrayList<>());
+    private final HttpServer server;
+    private final String script;
+
+    Daemons(Path work) throws IOException {
+      this(work, 0, 1, 0);
+    }
+
+    Daemons(Path work, int bodyBytes, int chunks, long pauseMillis) throws IOException {
+      StringBuilder body =
+          new StringBuilder("#!/bin/sh\necho ran > " + work.resolve("marker") + "\nexit 0\n");
+      while (body.length() < bodyBytes) {
+        body.append('#').append("x".repeat(Math.min(1023, bodyBytes - body.length()) - 1));
+        body.append('\n');
+      }
+      script = body.toString();
+      byte[] bytes = script.getBytes(StandardCharsets.UTF_8);
+      server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+      server.createContext(
+          "/artifacts/daemons/qits-ci-daemon/",
+          exchange -> {
+            requests.add(exchange.getRequestURI().toString());
+            exchange.sendResponseHeaders(200, bytes.length);
+            int size = (bytes.length + chunks - 1) / chunks;
+            try (var response = exchange.getResponseBody()) {
+              for (int from = 0; from < bytes.length; from += size) {
+                response.write(bytes, from, Math.min(size, bytes.length - from));
+                response.flush();
+                if (pauseMillis > 0) {
+                  Thread.sleep(pauseMillis);
+                }
+              }
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            } catch (IOException e) {
+              // the client hung up — the capped demonstration does exactly that
+            } finally {
+              exchange.close();
+            }
+          });
+      server.start();
+    }
+
+    String url() {
+      return "http://127.0.0.1:"
+          + server.getAddress().getPort()
+          + "/artifacts/daemons/qits-ci-daemon/"
+          + VERSION;
+    }
+
+    String script() {
+      return script;
+    }
+
+    @Override
+    public void close() {
+      server.stop(0);
+    }
+  }
+
+  private static void assumeShell() {
+    assumeTrue(Files.isExecutable(Path.of("/bin/sh")), "/bin/sh is required for this test");
+    assumeTrue(
+        onPath("wget") || onPath("curl"),
+        "one of wget/curl must be on PATH — the image contract this text probes for");
   }
 
   private static int aPortNobodyIsListeningOn() throws IOException {

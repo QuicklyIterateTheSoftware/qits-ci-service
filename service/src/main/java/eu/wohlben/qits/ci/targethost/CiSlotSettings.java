@@ -29,15 +29,16 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * the text below into the spec's env as {@link #BOOTSTRAP_ENV}, and the {@code
  * qits/build-images/ci-slot} image's entrypoint runs {@code /bin/sh -c "$QITS_CI_BOOTSTRAP"}. It
  * runs as user {@code 1001} with {@code HOME=/work/home} (set by the target, never by the spec),
- * and writes only under {@code /tmp}, {@code /work} and {@code $HOME}; the daemon it becomes puts
- * the run's worktree at {@code /work/<runId>}.
+ * and writes only under {@code /tmp}, {@code /work} and {@code $HOME}, plus the daemon cache in
+ * {@code /caches/ci-daemon} when the target mounts it (qits-1809); the daemon it becomes puts the
+ * run's worktree at {@code /work/<runId>}.
  */
 @ApplicationScoped
 public class CiSlotSettings {
 
   /**
    * The container's entrypoint: fetch the daemon, make it executable, become it. A {@code static
-   * final String}, host-authored, with nothing interpolated into it ever — the four values it needs
+   * final String}, host-authored, with nothing interpolated into it ever — the values it needs
    * arrive as environment variables the shell expands inside the container, so a repository cannot
    * reach this text no matter what it declares.
    *
@@ -68,13 +69,23 @@ public class CiSlotSettings {
    * String} with <b>zero interpolation</b>, and a Java constant folded in here would be the end of
    * that property.
    *
-   * <p><b>The accepted limit.</b> The budget is only bounded that tightly for connections that are
-   * <em>refused</em>, which is the measured failure. Attempts that instead hang to their own
-   * per-attempt timeouts ({@code -T 20}, {@code --connect-timeout 10 --max-time 120} — new, and the
-   * reason a hung attempt cannot make the retry meaningless) can make the loop outlast the host's
-   * deadline. In that case qits-ci gives up first and reports {@code NEVER_STARTED} exactly as it
-   * does today, and the container is reaped either way: the loop's worst case is bounded by the
-   * host, not by itself.
+   * <p><b>A moving transfer is never cut off</b> (qits-1809). The per-attempt timeouts bound only an
+   * attempt that has STALLED: busybox {@code wget -T 20} is an idle timeout, and curl gets {@code
+   * --connect-timeout 10 --speed-limit 10240 --speed-time 30}, so it aborts only when the transfer
+   * runs below 10 KB/s for 30 seconds. curl used to carry {@code --max-time 120} instead, a total
+   * cap: on 2026-11-02 a target behind a link of about 300 KB/s needed ~128 s for the 39 MB binary,
+   * so every attempt died at 120 s and started again from zero, and 21 of 21 runs failed {@code
+   * NEVER_STARTED}. The host's {@code qits.ci.daemon-register-timeout-seconds} is now the only total
+   * bound: a loop that outlasts it is reported {@code NEVER_STARTED} by qits-ci and the container is
+   * reaped either way, so the worst case is bounded by the host, not by this text.
+   *
+   * <p><b>The daemon is cached per version on the target</b> (qits-1809), in {@code /caches/ci-daemon}
+   * when the target mounts that volume writable and the lease names its {@code
+   * $QITS_CI_DAEMON_VERSION} ({@link CiSlotSpecs}): a version's bytes never change, so a target
+   * downloads each one once and every later lease copies it to {@code /tmp} and logs {@code
+   * qits-ci: using cached ci daemon <version>}. A download is renamed into place from a part file of
+   * its own, versions unused for 14 days are pruned, and every failure of the cache falls back to
+   * the plain fetch. Without the volume the bootstrap fetches straight to {@code /tmp} as before.
    *
    * <p><b>The fetch presents the run's token.</b> The binary is downloaded from qits-artifacts'
    * public name, which refuses an anonymous read, so both downloader arms send {@code
@@ -167,21 +178,64 @@ public class CiSlotSettings {
       if [ -n "$QITS_TOKEN" ]; then
         set -- --header "Authorization: Bearer $QITS_TOKEN"
       fi
+      # The daemon is cached per version on the target's /caches/ci-daemon volume (qits-1809): a
+      # version's bytes never change (the daemons store refuses a second PUT of one and serves it
+      # immutable), so a target downloads each version once and every later lease copies it. Used
+      # only when the volume is a writable directory and the lease was told its version; otherwise
+      # the daemon is fetched straight to /tmp exactly as before. A download lands in a part file of
+      # its own and is renamed into place, so a concurrent lease never reads half a binary; mktemp
+      # names it, because every lease's shell may be PID 1 and $$ would collide. The daemon still
+      # runs from /tmp: a file on the shared volume may be replaced or pruned under another lease.
+      # Nothing about the cache may cost a lease its daemon, so every step of it falls back to the
+      # plain fetch, and the prune of versions unused for 14 days is best-effort.
+      daemon_cache=
+      daemon_part=
+      daemon_out=/tmp/qits-ci-daemon
+      if [ -n "$QITS_CI_DAEMON_VERSION" ] && [ -d /caches/ci-daemon ] && [ -w /caches/ci-daemon ]; then
+        case "$QITS_CI_DAEMON_VERSION" in
+          .*|*[!A-Za-z0-9._-]*) ;;
+          *) daemon_cache="/caches/ci-daemon/qits-ci-daemon-$QITS_CI_DAEMON_VERSION" ;;
+        esac
+        find /caches/ci-daemon -maxdepth 1 -name 'qits-ci-daemon-*' -mtime +14 -delete 2>/dev/null || true
+      fi
+      if [ -n "$daemon_cache" ] && [ -s "$daemon_cache" ]; then
+        touch "$daemon_cache" 2>/dev/null || true
+        if cp "$daemon_cache" /tmp/qits-ci-daemon 2>/dev/null; then
+          echo "qits-ci: using cached ci daemon $QITS_CI_DAEMON_VERSION" >&2
+          daemon_out=
+        fi
+      fi
+      if [ -n "$daemon_out" ] && [ -n "$daemon_cache" ]; then
+        daemon_part=$(mktemp "$daemon_cache.part.XXXXXX" 2>/dev/null) || daemon_part=
+        if [ -n "$daemon_part" ]; then
+          daemon_out=$daemon_part
+        fi
+      fi
+      # A cache hit left daemon_out empty: there is nothing to fetch. curl aborts only a STALLED
+      # transfer (under 10 KB/s for 30s), never a slow one that is still moving: the host's register
+      # deadline is the only total bound on this fetch.
       attempt=1
-      while :; do
+      while [ -n "$daemon_out" ]; do
         if command -v wget >/dev/null 2>&1; then
           downloader=wget
-          if wget -q -T 20 "$@" -O /tmp/qits-ci-daemon "$QITS_CI_DAEMON_BINARY_URL"; then
+          if wget -q -T 20 "$@" -O "$daemon_out" "$QITS_CI_DAEMON_BINARY_URL"; then
             break
           fi
         elif command -v curl >/dev/null 2>&1; then
           downloader=curl
-          if curl -fsS --connect-timeout 10 --max-time 120 "$@" -o /tmp/qits-ci-daemon "$QITS_CI_DAEMON_BINARY_URL"; then
+          if curl -fsS --connect-timeout 10 --speed-limit 10240 --speed-time 30 "$@" -o "$daemon_out" "$QITS_CI_DAEMON_BINARY_URL"; then
             break
           fi
         else
           echo "qits-ci: this image has neither wget nor curl, so the ci daemon cannot be fetched" >&2
           exit 127
+        fi
+        # A failed attempt never retries into the cache: a full or broken volume must not cost the
+        # lease its daemon, and an uncached lease costs only the next one a download.
+        if [ -n "$daemon_part" ]; then
+          rm -f "$daemon_part" 2>/dev/null || true
+          daemon_part=
+          daemon_out=/tmp/qits-ci-daemon
         fi
         if [ "$attempt" -ge 10 ]; then
           echo "qits-ci: $downloader could not fetch $QITS_CI_DAEMON_BINARY_URL after $attempt attempts" >&2
@@ -191,6 +245,18 @@ public class CiSlotSettings {
         attempt=$((attempt + 1))
         sleep 12
       done
+      if [ -n "$daemon_part" ]; then
+        if mv -f "$daemon_part" "$daemon_cache" 2>/dev/null; then
+          daemon_part=$daemon_cache
+          echo "qits-ci: fetched ci daemon $QITS_CI_DAEMON_VERSION and cached it" >&2
+        else
+          echo "qits-ci: fetched ci daemon $QITS_CI_DAEMON_VERSION but could not cache it" >&2
+        fi
+        cp "$daemon_part" /tmp/qits-ci-daemon
+        if [ "$daemon_part" != "$daemon_cache" ]; then
+          rm -f "$daemon_part" 2>/dev/null || true
+        fi
+      fi
       chmod +x /tmp/qits-ci-daemon
       if [ -n "$QITS_CI_REGISTRY_AUTH_CONFIG" ] && [ -n "$DOCKER_CONFIG" ]; then
         mkdir -p "$DOCKER_CONFIG"

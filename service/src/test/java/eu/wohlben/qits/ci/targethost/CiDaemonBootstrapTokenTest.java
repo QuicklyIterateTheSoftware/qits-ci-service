@@ -398,7 +398,7 @@ public class CiDaemonBootstrapTokenTest {
   /**
    * Every path the text writes or makes is under {@code /tmp}, {@code /work} or {@code $HOME} —
    * or under {@code $DOCKER_CONFIG}/{@code $GIT_CONFIG_GLOBAL}, which the spec points into
-   * {@code /tmp}. Read off the text itself: each redirect target and each {@code mkdir} that names
+   * {@code /tmp} — save the daemon cache, inside its own {@code /caches/ci-daemon} (qits-1809). Read off the text itself: each redirect target and each {@code mkdir} that names
    * a path or a variable (the XML the text prints is not a redirect).
    */
   @Test
@@ -427,6 +427,21 @@ public class CiDaemonBootstrapTokenTest {
           "the bootstrap writes " + target);
     }
     assertFalse(seen.isEmpty(), "the pattern found no write at all");
+    // The target's volumes are the only other paths it names (qits-1655, qits-1809), and the one it
+    // writes itself is the daemon cache: its mv, cp and mktemp are not redirects, so this is how the
+    // cache stays inside its own volume.
+    java.util.regex.Matcher volumes =
+        java.util.regex.Pattern.compile("/caches/[^\\s\"';)/]*")
+            .matcher(
+                CiSlotSettings.BOOTSTRAP
+                    .lines()
+                    .filter(line -> !line.strip().startsWith("#"))
+                    .collect(java.util.stream.Collectors.joining("\n")));
+    while (volumes.find()) {
+      assertTrue(
+          List.of("/caches/m2", "/caches/pnpm", "/caches/ci-daemon").contains(volumes.group()),
+          "the bootstrap names " + volumes.group());
+    }
     Map<String, String> env = composedEnv();
     assertTrue(env.get("DOCKER_CONFIG").startsWith("/tmp/"), env.get("DOCKER_CONFIG"));
     assertTrue(env.get("GIT_CONFIG_GLOBAL").startsWith("/tmp/"), env.get("GIT_CONFIG_GLOBAL"));

@@ -48,6 +48,36 @@ class CiSlotSettingsTest {
     assertTrue(bootstrap.contains("exec /tmp/qits-ci-daemon"), bootstrap);
   }
 
+  /**
+   * qits-1809: the daemon is cached per version on the target's volume, written through a part file
+   * renamed into place, and still run from {@code /tmp} — never from the shared volume, where
+   * another lease may replace or prune it.
+   */
+  @Test
+  void theDaemonIsCachedPerVersionButAlwaysRunFromTmp() {
+    String bootstrap = CiSlotSettings.BOOTSTRAP;
+    assertTrue(
+        bootstrap.contains(
+            "if [ -n \"$QITS_CI_DAEMON_VERSION\" ] && [ -d /caches/ci-daemon ] && [ -w /caches/ci-daemon ]; then"),
+        bootstrap);
+    assertTrue(
+        bootstrap.contains(
+            "daemon_cache=\"/caches/ci-daemon/qits-ci-daemon-$QITS_CI_DAEMON_VERSION\""),
+        bootstrap);
+    assertTrue(bootstrap.contains("mktemp \"$daemon_cache.part.XXXXXX\""), bootstrap);
+    assertTrue(bootstrap.contains("mv -f \"$daemon_part\" \"$daemon_cache\""), bootstrap);
+    assertTrue(
+        bootstrap.contains(
+            "find /caches/ci-daemon -maxdepth 1 -name 'qits-ci-daemon-*' -mtime +14 -delete"
+                + " 2>/dev/null || true"),
+        bootstrap);
+    assertTrue(bootstrap.contains("qits-ci: using cached ci daemon $QITS_CI_DAEMON_VERSION"));
+    assertEquals(1, bootstrap.split("\nexec ", -1).length - 1, "one exec");
+    assertTrue(
+        bootstrap.indexOf("/caches/ci-daemon") < bootstrap.indexOf("chmod +x /tmp/qits-ci-daemon"),
+        "the cache is settled before the daemon is made executable");
+  }
+
   @Test
   void theBootstrapWritesTheRegistryLoginOutsideTheWorktreeBeforeTheDaemonRuns() {
     String bootstrap = CiSlotSettings.BOOTSTRAP;

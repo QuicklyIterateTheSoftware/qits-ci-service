@@ -85,6 +85,8 @@ public final class CiSlotSpecs {
     env.put("QITS_CI_DAEMON_ID", value(run.daemonId()));
     env.put("QITS_CI_DAEMON_URL", plane.daemonUrl());
     env.put("QITS_CI_DAEMON_BINARY_URL", plane.daemonBinaryUrl(run.daemonBinaryPath()));
+    // The version that path ends with: BOOTSTRAP keys the target's daemon cache by it (qits-1809).
+    env.put("QITS_CI_DAEMON_VERSION", daemonVersionOf(run.daemonBinaryPath()));
     env.put("QITS_CI_REPOSITORY_URL", cloneUrl(plane.gitBaseUrl(), run.repo()));
     env.put("QITS_CI_BRANCH", runScoped.get("QITS_CI_BRANCH"));
     env.put("QITS_CI_SHA", runScoped.get("QITS_CI_SHA"));
@@ -251,6 +253,16 @@ public final class CiSlotSpecs {
           .append("\"}");
     }
     return document.append("}}").toString();
+  }
+
+  /**
+   * The pinned daemon version a binary path names: its last segment ({@code
+   * /artifacts/daemons/qits-ci-daemon/<version>}, {@code CiSlotSettings.resolveBinaryUrl}), so the
+   * cache key and the download can never disagree. Empty when there is no path.
+   */
+  static String daemonVersionOf(String daemonBinaryPath) {
+    String path = value(daemonBinaryPath).replaceAll("/+$", "");
+    return path.substring(path.lastIndexOf('/') + 1);
   }
 
   private static String value(String text) {

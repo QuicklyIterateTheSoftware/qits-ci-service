@@ -39,6 +39,7 @@ class CiSlotSpecsTest {
             "QITS_CI_DAEMON_ID=" + SlotFixtures.DAEMON_ID,
             "QITS_CI_DAEMON_URL=wss://ci.qits.example.org/ci/daemon",
             "QITS_CI_DAEMON_BINARY_URL=https://registry.qits.example.org/artifacts/daemons/qits-ci-daemon/2026.927.1",
+            "QITS_CI_DAEMON_VERSION=2026.927.1",
             "QITS_CI_REPOSITORY_URL=https://githost.qits.example.org/git/qits/qits-ci-service",
             "QITS_CI_BRANCH=main",
             "QITS_CI_SHA=cafebabecafebabecafebabecafebabecafebabe",
@@ -74,6 +75,22 @@ class CiSlotSpecsTest {
             "QITS_VERSION=",
             "QITS_CI_BOOTSTRAP=" + CiSlotSettings.BOOTSTRAP),
         SlotFixtures.entries(spec.env()));
+  }
+
+  /**
+   * qits-1809: the version the bootstrap keys the target's daemon cache by is the one the binary
+   * url ends with, read off the same path, so a cached binary is always the one the run pinned.
+   */
+  @Test
+  void theDaemonVersionIsTheOneTheBinaryUrlEndsWith() {
+    Map<String, String> env = SlotFixtures.compose().env();
+    assertEquals("2026.927.1", env.get("QITS_CI_DAEMON_VERSION"));
+    assertTrue(
+        env.get("QITS_CI_DAEMON_BINARY_URL").endsWith("/" + env.get("QITS_CI_DAEMON_VERSION")));
+    assertEquals(
+        "2026.1.2",
+        CiSlotSpecs.daemonVersionOf(SlotFixtures.shippedSettings().resolveBinaryUrl("2026.1.2")));
+    assertEquals("", CiSlotSpecs.daemonVersionOf(null));
   }
 
   @Test
