@@ -11,6 +11,7 @@ import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusMock;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.security.TestSecurity;
 import jakarta.inject.Inject;
 import java.sql.SQLTransientConnectionException;
 import java.time.Instant;
@@ -49,6 +50,9 @@ import org.junit.jupiter.api.Test;
  * give-up case does not wait out a production cutover.
  */
 @QuarkusTest
+// The caller is a signed-in operator; forward-auth's %test dev user leaves qits-auth-core with
+// qits-1338 (epic qits-543, qits-1359), so the suite names it.
+@TestSecurity(user = "an-operator", roles = {"qits:admin"})
 public class CiReadPatienceTest {
 
   private static final String ACTIVE_RUNS = "/ci/api/runs/active";

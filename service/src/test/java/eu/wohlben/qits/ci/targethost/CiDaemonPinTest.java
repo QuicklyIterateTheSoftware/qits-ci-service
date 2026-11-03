@@ -8,6 +8,7 @@ import eu.wohlben.qits.ci.control.CiDaemonPins;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonBinary;
 import io.quarkus.arc.ClientProxy;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.security.TestSecurity;
 import jakarta.inject.Inject;
 import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
@@ -42,6 +43,10 @@ import org.junit.jupiter.api.Test;
  * refuses to exist rather than resolve to blank.
  */
 @QuarkusTest
+// The caller is a platform peer (qits-orchestrator, qits-artifacts read the pin); forward-auth's
+// %test dev user leaves qits-auth-core with qits-1338 (epic qits-543, qits-1359), so the suite
+// names it.
+@TestSecurity(user = "a-platform-service", roles = {"qits:system"})
 public class CiDaemonPinTest {
 
   private static final String DAEMON = "/ci/api/daemon";

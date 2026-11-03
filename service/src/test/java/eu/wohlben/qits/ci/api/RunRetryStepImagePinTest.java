@@ -11,6 +11,9 @@ import eu.wohlben.qits.ci.registry.StagedImagePins;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
+import io.quarkus.test.security.TestSecurity;
+import io.quarkus.test.security.oidc.Claim;
+import io.quarkus.test.security.oidc.OidcSecurity;
 import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.UUID;
@@ -82,16 +85,16 @@ class RunRetryStepImagePinTest {
   }
 
   @Test
+  @TestSecurity(user = "alice", roles = {"qits:admin"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = "qits-platform")})
   void aRetryWhoseStepImageCannotBePinnedIs503NamingTheImage() {
-    // The door's other real caller (AgentRetryAccessTest's own last case): an operator arrives on
-    // the edge's forwarded session, carries no bearer, and is never subject to the project scope
-    // check — this case is about the registry refusal, not about who may press the button.
+    // The door's other real caller (AgentRetryAccessTest's own last case): an operator's bearer,
+    // qits:admin with no project claim, which the scope check admits to every project — this case
+    // is about the registry refusal, not about who may press the button.
     StagedImagePins.install(null);
     String finished = insertFinishedRun();
 
     given()
-        .header("X-Qits-User", "alice")
-        .header("X-Qits-Roles", "qits:admin")
         .when()
         .post("/ci/api/runs/" + finished + "/retry")
         .then()

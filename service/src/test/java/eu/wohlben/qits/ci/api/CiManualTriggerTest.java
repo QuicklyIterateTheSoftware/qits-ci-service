@@ -13,6 +13,7 @@ import eu.wohlben.qits.ci.githost.StubGitHost;
 import io.quarkus.test.common.TestResourceScope;
 import io.quarkus.test.common.WithTestResource;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.security.TestSecurity;
 import io.restassured.http.ContentType;
 import io.restassured.path.json.JsonPath;
 import jakarta.inject.Inject;
@@ -56,6 +57,9 @@ import org.junit.jupiter.api.Test;
  * now simply how every case here works.
  */
 @QuarkusTest
+// The caller is a signed-in operator; forward-auth's %test dev user leaves qits-auth-core with
+// qits-1338 (epic qits-543, qits-1359), so the suite names it.
+@TestSecurity(user = "an-operator", roles = {"qits:admin"})
 @WithTestResource(value = StubGitHost.class, scope = TestResourceScope.GLOBAL)
 public class CiManualTriggerTest {
 

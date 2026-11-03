@@ -44,12 +44,11 @@ import org.junit.jupiter.api.Test;
  *
  * <p>What joined the trigger is {@code POST /ci/api/runs/cancellations}, qits-projects withdrawing a
  * release request's CI. <b>It has two real callers and both are asserted here</b>: a machine caller
- * is judged on its token exactly as the trigger's is, and an operator arrives on the edge's
- * forwarded {@code X-Qits-User}/{@code X-Qits-Roles} session carrying no token at all and is judged
- * by the class-level roles. That is why the {@code MachineAuth} call sits on the machine arm rather
- * than over the whole method, and why a case here asserts the forwarded session is <em>not</em>
- * answered 401 — a guard tightened to "always a token" would break the person, and one dropped
- * entirely would unguard the peer.
+ * is judged on its token exactly as the trigger's is, and an operator presents a person's bearer —
+ * {@code qits:admin}, no {@code project} claim — which the scope check's platform-wide arm admits.
+ * (The operator used to arrive on forward-auth's {@code X-Qits-User}/{@code X-Qits-Roles} session
+ * with no token at all; that leaves qits-auth-core with qits-1338, epic qits-543.) A case here
+ * asserts the person is <em>not</em> refused, and the machine cases that the peer stays guarded.
  *
  * <p><b>"Exactly as the trigger's is" is new, and it is the 2026-09-05 fix.</b> The cancellation
  * demanded {@code project=*} and its only real sender could not present one: qits-projects' bearer
@@ -124,19 +123,13 @@ public class MachineGuardTest {
   private static final String PROJECTS = "dev-qits-projects";
 
   /**
-   * The gate on, and the {@code %test} dev user off.
-   *
-   * <p>Blanking the dev user is not a convenience — it is what makes the suite match a deployment.
-   * {@code ForwardAuthMechanism} answers every request that carries no {@code X-Qits-User} with the
-   * synthetic {@code dev} identity, so under {@code %test} it authenticates first and no other
-   * mechanism is ever asked. A real machine call has no such header and no such fallback: forward
-   * auth abstains and the bearer is what the request is judged on. Left set, every test below sees a
-   * user rather than a machine and passes only by answering 401 for the wrong reason.
+   * The gate on. The suite's test config already blanks the forward-auth dev user (it leaves
+   * qits-auth-core with qits-1338, epic qits-543), so a request is judged on its bearer alone.
    */
   public static class GateOn implements QuarkusTestProfile {
     @Override
     public Map<String, String> getConfigOverrides() {
-      return Map.of(MachineAuth.REQUIRED_KEY, "true", "qits.auth.forward.dev-user", "");
+      return Map.of(MachineAuth.REQUIRED_KEY, "true");
     }
   }
 
@@ -153,7 +146,7 @@ public class MachineGuardTest {
    */
   private static final String SYSTEM = "qits:system";
 
-  /** A person's role, which the edge forwards in {@code X-Qits-Roles} and no machine token holds. */
+  /** A person's role, which no machine token holds. */
   private static final String ADMIN = "qits:admin";
 
   /** Absolute, like every address here: it is what catches a prefix or a rename regression. */
@@ -254,8 +247,7 @@ public class MachineGuardTest {
   @Test
   void theManualTriggerWithNoMachineTokenIs401() {
     // 401, not 403: nothing was presented, so the answer is "present something". The forward-auth
-    // dev user is blanked in this profile and would make no difference anyway — a user is not a
-    // machine.
+    // dev user is blanked in the suite's test config (it goes with qits-1338).
     given()
         .contentType(MediaType.APPLICATION_JSON)
         .body(TRIGGER_BODY)
@@ -397,14 +389,14 @@ public class MachineGuardTest {
   }
 
   @Test
-  void aForwardedAdminSessionTriggersByHand() {
-    // The trigger's other real caller, and why the machine check sits on the machine arm here too: a
-    // person invoking this on purpose is what the operation is for, and the edge's forwarded session
-    // carries no bearer at all. 503 is the guard passing; a guard demanding a token unconditionally
-    // answers this 401, and one left at the class's machine-only role answers it 403.
+  @TestSecurity(user = "alice", roles = {ADMIN})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void aSignedInAdminTriggersByHand() {
+    // The trigger's other real caller: a person invoking this on purpose is what the operation is
+    // for, and an operator's bearer holds qits:admin with no project claim, which the scope check
+    // admits to every project. 503 is the guard passing; one left at the class's machine-only role
+    // answers it 403. (Forward-auth's session leaves qits-auth-core with qits-1338, epic qits-543.)
     given()
-        .header("X-Qits-User", "alice")
-        .header("X-Qits-Roles", ADMIN)
         .contentType(MediaType.APPLICATION_JSON)
         .body(TRIGGER_BODY)
         .when()
@@ -747,14 +739,12 @@ public class MachineGuardTest {
   }
 
   @Test
-  void aForwardedAdminSessionCancelsAReleaseRequestsRuns() {
-    // The other caller of the same route, and why the MachineAuth check sits on the machine arm
-    // rather than over the whole method: an operator arrives on the edge's forwarded session, which
-    // carries no bearer at all and is judged by the class-level roles. A guard that demanded a
-    // machine token unconditionally would answer this 401.
+  @TestSecurity(user = "alice", roles = {ADMIN})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void aSignedInAdminCancelsAReleaseRequestsRuns() {
+    // The other caller of the same route: an operator's bearer, qits:admin with no project claim,
+    // judged by the class-level roles and admitted by the scope check's platform-wide arm.
     given()
-        .header("X-Qits-User", "alice")
-        .header("X-Qits-Roles", ADMIN)
         .contentType(MediaType.APPLICATION_JSON)
         .body(CANCELLATIONS_BODY)
         .when()
@@ -764,13 +754,12 @@ public class MachineGuardTest {
   }
 
   @Test
-  void aForwardedAdminSessionReadsTheRepositoryListing() {
-    // The other side of the same route, and the reason no @TestSecurity is here: the headers ARE
-    // the contract. The edge establishes the session and qits-gateway asserts the pair, which is
-    // what this profile's blanked dev user makes visible.
+  @TestSecurity(user = "alice", roles = {ADMIN})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void aSignedInAdminReadsTheRepositoryListing() {
+    // The other side of the same route: a signed-in operator's bearer reads the listing with the
+    // gate on.
     given()
-        .header("X-Qits-User", "alice")
-        .header("X-Qits-Roles", ADMIN)
         .when()
         .get("/ci/api/repositories")
         .then()

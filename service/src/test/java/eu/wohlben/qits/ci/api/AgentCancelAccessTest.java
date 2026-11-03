@@ -46,9 +46,8 @@ import org.junit.jupiter.api.Test;
  * <p>The seeded run is {@code RUNNING} with no worker of this process owning it — what {@code
  * CiRunService.cancel} settles in one write, {@code CANCELLED}, without a container to ask — so the
  * 202 case is a real cancellation that finishes before the response does. The profile is {@link
- * MachineGuardTest.GateOn} for {@code AgentReadAccessTest}'s reason: under {@code %test} the
- * forward-auth {@code dev} identity would answer every request as an admin, and reusing that
- * class's profile costs no second Quarkus start.
+ * MachineGuardTest.GateOn} for {@code AgentReadAccessTest}'s reason: the gate is what a deployment
+ * runs with, and reusing that class's profile costs no second Quarkus start.
  */
 @QuarkusTest
 @TestProfile(MachineGuardTest.GateOn.class)
@@ -202,13 +201,14 @@ class AgentCancelAccessTest {
   }
 
   @Test
-  void aForwardedAdminSessionCancelsWithNoProjectClaimAtAll() {
-    // The door's other real caller, unchanged by the widening: an operator on the edge's forwarded
-    // X-Qits-User/X-Qits-Roles session carries no bearer, is therefore not a machine, and never
-    // reaches the scope check — so it cancels with no catalogue staged at all.
+  @TestSecurity(user = "alice", roles = {"qits:admin"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void aSignedInAdminCancelsWithNoProjectClaimAtAll() {
+    // The door's other real caller, unchanged by the widening: an operator's bearer holds
+    // qits:admin and no project claim, the platform-wide arm of the scope check — so it cancels
+    // with no catalogue staged at all. (It used to arrive on forward-auth's X-Qits-User /
+    // X-Qits-Roles session, which leaves qits-auth-core with qits-1338, epic qits-543.)
     given()
-        .header("X-Qits-User", "alice")
-        .header("X-Qits-Roles", "qits:admin")
         .when()
         .post("/ci/api/runs/" + runningRun + "/cancel")
         .then()

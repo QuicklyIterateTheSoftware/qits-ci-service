@@ -492,6 +492,18 @@ class GoldenMasterRecordingTest {
     for (Map.Entry<String, String> header : interaction.headers().entrySet()) {
       request = request.header(header.getKey(), expand(header.getValue(), params));
     }
+    if (!interaction.headers().containsKey("Authorization")) {
+      // A recorded call without a bearer names no caller of its own, so the suite names one rather
+      // than leaning on a forward-auth dev user (epic qits-543, qits-1359): the daemon pin is a
+      // platform peer's read (qits:system), everything else a signed-in operator's. The header is
+      // sent, not recorded, so the golden master stays the consumer's shape.
+      request =
+          request.header(
+              "Authorization",
+              interaction.path().startsWith("/ci/api/daemon")
+                  ? ContractBearers.bearer("a-platform-service", "qits:system")
+                  : ContractBearers.bearer("an-operator", "qits:admin"));
+    }
     if (interaction.requestBody() != null) {
       request =
           request.contentType("application/json").body(expand(interaction.requestBody(), params));

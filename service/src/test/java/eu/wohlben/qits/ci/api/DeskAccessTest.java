@@ -48,8 +48,7 @@ import org.junit.jupiter.api.Test;
  * qits-system's.
  *
  * <p>The profile is {@link MachineGuardTest.GateOn}'s, for {@code AgentReadAccessTest}'s reason:
- * under {@code %test} the forward-auth {@code dev} identity would answer every request as an admin,
- * and reusing it costs no second Quarkus start.
+ * the gate is what a deployment runs with, and reusing it costs no second Quarkus start.
  */
 @QuarkusTest
 @TestProfile(MachineGuardTest.GateOn.class)

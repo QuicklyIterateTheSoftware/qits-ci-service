@@ -39,12 +39,11 @@ import org.junit.jupiter.api.Test;
  * <p>The agent's token names a project, and the run it reads is in another one: agents lose no read
  * access, so the project claim narrows nothing here.
  *
- * <p><b>The profile is what makes the agent the caller.</b> Under {@code %test},
- * {@code ForwardAuthMechanism} gives every request without {@code X-Qits-User} the synthetic
- * {@code dev} identity, which holds {@code qits:admin}. {@code @TestSecurity} yields to any identity
- * that is not anonymous, so without the profile every case ran as {@code dev}: the reads passed for
- * the admin and the writes reached their handlers. {@link MachineGuardTest.GateOn}
- * blanks the dev user, and reusing it costs no second Quarkus start. The token carries this
+ * <p><b>The profile is the gate a deployment runs with.</b> The forward-auth {@code dev} identity,
+ * which held {@code qits:admin}, is blanked in the suite's test config (it leaves qits-auth-core
+ * with qits-1338, epic qits-543), so the {@code @TestSecurity} agent is the only caller.
+ * {@link MachineGuardTest.GateOn} turns the gate on, and reusing it costs no second Quarkus
+ * start. The token carries this
  * service's audience and {@code project=*}, so {@code MachineAuth} would admit it: only the role can
  * refuse a write. The reads answering 200 and the writes answering 403 together prove the agent was
  * the caller.

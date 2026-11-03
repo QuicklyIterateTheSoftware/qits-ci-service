@@ -27,11 +27,13 @@ import java.util.concurrent.TimeUnit;
  * the frames it wants, including the wrong ones, which is how the refused dials and the malformed
  * frame are testable at all.
  *
- * <p><b>It arrives the way a step's daemon arrives BEHIND THE EDGE.</b> The real binary presents its
- * run's {@code ci-run} token as {@code Authorization: Bearer}; the platform edge introspects it and
- * forwards the caller as the token's subject with the role {@code qits:ci-run}. No suite here has
- * an edge, so this dials as what the edge forwards: {@code X-Qits-User: <subject>}, {@code
- * X-Qits-Roles: qits:ci-run}, which the forward-auth mechanism reads into the same identity. {@link
+ * <p><b>It arrives the way a step's daemon arrives.</b> The real binary presents its run's {@code
+ * ci-run} token as {@code Authorization: Bearer}, which is read as the token's subject holding the
+ * role {@code qits:ci-run}. No suite here runs an idp, so {@link #dial(URI, String)} presents a
+ * suite bearer ({@code contracts.ContractBearers#bearer}) that the suite's augmentor turns into that
+ * same identity — forward-auth's {@code X-Qits-User} / {@code X-Qits-Roles} pair leaves
+ * qits-auth-core with qits-1338 (epic qits-543, qits-1359). It is a {@code @QuarkusTest} helper: a
+ * packaged IT passes a {@code MockIdp} bearer to {@link #dial(URI, java.util.Map)} instead. {@link
  * CiDaemonSocket}'s {@code @RolesAllowed} is enforced at the HTTP <em>upgrade</em>, so a dial with
  * no identity is answered <b>401 and never reaches {@code @OnOpen} at all</b>.
  *
@@ -40,12 +42,6 @@ import java.util.concurrent.TimeUnit;
  * recorded against the subject it arrived as.
  */
 public final class FakeCiDaemon implements AutoCloseable {
-
-  /** How the edge names the caller to the forward-auth mechanism: the token's subject. */
-  public static final String USER_HEADER = "X-Qits-User";
-
-  /** …and its roles. */
-  public static final String ROLES_HEADER = "X-Qits-Roles";
 
   /** The role a {@code ci-run} token carries — {@code CiDaemonSocket.RUN_ROLE}. */
   public static final String RUN_ROLE = "qits:ci-run";
@@ -58,13 +54,19 @@ public final class FakeCiDaemon implements AutoCloseable {
   private final CompletableFuture<String> closeReason = new CompletableFuture<>();
 
   /**
-   * Dial the endpoint as the {@code ci-run} token of {@code subject}, the way the edge forwards one.
+   * Dial the endpoint as the {@code ci-run} token of {@code subject}, as a suite bearer.
    * Returns once the HTTP upgrade completed; nothing is admitted until {@link #hello(String)} names a
    * launch. A refused dial is a 1008 <em>close</em> after a successful upgrade, not a failed
    * handshake, so the caller asserts on {@link #awaitClose} rather than on this throwing.
    */
   public static FakeCiDaemon dial(URI endpoint, String subject) throws Exception {
-    return dial(endpoint, java.util.Map.of(USER_HEADER, subject, ROLES_HEADER, RUN_ROLE));
+    return dial(endpoint, runToken(subject));
+  }
+
+  /** The handshake headers of {@code subject}'s {@code ci-run} token, as a suite bearer. */
+  public static java.util.Map<String, String> runToken(String subject) {
+    return java.util.Map.of(
+        "Authorization", eu.wohlben.qits.ci.contracts.ContractBearers.bearer(subject, RUN_ROLE));
   }
 
   /**

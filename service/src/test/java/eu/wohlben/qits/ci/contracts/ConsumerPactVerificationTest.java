@@ -17,6 +17,7 @@ import jakarta.inject.Inject;
 import java.net.URL;
 import java.util.List;
 import java.util.Map;
+import org.apache.hc.core5.http.ClassicHttpRequest;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestTemplate;
@@ -151,12 +152,26 @@ class ConsumerPactVerificationTest {
 
   @TestTemplate
   @ExtendWith(PactVerificationInvocationContextProvider.class)
-  void consumerPactHolds(PactVerificationContext context) {
+  void consumerPactHolds(PactVerificationContext context, Pact pact, ClassicHttpRequest request) {
+    if (!request.containsHeader("Authorization")) {
+      // An interaction without a bearer names no caller of its own, so the suite names the one the
+      // consumer is (epic qits-543, qits-1359) rather than leaning on a forward-auth dev user: a
+      // platform service sends its own qits:system bearer, anything else — a frontend, the CLI, the
+      // bootstrap — a signed-in operator's.
+      request.setHeader("Authorization", callerOf(pact.getConsumer().getName()));
+    }
     try {
       context.verifyInteraction();
     } finally {
       states.cleanUp();
     }
+  }
+
+  /** The bearer a consumer's bearer-less interaction stands for, by what kind of consumer it is. */
+  static String callerOf(String consumer) {
+    return consumer.endsWith("-service")
+        ? ContractBearers.bearer(consumer, "qits:system")
+        : ContractBearers.bearer("an-operator", "qits:admin");
   }
 
   // --- the states: each one line into the registry -------------------------------------------

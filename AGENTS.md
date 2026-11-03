@@ -2912,11 +2912,25 @@ the **header** rather than the call — the `TokenSource` contract is that a sou
 source that returned nothing, so a broken idp is a 401 from qits-githost rather than an exception
 on a build slot.
 
-**`MachineGuardTest` blanks `qits.auth.forward.dev-user` in its profile, and that is not tidiness.**
-Under `%test` the forward-auth mechanism answers every request carrying no `X-Qits-User` with a
-synthetic `dev` identity, so it authenticates first and the bearer is never consulted. Left set,
-every case in that file sees a user rather than a machine and the 401 cases pass for the wrong
-reason. A real machine call has no such header and no such fallback.
+**No test uses forward-auth (epic qits-543, qits-1359).** `X-Qits-User` / `X-Qits-Roles` and the
+`%test` dev user leave qits-auth-core with qits-1338, and the suite already runs without them: the
+test config blanks the dev user and renames the forward headers (`%test.qits.auth.forward.*` in
+`service/src/test/resources/application.properties`, which go with qits-1338), so a header-less
+request is anonymous and the 401 cases in `MachineGuardTest` fail for the right reason. A
+`@QuarkusTest` with one caller names it with `@TestSecurity` and the roles it means (an operator
+is `qits:admin`, a peer `qits:system`; a signed-in person's bearer is `@TestSecurity` plus
+`@OidcSecurity` with the platform audience and no `project` claim). A contract interaction that
+carries no bearer, and `FakeCiDaemon`'s dial, send a suite bearer from
+`ContractBearers.bearer(subject, roles...)`, which the suite's `ContractBearers` augmentor turns
+into that identity. The packaged ITs send `MockIdp` bearers, for a person as for a machine:
+`CiPackagedSurfaceIT` runs under `PackagedWithIdp` (tenant on against `MockIdp`, gate off) and
+`StoryIdentities.operator` mints a person's token.
+
+**Dev mode needs a bearer.** The `%dev` dev user goes with qits-1338, and `%dev` keeps the OIDC
+tenant off, so `quarkus:dev` answers 401 on every guarded route until the tenant is pointed at an
+idp (`-Dqits.auth.machine.required=true -Dquarkus.oidc.auth-server-url=...`); then call it with a
+person's token, for example `curl -H "Authorization: Bearer $(qits-token qits-platform)" ...`, or
+through the `qits` CLI.
 
 `ForwardAuthTest` lives in qits-auth-core with the mechanism it covers, and its argument is worth
 knowing when you read it: it sets a real `X-Qits-User` rather than reaching for `@TestSecurity`,
@@ -3194,8 +3208,8 @@ contract, tested where it lives.
   left out. The registry-level tests (`CiDaemonRegistryReconnectTest`, `…TimeoutTest`) drive the
   same registry with a recording connection, and `targethost/LeaseStepRunnerTest` runs three steps
   over one scripted daemon connection (`daemonhost/ScriptedLeaseDaemon`).
-  <br>**It dials as what the edge forwards**: `X-Qits-User: <the run token's subject>` /
-  `X-Qits-Roles: qits:ci-run`, which the forward-auth mechanism reads into an identity, and then
+  <br>**It dials with its run's token**: a suite bearer for `<the run token's subject>` holding
+  `qits:ci-run` (`ContractBearers.bearer`; a packaged IT passes a `MockIdp` token instead), and then
   names its launch with `hello(daemonId)`. There is no launch header and no secret (qits-515). An
   identity is needed at all because websockets-next enforces `@RolesAllowed` at the **upgrade**;
   never assume a socket assertion that passes in TEST mode passes against the artifact.

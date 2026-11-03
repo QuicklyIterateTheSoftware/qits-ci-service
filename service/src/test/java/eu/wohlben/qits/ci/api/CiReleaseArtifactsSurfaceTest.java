@@ -10,6 +10,7 @@ import eu.wohlben.qits.ci.entity.CiReleaseAnnouncement;
 import eu.wohlben.qits.ci.persistence.CiReleaseAnnouncementRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.security.TestSecurity;
 import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.UUID;
@@ -26,6 +27,9 @@ import org.junit.jupiter.api.Test;
  * any more. How the join decides is {@code ReleaseJoinTest}'s, in the {@code ci} module.
  */
 @QuarkusTest
+// The caller is qits-projects, the platform peer that reads it; forward-auth's %test dev user
+// leaves qits-auth-core with qits-1338 (epic qits-543, qits-1359), so the suite names it.
+@TestSecurity(user = "dev-qits-projects", roles = {"qits:system"})
 public class CiReleaseArtifactsSurfaceTest {
 
   private static final String VERSION = "2026.1002.1";

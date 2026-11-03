@@ -97,7 +97,7 @@ public class BuildExecutionIT {
   /** The peer that asked for the build, and later polls the run it asked for. */
   static final String PLATFORM = "a platform service";
 
-  /** The person reading afterwards, through the edge's forward-auth headers. */
+  /** The person reading afterwards, with a signed-in person's bearer. */
   static final String OPERATOR = "an operator";
 
   /** A fixed readable id — see {@link BuildTriggerIT#REPO_ID} for why it is not a UUID. */

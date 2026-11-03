@@ -55,9 +55,9 @@ import org.junit.jupiter.api.Test;
  * nothing (a 403 there would tell an uncovered caller whether a run exists), and a run that has not
  * finished is still a 409.
  *
- * <p>The profile is {@link MachineGuardTest.GateOn} for {@code AgentReadAccessTest}'s reason: under
- * {@code %test} the forward-auth {@code dev} identity would answer every request as an admin, and
- * reusing that class's profile costs no second Quarkus start.
+ * <p>The profile is {@link MachineGuardTest.GateOn} for {@code AgentReadAccessTest}'s reason: the
+ * gate is what a deployment runs with, and reusing that class's profile costs no second Quarkus
+ * start.
  */
 @QuarkusTest
 @TestProfile(MachineGuardTest.GateOn.class)
@@ -253,14 +253,15 @@ class AgentRetryAccessTest {
   }
 
   @Test
-  void aForwardedAdminSessionRetriesWithNoProjectClaimAtAll() {
-    // The door's other real caller, unchanged by the widening: an operator arrives on the edge's
-    // forwarded X-Qits-User/X-Qits-Roles session, carries no bearer, is therefore not a machine,
-    // and never reaches the scope check. A guard tightened to "always a project" would answer this
-    // 403 and take the button away from the person it was written for.
+  @TestSecurity(user = "alice", roles = {"qits:admin"})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void aSignedInAdminRetriesWithNoProjectClaimAtAll() {
+    // The door's other real caller, unchanged by the widening: an operator's bearer holds
+    // qits:admin and no project claim, the platform-wide arm of the scope check. A guard tightened
+    // to "always a project" would answer this 403 and take the button away from the person it was
+    // written for. (It used to arrive on forward-auth's X-Qits-User / X-Qits-Roles session, which
+    // leaves qits-auth-core with qits-1338, epic qits-543.)
     given()
-        .header("X-Qits-User", "alice")
-        .header("X-Qits-Roles", "qits:admin")
         .when()
         .post("/ci/api/runs/" + finishedRun + "/retry")
         .then()

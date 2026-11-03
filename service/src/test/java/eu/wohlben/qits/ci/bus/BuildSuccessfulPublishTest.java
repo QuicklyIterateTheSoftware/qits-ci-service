@@ -18,6 +18,7 @@ import eu.wohlben.qits.ci.githost.StubGitHost;
 import io.quarkus.test.common.TestResourceScope;
 import io.quarkus.test.common.WithTestResource;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.security.TestSecurity;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.http.ContentType;
@@ -66,6 +67,9 @@ import org.junit.jupiter.api.Test;
  * for. A subscriber's own filtering is exactly the same operation: it subscribes by signature.
  */
 @QuarkusTest
+// The caller is a signed-in operator; forward-auth's %test dev user leaves qits-auth-core with
+// qits-1338 (epic qits-543, qits-1359), so the suite names it.
+@TestSecurity(user = "an-operator", roles = {"qits:admin"})
 @WithTestResource(value = StubGitHost.class, scope = TestResourceScope.GLOBAL)
 @TestProfile(BuildSuccessfulPublishTest.EventstreamOn.class)
 @WithTestResource(StubEventsServer.class)

@@ -150,8 +150,8 @@ public class CiDaemonSocketTest {
     String daemonId = launch("run-headers");
     java.util.Map<String, String> onQitsNet =
         java.util.Map.of(
-            FakeCiDaemon.USER_HEADER, "qits-ci-daemon",
-            FakeCiDaemon.ROLES_HEADER, "qits:system",
+            "Authorization",
+            eu.wohlben.qits.ci.contracts.ContractBearers.bearer("qits-ci-daemon", "qits:system"),
             "X-Qits-Ci-Daemon-Id", daemonId,
             "X-Qits-Ci-Daemon-Secret", "anything-at-all");
     try {

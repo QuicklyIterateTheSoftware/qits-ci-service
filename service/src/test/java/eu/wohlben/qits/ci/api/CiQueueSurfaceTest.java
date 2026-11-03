@@ -23,6 +23,7 @@ import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import eu.wohlben.qits.ci.persistence.CiStepRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.security.TestSecurity;
 import jakarta.inject.Inject;
 import java.time.Duration;
 import java.time.Instant;
@@ -64,6 +65,9 @@ import org.junit.jupiter.api.Test;
  * approximately.
  */
 @QuarkusTest
+// The caller is a signed-in operator; forward-auth's %test dev user leaves qits-auth-core with
+// qits-1338 (epic qits-543, qits-1359), so the suite names it.
+@TestSecurity(user = "an-operator", roles = {"qits:admin"})
 public class CiQueueSurfaceTest {
 
   private static final String TRIGGER_PATH = ".config/qits/ci-event-queue.yml";

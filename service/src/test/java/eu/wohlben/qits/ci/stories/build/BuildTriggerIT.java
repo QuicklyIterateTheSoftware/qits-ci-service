@@ -386,9 +386,9 @@ public class BuildTriggerIT {
 
   /**
    * The runs recorded for one repository, newest first — read as a <b>person</b> rather than as a
-   * machine. This service authenticates no human: the platform edge asserts {@code X-Qits-User} and
-   * {@code X-Qits-Roles}, and the bearer-only OIDC tenant lets a request carrying no {@code
-   * Authorization} header fall through to the header mechanism. Reading the listing that way is what
+   * machine: a signed-in person's bearer ({@code qits:admin}, no {@code project} claim) from the
+   * same idp, since forward-auth's {@code X-Qits-User} / {@code X-Qits-Roles} pair leaves
+   * qits-auth-core with qits-1338 (epic qits-543, qits-1359). Reading the listing that way is what
    * makes "an operator" an honest name for the arrow in the diagram.
    */
   private static List<Map<String, Object>> runsFor(String repoId) {

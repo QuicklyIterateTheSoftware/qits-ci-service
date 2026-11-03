@@ -21,6 +21,7 @@ import eu.wohlben.qits.ci.persistence.CiRunRepository;
 import eu.wohlben.qits.ci.persistence.CiStepRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.security.TestSecurity;
 import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.List;
@@ -51,6 +52,9 @@ import org.junit.jupiter.api.Test;
  * controls and the endpoint is asked about that instant rather than hoping to catch it.
  */
 @QuarkusTest
+// The caller is a signed-in operator; forward-auth's %test dev user leaves qits-auth-core with
+// qits-1338 (epic qits-543, qits-1359), so the suite names it.
+@TestSecurity(user = "an-operator", roles = {"qits:admin"})
 public class CiRunProgressSurfaceTest {
 
   private static final String TRIGGER_PATH = ".config/qits/ci-event-progress.yml";

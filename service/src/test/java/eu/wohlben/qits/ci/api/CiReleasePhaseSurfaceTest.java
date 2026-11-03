@@ -9,6 +9,7 @@ import eu.wohlben.qits.ci.githost.StubGitHost;
 import io.quarkus.test.common.TestResourceScope;
 import io.quarkus.test.common.WithTestResource;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.security.TestSecurity;
 import jakarta.inject.Inject;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -33,6 +34,9 @@ import org.junit.jupiter.api.Test;
  * for that class's reason: the candidate set is shared for the life of a Quarkus instance.
  */
 @QuarkusTest
+// The caller is qits-projects, the platform peer that reads it; forward-auth's %test dev user
+// leaves qits-auth-core with qits-1338 (epic qits-543, qits-1359), so the suite names it.
+@TestSecurity(user = "dev-qits-projects", roles = {"qits:system"})
 @WithTestResource(value = StubGitHost.class, scope = TestResourceScope.GLOBAL)
 public class CiReleasePhaseSurfaceTest {
 

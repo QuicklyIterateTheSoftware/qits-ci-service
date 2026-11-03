@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import eu.wohlben.qits.ci.daemonhost.FakeCiDaemon;
 import eu.wohlben.qits.ci.githost.StubGitHost;
 import eu.wohlben.qits.ci.testdb.EmbeddedPg;
+import eu.wohlben.qits.servicemock.idp.MockIdp;
 import io.quarkus.test.junit.QuarkusIntegrationTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
@@ -76,7 +77,7 @@ import org.junit.jupiter.api.Test;
  * qits-system target, and the stories play qits-system ({@code stories/support/StorySystem}).
  */
 @QuarkusIntegrationTest
-@TestProfile(CiPackagedSurfaceIT.PackagedUnderTarget.class)
+@TestProfile(CiPackagedSurfaceIT.PackagedWithIdp.class)
 public class CiPackagedSurfaceIT {
 
   /**
@@ -93,13 +94,46 @@ public class CiPackagedSurfaceIT {
    * The operator the two trigger probes arrive as. The manual trigger is {@code
    * @RolesAllowed({qits:admin, qits:system})} and the run listing admits those two and {@code
    * qits:agent}, and the launched artifact runs under neither {@code %dev} nor {@code %test}, so no
-   * forward-auth dev user stands in for a caller that names none: an anonymous POST is the 401
-   * answered before the resource is reached, which is what both probes got until they named one. The gate is off here, so the forward-auth pair
-   * is the identity — a person's forwarded session, the door's other real caller, whose arm of
-   * {@code CiEventController.scopeOf} evaluates against every project.
+   * dev user stands in for a caller that names none: an anonymous POST is the 401 answered before
+   * the resource is reached. The operator therefore presents a person's bearer from this run's
+   * {@link MockIdp} ({@link PackagedWithIdp}) — forward-auth's {@code X-Qits-User} / {@code
+   * X-Qits-Roles} pair leaves qits-auth-core with qits-1338 (epic qits-543, qits-1359). It carries
+   * {@code qits:admin} and no {@code project} claim, the arm of {@code CiEventController.scopeOf}
+   * that evaluates against every project.
    */
-  private static final Map<String, String> OPERATOR =
-      Map.of(FakeCiDaemon.USER_HEADER, "an-operator", FakeCiDaemon.ROLES_HEADER, "qits:admin");
+  private static Map<String, String> operator() {
+    return bearerOf("an-operator", "qits:admin");
+  }
+
+  /** The handshake or request headers of {@code subject} holding {@code role}, minted by the idp. */
+  private static Map<String, String> bearerOf(String subject, String role) {
+    return Map.of(
+        "Authorization",
+        "Bearer "
+            + MockIdp.attach()
+                .token()
+                .subject(subject)
+                .audience(TokenValidationBootstrapIT.PackagedWithMockIdp.AUDIENCE)
+                .groups(role)
+                .mint());
+  }
+
+  /**
+   * {@link PackagedUnderTarget} with the shipped OIDC tenant on against a {@link MockIdp}, so every
+   * caller's bearer is validated the way a deployment validates it. The machine gate stays off: this
+   * IT is about the surface, and {@code TokenValidationBootstrapIT} is where the gate is under test.
+   */
+  public static class PackagedWithIdp extends PackagedUnderTarget {
+
+    @Override
+    public Map<String, String> getConfigOverrides() {
+      MockIdp idp = MockIdp.ensureStarted();
+      Map<String, String> overrides = new java.util.LinkedHashMap<>(super.getConfigOverrides());
+      overrides.put("quarkus.oidc.tenant-enabled", "true");
+      overrides.put("quarkus.oidc.auth-server-url", idp.baseUrl());
+      return Map.copyOf(overrides);
+    }
+  }
 
   /**
    * Hands the launched artifact its two databases the way a deployment does — as the generic
@@ -173,6 +207,11 @@ public class CiPackagedSurfaceIT {
     }
   }
 
+  /** A run's {@code ci-run} token for {@code subject}, as the step's daemon presents it. */
+  private static Map<String, String> runToken(String subject) {
+    return bearerOf(subject, FakeCiDaemon.RUN_ROLE);
+  }
+
   @Test
   public void theApiDocumentAndItsUiAreServedUnderTheGatewaySegment() {
     // Both live under quarkus.http.non-application-root-path, which sits OUTSIDE quarkus.rest.path
@@ -192,7 +231,7 @@ public class CiPackagedSurfaceIT {
     // running. That endpoint is gone: a push is an SCMPublishCommit off the event log now, and what
     // would be wrong is a listener that does not subscribe — which no HTTP probe can see.
     given()
-        .headers(OPERATOR)
+        .headers(operator())
         .contentType(ContentType.JSON)
         .body("{}")
         .when()
@@ -290,7 +329,7 @@ public class CiPackagedSurfaceIT {
     // proving the endpoint is registered and reachable at /ci/daemon — and the server then closes
     // it 1008 at its Hello. A missing route fails the upgrade instead, with a 404.
     URI socket = URI.create("http://localhost:" + RestAssured.port + "/ci/daemon");
-    try (FakeCiDaemon daemon = FakeCiDaemon.dial(socket, "tok-ci-run-packaged-0")) {
+    try (FakeCiDaemon daemon = FakeCiDaemon.dial(socket, runToken("tok-ci-run-packaged-0"))) {
       daemon.hello("not-a-launched-daemon");
       assertEquals(
           (Short) (short) 1008,
@@ -305,14 +344,13 @@ public class CiPackagedSurfaceIT {
   public void theDaemonSocketAdmitsARunsTokenSubjectAtTheUpgrade() throws Exception {
     // A step's daemon (qits-477) arrives as its run's ci-run token — the role qits:ci-run, the
     // token's subject as its name, which is the one credential the socket takes (qits-516). The
-    // gate is off here, so the forward-auth pair carries that identity as the edge's validated JWT
-    // would with it on; @RolesAllowed is enforced at the upgrade either way, which is what only the
-    // artifact's own router can show. Admitted, the dial reaches the launch table and is refused
+    // idp mints that token here and the shipped tenant validates it; @RolesAllowed is enforced at
+    // the upgrade, which is what only the artifact's own router can show. Admitted, the dial reaches the launch table and is refused
     // there for the unknown launch it names — a subject compared against a real launch is
     // CiDaemonSocketTest's (right subject admitted, wrong one WRONG_RUN), since no launch can be
     // made in here.
     URI socket = URI.create("http://localhost:" + RestAssured.port + "/ci/daemon");
-    try (FakeCiDaemon daemon = FakeCiDaemon.dial(socket, "tok-ci-run-packaged-1")) {
+    try (FakeCiDaemon daemon = FakeCiDaemon.dial(socket, runToken("tok-ci-run-packaged-1"))) {
       daemon.hello("not-a-launched-daemon");
       assertEquals((Short) (short) 1008, daemon.awaitClose(Duration.ofSeconds(20)));
       assertEquals("UNKNOWN_DAEMON", daemon.closeReason());
@@ -330,7 +368,7 @@ public class CiPackagedSurfaceIT {
           403,
           FakeCiDaemon.refusedUpgradeStatus(
               socket,
-              Map.of(FakeCiDaemon.USER_HEADER, "somebody", FakeCiDaemon.ROLES_HEADER, role)),
+              bearerOf("somebody", role)),
           "a " + role + " caller must be refused at the daemon socket's upgrade");
     }
   }
@@ -344,8 +382,7 @@ public class CiPackagedSurfaceIT {
         java.util.List.of("/ci/api/runners", "/ci/api/runners/install.sh", "/ci/runners/socket")) {
       int status =
           given()
-              .header(FakeCiDaemon.USER_HEADER, "a-reader")
-              .header(FakeCiDaemon.ROLES_HEADER, "qits:agent")
+              .headers(bearerOf("a-reader", "qits:agent"))
               .when()
               .get(path)
               .then()
@@ -391,7 +428,7 @@ public class CiPackagedSurfaceIT {
             "event: " + eventName + "\nwhen:\n  - repoId: { exact: " + repoId + " }\nsteps: []\n");
 
     given()
-        .headers(OPERATOR)
+        .headers(operator())
         .contentType(ContentType.JSON)
         .body(
             Map.of(
@@ -426,7 +463,7 @@ public class CiPackagedSurfaceIT {
     // Settle it, so no later story's qits-system is asked a lease for this row (see the javadoc).
     String runId = String.valueOf(run.get("id"));
     given()
-        .headers(OPERATOR)
+        .headers(operator())
         .when()
         .post("/ci/api/runs/" + runId + "/cancel")
         .then()
@@ -434,7 +471,7 @@ public class CiPackagedSurfaceIT {
     assertEquals(
         "CANCELLED",
         given()
-            .headers(OPERATOR)
+            .headers(operator())
             .when()
             .get("/ci/api/runs/" + runId)
             .then()
@@ -509,7 +546,7 @@ public class CiPackagedSurfaceIT {
     }
     try {
       given()
-          .headers(OPERATOR)
+          .headers(operator())
           .when()
           .get("/ci/api/runs/" + gate + "/reports")
           .then()
@@ -519,7 +556,7 @@ public class CiPackagedSurfaceIT {
           .body("reports[0].highlights[0].text", org.hamcrest.Matchers.equalTo("coverage 80.95%"))
           .body("reports[0].highlights[0].value", org.hamcrest.Matchers.equalTo(80.95f));
       given()
-          .headers(OPERATOR)
+          .headers(operator())
           .when()
           .get("/ci/api/runs/" + gate + "/reports/" + report)
           .then()
@@ -527,7 +564,7 @@ public class CiPackagedSurfaceIT {
           .body("highlights[0].severity", org.hamcrest.Matchers.equalTo("good"))
           .body("payload.total.linesCovered", org.hamcrest.Matchers.equalTo(8120));
       given()
-          .headers(OPERATOR)
+          .headers(operator())
           .when()
           .get("/ci/api/runs/" + asking + "/baseline")
           .then()
@@ -536,7 +573,7 @@ public class CiPackagedSurfaceIT {
           .body("baseline.runId", org.hamcrest.Matchers.equalTo(gate))
           .body("baseline.releaseRequestId", org.hamcrest.Matchers.equalTo("rr-base"));
       given()
-          .headers(OPERATOR)
+          .headers(operator())
           .when()
           .get("/ci/api/runs/" + asking + "/baseline/reports/coverage")
           .then()
@@ -546,7 +583,7 @@ public class CiPackagedSurfaceIT {
       assertEquals(
           "{\"baseline\":null}",
           given()
-              .headers(OPERATOR)
+              .headers(operator())
               .when()
               .get("/ci/api/runs/" + gate + "/baseline")
               .then()
@@ -660,7 +697,7 @@ public class CiPackagedSurfaceIT {
     while (System.currentTimeMillis() < deadline) {
       List<Map<String, Object>> runs =
           given()
-              .headers(OPERATOR)
+              .headers(operator())
               .when()
               .get("/ci/api/runs?repositoryId=" + repoId)
               .then()
