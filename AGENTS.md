@@ -230,8 +230,8 @@ commissioning API is what mints the token, and `service/…/idp/` is the adapter
   `QUEUED`/`RUNNING` run, which this process is not holding right now, and which is older than ten
   minutes. **A listing it could not read reaps nothing**: `liveTokens()` answers an empty `Optional`
   rather than an empty list precisely so the two cannot be confused. It reaps no client.
-- **`RunGitRefs`** — the Git scope the commission states as `gitRefs` (C6 of the superproject's
-  `principal-bound-git-refs-plan.md`; the table is in `README.md`). It reads the run's own
+- **`RunGitRefs`** — the Git scope the commission states as `gitRefs` (C6 of epic qits-543, dossier
+  page "Plan (as of 2026-09-13)"; the table is in `README.md`). It reads the run's own
   `QITS_EVENT_NAME` and `QITS_EVENT_PAYLOAD` from the run's env.
   `RunCommissions` parses them with its own injected `ObjectMapper` and logs the scope at INFO
   (`Run <id> states gitRefs [...]`). **Never read a field of another bean**: an injected

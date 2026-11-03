@@ -12,7 +12,7 @@ import java.util.regex.Pattern;
 /**
  * The Git refs a CI run may push, read from the event that triggered it. The run's commission
  * states them as {@code gitRefs}, and qits-idp stamps them into every token of that client as
- * {@code git_refs} (contract C6 in the superproject's {@code principal-bound-git-refs-plan.md}).
+ * {@code git_refs} (contract C6 of epic qits-543, dossier page "Plan (as of 2026-09-13)").
  *
  * <p>Five answers:
  *
