@@ -18,13 +18,12 @@ import org.junit.jupiter.api.Test;
  * QUARKUS_OIDC_CLIENT_*} extras still in the container read by nothing — is {@link
  * OidcClientNeutralisationTest}, against a real environment source.
  *
- * <p><b>The idp address is DERIVED, which is why the value below reads {@code dev-}.</b> The
- * default spells {@code http://${QITS_ENVIRONMENT:dev}-qits-idp}, because an application's alias on
- * qits-net is {@code <environment>-<application>} for every service there is and qits-deployments
- * injects {@code QITS_ENVIRONMENT} into every container it starts. A surefire JVM gains no
- * environment variable, so what this case sees is the {@code dev} fallback, which is also this
- * estate's real environment; {@code DerivedEnvironmentAddressTest} is what asks the expression the
- * other question, with a real environment source under it.
+ * <p><b>Why the value below reads {@code dev-}.</b> The shipped default is the idp's edge host,
+ * {@code https://idp.qits.${QITS_DOMAIN}/idp} (qits-1414), with no default for the domain; the
+ * {@code %test} line keeps the old qits-net name {@code http://${QITS_ENVIRONMENT:dev}-qits-idp}
+ * only so the expansion resolves in a suite, and a surefire JVM gains no environment variable, so
+ * what this case sees is its {@code dev} fallback. {@code DerivedEnvironmentAddressTest} asks the
+ * deployed question, with a real environment source under it.
  */
 @QuarkusTest
 class QitsOidcClientShippedConfigTest {

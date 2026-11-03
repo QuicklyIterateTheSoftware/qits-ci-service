@@ -112,7 +112,8 @@ class ClientCallGuardTest {
       shipped.load(in);
     }
     String server = shipped.getProperty("quarkus.oidc.auth-server-url", "");
-    assertTrue(server.contains("qits-idp"), "the tenant reads qits-idp: " + server);
+    // qits-idp at its edge host, https://idp.qits.<domain>/idp (qits-1414).
+    assertTrue(server.startsWith("https://idp.qits."), "the tenant reads qits-idp: " + server);
     assertNull(
         shipped.getProperty("quarkus.oidc.token.issuer"),
         "the issuer is never configuration: discovery publishes it (qits-730)");
