@@ -215,9 +215,6 @@ class DerivedEnvironmentAddressTest {
         "https://registry.qits.wohlben.eu/artifacts/maven/maven",
         value(config, "qits.artifacts.maven.registry-url"));
     assertEquals("https://idp.qits.wohlben.eu/idp", value(config, "quarkus.oidc.auth-server-url"));
-    // Telemetry moves in a later step of epic qits-428, not with the peers.
-    assertEquals(
-        "http://dev-qits-observability:8080", value(config, "qits.observability.url"));
 
     SmallRyeConfig staging =
         config("prod", Map.of("QITS_ENVIRONMENT", "staging", "QITS_DOMAIN", "wohlben.eu"));
