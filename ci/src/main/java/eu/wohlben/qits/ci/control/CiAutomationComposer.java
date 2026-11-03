@@ -61,7 +61,11 @@ import java.util.regex.Pattern;
  * <p><b>No {@code checkout:}, on purpose.</b> The step fetches the fold itself, so the run is
  * recorded at the target's {@code main} head. A run recorded at the fold sha would publish a {@code
  * BuildSuccessful} or {@code BuildFailed} that qits-projects' CI gate reads as the fold's own
- * verdict.
+ * verdict. The daemon's worktree, and the submodules it materialises from {@code .gitmodules}, are
+ * nevertheless prepared at the payload's {@code foldSha} ({@code CiSlotSpecs.worktreeSha},
+ * qits-1836): at {@code main}'s head a fold that renames a submodule failed worktree preparation
+ * cloning a repository that no longer exists. So the prelude's checkout of {@code FETCH_HEAD} below
+ * lands on the commit the worktree already sits at.
  *
  * <p>The <b>prelude</b> refuses every payload value rather than quoting it, in the style of {@code
  * maintenance-bump.yml}: {@code kind} is {@code [a-z0-9-]+} and this file's; {@code branch} passes

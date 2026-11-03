@@ -799,19 +799,18 @@ public class LeaseStepRunner implements CiStepRunner {
     }
     leases.adopt(runId, hold.leaseId(), daemonId, token.subject());
     leases.recordContinuedLaunch(runId, hold.leaseId(), daemonId, token.subject());
+    Map<String, String> runEnv = continuation.runEnv() == null ? Map.of() : continuation.runEnv();
+    // The commit the daemon prepares the worktree at, which is the fold for a release-request
+    // automation and the run's own sha otherwise (qits-1836); the run stays recorded at its own.
+    String worktreeSha = CiSlotSpecs.worktreeSha(continuation.sha(), runEnv);
     Continue next =
         new Continue(
             runId,
             continuation.branch(),
-            continuation.sha(),
+            worktreeSha,
             token.token(),
             CiSlotSpecs.continueEnv(
-                plane.get(),
-                runId,
-                continuation.branch(),
-                continuation.sha(),
-                token,
-                continuation.runEnv() == null ? Map.of() : continuation.runEnv()));
+                plane.get(), runId, continuation.branch(), worktreeSha, token, runEnv));
     CiDaemonRegistry.Continuation answer =
         daemons.sendContinue(daemonId, next)
             ? daemons.awaitContinued(daemonId, Duration.ofSeconds(initTimeoutSeconds))

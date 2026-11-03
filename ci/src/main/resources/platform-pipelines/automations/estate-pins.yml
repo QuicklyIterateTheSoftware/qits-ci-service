@@ -132,9 +132,9 @@ script: |
     # THE PATH IS ONE OF TWO THINGS, and the postlude's `add -A` reads them differently.
     # POPULATED (qits-1696): since qits-1541 the step's worktree runs `git submodule update
     # --init` wherever a .gitmodules exists, automation runs included, so a declared submodule is
-    # a real checkout at main's old commit - and staging a populated submodule records ITS HEAD,
-    # which put the old sha straight back over the index entry while this line still printed
-    # `bumped`. So the checkout itself is moved to the tag's commit, fetched INTO it from the
+    # a real checkout at the FOLD's gitlink (qits-1836: the worktree is prepared at the fold, not
+    # at main's head) - and staging a populated submodule records ITS HEAD, which put the old sha
+    # straight back over the index entry while this line still printed `bumped`. So the checkout itself is moved to the tag's commit, fetched INTO it from the
     # sibling: it may be shallow, and the tag is the one name certain to carry the object. EMPTY
     # OR MISSING: an uninitialised submodule's empty directory reads as "unchanged" and keeps the
     # entry, but a MISSING one reads as a deletion and drops it - so a gitlink new to the tree

@@ -215,4 +215,104 @@ class CiSlotSpecsTest {
         "https://githost.qits.example.org/git/5ca0e7e9-repo",
         CiSlotSpecs.cloneUrl("https://githost.qits.example.org/", CiRepoRef.of("5ca0e7e9-repo")));
   }
+
+  // qits-1836: a release-request automation run is RECORDED at main's head but its worktree — and
+  // the submodules the daemon materialises from that commit's .gitmodules — is prepared at the fold.
+
+  private static final String MAIN_HEAD = "cafebabecafebabecafebabecafebabecafebabe";
+
+  private static final String FOLD = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f";
+
+  private static CiSlotSpecs.LeaseRun runOf(String eventName, String payload) {
+    CiSlotSpecs.LeaseRun sample = SlotFixtures.sampleRun();
+    return new CiSlotSpecs.LeaseRun(
+        sample.runId(),
+        sample.repo(),
+        "main",
+        MAIN_HEAD,
+        sample.daemonId(),
+        sample.daemonBinaryPath(),
+        sample.image(),
+        Map.of(
+            "QITS_EVENT_ID", "0b5f3c1e-0000-4000-8000-000000000002",
+            "QITS_EVENT_NAME", eventName,
+            "QITS_EVENT_OCCURRED_AT", "2026-11-03T10:00:00Z",
+            "QITS_EVENT_PAYLOAD", payload,
+            "QITS_VERSION", ""));
+  }
+
+  private static String automationPayload(String foldSha) {
+    return "{\"kind\":\"estate-pins\",\"branch\":\"maintenance/automations/estate-pins/x\","
+        + "\"baseRef\":\"release/42\","
+        + (foldSha == null ? "" : "\"foldSha\":\"" + foldSha + "\",")
+        + "\"commitPaths\":[\"components\"]}";
+  }
+
+  private static Map<String, String> leaseEnv(CiSlotSpecs.LeaseRun run) {
+    return CiSlotSpecs.compose(
+            SlotFixtures.shippedSettings().settings(),
+            SlotFixtures.plane(),
+            run,
+            SlotFixtures.token())
+        .env();
+  }
+
+  private static Map<String, String> continueEnv(CiSlotSpecs.LeaseRun run) {
+    return CiSlotSpecs.continueEnv(
+        SlotFixtures.plane(),
+        run.runId(),
+        run.branch(),
+        run.sha(),
+        SlotFixtures.token(),
+        run.env());
+  }
+
+  @Test
+  void anAutomationRunsWorktreeIsTheFoldWhileTheRunStaysRecordedAtMainsHead() {
+    CiSlotSpecs.LeaseRun run = runOf("ReleaseRequestAutomation", automationPayload(FOLD));
+
+    assertEquals(FOLD, leaseEnv(run).get("QITS_CI_SHA"), "the lease prepares the fold");
+    assertEquals(FOLD, continueEnv(run).get("QITS_CI_SHA"), "and so does a Continue");
+    assertEquals("main", leaseEnv(run).get("QITS_CI_BRANCH"));
+    assertEquals(MAIN_HEAD, run.sha(), "the recorded sha is untouched");
+
+    String sha256Fold = "ab".repeat(32);
+    CiSlotSpecs.LeaseRun sha256Run =
+        runOf("ReleaseRequestAutomation", automationPayload(sha256Fold));
+    assertEquals(sha256Fold, leaseEnv(sha256Run).get("QITS_CI_SHA"), "a sha-256 fold is one too");
+  }
+
+  @Test
+  void aRunOfAnyOtherEventPreparesItsOwnSha() {
+    CiSlotSpecs.LeaseRun run = runOf("ReleaseRequestChanged", automationPayload(FOLD));
+
+    assertEquals(MAIN_HEAD, leaseEnv(run).get("QITS_CI_SHA"), "a foldSha elsewhere is not ours");
+    assertEquals(MAIN_HEAD, continueEnv(run).get("QITS_CI_SHA"));
+    assertEquals(
+        "cafebabecafebabecafebabecafebabecafebabe",
+        SlotFixtures.compose().env().get("QITS_CI_SHA"));
+    assertEquals(MAIN_HEAD, CiSlotSpecs.worktreeSha(MAIN_HEAD, Map.of()));
+    assertEquals(MAIN_HEAD, CiSlotSpecs.worktreeSha(MAIN_HEAD, null));
+  }
+
+  @Test
+  void anAutomationPayloadWithNoPlausibleFoldShaKeepsTheRunsOwnSha() {
+    for (String payload :
+        List.of(
+            automationPayload(null),
+            automationPayload(""),
+            automationPayload("0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F"),
+            automationPayload("0f0f0f0"),
+            automationPayload("0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0"),
+            automationPayload("--upload-pack=x0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"),
+            "{\"foldSha\":42}",
+            "{\"foldSha\":[\"" + FOLD + "\"]}",
+            "not json",
+            "",
+            "null")) {
+      CiSlotSpecs.LeaseRun run = runOf("ReleaseRequestAutomation", payload);
+      assertEquals(MAIN_HEAD, leaseEnv(run).get("QITS_CI_SHA"), payload);
+      assertEquals(MAIN_HEAD, continueEnv(run).get("QITS_CI_SHA"), payload);
+    }
+  }
 }

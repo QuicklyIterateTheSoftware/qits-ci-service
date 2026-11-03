@@ -1,5 +1,9 @@
 package eu.wohlben.qits.ci.targethost;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import eu.wohlben.qits.ci.control.CiAutomationComposer;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiSlot;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
@@ -11,6 +15,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.regex.Pattern;
 
 /**
  * <b>What one CI lease is</b> (epic qits-1481, "CI in a slot"): the {@code LeaseSpec{image, env,
@@ -78,8 +83,11 @@ public final class CiSlotSpecs {
       IdpCommissioner.CommissionedToken token) {
     Objects.requireNonNull(token, "a lease is never composed without its run's token");
     // The run-scoped keys, from the one place a Continue's env is made too (epic qits-732), so the
-    // two can never drift; laid in at their own positions below.
-    Map<String, String> runScoped = runEnv(plane, run.runId(), run.branch(), run.sha(), token);
+    // two can never drift; laid in at their own positions below. QITS_CI_SHA is the worktree's
+    // commit, which for a release-request automation is its fold rather than the recorded main
+    // head (qits-1836, worktreeSha).
+    Map<String, String> runScoped =
+        runEnv(plane, run.runId(), run.branch(), worktreeSha(run.sha(), run.env()), token);
     Map<String, String> env = new LinkedHashMap<>();
     // The daemon's contract, as environment: it needs all of it before a socket exists.
     env.put("QITS_CI_DAEMON_ID", value(run.daemonId()));
@@ -194,6 +202,8 @@ public final class CiSlotSpecs {
    * {@code QITS_EVENT_*} of its trigger and {@code QITS_VERSION} — in the order and under the same
    * policy-key guard {@link #compose} writes them. Leaving the extras out handed a release run the
    * held QA run's event, with a blank {@code QITS_VERSION}, and every release step failed on it.
+   * Its {@code QITS_CI_SHA} is {@link #worktreeSha} of {@code sha} and those extras, exactly as
+   * {@link #compose}'s is (qits-1836).
    */
   public static Map<String, String> continueEnv(
       CiSlotAddresses.Plane plane,
@@ -202,13 +212,59 @@ public final class CiSlotSpecs {
       String sha,
       IdpCommissioner.CommissionedToken token,
       Map<String, String> extras) {
-    Map<String, String> env = new LinkedHashMap<>(runEnv(plane, runId, branch, sha, token));
+    Map<String, String> env =
+        new LinkedHashMap<>(runEnv(plane, runId, branch, worktreeSha(sha, extras), token));
     for (Map.Entry<String, String> extra : new TreeMap<>(extras).entrySet()) {
       if (!POLICY_ENV.contains(extra.getKey())) {
         env.put(extra.getKey(), value(extra.getValue()));
       }
     }
     return env;
+  }
+
+  /** What a fold sha may spell: sha-1 or sha-256, lowercase — the automation prelude's own rule. */
+  private static final Pattern FOLD_SHA = Pattern.compile("[0-9a-f]{40}|[0-9a-f]{64}");
+
+  /**
+   * The commit a lease's worktree is made at — its {@code $QITS_CI_SHA} — for a run recorded at
+   * {@code recordedSha} with the run-scoped extras {@code runEnv} (qits-1836). For every run it is
+   * the recorded sha, except a run of a composed {@code ReleaseRequestAutomation} trigger ({@link
+   * CiAutomationComposer#EVENT}): that run is deliberately <b>recorded</b> at the target's {@code
+   * main} head, so its {@code BuildSuccessful}/{@code BuildFailed} is never read as the fold's own
+   * verdict, but its worktree is prepared at the payload's {@code foldSha}. The daemon makes the
+   * worktree at {@code $QITS_CI_SHA} and runs {@code git submodule init/update} from that commit's
+   * {@code .gitmodules}, before the composed prelude ever fetches and checks out the fold: at
+   * {@code main}'s head, a fold that renames a submodule failed every run {@code INIT_FAILED}
+   * cloning a repository the git host no longer has (qits-qits, the old {@code
+   * qits-platform-access-cli}). At the fold, the submodules are materialised from the fold's {@code
+   * .gitmodules} at the fold's gitlinks, and the prelude's checkout lands on the same commit.
+   *
+   * <p>Only the worktree moves: the run's row, its {@code main@<head>} label, every build event's
+   * {@code commitSha} and the {@code SHA_GONE} probe all stay at the recorded sha — a fold gone from
+   * the mirror is one failed step, since {@code main}'s head is still held. A payload without a
+   * {@code foldSha} the prelude would accept (40 or 64 lowercase hex) keeps the recorded sha, and
+   * the prelude then refuses the payload itself. The mapper is local rather than static: a static
+   * one would be built into the native image heap, and this is read once per automation run.
+   */
+  public static String worktreeSha(String recordedSha, Map<String, String> runEnv) {
+    if (runEnv == null || !CiAutomationComposer.EVENT.equals(runEnv.get("QITS_EVENT_NAME"))) {
+      return recordedSha;
+    }
+    String payload = runEnv.get("QITS_EVENT_PAYLOAD");
+    if (payload == null || payload.isBlank()) {
+      return recordedSha;
+    }
+    JsonNode fold;
+    try {
+      JsonNode root = new ObjectMapper().readTree(payload);
+      fold = root == null ? null : root.get("foldSha");
+    } catch (JsonProcessingException notJson) {
+      return recordedSha;
+    }
+    if (fold == null || !fold.isTextual() || !FOLD_SHA.matcher(fold.asText()).matches()) {
+      return recordedSha;
+    }
+    return fold.asText();
   }
 
   /**
