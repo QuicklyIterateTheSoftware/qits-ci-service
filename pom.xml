@@ -155,7 +155,7 @@
         <qits.bootstrap-cli-pacts-qits-ci-service.version>2026.1023.225504</qits.bootstrap-cli-pacts-qits-ci-service.version>
         <qits.maintenance-service-pacts-qits-ci-service.version>2026.1026.180147</qits.maintenance-service-pacts-qits-ci-service.version>
         <qits.orchestrator-service-pacts-qits-ci-service.version>2026.1018.172917</qits.orchestrator-service-pacts-qits-ci-service.version>
-        <qits.platform-access-cli-pacts-qits-ci-service.version>2026.1027.110304</qits.platform-access-cli-pacts-qits-ci-service.version>
+        <qits.platform-access-monorepo-pacts-qits-ci-service.version>2026.1103.101116</qits.platform-access-monorepo-pacts-qits-ci-service.version>
         <qits.projects-service-pacts-qits-ci-service.version>2026.1018.195756</qits.projects-service-pacts-qits-ci-service.version>
         <!-- qits-workspaces-service's consumer pact (epic qits-1681): the run read a declared wait on a
              run makes (getRun). The first pin is set by hand; later ones are maintenance bumps. -->
