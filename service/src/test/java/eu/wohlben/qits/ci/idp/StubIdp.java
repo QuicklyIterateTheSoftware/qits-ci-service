@@ -25,6 +25,17 @@ import java.util.concurrent.atomic.AtomicInteger;
  * /idp/api/tokens}, for the opaque tokens a runner registers with. Everything a test wants to claim is recorded
  * rather than inferred: the bodies posted, the {@code Authorization} headers, the ids deleted and
  * the number of listings read.
+ *
+ * <p><b>A fourth route, {@code POST /idp/token}, is quarkus-oidc-client's own</b> — the mint {@code
+ * githost/IdpGitHostBearer} spends on every outbound call now that it fails closed with no bearer
+ * at all (owner ruling 2026-10-18, qits-1329): {@code githost/HttpGitHostRepoListing}, {@code
+ * githost/HttpGitConfigSource} and {@code projects/HttpProjectsRepoListing} each open no socket
+ * without one. It is deliberately NOT recorded alongside the three above — nothing here taps it
+ * into a story's network diagram — the same reason {@code qits-maintenance-service}'s and {@code
+ * qits-deployments-service}'s equivalent idp-token stubs (epic qits-543) leave their mint
+ * unanswered-for-the-diagram: quarkus-oidc-client caches the token and re-mints only once it
+ * expires, so which story's run happens to make this process's first git-host read is a question of
+ * run order, and an edge that moved with run order would never let a {@code networkHash} settle.
  */
 public final class StubIdp implements AutoCloseable {
 
@@ -95,12 +106,20 @@ public final class StubIdp implements AutoCloseable {
           }
           if (req.path().endsWith("/token")) {
             // The oidc client's own token endpoint, which a process with its qits client switched
-            // on asks for a bearer to present to its peers. This stub mints none: the caller then
-            // sends its request without the header, which is its documented behaviour.
+            // on asks for a bearer to present to its peers: the git host read
+            // (githost/HttpGitHostRepoListing, githost/HttpGitConfigSource) and the catalogue read
+            // (projects/HttpProjectsRepoListing). Both fail CLOSED with no bearer at all now (owner
+            // ruling 2026-10-18, qits-1329) — there is no forwarded X-Qits-User/X-Qits-Roles pair to
+            // fall back to any more — so this used to refuse the mint on the (then correct) theory
+            // that the caller would send its request bare regardless. It mints instead, so every
+            // packaged story that reads the git host gets the bearer it now requires.
             req.response()
-                .setStatusCode(400)
+                .setStatusCode(200)
                 .putHeader("Content-Type", "application/json")
-                .end("{\"error\":\"unsupported_grant_type\"}");
+                .end(
+                    "{\"access_token\":\""
+                        + GIT_HOST_BEARER_TOKEN
+                        + "\",\"token_type\":\"Bearer\",\"expires_in\":3600}");
             return;
           }
           if (req.method() == HttpMethod.POST) {
@@ -243,6 +262,16 @@ public final class StubIdp implements AutoCloseable {
   public static final String SERVICE_CLIENT_ID = "dev-qits-ci";
 
   public static final String SERVICE_SECRET = "service-s3cr3t";
+
+  /**
+   * The bearer minted for every {@code quarkus.oidc-client.qits} token request (qits-1329, qits-543
+   * follow-up). Opaque is fine: nothing on this stub's far side validates it, since what presents it
+   * is this very process's own outbound client ({@code IdpGitHostBearer}) and the only consumer of
+   * the header is {@code StubGitHost}, which does not check it either. Public so a story can assert
+   * the exact bearer a request carried, the way {@code StoryPeers}/{@code StoryProfile} do in the
+   * sibling repositories this fix mirrors.
+   */
+  public static final String GIT_HOST_BEARER_TOKEN = "stub-idp-qits-client-token";
 
   /**
    * A commissioner pointed at this stub, wired by hand.

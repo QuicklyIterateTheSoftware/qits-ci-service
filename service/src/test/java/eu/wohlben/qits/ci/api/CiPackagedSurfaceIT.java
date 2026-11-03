@@ -182,17 +182,26 @@ public class CiPackagedSurfaceIT {
       // (qits-1391). This class asks about the packaged surface, and the stories read the git
       // host's own listing, so both are put back to how they always ran: the gate off (the mock-idp
       // profile turns it on again) and the catalogue blank, which reads as unset.
-      return Map.of(
-          "qits.auth.machine.required", "false",
-          "qits.ci.projects-url", "",
-          "qits.ci.domain", DOMAIN,
-          "QITS_RESOURCE_DB_URL", databaseUrl(CI_URL_PROPERTY, "ci_packaged_it"),
-          "QITS_RESOURCE_DB_USERNAME", EmbeddedPg.USER,
-          "QITS_RESOURCE_DB_PASSWORD", EmbeddedPg.PASSWORD,
+      Map<String, String> overrides = new java.util.LinkedHashMap<>();
+      overrides.put("qits.auth.machine.required", "false");
+      overrides.put("qits.ci.projects-url", "");
+      overrides.put("qits.ci.domain", DOMAIN);
+      overrides.put("QITS_RESOURCE_DB_URL", databaseUrl(CI_URL_PROPERTY, "ci_packaged_it"));
+      overrides.put("QITS_RESOURCE_DB_USERNAME", EmbeddedPg.USER);
+      overrides.put("QITS_RESOURCE_DB_PASSWORD", EmbeddedPg.PASSWORD);
+      overrides.put(
           "QITS_RESOURCE_EVENTSTREAM_URL",
-              databaseUrl(EVENTSTREAM_URL_PROPERTY, "eventstream_packaged_it"),
-          "QITS_RESOURCE_EVENTSTREAM_USERNAME", EmbeddedPg.USER,
-          "QITS_RESOURCE_EVENTSTREAM_PASSWORD", EmbeddedPg.PASSWORD);
+          databaseUrl(EVENTSTREAM_URL_PROPERTY, "eventstream_packaged_it"));
+      overrides.put("QITS_RESOURCE_EVENTSTREAM_USERNAME", EmbeddedPg.USER);
+      overrides.put("QITS_RESOURCE_EVENTSTREAM_PASSWORD", EmbeddedPg.PASSWORD);
+      // The qits oidc client, pointed at the same unrecorded idp-token stub every story profile
+      // shares (stories/support/StoryRunTokens) — qits-1329, epic qits-543: with no bearer to
+      // present, githost/HttpGitHostRepoListing opens no socket at all, and the one run this class
+      // records of its own (aTriggeredRunGoesThroughYamlFlywayAndPanache) pushes a trigger file
+      // onto a repository the engine has never seen a run for, which only the git host's own
+      // listing — not the "known" set — can offer as a candidate.
+      overrides.putAll(eu.wohlben.qits.ci.stories.support.StoryRunTokens.configOverrides());
+      return Map.copyOf(overrides);
     }
 
     private static synchronized String databaseUrl(String property, String database) {

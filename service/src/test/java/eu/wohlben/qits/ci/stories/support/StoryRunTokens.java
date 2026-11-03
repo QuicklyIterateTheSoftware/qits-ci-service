@@ -4,15 +4,23 @@ import eu.wohlben.qits.ci.idp.StubIdp;
 import java.util.Map;
 
 /**
- * Where the LAUNCHED qits-ci commissions a run's {@code ci-run} token from: a {@link StubIdp}
- * answering qits-idp's {@code /api/tokens}, started once per failsafe JVM before the application.
+ * Where the LAUNCHED qits-ci commissions a run's {@code ci-run} token from, and — since qits-1329
+ * (epic qits-543) — where it mints the bearer it now presents to every platform peer it reads:
+ * a {@link StubIdp} answering qits-idp's {@code /api/tokens} AND quarkus-oidc-client's own {@code
+ * /token}, started once per failsafe JVM before the application.
  *
- * <p><b>Why a launched process needs one.</b> A step's only credential is its run's token, and a
- * qits-ci that commissions nothing launches no step at all (qits-515) — so a story that wants a
- * {@code Launch} to read needs the process under test to be able to mint. The shipped posture has
- * the qits oidc client OFF; these overrides turn it on and point it here, which is the posture a
- * deployed platform takes. {@code MockIdp}, which the same profile starts, is a different surface —
- * it signs the JWTs this service VALIDATES — and answers no commissioning call.
+ * <p><b>Why a launched process needs one, twice over.</b> A step's only credential is its run's
+ * token, and a qits-ci that commissions nothing launches no step at all (qits-515) — so a story
+ * that wants a {@code Launch} to read needs the process under test to be able to mint one. And
+ * since the owner's 2026-10-18 ruling, {@code githost/HttpGitHostRepoListing} and {@code
+ * githost/HttpGitConfigSource} fail CLOSED with no {@code X-Qits-User}/{@code X-Qits-Roles}
+ * fallback when the {@code qits} client has no bearer to give — so a story that pushes a trigger
+ * file onto a freshly seeded repository needs the same client able to mint, or the engine never
+ * learns the repository is a candidate at all (it is not yet "known": no run has ever been
+ * recorded for it). One client, one stub, both needs. The shipped posture has the qits oidc client
+ * OFF; these overrides turn it on and point it here, which is the posture a deployed platform
+ * takes. {@code MockIdp}, which the same profile starts, is a different surface — it signs the
+ * JWTs this service VALIDATES — and answers no commissioning call and no token mint either.
  *
  * <p><b>One server, found again through a system property</b>, for {@code MockIdp.ensureStarted}'s
  * reason: a profile is instantiated in more than one classloader, a static field is not shared
