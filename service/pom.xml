@@ -319,8 +319,8 @@
         </dependency>
         <dependency>
             <groupId>eu.wohlben.qits</groupId>
-            <artifactId>qits-platform-access-cli-pacts-qits-ci-service</artifactId>
-            <version>${qits.platform-access-cli-pacts-qits-ci-service.version}</version>
+            <artifactId>qits-platform-access-monorepo-pacts-qits-ci-service</artifactId>
+            <version>${qits.platform-access-monorepo-pacts-qits-ci-service.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
