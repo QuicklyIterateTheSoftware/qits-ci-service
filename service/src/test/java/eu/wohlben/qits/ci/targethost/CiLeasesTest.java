@@ -303,6 +303,79 @@ class CiLeasesTest {
     assertNull(CiLeases.State.parse("BOGUS"));
   }
 
+  // --- the reconcile's stale listing (qits-1827) -------------------------------------------------
+
+  /**
+   * The live incident: the listing was taken before the lease was asked, so it lacks a lease the
+   * run's row and launch already name. The read of the lease answers it {@code QUEUED}, and the run
+   * is left to wait for it — not claimed, not failed, its token and its lease kept.
+   */
+  @Test
+  void aLeaseTheListingPredatesIsReadAndAQueuedOneLeftAlone() {
+    leases.requestNow(RUN);
+    ((RecordingSystem) leases.system).read =
+        Optional.of(
+            new SystemLeases.LeaseView(LEASE, RUN, "QUEUED", null, null, null, Instant.now()));
+
+    leases.reconcile();
+
+    assertTrue(calls.contains("GET /system/api/leases/" + LEASE), calls.toString());
+    assertFalse(calls.stream().anyMatch(call -> call.startsWith("claim")), calls.toString());
+    assertFalse(calls.stream().anyMatch(call -> call.startsWith("DELETE")), calls.toString());
+    assertFalse(executed.isDone(), "nothing drives the run");
+    assertEquals(LEASE, leases.launchOf(RUN).orElseThrow().leaseId(), "the launch is still held");
+    assertTrue(idp.deletedTokens.isEmpty(), "the token is kept");
+    assertFalse(steps.endedLeases().containsKey(RUN), "the step seam is told nothing");
+  }
+
+  /** Not listed, and the read answers 404: the lease really is gone, and the run is told so. */
+  @Test
+  void aLeaseNeitherListedNorReadableIsGone() throws Exception {
+    leases.requestNow(RUN);
+
+    leases.reconcile();
+
+    assertTrue(calls.contains("GET /system/api/leases/" + LEASE), calls.toString());
+    assertTrue(idp.deletedTokens.contains("token-1"), "the token goes with the lease");
+    assertEquals(RUN, executed.get(10, TimeUnit.SECONDS), "claimed, so its first step fails");
+    assertTrue(calls.contains("claim " + RUN + " on null"), calls.toString());
+    assertTrue(
+        steps.endedLeases().get(RUN).contains("lease " + LEASE + " is gone from qits-system"),
+        steps.endedLeases().toString());
+  }
+
+  /** Not listed, and the read answers it ended: the run ends in the lease's own words. */
+  @Test
+  void aLeaseTheReadFindsEndedEndsTheRunInItsOwnWords() throws Exception {
+    leases.requestNow(RUN);
+    SystemLeases.LeaseView ended =
+        new SystemLeases.LeaseView(LEASE, RUN, "ENDED", TARGET, 1, "the target went away", null);
+    ((RecordingSystem) leases.system).read = Optional.of(ended);
+
+    leases.reconcile();
+
+    assertTrue(idp.deletedTokens.contains("token-1"));
+    assertEquals(RUN, executed.get(10, TimeUnit.SECONDS));
+    assertEquals(CiLeases.describe(ended), steps.endedLeases().get(RUN));
+  }
+
+  /** Not listed, and the read does not answer: nothing about the run changes this pass. */
+  @Test
+  void aLeaseThatCannotBeReadIsNeverReadAsGone() {
+    leases.requestNow(RUN);
+    ((RecordingSystem) leases.system).readDown = true;
+
+    leases.reconcile();
+
+    assertTrue(calls.contains("GET /system/api/leases/" + LEASE), calls.toString());
+    assertFalse(calls.stream().anyMatch(call -> call.startsWith("claim")), calls.toString());
+    assertFalse(calls.stream().anyMatch(call -> call.startsWith("DELETE")), calls.toString());
+    assertFalse(executed.isDone());
+    assertTrue(leases.launchOf(RUN).isPresent());
+    assertTrue(idp.deletedTokens.isEmpty());
+    assertFalse(steps.endedLeases().containsKey(RUN));
+  }
+
   // --- out-of-memory kills (qits-1818) -----------------------------------------------------------
 
   @Test
@@ -495,11 +568,22 @@ class CiLeasesTest {
       return new LeaseView(LEASE, request.ownerRef(), "QUEUED", null, null, null, Instant.now());
     }
 
+    /** What a read of one lease answers: empty is a 404. */
+    volatile Optional<LeaseView> read = Optional.empty();
+
+    /** A read of one lease that does not answer at all. */
+    volatile boolean readDown;
+
     @Override
     public Optional<LeaseView> get(UUID leaseId) {
-      return Optional.empty();
+      calls.add("GET /system/api/leases/" + leaseId);
+      if (readDown) {
+        throw new SystemUnavailable("GET /system/api/leases/" + leaseId + " did not answer", 0);
+      }
+      return read;
     }
 
+    /** The listing: never this run's lease, as a listing taken before it was asked would be. */
     @Override
     public List<LeaseView> list() {
       return List.of();
@@ -552,6 +636,17 @@ class CiLeasesTest {
     @Override
     public CiRun runRow(String runId) {
       return row;
+    }
+
+    /** The one row, once it holds a lease — what the reconcile walks. */
+    @Override
+    public List<CiRun> leasedRuns() {
+      return row.leaseId == null ? List.of() : List.of(row);
+    }
+
+    @Override
+    public List<String> queuedWithoutLease() {
+      return List.of();
     }
 
     /** {@link CiRunService#recordOomKills}'s contract on the one row: raised only, this lease only. */
