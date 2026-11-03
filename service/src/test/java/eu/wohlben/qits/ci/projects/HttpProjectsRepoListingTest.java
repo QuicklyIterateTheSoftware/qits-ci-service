@@ -41,10 +41,10 @@ public class HttpProjectsRepoListingTest {
   /** Every request the stub answered — the cache's assertion is a count. */
   private final AtomicInteger reads = new AtomicInteger();
 
-  /** Every path and role header seen, so the url shape and the identity are asserted, not assumed. */
+  /** Every path and bearer header seen, so the url shape and the identity are asserted, not assumed. */
   private final List<String> paths = Collections.synchronizedList(new ArrayList<>());
 
-  private final List<String> roles = Collections.synchronizedList(new ArrayList<>());
+  private final List<String> authorizations = Collections.synchronizedList(new ArrayList<>());
 
   private volatile int status = 200;
   private volatile String body = "{\"repositories\":[]}";
@@ -57,7 +57,7 @@ public class HttpProjectsRepoListingTest {
         req -> {
           reads.incrementAndGet();
           paths.add(req.path());
-          roles.add(req.getHeader("X-Qits-Roles"));
+          authorizations.add(req.getHeader("Authorization"));
           req.response()
               .setStatusCode(status)
               .putHeader("Content-Type", "application/json")
@@ -79,7 +79,7 @@ public class HttpProjectsRepoListingTest {
   }
 
   @Test
-  public void theCatalogueIsReadFromTheProjectsApiAndCarriesTheSystemRole() {
+  public void theCatalogueIsReadFromTheProjectsApiAndCarriesTheQitsOidcClientsBearer() {
     body =
         "{\"repositories\":["
             + "{\"id\":\"a1\",\"projectId\":\"qits\",\"name\":\"qits-ci\",\"mainBranch\":\"main\"},"
@@ -90,7 +90,17 @@ public class HttpProjectsRepoListingTest {
             new CiRepoRef("a1", "qits", "qits-ci"), new CiRepoRef("b2", "qits", "qits-blobstore")),
         listing().repositories());
     assertEquals(List.of("/projects/api/repositories"), paths);
-    assertEquals(List.of("qits:system"), roles, "the role the endpoint's contract asks for");
+    assertEquals(
+        List.of("Bearer machine-token"),
+        authorizations,
+        "the qits oidc client's bearer, never an X-Qits-User/X-Qits-Roles pair");
+  }
+
+  @Test
+  public void withNoBearerTheCallFailsClosedAndOpensNoSocket() {
+    // Owner ruling 2026-10-18: no pair as a fallback when the client is off.
+    assertTrue(listing("http://127.0.0.1:" + port, null).repositories().isEmpty());
+    assertEquals(0, reads.get(), "no socket is opened with no bearer from the qits oidc client");
   }
 
   @Test
@@ -212,9 +222,14 @@ public class HttpProjectsRepoListingTest {
   }
 
   private HttpProjectsRepoListing listing(String projectsUrl) {
+    return listing(projectsUrl, "machine-token");
+  }
+
+  private HttpProjectsRepoListing listing(String projectsUrl, String bearer) {
     HttpProjectsRepoListing listing = new HttpProjectsRepoListing();
     listing.projectsUrl = Optional.of(projectsUrl);
     listing.objectMapper = new ObjectMapper();
+    listing.gitHostBearer = () -> Optional.ofNullable(bearer);
     listing.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
     listing.buildClient();
     return listing;

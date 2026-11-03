@@ -25,13 +25,19 @@ public final class GitHostClients {
     return source;
   }
 
-  /** {@link HttpGitHostRepoListing} against {@code gitHostUrl}. */
-  public static HttpGitHostRepoListing repoListing(String gitHostUrl) {
+  /** {@link HttpGitHostRepoListing} against {@code gitHostUrl}, presenting {@code bearer}. */
+  public static HttpGitHostRepoListing repoListing(String gitHostUrl, String bearer) {
     HttpGitHostRepoListing listing = new HttpGitHostRepoListing();
     listing.gitHostUrl = gitHostUrl;
     listing.objectMapper = new ObjectMapper();
+    listing.gitHostBearer = () -> Optional.ofNullable(bearer);
     listing.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
     listing.buildClient();
     return listing;
+  }
+
+  /** {@link #repoListing(String, String)} with a bearer every pact row may present. */
+  public static HttpGitHostRepoListing repoListing(String gitHostUrl) {
+    return repoListing(gitHostUrl, "machine-token");
   }
 }
