@@ -60,12 +60,14 @@ import org.junit.jupiter.api.Test;
  * is the case that must never go back to 403; the two beside it keep the widening where the ruling
  * put it.
  *
- * <p>{@code POST /ci/api/runs/{runId}/retry} is beside the cancel and is the one write here that a
- * non-person may press: {@code qits:admin} plus {@code qits:agent}, with the run's repository
- * checked against the token's project claim (owner ruling, 2026-09-19 — an agent in front of a red
- * release-request gate is the caller it exists for). {@code qits:system} is still absent, so a peer
- * service granted every project is refused, which is the case kept here; the agent's own two sides
- * are {@code AgentRetryAccessTest}'s.
+ * <p>{@code POST /ci/api/runs/{runId}/retry} and {@code POST /ci/api/runs/{runId}/cancel} are the
+ * two run-scoped writes here that a non-person may press: {@code qits:admin} plus {@code
+ * qits:agent}, with the run's repository checked against the token's project claim (owner ruling,
+ * 2026-09-19 for the retry — an agent in front of a red release-request gate is the caller it
+ * exists for — and qits-536 for the cancel, on the same terms). {@code qits:system} is absent from
+ * both, so a peer service is refused whether it is granted every project or names none, which are
+ * the cases kept here; the agent's own sides are {@code AgentRetryAccessTest}'s and {@code
+ * AgentCancelAccessTest}'s.
  *
  * <p>The rule they enforced is unchanged, and is why this file stays: a NEW write method that simply
  * omits {@code machineAuth.require*} ships unguarded and nothing says so. Add a write endpoint, add
@@ -85,8 +87,8 @@ import org.junit.jupiter.api.Test;
  * its own 403. Which caller each read serves is spelled out per case: the daemon pin takes the
  * machine role a peer holds, and the run and repository reads take <b>the pair</b> —
  * {@code qits:system} is the machine role, {@code qits:admin} the human one, and both of those
- * callers legitimately read. What mutates is not widened with them: cancelling a run stays
- * {@code qits:admin} alone.
+ * callers legitimately read. What mutates is not widened with them: cancelling or retrying a run by
+ * id never takes {@code qits:system}.
  */
 @QuarkusTest
 @TestProfile(MachineGuardTest.GateOn.class)
@@ -498,9 +500,22 @@ public class MachineGuardTest {
         @Claim(key = "aud", value = OWN_AUDIENCE),
         @Claim(key = QitsClaims.PROJECT, value = "*")
       })
-  void cancellingARunStaysAPersonsAndRefusesAMachine() {
-    // The one write on the read resource, and the whole reason the reads' widening is method-scoped
-    // rather than class-wide: stopping somebody's build is not a thing a peer service does.
+  void cancellingARunRefusesAPeerServicesMachineRole() {
+    // A write on the read resource, and the reason the reads' widening is method-scoped rather than
+    // class-wide: stopping somebody's build by run id is not a thing a peer service does. qits-536
+    // admitted qits:agent here, bound to its project claim (AgentCancelAccessTest), but not
+    // qits:system — qits-projects stops a release request's runs through /ci/api/runs/cancellations,
+    // addressed by the pair it actually holds. So a machine granted every project is 403 before the
+    // run is ever read.
+    given().when().post("/ci/api/runs/no-such-run/cancel").then().statusCode(403);
+  }
+
+  @Test
+  @TestSecurity(user = ARTIFACTS, roles = {SYSTEM})
+  @OidcSecurity(claims = {@Claim(key = "aud", value = OWN_AUDIENCE)})
+  void cancellingARunRefusesAPeerServicesMachineRoleWithNoProjectClaim() {
+    // The other qits:system shape: no project claim at all, which cancellationScope() would read as
+    // platform-wide for that role. It never gets asked — @RolesAllowed refuses first.
     given().when().post("/ci/api/runs/no-such-run/cancel").then().statusCode(403);
   }
 
@@ -512,7 +527,7 @@ public class MachineGuardTest {
         @Claim(key = QitsClaims.PROJECT, value = "*")
       })
   void retryingARunRefusesAPeerServicesMachineRole() {
-    // The second write on the read resource. It is no longer qits:admin alone — it names
+    // The other run-scoped write on the read resource. It is no longer qits:admin alone — it names
     // {qits:admin, qits:agent} since 2026-09-19, because the caller standing in front of a red
     // release-request gate is an agent — but qits:system is deliberately NOT in that list: no peer
     // service presses this button, and qits-projects re-asks a release request's CI through

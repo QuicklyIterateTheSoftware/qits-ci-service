@@ -74,7 +74,8 @@ import org.jboss.logging.Logger;
  *       daemon's dial) under {@code qits.ci.lease-start-timeout-seconds}, and only then starts the
  *       register clock: {@code RUNNING} and the dial are handed to {@link
  *       LeaseStepRunner#leaseRunning} (qits-1544).
- *   <li>{@code FAILED}, {@code EXITED}, or gone: the run's token is deleted, and the step seam is
+ *   <li>{@code FAILED}, {@code EXITED}, or gone — a lease the reconcile's listing lacks is gone only
+ *       once a read of it answers 404 (qits-1827): the run's token is deleted, and the step seam is
  *       told ({@link LeaseStepRunner#leaseEnded}). A run that was still waiting is claimed anyway, so
  *       its first step answers {@code LAUNCH_FAILED} with the lease's detail and the run is settled
  *       — and retried automatically — like any infra failure.
@@ -628,6 +629,14 @@ public class CiLeases {
    * observed, a run whose lease is gone is told so, a lease no live run names is ended, and a queued
    * run with no lease is asked one. A listing that could not be read changes nothing — it must never
    * read as "every lease is gone".
+   *
+   * <p><b>A lease missing from the listing is confirmed gone by a read of its own</b> (qits-1827).
+   * The listing is taken first and the run table read after it, and {@code ci-lease-requests} can
+   * ask a lease, record it on the run's row and hold its launch in between — so a run, or a held
+   * slot, can name a lease newer than the listing it is compared with. Absence there is a stale
+   * snapshot, not a verdict: {@code GET /system/api/leases/{id}} decides. A 404 is gone (the run is
+   * told, the hold released); a lease it answers is observed like any listed one; and a read that
+   * could not be made changes nothing for that run or hold this pass, the listing's own rule.
    */
   void reconcile() {
     if (stopping) {
@@ -648,15 +657,28 @@ public class CiLeases {
     }
     Map<UUID, String> named = new HashMap<>();
     // A slot held for a release names its lease, so the orphan sweep below never ends it, and a held
-    // lease qits-system no longer lists is a slot that is gone (epic qits-732).
+    // lease qits-system no longer has is a slot that is gone (epic qits-732) — "no longer has" asked
+    // of the lease itself, since the listing may predate it (qits-1827).
     for (UUID heldLease : holds.heldLeases()) {
       SystemLeases.LeaseView lease = byId.get(heldLease);
       if (lease == null) {
-        holds.release(heldLease, CiSlotHolds.LEASE_ENDED);
-      } else {
-        named.put(heldLease, lease.ownerRef());
-        holds.leaseObserved(lease);
+        Optional<SystemLeases.LeaseView> read;
+        try {
+          read = system.get(heldLease);
+        } catch (RuntimeException e) {
+          LOG.debugf(
+              "Held lease %s is not listed and could not be read; the next pass asks again: %s",
+              heldLease, e.getMessage());
+          continue;
+        }
+        if (read.isEmpty()) {
+          holds.release(heldLease, CiSlotHolds.LEASE_ENDED);
+          continue;
+        }
+        lease = read.get();
       }
+      named.put(heldLease, lease.ownerRef());
+      holds.leaseObserved(lease);
     }
     for (CiRun run : runs.leasedRuns()) {
       named.put(run.leaseId, run.id);
@@ -668,7 +690,7 @@ public class CiLeases {
         observe(lease);
       } else if (launches.containsKey(run.id)
           && Objects.equals(launches.get(run.id).leaseId(), run.leaseId)) {
-        ended(run.id, run.leaseId, "lease " + run.leaseId + " is gone from qits-system");
+        confirmGone(run);
       }
     }
     Instant now = Instant.now();
@@ -687,6 +709,30 @@ public class CiLeases {
     }
     for (String runId : runs.queuedWithoutLease()) {
       request(runId);
+    }
+  }
+
+  /**
+   * A run whose lease the listing lacks: asked of the lease itself before the run is told it is gone
+   * (qits-1827). The lease may have been asked, recorded and launched after the listing was taken —
+   * live, a just-retried run's {@code QUEUED} lease was reported gone 1.5s after it was asked and
+   * the run failed {@code LAUNCH_FAILED} at once. A 404 is gone; an answer is observed, so a {@code
+   * QUEUED} lease waits and an ended one ends the run in its own words; no answer changes nothing.
+   */
+  private void confirmGone(CiRun run) {
+    Optional<SystemLeases.LeaseView> read;
+    try {
+      read = system.get(run.leaseId);
+    } catch (RuntimeException e) {
+      LOG.debugf(
+          "CI run %s: lease %s is not listed and could not be read; the next pass asks again: %s",
+          run.id, run.leaseId, e.getMessage());
+      return;
+    }
+    if (read.isEmpty()) {
+      ended(run.id, run.leaseId, "lease " + run.leaseId + " is gone from qits-system");
+    } else {
+      observe(read.get());
     }
   }
 

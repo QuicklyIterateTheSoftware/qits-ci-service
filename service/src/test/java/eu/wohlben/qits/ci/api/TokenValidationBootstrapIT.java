@@ -268,7 +268,8 @@ public class TokenValidationBootstrapIT {
     // of ci's own rows — no git host, no qits-containers, no qits-events, so what it proves is the
     // token and not another service's availability. It is class-level {qits:admin, qits:system} on
     // CiRunController, so the machine role a platform peer really holds is enough (the write beside
-    // it, cancelRun, carries its own method-level qits:admin, which REPLACES the class list). And
+    // it, cancelRun, carries its own method-level list without qits:system, which REPLACES the
+    // class list). And
     // it takes no parameters at all, so an empty answer is still a 200 and the story stays about
     // who may read rather than about what happens to be in the table.
     NetworkCapture.actor("a platform service");

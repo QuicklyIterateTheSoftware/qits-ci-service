@@ -45,8 +45,8 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 
 /**
  * The read side of {@code /ci/api} (docs/epics/qits-ci/): the recorded green/red per branch,
- * visible without any session (reads are open — the gate is advisory in the MVP), plus the one write
- * a person performs, cancelling a run.
+ * visible without any session (reads are open — the gate is advisory in the MVP), plus the run-scoped
+ * writes — cancelling a run and retrying one.
  *
  * <p>The run is the entity and the repository is a <b>filter</b>, so the listing takes {@code
  * ?repositoryId=} rather than sitting under {@code /repositories/{repoId}/}. ci does not own
@@ -55,13 +55,15 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * not exist, and put three services under one gateway prefix. {@code {runId}} stays in the path:
  * there it is identity, not scope.
  *
- * <p><b>The reads take the pair {@code qits:admin, qits:system}; of the two run-scoped writes the
- * cancel takes {@code qits:admin} alone and the retry adds {@code qits:agent}</b> (see {@link
- * #retryRun} for why an agent presses that one and what scopes it). qits:system is the machine role and qits:admin the human one, and a
- * machine that has to poll a run it asked for — qits-platform-maintenance waits out every bump this
- * way — must not be granted a person's role to do it. What mutates is not widened: {@link #cancelRun}
- * and {@link #retryRun} carry their own method-level list, which replaces the class's rather than
- * adding to it.
+ * <p><b>The reads take the pair {@code qits:admin, qits:system}; the two run-scoped writes, the
+ * cancel and the retry, take {@code qits:agent} instead of {@code qits:system}</b> and bind a
+ * project-scoped caller to the run's own repository (see {@link #retryRun} for why an agent presses
+ * that one, {@link #cancelRun} for the same answer on the cancel since qits-536, and what scopes
+ * both). qits:system is the machine role and qits:admin the human one, and a machine that has to
+ * poll a run it asked for — qits-platform-maintenance waits out every bump this way — must not be
+ * granted a person's role to do it. What mutates is not widened to the machine role: {@link
+ * #cancelRun} and {@link #retryRun} carry their own method-level list, which replaces the class's
+ * rather than adding to it.
  *
  * <p><b>There is one write here a machine really does perform, and it is the exception that proves
  * that rule.</b> {@link #cancelReleaseRequestRuns} is qits-projects withdrawing a release request's
@@ -164,8 +166,8 @@ public class CiRunController {
   // It is deliberately absent from cancellationScope()'s platform-wide arm below — unlike
   // ADMIN_AGENT_ROLE, the desk is never admitted unscoped there. A desk caller presenting a project
   // claim is bound to it exactly as a plain qits:agent is: the same project-claim arm of
-  // cancellationScope() that scopes the agent's retry already scopes the desk, with no change to
-  // that method needed. No constant is declared for it here because nothing in this class's body
+  // cancellationScope() that scopes the agent's retry and cancel already scopes the desk, with no
+  // change to that method needed. No constant is declared for it here because nothing in this class's body
   // may reference one — spelling it would invite exactly the widening this comment refuses. The
   // same holds for qits:desk-admin, which also carries qits:desk and a project claim: it is scoped
   // by the same arm, and DESK_ADMIN_ROLE above exists only for the platform-wide arm's literal
@@ -255,7 +257,7 @@ public class CiRunController {
    */
   @GET
   // Every read also takes qits:agent. It sits on each read rather than on the class, because the
-  // class list also guards the cancellations write, and agents do not write here.
+  // class list also guards the cancellations write, which agents do not press.
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:system", "qits:agent"})
   @Operation(
       operationId = "listRuns",
@@ -645,26 +647,54 @@ public class CiRunController {
    * has nothing to stop, and a cheerful 202 would be a claim the caller cannot check.
    *
    * <p>A run that is still {@code QUEUED} can be cancelled too, and it is the cheap case — there is
-   * no container to ask, so the run is recorded {@code FAILED} with no steps and the worker never
-   * picks it up. Still a 202: the shape of the answer does not change with how far along the run
-   * was, and the caller polls either way.
+   * no container to ask, so the run is finished {@code CANCELLED} on the spot, with no steps and
+   * the cancellation reason recorded, and the worker never picks it up. Still a 202: the shape of
+   * the answer does not change with how far along the run was, and the caller polls either way.
    *
    * <p>Deliberately <b>not</b> {@code @Operation(hidden = true)}, unlike everything else in this
    * service. The intake and the run reads are machine surfaces; this one is a button a person
-   * presses, so it belongs in the API document. It sits on the same deployment-policy-guarded
-   * surface as the run reads and carries no token of its own — the single-user stance.
+   * presses, so it belongs in the API document.
+   *
+   * <p><b>An agent may press it too, and the widening is {@link #retryRun}'s, arm for arm</b>
+   * (qits-536). The case is the same one turned around: an agent watching a run it knows is wasted
+   * — a build of a commit it has already superseded, a step hung on a platform fault it has just
+   * reported — could re-fire a run but not stop one, and was left waiting out the step deadline on
+   * capacity somebody else's queue was standing behind.
+   *
+   * <p><b>What makes that safe is the scope check, not the role.</b> A caller that is not
+   * platform-wide is judged exactly as {@link #retryRun} judges one — {@link #cancellationScope()}
+   * for the arms, then {@link #requireRepositoryInProject} against the <em>run's own</em>
+   * repository — so an agent may stop a build in its own project and is refused one in somebody
+   * else's, and a repository the catalogue cannot place is in no project at all. The check binds
+   * every token that carries a project claim, which is new for the desk: {@code qits:desk} and
+   * {@code qits:desk-admin} were admitted here outright before, and are now bound to their own
+   * project on the cancel as they already were on the retry. A platform-wide caller — {@code
+   * qits:admin}/{@code qits:admin-agent} with no project claim, any token with {@code project=*} —
+   * and the operator's forwarded session, which is not a machine and never reaches the check,
+   * still cancel everywhere. {@code qits:system} stays absent for retry's reason: no peer service
+   * stops a run by id, and qits-projects withdraws a release request's CI through {@link
+   * #cancelReleaseRequestRuns}, addressed by the pair it actually holds.
+   *
+   * <p>The order of the answers is part of the contract: the run is read first, so an id that names
+   * no run is a 404 rather than a 403 that would tell an uncovered caller whether it exists. A
+   * finished run in the caller's own project is still the 409 above.
    */
   @POST
   @Path("/{runId}/cancel")
   // A method-level list REPLACES the class-level one rather than adding to it, which is exactly what
-  // this needs: the reads above take the pair, and cancelling a build stays a person's.
-  // qits:admin-agent is admitted too (qits-628 follow-up); remove it here if this door must stay
-  // human-only. qits:desk is admitted alongside it (qits-1596): the delivery desk is admitted
-  // wherever the coordinator is.
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk"})
+  // this needs: the reads above take the pair, and no peer service stops a run by id, so
+  // qits:system is not here. qits:admin-agent is admitted (qits-628 follow-up), qits:desk alongside
+  // it (qits-1596: the delivery desk is admitted wherever the coordinator is), and qits:agent since
+  // qits-536 — every one of them bound to its project claim by the scope check in the body.
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:agent"})
   @Consumes(MediaType.WILDCARD)
   @Operation(operationId = "cancelRun", summary = "Cancel a queued or running CI run")
   @APIResponse(responseCode = "202", description = "The run has been stopped or asked to stop")
+  @APIResponse(
+      responseCode = "403",
+      description =
+          "The token covers this run's repository for nobody — no project claim and no platform-wide"
+              + " role, or a project claim this instance cannot place the repository in")
   @APIResponse(responseCode = "404", description = "No such run")
   @APIResponse(responseCode = "409", description = "The run has already finished, so there is nothing to stop")
   public Response cancelRun(
@@ -676,6 +706,11 @@ public class CiRunController {
                   @org.eclipse.microprofile.openapi.annotations.media.Content(
                       schema = @Schema(implementation = CancelRunRequest.class)))
           String payload) {
+    CiRun run = runService.requireRun(runId);
+    String projectScope = cancellationScope();
+    if (projectScope != null) {
+      requireRepositoryInProject(run.repoId, projectScope);
+    }
     runService.cancel(runId, cancellationReason(payload));
     return Response.accepted().build();
   }
@@ -825,11 +860,13 @@ public class CiRunController {
    * (2026-09-13) it is.</b> {@code qits:system} names a service calling a service, and such a
    * caller may act for every project — the cancellation is bounded regardless (it stops the runs of
    * one named release request in one named repository and publishes no verdict), so nothing is
-   * widened beyond what the role already means. What stays refused is a commissioned credential: a
-   * {@code ci-run} or {@code agent} context is minted {@code qits:ci-run}/{@code qits:agent}, never
-   * {@code qits:system}, and neither role is in this resource's {@code @RolesAllowed} — such a token
-   * never reaches this class's writes at all, so it stays bound to whatever the read routes that do
-   * accept it narrow it to.
+   * widened beyond what the role already means. What stays unwidened is a commissioned credential:
+   * a {@code ci-run} or {@code agent} context is minted {@code qits:ci-run}/{@code qits:agent},
+   * never {@code qits:system}, so it never reaches the last arm. {@code qits:ci-run} is in no
+   * write's {@code @RolesAllowed} here at all. {@code qits:agent} is in exactly two — {@link
+   * #retryRun} and {@link #cancelRun} (qits-536) — and reaches this method only there, carrying the
+   * {@code project} claim qits-idp states on every agent credential, so the third arm binds it to
+   * its own project; one arriving without the claim holds no platform-wide role and is refused.
    */
   private String cancellationScope() {
     if (!MachineIdentity.isMachine(identity)) {

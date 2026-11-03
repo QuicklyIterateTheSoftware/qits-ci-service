@@ -76,6 +76,9 @@ class CiSlotHoldTest {
   /** What qits-system lists, for the reconcile. */
   private final List<SystemLeases.LeaseView> listed = Collections.synchronizedList(new ArrayList<>());
 
+  /** What a read of one lease answers, by id; absent is a 404. */
+  private final Map<UUID, SystemLeases.LeaseView> readable = new ConcurrentHashMap<>();
+
   private final Map<String, CiRun> rows = new ConcurrentHashMap<>();
 
   private final InMemoryRows holdRows = new InMemoryRows();
@@ -327,6 +330,31 @@ class CiSlotHoldTest {
 
     // And a held lease qits-system no longer lists is a slot that is gone.
     listed.clear();
+    leases.reconcile();
+
+    assertFalse(holds.holds(lease));
+    assertTrue(holdRows.rows.isEmpty());
+  }
+
+  /**
+   * A held lease the listing lacks but a read of it answers is a listing older than the lease, not a
+   * slot that is gone (qits-1827): the hold stays, and the lease's state is observed as ever.
+   */
+  @Test
+  public void aHeldLeaseTheListingLacksButAReadAnswersIsKept() {
+    held(RUN);
+    UUID lease = leaseOf.get(RUN);
+    readable.put(
+        lease, new SystemLeases.LeaseView(lease, RUN, "RUNNING", null, null, null, NOW));
+
+    leases.reconcile();
+
+    assertTrue(holds.holds(lease), "the hold is kept");
+    assertFalse(holdRows.rows.isEmpty());
+    assertFalse(calls.contains("DELETE " + lease), calls.toString());
+
+    // The read is what is observed: an ended lease releases the hold.
+    readable.put(lease, new SystemLeases.LeaseView(lease, RUN, "ENDED", null, null, null, NOW));
     leases.reconcile();
 
     assertFalse(holds.holds(lease));
@@ -623,7 +651,7 @@ class CiSlotHoldTest {
 
     @Override
     public Optional<LeaseView> get(UUID leaseId) {
-      return Optional.empty();
+      return Optional.ofNullable(readable.get(leaseId));
     }
 
     @Override

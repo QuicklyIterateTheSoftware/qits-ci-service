@@ -1132,14 +1132,16 @@ paths:
       responses:
         "202":
           description: The run has been stopped or asked to stop
+        "403":
+          description: "The token covers this run's repository for nobody — no project\
+            \ claim and no platform-wide role, or a project claim this instance cannot\
+            \ place the repository in"
         "404":
           description: No such run
         "409":
           description: "The run has already finished, so there is nothing to stop"
         "401":
           description: Not Authorized
-        "403":
-          description: Not Allowed
         "400":
           description: Bad Request
       tags:
@@ -1150,6 +1152,7 @@ paths:
         - qits:admin-agent
         - qits:desk-admin
         - qits:desk
+        - qits:agent
   /ci/api/runs/{runId}/gate/reports:
     get:
       summary: "The release reports of the green QA run that gated this run's release\
