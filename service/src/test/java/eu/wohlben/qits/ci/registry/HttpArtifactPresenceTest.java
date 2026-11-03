@@ -37,6 +37,9 @@ public class HttpArtifactPresenceTest {
   /** Raw request uris, so an encoded scope is visible as sent. */
   private final List<String> uris = Collections.synchronizedList(new ArrayList<>());
 
+  /** The Authorization header of each request, {@code "null"} when none was sent. */
+  private final List<String> authorizations = Collections.synchronizedList(new ArrayList<>());
+
   private volatile int status = 200;
   private volatile String body = "";
 
@@ -47,6 +50,7 @@ public class HttpArtifactPresenceTest {
     server.requestHandler(
         req -> {
           uris.add(req.uri());
+          authorizations.add(String.valueOf(req.getHeader("Authorization")));
           req.response().setStatusCode(status).end(body);
         });
     port =
@@ -218,6 +222,23 @@ public class HttpArtifactPresenceTest {
     assertEquals(
         Verdict.INCONCLUSIVE, presence().newest(CiArtifact.Type.NPM, "@qits/x?y=1").verdict());
     assertEquals(List.of(), uris);
+  }
+
+  @Test
+  public void everyReadPresentsTheQitsBearerWhenThereIsOne() {
+    // The store is dialled at its edge host now (qits-1414): each of the three reads carries the
+    // service's own `qits` bearer, and with none the read is still made.
+    HttpArtifactPresence presence = presence();
+    presence.bearer = () -> Optional.of("machine-token");
+    body = "{\"versions\":{\"" + VERSION + "\":{}},\"version\":\"" + VERSION + "\"}";
+    presence.probe(CiArtifact.Type.MAVEN, "a.b:c", VERSION);
+    presence.probe(CiArtifact.Type.NPM, "c", VERSION);
+    presence.newest(CiArtifact.Type.MAVEN, "a.b:c");
+    presence().probe(CiArtifact.Type.MAVEN, "a.b:c", VERSION);
+
+    assertEquals(
+        List.of("Bearer machine-token", "Bearer machine-token", "Bearer machine-token", "null"),
+        authorizations);
   }
 
   private HttpArtifactPresence presence() {

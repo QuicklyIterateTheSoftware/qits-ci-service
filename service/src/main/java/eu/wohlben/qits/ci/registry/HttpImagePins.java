@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.registry;
 
 import eu.wohlben.qits.ci.control.CiStepImagePins;
+import eu.wohlben.qits.ci.githost.GitHostBearer;
 import eu.wohlben.qits.ci.targethost.CiSlotAddresses;
 import eu.wohlben.qits.http.QitsHttpClients;
 import jakarta.annotation.PostConstruct;
@@ -32,16 +33,16 @@ import org.jboss.logging.Logger;
  * <p><b>The address is DERIVED, never configured</b> — {@code IdpCommissioner}'s rule, for its
  * reason: a second key is a second thing to keep in step with the first, and a pin resolved against
  * one store and pulled from another is worse than no pin. It is the origin of {@code
- * qits.artifacts.maven.registry-url}, which is set on every live deployment. That origin and the {@code /v2} registry are one
+ * qits.artifacts.maven.registry-url} — the store's edge host, {@code https://registry.qits.<domain>}
+ * (qits-1414). That origin and the {@code /v2} registry are one
  * service by construction: the registry cannot be mounted anywhere else — docker resolves a
  * reference against {@code <host>/v2/} and accepts no path prefix.
  *
- * <p><b>Two names, one registry, and each is used for what it is — and neither is configured.</b>
- * What this process dials is the in-network origin above. What a pinned reference is ADDRESSED
- * under is the registry's public name, {@code registry.qits.<QITS_DOMAIN>}, derived by {@link
- * CiSlotAddresses} exactly as every other address a lease is told — the name a target really pulls
- * from. Resolving through one and pulling through another is correct and not a mismatch: a digest
- * is content-addressed, so the same digest names the same bytes at whichever address they are read.
+ * <p><b>One name for the registry now (qits-1414).</b> What this process dials is the origin above,
+ * which is the registry's public name, {@code registry.qits.<QITS_DOMAIN>} — the same host a pinned
+ * reference is ADDRESSED under, derived by {@link CiSlotAddresses} exactly as every other address a
+ * lease is told. It used to be the in-network alias {@code <env>-qits-artifacts}; a digest is
+ * content-addressed, so the same digest names the same bytes at whichever address they are read.
  *
  * <p><b>There is no registry host key any more (qits-757).</b> One used to name the host a pinned
  * reference was built with and recognised by; its shipped default was a host-loopback machine name
@@ -50,10 +51,10 @@ import org.jboss.logging.Logger;
  * qits/build-images/ci-slot:latest}, the spelling every recipe and every step row uses — or when it
  * names the derived public registry host.
  *
- * <p><b>No credential, deliberately.</b> qits-artifacts' {@code PublishGuard} guards the six
- * publish surfaces and lets every read through untouched, so a manifest read needs none — and
- * presenting one would be a credential offered where the store asks for nothing, on the trigger
- * worker, once per distinct image per accepted run.
+ * <p><b>The {@code qits} bearer when there is one (qits-1414).</b> qits-artifacts' {@code
+ * PublishGuard} guards the six publish surfaces and lets every read through, but the read goes
+ * through the edge now, and every call this service makes there carries its own credential. A
+ * missing token costs the header and never the call ({@link ArtifactsOrigin#withBearer}).
  *
  * <h2>What is NOT pinned, and why that is an answer rather than a gap</h2>
  *
@@ -139,6 +140,9 @@ public class HttpImagePins implements CiStepImagePins {
 
   @Inject QitsHttpClients clients;
 
+  /** The {@code qits} oidc client's bearer ({@code IdpGitHostBearer}), sent when there is one. */
+  @Inject GitHostBearer bearer;
+
   /**
    * Built here rather than at the field — see {@code HttpGitConfigSource#buildClient} for why a
    * field initializer cannot reach an injected collaborator.
@@ -174,10 +178,12 @@ public class HttpImagePins implements CiStepImagePins {
     try {
       HttpResponse<Void> response =
           client.send(
-              HttpRequest.newBuilder(URI.create(url))
-                  .timeout(REQUEST_TIMEOUT)
-                  .header("Accept", MANIFEST_ACCEPT)
-                  .method("HEAD", HttpRequest.BodyPublishers.noBody())
+              ArtifactsOrigin.withBearer(
+                      HttpRequest.newBuilder(URI.create(url))
+                          .timeout(REQUEST_TIMEOUT)
+                          .header("Accept", MANIFEST_ACCEPT)
+                          .method("HEAD", HttpRequest.BodyPublishers.noBody()),
+                      bearer)
                   .build(),
               HttpResponse.BodyHandlers.discarding());
       if (response.statusCode() != 200) {
@@ -208,9 +214,8 @@ public class HttpImagePins implements CiStepImagePins {
    * The origin this process dials the registry at — {@code qits.artifacts.url} when a deployment
    * states one, otherwise the scheme and authority of {@code qits.artifacts.maven.registry-url}.
    *
-   * <p>This is where qits-ci ITSELF asks about the store, from inside the swarm — not an address a
-   * step is told. A step reads the same store at its public name ({@code CiSlotAddresses}); a
-   * digest is content-addressed, so the pin resolved here names the same bytes there.
+   * <p>This is where qits-ci ITSELF asks about the store — not an address a step is told, though
+   * since qits-1414 it is the same public name a step reads the store at ({@code CiSlotAddresses}).
    */
   String registryApiOrigin() {
     // One derivation for every qits-ci -> qits-artifacts read (ArtifactsOrigin), so the digest

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.ci.control.CiArtifact;
 import eu.wohlben.qits.ci.control.CiArtifactPresence;
+import eu.wohlben.qits.ci.githost.GitHostBearer;
 import eu.wohlben.qits.http.QitsHttpClients;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -50,10 +51,11 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * hosted maven root), and {@code <origin>/artifacts/maven/maven} when one is; the npm root is {@code
  * <origin>/artifacts/npm/npm} — the same two paths {@code CiSlotAddresses} tells a step.
  *
- * <p><b>No credential, deliberately</b>, for {@link HttpImagePins}' reason: qits-artifacts' {@code
- * PublishGuard} guards only the publish verbs ({@code PUT} on {@code /artifacts/maven/…} and {@code
- * /artifacts/npm/…}) and lets every read through, so presenting one would be a credential offered
- * where the store asks for none.
+ * <p><b>The {@code qits} bearer when there is one</b>, for {@link HttpImagePins}' reason
+ * (qits-1414): the store is reached at its edge host, {@code registry.qits.<domain>}, and every call
+ * this service makes there carries its own credential. qits-artifacts' {@code PublishGuard} guards
+ * only the publish verbs and lets every read through, so a missing token costs the header and never
+ * the call ({@link ArtifactsOrigin#withBearer}).
  *
  * <p>An instance {@code HttpClient}, not a static one — a static client is created at image-build
  * time and native-image refuses the heap it lands in. Wrapped through {@link QitsHttpClients}, like
@@ -92,6 +94,9 @@ public class HttpArtifactPresence implements CiArtifactPresence {
   String artifactsMavenRegistryUrl;
 
   @Inject QitsHttpClients clients;
+
+  /** The {@code qits} oidc client's bearer ({@code IdpGitHostBearer}), sent when there is one. */
+  @Inject GitHostBearer bearer;
 
   /**
    * Built here rather than at the field — see {@code HttpGitConfigSource#buildClient} for why a
@@ -133,10 +138,12 @@ public class HttpArtifactPresence implements CiArtifactPresence {
     try {
       HttpResponse<String> response =
           client.send(
-              HttpRequest.newBuilder(URI.create(url))
-                  .timeout(REQUEST_TIMEOUT)
-                  .header("Accept", "application/json")
-                  .GET()
+              ArtifactsOrigin.withBearer(
+                      HttpRequest.newBuilder(URI.create(url))
+                          .timeout(REQUEST_TIMEOUT)
+                          .header("Accept", "application/json")
+                          .GET(),
+                      bearer)
                   .build(),
               HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() == 404) {
@@ -184,7 +191,9 @@ public class HttpArtifactPresence implements CiArtifactPresence {
     try {
       HttpResponse<Void> response =
           client.send(
-              HttpRequest.newBuilder(URI.create(url)).timeout(REQUEST_TIMEOUT).GET().build(),
+              ArtifactsOrigin.withBearer(
+                      HttpRequest.newBuilder(URI.create(url)).timeout(REQUEST_TIMEOUT).GET(), bearer)
+                  .build(),
               HttpResponse.BodyHandlers.discarding());
       return switch (response.statusCode()) {
         case 200 -> Probe.present("GET " + url + " answered 200");
@@ -208,10 +217,12 @@ public class HttpArtifactPresence implements CiArtifactPresence {
     try {
       HttpResponse<String> response =
           client.send(
-              HttpRequest.newBuilder(URI.create(url))
-                  .timeout(REQUEST_TIMEOUT)
-                  .header("Accept", "application/json")
-                  .GET()
+              ArtifactsOrigin.withBearer(
+                      HttpRequest.newBuilder(URI.create(url))
+                          .timeout(REQUEST_TIMEOUT)
+                          .header("Accept", "application/json")
+                          .GET(),
+                      bearer)
                   .build(),
               HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() == 404) {

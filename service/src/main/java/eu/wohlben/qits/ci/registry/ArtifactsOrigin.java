@@ -1,6 +1,8 @@
 package eu.wohlben.qits.ci.registry;
 
+import eu.wohlben.qits.ci.githost.GitHostBearer;
 import java.net.URI;
+import java.net.http.HttpRequest;
 import java.util.Optional;
 
 /**
@@ -32,6 +34,22 @@ final class ArtifactsOrigin {
       return null;
     }
     return explicit.trim().replaceAll("/+$", "");
+  }
+
+  /**
+   * {@code building} with the {@code qits} oidc client's bearer when there is one (qits-1414): the
+   * store is reached at its edge host, {@code registry.qits.<domain>}, and a call there carries the
+   * service's own credential rather than none. A missing token costs the header and never the call —
+   * the store's reads ask for none, so the answer is the same either way.
+   */
+  static HttpRequest.Builder withBearer(HttpRequest.Builder building, GitHostBearer bearer) {
+    if (bearer != null) {
+      bearer
+          .token()
+          .filter(value -> !value.isBlank())
+          .ifPresent(token -> building.header("Authorization", "Bearer " + token));
+    }
+    return building;
   }
 
   /** The scheme and authority of a url, or null when it has neither. */

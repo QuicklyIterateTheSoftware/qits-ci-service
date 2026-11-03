@@ -552,6 +552,16 @@
                         <quarkus.http.test-port>0</quarkus.http.test-port>
                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
                     </systemPropertyVariables>
+                    <!-- QITS_DOMAIN carries no default in the shipped properties (qits-1414: every
+                         peer is https://<label>.qits.${QITS_DOMAIN}), and the launched packaged
+                         artifact runs the prod profile and reads src/main/resources only. The
+                         deployer states it on every container; here the forked JVM states it, and
+                         the launch inherits it. The suite's own domain (HermeticConfigSource.DOMAIN),
+                         which every packaged profile also pins as qits.ci.domain: no IT may reach
+                         the real platform. -->
+                    <environmentVariables>
+                        <QITS_DOMAIN>suite.example</QITS_DOMAIN>
+                    </environmentVariables>
                 </configuration>
             </plugin>
             <plugin>

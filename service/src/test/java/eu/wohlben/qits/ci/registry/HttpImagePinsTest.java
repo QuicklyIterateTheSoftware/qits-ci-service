@@ -54,6 +54,7 @@ public class HttpImagePinsTest {
   private final AtomicInteger reads = new AtomicInteger();
   private final List<String> paths = Collections.synchronizedList(new ArrayList<>());
   private final List<String> accepts = Collections.synchronizedList(new ArrayList<>());
+  private final List<String> authorizations = Collections.synchronizedList(new ArrayList<>());
 
   private volatile int status = 200;
   private volatile String digest = DIGEST;
@@ -67,6 +68,7 @@ public class HttpImagePinsTest {
           reads.incrementAndGet();
           paths.add(req.path());
           accepts.add(req.getHeader("Accept"));
+          authorizations.add(String.valueOf(req.getHeader("Authorization")));
           if (digest != null) {
             req.response().putHeader("Docker-Content-Digest", digest);
           }
@@ -103,6 +105,22 @@ public class HttpImagePinsTest {
         accepts.get(0).contains("application/vnd.oci.image.index.v1+json"),
         "an index is asked for first, or a multi-arch image pins one architecture's child: "
             + accepts);
+  }
+
+  @Test
+  public void theQitsBearerIsPresentedWhenThereIsOneAndItsAbsenceCostsOnlyTheHeader() {
+    // The registry is dialled at its edge host now (qits-1414), and a call there carries the
+    // service's own `qits` bearer; with none the read is still made, since the store's reads ask
+    // for no credential.
+    HttpImagePins pins = pins();
+    pins.bearer = () -> Optional.of("machine-token");
+    assertEquals(Status.PINNED, pins.pin(BARE).status());
+
+    HttpImagePins bare = pins();
+    bare.bearer = Optional::empty;
+    assertEquals(Status.PINNED, bare.pin(BARE).status());
+
+    assertEquals(List.of("Bearer machine-token", "null"), authorizations);
   }
 
   @Test
