@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +46,8 @@ class CiLeasesTest {
   private static final UUID LEASE = UUID.fromString("1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d");
 
   private static final UUID TARGET = UUID.fromString("9f8e7d6c-5b4a-4c3d-8e2f-1a0b9c8d7e6f");
+
+  private static final UUID OTHER_TARGET = UUID.fromString("2d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f6a");
 
   private StubIdp idp;
 
@@ -254,6 +257,84 @@ class CiLeasesTest {
     leases.observe(
         new SystemLeases.LeaseView(LEASE, RUN, "RUNNING", TARGET, null, null, Instant.now()));
     assertNotNull(steps.leaseRunningSince(RUN), "RUNNING starts the register clock");
+  }
+
+  // --- a lease granted, queued again and regranted elsewhere (qits-1829) -------------------------
+
+  /**
+   * qits-system can move a {@code GRANTED} lease it holds back to {@code QUEUED} — the target
+   * disconnected before it started the lease, or its runner stopped acting — and grant the same
+   * lease id again, possibly on another target. The run's driver, already running, keeps running
+   * throughout: it is claimed once, never fails and never retries, and the row's own idea of its
+   * target follows the regrant.
+   */
+  @Test
+  void aClaimedRunsLeaseRegrantedElsewhereRidesToRunningOnTheNewTarget() throws Exception {
+    ((StandInRuns) leases.runs).holdDriver = new CountDownLatch(1);
+    leases.requestNow(RUN);
+
+    leases.observe(
+        new SystemLeases.LeaseView(LEASE, RUN, "GRANTED", TARGET, null, null, Instant.now()));
+    assertEquals(RUN, executed.get(10, TimeUnit.SECONDS), "claimed and driven at the first grant");
+    assertEquals(TARGET, row.targetId);
+    assertNull(steps.leaseRunningSince(RUN), "granted alone never starts the register clock");
+
+    // qits-system moves the lease back to QUEUED: the target went away before it started it.
+    leases.observe(
+        new SystemLeases.LeaseView(
+            LEASE,
+            RUN,
+            "QUEUED",
+            null,
+            null,
+            "target " + TARGET + " went away before it started the lease ... queued again",
+            Instant.now()));
+    assertNull(steps.leaseRunningSince(RUN), "still not running");
+
+    // The same lease id, granted again, elsewhere.
+    leases.observe(
+        new SystemLeases.LeaseView(LEASE, RUN, "GRANTED", OTHER_TARGET, null, null, Instant.now()));
+    assertEquals(OTHER_TARGET, row.targetId, "the row follows the regrant to the new target");
+    assertNull(steps.leaseRunningSince(RUN), "granted on the new target still has not started it");
+
+    leases.observe(
+        new SystemLeases.LeaseView(LEASE, RUN, "RUNNING", OTHER_TARGET, null, null, Instant.now()));
+    assertNotNull(steps.leaseRunningSince(RUN), "RUNNING starts the register clock, on the new target");
+    assertEquals(OTHER_TARGET, row.targetId);
+
+    assertEquals(
+        1,
+        calls.stream().filter(call -> call.startsWith("claim ")).count(),
+        "claimed once, never a second time for the regrant: " + calls);
+    assertFalse(steps.endedLeases().containsKey(RUN), "no LAUNCH_FAILED anywhere in this sequence");
+
+    ((StandInRuns) leases.runs).holdDriver.countDown();
+  }
+
+  /**
+   * A lease id that is not the one the launch this process holds names — stale, or another run's —
+   * must never move the row's target, however it is reported.
+   */
+  @Test
+  void aGrantedObservationOfAStaleLeaseIdLeavesTheTargetAlone() throws Exception {
+    ((StandInRuns) leases.runs).holdDriver = new CountDownLatch(1);
+    leases.requestNow(RUN);
+    leases.observe(
+        new SystemLeases.LeaseView(LEASE, RUN, "GRANTED", TARGET, null, null, Instant.now()));
+    assertEquals(RUN, executed.get(10, TimeUnit.SECONDS));
+    assertEquals(TARGET, row.targetId);
+
+    UUID stale = UUID.fromString("00000000-0000-4000-8000-000000000002");
+    leases.observe(
+        new SystemLeases.LeaseView(stale, RUN, "GRANTED", OTHER_TARGET, null, null, Instant.now()));
+
+    assertEquals(
+        TARGET, row.targetId, "a lease id that is not the launch's own must never move the target");
+    assertFalse(
+        calls.stream().anyMatch(call -> call.startsWith("regrant")),
+        "a stale lease id never reaches the repository at all: " + calls);
+
+    ((StandInRuns) leases.runs).holdDriver.countDown();
   }
 
   @Test
@@ -606,6 +687,13 @@ class CiLeasesTest {
   private final class StandInRuns extends CiRunService {
     volatile boolean refuseRecord;
 
+    /**
+     * Set only by a test that drives more lease observations at a run while its driver is meant to
+     * still be registered (qits-1829): {@link #executeReserved} blocks on it rather than returning
+     * at once, which is what a real run's driver does for the whole of its execution.
+     */
+    volatile CountDownLatch holdDriver;
+
     @Override
     public Optional<Reservation> leaseCandidate(String runId) {
       return Optional.of(new Reservation(row, request()));
@@ -625,12 +713,42 @@ class CiLeasesTest {
     @Override
     public Optional<Reservation> claimLeased(String runId, UUID leaseId, UUID targetId) {
       calls.add("claim " + runId + " on " + targetId);
+      // The real claim writes RUNNING and the target in the one conditional UPDATE it is.
+      row.status = CiRunStatus.RUNNING;
+      row.targetId = targetId;
       return Optional.of(new Reservation(row, request()));
+    }
+
+    /**
+     * {@link CiRunService#regrantTarget}'s contract on the one row (qits-1829): a conditional write,
+     * only while the row is {@code RUNNING} on the lease it names, and only when the target really
+     * moved.
+     */
+    @Override
+    public boolean regrantTarget(String runId, UUID leaseId, UUID targetId) {
+      calls.add("regrant " + runId + " to " + targetId);
+      if (!RUN.equals(runId)
+          || row.status != CiRunStatus.RUNNING
+          || !leaseId.equals(row.leaseId)
+          || targetId == null
+          || targetId.equals(row.targetId)) {
+        return false;
+      }
+      row.targetId = targetId;
+      return true;
     }
 
     @Override
     public void executeReserved(Reservation reservation) {
       executed.complete(reservation.run().id);
+      CountDownLatch hold = holdDriver;
+      if (hold != null) {
+        try {
+          hold.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+        }
+      }
     }
 
     @Override

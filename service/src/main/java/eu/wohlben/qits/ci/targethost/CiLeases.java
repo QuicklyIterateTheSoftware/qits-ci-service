@@ -74,6 +74,14 @@ import org.jboss.logging.Logger;
  *       daemon's dial) under {@code qits.ci.lease-start-timeout-seconds}, and only then starts the
  *       register clock: {@code RUNNING} and the dial are handed to {@link
  *       LeaseStepRunner#leaseRunning} (qits-1544).
+ *   <li>A lease this process already drives can be reported {@code GRANTED} again (qits-1829):
+ *       qits-system moves a {@code GRANTED} lease back to {@code QUEUED} ({@code targetId null},
+ *       detail naming the target that went away) when its target disconnects past a grace or its
+ *       runner stops acting, then grants the same lease id again, possibly on another target. The
+ *       run keeps its driver throughout and the lease-start clock keeps counting from the original
+ *       claim; only the row's own record of which target it runs on is stale, and {@link #start}
+ *       catches that up ({@link CiRunService#regrantTarget}) rather than claiming or driving the run
+ *       a second time.
  *   <li>{@code FAILED}, {@code EXITED}, or gone — a lease the reconcile's listing lacks is gone only
  *       once a read of it answers 404 (qits-1827): the run's token is deleted, and the step seam is
  *       told ({@link LeaseStepRunner#leaseEnded}). A run that was still waiting is claimed anyway, so
@@ -417,12 +425,33 @@ public class CiLeases {
 
   /** A granted lease's run: claimed once and driven. */
   private void start(String runId, SystemLeases.LeaseView lease) {
-    if (drivers.containsKey(runId) || stopping) {
+    if (stopping) {
+      return;
+    }
+    if (drivers.containsKey(runId)) {
+      regrant(runId, lease);
       return;
     }
     Optional<CiRunService.Reservation> claimed =
         runs.claimLeased(runId, lease.id(), lease.targetId());
     claimed.ifPresent(this::drive);
+  }
+
+  /**
+   * A run this process already drives, reported {@code GRANTED} or {@code RUNNING} again on a
+   * target that may not be the one its row names (qits-1829): qits-system can move a lease back to
+   * {@code QUEUED} and grant it again elsewhere without this process ever losing the run's driver.
+   * Only for the lease the launch this process holds names — a stale report of a lease this run no
+   * longer holds changes nothing — and only with a target at all; the actual write is one
+   * conditional UPDATE ({@link CiRunService#regrantTarget}) that is a no-op when the row already
+   * names that target.
+   */
+  private void regrant(String runId, SystemLeases.LeaseView lease) {
+    Launch launch = launches.get(runId);
+    if (launch == null || !launch.leaseId().equals(lease.id()) || lease.targetId() == null) {
+      return;
+    }
+    runs.regrantTarget(runId, lease.id(), lease.targetId());
   }
 
   /** A lease that ended while its run did not. */

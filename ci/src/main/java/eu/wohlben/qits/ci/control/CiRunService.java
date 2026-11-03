@@ -2648,6 +2648,29 @@ public class CiRunService {
   }
 
   /**
+   * <b>The run's lease was granted again, on a target that is not the row's own</b> (qits-1829):
+   * qits-system moves a {@code GRANTED} lease it holds back to {@code QUEUED} when the target
+   * disconnects past a grace or its runner stops acting, and grants the same lease id again —
+   * possibly elsewhere. Nothing about the run's driver moves: it keeps driving the run on the same
+   * thread it always did, and the lease-start clock keeps counting from the original claim. All that is
+   * stale is the row's own record of where it runs, so this is the one conditional UPDATE ({@link
+   * CiRunRepository#regrantTarget}) that catches it up, while the row is still {@code RUNNING} on
+   * this lease. A no-op — the target the row already names, or a stale report of a lease this run no
+   * longer holds — writes and logs nothing.
+   */
+  public boolean regrantTarget(String runId, UUID leaseId, UUID targetId) {
+    if (runId == null || leaseId == null || targetId == null) {
+      return false;
+    }
+    boolean regranted =
+        QuarkusTransaction.requiringNew().call(() -> runs.regrantTarget(runId, leaseId, targetId) > 0);
+    if (regranted) {
+      LOG.infof("CI run %s: its lease %s was granted again, now on target %s", runId, leaseId, targetId);
+    }
+    return regranted;
+  }
+
+  /**
    * Records the launch a run adopted with its held slot (epic qits-732) — the slot's daemon and the
    * subject of the run's own new token — so a successor can take the run back after a restart, as
    * {@link #recordLease} does for a lease the run asked for. Only while the row is {@code RUNNING} on

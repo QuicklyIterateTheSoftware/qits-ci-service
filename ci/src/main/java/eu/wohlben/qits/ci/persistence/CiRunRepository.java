@@ -153,6 +153,26 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
         seen);
   }
 
+  /**
+   * <b>Re-aims a running run's own idea of which target its lease is on</b> (qits-1829): qits-system
+   * can move a {@code GRANTED} lease back to {@code QUEUED} — the target that held it disconnected
+   * past its grace, or stopped acting — and grant the same lease id again, possibly on a different
+   * target, while this process never stops driving the run. One conditional UPDATE, only while the
+   * row is still {@code RUNNING} and still names {@code leaseId}, and only when the target really
+   * changed — so a {@code GRANTED}/{@code RUNNING} pair reported for the target the row already
+   * names writes nothing. One row changed is a regrant this caller's write really made; zero is
+   * either fact already holding or a race this call lost.
+   */
+  public int regrantTarget(String runId, UUID leaseId, UUID targetId) {
+    return update(
+        "targetId = ?1 where id = ?2 and leaseId = ?3 and status = ?4"
+            + " and (targetId is null or targetId <> ?1)",
+        targetId,
+        runId,
+        leaseId,
+        CiRunStatus.RUNNING);
+  }
+
   /** Forgets a queued run's lease, conditionally like {@link #recordLease}. */
   public int forgetLease(String runId, UUID leaseId) {
     return update(
