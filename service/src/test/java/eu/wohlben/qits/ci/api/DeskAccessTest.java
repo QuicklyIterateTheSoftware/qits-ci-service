@@ -34,11 +34,14 @@ import org.junit.jupiter.api.Test;
  *
  * <p><b>One case per representative shape, not one per door.</b> {@code CiRunController}'s reads
  * (class-level and per-method lists) are the "admitted, nothing to bind" shape {@code
- * CiRepositoryController} and {@code CiReportController} share; {@code cancelRun} is the "admitted
- * outright because the door never bound anyone else either" shape; {@code retryRun} is the
- * project-bound shape {@code cancelReleaseRequestRuns} and {@code rerunReleaseRequestPhase} share
- * via the identical {@code cancellationScope()}/{@code requireRepositoryInProject} pair, and {@code
- * CiEventController.trigger}'s {@code scopeOf()} is the same mechanism one class over. The fourth
+ * CiRepositoryController} and {@code CiReportController} share; {@code retryRun} and, since
+ * qits-536, {@code cancelRun} are the project-bound shape {@code cancelReleaseRequestRuns} and
+ * {@code rerunReleaseRequestPhase} share via the identical {@code cancellationScope()}/{@code
+ * requireRepositoryInProject} pair, and {@code CiEventController.trigger}'s {@code scopeOf()} is the
+ * same mechanism one class over. {@code cancelRun} used to be a shape of its own — "admitted
+ * outright because the door never bound anyone else either" — and stopped being one when it was
+ * given the retry's scope check to admit {@code qits:agent}: that check binds every token carrying
+ * a project claim, the desk's included. The fourth
  * shape main's qits-1596 also covered — "admitted outright, no project at all", the runner
  * administration doors under {@code /ci/api/runners} — has no door here any more: the CI runner is
  * deleted (qits-1544), and a run's capacity is a lease on a qits-system target, whose doors are
@@ -164,9 +167,24 @@ class DeskAccessTest {
   }
 
   /**
-   * {@code cancelRun} never bound anyone to a project — not {@code qits:admin}, not {@code
-   * qits:admin-agent} — so the desk is admitted the same way: outright. A running run really stops.
+   * qits-536: {@code cancelRun} runs the retry's {@code cancellationScope()}/{@code
+   * requireRepositoryInProject} check against the run's own repository, so the desk — admitted
+   * outright here before — is now bound to its own project on the cancel exactly as it is on the
+   * retry. A running run in its own project really stops.
    */
+  @Test
+  @TestSecurity(user = "delivery-desk", roles = {DESK, AGENT})
+  @OidcSecurity(
+      claims = {
+        @Claim(key = "aud", value = OWN_AUDIENCE),
+        @Claim(key = QitsClaims.PROJECT, value = PROJECT)
+      })
+  void aDeskCancelsARunningRunInItsOwnProject() {
+    projectsListing.set(new CiRepoRef(REPO, PROJECT, REPO));
+    given().when().post("/ci/api/runs/" + runningRun + "/cancel").then().statusCode(202);
+  }
+
+  /** The other half: another project's run is refused, and the press stops nothing. */
   @Test
   @TestSecurity(user = "delivery-desk", roles = {DESK, AGENT})
   @OidcSecurity(
@@ -174,8 +192,9 @@ class DeskAccessTest {
         @Claim(key = "aud", value = OWN_AUDIENCE),
         @Claim(key = QitsClaims.PROJECT, value = "some-other-project")
       })
-  void aDeskCancelsARunningRunOutright() {
-    given().when().post("/ci/api/runs/" + runningRun + "/cancel").then().statusCode(202);
+  void aDeskMayNotCancelARunInAnotherProject() {
+    projectsListing.set(new CiRepoRef(REPO, PROJECT, REPO));
+    given().when().post("/ci/api/runs/" + runningRun + "/cancel").then().statusCode(403);
   }
 
   /**

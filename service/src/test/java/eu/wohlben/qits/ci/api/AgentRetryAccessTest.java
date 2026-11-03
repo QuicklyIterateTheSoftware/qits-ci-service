@@ -25,15 +25,16 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * {@code POST /ci/api/runs/{runId}/retry} is the ONE write a {@code qits:agent} may press, and it is
- * scoped rather than blanket.
+ * {@code POST /ci/api/runs/{runId}/retry} is a write a {@code qits:agent} may press, and it is scoped
+ * rather than blanket. The cancel beside it joined it on the same terms with qits-536, and {@code
+ * AgentCancelAccessTest} is its case file.
  *
  * <p><b>Why the exception exists at all.</b> An agent standing in front of a release-request gate
  * that went red for a reason that is the platform's — a flaked container, a registry 500 — can
  * neither re-ask the gate nor explain it away; its only other door was an empty commit on a source
  * branch and a second full gate. Owner ruling, 2026-09-19. Everything else on this surface is
  * unchanged: {@code AgentReadAccessTest} still holds that an agent reads everything and writes
- * nothing else.
+ * nothing but this and the run cancel.
  *
  * <p><b>What makes it safe is the scope check, and that is what this file is really about.</b> The
  * role admits the caller and {@link CiRunController#cancellationScope()} plus {@code

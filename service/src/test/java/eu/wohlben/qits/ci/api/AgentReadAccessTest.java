@@ -27,13 +27,14 @@ import org.junit.jupiter.api.Test;
 
 /**
  * A {@code qits:agent} reads every read route {@code qits:admin} or {@code qits:system} reads, with no
- * filter, and writes nothing but a retry and a runner's health check. One case per changed
- * controller, and one for the writes.
+ * filter, and writes nothing but a retry, a run cancel and a runner's health check. One case per
+ * changed controller, and one for the writes.
  *
- * <p><b>The one write an agent may press is {@code POST /ci/api/runs/{runId}/retry}</b> (owner
- * ruling, 2026-09-19), and it is project-scoped rather than open. It is therefore not asserted here
- * at all: {@code AgentRetryAccessTest} owns both of its sides, and this file keeps saying what it
- * always said about every other write.
+ * <p><b>The run-scoped writes an agent may press are {@code POST /ci/api/runs/{runId}/retry}</b>
+ * (owner ruling, 2026-09-19) <b>and {@code POST /ci/api/runs/{runId}/cancel}</b> (qits-536), and
+ * both are project-scoped rather than open. They are therefore not asserted here at all: {@code
+ * AgentRetryAccessTest} and {@code AgentCancelAccessTest} own both of their sides, and this file
+ * keeps saying what it always said about every other write.
  *
  * <p>The agent's token names a project, and the run it reads is in another one: agents lose no read
  * access, so the project claim narrows nothing here.
@@ -42,7 +43,7 @@ import org.junit.jupiter.api.Test;
  * {@code ForwardAuthMechanism} gives every request without {@code X-Qits-User} the synthetic
  * {@code dev} identity, which holds {@code qits:admin}. {@code @TestSecurity} yields to any identity
  * that is not anonymous, so without the profile every case ran as {@code dev}: the reads passed for
- * the admin and the cancel reached its handler (409 on a finished run). {@link MachineGuardTest.GateOn}
+ * the admin and the writes reached their handlers. {@link MachineGuardTest.GateOn}
  * blanks the dev user, and reusing it costs no second Quarkus start. The token carries this
  * service's audience and {@code project=*}, so {@code MachineAuth} would admit it: only the role can
  * refuse a write. The reads answering 200 and the writes answering 403 together prove the agent was
@@ -199,12 +200,12 @@ class AgentReadAccessTest {
         @Claim(key = "aud", value = OWN_AUDIENCE),
         @Claim(key = QitsClaims.PROJECT, value = "*")
       })
-  void anAgentWritesNothingButARetry() {
+  void anAgentWritesNothingButARetryOrACancel() {
     // The retry left this list on 2026-09-19: an agent may re-fire a run whose repository its
     // project claim covers, and is refused one in anybody else's. AgentRetryAccessTest holds both
-    // sides. A runner's health check left it with qits-896 (the case above). Everything below is
-    // still shut.
-    given().when().post("/ci/api/runs/" + foreignRun + "/cancel").then().statusCode(403);
+    // sides. The run cancel left it on the same terms with qits-536, and AgentCancelAccessTest holds
+    // its sides. A runner's health check left it with qits-896 (the case above). Everything below
+    // is still shut.
     given()
         .contentType(MediaType.APPLICATION_JSON)
         .body("{\"repoId\":\"" + REPO + "\",\"releaseRequestId\":\"rr-agent\"}")

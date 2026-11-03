@@ -929,8 +929,9 @@ all — so a fixture that mints a token without `groups` authenticates perfectly
 403, which is a stale fixture rather than a regression. A method-level role list **replaces** the
 class-level one rather than adding to it; a route both a person and a machine read must name both.
 
-**Every read route also takes `qits:agent`, and exactly ONE write does** — the retry below. Agents keep all read
-access and lost write access wholesale (user ruling, 2026-09-12). So `CiRepositoryController` and
+**Every read route also takes `qits:agent`, and exactly TWO writes do** — the retry below and, on the
+same terms, the run cancel (qits-536). Agents keep all read access and lost write access wholesale
+(user ruling, 2026-09-12). So `CiRepositoryController` and
 `CiDaemonController` name it on the class, and `CiRunController` names it on each of its four
 reads: its class list also guards the `cancellations` write. Nothing filters what an agent reads.
 The daemon socket is not a read route (step daemons write run records through it) and is unchanged.
@@ -948,6 +949,13 @@ run is read first so a bad run id is still a 404 rather than a 403. It does **no
 addressed by the triple it actually holds). The claim the check reads is real — qits-idp states
 `project` on every commissioned agent credential — and an agent arriving without one holds no
 platform-wide role either, so it is refused. `AgentRetryAccessTest` is the case file.
+
+**`POST /ci/api/runs/{runId}/cancel` took the same widening with qits-536**, guard for guard:
+`cancelRun` reads the run (404 first), then runs `cancellationScope()`/`requireRepositoryInProject`
+against its repository, then cancels (409 on a finished run). No `qits:system`. The check binds
+every token with a project claim, so `qits:desk`/`qits:desk-admin`, admitted outright before, are
+now bound to their own project on the cancel as on the retry. `AgentCancelAccessTest` is its case
+file.
 
 ## The Angular client
 
@@ -2807,8 +2815,9 @@ and governs both roles identically.
 `SecurityIdentity`; this service authenticates no person. The platform edge establishes the
 session, and `qits-gateway` strips and re-asserts its reserved `X-Qits-*` namespace. That hygiene is
 the entire reason the headers can be trusted here. There is no auth variant to select in this
-service: the read routes accept `qits:admin` or `qits:system`, the two human writes (`cancel` and
-`retry`) require `qits:admin`, the release-request cancellation **and the manual trigger** take
+service: the read routes accept `qits:admin` or `qits:system`, the two run-scoped writes (`cancel`
+and `retry`) take `qits:admin` or a project-bound `qits:agent` but never `qits:system`, the
+release-request cancellation **and the manual trigger** take
 either role and add a `MachineAuth` check on their machine arm — the trigger's reads the `project`
 claim as a scope rather than demanding one value — and machine controllers retain their separate
 `MachineAuth` audience/scope checks pending endpoint-scoped machine roles.
