@@ -14,6 +14,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -49,6 +50,13 @@ import org.jboss.logging.Logger;
  * read is cached; a failure is retried by the next event, which is what keeps a git host that came
  * back up from staying invisible for a window.
  *
+ * <h2>Authentication</h2>
+ *
+ * <p>It presents the {@code qits} named oidc client's bearer ({@link IdpGitHostBearer}) and nothing
+ * beside it — no {@code X-Qits-User}/{@code X-Qits-Roles} pair, and none as a fallback when the
+ * client is off. With no bearer the call fails closed: it is never sent, and one WARN names the
+ * missing client (owner ruling 2026-10-18).
+ *
  * <p><b>An instance {@code HttpClient}, never a static one</b> — and this is where that constraint is
  * written down, since the class that used to hold it ({@code notify/PdBuildNotifier}) went with the
  * direct deploy POST. A static client is created at image-build time and native-image refuses the
@@ -78,6 +86,7 @@ public class HttpGitHostRepoListing implements GitHostRepoListing {
 
   @Inject ObjectMapper objectMapper;
   @Inject QitsHttpClients clients;
+  @Inject GitHostBearer gitHostBearer;
 
   /**
    * Built here rather than at the field — see {@code HttpGitConfigSource#buildClient} for why a
@@ -116,14 +125,28 @@ public class HttpGitHostRepoListing implements GitHostRepoListing {
     return ids;
   }
 
-  /** The listing, or null when it could not be read — the one caller turns null into empty. */
+  /**
+   * The listing, or null when it could not be read — the one caller turns null into empty.
+   *
+   * <p><b>With no bearer, this fails closed and opens no socket</b> (owner ruling 2026-10-18): the
+   * call carries the {@code qits} oidc client's bearer alone, never a forwarded {@code
+   * X-Qits-User}/{@code X-Qits-Roles} pair as a fallback. A disabled or unreachable client is a WARN
+   * naming it, exactly as {@code projects/HttpProjectsRepoListing} does for the catalogue read.
+   */
   private Set<String> read(String url) {
+    Optional<String> token = gitHostBearer.token();
+    if (token.isEmpty()) {
+      LOG.warnf(
+          "No bearer from the qits oidc client (quarkus.oidc-client.qits) — not reading the git"
+              + " host's repository listing from %s",
+          url);
+      return null;
+    }
     try {
       HttpRequest request =
           HttpRequest.newBuilder(URI.create(url))
               .timeout(REQUEST_TIMEOUT)
-              .header("X-Qits-User", "qits-ci")
-              .header("X-Qits-Roles", "qits:system")
+              .header("Authorization", "Bearer " + token.get())
               .GET()
               .build();
       HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());

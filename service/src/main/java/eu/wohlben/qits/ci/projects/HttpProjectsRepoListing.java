@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.ci.control.CiIdentifiers;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiRepositoryListing;
+import eu.wohlben.qits.ci.githost.GitHostBearer;
+import eu.wohlben.qits.ci.githost.IdpGitHostBearer;
 import eu.wohlben.qits.http.QitsHttpClients;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -54,12 +56,11 @@ import org.jboss.logging.Logger;
  *
  * <h2>Authentication</h2>
  *
- * <p>It presents {@code X-Qits-User}/{@code X-Qits-Roles: qits:system} — the same forward-auth
- * identity {@code githost/HttpGitHostRepoListing} presents for the same kind of in-network read, and
- * exactly the role the endpoint's contract asks for. No bearer: the shared {@code qits} named
- * client, audience {@code qits-platform}, is not wired in for this hop, and a request carrying no
- * {@code Authorization} falls through to the header mechanism. Wiring it in is an application
- * change, and it belongs in the campaign's wiring work rather than here.
+ * <p>It presents the {@code qits} named oidc client's bearer ({@link IdpGitHostBearer}) and nothing
+ * beside it — no {@code X-Qits-User}/{@code X-Qits-Roles} pair, and none as a fallback when the
+ * client is off (owner ruling 2026-10-18). With no bearer the call fails closed: it is never sent,
+ * and one WARN names the missing client, exactly as {@code githost/HttpGitHostRepoListing} does for
+ * the git host's listing.
  *
  * <h2>The timeouts and the cache</h2>
  *
@@ -103,6 +104,7 @@ public class HttpProjectsRepoListing implements CiRepositoryListing {
 
   @Inject ObjectMapper objectMapper;
   @Inject QitsHttpClients clients;
+  @Inject GitHostBearer gitHostBearer;
 
   /**
    * Built here rather than at the field — see {@code HttpGitConfigSource#buildClient} for why a
@@ -151,14 +153,28 @@ public class HttpProjectsRepoListing implements CiRepositoryListing {
     return repositories;
   }
 
-  /** The listing, or null when it could not be read — the one caller turns null into empty. */
+  /**
+   * The listing, or null when it could not be read — the one caller turns null into empty.
+   *
+   * <p><b>With no bearer, this fails closed and opens no socket</b> (owner ruling 2026-10-18): the
+   * call carries the {@code qits} oidc client's bearer alone, never a forwarded {@code
+   * X-Qits-User}/{@code X-Qits-Roles} pair as a fallback. A disabled or unreachable client is a WARN
+   * naming it, exactly as {@code githost/HttpGitHostRepoListing} does for the git host's listing.
+   */
   private List<CiRepoRef> read(String url) {
+    Optional<String> token = gitHostBearer.token();
+    if (token.isEmpty()) {
+      LOG.warnf(
+          "No bearer from the qits oidc client (quarkus.oidc-client.qits) — not reading the"
+              + " repository catalogue from %s",
+          url);
+      return null;
+    }
     try {
       HttpRequest request =
           HttpRequest.newBuilder(URI.create(url))
               .timeout(REQUEST_TIMEOUT)
-              .header("X-Qits-User", "qits-ci")
-              .header("X-Qits-Roles", "qits:system")
+              .header("Authorization", "Bearer " + token.get())
               .GET()
               .build();
       HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());

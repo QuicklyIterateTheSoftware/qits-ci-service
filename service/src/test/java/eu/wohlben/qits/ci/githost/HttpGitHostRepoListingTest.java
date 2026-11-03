@@ -12,6 +12,7 @@ import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -44,6 +45,9 @@ public class HttpGitHostRepoListingTest {
   /** Every path the stub was asked for, so the url shape is asserted rather than assumed. */
   private final List<String> paths = Collections.synchronizedList(new ArrayList<>());
 
+  /** Every {@code Authorization} header seen, so the bearer is asserted rather than assumed. */
+  private final List<String> authorizations = Collections.synchronizedList(new ArrayList<>());
+
   private volatile int status = 200;
   private volatile String body = "{\"repositories\":[]}";
 
@@ -55,6 +59,7 @@ public class HttpGitHostRepoListingTest {
         req -> {
           reads.incrementAndGet();
           paths.add(req.path());
+          authorizations.add(req.getHeader("Authorization"));
           req.response().setStatusCode(status).putHeader("Content-Type", "application/json").end(body);
         });
     port =
@@ -78,6 +83,17 @@ public class HttpGitHostRepoListingTest {
 
     assertEquals(Set.of("qits-ci", "qits-spa-home"), listing().repositories());
     assertEquals(List.of("/git"), paths, "the same segment ci appends to fetch a ref");
+    assertEquals(
+        List.of("Bearer machine-token"),
+        authorizations,
+        "the qits oidc client's bearer, never an X-Qits-User/X-Qits-Roles pair");
+  }
+
+  @Test
+  public void withNoBearerTheCallFailsClosedAndOpensNoSocket() {
+    // Owner ruling 2026-10-18: no pair as a fallback when the client is off.
+    assertTrue(listing("http://127.0.0.1:" + port, null).repositories().isEmpty());
+    assertEquals(0, reads.get(), "no socket is opened with no bearer from the qits oidc client");
   }
 
   @Test
@@ -165,9 +181,14 @@ public class HttpGitHostRepoListingTest {
   }
 
   private HttpGitHostRepoListing listing(String gitHostUrl) {
+    return listing(gitHostUrl, "machine-token");
+  }
+
+  private HttpGitHostRepoListing listing(String gitHostUrl, String bearer) {
     HttpGitHostRepoListing listing = new HttpGitHostRepoListing();
     listing.gitHostUrl = gitHostUrl;
     listing.objectMapper = new ObjectMapper();
+    listing.gitHostBearer = () -> Optional.ofNullable(bearer);
     listing.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
     listing.buildClient();
     return listing;

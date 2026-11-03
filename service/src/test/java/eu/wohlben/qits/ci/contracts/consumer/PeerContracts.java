@@ -88,8 +88,8 @@ import org.jose4j.jwk.RsaJsonWebKey;
  * file test fails until {@code -Dgolden.update=true} rewrites the file, and the row is live. An
  * operationId the provider's route does not carry yet is this consumer's proposal.
  *
- * <p>Requests other than the recorded one are the consumer's own extra headers ({@code X-Qits-User},
- * the git host's bearer, {@code Accept}), which a pact does not bind.
+ * <p>Requests other than the recorded one are the consumer's own extra headers (the {@code qits}
+ * oidc client's bearer, {@code Accept}), which a pact does not bind.
  */
 final class PeerContracts {
 

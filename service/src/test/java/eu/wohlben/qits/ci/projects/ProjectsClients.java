@@ -13,12 +13,18 @@ public final class ProjectsClients {
 
   private ProjectsClients() {}
 
-  public static HttpProjectsRepoListing repoListing(String projectsUrl) {
+  public static HttpProjectsRepoListing repoListing(String projectsUrl, String bearer) {
     HttpProjectsRepoListing listing = new HttpProjectsRepoListing();
     listing.projectsUrl = Optional.of(projectsUrl);
     listing.objectMapper = new ObjectMapper();
+    listing.gitHostBearer = () -> Optional.ofNullable(bearer);
     listing.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
     listing.buildClient();
     return listing;
+  }
+
+  /** {@link #repoListing(String, String)} with a bearer every pact row may present. */
+  public static HttpProjectsRepoListing repoListing(String projectsUrl) {
+    return repoListing(projectsUrl, "machine-token");
   }
 }
