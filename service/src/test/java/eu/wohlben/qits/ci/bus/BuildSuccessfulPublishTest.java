@@ -82,11 +82,21 @@ public class BuildSuccessfulPublishTest {
           script: echo ok
       """;
 
-  /** Undoes the shipped `%test` darkness for this class only. */
+  /**
+   * Undoes the shipped `%test` darkness for this class only — and switches the {@code qits} oidc
+   * client back on with it, against the same unrecorded idp-token stub the story profiles share
+   * ({@link eu.wohlben.qits.ci.stories.support.StoryRunTokens}). qits-eventstream presents that
+   * client's bearer on every publish, subscribe and query and fails CLOSED without one (qits-1328,
+   * epic qits-543), so a bus switched on with the `%test`-disabled client publishes nothing at all.
+   */
   public static class EventstreamOn implements QuarkusTestProfile {
     @Override
     public Map<String, String> getConfigOverrides() {
-      return Map.of("qits.eventstream.enabled", "true");
+      Map<String, String> overrides =
+          new java.util.HashMap<>(
+              eu.wohlben.qits.ci.stories.support.StoryRunTokens.configOverrides());
+      overrides.put("qits.eventstream.enabled", "true");
+      return Map.copyOf(overrides);
     }
   }
 
@@ -141,6 +151,13 @@ public class BuildSuccessfulPublishTest {
     List<StubEventsServer.Put> all = awaitPuts(PER_GREEN_RUN);
     List<StubEventsServer.Put> puts = named(all, "BuildSuccessful");
     assertEquals(1, puts.size(), "one green run is one verdict");
+    // Every publish carries this service's own qits client bearer (qits-1328, epic qits-543):
+    // qits-eventstream fails closed without one, so a bare PUT would never have arrived at all.
+    assertEquals(
+        java.util.Collections.nCopies(
+            all.size(), "Bearer " + eu.wohlben.qits.ci.idp.StubIdp.GIT_HOST_BEARER_TOKEN),
+        StubEventsServer.putAuthorizations().subList(0, all.size()),
+        "every publish presents the qits client bearer");
     // The lifecycle rides beside it, in the order the run really moved — the other reader's half of
     // the same run, asserted here so a green build's whole output on the bus is written down once.
     assertEquals(
