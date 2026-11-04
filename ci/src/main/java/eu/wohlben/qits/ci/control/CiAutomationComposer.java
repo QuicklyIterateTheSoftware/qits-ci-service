@@ -96,8 +96,10 @@ import java.util.regex.Pattern;
  * the kind's script runs as a child and cannot move what the postlude reads.
  *
  * <p>The <b>postlude</b> stages <b>only</b> the payload's {@code commitPaths} ({@code git add -A
- * --}), commits {@code chore(<item>): update <kind words>} (or the kind's own message, below)
- * unless the {@code
+ * --}), commits {@code chore(<item>): update <kind words>} ({@code chore(platform): update <kind
+ * words>} with no item — qits-706: {@code platform} is a scope, not a work item, and reads true
+ * when neither the caller nor the fold's own history named one; a bare {@code chore: ...} is a
+ * subject qits-githost refuses outright) (or the kind's own message, below) unless the {@code
  * --ignore-submodules=none} guard finds nothing staged — then it prints {@code unchanged at fold
  * <sha> (<base>): the <kind> regeneration changed nothing under the commit paths} and exits 0 —
  * and makes a plain push, never forced, to {@code HEAD:refs/heads/<branch>}. A rejected push
@@ -140,12 +142,15 @@ import java.util.regex.Pattern;
  * commit-type: bump} and writes the rest itself: the step exports {@value #MESSAGE_ENV} naming
  * a file in the run's own directory, the script writes the DESCRIPTION there on its first line
  * and, optionally, a body after it, and the postlude commits {@code <type>(<item>): <description>}
- * — {@code <type>: <description>} with no item — with that body below a blank line. <b>The type
- * and the scope stay the platform's</b>: the type is the kind file's, the item is the prelude's,
- * and a script can no more pick either than it can pick the branch. A changed tree with no
- * description is a failed step naming the variable, never a commit with an empty subject; the
- * file is only read once the guard has found something staged, so a run with nothing to commit
- * needs no message at all.
+ * — {@code <type>(platform): <description>} with no item (qits-706: the same reason the untyped
+ * subject above falls back to {@code platform} rather than dropping the scope — a bare {@code
+ * <type>: ...} is a subject qits-githost refuses, and {@code bump(platform): N dependencies}
+ * still fits the fixed {@code bump(<scope>): N dependencies} variant) — with that body below a
+ * blank line. <b>The type and the scope stay the platform's</b>: the type is the kind file's, the
+ * item is the prelude's, and a script can no more pick either than it can pick the branch. A
+ * changed tree with no description is a failed step naming the variable, never a commit with an
+ * empty subject; the file is only read once the guard has found something staged, so a run with
+ * nothing to commit needs no message at all.
  *
  * <p><b>The tickets a commit carries head its subject</b> (qits-893). A dependency bump pulls in
  * internal releases, and their changelogs name the tickets that shipped in them: the bump commit
@@ -154,9 +159,9 @@ import java.util.regex.Pattern;
  * tickets — {@code dependency-bump} reads them off {@code qits changelog bump-message} — writes
  * them there, separated by single spaces. A script only ever names either file by its variable.
  * The postlude then commits {@code chore(<id>, <id>): <type>(<item>): <description>} ({@code
- * chore(<ids>): <type>: <description>} with no item): the tickets head the subject, and <b>the
- * type and the item stay the platform's</b>, untouched behind them. The file is optional — absent
- * or empty is the plain subject — but what it says is refused rather than quoted: anything but
+ * chore(<ids>): <type>(platform): <description>} with no item): the tickets head the subject, and
+ * <b>the type and the item stay the platform's</b>, untouched behind them. The file is optional —
+ * absent or empty is the plain subject — but what it says is refused rather than quoted: anything but
  * work items ({@code [A-Za-z0-9][A-Za-z0-9-]*-[0-9]{1,18}}) separated by single spaces fails the
  * step with a sentence naming the variable. The commit is {@code --cleanup=verbatim}, because a
  * changelog body carries {@code # <version>} headings that git's default cleanup would strip as
@@ -670,7 +675,10 @@ public final class CiAutomationComposer {
       out.append("if [ -n \"$item\" ]; then\n");
       out.append("  subject=\"chore($item): $subject\"\n");
       out.append("else\n");
-      out.append("  subject=\"chore: $subject\"\n");
+      // qits-706: qits-githost refuses every non-merge subject outside its fixed variants, and a
+      // bare `chore: ...` fits none of them. `platform` is a scope, not a work item, and reads
+      // true: no caller named one, and the fold's own newest 200 subjects named none either.
+      out.append("  subject=\"chore(platform): $subject\"\n");
       out.append("fi\n");
       out.append(
           "git -c user.name=\"qits maintenance\" -c user.email=\"maintenance@qits.local\" \\\n");
@@ -693,7 +701,9 @@ public final class CiAutomationComposer {
       out.append("if [ -n \"$item\" ]; then\n");
       out.append("  subject=\"").append(commitType).append("($item): $description\"\n");
       out.append("else\n");
-      out.append("  subject=\"").append(commitType).append(": $description\"\n");
+      // qits-706: the same refusal, for a typed kind's subject — `bump: ...` fits none of
+      // qits-githost's variants either, and `bump(platform): ...` is the BUMP one.
+      out.append("  subject=\"").append(commitType).append("(platform): $description\"\n");
       out.append("fi\n");
       // The tickets head the subject; the type and the item behind them stay the platform's. One
       // line of work items and single spaces, or the step fails: they reach the commit subject.

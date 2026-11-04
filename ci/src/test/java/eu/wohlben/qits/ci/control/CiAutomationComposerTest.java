@@ -414,6 +414,22 @@ public class CiAutomationComposerTest {
   }
 
   @Test
+  public void noItemAnywhereFallsBackToThePlatformScopeForAnUntypedKind(@TempDir Path dir)
+      throws Exception {
+    // qits-706: qits-githost refuses every non-merge subject outside its fixed variants, and a
+    // bare `chore: update test kind` fits none of them. Neither the caller's payload nor the
+    // fold's own newest 200 subjects name a work item here, so the postlude must fall back to
+    // `chore(platform): ...` — the PLATFORM variant — rather than the refused bare form.
+    Scratch scratch = new Scratch(dir, "test-kind", null, "fold a source branch, untyped");
+    Result run = scratch.run("bash", WRITES, scratch.payload(BRANCH, scratch.fold, "\"out/file.txt\""));
+
+    assertEquals(0, run.exit, run.output);
+    assertEquals(
+        "chore(platform): update test kind",
+        scratch.git(scratch.origin, "log", "-1", "--format=%s", "refs/heads/" + BRANCH));
+  }
+
+  @Test
   public void nothingChangedUnderThePathsIsUnchangedAndGreen(@TempDir Path dir) throws Exception {
     Scratch scratch = new Scratch(dir);
     Result run =
@@ -973,6 +989,26 @@ public class CiAutomationComposerTest {
           "out/file.txt",
           scratch.git(scratch.origin, "diff-tree", "--no-commit-id", "--name-only", "-r", pushed),
           "the message file is no commit path");
+    }
+  }
+
+  @Test
+  public void noItemAnywhereFallsBackToThePlatformScopeForACommitTypeKind(@TempDir Path dir)
+      throws Exception {
+    // qits-706: a typed kind's bare `bump: 2 dependencies` is refused by qits-githost exactly as
+    // the untyped `chore: ...` is - `bump(platform): 2 dependencies` is the fixed BUMP variant
+    // (`bump\([0-9A-Za-z._-]+\): [0-9]+ dependencies`), and `platform` fits its scope charset.
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch =
+          new Scratch(dir.resolve(shell), "test-kind", "bump", "fold a source branch, untyped");
+      Result run =
+          scratch.run(shell, WRITES_A_MESSAGE, scratch.payload(BRANCH, scratch.fold, "\"out/**\""));
+
+      assertEquals(0, run.exit, shell + ":\n" + run.output);
+      String pushed = scratch.originRev("refs/heads/" + BRANCH);
+      assertEquals(
+          "bump(platform): 2 dependencies",
+          scratch.git(scratch.origin, "log", "-1", "--format=%s", pushed));
     }
   }
 
@@ -1692,6 +1728,16 @@ public class CiAutomationComposerTest {
 
     /** The same origin, for a step composed as {@code kind} with this {@code commit-type}. */
     Scratch(Path root, String kind, String commitType) throws Exception {
+      this(root, kind, commitType, "feat(qits-978): fold a source branch");
+    }
+
+    /**
+     * The same origin, with the fold's own commit carrying {@code foldSubject} rather than the
+     * typed, ticket-named one every other test builds on — the no-item fallback's own fixture:
+     * nothing in the fold's newest 200 subjects names a work item, and the payload below names none
+     * either, so {@code $item} is empty when the postlude composes the subject.
+     */
+    Scratch(Path root, String kind, String commitType, String foldSubject) throws Exception {
       assumeTrue(available("jq"), "jq is not installed on this host");
       this.root = root;
       this.kind = kind;
@@ -1711,7 +1757,7 @@ public class CiAutomationComposerTest {
       git(seed, "checkout", "-q", "-b", "release/abc");
       Files.writeString(seed.resolve("feature.txt"), "folded\n");
       git(seed, "add", "feature.txt");
-      commit(seed, "feat(qits-978): fold a source branch");
+      commit(seed, foldSubject);
       git(seed, "push", "-q", origin.toString(), "release/abc");
       fold = git(seed, "rev-parse", "HEAD");
       // The step's own clone is of main: the run is recorded at main's head.
