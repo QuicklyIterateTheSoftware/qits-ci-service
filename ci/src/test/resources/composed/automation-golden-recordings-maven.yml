@@ -215,7 +215,7 @@ steps:
       if [ -n "$item" ]; then
         subject="chore($item): $subject"
       else
-        subject="chore: $subject"
+        subject="chore(platform): $subject"
       fi
       git -c user.name="qits maintenance" -c user.email="maintenance@qits.local" \
           commit -q -m "$subject"
