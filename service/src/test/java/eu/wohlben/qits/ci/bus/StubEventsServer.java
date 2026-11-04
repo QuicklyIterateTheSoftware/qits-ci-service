@@ -64,6 +64,21 @@ public class StubEventsServer implements QuarkusTestResourceLifecycleManager {
    */
   private static final List<String> SUBSCRIBES = Collections.synchronizedList(new ArrayList<>());
 
+  /**
+   * The {@code Authorization} header of every PUT, in arrival order (null where none was sent) —
+   * qits-eventstream presents the service's own {@code qits} client bearer on every publish
+   * (qits-1328), and that is a claim worth asserting rather than assuming.
+   */
+  private static final List<String> PUT_AUTHORIZATIONS =
+      Collections.synchronizedList(new ArrayList<>());
+
+  /** Every PUT's {@code Authorization} header, in order. */
+  public static List<String> putAuthorizations() {
+    synchronized (PUT_AUTHORIZATIONS) {
+      return new ArrayList<>(PUT_AUTHORIZATIONS);
+    }
+  }
+
   private static Vertx vertx;
   private static HttpServer server;
 
@@ -90,6 +105,7 @@ public class StubEventsServer implements QuarkusTestResourceLifecycleManager {
    */
   public static void reset() {
     PUTS.clear();
+    PUT_AUTHORIZATIONS.clear();
     SEEDED_EVENTS.clear();
   }
 
@@ -118,10 +134,12 @@ public class StubEventsServer implements QuarkusTestResourceLifecycleManager {
                   String path = request.path();
                   if (request.method().name().equals("PUT") && path.startsWith(EVENTS_PATH)) {
                     String id = path.substring(EVENTS_PATH.length());
+                    String authorization = request.getHeader("Authorization");
                     request
                         .body()
                         .onSuccess(
                             body -> {
+                              PUT_AUTHORIZATIONS.add(authorization);
                               PUTS.add(new Put(id, body.toString()));
                               request.response().setStatusCode(201).end();
                             });
