@@ -62,21 +62,70 @@ script: |
     settings="-s .qits-maven-settings.xml"
   fi
 
-  # Passed as a property ONLY when a pom reads ${qits.maven.repository.url}, as cli.yml does: Maven
-  # forwards a user property into surefire's test JVM, and a module with a strict `qits`
-  # ConfigMapping refuses one it does not map (SRCFG00050, qits-bootstrap-cli's WebViewTest in
-  # qits-1516's first live runs).
+  # THE REACTOR'S POMS (qits-1887): the root pom.xml and every pom it declares as a module,
+  # walked down, printed one path per line. Not every pom.xml in the tree: a repository keeps
+  # copies of other repositories' poms as test fixtures
+  # (`src/test/resources/estate/*/files/pom.xml`), which are no part of its build, so they
+  # must not decide how its build runs. Every `<module>` counts, a profile's too: a superset
+  # of any one activation, which errs towards the flag some module of the reactor may need. A
+  # module naming a directory is its pom.xml, one ending in `.xml` is that file; a
+  # commented-out module does not count, a missing pom is skipped, and a pom outside the
+  # checkout is never read. Each pom is read once and the walk stops 16 levels down, so a
+  # cycle in the declarations ends. Plain sh and sed, because a step image's sh may be dash or
+  # busybox: no find, realpath or xmllint. The same text, byte for byte, in cli.yml,
+  # java-service.yml and golden-recordings-maven.yml, since each step script stands alone.
+  qits_reactor_poms() {
+    qits_reactor_level=./pom.xml
+    qits_reactor_seen=" "
+    qits_reactor_depth=0
+    while [ -n "$qits_reactor_level" ] && [ "$qits_reactor_depth" -lt 16 ]; do
+      qits_reactor_next=""
+      for qits_reactor_pom in $qits_reactor_level; do
+        case "$qits_reactor_seen" in *" $qits_reactor_pom "*) continue ;; esac
+        case "$qits_reactor_pom" in ./../*) continue ;; esac
+        [ -f "$qits_reactor_pom" ] || continue
+        qits_reactor_seen="$qits_reactor_seen$qits_reactor_pom "
+        printf '%s\n' "$qits_reactor_pom"
+        qits_reactor_dir=${qits_reactor_pom%/*}
+        qits_reactor_next="$qits_reactor_next $(
+          for qits_reactor_module in $(sed -n -e ':j' -e '$!N' -e '$!bj' \
+            -e 's/<!--[^-]*\(-[^-][^-]*\)*-->//g' \
+            -e ':m' -e '/<module>[^<]*<\/module>/!d' -e 'h' \
+            -e 's/<module>\([^<]*\)<\/module>.*/<module>\1/' -e 's/.*<module>//p' \
+            -e 'g' -e 's/<module>[^<]*<\/module>//' -e 'bm' "$qits_reactor_pom"); do
+            case "$qits_reactor_module" in
+              *.xml) printf '%s\n' "$qits_reactor_dir/$qits_reactor_module" ;;
+              *) printf '%s\n' "$qits_reactor_dir/$qits_reactor_module/pom.xml" ;;
+            esac
+          done | sed -e 's|//*|/|g' -e ':n' -e 's|/\./|/|' -e 's|/[^/.][^/]*/\.\./|/|' \
+            -e 's|/\.[^/.][^/]*/\.\./|/|' -e 's|/\.\.[^/][^/]*/\.\./|/|' -e 'tn'
+        )"
+      done
+      qits_reactor_level=$qits_reactor_next
+      qits_reactor_depth=$((qits_reactor_depth + 1))
+    done
+  }
+
+  # Both decisions below read the reactor's poms, the root and the modules it declares, and not
+  # every pom.xml in the tree: a test fixture copying another repository's pom carries that
+  # repository's markers, and it must not change how this suite runs (qits-1887).
+  reactor_poms=$(qits_reactor_poms)
+
+  # Passed as a property ONLY when a pom of the reactor reads ${qits.maven.repository.url}, as
+  # cli.yml does: Maven forwards a user property into surefire's test JVM, and a module with a
+  # strict `qits` ConfigMapping refuses one it does not map (SRCFG00050, qits-bootstrap-cli's
+  # WebViewTest in qits-1516's first live runs).
   maven_repository_property=""
-  if grep -rqs --include=pom.xml 'qits.maven.repository.url' .; then
+  if grep -qs 'qits.maven.repository.url' $reactor_poms; then
     maven_repository_property="-Dqits.maven.repository.url=$QITS_MAVEN_REPOSITORY_URL"
   fi
 
-  # Quinoa off ONLY where a pom has Quinoa: the clone does not recurse, so a webui submodule is an
-  # empty directory - the one state Quinoa calls a misconfiguration. Anywhere else Quarkus warns
-  # about an unrecognized key on stdout, and a CLI test that compares its output fails
-  # (qits-platform-access-cli's AccessCliTest in qits-1516's live runs).
+  # Quinoa off ONLY where a pom of the reactor has Quinoa: the clone does not recurse, so a webui
+  # submodule is an empty directory - the one state Quinoa calls a misconfiguration. Anywhere else
+  # Quarkus warns about an unrecognized key on stdout, and a CLI test that compares its output
+  # fails (qits-platform-access-cli's AccessCliTest in qits-1516's live runs).
   quinoa_property=""
-  if grep -rqs --include=pom.xml 'quarkus-quinoa' .; then
+  if grep -qs 'quarkus-quinoa' $reactor_poms; then
     quinoa_property="-Dquarkus.quinoa=false"
   fi
 

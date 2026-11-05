@@ -247,6 +247,10 @@ public class JavaServiceReleaseArchetypeTest {
       </project>
       """;
 
+  /** A reactor root, as a real one is: it declares the module the provider pom lives in. */
+  private static final String REACTOR_ROOT_POM =
+      "<project><modules><module>service</module></modules></project>\n";
+
   /** A consumer's: golden masters and a pact package naming ANOTHER provider, never this one. */
   private static final String CONSUMER_POM =
       """
@@ -272,7 +276,7 @@ public class JavaServiceReleaseArchetypeTest {
     for (String shell : List.of("bash", "sh")) {
       Path tree = dir.resolve(shell);
       Files.createDirectories(tree.resolve("service"));
-      Files.writeString(tree.resolve("pom.xml"), "<project/>\n");
+      Files.writeString(tree.resolve("pom.xml"), REACTOR_ROOT_POM);
       Files.writeString(tree.resolve("service/pom.xml"), PROVIDER_POM);
       // Left over from an earlier attempt in the same checkout: it must not be verified as deployed.
       Path stale = tree.resolve("target/deployed-pacts/old-consumer/1/old_qits-githost-service.json");
@@ -307,7 +311,8 @@ public class JavaServiceReleaseArchetypeTest {
       // Two poms, two declared consumers: the scan collects them across the whole reactor.
       Files.writeString(
           tree.resolve("pom.xml"),
-          "<project><dependencyManagement><dependencies><dependency>"
+          "<project><modules><module>service</module></modules>"
+              + "<dependencyManagement><dependencies><dependency>"
               + "<artifactId>qits-deploy-app-pacts-qits-githost-service</artifactId>"
               + "</dependency></dependencies></dependencyManagement></project>\n");
       Files.writeString(tree.resolve("service/pom.xml"), PROVIDER_POM);
@@ -342,6 +347,33 @@ public class JavaServiceReleaseArchetypeTest {
       Files.writeString(tree.resolve("pom.xml"), CONSUMER_POM);
       // Build output is not a declaration: a copied pom under target/ does not make a provider.
       Files.writeString(tree.resolve("service/target/pom.xml"), PROVIDER_POM);
+
+      VerifyRun run = verify(tree, shell, 0);
+
+      assertEquals(List.of(), run.qits(), shell + ":\n" + run.output());
+      assertEquals(
+          List.of("QITS_DEPLOYED_PACTS_DIR=<unset>", "files="), run.mvnw(), shell + ":\n" + run.output());
+      assertFalse(Files.exists(tree.resolve("target/deployed-pacts")), shell);
+    }
+  }
+
+  @Test
+  public void aFixturePomDeclaringAPactPackageDoesNotMakeAProvider(@TempDir Path dir)
+      throws Exception {
+    // qits-1887: only the reactor's poms are read. A repository's test fixtures copy other
+    // repositories' poms, a provider's among them; that copy declares no pact this repository
+    // verifies, so it must neither fetch the deployed pacts nor hand the verify a directory.
+    for (String shell : List.of("bash", "sh")) {
+      Path tree = dir.resolve(shell);
+      Files.createDirectories(tree.resolve("service"));
+      Files.createDirectories(tree.resolve("service/src/test/resources/estate/x/files"));
+      Files.writeString(tree.resolve("pom.xml"), REACTOR_ROOT_POM);
+      Files.writeString(tree.resolve("service/pom.xml"), CONSUMER_POM);
+      Files.writeString(
+          tree.resolve("service/src/test/resources/estate/x/files/pom.xml"), PROVIDER_POM);
+      // A module the root does not declare is no part of the reactor either.
+      Files.createDirectories(tree.resolve("undeclared"));
+      Files.writeString(tree.resolve("undeclared/pom.xml"), PROVIDER_POM);
 
       VerifyRun run = verify(tree, shell, 0);
 

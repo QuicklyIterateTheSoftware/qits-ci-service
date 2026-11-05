@@ -141,12 +141,59 @@ steps:
       export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
       export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
 
-      # Passed as a property ONLY when a pom reads ${qits.maven.repository.url} — the pom that
-      # declares the `qits-maven` repository by it. Maven forwards a user property into surefire's
-      # test JVM, and a CLI with a strict `qits` ConfigMapping refuses one it does not map
-      # (SRCFG00050), so its tests would not boot.
+      # THE REACTOR'S POMS (qits-1887): the root pom.xml and every pom it declares as a module,
+      # walked down, printed one path per line. Not every pom.xml in the tree: a repository keeps
+      # copies of other repositories' poms as test fixtures
+      # (`src/test/resources/estate/*/files/pom.xml`), which are no part of its build, so they
+      # must not decide how its build runs. Every `<module>` counts, a profile's too: a superset
+      # of any one activation, which errs towards the flag some module of the reactor may need. A
+      # module naming a directory is its pom.xml, one ending in `.xml` is that file; a
+      # commented-out module does not count, a missing pom is skipped, and a pom outside the
+      # checkout is never read. Each pom is read once and the walk stops 16 levels down, so a
+      # cycle in the declarations ends. Plain sh and sed, because a step image's sh may be dash or
+      # busybox: no find, realpath or xmllint. The same text, byte for byte, in cli.yml,
+      # java-service.yml and golden-recordings-maven.yml, since each step script stands alone.
+      qits_reactor_poms() {
+        qits_reactor_level=./pom.xml
+        qits_reactor_seen=" "
+        qits_reactor_depth=0
+        while [ -n "$qits_reactor_level" ] && [ "$qits_reactor_depth" -lt 16 ]; do
+          qits_reactor_next=""
+          for qits_reactor_pom in $qits_reactor_level; do
+            case "$qits_reactor_seen" in *" $qits_reactor_pom "*) continue ;; esac
+            case "$qits_reactor_pom" in ./../*) continue ;; esac
+            [ -f "$qits_reactor_pom" ] || continue
+            qits_reactor_seen="$qits_reactor_seen$qits_reactor_pom "
+            printf '%s\n' "$qits_reactor_pom"
+            qits_reactor_dir=${qits_reactor_pom%/*}
+            qits_reactor_next="$qits_reactor_next $(
+              for qits_reactor_module in $(sed -n -e ':j' -e '$!N' -e '$!bj' \
+                -e 's/<!--[^-]*\(-[^-][^-]*\)*-->//g' \
+                -e ':m' -e '/<module>[^<]*<\/module>/!d' -e 'h' \
+                -e 's/<module>\([^<]*\)<\/module>.*/<module>\1/' -e 's/.*<module>//p' \
+                -e 'g' -e 's/<module>[^<]*<\/module>//' -e 'bm' "$qits_reactor_pom"); do
+                case "$qits_reactor_module" in
+                  *.xml) printf '%s\n' "$qits_reactor_dir/$qits_reactor_module" ;;
+                  *) printf '%s\n' "$qits_reactor_dir/$qits_reactor_module/pom.xml" ;;
+                esac
+              done | sed -e 's|//*|/|g' -e ':n' -e 's|/\./|/|' -e 's|/[^/.][^/]*/\.\./|/|' \
+                -e 's|/\.[^/.][^/]*/\.\./|/|' -e 's|/\.\.[^/][^/]*/\.\./|/|' -e 'tn'
+            )"
+          done
+          qits_reactor_level=$qits_reactor_next
+          qits_reactor_depth=$((qits_reactor_depth + 1))
+        done
+      }
+
+      # Passed as a property ONLY when a pom of the reactor reads ${qits.maven.repository.url} — the
+      # pom that declares the `qits-maven` repository by it. Maven forwards a user property into
+      # surefire's test JVM, and a CLI with a strict `qits` ConfigMapping refuses one it does not
+      # map (SRCFG00050), so its tests would not boot. The reactor's poms decide, not every pom.xml
+      # in the tree: a test fixture copying another repository's pom, marker and all, once passed
+      # the property to qits-bootstrap-cli, whose own poms never read it (qits-1887).
       maven_repository_property=""
-      if grep -rqs --include=pom.xml 'qits.maven.repository.url' .; then
+      reactor_poms=$(qits_reactor_poms)
+      if [ -n "$reactor_poms" ] && grep -qs 'qits.maven.repository.url' $reactor_poms; then
         maven_repository_property="-Dqits.maven.repository.url=$QITS_MAVEN_REPOSITORY_URL"
       fi
 

@@ -509,15 +509,19 @@ steps:
       # /maintenance/api/deployed-pacts?provider=`, behind `qits artifacts fetch deployed-pacts`),
       # and its verifier checks each of those pacts as a source of its own.
       #
-      # WHO IS A PROVIDER: a repository whose poms depend on a consumer pact package, an artifactId
+      # WHO IS A PROVIDER: a repository whose reactor poms (the root pom and the modules it declares,
+      # qits_reactor_poms below) depend on a consumer pact package, an artifactId
       # `<consumer>-pacts-<this repository>` (CiContracts' naming, keyed by the provider's REPOSITORY
       # name, which is $QITS_CI_REPO_NAME and not the image or application name). The poms already
       # declare which pacts the verifier reads, so this check needs no extra key in release.yml.
       # The scan also collects each declared `<consumer>`, which the filter after the fetch uses.
       # A repository that verifies no pact makes no fetch and gets no variable, and its verify is
-      # the same as before. `target/` and `node_modules/` hold build output and installed
-      # packages, so neither is searched. A pom that cannot be read fails the step: a provider that
-      # silently skips this fetch would pass a gate it should not pass.
+      # the same as before. Only the reactor's poms are read, never every pom.xml in the tree: a
+      # test fixture copying another repository's pom (`src/test/resources/estate/*/files/pom.xml`)
+      # would otherwise make a provider of a repository that verifies no pact, and build output
+      # under `target/` or packages under `node_modules/` are no declaration either (qits-1887). A
+      # pom that cannot be read fails the step: a provider that silently skips this fetch would pass
+      # a gate it should not pass.
       #
       # FAIL-CLOSED, AND NO FALLBACK FOR A CLI WITHOUT THE VERB. The CLI exits 1 on any failure: the
       # store does not answer, a pact cannot be fetched, or the archive does not unpack. That ends
@@ -534,10 +538,54 @@ steps:
       # JAVA_TOOL_OPTIONS below. Each provider's `ClasspathPactLoader` reads it and refuses a
       # directory that is set but missing. `qits` is on PATH because this step declares
       # `qits-cli: true`.
+      #
+      # THE REACTOR'S POMS (qits-1887): the root pom.xml and every pom it declares as a module,
+      # walked down, printed one path per line. Not every pom.xml in the tree: a repository keeps
+      # copies of other repositories' poms as test fixtures
+      # (`src/test/resources/estate/*/files/pom.xml`), which are no part of its build, so they
+      # must not decide how its build runs. Every `<module>` counts, a profile's too: a superset
+      # of any one activation, which errs towards the flag some module of the reactor may need. A
+      # module naming a directory is its pom.xml, one ending in `.xml` is that file; a
+      # commented-out module does not count, a missing pom is skipped, and a pom outside the
+      # checkout is never read. Each pom is read once and the walk stops 16 levels down, so a
+      # cycle in the declarations ends. Plain sh and sed, because a step image's sh may be dash or
+      # busybox: no find, realpath or xmllint. The same text, byte for byte, in cli.yml,
+      # java-service.yml and golden-recordings-maven.yml, since each step script stands alone.
+      qits_reactor_poms() {
+        qits_reactor_level=./pom.xml
+        qits_reactor_seen=" "
+        qits_reactor_depth=0
+        while [ -n "$qits_reactor_level" ] && [ "$qits_reactor_depth" -lt 16 ]; do
+          qits_reactor_next=""
+          for qits_reactor_pom in $qits_reactor_level; do
+            case "$qits_reactor_seen" in *" $qits_reactor_pom "*) continue ;; esac
+            case "$qits_reactor_pom" in ./../*) continue ;; esac
+            [ -f "$qits_reactor_pom" ] || continue
+            qits_reactor_seen="$qits_reactor_seen$qits_reactor_pom "
+            printf '%s\n' "$qits_reactor_pom"
+            qits_reactor_dir=${qits_reactor_pom%/*}
+            qits_reactor_next="$qits_reactor_next $(
+              for qits_reactor_module in $(sed -n -e ':j' -e '$!N' -e '$!bj' \
+                -e 's/<!--[^-]*\(-[^-][^-]*\)*-->//g' \
+                -e ':m' -e '/<module>[^<]*<\/module>/!d' -e 'h' \
+                -e 's/<module>\([^<]*\)<\/module>.*/<module>\1/' -e 's/.*<module>//p' \
+                -e 'g' -e 's/<module>[^<]*<\/module>//' -e 'bm' "$qits_reactor_pom"); do
+                case "$qits_reactor_module" in
+                  *.xml) printf '%s\n' "$qits_reactor_dir/$qits_reactor_module" ;;
+                  *) printf '%s\n' "$qits_reactor_dir/$qits_reactor_module/pom.xml" ;;
+                esac
+              done | sed -e 's|//*|/|g' -e ':n' -e 's|/\./|/|' -e 's|/[^/.][^/]*/\.\./|/|' \
+                -e 's|/\.[^/.][^/]*/\.\./|/|' -e 's|/\.\.[^/][^/]*/\.\./|/|' -e 'tn'
+            )"
+          done
+          qits_reactor_level=$qits_reactor_next
+          qits_reactor_depth=$((qits_reactor_depth + 1))
+        done
+      }
       repo=${QITS_CI_REPO_NAME:?this step was told no QITS_CI_REPO_NAME}
       deployed_pacts_dir=""
       declared_consumers=""
-      poms=$(find . -name pom.xml -not -path '*/target/*' -not -path '*/node_modules/*')
+      poms=$(qits_reactor_poms)
       for pom in $poms; do
         found=$(sed -n "s|.*<artifactId>\([A-Za-z0-9._-]*\)-pacts-$repo</artifactId>.*|\1|p" "$pom") || {
           echo "deployed pacts: could not read $pom to tell whether $repo is a pact provider" >&2
