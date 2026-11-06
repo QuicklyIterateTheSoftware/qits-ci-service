@@ -187,9 +187,23 @@ public interface CiStepRunner {
    * A run a previous process of this service left {@code RUNNING} in a lease. {@code daemonId} and
    * {@code tokenSubject} are the run's launch as its row recorded it; {@code inFlight} is null when
    * no step was in flight — between two steps, or before the first.
+   *
+   * <p>{@code awaitsInitialized} is true only before the first step of a run in a lease of its own
+   * (qits-1893): no {@code RunStep} ever left for its daemon, so nothing yet says its worktree is
+   * ready — the daemon may have said {@code Initialized} to the previous process, or may be dialling
+   * for the first time with the checkout still ahead of it. Its first step therefore waits for the
+   * {@code Initialized} a fresh run waits for, which such a daemon resends after every re-{@code Ack}
+   * until a step reaches it. False between two steps, where that resend stopped at the first step,
+   * and for a run continued in a held slot (epic qits-732), whose daemon answers its {@code
+   * Continue} again instead.
    */
   record InheritedRun(
-      String runId, UUID leaseId, String daemonId, String tokenSubject, InFlightStep inFlight) {}
+      String runId,
+      UUID leaseId,
+      String daemonId,
+      String tokenSubject,
+      InFlightStep inFlight,
+      boolean awaitsInitialized) {}
 
   /**
    * Wait for the daemon of a run a previous process left {@code RUNNING} to dial back (qits-1192):

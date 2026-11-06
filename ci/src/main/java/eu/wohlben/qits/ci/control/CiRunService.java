@@ -719,7 +719,10 @@ public class CiRunService {
                   orphan.leaseId,
                   orphan.inflightDaemonId,
                   orphan.inflightTokenSubject,
-                  inheritance.inFlight()));
+                  inheritance.inFlight(),
+                  // Before the first step — no index was ever recorded, so no RunStep ever left —
+                  // in a lease the run did not continue in (qits-1893).
+                  orphan.inflightStepIndex == null && orphan.continuedFromRunId == null));
         } else {
           LOG.warnf(
               "CI run %s cannot be taken back: %s — it is settled instead",

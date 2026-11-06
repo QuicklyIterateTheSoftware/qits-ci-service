@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -100,6 +101,7 @@ public class CiInheritedRunTest extends CiTestSupport {
         new CiStepRunner.InFlightStep(1, DAEMON_1, "sub-run", STARTED, "echo publish", 600),
         inherited.inFlight(),
         "the in-flight step as the row recorded it, with its script for a daemon still owed it");
+    assertFalse(inherited.awaitsInitialized(), "a daemon that was sent a step has its worktree");
     assertTrue(fakeRunner.executed().isEmpty(), "nothing is sent before the daemon is back");
     assertTrue(fakeRunner.revoked().isEmpty(), "its old token is still the running step's");
   }
@@ -143,6 +145,9 @@ public class CiInheritedRunTest extends CiTestSupport {
     String runId = insertRunning(null, false);
     service.sweepInterrupted();
     assertNull(fakeRunner.inheritances().get(0).run().inFlight());
+    assertFalse(
+        fakeRunner.inheritances().get(0).run().awaitsInitialized(),
+        "it ran step 0 in its worktree, and resends no Initialized (qits-1893)");
 
     fakeRunner.inheritances().get(0).adopted().run();
     forgetLoadedEntities();
@@ -280,6 +285,9 @@ public class CiInheritedRunTest extends CiTestSupport {
     service.sweepInterrupted();
     assertEquals(1, fakeRunner.inheritances().size(), "it is taken back, not settled");
     assertNull(fakeRunner.inheritances().get(0).run().inFlight());
+    assertTrue(
+        fakeRunner.inheritances().get(0).run().awaitsInitialized(),
+        "no step ever left: its first waits for the daemon's Initialized (qits-1893)");
 
     fakeRunner.inheritances().get(0).adopted().run();
     forgetLoadedEntities();
