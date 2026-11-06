@@ -115,7 +115,7 @@
              this version is the one that dropped Interactions.happened. It carries its OWN version
              rather than riding the three above, because it is released out of libs/qits-userflows
              and not out of the qits-integrations-quarkus reactor. -->
-        <qits.userflows.version>2026.1028.231715</qits.userflows.version>
+        <qits.userflows.version>2026.1106.205</qits.userflows.version>
         <!-- The recording service mocks the same IT boots against (the generic MockService plus
              idp.MockIdp), released out of libs/qits-integrations-quarkus like qits-auth-core,
              qits-db-core and qits-arch-rules above — so the same-string policy applies the day this
