@@ -11,14 +11,17 @@ import eu.wohlben.qits.ci.daemonhost.CiDaemonRegistry;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import eu.wohlben.qits.ci.daemonhost.ScriptedLeaseDaemon;
 import eu.wohlben.qits.ci.idp.RunCommissions;
+import eu.wohlben.qits.cidaemon.protocol.Ack;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonMessage;
 import eu.wohlben.qits.cidaemon.protocol.Close;
 import eu.wohlben.qits.cidaemon.protocol.RunStep;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -72,13 +75,34 @@ class LeaseStepRunnerTest {
     public boolean drives(String runId) {
       return false;
     }
+
+    /** An inherited launch, held as the one launch (qits-1192). */
+    @Override
+    void adopt(String runId, UUID leaseId, String daemonId, String tokenSubject) {
+      launch = new Launch(leaseId, daemonId, tokenSubject);
+    }
+
+    @Override
+    void driveInherited(String runId, Runnable adopted) {
+      Thread driver = new Thread(adopted, "ci-run-" + runId);
+      driver.setDaemon(true);
+      driver.start();
+    }
+  }
+
+  /** qits-idp's listing of the run's live tokens, naming the one its launch was recorded with. */
+  private static final class ListedCommissions extends RunCommissions {
+    @Override
+    public Optional<Set<String>> liveSubjectsOf(String runId) {
+      return Optional.of(Set.of(SUBJECT));
+    }
   }
 
   private LeaseStepRunner runner() {
     LeaseStepRunner runner = new LeaseStepRunner();
     runner.daemons = registry;
     runner.relay = new CiStepRelay();
-    runner.commissions = new RunCommissions();
+    runner.commissions = new ListedCommissions();
     runner.settings = SlotFixtures.shippedSettings();
     runner.leases = leases;
     runner.registerTimeoutSeconds = 5;
@@ -335,5 +359,147 @@ class LeaseStepRunnerTest {
     CiStepRunner.StepResult first = result.get(5, TimeUnit.SECONDS);
     assertEquals(CiStepRunner.StepOutcome.LAUNCH_FAILED, first.outcome());
     assertEquals("lease " + LEASE + " FAILED: pull access denied", first.output());
+  }
+
+  // --- an inherited run (qits-1192, qits-1893) ----------------------------------------------------
+  //
+  // The previous process left the run RUNNING in its lease; this one registers the launch again and
+  // waits for the daemon to re-dial. What the run is driven with once it is back is the adopted
+  // callback, on a driver thread of its own, as CiRunService.executeInherited drives it.
+
+  /** The launch id the previous process recorded on the run row. */
+  private static final String INHERITED_DAEMON = "5b1f0c1e-6a43-4f3e-9d1a-0c8b2f7e1a11";
+
+  /**
+   * Inherits {@code run} and answers what {@code drive} made of it once its daemon was back — or a
+   * failed future when it was not taken back.
+   */
+  private CompletableFuture<CiStepRunner.StepResult> inherit(
+      CiStepRunner.InheritedRun run,
+      java.util.function.Supplier<CiStepRunner.StepResult> drive) {
+    CompletableFuture<CiStepRunner.StepResult> driven = new CompletableFuture<>();
+    runner.inherit(
+        run,
+        () -> {
+          try {
+            driven.complete(drive.get());
+          } catch (Throwable t) {
+            driven.completeExceptionally(t);
+          }
+        },
+        () -> driven.completeExceptionally(new AssertionError("the run was not taken back")));
+    return driven;
+  }
+
+  /** Waits for the inherited launch to be registered again, so its daemon's dial is admitted. */
+  private void awaitReattached() throws InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (registry.phaseOf(INHERITED_DAEMON) == null) {
+      assertTrue(System.nanoTime() < deadline, "the inherited launch was never registered again");
+      Thread.sleep(20);
+    }
+  }
+
+  private static CiStepRunner.InheritedRun inheritedBeforeTheFirstStep() {
+    return new CiStepRunner.InheritedRun(RUN, LEASE, INHERITED_DAEMON, SUBJECT, null, true);
+  }
+
+  private List<RunStep> runStepsSent() {
+    return daemon.received().stream()
+        .filter(RunStep.class::isInstance)
+        .map(RunStep.class::cast)
+        .toList();
+  }
+
+  @Test
+  void anInheritedRunBeforeItsFirstStepWhoseDaemonNeverInitializesIsNeverInitializedOnTheInitClock()
+      throws Exception {
+    // qits-ci 650ee0a2: the successor's sweep took the run back before its first step, sent RunStep
+    // 0 to a daemon that had just dialled for the first time, and waited out the 2h01m backstop.
+    runner.initTimeoutSeconds = 1;
+    CompletableFuture<CiStepRunner.StepResult> first =
+        inherit(inheritedBeforeTheFirstStep(), () -> runner.run(step(0, "./verify.sh"), new Listened()));
+    awaitReattached();
+    long began = System.nanoTime();
+    daemon = ScriptedLeaseDaemon.dialUninitialized(registry, INHERITED_DAEMON, SUBJECT);
+
+    CiStepRunner.StepResult result = first.get(10, TimeUnit.SECONDS);
+    long tookMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - began);
+
+    assertEquals(CiStepRunner.StepOutcome.NEVER_INITIALIZED, result.outcome(), result.output());
+    assertTrue(tookMillis < 5_000, "the init clock, not the step's backstop: " + tookMillis);
+    assertTrue(runStepsSent().isEmpty(), "no step goes to a daemon that has no worktree");
+    assertTrue(
+        daemon.received().stream().anyMatch(Ack.class::isInstance), "it was admitted and Acked");
+  }
+
+  @Test
+  void anInheritedRunBeforeItsFirstStepSendsItOnlyOnceItsDaemonSaysInitialized() throws Exception {
+    runner.initTimeoutSeconds = 30;
+    CompletableFuture<CiStepRunner.StepResult> first =
+        inherit(inheritedBeforeTheFirstStep(), () -> runner.run(step(0, "./verify.sh"), new Listened()));
+    awaitReattached();
+    daemon = ScriptedLeaseDaemon.dialUninitialized(registry, INHERITED_DAEMON, SUBJECT);
+
+    // Back, and still making its worktree (or about to resend the Initialized nobody read).
+    Thread.sleep(500);
+    assertFalse(first.isDone(), "the first step waits for the worktree");
+    assertTrue(runStepsSent().isEmpty(), "and nothing is sent before it");
+
+    daemon.sayInitialized();
+    CiStepRunner.StepResult result = first.get(10, TimeUnit.SECONDS);
+
+    assertEquals(CiStepRunner.StepOutcome.OK, result.outcome(), result.output());
+    assertEquals(0, result.exitCode());
+    assertEquals(List.of(0), runStepsSent().stream().map(RunStep::stepIndex).toList());
+    List<CiDaemonMessage> received = daemon.received();
+    int ack = received.indexOf(received.stream().filter(Ack.class::isInstance).findFirst().orElseThrow());
+    int runStep = received.indexOf(runStepsSent().getFirst());
+    assertTrue(ack < runStep, "the Ack precedes the step: " + received);
+  }
+
+  @Test
+  void anInheritedRunBetweenTwoStepsSendsTheNextAtOnce() throws Exception {
+    // Between two steps the daemon has run one in its worktree and resends no Initialized: waiting
+    // for one would fail a sound run on the init clock.
+    runner.initTimeoutSeconds = 30;
+    CompletableFuture<CiStepRunner.StepResult> next =
+        inherit(
+            new CiStepRunner.InheritedRun(RUN, LEASE, INHERITED_DAEMON, SUBJECT, null, false),
+            () -> runner.run(step(1, "./step-1.sh"), new Listened()));
+    awaitReattached();
+    daemon = ScriptedLeaseDaemon.dialUninitialized(registry, INHERITED_DAEMON, SUBJECT);
+
+    CiStepRunner.StepResult result = next.get(5, TimeUnit.SECONDS);
+    assertEquals(CiStepRunner.StepOutcome.OK, result.outcome(), result.output());
+    // Once or twice: a step sent between the dial and its Hello is sent again after the Ack
+    // (CiDaemonRegistry#resume), and a daemon ignores a step index it already has.
+    assertEquals(
+        List.of(1), runStepsSent().stream().map(RunStep::stepIndex).distinct().toList());
+  }
+
+  @Test
+  void anInheritedRunWithAStepInFlightTakesItBackAndRunsTheNextWithoutWaiting() throws Exception {
+    runner.initTimeoutSeconds = 30;
+    CiStepRunner.InFlightStep inFlight =
+        new CiStepRunner.InFlightStep(
+            0, INHERITED_DAEMON, SUBJECT, Instant.parse("2026-11-05T10:00:00Z"), "./verify.sh", 60);
+    CompletableFuture<CiStepRunner.StepResult> taken =
+        inherit(
+            new CiStepRunner.InheritedRun(RUN, LEASE, INHERITED_DAEMON, SUBJECT, inFlight, false),
+            () -> {
+              CiStepRunner.StepResult back = runner.reattach(step(0, "./verify.sh"), new Listened());
+              assertEquals(CiStepRunner.StepOutcome.OK, back.outcome(), back.output());
+              return runner.run(step(1, "./step-1.sh"), new Listened());
+            });
+    awaitReattached();
+    daemon = ScriptedLeaseDaemon.dialUninitialized(registry, INHERITED_DAEMON, SUBJECT);
+
+    CiStepRunner.StepResult result = taken.get(5, TimeUnit.SECONDS);
+    assertEquals(CiStepRunner.StepOutcome.OK, result.outcome(), result.output());
+    assertEquals(
+        List.of(0, 1),
+        runStepsSent().stream().map(RunStep::stepIndex).toList(),
+        "the in-flight step resent after the Ack, then the next one");
   }
 }

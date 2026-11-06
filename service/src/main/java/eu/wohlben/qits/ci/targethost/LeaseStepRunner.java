@@ -546,8 +546,18 @@ public class LeaseStepRunner implements CiStepRunner {
           runId, run.daemonId(), daemons.reconnectGrace());
       return false;
     }
-    // A daemon that is back has its worktree: it initialized before the restart, or says so again.
-    initialized.add(runId);
+    // It dialled, so its lease runs: the first step's start wait has nothing left to wait for.
+    startOf(runId).complete(Instant.now());
+    // A daemon that is back between two steps, or with one in flight, has its worktree: it ran a
+    // step in it. Before the first step it may not (qits-1893): it may be dialling for the first
+    // time with its checkout still ahead of it, and a RunStep sent then — before its Ack, even — is
+    // one it drops, leaving the step to the backstop with no output. So that run's first step waits
+    // for Initialized as a fresh run's does, under qits.ci.daemon-init-timeout-seconds: a daemon
+    // that said it to the previous process says it again after this Ack, since no step answered it
+    // (qits-748), and one that never says it ends NEVER_INITIALIZED on that clock.
+    if (!run.awaitsInitialized()) {
+      initialized.add(runId);
+    }
     return !givenUp.contains(runId);
   }
 

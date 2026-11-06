@@ -96,14 +96,34 @@ public final class ScriptedLeaseDaemon implements AutoCloseable {
   /** {@link #dial(CiDaemonRegistry, String, String)}, announcing {@code capability} in its Hello. */
   public static ScriptedLeaseDaemon dial(
       CiDaemonRegistry registry, String daemonId, String subject, int capability) {
+    ScriptedLeaseDaemon daemon = dialUninitialized(registry, daemonId, subject, capability);
+    daemon.sayInitialized();
+    return daemon;
+  }
+
+  /**
+   * Dials and says Hello only: a daemon still making its worktree, or one that never finishes it,
+   * until {@link #sayInitialized} (qits-1893).
+   */
+  public static ScriptedLeaseDaemon dialUninitialized(
+      CiDaemonRegistry registry, String daemonId, String subject) {
+    return dialUninitialized(registry, daemonId, subject, CiDaemonProtocol.CAPABILITY_VERSION);
+  }
+
+  private static ScriptedLeaseDaemon dialUninitialized(
+      CiDaemonRegistry registry, String daemonId, String subject, int capability) {
     ScriptedLeaseDaemon daemon = new ScriptedLeaseDaemon(registry, daemonId);
     if (registry.admitByToken(daemonId, subject, daemon.connection)
         != CiDaemonRegistry.Admission.ADMITTED) {
       throw new IllegalStateException("not admitted");
     }
     registry.onMessage(daemonId, daemon.connection, new Hello(daemonId, capability));
-    registry.onMessage(daemonId, daemon.connection, new Initialized());
     return daemon;
+  }
+
+  /** Says {@code Initialized} on the connection it holds: its worktree is ready. */
+  public void sayInitialized() {
+    registry.onMessage(daemonId, connection, new Initialized());
   }
 
   private ScriptedLeaseDaemon(CiDaemonRegistry registry, String daemonId) {
