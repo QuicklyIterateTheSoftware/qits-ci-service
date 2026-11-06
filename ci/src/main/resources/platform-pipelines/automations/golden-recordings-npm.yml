@@ -51,6 +51,37 @@ script: |
   npm_hosted_origin="https://registry.qits.$qits_domain"
   npm_proxy_origin="https://mirror.qits.$qits_domain"
   npm_hosted_path=/artifacts/npm/npm/
+
+  # A PNPM REPOSITORY INSTALLS AND TESTS WITH PNPM (qits-1914): a root pnpm-lock.yaml and no
+  # package-lock.json is one whose `packageManager` is pnpm, and `npm ci` refuses it for want of
+  # a package-lock.json. The npm-library archetype's own install - the lockfile as committed,
+  # under the same two registries, which pnpm reads from `npm_config_*` as npm does - with its
+  # retry of a copy that raced the filesystem, and only that (ERR_PNPM_EAGAIN, qits-618: read
+  # the rationale there).
+  if [ -f pnpm-lock.yaml ] && [ ! -f package-lock.json ]; then
+    pnpm_install() {
+      _attempt=1
+      while :; do
+        _status=0
+        env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
+            "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
+            pnpm install --frozen-lockfile > /tmp/pnpm-install.log 2>&1 || _status=$?
+        cat /tmp/pnpm-install.log
+        [ "$_status" = 0 ] && return 0
+        if [ "$_attempt" -ge 3 ] || ! grep -q ERR_PNPM_EAGAIN /tmp/pnpm-install.log; then
+          return "$_status"
+        fi
+        echo "pnpm install hit ERR_PNPM_EAGAIN (attempt $_attempt of 3, ZFS block cloning, qits-618) - retrying in 10s" >&2
+        sleep 10
+        _attempt=$((_attempt + 1))
+      done
+    }
+    pnpm_install
+    # The unit tests in update mode, as below - pnpm's `run` takes the same `--if-present`.
+    CI=true QITS_GOLDEN_UPDATE=true pnpm run --if-present test
+    exit 0
+  fi
+
   env npm_config_registry="$npm_proxy_origin/npm/npmjs/" \
       "npm_config_@qits:registry=$npm_hosted_origin$npm_hosted_path" \
       npm ci --no-audit --no-fund
