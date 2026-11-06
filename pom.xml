@@ -171,11 +171,11 @@
         <qits.ci-frontend-pacts-qits-ci-service.version>2026.1106.181206</qits.ci-frontend-pacts-qits-ci-service.version>
         <qits.projects-frontend-pacts-qits-ci-service.version>2026.1106.181420</qits.projects-frontend-pacts-qits-ci-service.version>
         <qits.docs-frontend-pacts-qits-ci-service.version>2026.1106.181135</qits.docs-frontend-pacts-qits-ci-service.version>
-        <qits.events-frontend-pacts-qits-ci-service.version>2026.1106.172624</qits.events-frontend-pacts-qits-ci-service.version>
+        <qits.events-frontend-pacts-qits-ci-service.version>2026.1106.202122</qits.events-frontend-pacts-qits-ci-service.version>
         <qits.githost-frontend-pacts-qits-ci-service.version>2026.1106.181222</qits.githost-frontend-pacts-qits-ci-service.version>
-        <qits.maintenance-frontend-pacts-qits-ci-service.version>2026.1106.172621</qits.maintenance-frontend-pacts-qits-ci-service.version>
+        <qits.maintenance-frontend-pacts-qits-ci-service.version>2026.1106.202344</qits.maintenance-frontend-pacts-qits-ci-service.version>
         <qits.artifacts-frontend-pacts-qits-ci-service.version>2026.1106.181037</qits.artifacts-frontend-pacts-qits-ci-service.version>
-        <qits.deployments-frontend-pacts-qits-ci-service.version>2026.1106.172607</qits.deployments-frontend-pacts-qits-ci-service.version>
+        <qits.deployments-frontend-pacts-qits-ci-service.version>2026.1106.201642</qits.deployments-frontend-pacts-qits-ci-service.version>
         <qits.mirror-frontend-pacts-qits-ci-service.version>2026.1106.172623</qits.mirror-frontend-pacts-qits-ci-service.version>
         <qits.observability-frontend-pacts-qits-ci-service.version>2026.1106.181306</qits.observability-frontend-pacts-qits-ci-service.version>
         <qits.orchestrator-frontend-pacts-qits-ci-service.version>2026.1106.172620</qits.orchestrator-frontend-pacts-qits-ci-service.version>
