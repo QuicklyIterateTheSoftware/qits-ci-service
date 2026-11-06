@@ -75,7 +75,7 @@
              into a release request and gated by this repository's own CI like any other content.
              Do NOT hand-edit it to chase a release you just made: a hand-written pin asserts a
              pairing nobody gated, and the next bump overwrites it regardless. -->
-        <qits.ci-daemon-protocol.version>2026.1106.1444</qits.ci-daemon-protocol.version>
+        <qits.ci-daemon-protocol.version>2026.1106.2530</qits.ci-daemon-protocol.version>
         <qits.eventstream.version>2026.1103.231226</qits.eventstream.version>
         <!-- qits-githost's event vocabulary: the SCM records a push announces. qits-ci consumes
              SCMPublishCommit and nothing else, but the jar is the whole vocabulary — it is a data
@@ -86,7 +86,7 @@
              snapshot nobody published"; qits-githost released the jar on 2026-08-12 and this is that
              release. What kept the snapshot working until then was the bootstrap seed-publishing it
              into the registry, which is not a release and does not survive one being re-seeded. -->
-        <qits.githost-events.version>2026.1104.22323</qits.githost-events.version>
+        <qits.githost-events.version>2026.1106.4526</qits.githost-events.version>
         <qits.auth-core.version>2026.1106.507</qits.auth-core.version>
         <!-- qits-http-core's QitsHttpClients: every hand-rolled java.net.http client under
              service/…/{githost,projects,registry,idp}/ is wrapped through it, so the CLIENT span and
