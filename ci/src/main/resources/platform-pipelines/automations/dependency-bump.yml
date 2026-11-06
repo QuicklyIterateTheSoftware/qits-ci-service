@@ -33,17 +33,19 @@
 #   location      maven: `property:<name>` or `dependency:<groupId>:<artifactId>`
 #                 docker: `arg:<name>` anchors on an ARG default; anything else is a FROM line
 #                 npm, gitlink: ignored
-# `commitPaths` is the manifests those changes touch - pom.xml files, package.json AND
-# package-lock.json, Dockerfiles, gitlink paths - and is all the postlude stages.
+# `commitPaths` is the manifests those changes touch - pom.xml files, package.json AND its lock
+# (package-lock.json, or pnpm-lock.yaml for a pnpm repository, qits-1914), Dockerfiles, gitlink
+# paths - and is all the postlude stages.
 #
 # ALL FOUR ECOSYSTEMS IN ONE STEP, where `../maintenance-bump.yml` needs two (a maven-base step
 # and a node-base step, each committing and pushing its own half). The apply logic below is
 # lifted from those two steps, and what each ecosystem needs is small: maven and docker are awk
-# over a text file, gitlink is git, and npm is node + npm. No ecosystem runs `mvn`, so the image
-# needs no maven at all - and it does need jq, which the composed prelude reads the payload
-# with. node-browser-base is the one platform image carrying node, npm, jq, git and awk
-# together (node-base has no jq; maven-base and userflows-base have no node), and it is the
-# image the `screenshot-baselines` kind already runs on. Its awk is Debian's mawk, not
+# over a text file, gitlink is git, and npm is node + npm (or node + pnpm, beside a pnpm-lock.yaml:
+# the ci-slot runner carries pnpm, as the npm-library archetype's install relies on). No ecosystem
+# runs `mvn`, so the image needs no maven at all - and it does need jq, which the composed prelude
+# reads the payload with. node-browser-base is the one platform image carrying node, npm, jq,
+# git and awk together (node-base has no jq; maven-base and userflows-base have no node), and it
+# is the image the `screenshot-baselines` kind already runs on. Its awk is Debian's mawk, not
 # busybox's: the four programs below stick to POSIX awk (match/substr/index/sub) so either runs
 # them.
 #
@@ -281,7 +283,19 @@ script: |
         mirror_origin="https://mirror.qits.$QITS_DOMAIN"
         dir=$(dirname "$manifest")
         lock="$dir/package-lock.json"
-        [ -f "$lock" ] || { echo "no package-lock.json beside $manifest" >&2; exit 1; }
+        pnpm_lock="$dir/pnpm-lock.yaml"
+        # THE LOCK BESIDE THE MANIFEST PICKS THE TOOL (qits-1914). A package-lock.json is npm's,
+        # as it always was, and wins when both are present; a pnpm-lock.yaml alone is a pnpm
+        # repository's (`packageManager: pnpm@...`), which npm cannot update without writing a
+        # second lock nobody installs from.
+        if [ -f "$lock" ]; then
+          manager=npm
+        elif [ -f "$pnpm_lock" ]; then
+          manager=pnpm
+        else
+          echo "neither package-lock.json nor pnpm-lock.yaml beside $manifest" >&2
+          exit 1
+        fi
         # THE SPECIFIER KEEPS ITS SHAPE. Read from whichever section holds the entry: an exact
         # pin stays exact, a `^`/`~` range keeps its operator around the new version. Anything
         # else - a wider range, a tag, a file: or git: source - is not a version a bump can move
@@ -301,31 +315,74 @@ script: |
           '~'[0-9]*) exact=false; prefix='~' ;;
           *) echo "refusing to bump $name: $manifest pins it as '$current', which is not an exact version, ^ or ~" >&2; exit 1 ;;
         esac
-        # NO LOCKFILE REWRITE, in either direction. The install resolves against the platform's
-        # own public names and writes them into `resolved` as it finds them; environment rather
-        # than a file, because a committed project .npmrc outranks ~/.npmrc and `npm_config_*`
-        # outranks both.
-        ( cd "$dir" \
-          && env npm_config_registry="$mirror_origin/npm/npmjs/" \
-                 "npm_config_@qits:registry=$registry_origin/artifacts/npm/npm/" \
-                 npm install --package-lock-only --no-audit --no-fund \
-                   "--save-exact=$exact" "--save-prefix=$prefix" "$name@$to" )
-        # EVERY ORIGIN IN THE LOCK IS THE PLATFORM'S, OR THE BUMP FAILS: a lock naming any other
-        # host keeps those entries across the install, and committing it would push a lockfile
-        # no step can install from. It is a migration the repository owes, said here with the
-        # entries named, rather than papered over by a rewrite.
-        foreign=$(grep -o '"resolved": *"[^"]*"' "$lock" \
-          | sed -e 's/^"resolved": *"//' -e 's/"$//' \
-          | awk -v r="$registry_origin/" -v m="$mirror_origin/" \
-              'index($0, r) != 1 && index($0, m) != 1' \
-          | head -n 5)
-        if [ -n "$foreign" ]; then
-          echo "$lock resolves packages outside $registry_origin and $mirror_origin, for example:" >&2
-          printf '  %s\n' $foreign >&2
-          echo "regenerate the lockfile against those two registries before this dependency can be bumped" >&2
-          exit 1
+        if [ "$manager" = npm ]; then
+          # NO LOCKFILE REWRITE, in either direction. The install resolves against the platform's
+          # own public names and writes them into `resolved` as it finds them; environment rather
+          # than a file, because a committed project .npmrc outranks ~/.npmrc and `npm_config_*`
+          # outranks both.
+          ( cd "$dir" \
+            && env npm_config_registry="$mirror_origin/npm/npmjs/" \
+                   "npm_config_@qits:registry=$registry_origin/artifacts/npm/npm/" \
+                   npm install --package-lock-only --no-audit --no-fund \
+                     "--save-exact=$exact" "--save-prefix=$prefix" "$name@$to" )
+          # EVERY ORIGIN IN THE LOCK IS THE PLATFORM'S, OR THE BUMP FAILS: a lock naming any other
+          # host keeps those entries across the install, and committing it would push a lockfile
+          # no step can install from. It is a migration the repository owes, said here with the
+          # entries named, rather than papered over by a rewrite.
+          foreign=$(grep -o '"resolved": *"[^"]*"' "$lock" \
+            | sed -e 's/^"resolved": *"//' -e 's/"$//' \
+            | awk -v r="$registry_origin/" -v m="$mirror_origin/" \
+                'index($0, r) != 1 && index($0, m) != 1' \
+            | head -n 5)
+          if [ -n "$foreign" ]; then
+            echo "$lock resolves packages outside $registry_origin and $mirror_origin, for example:" >&2
+            printf '  %s\n' $foreign >&2
+            echo "regenerate the lockfile against those two registries before this dependency can be bumped" >&2
+            exit 1
+          fi
+          set -- "$@" "$lock"
+        else
+          # PNPM GETS THE SPECIFIER WRITTEN FOR IT, then only re-locks. The manifest is edited here,
+          # in the section that already holds the entry, to exactly `<prefix><to>`, and
+          # `pnpm install --lockfile-only` resolves the lock against it. Not `pnpm add`: it decides
+          # the prefix from its own save-exact/save-prefix configuration rather than from what the
+          # manifest said, and at a workspace root it refuses without `-w`. `--lockfile-only`
+          # writes pnpm-lock.yaml and never node_modules, `--ignore-scripts` keeps every lifecycle
+          # script out of it, and `--no-frozen-lockfile` because pnpm freezes the lock by default
+          # wherever CI is set - which is the one thing this run is here to change. A `^`/`~` range
+          # locks at its highest match, as any fresh install of that range would.
+          BUMP_MANIFEST="$manifest" BUMP_NAME="$name" BUMP_SPEC="$prefix$to" node -e '
+            const fs = require("fs");
+            const file = process.env.BUMP_MANIFEST;
+            const text = fs.readFileSync(file, "utf8");
+            const m = JSON.parse(text);
+            const section = ["dependencies", "devDependencies", "optionalDependencies"]
+              .find((s) => typeof (m[s] || {})[process.env.BUMP_NAME] === "string");
+            m[section][process.env.BUMP_NAME] = process.env.BUMP_SPEC;
+            const indent = (text.match(/^[{[]\r?\n([ \t]+)/) || [null, "  "])[1];
+            fs.writeFileSync(file, JSON.stringify(m, null, indent) + (text.endsWith("\n") ? "\n" : ""));'
+          # The same two registries, by the same environment: pnpm reads `npm_config_*` too
+          # (measured on the estate's pnpm@10.33.0, the `packageManager` both pnpm repositories pin).
+          ( cd "$dir" \
+            && env npm_config_registry="$mirror_origin/npm/npmjs/" \
+                   "npm_config_@qits:registry=$registry_origin/artifacts/npm/npm/" \
+                   pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile )
+          # The same refusal as npm's, over what a v9 lock records of an origin: usually nothing,
+          # since a package from the configured registry carries only its integrity, and a
+          # `tarball:` for anything fetched from somewhere else.
+          foreign=$(grep -o 'tarball: *[^,} ]*' "$pnpm_lock" \
+            | sed -e 's/^tarball: *//' -e "s/^['\"]//" -e "s/['\"]$//" \
+            | awk -v r="$registry_origin/" -v m="$mirror_origin/" \
+                'index($0, r) != 1 && index($0, m) != 1' \
+            | head -n 5)
+          if [ -n "$foreign" ]; then
+            echo "$pnpm_lock resolves packages outside $registry_origin and $mirror_origin, for example:" >&2
+            printf '  %s\n' $foreign >&2
+            echo "regenerate the lockfile against those two registries before this dependency can be bumped" >&2
+            exit 1
+          fi
+          set -- "$@" "$pnpm_lock"
         fi
-        set -- "$@" "$lock"
         ;;
       docker)
         case "$name" in ''|*[!@A-Za-z0-9._/-]*) echo "refusing an implausible image: $name" >&2; exit 1 ;; esac

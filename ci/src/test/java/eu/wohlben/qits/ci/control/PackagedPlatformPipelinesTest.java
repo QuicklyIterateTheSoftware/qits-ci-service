@@ -505,14 +505,39 @@ public class PackagedPlatformPipelinesTest {
     assertTrue(script.indexOf("superseded before start") < body, "the prelude comes first");
     assertTrue(body < noPackage && noPackage < npmCi && npmCi < test && test < add, script);
 
-    // The install is screenshot-baselines' own, line for line.
+    // A pnpm repository (qits-1914) branches off before `npm ci`: a root pnpm-lock.yaml and no
+    // package-lock.json installs the lock as committed and tests in update mode with pnpm, and
+    // the npm path is never reached.
+    int pnpmBranch =
+        script.indexOf("if [ -f pnpm-lock.yaml ] && [ ! -f package-lock.json ]; then\n");
+    int pnpmInstall = script.indexOf("pnpm install --frozen-lockfile > /tmp/pnpm-install.log");
+    int pnpmTest =
+        script.indexOf("  CI=true QITS_GOLDEN_UPDATE=true pnpm run --if-present test\n  exit 0\n");
+    assertTrue(
+        noPackage < pnpmBranch
+            && pnpmBranch < pnpmInstall
+            && pnpmInstall < pnpmTest
+            && pnpmTest < npmCi,
+        script);
+    assertTrue(script.contains("grep -q ERR_PNPM_EAGAIN /tmp/pnpm-install.log"), script);
+
+    // The addresses and the npm install are screenshot-baselines' own, line for line; the pnpm
+    // branch sits between the two and installs under the same registries.
     String baselines = Files.readString(SOURCE.resolve("automations/screenshot-baselines.yml"));
     String npm = Files.readString(SOURCE.resolve("automations/golden-recordings-npm.yml"));
+    int addresses = baselines.indexOf("  qits_domain=${QITS_DOMAIN");
+    int registries = baselines.indexOf("  env npm_config_registry=", addresses);
+    String origins = baselines.substring(addresses, registries);
     String install =
-        baselines.substring(
-            baselines.indexOf("  qits_domain=${QITS_DOMAIN"),
-            baselines.indexOf("npm ci --no-audit --no-fund\n"));
-    assertTrue(npm.contains(install), install);
+        baselines.substring(registries, baselines.indexOf("npm ci --no-audit --no-fund\n"));
+    assertTrue(npm.contains(origins), origins);
+    assertTrue(npm.contains(install + "npm ci --no-audit --no-fund\n"), install);
+    assertTrue(
+        npm.contains(
+            "      "
+                + install.replace("\n", "\n      ")
+                + "pnpm install --frozen-lockfile"),
+        install);
     syntax(dir, kindScript(script), path + " (the kind's script)");
   }
 

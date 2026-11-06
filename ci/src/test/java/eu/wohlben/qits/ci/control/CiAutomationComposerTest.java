@@ -1433,6 +1433,193 @@ public class CiAutomationComposerTest {
     assertFalse(run.output.contains("fake qits"), run.output);
   }
 
+  // --- the dependency-bump kind's pnpm arm, run (qits-1914) --------------------------------------
+
+  /** A pnpm repository's manifest, four-space indented: the edit keeps the file's own indent. */
+  private static final String PNPM_MANIFEST =
+      "{\n"
+          + "    \"name\": \"web\",\n"
+          + "    \"packageManager\": \"pnpm@10.33.0\",\n"
+          + "    \"dependencies\": {\n"
+          + "        \"left-pad\": \"^1.1.0\"\n"
+          + "    },\n"
+          + "    \"devDependencies\": {\n"
+          + "        \"is-number\": \"7.0.0\"\n"
+          + "    }\n"
+          + "}\n";
+
+  private static final String PNPM_CHANGES =
+      "[{\"ecosystem\":\"npm\",\"manifestPath\":\"web/package.json\",\"name\":\"left-pad\","
+          + "\"from\":\"1.1.0\",\"to\":\"1.3.0\"},"
+          + "{\"ecosystem\":\"npm\",\"manifestPath\":\"web/package.json\",\"name\":\"is-number\","
+          + "\"from\":\"7.0.0\",\"to\":\"7.0.1\"}]";
+
+  /** The lock a fake pnpm writes, with one recorded tarball at {@code tarball}. */
+  private static String pnpmLock(String tarball) {
+    return "lockfileVersion: '9.0'\n\n"
+        + "importers:\n\n"
+        + "  .:\n"
+        + "    dependencies:\n"
+        + "      left-pad:\n"
+        + "        specifier: ^1.3.0\n"
+        + "        version: 1.3.0\n\n"
+        + "packages:\n\n"
+        + "  left-pad@1.3.0:\n"
+        + "    resolution: {integrity: sha512-x, tarball: "
+        + tarball
+        + "}\n";
+  }
+
+  /**
+   * A {@code pnpm} and an {@code npm} ahead of the real ones on PATH: each appends its working
+   * directory, its arguments and the two registries it was handed to {@code <calls>/<tool>}, and
+   * the pnpm one writes {@code $FAKE_PNPM_LOCK} as the lock - no network, and a lock whose origins
+   * the test chooses.
+   */
+  private static Map<String, String> fakeLockTools(Path dir, Path calls, String lock)
+      throws Exception {
+    Path shim = dir.resolve("lock-shim");
+    Files.createDirectories(shim);
+    Files.createDirectories(calls);
+    for (String tool : List.of("pnpm", "npm")) {
+      Path fake = shim.resolve(tool);
+      Files.writeString(
+          fake,
+          // bash, not sh: dash drops `npm_config_@qits:registry` from the environment it hands on,
+          // a name no POSIX shell variable can have - the real npm and pnpm are node.
+          "#!/usr/bin/env bash\n"
+              + "{ printf '%s\\n' \"$(pwd -P)\" \"$*\" \"$npm_config_registry\"; "
+              + "printenv 'npm_config_@qits:registry'; } >> \""
+              + calls.resolve(tool)
+              + "\"\n"
+              + ("pnpm".equals(tool) ? "cp \"$FAKE_PNPM_LOCK\" pnpm-lock.yaml\n" : ""));
+      assertTrue(fake.toFile().setExecutable(true));
+    }
+    Path lockFile = dir.resolve("fake-pnpm-lock.yaml");
+    Files.writeString(lockFile, lock);
+    Map<String, String> env = new java.util.HashMap<>(FAKE_CLI_ENV);
+    env.put("PATH", shim + ":" + System.getenv("PATH"));
+    env.put("FAKE_PNPM_LOCK", lockFile.toString());
+    // pnpm freezes the lock wherever CI is set; the step passes --no-frozen-lockfile for that.
+    env.put("CI", "true");
+    return env;
+  }
+
+  @Test
+  public void aPnpmRepositoryIsBumpedInItsManifestAndRelockedByPnpmAlone(@TempDir Path dir)
+      throws Exception {
+    assumeTrue(Scratch.available("node"), "node is not installed on this host");
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    scratch.foldWith(
+        Map.of("web/package.json", PNPM_MANIFEST, "web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
+        Map.of());
+    Path calls = dir.resolve("calls");
+    // A tarball on the platform's own mirror is no foreign origin.
+    String lock =
+        pnpmLock("https://mirror.qits.example.invalid/npm/npmjs/left-pad/-/left-pad-1.3.0.tgz");
+    Result run =
+        scratch.runStep(
+            "bash",
+            dependencyBumpStep(fakeChangelogCli(dir.resolve("store"), "", 0)),
+            bumpPayload(scratch, PNPM_CHANGES, "\"web/package.json\",\"web/pnpm-lock.yaml\""),
+            fakeLockTools(dir, calls, lock));
+
+    assertEquals(0, run.exit, run.output);
+    String pushed = scratch.originRev("refs/heads/" + BUMP_BRANCH);
+    assertEquals(
+        "bump(qits-978): 2 dependencies",
+        scratch.git(scratch.origin, "log", "-1", "--format=%s", pushed));
+    assertEquals(
+        "web/package.json\nweb/pnpm-lock.yaml",
+        scratch.git(scratch.origin, "diff-tree", "--no-commit-id", "--name-only", "-r", pushed));
+    // Each specifier keeps its shape AND its section, and the file its indent and its newline.
+    assertEquals(
+        PNPM_MANIFEST.replace("\"^1.1.0\"", "\"^1.3.0\"").replace("\"7.0.0\"", "\"7.0.1\""),
+        scratch.git(scratch.origin, "show", pushed + ":web/package.json") + "\n");
+    assertEquals(lock.strip(), scratch.git(scratch.origin, "show", pushed + ":web/pnpm-lock.yaml"));
+    // pnpm, once per change, in the manifest's directory, lockfile-only, under both registries.
+    String once =
+        scratch.work.toRealPath().resolve("web")
+            + "\ninstall --lockfile-only --ignore-scripts --no-frozen-lockfile\n"
+            + "https://mirror.qits.example.invalid/npm/npmjs/\n"
+            + "https://registry.qits.example.invalid/artifacts/npm/npm/\n";
+    assertEquals(once + once, Files.readString(calls.resolve("pnpm")));
+    assertFalse(Files.exists(calls.resolve("npm")), "npm never runs beside a pnpm-lock.yaml");
+  }
+
+  @Test
+  public void aPnpmLockRecordingAForeignTarballFailsTheBumpAndPushesNothing(@TempDir Path dir)
+      throws Exception {
+    assumeTrue(Scratch.available("node"), "node is not installed on this host");
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    scratch.foldWith(
+        Map.of("web/package.json", PNPM_MANIFEST, "web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
+        Map.of());
+    String foreign = "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz";
+    Result run =
+        scratch.runStep(
+            "bash",
+            dependencyBumpStep(fakeChangelogCli(dir.resolve("store"), "", 0)),
+            bumpPayload(scratch, PNPM_CHANGES, "\"web/package.json\",\"web/pnpm-lock.yaml\""),
+            fakeLockTools(dir, dir.resolve("calls"), pnpmLock(foreign)));
+
+    assertEquals(1, run.exit, run.output);
+    assertTrue(
+        run.output.contains(
+            "web/pnpm-lock.yaml resolves packages outside https://registry.qits.example.invalid"),
+        run.output);
+    assertTrue(run.output.contains("  " + foreign + "\n"), run.output);
+    assertFalse(run.output.contains("bumped left-pad"), run.output);
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BUMP_BRANCH), "nothing was pushed");
+  }
+
+  @Test
+  public void aPackageLockBesideAPnpmLockKeepsTheBumpOnNpm(@TempDir Path dir) throws Exception {
+    assumeTrue(Scratch.available("node"), "node is not installed on this host");
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    scratch.foldWith(
+        Map.of(
+            "web/package.json", PNPM_MANIFEST,
+            "web/package-lock.json", "{}\n",
+            "web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
+        Map.of());
+    Path calls = dir.resolve("calls");
+    String oneChange = "[" + PNPM_CHANGES.substring(1, PNPM_CHANGES.indexOf("},") + 1) + "]";
+    Result run =
+        scratch.runStep(
+            "bash",
+            dependencyBumpStep(fakeChangelogCli(dir.resolve("failing"), "", 1)),
+            bumpPayload(scratch, oneChange, "\"web/package.json\",\"web/package-lock.json\""),
+            fakeLockTools(dir, calls, pnpmLock("unused")));
+
+    // The fake npm edits nothing, so the run is a no-op - what matters is who was asked.
+    assertEquals(0, run.exit, run.output);
+    assertTrue(
+        Files.readString(calls.resolve("npm"))
+            .contains("install --package-lock-only --no-audit --no-fund --save-exact=false "
+                + "--save-prefix=^ left-pad@1.3.0\n"),
+        Files.readString(calls.resolve("npm")));
+    assertFalse(Files.exists(calls.resolve("pnpm")), "pnpm never runs beside a package-lock.json");
+  }
+
+  @Test
+  public void anNpmManifestWithNeitherLockBesideItFailsTheBump(@TempDir Path dir) throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    scratch.foldWith(Map.of("web/package.json", PNPM_MANIFEST), Map.of());
+    Result run =
+        scratch.runStep(
+            "bash",
+            dependencyBumpStep(fakeChangelogCli(dir.resolve("store"), "", 0)),
+            bumpPayload(scratch, PNPM_CHANGES, "\"web/package.json\""),
+            fakeLockTools(dir, dir.resolve("calls"), pnpmLock("unused")));
+
+    assertEquals(1, run.exit, run.output);
+    assertTrue(
+        run.output.contains("neither package-lock.json nor pnpm-lock.yaml beside web/package.json"),
+        run.output);
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BUMP_BRANCH), "nothing was pushed");
+  }
+
   // --- the estate-pins kind, run (qits-1258) -------------------------------------------------------
 
   private static final String ESTATE_PINS_PATH =
