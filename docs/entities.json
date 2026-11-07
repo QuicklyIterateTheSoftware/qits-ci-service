@@ -30,13 +30,6 @@
           "path" : "/events/trigger",
           "dto" : "eu.wohlben.qits.ci.control.CiEventTriggerService$Arrival",
           "kind" : "body"
-        },
-        {
-          "operationId" : "triggerEvent",
-          "method" : "POST",
-          "path" : "/events/trigger",
-          "dto" : "eu.wohlben.qits.ci.control.CiEventTriggerService$Evaluation",
-          "kind" : "body"
         }
       ]
     },
@@ -67,13 +60,6 @@
           "method" : "GET",
           "path" : "/repositories/{repoId}/releases/{version}/artifacts",
           "dto" : "eu.wohlben.qits.ci.api.CiRepositoryController$ReleaseArtifactsResponse",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listReleaseArtifacts",
-          "method" : "GET",
-          "path" : "/repositories/{repoId}/releases/{version}/artifacts",
-          "dto" : "eu.wohlben.qits.ci.control.ReleaseJoin$ReleasedArtifact",
           "kind" : "returns"
         }
       ]
@@ -126,13 +112,6 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "getRunReport",
-          "method" : "GET",
-          "path" : "/runs/{runId}/reports/{reportId}",
-          "dto" : "eu.wohlben.qits.ci.dto.CiReportHighlightDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "listRunBaselineReports",
           "method" : "GET",
           "path" : "/runs/{runId}/baseline/reports/{kind}",
@@ -140,13 +119,6 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "listRunBaselineReports",
-          "method" : "GET",
-          "path" : "/runs/{runId}/baseline/reports/{kind}",
-          "dto" : "eu.wohlben.qits.ci.dto.CiReportHighlightDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "listRunGateReports",
           "method" : "GET",
           "path" : "/runs/{runId}/gate/reports",
@@ -154,38 +126,10 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "listRunGateReports",
-          "method" : "GET",
-          "path" : "/runs/{runId}/gate/reports",
-          "dto" : "eu.wohlben.qits.ci.dto.CiReportSummaryDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRunGateReports",
-          "method" : "GET",
-          "path" : "/runs/{runId}/gate/reports",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunReportsDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "listRunReports",
           "method" : "GET",
           "path" : "/runs/{runId}/reports",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportHighlightDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRunReports",
-          "method" : "GET",
-          "path" : "/runs/{runId}/reports",
-          "dto" : "eu.wohlben.qits.ci.dto.CiReportSummaryDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRunReports",
-          "method" : "GET",
-          "path" : "/runs/{runId}/reports",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunReportsDto",
           "kind" : "returns"
         },
         {
@@ -193,13 +137,6 @@
           "method" : "PUT",
           "path" : "/runs/{runId}/steps/{stepIndex}/reports/{kind}",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportHighlightDto",
-          "kind" : "body"
-        },
-        {
-          "operationId" : "putRunStepReport",
-          "method" : "PUT",
-          "path" : "/runs/{runId}/steps/{stepIndex}/reports/{kind}",
-          "dto" : "eu.wohlben.qits.ci.dto.CiReportSubmission",
           "kind" : "body"
         }
       ]
@@ -336,48 +273,6 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "CiRepositoryController.listRepositorySummaries",
-          "method" : "GET",
-          "path" : "/repositories/summary",
-          "dto" : "eu.wohlben.qits.ci.api.CiRepositoryController$RepositorySummaryDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRepositoryController.listRepositorySummaries",
-          "method" : "GET",
-          "path" : "/repositories/summary",
-          "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRepositoryController.listRepositorySummaries",
-          "method" : "GET",
-          "path" : "/repositories/summary",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRepositoryController.listRepositorySummaries",
-          "method" : "GET",
-          "path" : "/repositories/summary",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRepositoryController.listRepositorySummaries",
-          "method" : "GET",
-          "path" : "/repositories/summary",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto$Blocker",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRepositoryController.listRepositorySummaries",
-          "method" : "GET",
-          "path" : "/repositories/summary",
-          "dto" : "eu.wohlben.qits.ci.dto.CiStepDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "CiRunController.listFinishedRuns",
           "method" : "GET",
           "path" : "/runs/finished",
@@ -385,73 +280,10 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "CiRunController.listFinishedRuns",
-          "method" : "GET",
-          "path" : "/runs/finished",
-          "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRunController.listFinishedRuns",
-          "method" : "GET",
-          "path" : "/runs/finished",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRunController.listFinishedRuns",
-          "method" : "GET",
-          "path" : "/runs/finished",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRunController.listFinishedRuns",
-          "method" : "GET",
-          "path" : "/runs/finished",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto$Blocker",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRunController.listFinishedRuns",
-          "method" : "GET",
-          "path" : "/runs/finished",
-          "dto" : "eu.wohlben.qits.ci.dto.CiStepDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "getRun",
           "method" : "GET",
           "path" : "/runs/{runId}",
           "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRun",
-          "method" : "GET",
-          "path" : "/runs/{runId}",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRun",
-          "method" : "GET",
-          "path" : "/runs/{runId}",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRun",
-          "method" : "GET",
-          "path" : "/runs/{runId}",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto$Blocker",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRun",
-          "method" : "GET",
-          "path" : "/runs/{runId}",
-          "dto" : "eu.wohlben.qits.ci.dto.CiStepDto",
           "kind" : "returns"
         },
         {
@@ -462,13 +294,6 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "getRunBaseline",
-          "method" : "GET",
-          "path" : "/runs/{runId}/baseline",
-          "dto" : "eu.wohlben.qits.ci.dto.CiReportBaselineDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "getRunQueue",
           "method" : "GET",
           "path" : "/runs/queue",
@@ -476,52 +301,10 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "getRunQueue",
-          "method" : "GET",
-          "path" : "/runs/queue",
-          "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRunQueue",
-          "method" : "GET",
-          "path" : "/runs/queue",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRunQueue",
-          "method" : "GET",
-          "path" : "/runs/queue",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRunQueue",
-          "method" : "GET",
-          "path" : "/runs/queue",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto$Blocker",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRunQueue",
-          "method" : "GET",
-          "path" : "/runs/queue",
-          "dto" : "eu.wohlben.qits.ci.dto.CiStepDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "getRunReport",
           "method" : "GET",
           "path" : "/runs/{runId}/reports/{reportId}",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRunReport",
-          "method" : "GET",
-          "path" : "/runs/{runId}/reports/{reportId}",
-          "dto" : "eu.wohlben.qits.ci.dto.CiReportHighlightDto",
           "kind" : "returns"
         },
         {
@@ -532,41 +315,6 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "listActiveRuns",
-          "method" : "GET",
-          "path" : "/runs/active",
-          "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listActiveRuns",
-          "method" : "GET",
-          "path" : "/runs/active",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listActiveRuns",
-          "method" : "GET",
-          "path" : "/runs/active",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listActiveRuns",
-          "method" : "GET",
-          "path" : "/runs/active",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto$Blocker",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listActiveRuns",
-          "method" : "GET",
-          "path" : "/runs/active",
-          "dto" : "eu.wohlben.qits.ci.dto.CiStepDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "listRunBaselineReports",
           "method" : "GET",
           "path" : "/runs/{runId}/baseline/reports/{kind}",
@@ -574,13 +322,6 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "listRunBaselineReports",
-          "method" : "GET",
-          "path" : "/runs/{runId}/baseline/reports/{kind}",
-          "dto" : "eu.wohlben.qits.ci.dto.CiReportHighlightDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "listRunGateReports",
           "method" : "GET",
           "path" : "/runs/{runId}/gate/reports",
@@ -588,52 +329,10 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "listRunGateReports",
-          "method" : "GET",
-          "path" : "/runs/{runId}/gate/reports",
-          "dto" : "eu.wohlben.qits.ci.dto.CiReportHighlightDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRunGateReports",
-          "method" : "GET",
-          "path" : "/runs/{runId}/gate/reports",
-          "dto" : "eu.wohlben.qits.ci.dto.CiReportSummaryDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRunGateReports",
-          "method" : "GET",
-          "path" : "/runs/{runId}/gate/reports",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunReportsDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "listRunReports",
           "method" : "GET",
           "path" : "/runs/{runId}/reports",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportBaselineDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRunReports",
-          "method" : "GET",
-          "path" : "/runs/{runId}/reports",
-          "dto" : "eu.wohlben.qits.ci.dto.CiReportHighlightDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRunReports",
-          "method" : "GET",
-          "path" : "/runs/{runId}/reports",
-          "dto" : "eu.wohlben.qits.ci.dto.CiReportSummaryDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRunReports",
-          "method" : "GET",
-          "path" : "/runs/{runId}/reports",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunReportsDto",
           "kind" : "returns"
         },
         {
@@ -641,41 +340,6 @@
           "method" : "GET",
           "path" : "/runs",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$ListRunsResponse",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRuns",
-          "method" : "GET",
-          "path" : "/runs",
-          "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRuns",
-          "method" : "GET",
-          "path" : "/runs",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRuns",
-          "method" : "GET",
-          "path" : "/runs",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRuns",
-          "method" : "GET",
-          "path" : "/runs",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto$Blocker",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRuns",
-          "method" : "GET",
-          "path" : "/runs",
-          "dto" : "eu.wohlben.qits.ci.dto.CiStepDto",
           "kind" : "returns"
         },
         {
@@ -829,41 +493,6 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "CiRepositoryController.listRepositorySummaries",
-          "method" : "GET",
-          "path" : "/repositories/summary",
-          "dto" : "eu.wohlben.qits.ci.api.CiRepositoryController$RepositorySummaryDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRepositoryController.listRepositorySummaries",
-          "method" : "GET",
-          "path" : "/repositories/summary",
-          "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRepositoryController.listRepositorySummaries",
-          "method" : "GET",
-          "path" : "/repositories/summary",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRepositoryController.listRepositorySummaries",
-          "method" : "GET",
-          "path" : "/repositories/summary",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRepositoryController.listRepositorySummaries",
-          "method" : "GET",
-          "path" : "/repositories/summary",
-          "dto" : "eu.wohlben.qits.ci.dto.CiStepDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "CiRunController.listFinishedRuns",
           "method" : "GET",
           "path" : "/runs/finished",
@@ -871,59 +500,10 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "CiRunController.listFinishedRuns",
-          "method" : "GET",
-          "path" : "/runs/finished",
-          "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRunController.listFinishedRuns",
-          "method" : "GET",
-          "path" : "/runs/finished",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRunController.listFinishedRuns",
-          "method" : "GET",
-          "path" : "/runs/finished",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "CiRunController.listFinishedRuns",
-          "method" : "GET",
-          "path" : "/runs/finished",
-          "dto" : "eu.wohlben.qits.ci.dto.CiStepDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "getRun",
           "method" : "GET",
           "path" : "/runs/{runId}",
           "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRun",
-          "method" : "GET",
-          "path" : "/runs/{runId}",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRun",
-          "method" : "GET",
-          "path" : "/runs/{runId}",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRun",
-          "method" : "GET",
-          "path" : "/runs/{runId}",
-          "dto" : "eu.wohlben.qits.ci.dto.CiStepDto",
           "kind" : "returns"
         },
         {
@@ -934,34 +514,6 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "getRunQueue",
-          "method" : "GET",
-          "path" : "/runs/queue",
-          "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRunQueue",
-          "method" : "GET",
-          "path" : "/runs/queue",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRunQueue",
-          "method" : "GET",
-          "path" : "/runs/queue",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "getRunQueue",
-          "method" : "GET",
-          "path" : "/runs/queue",
-          "dto" : "eu.wohlben.qits.ci.dto.CiStepDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "listActiveRuns",
           "method" : "GET",
           "path" : "/runs/active",
@@ -969,66 +521,10 @@
           "kind" : "returns"
         },
         {
-          "operationId" : "listActiveRuns",
-          "method" : "GET",
-          "path" : "/runs/active",
-          "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listActiveRuns",
-          "method" : "GET",
-          "path" : "/runs/active",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listActiveRuns",
-          "method" : "GET",
-          "path" : "/runs/active",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listActiveRuns",
-          "method" : "GET",
-          "path" : "/runs/active",
-          "dto" : "eu.wohlben.qits.ci.dto.CiStepDto",
-          "kind" : "returns"
-        },
-        {
           "operationId" : "listRuns",
           "method" : "GET",
           "path" : "/runs",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$ListRunsResponse",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRuns",
-          "method" : "GET",
-          "path" : "/runs",
-          "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRuns",
-          "method" : "GET",
-          "path" : "/runs",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRuns",
-          "method" : "GET",
-          "path" : "/runs",
-          "dto" : "eu.wohlben.qits.ci.dto.CiRunOrderingDto",
-          "kind" : "returns"
-        },
-        {
-          "operationId" : "listRuns",
-          "method" : "GET",
-          "path" : "/runs",
-          "dto" : "eu.wohlben.qits.ci.dto.CiStepDto",
           "kind" : "returns"
         }
       ]
