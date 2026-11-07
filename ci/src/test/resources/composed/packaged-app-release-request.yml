@@ -297,7 +297,7 @@ steps:
         if [ "$qits_check_exit" -ne 0 ]; then
           echo "qits-ci: the screenshot-baselines generator failed (exit $qits_check_exit), so its outputs were not checked" >&2
           qits_step_exit=$qits_check_exit
-        elif ! qits_changed=$(git status --porcelain --untracked-files=all -- ':(glob)**/__screenshots__/**' ':(glob)**/testing/browser/renderer.txt'); then
+        elif ! qits_changed=$(git status --porcelain --untracked-files=all -- ':(glob)**/__screenshots__/**' ':(glob)**/testing/browser/renderer.txt' ':(glob)**/testing/browser/routes.json'); then
           echo "qits-ci: git status failed, so the screenshot-baselines outputs were not checked" >&2
           qits_step_exit=1
         elif [ -n "$qits_changed" ]; then

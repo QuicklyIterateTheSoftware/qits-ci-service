@@ -1348,8 +1348,9 @@ its steps run as written, so nothing would act on them.
 - `check-outputs: [entity-diagram, screenshot-baselines, cli-tapes]` — QA steps only. After the script exits 0,
   each kind's generator runs (the `script:` of `platform-pipelines/automations/<kind>.yml`, verbatim,
   so the check and the regeneration cannot disagree), then `git status --porcelain
-  --untracked-files=all` over the kind's paths (`docs/database`; `**/__screenshots__/**` and
-  `**/testing/browser/renderer.txt`; `tapes/golden/**` and `tapes/recordings/**`). A change there fails the step with one line:
+  --untracked-files=all` over the kind's paths (`docs/database`; `**/__screenshots__/**`,
+  `**/testing/browser/renderer.txt` and `**/testing/browser/routes.json`; `tapes/golden/**` and
+  `tapes/recordings/**`). A change there fails the step with one line:
   `qits-ci: stale outputs: <kinds> — regenerate with: qits release-request regenerate --project <p>
   --repository <r> --kind <kind>`. A generator that fails (a failing spec) fails the step with its
   own code and is not called stale. Nothing is regenerated or committed, and the report hook still
