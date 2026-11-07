@@ -145,7 +145,7 @@
         <!-- The other providers' golden masters (qits-1149), test scope: what this repository's
              consumer pacts against qits-projects, qits-githost, qits-artifacts and qits-idp are
              built from (contracts/consumer/). Bumped like every internal pin. -->
-        <qits.projects-golden-masters.version>2026.1106.202329</qits.projects-golden-masters.version>
+        <qits.projects-golden-masters.version>2026.1107.105401</qits.projects-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1020.204038</qits.githost-golden-masters.version>
         <qits.artifacts-golden-masters.version>2026.1029.125556</qits.artifacts-golden-masters.version>
         <qits.idp-golden-masters.version>2026.1027.165632</qits.idp-golden-masters.version>
@@ -161,7 +161,7 @@
         <qits.maintenance-service-pacts-qits-ci-service.version>2026.1026.180147</qits.maintenance-service-pacts-qits-ci-service.version>
         <qits.orchestrator-service-pacts-qits-ci-service.version>2026.1018.172917</qits.orchestrator-service-pacts-qits-ci-service.version>
         <qits.platform-access-monorepo-pacts-qits-ci-service.version>2026.1103.101116</qits.platform-access-monorepo-pacts-qits-ci-service.version>
-        <qits.projects-service-pacts-qits-ci-service.version>2026.1018.195756</qits.projects-service-pacts-qits-ci-service.version>
+        <qits.projects-service-pacts-qits-ci-service.version>2026.1107.105401</qits.projects-service-pacts-qits-ci-service.version>
         <!-- qits-workspaces-service's consumer pact (epic qits-1681): the run read a declared wait on a
              run makes (getRun). The first pin is set by hand; later ones are maintenance bumps. -->
         <qits.workspaces-service-pacts-qits-ci-service.version>2026.1028.174331</qits.workspaces-service-pacts-qits-ci-service.version>
