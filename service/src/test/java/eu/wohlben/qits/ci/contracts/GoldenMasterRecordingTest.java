@@ -347,7 +347,17 @@ class GoldenMasterRecordingTest {
               "/ci/api/runs",
               Map.of("repositoryId", "{repositoryId}", "limit", "30"),
               200,
-              "$.runs"));
+              "$.runs"),
+          // --- qits-1920: qits-projects-service reads a failed QA run's stale-outputs report: the
+          // listing for its highlight, the report itself for the payload's regenerate commands
+          read(
+              ProviderStates.A_FAILED_QA_RUN_WITH_STALE_OUTPUTS,
+              "listRunReports",
+              "/ci/api/runs/{runId}/reports"),
+          read(
+              ProviderStates.A_FAILED_QA_RUN_WITH_STALE_OUTPUTS,
+              "getRunReport",
+              "/ci/api/runs/{runId}/reports/{staleOutputsReportId}"));
 
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final Pattern TEMPLATE_PARAM = Pattern.compile("\\{([A-Za-z][A-Za-z0-9]*)}");

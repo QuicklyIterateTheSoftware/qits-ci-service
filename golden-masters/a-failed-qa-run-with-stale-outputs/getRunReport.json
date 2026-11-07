@@ -1,0 +1,27 @@
+{
+  "id": "00000000-0000-4000-8000-000000000005",
+  "kind": "stale-outputs",
+  "kindVersion": 1,
+  "stepIndex": 1,
+  "highlights": [
+    {
+      "severity": "bad",
+      "text": "stale outputs: cli-tapes",
+      "metric": null,
+      "value": null,
+      "delta": null
+    }
+  ],
+  "baselineRunId": null,
+  "baselineVersion": null,
+  "payloadBytes": 153,
+  "submittedAt": "2026-01-01T00:00:00Z",
+  "payload": {
+    "kinds": [
+      {
+        "kind": "cli-tapes",
+        "regenerate": "qits release-request regenerate --project contract-project --repository contract-service --kind cli-tapes"
+      }
+    ]
+  }
+}

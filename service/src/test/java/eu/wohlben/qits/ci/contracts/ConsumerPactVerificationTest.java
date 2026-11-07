@@ -295,4 +295,9 @@ class ConsumerPactVerificationTest {
   Map<String, String> aRepositoryWithIts30MostRecentRuns() {
     return states.params(ProviderStates.A_REPOSITORY_WITH_ITS_30_MOST_RECENT_RUNS);
   }
+
+  @State(ProviderStates.A_FAILED_QA_RUN_WITH_STALE_OUTPUTS)
+  Map<String, String> aFailedQaRunWithStaleOutputs() {
+    return states.params(ProviderStates.A_FAILED_QA_RUN_WITH_STALE_OUTPUTS);
+  }
 }
