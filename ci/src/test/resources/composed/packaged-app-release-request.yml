@@ -253,6 +253,8 @@ steps:
       # --- platform output check: the generators run, then git status on their paths ---
       qits_stale=
       qits_regenerate=
+      export QITS_CI_STALE_OUTPUTS=/tmp/qits-stale-outputs.tsv
+      : > "$QITS_CI_STALE_OUTPUTS"
       cat > /tmp/qits-check-screenshot-baselines.sh <<'QITS_CHECK_EOF'
       if ! jq -e '.scripts["test:browser"]' package.json >/dev/null 2>&1; then
         echo "this repository has no test:browser script - there are no screenshot tests to render" >&2
@@ -302,6 +304,7 @@ steps:
           printf '%s\n' "$qits_changed" >&2
           qits_stale="${qits_stale:+$qits_stale, }screenshot-baselines"
           qits_regenerate="${qits_regenerate:+$qits_regenerate; }qits release-request regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository ${QITS_CI_REPO_NAME:-<repository>} --kind screenshot-baselines"
+          printf '%s\t%s\n' screenshot-baselines "qits release-request regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository ${QITS_CI_REPO_NAME:-<repository>} --kind screenshot-baselines" >> "$QITS_CI_STALE_OUTPUTS"
         fi
       fi
       if [ -n "$qits_stale" ]; then

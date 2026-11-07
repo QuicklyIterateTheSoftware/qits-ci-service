@@ -424,6 +424,8 @@ steps:
       # --- platform output check: the generators run, then git status on their paths ---
       qits_stale=
       qits_regenerate=
+      export QITS_CI_STALE_OUTPUTS=/tmp/qits-stale-outputs.tsv
+      : > "$QITS_CI_STALE_OUTPUTS"
       cat > /tmp/qits-check-cli-tapes.sh <<'QITS_CHECK_EOF'
       if [ ! -f tapes/prepare.sh ]; then
         echo "this repository has no tapes (no tapes/prepare.sh) - there is nothing to play"
@@ -514,6 +516,7 @@ steps:
           printf '%s\n' "$qits_changed" >&2
           qits_stale="${qits_stale:+$qits_stale, }cli-tapes"
           qits_regenerate="${qits_regenerate:+$qits_regenerate; }qits release-request regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository ${QITS_CI_REPO_NAME:-<repository>} --kind cli-tapes"
+          printf '%s\t%s\n' cli-tapes "qits release-request regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository ${QITS_CI_REPO_NAME:-<repository>} --kind cli-tapes" >> "$QITS_CI_STALE_OUTPUTS"
         fi
       fi
       if [ -n "$qits_stale" ]; then

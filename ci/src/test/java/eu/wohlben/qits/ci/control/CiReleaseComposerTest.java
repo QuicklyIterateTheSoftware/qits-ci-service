@@ -2406,6 +2406,15 @@ public class CiReleaseComposerTest {
     // The check sits between the declared script and the report hook.
     assertTrue(qa.indexOf("qits_step_exit=$?") < qa.indexOf("platform output check"), qa);
     assertTrue(qa.indexOf("platform output check") < qa.indexOf("platform report hook"), qa);
+    // The stale kinds' file is the check's own (qits-1920): exported before the first generator,
+    // and a QA step without checks never names it.
+    assertTrue(qa.contains("export QITS_CI_STALE_OUTPUTS=/tmp/qits-stale-outputs.tsv\n"), qa);
+    assertTrue(qa.indexOf("QITS_CI_STALE_OUTPUTS=") < qa.indexOf("qits-ci: checking"), qa);
+    String unchecked =
+        CiReleaseComposer.compose(
+                REPO, slots("release-request:\n  - image: alpine:3\n    script: x\n"), null)
+            .releaseRequestDocument();
+    assertFalse(unchecked.contains("QITS_CI_STALE_OUTPUTS"), unchecked);
   }
 
   @Test
@@ -2519,7 +2528,8 @@ public class CiReleaseComposerTest {
    * The output check, EXECUTED, with a stub generator through the compose seam and a real git
    * checkout: clean passes, a change under the kind's paths fails as stale with the one line, a
    * failing generator fails with its own code and is not called stale, and a red script never
-   * reaches the generator. The report hook is told the final code every time.
+   * reaches the generator. The report hook is told the final code every time, and its CLI inherits
+   * {@code QITS_CI_STALE_OUTPUTS}, naming a file that holds one line per stale kind (qits-1920).
    */
   @Test
   public void theOutputCheckFailsOnlyOnStaleOutputsAndTheHookStillRuns() throws Exception {
@@ -2563,7 +2573,11 @@ public class CiReleaseComposerTest {
       assertEquals(0, init.waitFor());
       Files.writeString(
           work.resolve("stub-qits"),
-          "#!/bin/sh\nprintf '%s\\n' \"$*\" > '" + work.resolve("qits-argv.txt") + "'\n");
+          "#!/bin/sh\nprintf '%s\\n' \"$*\" > '"
+              + work.resolve("qits-argv.txt")
+              + "'\nprintf '%s\\n' \"${QITS_CI_STALE_OUTPUTS:-unset}\" > '"
+              + work.resolve("qits-stale-env.txt")
+              + "'\n");
       Path bin = Files.createDirectories(work.resolve("bin"));
       Path curl = bin.resolve("curl");
       Files.writeString(
@@ -2578,6 +2592,7 @@ public class CiReleaseComposerTest {
       String path = bin + ":" + System.getenv("PATH");
       Map<String, String> base =
           Map.of("QITS_CI_PROJECT_ID", "proj-1", "QITS_CI_REPO_NAME", "qits-ci-service");
+      Path staleFile = work.resolve("qits-stale-outputs.tsv");
 
       // Up to date: green, and a change outside the kind's paths is not the check's business.
       HookRun clean = runQaStep(scriptFile, checkout, path, with(base, "QITS_TEST_EXIT", "0"));
@@ -2585,6 +2600,8 @@ public class CiReleaseComposerTest {
       assertTrue(clean.output().contains("generator-ran"), clean.output());
       assertFalse(clean.output().contains("stale"), clean.output());
       assertEquals("ci report submit --exit-code 0\n", read(work, "qits-argv.txt"));
+      assertEquals(staleFile + "\n", read(work, "qits-stale-env.txt"));
+      assertEquals("", Files.readString(staleFile));
 
       // Stale: one line naming the kind and how to regenerate it, exit 1, and the hook told 1.
       HookRun stale =
@@ -2604,6 +2621,12 @@ public class CiReleaseComposerTest {
           stale.output());
       assertTrue(stale.output().contains("src/__screenshots__/new.png"), stale.output());
       assertEquals("ci report submit --exit-code 1\n", read(work, "qits-argv.txt"));
+      // ...and the same kind and command as one tab-separated line for the hook's CLI (qits-1920).
+      assertEquals(staleFile + "\n", read(work, "qits-stale-env.txt"));
+      assertEquals(
+          "screenshot-baselines\tqits release-request regenerate --project proj-1 --repository"
+              + " qits-ci-service --kind screenshot-baselines\n",
+          Files.readString(staleFile));
       deleteTree(checkout.resolve("src"));
 
       // A failing generator is a failed step with its own code, never a stale output.
@@ -2616,6 +2639,7 @@ public class CiReleaseComposerTest {
       assertEquals(4, failed.exit(), failed.output());
       assertTrue(failed.output().contains("generator failed (exit 4)"), failed.output());
       assertFalse(failed.output().contains("stale outputs"), failed.output());
+      assertEquals("", Files.readString(staleFile), "each run starts the file empty");
       assertEquals("ci report submit --exit-code 4\n", read(work, "qits-argv.txt"));
 
       // A red script stays red, and the generator never runs.
