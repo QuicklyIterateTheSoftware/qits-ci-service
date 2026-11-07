@@ -30,12 +30,33 @@
 #   to            the new version, refused unless [0-9A-Za-z._+-]+
 #   from          the commit message only, never a precondition: a manifest already holding
 #                 `to` is a no-op
-#   location      maven: `property:<name>` or `dependency:<groupId>:<artifactId>`
+#   location      maven: `property:<name>` or `dependency:<groupId>:<artifactId>`, or
+#                 `pact-adopt:<groupId>:<consumer>-pacts-<provider>` (qits-1952, below)
 #                 docker: `arg:<name>` anchors on an ARG default; anything else is a FROM line
 #                 npm, gitlink: ignored
 # `commitPaths` is the manifests those changes touch - pom.xml files, package.json AND its lock
 # (package-lock.json, or pnpm-lock.yaml for a pnpm repository, qits-1914), Dockerfiles, gitlink
 # paths - and is all the postlude stages.
+#
+# A PACT ADOPT ADDS A PIN RATHER THAN MOVING ONE (qits-1952). A consumer's FIRST pact jar,
+# `<consumer>-pacts-<provider>`, has no pin in the provider - this repository - so no `property:`
+# or `dependency:` change could ever name one, and the provider never verified a pact its new
+# consumer had published. The change says `pact-adopt:<groupId>:<artifactId>` with an empty `from`,
+# `name` is the same `<groupId>:<artifactId>`, `manifestPath` is the root pom (informational: the
+# adopt edits whichever reactor poms carry a sibling's pin) and `commitPaths` lists every pom.xml.
+# The apply copies a SIBLING consumer's pin - the template, the last `<T>-pacts-<provider>`
+# artifactId in the root pom (or, with none there, in the first pom by path that has one) - at
+# every place it appears in every tracked pom, inserting each copy right after its original:
+#   a <properties> line whose name holds `<T>-pacts-<provider>` (or `<T'>-pacts-<provider>`, T'
+#                 being T without its leading `qits-`, as in `qits.docs-service-pacts-...version`),
+#                 renamed the same way for the consumer and set to `to`
+#   a <dependency> block whose artifactId is the template's, comments inside it included, with the
+#                 artifactId swapped, a `${property}` version renamed as above and a literal
+#                 version set to `to` - a versionless (dependencyManagement-governed) one stays so
+# It is idempotent: a repository whose poms already name the artifact is left alone, and moving
+# that pin is a later `property:`/`dependency:` change's job. With no sibling to copy it refuses -
+# the first consumer pact of a provider is set up by hand - and it refuses before writing anything
+# when a pom it would edit is not among `commitPaths`, which the postlude alone stages.
 #
 # ALL FOUR ECOSYSTEMS IN ONE STEP, where `../maintenance-bump.yml` needs two (a maven-base step
 # and a node-base step, each committing and pushing its own half). The apply logic below is
@@ -46,7 +67,7 @@
 # reads the payload with. node-browser-base is the one platform image carrying node, npm, jq,
 # git and awk together (node-base has no jq; maven-base and userflows-base have no node), and it
 # is the image the `screenshot-baselines` kind already runs on. Its awk is Debian's mawk, not
-# busybox's: the four programs below stick to POSIX awk (match/substr/index/sub) so either runs
+# busybox's: the awk programs below stick to POSIX awk (match/substr/index/sub) so either runs
 # them.
 #
 # THE COMMIT MESSAGE CARRIES THE CHANGELOGS (qits-893), as `../maintenance-bump.yml`'s does: the
@@ -63,8 +84,9 @@
 # earlier run's commit) never calls the CLI: the postlude prints `unchanged` and reads no message.
 #
 # READING THE PAYLOAD AND FETCHING A SIBLING are the two things this kind does that the others
-# do not, and both are confined: the payload is read for `.changes` alone (`branch`, `baseRef`
-# and the rest stay the prelude's), and the one fetch is a gitlink's sibling tag, which writes
+# do not, and both are confined: the payload is read for `.changes`, and for `.commitPaths` only
+# by a pact adopt's check of what it may edit (`branch`, `baseRef` and the rest stay the
+# prelude's), and the one fetch is a gitlink's sibling tag, which writes
 # no ref of this repository.
 timeout-seconds: 1800
 qits-cli: true
@@ -223,6 +245,118 @@ script: |
   }
   AWK
 
+  # A pact adopt's template (qits-1952): the consumer T of the LAST `<T><sfx>` artifactId in the
+  # first file, in argument order, that names one at all. The root pom is passed first, so the
+  # copy lands at the end of its list of consumers; "last" also steps past the first entry, the
+  # one a group's explaining comment usually sits inside.
+  cat > /tmp/bump-pact-template.awk <<'AWK'
+  BEGIN { file = ""; t = "" }
+  {
+    if (match($0, /<artifactId>[^<]*<\/artifactId>/)) {
+      a = substr($0, RSTART + 12, RLENGTH - 25)
+      if (length(a) > length(sfx) && substr(a, length(a) - length(sfx) + 1) == sfx) {
+        if (file == "") file = FILENAME
+        if (FILENAME == file) t = substr(a, 1, length(a) - length(sfx))
+      }
+    }
+  }
+  END { if (t != "") print t }
+  AWK
+
+  # A pact adopt's copy of the template's pin in ONE pom (qits-1952): each <properties> line
+  # naming the template and each <dependency> block of its artifactId is printed, then printed
+  # again for the consumer right below it. A property's name is renamed by its consumer token,
+  # matched between dots or the name's ends so `ci-service` never matches inside `foo-ci-service`:
+  # `tf`/`cf` are the template's and the consumer's `<name>-pacts-<provider>`, `ts`/`cs` the same
+  # without a leading `qits-` (`qits.docs-service-pacts-...version`). What was copied is appended
+  # to `stats` - `prop <name>`, `ref <name>`, `dep` - for the checks the step makes afterwards.
+  cat > /tmp/bump-pact-adopt.awk <<'AWK'
+  function renamed(n,   w, i, r) {
+    w = "." n "."
+    i = index(w, "." tf ".")
+    if (i > 0) {
+      r = substr(w, 1, i) cf substr(w, i + 1 + length(tf))
+      return substr(r, 2, length(r) - 2)
+    }
+    if (ts != tf) {
+      i = index(w, "." ts ".")
+      if (i > 0) {
+        r = substr(w, 1, i) cs substr(w, i + 1 + length(ts))
+        return substr(r, 2, length(r) - 2)
+      }
+    }
+    return ""
+  }
+  function clone(   i, line, s, v, x, nx, nv) {
+    for (i = 1; i <= nb; i++) {
+      line = buf[i]
+      s = index(line, "<artifactId>" ta "</artifactId>")
+      if (s > 0) line = substr(line, 1, s - 1) "<artifactId>" na "</artifactId>" substr(line, s + length(ta) + 25)
+      if (match(line, /<version>[^<]*<\/version>/)) {
+        v = substr(line, RSTART + 9, RLENGTH - 19)
+        if (substr(v, 1, 2) == "${" && substr(v, length(v)) == "}") {
+          x = substr(v, 3, length(v) - 3)
+          nx = renamed(x)
+          if (nx == "") {
+            printf("%s's <version>%s</version> is no property of its own to rename\n", ta, v) > "/dev/stderr"
+            bad = 1
+            nv = v
+          } else {
+            nv = "${" nx "}"
+            print "ref " nx >> stats
+          }
+        } else nv = to
+        line = substr(line, 1, RSTART - 1) "<version>" nv "</version>" substr(line, RSTART + RLENGTH)
+      }
+      print line
+    }
+    print "dep" >> stats
+  }
+  BEGIN { inprops = 0; inblock = 0; nb = 0; bad = 0 }
+  {
+    # Anchored at both ends of the line: prose in a comment ("adding a <dependency> was the whole
+    # change") must not open a block that swallows everything down to the next real one.
+    if (inblock == 0 && $0 ~ /^[ \t]*<dependency>/) { inblock = 1; nb = 0; a = "" }
+    if (inblock == 1) {
+      nb++
+      buf[nb] = $0
+      if (a == "" && match($0, /<artifactId>[^<]*<\/artifactId>/)) a = substr($0, RSTART + 12, RLENGTH - 25)
+      if ($0 ~ /<\/dependency>[ \t]*$/) {
+        for (i = 1; i <= nb; i++) print buf[i]
+        if (a == ta) clone()
+        inblock = 0
+        nb = 0
+      }
+      next
+    }
+    if ($0 ~ /^[ \t]*<properties>/) inprops = 1
+    if (inprops == 1 && match($0, /<[A-Za-z0-9._-]+>[^<]*<\/[A-Za-z0-9._-]+>/)) {
+      # Both halves are cut BEFORE renamed() runs index(), and nothing here calls match() again.
+      head = substr($0, 1, RSTART - 1)
+      el = substr($0, RSTART, RLENGTH)
+      tail = substr($0, RSTART + RLENGTH)
+      o = index(el, ">")
+      name = substr(el, 2, o - 2)
+      # The element opens the line, as a property does; one quoted inside a comment does not.
+      if (head ~ /^[ \t]*$/ && substr(el, length(el) - length(name) - 2) == "</" name ">") {
+        nn = renamed(name)
+        if (nn != "") {
+          print
+          print head "<" nn ">" to "</" nn ">" tail
+          print "prop " nn >> stats
+          next
+        }
+      }
+    }
+    if ($0 ~ /^[ \t]*<\/properties>/) inprops = 0
+    print
+  }
+  END {
+    for (i = 1; i <= nb; i++) print buf[i]
+    if (bad) exit 4
+  }
+  AWK
+
   # --- apply, every ecosystem in turn -------------------------------------------------
   # Every value reaches an argv, an awk -v, a URL or an index entry, so the charset is refused
   # rather than quoted. Nothing legitimate needs a character outside these sets.
@@ -245,6 +379,9 @@ script: |
       exit 1
     fi
 
+    # What the body and the log say of the change; a pact adopt says it differently.
+    line="- $ecosystem $name $from -> $to ($manifest)"
+    said="bumped $name to $to in $manifest"
     case "$ecosystem" in
       maven)
         case "$name" in ''|*[!0-9A-Za-z._:-]*) echo "refusing an implausible dependency: $name" >&2; exit 1 ;; esac
@@ -255,6 +392,7 @@ script: |
               ''|*[!0-9A-Za-z._-]*) echo "refusing an implausible property: $prop" >&2; exit 1 ;;
             esac
             awk -v prop="$prop" -v to="$to" -f /tmp/bump-property.awk "$manifest" > /tmp/bump-edited
+            mv /tmp/bump-edited "$manifest"
             ;;
           dependency:*:*)
             coords=${location#dependency:}
@@ -266,13 +404,126 @@ script: |
               esac
             done
             awk -v gid="$gid" -v aid="$aid" -v to="$to" -f /tmp/bump-dependency.awk "$manifest" > /tmp/bump-edited
+            mv /tmp/bump-edited "$manifest"
+            ;;
+          pact-adopt:*:*)
+            # A consumer's first pact pin, copied from a sibling consumer's (qits-1952, see the
+            # header). The name and the location say the same coordinates, or nothing is guessed.
+            coords=${location#pact-adopt:}
+            gid=${coords%%:*}
+            aid=${coords#*:}
+            for part in "$gid" "$aid"; do
+              case "$part" in
+                ''|*[!0-9A-Za-z._-]*) echo "refusing implausible coordinates: $location" >&2; exit 1 ;;
+              esac
+            done
+            if [ "$name" != "$coords" ]; then
+              echo "refusing a pact adopt whose name $name is not its location's $coords" >&2
+              exit 1
+            fi
+            # `<consumer>-pacts-<provider>`, split at the FIRST `-pacts-`: no repository name
+            # carries the word, so the consumer is everything before it and the provider after.
+            case "$aid" in
+              ?*-pacts-?*) ;;
+              *) echo "refusing to adopt $aid: not a <consumer>-pacts-<provider> artifact" >&2; exit 1 ;;
+            esac
+            consumer=${aid%%-pacts-*}
+            provider=${aid#*-pacts-}
+            # Every tracked pom, the root first: the template is looked for there before anywhere
+            # else. A path outside the charset is refused, so the list word-splits safely below.
+            git ls-files -- 'pom.xml' '*/pom.xml' > /tmp/bump-poms-all.txt
+            { grep -x 'pom.xml' /tmp/bump-poms-all.txt || :; grep -vx 'pom.xml' /tmp/bump-poms-all.txt || :; } \
+              > /tmp/bump-poms.txt
+            if grep -q '[^0-9A-Za-z._/-]' /tmp/bump-poms.txt; then
+              echo "refusing to adopt $aid: a tracked pom.xml has an implausible path" >&2
+              exit 1
+            fi
+            poms=$(cat /tmp/bump-poms.txt)
+            if [ -z "$poms" ]; then
+              echo "refusing to adopt $aid: the repository tracks no pom.xml" >&2
+              exit 1
+            fi
+            # IDEMPOTENT: a pom that already names the artifact means the adopt happened (an earlier
+            # run's commit is in the fold, or a person pinned it by hand). Moving that pin is a
+            # `property:`/`dependency:` change's job, so this one records nothing at all.
+            pinned=$(grep -lF "<artifactId>$aid</artifactId>" $poms | head -n 1 || :)
+            if [ -n "$pinned" ]; then
+              echo "$pinned already pins $aid: nothing to adopt"
+              continue
+            fi
+            template=$(awk -v sfx="-pacts-$provider" -f /tmp/bump-pact-template.awk $poms)
+            if [ -z "$template" ]; then
+              echo "refusing to adopt $aid: $provider pins no consumer pact to copy; the first consumer pact of a provider is set up by hand" >&2
+              exit 1
+            fi
+            short_t=${template#qits-}
+            short_c=${consumer#qits-}
+            # Every pom is edited into a scratch copy first, and nothing is moved into place until
+            # all the checks below pass: a refusal leaves the tree as the fold had it.
+            : > /tmp/bump-adopt-stats
+            : > /tmp/bump-adopt-edited.txt
+            i=0
+            for pom in $poms; do
+              i=$((i + 1))
+              # Every copy appends a line to the stats, so a pom whose count did not move is one the
+              # program left as it was - and it is left alone rather than rewritten.
+              before=$(grep -c '' /tmp/bump-adopt-stats || :)
+              awk -v tf="$template-pacts-$provider" -v cf="$aid" \
+                  -v ts="$short_t-pacts-$provider" -v cs="$short_c-pacts-$provider" \
+                  -v ta="$template-pacts-$provider" -v na="$aid" -v to="$to" \
+                  -v stats=/tmp/bump-adopt-stats -f /tmp/bump-pact-adopt.awk "$pom" > "/tmp/bump-adopt.$i"
+              if [ "$(grep -c '' /tmp/bump-adopt-stats || :)" != "$before" ]; then
+                printf '%s %s\n' "/tmp/bump-adopt.$i" "$pom" >> /tmp/bump-adopt-edited.txt
+              fi
+            done
+            if ! grep -qx 'dep' /tmp/bump-adopt-stats; then
+              echo "refusing to adopt $aid: $template-pacts-$provider has no <dependency> block to copy" >&2
+              exit 1
+            fi
+            # A copied `${property}` must name a property that was copied too, or the new pin would
+            # resolve to nothing at all.
+            for ref in $(sed -n 's/^ref //p' /tmp/bump-adopt-stats); do
+              if ! grep -qx "prop $ref" /tmp/bump-adopt-stats; then
+                echo "refusing to adopt $aid: its copied version reads \${$ref}, which no <properties> line of $template's declares" >&2
+                exit 1
+              fi
+            done
+            # A property the consumer's pin would be declared under twice is a half-done adopt by
+            # hand, and a person's to finish: maven refuses a duplicated tag.
+            for prop in $(sed -n 's/^prop //p' /tmp/bump-adopt-stats); do
+              if grep -qF "<$prop>" $poms; then
+                echo "refusing to adopt $aid: <$prop> is already declared, with no dependency naming the artifact" >&2
+                exit 1
+              fi
+            done
+            # The postlude stages `commitPaths` and nothing else, so a pom edited outside them
+            # would be an edit left behind while the commit claims the adopt. Asked the way the
+            # postlude asks, as pathspecs - a directory or a `:(glob)` entry covers its files.
+            printf '%s' "$QITS_EVENT_PAYLOAD" | jq -r '.commitPaths[]' > /tmp/bump-commit-paths.txt
+            : > /tmp/bump-commit-files.txt
+            while IFS= read -r entry; do
+              git ls-files -- "$entry" >> /tmp/bump-commit-files.txt
+            done < /tmp/bump-commit-paths.txt
+            adopted=
+            while read -r edited pom; do
+              if ! grep -qxF "$pom" /tmp/bump-commit-files.txt; then
+                echo "refusing to adopt $aid: $pom carries $template's pin but is not among the payload's commitPaths" >&2
+                exit 1
+              fi
+              adopted="$adopted${adopted:+, }$pom"
+            done < /tmp/bump-adopt-edited.txt
+            while read -r edited pom; do
+              mv "$edited" "$pom"
+              set -- "$@" "$pom"
+            done < /tmp/bump-adopt-edited.txt
+            line="- maven $name adopt $consumer's pact $to, copying $template's ($adopted)"
+            said="adopted $name at $to in $adopted, copying $template's pin"
             ;;
           *)
             echo "unknown maven location: $location" >&2
             exit 1
             ;;
         esac
-        mv /tmp/bump-edited "$manifest"
         ;;
       npm)
         case "$name" in ''|*[!@A-Za-z0-9._/-]*) echo "refusing an implausible dependency: $name" >&2; exit 1 ;; esac
@@ -461,9 +712,9 @@ script: |
         exit 1
         ;;
     esac
-    echo "- $ecosystem $name $from -> $to ($manifest)" >> /tmp/bump-body.txt
+    echo "$line" >> /tmp/bump-body.txt
     printf '%s\t%s\n' "$ecosystem" "$name" >> /tmp/bump-applied.tsv
-    echo "bumped $name to $to in $manifest"
+    echo "$said"
     set -- "$@" "$manifest"
   done 3< /tmp/bump-changes.txt
 

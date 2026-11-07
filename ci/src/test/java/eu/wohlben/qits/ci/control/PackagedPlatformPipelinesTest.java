@@ -624,10 +624,15 @@ public class PackagedPlatformPipelinesTest {
       throws Exception {
     String kindFile = Files.readString(SOURCE.resolve("automations/dependency-bump.yml"));
     String script = kindFile.substring(kindFile.indexOf("\nscript: |\n"));
-    // The payload: one read, of `.changes`; branch, baseRef and foldSha stay the prelude's.
-    assertEquals(1, script.split("QITS_EVENT_PAYLOAD", -1).length - 1, script);
+    // The payload: two reads, of `.changes` and - a pact adopt's check of the poms it may edit,
+    // qits-1952 - of `.commitPaths`, which stages nothing; branch, baseRef and foldSha stay the
+    // prelude's.
+    assertEquals(2, script.split("QITS_EVENT_PAYLOAD", -1).length - 1, script);
     assertTrue(script.contains("printf '%s' \"$QITS_EVENT_PAYLOAD\" | jq -r '\n    .changes\n"));
-    for (String field : List.of(".branch", ".baseRef", ".foldSha", ".commitPaths", ".workItem")) {
+    assertTrue(
+        script.contains("printf '%s' \"$QITS_EVENT_PAYLOAD\" | jq -r '.commitPaths[]' > "), script);
+    assertEquals(1, script.split("\\.commitPaths", -1).length - 1, script);
+    for (String field : List.of(".branch", ".baseRef", ".foldSha", ".workItem")) {
       assertFalse(script.contains(field), "the kind reads the prelude's " + field);
     }
     // The one fetch: a gitlink's sibling, at a tag — never a ref of this repository. Made twice

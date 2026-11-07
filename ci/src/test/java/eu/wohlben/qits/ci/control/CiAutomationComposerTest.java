@@ -1433,6 +1433,355 @@ public class CiAutomationComposerTest {
     assertFalse(run.output.contains("fake qits"), run.output);
   }
 
+  // --- the dependency-bump kind's pact adopt, run (qits-1952) ------------------------------------
+
+  /** qits-artifacts-service's layout: root properties, dependencyManagement, versionless module dep. */
+  private static final String ADOPT_ROOT_MANAGED =
+      """
+      <project>
+        <properties>
+          <!-- THE CONSUMER PACTS: one pin per consumer. -->
+          <qits.docs-service-pacts-qits-target.version>2026.1.1</qits.docs-service-pacts-qits-target.version>
+          <qits.ci-service-pacts-qits-target.version>2026.1.2</qits.ci-service-pacts-qits-target.version>
+          <quarkus.version>3.1.0</quarkus.version>
+        </properties>
+        <dependencyManagement>
+          <dependencies>
+            <dependency>
+              <!-- Test scope at every declaration site: a consumer's pact. -->
+              <groupId>${project.groupId}</groupId>
+              <artifactId>qits-docs-service-pacts-qits-target</artifactId>
+              <version>${qits.docs-service-pacts-qits-target.version}</version>
+            </dependency>
+            <!-- The CI service's pact. -->
+            <dependency>
+              <groupId>${project.groupId}</groupId>
+              <artifactId>qits-ci-service-pacts-qits-target</artifactId>
+              <version>${qits.ci-service-pacts-qits-target.version}</version>
+            </dependency>
+            <dependency>
+              <groupId>${project.groupId}</groupId>
+              <artifactId>qits-target-golden-masters</artifactId>
+              <version>${project.version}</version>
+            </dependency>
+          </dependencies>
+        </dependencyManagement>
+      </project>
+      """;
+
+  private static final String ADOPT_MODULE_VERSIONLESS =
+      """
+      <project>
+        <dependencies>
+          <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-docs-service-pacts-qits-target</artifactId>
+            <scope>test</scope>
+          </dependency>
+          <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-ci-service-pacts-qits-target</artifactId>
+            <scope>test</scope>
+          </dependency>
+        </dependencies>
+      </project>
+      """;
+
+  /** A module naming no pact at all: the adopt must leave it byte for byte. */
+  private static final String ADOPT_MODULE_UNRELATED =
+      """
+      <project>
+        <artifactId>qits-target-gc</artifactId>
+      </project>
+      """;
+
+  private static String adoptChange(String artifactId) {
+    return "[{\"ecosystem\":\"maven\",\"manifestPath\":\"pom.xml\",\"name\":\"eu.wohlben.qits:"
+        + artifactId
+        + "\",\"from\":null,\"to\":\"2026.1107.1\",\"location\":\"pact-adopt:eu.wohlben.qits:"
+        + artifactId
+        + "\"}]";
+  }
+
+  /** Runs one adopt of {@code artifactId} over {@code poms} on the fold, with {@code paths}. */
+  private static Result runAdopt(
+      Scratch scratch, Path dir, Map<String, String> poms, String artifactId, String paths, Path applied)
+      throws Exception {
+    scratch.foldWith(poms, Map.of());
+    Path store = fakeChangelogCli(dir.resolve("store"), "", 0);
+    return scratch.runStep(
+        "bash",
+        dependencyBumpStep(store),
+        bumpPayload(scratch, adoptChange(artifactId), paths),
+        fakeCliEnv(applied));
+  }
+
+  @Test
+  public void aPactAdoptCopiesTheLastSiblingsPropertyManagedDependencyAndModuleDependency(
+      @TempDir Path dir) throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    Path applied = dir.resolve("applied.tsv");
+    Result run =
+        runAdopt(
+            scratch,
+            dir,
+            Map.of(
+                "pom.xml", ADOPT_ROOT_MANAGED,
+                "service/pom.xml", ADOPT_MODULE_VERSIONLESS,
+                "gc/pom.xml", ADOPT_MODULE_UNRELATED),
+            "qits-system-service-pacts-qits-target",
+            "\":(glob)**/pom.xml\"",
+            applied);
+
+    assertEquals(0, run.exit, run.output);
+    String pushed = scratch.originRev("refs/heads/" + BUMP_BRANCH);
+    assertEquals(
+        "bump(qits-978): 1 dependencies",
+        scratch.git(scratch.origin, "log", "-1", "--format=%s", pushed));
+    // The body says the adopt in its own words: no `from`, the template it copied and where.
+    assertEquals(
+        "- maven eu.wohlben.qits:qits-system-service-pacts-qits-target adopt qits-system-service's"
+            + " pact 2026.1107.1, copying qits-ci-service's (pom.xml, service/pom.xml)\n\n"
+            + "## qits-sibling\n# 2026.1010.1\nshipped qits-1 and qits-2",
+        scratch.git(scratch.origin, "log", "-1", "--format=%b", pushed));
+    assertEquals(
+        "maven\teu.wohlben.qits:qits-system-service-pacts-qits-target\n", Files.readString(applied));
+    assertEquals(
+        "pom.xml\nservice/pom.xml",
+        scratch.git(scratch.origin, "diff-tree", "--no-commit-id", "--name-only", "-r", pushed));
+    // The copy sits right below the template's, a comment above the template is not copied and
+    // one inside its block would be; the other consumer and the golden master are untouched.
+    assertEquals(
+        ADOPT_ROOT_MANAGED
+            .replace(
+                "    <qits.ci-service-pacts-qits-target.version>2026.1.2</qits.ci-service-pacts-qits-target.version>\n",
+                "    <qits.ci-service-pacts-qits-target.version>2026.1.2</qits.ci-service-pacts-qits-target.version>\n"
+                    + "    <qits.system-service-pacts-qits-target.version>2026.1107.1</qits.system-service-pacts-qits-target.version>\n")
+            .replace(
+                "        <version>${qits.ci-service-pacts-qits-target.version}</version>\n"
+                    + "      </dependency>\n",
+                "        <version>${qits.ci-service-pacts-qits-target.version}</version>\n"
+                    + "      </dependency>\n"
+                    + "      <dependency>\n"
+                    + "        <groupId>${project.groupId}</groupId>\n"
+                    + "        <artifactId>qits-system-service-pacts-qits-target</artifactId>\n"
+                    + "        <version>${qits.system-service-pacts-qits-target.version}</version>\n"
+                    + "      </dependency>\n")
+            .strip(),
+        scratch.git(scratch.origin, "show", pushed + ":pom.xml"));
+    // Versionless, as the template is: dependencyManagement governs it.
+    assertEquals(
+        ADOPT_MODULE_VERSIONLESS
+            .replace(
+                "    </dependency>\n  </dependencies>",
+                "    </dependency>\n"
+                    + "    <dependency>\n"
+                    + "      <groupId>${project.groupId}</groupId>\n"
+                    + "      <artifactId>qits-system-service-pacts-qits-target</artifactId>\n"
+                    + "      <scope>test</scope>\n"
+                    + "    </dependency>\n"
+                    + "  </dependencies>")
+            .strip(),
+        scratch.git(scratch.origin, "show", pushed + ":service/pom.xml"));
+  }
+
+  /** qits-ci-service's layout: root properties only, the module pins `${prop}` inline. */
+  private static final String ADOPT_ROOT_PROPERTIES =
+      """
+      <project>
+        <!-- Prose naming a <dependency> must not open a block. -->
+        <properties>
+          <qits.landing-app-pacts-qits-target.version>2026.1.1</qits.landing-app-pacts-qits-target.version>
+          <qits.system-frontend-pacts-qits-target.version>2026.1.2</qits.system-frontend-pacts-qits-target.version>
+          <qits.maven.repository.url>https://example.invalid</qits.maven.repository.url>
+        </properties>
+      </project>
+      """;
+
+  private static final String ADOPT_MODULE_INLINE =
+      """
+      <project>
+        <dependencies>
+          <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-landing-app-pacts-qits-target</artifactId>
+            <version>${qits.landing-app-pacts-qits-target.version}</version>
+            <scope>test</scope>
+          </dependency>
+          <dependency>
+            <!-- The frontends' pacts. -->
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-system-frontend-pacts-qits-target</artifactId>
+            <version>${qits.system-frontend-pacts-qits-target.version}</version>
+            <scope>test</scope>
+          </dependency>
+        </dependencies>
+      </project>
+      """;
+
+  @Test
+  public void aPactAdoptCopiesARootPropertyAndAnInlinePropertyVersionInTheModule(@TempDir Path dir)
+      throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    Result run =
+        runAdopt(
+            scratch,
+            dir,
+            Map.of("pom.xml", ADOPT_ROOT_PROPERTIES, "service/pom.xml", ADOPT_MODULE_INLINE),
+            "qits-system-service-pacts-qits-target",
+            "\"pom.xml\",\"service/pom.xml\"",
+            dir.resolve("applied.tsv"));
+
+    assertEquals(0, run.exit, run.output);
+    String pushed = scratch.originRev("refs/heads/" + BUMP_BRANCH);
+    // No artifactId in the root, so the template is the module's last: the system frontend's.
+    assertTrue(run.output.contains("copying qits-system-frontend's pin"), run.output);
+    assertEquals(
+        ADOPT_ROOT_PROPERTIES
+            .replace(
+                "</qits.system-frontend-pacts-qits-target.version>\n",
+                "</qits.system-frontend-pacts-qits-target.version>\n"
+                    + "    <qits.system-service-pacts-qits-target.version>2026.1107.1</qits.system-service-pacts-qits-target.version>\n")
+            .strip(),
+        scratch.git(scratch.origin, "show", pushed + ":pom.xml"));
+    assertEquals(
+        ADOPT_MODULE_INLINE
+            .replace(
+                "    </dependency>\n  </dependencies>",
+                "    </dependency>\n"
+                    + "    <dependency>\n"
+                    + "      <!-- The frontends' pacts. -->\n"
+                    + "      <groupId>eu.wohlben.qits</groupId>\n"
+                    + "      <artifactId>qits-system-service-pacts-qits-target</artifactId>\n"
+                    + "      <version>${qits.system-service-pacts-qits-target.version}</version>\n"
+                    + "      <scope>test</scope>\n"
+                    + "    </dependency>\n"
+                    + "  </dependencies>")
+            .strip(),
+        scratch.git(scratch.origin, "show", pushed + ":service/pom.xml"));
+  }
+
+  /** qits-projects-daemon's layout: the property is the full consumer name, no `qits.` prefix. */
+  private static final String ADOPT_ROOT_FULL_NAME =
+      """
+      <project>
+        <properties>
+          <qits-projects-service-pacts-qits-target.version>2026.1.1</qits-projects-service-pacts-qits-target.version>
+        </properties>
+      </project>
+      """;
+
+  private static final String ADOPT_MODULE_FULL_NAME =
+      """
+      <project>
+        <dependencies>
+          <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-projects-service-pacts-qits-target</artifactId>
+            <version>${qits-projects-service-pacts-qits-target.version}</version>
+            <scope>test</scope>
+          </dependency>
+        </dependencies>
+      </project>
+      """;
+
+  @Test
+  public void aPactAdoptRenamesAFullConsumerNamePropertyByTheFullName(@TempDir Path dir)
+      throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    Result run =
+        runAdopt(
+            scratch,
+            dir,
+            Map.of("pom.xml", ADOPT_ROOT_FULL_NAME, "daemon/pom.xml", ADOPT_MODULE_FULL_NAME),
+            "qits-system-service-pacts-qits-target",
+            "\"pom.xml\",\"daemon\"",
+            dir.resolve("applied.tsv"));
+
+    assertEquals(0, run.exit, run.output);
+    String pushed = scratch.originRev("refs/heads/" + BUMP_BRANCH);
+    String root = scratch.git(scratch.origin, "show", pushed + ":pom.xml");
+    assertTrue(
+        root.contains(
+            "<qits-projects-service-pacts-qits-target.version>2026.1.1</qits-projects-service-pacts-qits-target.version>\n"
+                + "    <qits-system-service-pacts-qits-target.version>2026.1107.1</qits-system-service-pacts-qits-target.version>\n"),
+        root);
+    String module = scratch.git(scratch.origin, "show", pushed + ":daemon/pom.xml");
+    assertTrue(
+        module.contains(
+            "<artifactId>qits-system-service-pacts-qits-target</artifactId>\n"
+                + "      <version>${qits-system-service-pacts-qits-target.version}</version>\n"),
+        module);
+  }
+
+  @Test
+  public void aPactAdoptOfAnArtifactAlreadyPinnedChangesNothing(@TempDir Path dir) throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    scratch.foldWith(
+        Map.of("pom.xml", ADOPT_ROOT_MANAGED, "service/pom.xml", ADOPT_MODULE_VERSIONLESS), Map.of());
+    // A CLI that would fail: an unchanged run never asks it.
+    Result run =
+        scratch.runStep(
+            "bash",
+            dependencyBumpStep(fakeChangelogCli(dir.resolve("failing"), "", 1)),
+            bumpPayload(
+                scratch,
+                adoptChange("qits-ci-service-pacts-qits-target"),
+                "\"pom.xml\",\"service/pom.xml\""),
+            FAKE_CLI_ENV);
+
+    assertEquals(0, run.exit, run.output);
+    assertTrue(run.output.contains("already pins qits-ci-service-pacts-qits-target"), run.output);
+    assertTrue(run.output.contains("unchanged"), run.output);
+    assertFalse(run.output.contains("fake qits"), run.output);
+  }
+
+  @Test
+  public void aPactAdoptWithNoSiblingToCopyFailsAndPushesNothing(@TempDir Path dir)
+      throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    Result run =
+        runAdopt(
+            scratch,
+            dir,
+            // Siblings of ANOTHER provider are no template for this one.
+            Map.of("pom.xml", ADOPT_ROOT_MANAGED.replace("-pacts-qits-target", "-pacts-qits-other")),
+            "qits-system-service-pacts-qits-target",
+            "\"pom.xml\"",
+            dir.resolve("applied.tsv"));
+
+    assertEquals(1, run.exit, run.output);
+    assertTrue(
+        run.output.contains(
+            "refusing to adopt qits-system-service-pacts-qits-target: qits-target pins no consumer"
+                + " pact to copy; the first consumer pact of a provider is set up by hand"),
+        run.output);
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BUMP_BRANCH), "nothing was pushed");
+  }
+
+  @Test
+  public void aPactAdoptThatWouldEditAPomOutsideTheCommitPathsFailsAndPushesNothing(
+      @TempDir Path dir) throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    Result run =
+        runAdopt(
+            scratch,
+            dir,
+            Map.of("pom.xml", ADOPT_ROOT_MANAGED, "service/pom.xml", ADOPT_MODULE_VERSIONLESS),
+            "qits-system-service-pacts-qits-target",
+            "\"pom.xml\"",
+            dir.resolve("applied.tsv"));
+
+    assertEquals(1, run.exit, run.output);
+    assertTrue(
+        run.output.contains(
+            "refusing to adopt qits-system-service-pacts-qits-target: service/pom.xml carries"
+                + " qits-ci-service's pin but is not among the payload's commitPaths"),
+        run.output);
+    assertFalse(run.output.contains("adopted "), run.output);
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BUMP_BRANCH), "nothing was pushed");
+  }
+
   // --- the dependency-bump kind's pnpm arm, run (qits-1914) --------------------------------------
 
   /** A pnpm repository's manifest, four-space indented: the edit keeps the file's own indent. */
