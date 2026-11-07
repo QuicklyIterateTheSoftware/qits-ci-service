@@ -138,7 +138,7 @@
              qits-platform-maintenance moves it like any internal pin, on a maintenance/* branch, and
              THIS repository's own release request is what gates the move. Do not hand-edit it to
              chase a release. -->
-        <qits.platform-access-cli-binary.version>2026.1107.104438</qits.platform-access-cli-binary.version>
+        <qits.platform-access-cli-binary.version>2026.1107.132020</qits.platform-access-cli-binary.version>
         <!-- pact-jvm's JUnit 5 provider, for contracts/ConsumerPactVerificationTest: the version every
              provider on the estate verifies with, so a consumer's pact is read the same way. -->
         <pact.version>4.7.5</pact.version>
@@ -169,7 +169,7 @@
              jar per frontend, `pacts/<frontend>_qits-ui-components-jslib_qits-ci-service.json`,
              bumped like the rows above when the frontend releases a changed pact. -->
         <qits.ci-frontend-pacts-qits-ci-service.version>2026.1107.25251</qits.ci-frontend-pacts-qits-ci-service.version>
-        <qits.projects-frontend-pacts-qits-ci-service.version>2026.1107.25120</qits.projects-frontend-pacts-qits-ci-service.version>
+        <qits.projects-frontend-pacts-qits-ci-service.version>2026.1107.140028</qits.projects-frontend-pacts-qits-ci-service.version>
         <qits.docs-frontend-pacts-qits-ci-service.version>2026.1106.181135</qits.docs-frontend-pacts-qits-ci-service.version>
         <qits.events-frontend-pacts-qits-ci-service.version>2026.1106.202122</qits.events-frontend-pacts-qits-ci-service.version>
         <qits.githost-frontend-pacts-qits-ci-service.version>2026.1106.181222</qits.githost-frontend-pacts-qits-ci-service.version>
