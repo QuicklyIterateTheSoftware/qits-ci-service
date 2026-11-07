@@ -236,7 +236,10 @@ import java.util.Set;
  * fails (a real test failure, for screenshots) fails the step with its own code and is never called
  * stale. Nothing is regenerated or committed here. The check runs before the report hook, so the
  * hook still runs and reports the step's final code. A kind whose kind file declares {@code
- * qits-cli: true} gets the CLI as if the step had declared it.
+ * qits-cli: true} gets the CLI as if the step had declared it. Each stale kind is also written as
+ * one {@code <kind><TAB><regenerate command>} line to {@link #STALE_OUTPUTS_FILE}, exported as
+ * {@code QITS_CI_STALE_OUTPUTS}, which the hook's CLI submits as a {@code stale-outputs} report
+ * (qits-1920).
  *
  * <h2>The QA consistency refusal (qits-1400)</h2>
  *
@@ -421,6 +424,14 @@ public final class CiReleaseComposer {
 
   /** The quoted heredoc delimiter a generator is written through. */
   static final String OUTPUT_CHECK_DELIMITER = "QITS_CHECK_EOF";
+
+  /**
+   * Where a QA step with output checks records its stale kinds (qits-1920): one line per kind,
+   * {@code <kind><TAB><regenerate command>}, exported as {@code QITS_CI_STALE_OUTPUTS} so the
+   * report hook's {@code qits ci report submit} can submit them as a {@code stale-outputs} report.
+   * A step without checks never exports it, and an older CLI ignores it.
+   */
+  static final String STALE_OUTPUTS_FILE = "/tmp/qits-stale-outputs.tsv";
 
   /**
    * One kind's generator: its automation kind file's {@code script:} and whether that file declares
@@ -1067,6 +1078,8 @@ public final class CiReleaseComposer {
     out.append("# --- platform output check: the generators run, then git status on their paths ---\n");
     out.append("qits_stale=\n");
     out.append("qits_regenerate=\n");
+    out.append("export QITS_CI_STALE_OUTPUTS=").append(STALE_OUTPUTS_FILE).append('\n');
+    out.append(": > \"$QITS_CI_STALE_OUTPUTS\"\n");
     for (OutputCheck check : checks) {
       for (String line : check.script().split("\n", -1)) {
         if (line.strip().equals(OUTPUT_CHECK_DELIMITER)) {
@@ -1110,11 +1123,19 @@ public final class CiReleaseComposer {
       out.append("  elif [ -n \"$qits_changed\" ]; then\n");
       out.append("    printf '%s\\n' \"$qits_changed\" >&2\n");
       out.append("    qits_stale=\"${qits_stale:+$qits_stale, }").append(check.kind()).append("\"\n");
-      out.append("    qits_regenerate=\"${qits_regenerate:+$qits_regenerate; }qits release-request"
-          + " regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository"
-          + " ${QITS_CI_REPO_NAME:-<repository>} --kind ")
-          .append(check.kind())
+      String regenerate =
+          "qits release-request regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository"
+              + " ${QITS_CI_REPO_NAME:-<repository>} --kind "
+              + check.kind();
+      out.append("    qits_regenerate=\"${qits_regenerate:+$qits_regenerate; }")
+          .append(regenerate)
           .append("\"\n");
+      // The same command, as a line the report hook's CLI reads back (qits-1920).
+      out.append("    printf '%s\\t%s\\n' ")
+          .append(check.kind())
+          .append(" \"")
+          .append(regenerate)
+          .append("\" >> \"$QITS_CI_STALE_OUTPUTS\"\n");
       out.append("  fi\n");
       out.append("fi\n");
     }

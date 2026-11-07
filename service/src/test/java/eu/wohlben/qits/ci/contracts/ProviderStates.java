@@ -146,6 +146,9 @@ public class ProviderStates {
   public static final String A_REPOSITORY_WITH_ITS_30_MOST_RECENT_RUNS =
       "a repository with its 30 most recent runs";
 
+  public static final String A_FAILED_QA_RUN_WITH_STALE_OUTPUTS =
+      "a failed qa run with stale outputs";
+
   /** The automation kind the ReleaseRequestAutomation state names: a packaged kind file. */
   static final String AUTOMATION_KIND = "entity-diagram";
 
@@ -249,6 +252,7 @@ public class ProviderStates {
     states.put(
         A_REPOSITORY_WITH_RUNS_TO_FIND_BY_THE_START_OF_AN_ID, this::aRepositoryWithFinishedQaRuns);
     states.put(A_REPOSITORY_WITH_ITS_30_MOST_RECENT_RUNS, this::aRepositoryWithFinishedQaRuns);
+    states.put(A_FAILED_QA_RUN_WITH_STALE_OUTPUTS, this::aFailedQaRunWithStaleOutputs);
   }
 
   /** Every state name this provider answers for. */
@@ -783,6 +787,42 @@ public class ProviderStates {
             report(params.get("coverageReportId"), gate.id, "coverage", coverage(VERSION), null,
                 null,
                 List.of(highlight("info", "coverage 81.3%", "coverage.total", 81.3, null))));
+    QuarkusTransaction.requiringNew().run(() -> seeded.forEach(reports::persist));
+    return setup(params);
+  }
+
+  /**
+   * A release request's failed QA run ({@code runId}) whose output check found the committed
+   * {@code cli-tapes} stale (qits-1920), with two reports from its step 1: {@code test-results}
+   * ({@code reportId}) and {@code stale-outputs} ({@code staleOutputsReportId}, kind version 1). The
+   * latter's one {@code bad} highlight reads {@code stale outputs: cli-tapes} (a highlight holds at
+   * most 80 characters), and its payload lists the kind with its regenerate command, which
+   * qits-projects-service reads back from {@code listRunReports}.
+   */
+  private Setup aFailedQaRunWithStaleOutputs() {
+    Map<String, String> params =
+        ids(
+            Map.of(),
+            "releaseRequestId",
+            "reportId",
+            "repositoryId",
+            "runId",
+            "staleOutputsReportId");
+    String request = params.get("releaseRequestId");
+    CiRun failed = run(
+        params.get("runId"), params.get("repositoryId"), "release/" + request, 1, CiRunStatus.FAILED);
+    qa(failed, request);
+    persist(List.of(failed), List.of());
+    String regenerate =
+        "qits release-request regenerate --project " + failed.projectId + " --repository "
+            + failed.repoName + " --kind cli-tapes";
+    List<CiReport> seeded =
+        List.of(
+            report(params.get("reportId"), failed.id, "test-results", testResults(failed), null,
+                null, List.of(highlight("info", "128 tests", "tests.total", 128.0, null))),
+            report(params.get("staleOutputsReportId"), failed.id, "stale-outputs",
+                ordered("kinds", List.of(ordered("kind", "cli-tapes", "regenerate", regenerate))),
+                null, null, List.of(highlight("bad", "stale outputs: cli-tapes", null, null, null))));
     QuarkusTransaction.requiringNew().run(() -> seeded.forEach(reports::persist));
     return setup(params);
   }

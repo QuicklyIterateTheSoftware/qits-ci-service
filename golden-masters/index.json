@@ -34,6 +34,56 @@
       ]
     },
     {
+      "name": "a failed qa run with stale outputs",
+      "slug": "a-failed-qa-run-with-stale-outputs",
+      "params": {
+        "releaseRequestId": "00000000-0000-4000-8000-000000000001",
+        "reportId": "00000000-0000-4000-8000-000000000002",
+        "repositoryId": "00000000-0000-4000-8000-000000000003",
+        "runId": "00000000-0000-4000-8000-000000000004",
+        "staleOutputsReportId": "00000000-0000-4000-8000-000000000005"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getRunReport",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}/reports/{staleOutputsReportId}",
+          "status": 200,
+          "file": "a-failed-qa-run-with-stale-outputs/getRunReport.json",
+          "frozen": {
+            "ids": [
+              "$.id"
+            ],
+            "instants": [
+              "$.submittedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "listRunReports",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}/reports",
+          "status": 200,
+          "file": "a-failed-qa-run-with-stale-outputs/listRunReports.json",
+          "frozen": {
+            "ids": [
+              "$.runId",
+              "$.releaseRequestId",
+              "$.reports[*].id"
+            ],
+            "instants": [
+              "$.reports[*].submittedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a failed run retried automatically",
       "slug": "a-failed-run-retried-automatically",
       "params": {
