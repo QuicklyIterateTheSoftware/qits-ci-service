@@ -176,9 +176,9 @@
         <qits.maintenance-frontend-pacts-qits-ci-service.version>2026.1107.80100</qits.maintenance-frontend-pacts-qits-ci-service.version>
         <qits.artifacts-frontend-pacts-qits-ci-service.version>2026.1106.181037</qits.artifacts-frontend-pacts-qits-ci-service.version>
         <qits.deployments-frontend-pacts-qits-ci-service.version>2026.1107.75922</qits.deployments-frontend-pacts-qits-ci-service.version>
-        <qits.mirror-frontend-pacts-qits-ci-service.version>2026.1106.203226</qits.mirror-frontend-pacts-qits-ci-service.version>
+        <qits.mirror-frontend-pacts-qits-ci-service.version>2026.1107.80221</qits.mirror-frontend-pacts-qits-ci-service.version>
         <qits.observability-frontend-pacts-qits-ci-service.version>2026.1106.181306</qits.observability-frontend-pacts-qits-ci-service.version>
-        <qits.orchestrator-frontend-pacts-qits-ci-service.version>2026.1106.203358</qits.orchestrator-frontend-pacts-qits-ci-service.version>
+        <qits.orchestrator-frontend-pacts-qits-ci-service.version>2026.1107.80224</qits.orchestrator-frontend-pacts-qits-ci-service.version>
         <qits.system-frontend-pacts-qits-ci-service.version>2026.1106.181314</qits.system-frontend-pacts-qits-ci-service.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
