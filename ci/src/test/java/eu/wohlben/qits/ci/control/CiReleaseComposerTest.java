@@ -2478,7 +2478,8 @@ public class CiReleaseComposerTest {
     assertTrue(
         qa.contains(
             "git status --porcelain --untracked-files=all -- ':(glob)**/__screenshots__/**'"
-                + " ':(glob)**/testing/browser/renderer.txt'"),
+                + " ':(glob)**/testing/browser/renderer.txt'"
+                + " ':(glob)**/testing/browser/routes.json'"),
         qa);
   }
 
