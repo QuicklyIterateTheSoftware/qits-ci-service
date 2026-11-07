@@ -256,4 +256,67 @@ public class CiContractsTest {
             .getMessage()
             .contains("contracts.golden-masters.from is missing"));
   }
+
+  // --- entities (qits-1945) ------------------------------------------------------------------------
+
+  @Test
+  public void entitiesIsAcceptedBesideGoldenMastersAndExposedOnTheRecord() {
+    CiContracts accepted =
+        contracts(
+            """
+            contracts:
+              application: qits-x
+              golden-masters: { from: golden-masters/, packages: [maven] }
+              entities: docs/entities.json
+            """);
+    assertEquals("docs/entities.json", accepted.entities());
+
+    CiContracts absent =
+        contracts(
+            """
+            contracts:
+              application: qits-x
+              golden-masters: { from: golden-masters/, packages: [maven] }
+            """);
+    assertEquals(null, absent.entities());
+  }
+
+  @Test
+  public void entitiesRequiresGoldenMasters() {
+    String message =
+        refused(
+                "contracts:\n  application: qits-x\n  pacts:\n    qits-p-service: { packages:"
+                    + " [maven] }\n  entities: docs/entities.json\n")
+            .getMessage();
+    assertTrue(message.contains("contracts.entities"), message);
+    assertTrue(message.contains("declared without 'golden-masters'"), message);
+  }
+
+  @Test
+  public void entitiesIsARelativeDownwardJsonPath() {
+    assertTrue(
+        refused(
+                "contracts:\n  application: qits-x\n  golden-masters: { from: gm/, packages:"
+                    + " [maven] }\n  entities: ../docs/entities.json\n")
+            .getMessage()
+            .contains("downwards"));
+    assertTrue(
+        refused(
+                "contracts:\n  application: qits-x\n  golden-masters: { from: gm/, packages:"
+                    + " [maven] }\n  entities: /docs/entities.json\n")
+            .getMessage()
+            .contains("downwards"));
+    assertTrue(
+        refused(
+                "contracts:\n  application: qits-x\n  golden-masters: { from: gm/, packages:"
+                    + " [maven] }\n  entities: ''\n")
+            .getMessage()
+            .contains("missing"));
+    String notJson =
+        refused(
+                "contracts:\n  application: qits-x\n  golden-masters: { from: gm/, packages:"
+                    + " [maven] }\n  entities: docs/entities.yaml\n")
+            .getMessage();
+    assertTrue(notJson.contains("must end in .json"), notJson);
+  }
 }

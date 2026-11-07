@@ -102,12 +102,19 @@
 #     contracts:
 #       application: qits-projects
 #       golden-masters: { from: golden-masters/, packages: [maven, npm] }
+#       entities: docs/entities.json
 #       pacts:
 #         qits-githost-service: { packages: [maven] }
 #
 # A pact is keyed by the provider's REPOSITORY name and is the file
 # `pacts/<this repository>_<provider repository>.json`; every pact sits flat in `pacts/`, and each
 # provider's package holds only its own file.
+#
+# `entities:` (qits-1945) is the optional repository-relative path to the entity exposure map
+# EntityExposureTest (qits-arch-rules) writes, by convention `docs/entities.json`. It rides the
+# `contract-docs` call `golden-masters:` already composes (`--entities <path>` beside `--from`), so
+# it needs `golden-masters:` declared too, and it needs a qits CLI that knows `contract-docs
+# --entities` — a repository must not declare the key before this qits-ci's pinned CLI carries it.
 #
 # ---------------------------------------------------------------------------------------------
 # WHAT THIS RECIPE READS OUT OF A REPOSITORY, AND WHY IT IS THE DECLARATION

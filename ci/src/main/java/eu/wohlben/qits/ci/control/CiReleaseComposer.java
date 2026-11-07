@@ -146,8 +146,8 @@ import java.util.Set;
  * $QITS_ARTIFACTS_CLI_PACKAGE} and the run's credential files. The exceptions
  * are what {@code release.yml} declares about its artifacts and contracts — an artifact's {@code
  * type}/{@code name}, its {@code sbom:}, {@code path:}, {@code link:} and {@code include:}, and a
- * contract tree's application, provider and {@code from:} — which are interpolated into the
- * postlude: held to {@link CiReleaseSlotParser#SCRIPT_SAFE} (or {@link
+ * contract tree's application, provider, {@code from:} and {@code entities:} — which are
+ * interpolated into the postlude: held to {@link CiReleaseSlotParser#SCRIPT_SAFE} (or {@link
  * CiReleaseSlotParser#INCLUDE_SAFE} for a glob) at parse time and single-quoted here, so the value
  * cannot be anything but a word.
  *
@@ -1919,6 +1919,9 @@ public final class CiReleaseComposer {
         for (CiContracts.Package contract : contracts.goldenMasterPackages()) {
           out.append(" --package ")
               .append(quote(contract.ecosystem().declared() + "=" + contract.name()));
+        }
+        if (contracts.entities() != null) {
+          out.append(" --entities ").append(quote(contracts.entities()));
         }
         out.append(" --version \"$QITS_VERSION\"").append(META).append('\n');
       }

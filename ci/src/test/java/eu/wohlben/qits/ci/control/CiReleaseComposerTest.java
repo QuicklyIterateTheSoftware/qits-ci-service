@@ -1658,6 +1658,41 @@ public class CiReleaseComposerTest {
   }
 
   /**
+   * qits-1945: {@code entities:} rides the {@code contract-docs} call {@code golden-masters:}
+   * already composes — {@code --entities <path>} appended after the {@code --package} entries and
+   * before {@code --version}. Absent (the test above) leaves the call byte-identical to before this
+   * key existed.
+   */
+  @Test
+  public void aJavaServiceWithContractsEntitiesAppendsEntitiesToContractDocs() {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            CiRepoRef.of("55555555-6666-7777-8888-999999999999", "qits", "qits-projects-service"),
+            slots(
+                """
+                archetype: java-service
+                artifacts:
+                  - { type: docker, name: qits/qits-projects, sbom: .sbom/sbom.json }
+                contracts:
+                  application: qits-projects
+                  golden-masters: { from: golden-masters/, packages: [maven, npm] }
+                  entities: docs/entities.json
+                """),
+            archetype("java-service", JAVA_SERVICE));
+
+    golden("java-service-contracts-entities-release.yml", composed.releaseDocument());
+
+    String document = composed.releaseDocument();
+    assertTrue(
+        document.contains(
+            "qits artifacts publish contract-docs --application 'qits-projects' --from"
+                + " 'golden-masters/' --package 'maven=eu.wohlben.qits:qits-projects-golden-masters'"
+                + " --package 'npm=@qits/projects-golden-masters' --entities 'docs/entities.json'"
+                + " --version \"$QITS_VERSION\""),
+        document);
+  }
+
+  /**
    * qits-653: the packaged {@code app} recipe, exactly as it ships, with the declaration its header
    * now names. Its one release step generates {@code .sbom/sbom.json} after the image push, and that
    * same step — the only one, so also the last — submits it and checks it arrived.

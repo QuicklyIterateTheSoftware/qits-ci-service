@@ -17,9 +17,20 @@ import java.util.Set;
  * contracts:
  *   application: qits-landing
  *   golden-masters: { from: golden-masters/, packages: [maven, npm] }
+ *   entities: docs/entities.json
  *   pacts:
  *     qits-projects-service: { packages: [maven] }
  * }</pre>
+ *
+ * <h2>{@code entities:} rides the golden-masters bundle</h2>
+ *
+ * <p>{@code entities:} (qits-1945) is the optional repository-relative path to the entity exposure
+ * map a service's {@code EntityExposureTest} writes (qits-arch-rules), by convention {@code
+ * docs/entities.json}. It is handed to {@code contract-docs} as {@code --entities <path>} alongside
+ * {@code --from}, because the map rides the {@code @contracts} bundle that command builds — which
+ * exists only when {@code golden-masters:} is declared — so the key is refused without one. It names
+ * no package of its own: there is no {@code entities} ecosystem and no coordinate, only a file
+ * folded into the bundle {@code golden-masters:} already produces.
  *
  * <h2>Pacts are keyed by the provider's repository name, and picked by file name</h2>
  *
@@ -56,8 +67,11 @@ import java.util.Set;
  *     provider for golden masters
  * @param goldenMasters the golden-masters tree, or null when none is declared
  * @param pacts the pact packages by provider repository, in declared order, empty when none
+ * @param entities the repository-relative path to the entity exposure map, or null when none is
+ *     declared; never present without {@code goldenMasters}
  */
-public record CiContracts(String application, Source goldenMasters, Map<String, Source> pacts) {
+public record CiContracts(
+    String application, Source goldenMasters, Map<String, Source> pacts, String entities) {
 
   /** The group every contract package's maven coordinate is in. */
   static final String GROUP = "eu.wohlben.qits";
@@ -70,6 +84,7 @@ public record CiContracts(String application, Source goldenMasters, Map<String, 
   private static final String APPLICATION_KEY = "application";
   private static final String GOLDEN_MASTERS_KEY = "golden-masters";
   private static final String PACTS_KEY = "pacts";
+  private static final String ENTITIES_KEY = "entities";
   private static final String FROM_KEY = "from";
   private static final String PACKAGES_KEY = "packages";
 
@@ -236,20 +251,22 @@ public record CiContracts(String application, Source goldenMasters, Map<String, 
   /**
    * Parses the section, strictly: an unknown key at any level, a missing or malformed {@code
    * application}, a section with neither tree, an empty or duplicate or unknown {@code packages}
-   * entry, and {@code publish:} anywhere inside are all {@link CiConfigException}s naming the file.
+   * entry, an {@code entities:} that is not a relative, downward {@code .json} path or that is
+   * declared without {@code golden-masters:}, and {@code publish:} anywhere inside are all {@link
+   * CiConfigException}s naming the file.
    */
   static CiContracts parse(Object raw, String configPath) {
     String where = configPath + ": '" + KEY + "'";
     if (!(raw instanceof Map<?, ?> map)) {
       throw new CiConfigException(
           where
-              + " must be a mapping of { application, golden-masters, pacts }, got: "
+              + " must be a mapping of { application, golden-masters, entities, pacts }, got: "
               + CiConfigSchema.typeOf(raw));
     }
     refusePublish(map, configPath, KEY);
     requireKeys(
-        map, Set.of(APPLICATION_KEY, GOLDEN_MASTERS_KEY, PACTS_KEY), configPath, KEY,
-        "'application', 'golden-masters' and 'pacts'");
+        map, Set.of(APPLICATION_KEY, GOLDEN_MASTERS_KEY, ENTITIES_KEY, PACTS_KEY), configPath, KEY,
+        "'application', 'golden-masters', 'entities' and 'pacts'");
     Object app = map.get(APPLICATION_KEY);
     if (!(app instanceof String application) || !application.matches(APPLICATION)) {
       throw new CiConfigException(
@@ -276,6 +293,8 @@ public record CiContracts(String application, Source goldenMasters, Map<String, 
         map.containsKey(GOLDEN_MASTERS_KEY)
             ? source(map.get(GOLDEN_MASTERS_KEY), configPath, KEY + "." + GOLDEN_MASTERS_KEY)
             : null;
+    String entities =
+        map.containsKey(ENTITIES_KEY) ? entities(map, goldenMasters, configPath) : null;
     Map<String, Source> pacts = new LinkedHashMap<>();
     if (map.containsKey(PACTS_KEY)) {
       Object rawPacts = map.get(PACTS_KEY);
@@ -306,7 +325,40 @@ public record CiContracts(String application, Source goldenMasters, Map<String, 
         pacts.put(provider, pactSource(pact.getValue(), configPath, pactsWhere + "." + provider));
       }
     }
-    return new CiContracts(application, goldenMasters, pacts);
+    return new CiContracts(application, goldenMasters, pacts, entities);
+  }
+
+  /**
+   * The {@code entities:} path: a non-blank, relative, downward {@code .json} path, and refused
+   * without {@code golden-masters:} — the entity exposure map rides the {@code @contracts} bundle
+   * {@code contract-docs} builds from {@code golden-masters.from}, so there is nothing to ride
+   * without one.
+   */
+  private static String entities(Map<?, ?> map, Source goldenMasters, String configPath) {
+    String what = KEY + "." + ENTITIES_KEY;
+    if (goldenMasters == null) {
+      throw new CiConfigException(
+          configPath
+              + ": "
+              + what
+              + " is declared without '"
+              + GOLDEN_MASTERS_KEY
+              + "' — the entity exposure map is packed into the golden-masters docs bundle, so it"
+              + " needs that tree declared too");
+    }
+    String path =
+        CiReleaseSlotParser.requireDownward(map.get(ENTITIES_KEY), configPath, "'" + what + "'");
+    if (!path.endsWith(".json")) {
+      throw new CiConfigException(
+          configPath
+              + ": "
+              + what
+              + " is '"
+              + path
+              + "' — it is the path to the entity exposure map EntityExposureTest writes, and must"
+              + " end in .json");
+    }
+    return path;
   }
 
   /**
