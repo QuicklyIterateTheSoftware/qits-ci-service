@@ -166,7 +166,10 @@ public class ProviderStates {
   /**
    * What a state hands back.
    *
-   * @param params the state's parameters, keys sorted — what a pact {@code @State} method returns
+   * @param params the state's parameters, keys sorted — what a pact {@code @State} method returns.
+   *     A UUID's frozen number in a param — the whole value or embedded in it — is sticky to the
+   *     committed {@code golden-masters/index.json} ({@link Freezer#seed(Map, Map)}): adding or
+   *     removing a param never renumbers the others
    * @param uniqueTokens strings the answer holds that differ per build — frozen to {@code frozen-token-N} (the
    *     daemon pin's version, which every dependency bump moves)
    */
