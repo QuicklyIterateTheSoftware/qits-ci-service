@@ -182,6 +182,13 @@
 # it, per declared artifact carrying `sbom:`, and checked for on the last. So none of that appears below — a copy here would be a second
 # implementation of a platform guarantee.
 #
+# THE GOLDEN-MASTER COVERAGE CHECK IS THE PLATFORM'S TOO (qits-1940), and it is this archetype's
+# rule: every operation in docs/openapi.yml has a golden master in golden-masters/index.json. The
+# composer adds it to the LAST QA step — `build and test` below, and the last step of a repository's
+# own `release-request:` slot too, because the verify is always last — after that step's script and
+# its entity-diagram check, before the report hook. No release.yml key turns it on or off; whether
+# it gates or only reports is qits-ci's `qits.ci.golden-master-coverage.gate`. See that step.
+#
 # WHAT THE SCRIPTS THEREFORE STILL DO: they GENERATE the SBOM at the declared path. Generating is
 # the build's business; submitting is the platform's.
 #
@@ -380,6 +387,19 @@ release-request:
   # entities, or no classes, is never stale. qits-maintenance reads this key to know that QA checks
   # the diagram, and then does not regenerate it before QA: removing the key here puts its pre-run
   # back.
+  #
+  # THE GOLDEN-MASTER COVERAGE CHECK, COMPOSED (qits-1940). After the script below exits 0 and after
+  # the entity-diagram check, qits-ci runs `qits contracts coverage --out
+  # /tmp/qits-uncovered-operations.tsv` over the docs/openapi.yml this script's suite just rewrote:
+  # an operation no golden master in golden-masters/index.json covers is printed as one `uncovered:`
+  # line, and the file is exported as QITS_CI_UNCOVERED_OPERATIONS so the report hook submits it as
+  # a `golden-master-coverage` report. `--no-golden-masters` is added when release.yml's
+  # `contracts:` declares none, `--index <from>index.json` when its `from:` is not golden-masters/.
+  # Nothing here declares it: the composer adds it to this archetype's last QA step, so a repository
+  # replacing this slot keeps it, and there is no key to drop it with. The CLI comes with the check.
+  # REPORT-ONLY until the platform says otherwise: with `qits.ci.golden-master-coverage.gate=false`
+  # (qits-ci's default) no outcome of the check, a CLI too old to know the verb included, changes
+  # this step's verdict; with `true`, uncovered operations or a missing input fail it.
   #
   # `user: build`, and NOT a switch inside the script: a story IT hands the launched artifact an
   # embedded postgres, initdb refuses to run as root and calls getpwuid, so the step needs a

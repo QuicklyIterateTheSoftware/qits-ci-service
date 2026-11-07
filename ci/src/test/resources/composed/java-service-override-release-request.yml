@@ -298,6 +298,32 @@ steps:
       echo "qits-ci: migration versions checked ($lineages lineages)" >&2
       QITS_MIGRATION_EOF
       sh /tmp/qits-migration-versions.sh
+      # --- the qits CLI, pinned, on PATH: this step's coverage check needs it ---
+      if [ -z "${QITS_ARTIFACTS_CLI_PACKAGE:-}" ]; then
+        echo "qits-ci: the qits CLI could not be fetched: no qits CLI package is configured for this deployment" >&2
+        exit 1
+      fi
+      if [ -z "${QITS_ARTIFACTS_CLI_VERSION:-}" ]; then
+        echo "qits-ci: the qits CLI could not be fetched: the qits CLI package is configured but no version was injected; the qits-ci that launched this step predates the CLI pin" >&2
+        exit 1
+      fi
+      mkdir -p /tmp/qits-bin || { echo "qits-ci: the qits CLI could not be fetched: could not create /tmp/qits-bin" >&2; exit 1; }
+      qits_cli_bearer=
+      if [ -n "${QITS_TOKEN:-}" ]; then
+        qits_cli_bearer="Authorization: Bearer $QITS_TOKEN"
+      fi
+      if command -v curl > /dev/null 2>&1; then
+        curl -fsSL --retry 2 --retry-delay 2 ${qits_cli_bearer:+--header} ${qits_cli_bearer:+"$qits_cli_bearer"} -o /tmp/qits-bin/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION" || { echo "qits-ci: the qits CLI could not be fetched: the download of $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION failed" >&2; exit 1; }
+      elif command -v wget > /dev/null 2>&1; then
+        wget -q ${qits_cli_bearer:+--header} ${qits_cli_bearer:+"$qits_cli_bearer"} -O /tmp/qits-bin/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION" || { echo "qits-ci: the qits CLI could not be fetched: the download of $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION failed" >&2; exit 1; }
+      else
+        echo 'qits-ci: the qits CLI could not be fetched: the image for this step (qits/build-images/ci-slot) has neither curl nor wget — add one to the image' >&2
+        exit 1
+      fi
+      chmod +x /tmp/qits-bin/qits || { echo "qits-ci: the qits CLI could not be fetched: could not make /tmp/qits-bin/qits executable" >&2; exit 1; }
+      echo "qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+      PATH="/tmp/qits-bin:$PATH"
+      export PATH
       # --- the declared step, run as data -------------------------------------------
       cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
       ./mvnw -q verify -Dit.test=BuildTriggerIT
@@ -310,6 +336,18 @@ steps:
       fi
       qits_step_exit=$?
       set -e
+      qits_script_exit=$qits_step_exit
+      # --- platform golden-master coverage check, report-only: never changes the verdict ---
+      export QITS_CI_UNCOVERED_OPERATIONS=/tmp/qits-uncovered-operations.tsv
+      rm -f "$QITS_CI_UNCOVERED_OPERATIONS"
+      if [ "$qits_script_exit" -eq 0 ]; then
+        echo "qits-ci: checking golden-master coverage" >&2
+        qits_coverage_exit=0
+        qits contracts coverage --out "$QITS_CI_UNCOVERED_OPERATIONS" --no-golden-masters || qits_coverage_exit=$?
+        if [ "$qits_coverage_exit" -ne 0 ]; then
+          echo "qits-ci: golden-master coverage is report-only (exit $qits_coverage_exit); the step's verdict is unchanged" >&2
+        fi
+      fi
       # --- platform report hook: always runs, never changes the step's verdict ---
       cat > /tmp/qits-report-hook.sh <<'QITS_REPORT_HOOK'
       # qits-ci report hook (qits-754). $1 is the declared script's exit code.

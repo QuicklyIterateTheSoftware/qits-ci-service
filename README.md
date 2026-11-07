@@ -1361,6 +1361,17 @@ its steps run as written, so nothing would act on them.
   the key from the recipe a repository's QA is composed from, so a repository's own `release-request:`
   slot or recipe copy without it also keeps the pre-run.
 
+**A `java-service` QA half checks golden-master coverage** (qits-1940). Composed, never declared:
+on the QA slot's last step — the recipe's `build and test`, or the last step of a repository's own
+`release-request:` — after the script exits 0 and after any output check, before the report hook,
+`qits contracts coverage --out /tmp/qits-uncovered-operations.tsv` (plus `--no-golden-masters`
+when `contracts:` declares none, `--index <from>index.json` for a `from:` other than
+`golden-masters/`), exported as `QITS_CI_UNCOVERED_OPERATIONS` for the hook's
+`golden-master-coverage` report. No release.yml key turns it off; the step gets the CLI with it.
+`qits.ci.golden-master-coverage.gate` (default `false`) is the mode: `false` reports and never
+changes the verdict, `true` fails the step on uncovered operations, a missing or malformed input,
+or a pinned CLI without the verb.
+
 **Every release publishes a changelog** (qits-893). The last release step's publish block always
 ends with `qits artifacts publish changelog --version "$QITS_VERSION"` and the provenance `--meta`
 the docs bundle carries, and it is required: a red publish is a red release run and a failed PUBLISH

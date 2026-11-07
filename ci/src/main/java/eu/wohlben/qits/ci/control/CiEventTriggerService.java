@@ -286,6 +286,15 @@ public class CiEventTriggerService {
 
   @Inject CiPlatformPipelines platformPipelines;
 
+  /**
+   * Whether the golden-master coverage check a java-service QA half carries gates or only reports
+   * (qits-1940). Read here because this is where a release pair is composed, and handed to {@link
+   * CiReleaseComposer} as an argument, so the composer stays a pure function and the mode is
+   * written into the run's composed text. See the composer's class javadoc.
+   */
+  @ConfigProperty(name = CiReleaseComposer.COVERAGE_GATE_PROPERTY, defaultValue = "false")
+  boolean goldenMasterCoverageGate;
+
   /** The config's value, and whatever a test armed after that. */
   private boolean platformPipelinesEnabled;
 
@@ -309,6 +318,14 @@ public class CiEventTriggerService {
    */
   void platformPipelines(boolean enabled) {
     platformPipelinesEnabled = enabled;
+  }
+
+  /**
+   * Sets the golden-master coverage check's mode for one test (qits-1940). A method for the reason
+   * {@link #platformPipelines} is one: a field write would land on the client proxy.
+   */
+  void goldenMasterCoverageGate(boolean gate) {
+    goldenMasterCoverageGate = gate;
   }
 
   /**
@@ -1689,7 +1706,8 @@ public class CiEventTriggerService {
     try {
       return new ComposeAttempt(
           ComposeOutcome.COMPOSED,
-          CiReleaseComposer.compose(repo, slots, archetypeSlots, qaRefusal),
+          CiReleaseComposer.compose(
+              repo, slots, archetypeSlots, qaRefusal, goldenMasterCoverageGate),
           null,
           used);
     } catch (CiConfigException e) {

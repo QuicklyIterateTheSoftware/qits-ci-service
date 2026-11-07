@@ -315,6 +315,35 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
             + fakeConfig.fileReads());
   }
 
+  /**
+   * qits-1940: the coverage check's mode is qits-ci's property, read here and composed into the
+   * run's text — report by default, gate when the platform says so — for a java-service QA half.
+   */
+  @Test
+  public void theCoverageGatePropertyReachesTheComposedJavaServiceQaRun() throws Exception {
+    seedSlots("archetype: java-service\n");
+    deliver(releaseRequest());
+    List<CiRun> reported = runService.runsFor(repoId);
+    assertEquals(1, reported.size(), "the packaged java-service recipe composes");
+    String text = reported.get(0).triggerConfig;
+    assertTrue(text.contains("qits contracts coverage --out"), text);
+    assertTrue(text.contains("golden-master coverage is report-only"), "the default reports: " + text);
+    assertFalse(text.contains("golden-master coverage failed"), text);
+
+    engine.goldenMasterCoverageGate(true);
+    try {
+      deliver(releaseRequest(null, "d4e5f6"));
+    } finally {
+      engine.goldenMasterCoverageGate(false);
+    }
+    List<CiRun> both = runService.runsFor(repoId);
+    assertEquals(2, both.size(), "a second request's fold records its own run");
+    assertTrue(
+        both.stream()
+            .anyMatch(run -> run.triggerConfig.contains("golden-master coverage failed")),
+        "gate mode composes the failing arm");
+  }
+
   @Test
   public void aComposedQaRunWaitsForThePreRun() throws Exception {
     // qits-1133: the hold sits before trigger matching, so a composed archetype obeys it exactly

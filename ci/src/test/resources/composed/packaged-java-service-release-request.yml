@@ -722,6 +722,7 @@ steps:
       fi
       qits_step_exit=$?
       set -e
+      qits_script_exit=$qits_step_exit
       # --- platform output check: the generators run, then git status on their paths ---
       qits_stale=
       qits_regenerate=
@@ -797,6 +798,17 @@ steps:
       if [ -n "$qits_stale" ]; then
         echo "qits-ci: stale outputs: $qits_stale — regenerate with: $qits_regenerate" >&2
         qits_step_exit=1
+      fi
+      # --- platform golden-master coverage check, report-only: never changes the verdict ---
+      export QITS_CI_UNCOVERED_OPERATIONS=/tmp/qits-uncovered-operations.tsv
+      rm -f "$QITS_CI_UNCOVERED_OPERATIONS"
+      if [ "$qits_script_exit" -eq 0 ]; then
+        echo "qits-ci: checking golden-master coverage" >&2
+        qits_coverage_exit=0
+        qits contracts coverage --out "$QITS_CI_UNCOVERED_OPERATIONS" --no-golden-masters || qits_coverage_exit=$?
+        if [ "$qits_coverage_exit" -ne 0 ]; then
+          echo "qits-ci: golden-master coverage is report-only (exit $qits_coverage_exit); the step's verdict is unchanged" >&2
+        fi
       fi
       # --- platform report hook: always runs, never changes the step's verdict ---
       cat > /tmp/qits-report-hook.sh <<'QITS_REPORT_HOOK'

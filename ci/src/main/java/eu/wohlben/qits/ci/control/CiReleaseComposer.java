@@ -241,6 +241,45 @@ import java.util.Set;
  * {@code QITS_CI_STALE_OUTPUTS}, which the hook's CLI submits as a {@code stale-outputs} report
  * (qits-1920).
  *
+ * <h2>The golden-master coverage check (qits-1940)</h2>
+ *
+ * <p><b>Every HTTP operation a {@code java-service} provider serves has at least one golden
+ * master.</b> The operations are the ones in {@code docs/openapi.yml}, which the service's own suite
+ * rewrites during the QA step's verify; the golden masters are the ones {@code
+ * golden-masters/index.json} lists. So the rule can only be checked AFTER the suite, on the step
+ * that ran it, and it is composed there: on the QA slot's last step, after the declared script and
+ * after the output check, before the report hook, {@code qits contracts coverage --out} {@link
+ * #UNCOVERED_OPERATIONS_FILE} — plus {@code --no-golden-masters} when {@code contracts:} declares no
+ * golden masters, and {@code --index <from>index.json} when they are declared {@code from:}
+ * anywhere but {@code golden-masters/}. It runs only when the declared script exited 0 (a red suite
+ * exported no document worth reading), whatever the output check made of the step. The file is
+ * exported as {@code QITS_CI_UNCOVERED_OPERATIONS}, removed first, and the hook's CLI submits it
+ * as a {@code golden-master-coverage} report: absent is not reported, empty is a clean pass.
+ *
+ * <p><b>Per archetype, not per repository.</b> It is composed for a repository whose {@code
+ * release.yml} names {@value #COVERAGE_ARCHETYPE} and for no other, and there is no key to turn it
+ * off. A repository that replaces the QA slot keeps it: the check goes on the slot's LAST step
+ * whichever document the slot came from, because the verify is last in every one of them (a failing
+ * step skips everything after it), and it implies the CLI on that step the way a kind file's {@code
+ * qits-cli: true} does, so a slot that never declared the key still has {@code qits} on {@code
+ * PATH}.
+ *
+ * <p><b>The mode is the platform's: {@value #COVERAGE_GATE_PROPERTY}</b>, default {@code false},
+ * handed in by the caller like the consistency refusal below so this class reads no config. It is
+ * written into the composed text, so the run's stored snapshot says which mode it ran in, and a
+ * retry runs it the same way.
+ *
+ * <ul>
+ *   <li><b>report</b> ({@code false}): the CLI's output is printed, and whatever its exit code —
+ *       {@code 0}, {@code 3} (uncovered), {@code 1} (input missing or malformed), {@code 2} (a CLI
+ *       too old to know the verb) or even {@code command not found} — the step's result is
+ *       unchanged; a non-zero code adds one line saying the check is report-only.
+ *   <li><b>gate</b> ({@code true}): {@code 3}, {@code 1}, {@code 2} (named as the pinned CLI
+ *       lacking {@code qits contracts coverage}) and any other non-zero code print one line naming
+ *       the outcome and make the step exit 1 — through {@code qits_step_exit}, as the output check
+ *       does, so the report hook still runs and reports it. A step already red keeps its own code.
+ * </ul>
+ *
  * <h2>The QA consistency refusal (qits-1400)</h2>
  *
  * <p><b>A fold {@link CiReleaseConsistency} refuses composes a QA half that fails first.</b> The
@@ -434,6 +473,31 @@ public final class CiReleaseComposer {
   static final String STALE_OUTPUTS_FILE = "/tmp/qits-stale-outputs.tsv";
 
   /**
+   * The release archetype whose QA carries the golden-master coverage check (qits-1940): the recipe
+   * a {@code release.yml} names in {@code archetype:}, never the repository's {@code kind} — the
+   * two vocabularies are not mapped onto each other (qits-1834).
+   */
+  static final String COVERAGE_ARCHETYPE = "java-service";
+
+  /**
+   * The qits-ci property the coverage check's mode is read from, by the caller that composes:
+   * {@code false} (the default) reports, {@code true} gates. Owned by the platform, never by a
+   * repository.
+   */
+  public static final String COVERAGE_GATE_PROPERTY = "qits.ci.golden-master-coverage.gate";
+
+  /**
+   * Where the coverage check's CLI writes the operations it found uncovered (qits-1940), one
+   * {@code <name><TAB><METHOD><TAB><path>} line each, exported as {@code
+   * QITS_CI_UNCOVERED_OPERATIONS} so the report hook's {@code qits ci report submit} submits a
+   * {@code golden-master-coverage} report. Absent means not reported; empty means a clean pass.
+   */
+  static final String UNCOVERED_OPERATIONS_FILE = "/tmp/qits-uncovered-operations.tsv";
+
+  /** The golden-master tree {@code qits contracts coverage} reads its index from by default. */
+  static final String DEFAULT_GOLDEN_MASTERS = "golden-masters";
+
+  /**
    * One kind's generator: its automation kind file's {@code script:} and whether that file declares
    * {@code qits-cli: true}.
    */
@@ -525,7 +589,7 @@ public final class CiReleaseComposer {
    *     heredoc delimiter, {@code artifacts:} declared with no release steps to build them
    */
   public static Composed compose(CiRepoRef repo, CiReleaseSlots slots, CiReleaseSlots archetype) {
-    return compose(repo, slots, archetype, packagedOutputChecks(), null);
+    return compose(repo, slots, archetype, packagedOutputChecks(), null, false);
   }
 
   /**
@@ -539,7 +603,25 @@ public final class CiReleaseComposer {
    */
   public static Composed compose(
       CiRepoRef repo, CiReleaseSlots slots, CiReleaseSlots archetype, String qaRefusal) {
-    return compose(repo, slots, archetype, packagedOutputChecks(), qaRefusal);
+    return compose(repo, slots, archetype, packagedOutputChecks(), qaRefusal, false);
+  }
+
+  /**
+   * {@link #compose(CiRepoRef, CiReleaseSlots, CiReleaseSlots, String)} with the golden-master
+   * coverage check's mode (qits-1940): whether an uncovered operation, or a check that cannot run,
+   * fails the QA step or is only reported. The caller reads it from {@value
+   * #COVERAGE_GATE_PROPERTY}; it is an INPUT here, like the refusal, so this class stays a pure
+   * function and the mode is written into the composed text the run stores.
+   *
+   * @param coverageGate true to gate on the coverage check, false to report it only
+   */
+  public static Composed compose(
+      CiRepoRef repo,
+      CiReleaseSlots slots,
+      CiReleaseSlots archetype,
+      String qaRefusal,
+      boolean coverageGate) {
+    return compose(repo, slots, archetype, packagedOutputChecks(), qaRefusal, coverageGate);
   }
 
   /** The seam a test runs a stub generator through, composing no refusal. */
@@ -548,20 +630,21 @@ public final class CiReleaseComposer {
       CiReleaseSlots slots,
       CiReleaseSlots archetype,
       Map<String, OutputCheck> outputChecks) {
-    return compose(repo, slots, archetype, outputChecks, null);
+    return compose(repo, slots, archetype, outputChecks, null, false);
   }
 
   /**
    * {@link #compose(CiRepoRef, CiReleaseSlots, CiReleaseSlots)} with the generators a {@code
    * check-outputs:} step runs given rather than read from the packaged kind files — the seam a test
-   * runs a stub generator through.
+   * runs a stub generator through — and the coverage check's mode.
    */
   static Composed compose(
       CiRepoRef repo,
       CiReleaseSlots slots,
       CiReleaseSlots archetype,
       Map<String, OutputCheck> outputChecks,
-      String qaRefusal) {
+      String qaRefusal,
+      boolean coverageGate) {
     String selector = selector(repo);
     // WHOLE-SLOT OVERRIDE. A repository that declares a slot replaces the archetype's entirely, and
     // the file the steps came from travels with them so an error names the document a person edits.
@@ -589,8 +672,13 @@ public final class CiReleaseComposer {
     // build makes, and the synthesised step builds nothing.
     Slot release = declaredRelease != null ? declaredRelease : changelogOnlySlot(slots);
     Postlude postlude = new Postlude(artifacts, artifactsPath, contracts, selector);
+    // THE GOLDEN-MASTER COVERAGE CHECK (qits-1940): the java-service archetype's rule, so it is
+    // decided by the archetype the repository names and never by a key of its own.
+    Coverage coverage = coverage(slots, contracts, coverageGate);
     return new Composed(
-        qa == null ? null : qaDocument(slots, archetype, selector, qa, outputChecks, qaRefusal),
+        qa == null
+            ? null
+            : qaDocument(slots, archetype, selector, qa, outputChecks, qaRefusal, coverage),
         releaseDocument(slots, archetype, selector, release, postlude));
   }
 
@@ -667,6 +755,47 @@ public final class CiReleaseComposer {
     }
   }
 
+  /**
+   * The golden-master coverage check of one composition (qits-1940): its mode, and the arguments
+   * {@code qits contracts coverage} is called with beyond {@code --out}.
+   *
+   * <p><b>It goes on the QA slot's LAST step</b>, which is the step that runs the suite: the
+   * packaged recipe's {@code build and test} is last because a failing step skips everything after
+   * it, and every repository on the archetype that replaces the slot ends it with its verify for
+   * the same reason. That holds whichever document the slot came from, so overriding the QA slot
+   * is not a way out of the rule — there is no key to opt out with, and an override is not one.
+   */
+  private record Coverage(boolean gate, String arguments) {}
+
+  /**
+   * The coverage check {@code slots} owes, or null when it owes none: only a repository naming the
+   * {@value #COVERAGE_ARCHETYPE} recipe, whether the QA slot is the recipe's or its own.
+   *
+   * <p>{@code --no-golden-masters} when the repository's {@code contracts:} declares no golden
+   * masters (or there is no section at all): every operation is then uncovered, which is the honest
+   * answer, and the CLI does not go looking for an index that nothing declares. {@code --index}
+   * only when the declared {@code from:} is not the CLI's own default, so the common case reads as
+   * the bare command.
+   */
+  private static Coverage coverage(CiReleaseSlots slots, CiContracts contracts, boolean gate) {
+    if (!COVERAGE_ARCHETYPE.equals(slots.archetype())) {
+      return null;
+    }
+    CiContracts.Source goldenMasters = contracts == null ? null : contracts.goldenMasters();
+    if (goldenMasters == null) {
+      return new Coverage(gate, " --no-golden-masters");
+    }
+    String from = goldenMasters.from();
+    while (from.endsWith("/")) {
+      from = from.substring(0, from.length() - 1);
+    }
+    return new Coverage(
+        gate,
+        from.equals(DEFAULT_GOLDEN_MASTERS)
+            ? ""
+            : " --index " + shellQuote(from + "/index.json"));
+  }
+
   /** One chosen slot: the steps, and the document they were declared in. */
   private record Slot(CiPipeline pipeline, String sourcePath) {}
 
@@ -696,7 +825,8 @@ public final class CiReleaseComposer {
       String selector,
       Slot qa,
       Map<String, OutputCheck> outputChecks,
-      String refusal) {
+      String refusal,
+      Coverage coverage) {
     StringBuilder out = new StringBuilder();
     header(out, slots, archetype);
     out.append("event: ").append(RELEASE_REQUEST_EVENT).append('\n');
@@ -713,7 +843,7 @@ public final class CiReleaseComposer {
     out.append("checkout:\n");
     out.append("  branch: ").append(RELEASE_REQUEST_BRANCH_PATH).append('\n');
     out.append("  sha: ").append(RELEASE_REQUEST_SHA_PATH).append('\n');
-    steps(out, qa, false, null, outputChecks, refusal);
+    steps(out, qa, false, null, outputChecks, refusal, coverage);
     return out.toString();
   }
 
@@ -763,7 +893,7 @@ public final class CiReleaseComposer {
         out.append(" }\n");
       }
     }
-    steps(out, release, true, postlude, Map.of(), null);
+    steps(out, release, true, postlude, Map.of(), null, null);
     return out.toString();
   }
 
@@ -796,7 +926,8 @@ public final class CiReleaseComposer {
       boolean releasePhase,
       Postlude postlude,
       Map<String, OutputCheck> outputChecks,
-      String refusal) {
+      String refusal,
+      Coverage coverage) {
     List<CiStepDecl> declared = slot.pipeline().steps();
     // Every release phase's last step publishes — at the very least its changelog (qits-893) — so
     // the publish block's place is no longer conditional on what the repository declares.
@@ -841,7 +972,9 @@ public final class CiReleaseComposer {
               i == last,
               slot.sourcePath(),
               outputChecks,
-              i == 0 ? refusal : null),
+              i == 0 ? refusal : null,
+              // The QA slot's LAST step is the one that runs the suite: see Coverage.
+              !releasePhase && i == declared.size() - 1 ? coverage : null),
           "      ");
     }
   }
@@ -874,7 +1007,8 @@ public final class CiReleaseComposer {
       boolean last,
       String sourcePath,
       Map<String, OutputCheck> outputChecks,
-      String refusal) {
+      String refusal,
+      Coverage coverage) {
     List<OutputCheck> checks = new ArrayList<>();
     for (String kind : step.checkOutputs()) {
       OutputCheck check = outputChecks.get(kind);
@@ -979,11 +1113,15 @@ public final class CiReleaseComposer {
                 + " is not configured on this deployment}\"\n");
       }
       cliFetch(out, step.image(), CliFetch.RELEASE);
-    } else if (step.qitsCli() || checkNeedsCli) {
+    } else if (step.qitsCli() || checkNeedsCli || coverage != null) {
+      // The coverage check implies the CLI the way a kind file's `qits-cli: true` does, so it holds
+      // on a repository's own QA slot that never declared the key.
       out.append(
           step.qitsCli()
               ? "# --- the qits CLI, pinned, on PATH: this step declares qits-cli: true ---\n"
-              : "# --- the qits CLI, pinned, on PATH: this step's output check needs it ---\n");
+              : checkNeedsCli
+                  ? "# --- the qits CLI, pinned, on PATH: this step's output check needs it ---\n"
+                  : "# --- the qits CLI, pinned, on PATH: this step's coverage check needs it ---\n");
       cliFetch(out, step.image(), CliFetch.AUTOMATION);
     }
     buildEnvironment(out, step.build(), step.docker());
@@ -1012,8 +1150,16 @@ public final class CiReleaseComposer {
     if (!releasePhase) {
       out.append("qits_step_exit=$?\n");
       out.append("set -e\n");
+      if (coverage != null) {
+        // The declared script's own code, kept before the output check can move qits_step_exit:
+        // the coverage check asks whether the SUITE passed, which a stale diagram does not change.
+        out.append("qits_script_exit=$qits_step_exit\n");
+      }
       if (!checks.isEmpty()) {
         outputCheck(out, checks, sourcePath);
+      }
+      if (coverage != null) {
+        coverageCheck(out, coverage);
       }
       out.append(
           "# --- platform report hook: always runs, never changes the step's verdict ---\n");
@@ -1142,6 +1288,61 @@ public final class CiReleaseComposer {
     out.append("if [ -n \"$qits_stale\" ]; then\n");
     out.append("  echo \"qits-ci: stale outputs: $qits_stale — regenerate with: $qits_regenerate\" >&2\n");
     out.append("  qits_step_exit=1\n");
+    out.append("fi\n");
+  }
+
+  /**
+   * The golden-master coverage check (qits-1940): after the declared script exited 0 and after the
+   * output check, before the report hook, {@code qits contracts coverage --out} {@value
+   * #UNCOVERED_OPERATIONS_FILE}. See the class javadoc. Like the output check it only ever moves
+   * {@code qits_step_exit} — and only in gate mode, and only from 0 — so the hook still runs and
+   * reports the final code.
+   */
+  private static void coverageCheck(StringBuilder out, Coverage coverage) {
+    out.append(
+        coverage.gate()
+            ? "# --- platform golden-master coverage check: every operation has a golden master ---\n"
+            : "# --- platform golden-master coverage check, report-only: never changes the verdict ---\n");
+    // Removed first, so a file left by an earlier attempt is never reported for this one; absent is
+    // "not reported", which is also what a check that did not run should say.
+    out.append("export QITS_CI_UNCOVERED_OPERATIONS=").append(UNCOVERED_OPERATIONS_FILE).append('\n');
+    out.append("rm -f \"$QITS_CI_UNCOVERED_OPERATIONS\"\n");
+    out.append("if [ \"$qits_script_exit\" -eq 0 ]; then\n");
+    out.append("  echo \"qits-ci: checking golden-master coverage\" >&2\n");
+    // `|| rc=$?`: the wrapper is `set -eu`, and a bare non-zero call would end the step here.
+    out.append("  qits_coverage_exit=0\n");
+    out.append("  qits contracts coverage --out \"$QITS_CI_UNCOVERED_OPERATIONS\"")
+        .append(coverage.arguments())
+        .append(" || qits_coverage_exit=$?\n");
+    if (!coverage.gate()) {
+      out.append("  if [ \"$qits_coverage_exit\" -ne 0 ]; then\n");
+      out.append(
+          "    echo \"qits-ci: golden-master coverage is report-only (exit $qits_coverage_exit);"
+              + " the step's verdict is unchanged\" >&2\n");
+      out.append("  fi\n");
+      out.append("fi\n");
+      return;
+    }
+    out.append("  qits_coverage_failed=\n");
+    out.append("  case \"$qits_coverage_exit\" in\n");
+    out.append("    0) ;;\n");
+    out.append(
+        "    3) qits_coverage_failed=\"some operations have no golden master (the uncovered: lines"
+            + " above)\" ;;\n");
+    out.append(
+        "    1) qits_coverage_failed=\"the exported OpenAPI or the golden-master index is missing or"
+            + " malformed\" ;;\n");
+    out.append(
+        "    2) qits_coverage_failed=\"the pinned qits CLI lacks 'qits contracts coverage'\" ;;\n");
+    out.append("    *) qits_coverage_failed=\"the check could not run (exit $qits_coverage_exit)\" ;;\n");
+    out.append("  esac\n");
+    out.append("  if [ -n \"$qits_coverage_failed\" ]; then\n");
+    out.append("    echo \"qits-ci: golden-master coverage failed: $qits_coverage_failed\" >&2\n");
+    // From 0 only: a red output check keeps its own code, which is the more specific verdict.
+    out.append("    if [ \"$qits_step_exit\" -eq 0 ]; then\n");
+    out.append("      qits_step_exit=1\n");
+    out.append("    fi\n");
+    out.append("  fi\n");
     out.append("fi\n");
   }
 

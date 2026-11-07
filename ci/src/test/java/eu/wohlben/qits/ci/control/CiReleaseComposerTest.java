@@ -2,6 +2,7 @@ package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -2647,6 +2648,304 @@ public class CiReleaseComposerTest {
       assertEquals(3, red.exit(), red.output());
       assertFalse(red.output().contains("generator-ran"), red.output());
       assertEquals("ci report submit --exit-code 3\n", read(work, "qits-argv.txt"));
+    } finally {
+      deleteTree(work);
+    }
+  }
+
+  // --- the golden-master coverage check (qits-1940) ------------------------------------------------
+
+  /** qits-ci-service's own declaration shape: the packaged recipe, golden masters at the default. */
+  private static final String JAVA_SERVICE_WITH_GOLDEN_MASTERS =
+      """
+      archetype: java-service
+      artifacts:
+        - { type: docker, name: qits/qits-ci, sbom: .sbom/sbom.json }
+      contracts:
+        application: qits-ci
+        golden-masters: { from: golden-masters/, packages: [maven] }
+      userflows: qits-ci
+      """;
+
+  private String packagedJavaServiceQa(String declaration, boolean gate) throws IOException {
+    return CiReleaseComposer.compose(REPO, slots(declaration), packaged("java-service"), null, gate)
+        .releaseRequestDocument();
+  }
+
+  @Test
+  public void theJavaServiceQaStepChecksGoldenMasterCoverageAfterTheOutputCheckReportOnly()
+      throws IOException {
+    String qa = packagedJavaServiceQa(JAVA_SERVICE_WITH_GOLDEN_MASTERS, false);
+    // Golden masters at golden-masters/: the bare command, no --index and no --no-golden-masters.
+    assertTrue(
+        qa.contains(
+            "  qits contracts coverage --out \"$QITS_CI_UNCOVERED_OPERATIONS\" ||"
+                + " qits_coverage_exit=$?\n"),
+        qa);
+    assertTrue(qa.contains("export QITS_CI_UNCOVERED_OPERATIONS=/tmp/qits-uncovered-operations.tsv\n"), qa);
+    assertTrue(qa.contains("qits_script_exit=$qits_step_exit\n"), qa);
+    assertTrue(qa.contains("if [ \"$qits_script_exit\" -eq 0 ]; then\n"), qa);
+    assertTrue(qa.contains("golden-master coverage is report-only (exit $qits_coverage_exit)"), qa);
+    assertFalse(qa.contains("golden-master coverage failed"), qa);
+    assertFalse(qa.contains("--index"), qa);
+    assertFalse(qa.contains("--no-golden-masters"), qa);
+    // After the declared script and the entity-diagram check, before the report hook — once, on the
+    // one step that runs the suite (the recipe's last), and never on the image build before it.
+    assertEquals(1, occurrences(qa, "qits contracts coverage"), qa);
+    assertTrue(qa.indexOf("name: 'build and test'") < qa.indexOf("qits contracts coverage"), qa);
+    assertTrue(qa.indexOf("qits_step_exit=$?") < qa.indexOf("qits_script_exit="), qa);
+    assertTrue(qa.lastIndexOf("platform output check") < qa.indexOf("golden-master coverage check"), qa);
+    assertTrue(qa.lastIndexOf("qits_stale=") < qa.indexOf("qits contracts coverage"), qa);
+    assertTrue(qa.indexOf("qits contracts coverage") < qa.lastIndexOf("platform report hook"), qa);
+    // The release half is a publish: it carries no coverage check.
+    String release =
+        CiReleaseComposer.compose(
+                REPO, slots(JAVA_SERVICE_WITH_GOLDEN_MASTERS), packaged("java-service"), null, true)
+            .releaseDocument();
+    assertFalse(release.contains("contracts coverage"), release);
+    assertFalse(release.contains("QITS_CI_UNCOVERED_OPERATIONS"), release);
+  }
+
+  @Test
+  public void theGateModeFailsTheStepOnEveryNonZeroOutcomeThroughTheStepExit() throws IOException {
+    String qa = packagedJavaServiceQa(JAVA_SERVICE_WITH_GOLDEN_MASTERS, true);
+    assertTrue(qa.contains("    3) qits_coverage_failed=\"some operations have no golden master"), qa);
+    assertTrue(qa.contains("    1) qits_coverage_failed=\"the exported OpenAPI or the golden-master"), qa);
+    assertTrue(
+        qa.contains("    2) qits_coverage_failed=\"the pinned qits CLI lacks 'qits contracts coverage'\""),
+        qa);
+    assertTrue(qa.contains("echo \"qits-ci: golden-master coverage failed: $qits_coverage_failed\""), qa);
+    assertTrue(qa.contains("      qits_step_exit=1\n"), qa);
+    assertFalse(qa.contains("report-only"), qa);
+    // The mode is the only difference between the two compositions.
+    String report = packagedJavaServiceQa(JAVA_SERVICE_WITH_GOLDEN_MASTERS, false);
+    assertNotEquals(report, qa);
+    assertEquals(
+        report.substring(0, report.indexOf("# --- platform golden-master coverage check")),
+        qa.substring(0, qa.indexOf("# --- platform golden-master coverage check")));
+  }
+
+  @Test
+  public void noDeclaredGoldenMastersIsTheNoGoldenMastersFlag() throws IOException {
+    // No contracts: section at all — the packaged declaration the goldens hold.
+    String none =
+        packagedJavaServiceQa(
+            "archetype: java-service\nartifacts:\n  - { type: docker, name: qits/x, sbom: .sbom/sbom.json }\n",
+            false);
+    assertTrue(
+        none.contains(
+            "qits contracts coverage --out \"$QITS_CI_UNCOVERED_OPERATIONS\" --no-golden-masters ||"),
+        none);
+    // A contracts: section declaring only pacts.
+    String pactsOnly =
+        packagedJavaServiceQa(
+            """
+            archetype: java-service
+            contracts:
+              application: qits-x
+              pacts:
+                qits-projects-service: { packages: [maven] }
+            """,
+            false);
+    assertTrue(pactsOnly.contains("--no-golden-masters ||"), pactsOnly);
+  }
+
+  @Test
+  public void aGoldenMasterTreeDeclaredElsewhereIsTheIndexFlag() throws IOException {
+    String qa =
+        packagedJavaServiceQa(
+            """
+            archetype: java-service
+            contracts:
+              application: qits-x
+              golden-masters: { from: contracts/gm/, packages: [maven] }
+            """,
+            false);
+    assertTrue(
+        qa.contains(
+            "qits contracts coverage --out \"$QITS_CI_UNCOVERED_OPERATIONS\" --index"
+                + " 'contracts/gm/index.json' ||"),
+        qa);
+    assertFalse(qa.contains("--no-golden-masters"), qa);
+    // Spelled without the trailing slash, the default is still the default.
+    String bare =
+        packagedJavaServiceQa(
+            """
+            archetype: java-service
+            contracts:
+              application: qits-x
+              golden-masters: { from: golden-masters, packages: [maven] }
+            """,
+            false);
+    assertFalse(bare.contains("--index"), bare);
+  }
+
+  @Test
+  public void noOtherArchetypeAndNoBespokeRepositoryChecksCoverage() throws IOException {
+    for (String name : List.of("app", "cli", "maven-library", "npm-library", "spa-frontend")) {
+      String qa =
+          CiReleaseComposer.compose(
+                  REPO, slots("archetype: " + name + "\n"), packaged(name), null, true)
+              .releaseRequestDocument();
+      assertFalse(qa.contains("contracts coverage"), name + "\n" + qa);
+      assertFalse(qa.contains("QITS_CI_UNCOVERED_OPERATIONS"), name + "\n" + qa);
+    }
+    String bespoke =
+        CiReleaseComposer.compose(
+                REPO,
+                slots(
+                    """
+                    release-request:
+                      - image: qits/build-images/maven-base:latest
+                        script: ./mvnw -B verify
+                    contracts:
+                      application: qits-x
+                      golden-masters: { from: golden-masters/, packages: [maven] }
+                    """),
+                null,
+                null,
+                true)
+            .releaseRequestDocument();
+    assertFalse(bespoke.contains("contracts coverage"), bespoke);
+  }
+
+  @Test
+  public void aRepositorysOwnQaSlotKeepsTheCheckOnItsLastStepWithTheCli() {
+    String qa =
+        CiReleaseComposer.compose(
+                REPO,
+                slots(
+                    """
+                    archetype: java-service
+                    release-request:
+                      - image: qits/build-images/ci-base:latest
+                        build: true
+                        script: buildctl build
+                      - image: qits/build-images/maven-base:latest
+                        script: ./mvnw -q verify
+                    """),
+                archetype("java-service", JAVA_SERVICE),
+                null,
+                false)
+            .releaseRequestDocument();
+    assertEquals(1, occurrences(qa, "qits contracts coverage"), qa);
+    int second = qa.indexOf("./mvnw -q verify");
+    assertTrue(qa.indexOf("buildctl build\n") < second && second < qa.indexOf("qits contracts coverage"), qa);
+    // The step declared no qits-cli: the check brings the CLI, after the first step's script.
+    assertEquals(1, occurrences(qa, "this step's coverage check needs it"), qa);
+    assertTrue(qa.indexOf("buildctl build\n") < qa.indexOf("this step's coverage check needs it"), qa);
+  }
+
+  /**
+   * The coverage check, EXECUTED, with a stand-in CLI for every exit code it can give, in both
+   * modes: report never moves the verdict and says so once when the check found something; gate
+   * makes 3, 1 and 2 an exit 1 naming the outcome; a red script never reaches the check; and the
+   * report hook is told the final code with {@code QITS_CI_UNCOVERED_OPERATIONS} inherited.
+   */
+  @Test
+  public void theCoverageCheckReportsOrGatesAndTheHookStillRuns() throws Exception {
+    String declaration =
+        """
+        archetype: java-service
+        release-request:
+          - image: alpine:3
+            script: |
+              echo declared-script-ran
+              exit "$QITS_TEST_EXIT"
+        contracts:
+          application: qits-x
+          golden-masters: { from: golden-masters/, packages: [maven] }
+        """;
+    Path work = Files.createTempDirectory("qa-coverage-check");
+    try {
+      Path checkout = Files.createDirectories(work.resolve("checkout"));
+      Path uncovered = work.resolve("qits-uncovered-operations.tsv");
+      Files.writeString(
+          work.resolve("stub-qits"),
+          "#!/bin/sh\n"
+              + "if [ \"$1\" = contracts ]; then\n"
+              + "  printf '%s\\n' \"$*\" > '" + work.resolve("coverage-argv.txt") + "'\n"
+              + "  out=; prev=\n"
+              + "  for a in \"$@\"; do if [ \"$prev\" = --out ]; then out=$a; fi; prev=$a; done\n"
+              + "  case \"$QITS_TEST_COVERAGE\" in\n"
+              + "    0) : > \"$out\" ;;\n"
+              + "    3) echo 'uncovered: qits-x GET /x'; printf 'qits-x\\tGET\\t/x\\n' > \"$out\" ;;\n"
+              + "  esac\n"
+              + "  exit \"$QITS_TEST_COVERAGE\"\n"
+              + "fi\n"
+              + "printf '%s\\n' \"$*\" > '" + work.resolve("qits-argv.txt") + "'\n"
+              + "printf '%s\\n' \"${QITS_CI_UNCOVERED_OPERATIONS:-unset}\" > '"
+              + work.resolve("qits-uncovered-env.txt") + "'\n");
+      Path bin = Files.createDirectories(work.resolve("bin"));
+      Path curl = bin.resolve("curl");
+      Files.writeString(
+          curl,
+          "#!/bin/sh\n"
+              + "prev=\n"
+              + "for a in \"$@\"; do\n"
+              + "  if [ \"$prev\" = \"-o\" ]; then cp '" + work.resolve("stub-qits") + "' \"$a\"; fi\n"
+              + "  prev=\"$a\"\n"
+              + "done\n");
+      assertTrue(curl.toFile().setExecutable(true));
+      String path = bin + ":" + System.getenv("PATH");
+
+      for (boolean gate : List.of(false, true)) {
+        String document =
+            CiReleaseComposer.compose(REPO, slots(declaration), null, Map.of(), null, gate)
+                .releaseRequestDocument();
+        Path scriptFile = work.resolve("step-" + gate + ".sh");
+        Files.writeString(scriptFile, stepScript(document).replace("/tmp/", work + "/"));
+        for (int coverage : new int[] {0, 3, 1, 2, 127}) {
+          String label = (gate ? "gate" : "report") + " exit " + coverage;
+          HookRun run =
+              runQaStep(
+                  scriptFile,
+                  checkout,
+                  path,
+                  Map.of("QITS_TEST_EXIT", "0", "QITS_TEST_COVERAGE", String.valueOf(coverage)));
+          int expected = gate && coverage != 0 ? 1 : 0;
+          assertEquals(expected, run.exit(), label + "\n" + run.output());
+          assertTrue(run.output().contains("declared-script-ran"), label);
+          assertEquals(
+              "contracts coverage --out " + uncovered + "\n",
+              read(work, "coverage-argv.txt"),
+              label);
+          assertEquals("ci report submit --exit-code " + expected + "\n", read(work, "qits-argv.txt"), label);
+          assertEquals(uncovered + "\n", read(work, "qits-uncovered-env.txt"), label);
+          String out = run.output();
+          if (coverage == 0) {
+            assertFalse(out.contains("report-only"), label + "\n" + out);
+            assertFalse(out.contains("coverage failed"), label + "\n" + out);
+            assertEquals("", Files.readString(uncovered), label);
+          } else if (!gate) {
+            assertEquals(1, occurrences(out, "golden-master coverage is report-only (exit " + coverage + ")"), label + "\n" + out);
+            assertFalse(out.contains("coverage failed"), label + "\n" + out);
+          } else {
+            String why =
+                switch (coverage) {
+                  case 3 -> "some operations have no golden master";
+                  case 1 -> "the exported OpenAPI or the golden-master index is missing or malformed";
+                  case 2 -> "the pinned qits CLI lacks 'qits contracts coverage'";
+                  default -> "the check could not run (exit 127)";
+                };
+            assertTrue(out.contains("qits-ci: golden-master coverage failed: " + why), label + "\n" + out);
+          }
+          if (coverage == 3) {
+            assertTrue(out.contains("uncovered: qits-x GET /x"), label + "\n" + out);
+            assertEquals("qits-x\tGET\t/x\n", Files.readString(uncovered), label);
+          } else if (coverage != 0) {
+            assertFalse(Files.exists(uncovered), label + ": a file of an earlier run is removed first");
+          }
+        }
+        // A red script stays red with its own code, and the check never runs.
+        Files.deleteIfExists(work.resolve("coverage-argv.txt"));
+        HookRun red =
+            runQaStep(scriptFile, checkout, path, Map.of("QITS_TEST_EXIT", "5", "QITS_TEST_COVERAGE", "3"));
+        assertEquals(5, red.exit(), red.output());
+        assertFalse(Files.exists(work.resolve("coverage-argv.txt")), red.output());
+        assertFalse(red.output().contains("checking golden-master coverage"), red.output());
+        assertEquals("ci report submit --exit-code 5\n", read(work, "qits-argv.txt"));
+      }
     } finally {
       deleteTree(work);
     }
