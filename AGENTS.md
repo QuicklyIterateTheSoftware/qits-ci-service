@@ -2029,7 +2029,7 @@ is about*.
   `chore(<ids>): <type>(<item>): …`, committed `--cleanup=verbatim` — `dependency-bump` takes the
   ids and the changelog body from `qits changelog bump-message`, qits-893) and optionally `user:
   <name>` (the composed step's `user:`; `golden-recordings-maven` runs as `build` because zonky's
-  initdb refuses root, qits-1516) and optionally `build: true` (only `true`; a slot step's `build:
+  initdb refuses root, qits-1516, and `entity-exposure` as java-service's QA does, qits-1958) and optionally `build: true` (only `true`; a slot step's `build:
   true` exactly — the composed step declares it and its prelude spends
   `CiReleaseComposer.buildEnvironment`, the one text a slot step gets, never a copy; `cli-tapes`
   uses it because the repository's `tapes/prepare.sh` builds the native binary through the

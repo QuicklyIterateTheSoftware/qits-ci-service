@@ -89,6 +89,7 @@ public class CiPlatformPipelines {
           "cli-tapes",
           "dependency-bump",
           "entity-diagram",
+          "entity-exposure",
           "estate-pins",
           "golden-recordings-maven",
           "golden-recordings-npm",

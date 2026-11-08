@@ -258,6 +258,7 @@ public class CiPlatformTriggerTest extends CiTestSupport {
             "ci/src/main/resources/platform-pipelines/automations/cli-tapes.yml",
             "ci/src/main/resources/platform-pipelines/automations/dependency-bump.yml",
             "ci/src/main/resources/platform-pipelines/automations/entity-diagram.yml",
+            "ci/src/main/resources/platform-pipelines/automations/entity-exposure.yml",
             "ci/src/main/resources/platform-pipelines/automations/estate-pins.yml",
             "ci/src/main/resources/platform-pipelines/automations/golden-recordings-maven.yml",
             "ci/src/main/resources/platform-pipelines/automations/golden-recordings-npm.yml",

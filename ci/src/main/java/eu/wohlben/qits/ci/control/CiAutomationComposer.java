@@ -35,7 +35,8 @@ import java.util.regex.Pattern;
  *       {@link CiConfigSchema}'s {@code user}). A kind whose script runs a test suite needs it: the
  *       estate's Quarkus tests start zonky's embedded postgres, whose initdb refuses uid 0, so the
  *       {@code golden-recordings-maven} kind (qits-1516) runs as maven-base's {@code build} user,
- *       exactly as java-service's QA step does. A kind without the key is composed exactly as if
+ *       exactly as java-service's QA step does, and so does the {@code entity-exposure} kind
+ *       (qits-1958), which runs one test of that suite. A kind without the key is composed exactly as if
  *       the key did not exist, and runs as the image's own user.
  *   <li>{@code build} — optional, and only ever {@code true} (qits-1377): exactly what {@code build:
  *       true} means on a slot step ({@link CiConfigSchema}'s {@code build}). The composed step
