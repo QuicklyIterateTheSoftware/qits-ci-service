@@ -1,5 +1,6 @@
 package eu.wohlben.qits.ci.entity;
 
+import eu.wohlben.qits.db.exposure.Technical;
 import eu.wohlben.qits.eventstream.Uncaused;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.Column;
@@ -31,6 +32,11 @@ import java.util.UUID;
 @Entity
 @Table(name = "ci_slot_hold")
 @Uncaused
+@Technical(
+    reason =
+        "Coordination state that keeps a green QA run's lease open for the release that follows;"
+            + " the lease itself is qits-system's and listed there, and by design no run listing"
+            + " reads the hold.")
 public class CiSlotHold extends PanacheEntityBase {
 
   /** The held lease at qits-system. No foreign key: another service's row. */
