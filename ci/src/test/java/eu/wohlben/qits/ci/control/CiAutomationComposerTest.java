@@ -336,9 +336,25 @@ public class CiAutomationComposerTest {
   }
 
   @Test
+  public void theEntityExposureKindRunsAsTheBuildUser() throws Exception {
+    // qits-1958: one test of the suite java-service's QA runs as maven-base's build user.
+    String path = "ci/src/main/resources/platform-pipelines/automations/entity-exposure.yml";
+    String composed =
+        CiAutomationComposer.compose(
+            "entity-exposure", path, Files.readString(Path.of("..").resolve(path)));
+    CiPipeline.CiStepDecl step =
+        new CiEventTriggerParser().parse(path, composed).pipeline().steps().get(0);
+    assertEquals("build", step.user());
+    assertEquals(1800, step.timeoutSeconds());
+    assertFalse(step.build(), composed);
+    assertTrue(composed.contains("  - kind: { exact: 'entity-exposure' }\n"), composed);
+    assertFalse(composed.contains("check-outputs"), composed);
+  }
+
+  @Test
   public void theGoldenRecordingsMavenKindIsComposedAsItsFixture() throws Exception {
-    // composed/automation-golden-recordings-maven.yml: the one packaged kind declaring `user:`, so
-    // the line's place in the composed step is held byte for byte.
+    // composed/automation-golden-recordings-maven.yml: a packaged kind declaring `user:`, so the
+    // line's place in the composed step is held byte for byte.
     String path =
         "ci/src/main/resources/platform-pipelines/automations/golden-recordings-maven.yml";
     String kindFile = Files.readString(Path.of("..").resolve(path));

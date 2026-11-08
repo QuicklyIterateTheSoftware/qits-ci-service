@@ -126,6 +126,7 @@ public class PackagedPlatformPipelinesTest {
             "ReleaseRequestAutomation",
             "ReleaseRequestAutomation",
             "ReleaseRequestAutomation",
+            "ReleaseRequestAutomation",
             "ReleaseRequestAutomation"),
         packaged().stream()
             .map(file -> triggerParser.parse(file.path(), file.content()).eventName())
@@ -558,6 +559,113 @@ public class PackagedPlatformPipelinesTest {
       assertTrue(matcher.group().contains("--ignore-submodules=none"), matcher.group());
       assertFalse(composed.contains("--force"), kind + ": a forced push");
     }
+  }
+
+  // --- the composed entity-exposure automation (qits-1958) --------------------------------------
+
+  private static final String EXPOSURE_KIND_PATH =
+      "ci/src/main/resources/platform-pipelines/automations/entity-exposure.yml";
+
+  @Test
+  public void theEntityExposureKindRunsOnlyTheExposureTestInUpdateModeAsTheBuildUser(
+      @TempDir Path dir) throws Exception {
+    String composed = composedKind("entity-exposure");
+    CiEventTrigger trigger = triggerParser.parse(EXPOSURE_KIND_PATH, composed);
+    assertEquals("ReleaseRequestAutomation", trigger.eventName());
+    assertEquals(null, trigger.checkout(), "recorded at main's head, never at the fold");
+    assertTrue(composed.contains("  - kind: { exact: 'entity-exposure' }\n"), composed);
+    assertEquals(1, trigger.pipeline().steps().size());
+    CiStepDecl step = trigger.pipeline().steps().get(0);
+    assertEquals(null, step.image(), "image: is ignored, and no kind file declares one");
+    assertEquals("build", step.user());
+    assertEquals(1800, step.timeoutSeconds());
+    // No CLI: the test writes the map itself.
+    assertFalse(composed.contains("qits CLI, pinned, on PATH"), composed);
+
+    String script = step.script();
+    int body = script.indexOf("cat > " + CiAutomationComposer.KIND_SCRIPT);
+    int noPom = script.indexOf("no pom.xml: entity-exposure");
+    int maven = script.indexOf("QITS_GOLDEN_UPDATE=true ./mvnw -B -ntp ${settings}");
+    int add = script.indexOf("git add -A --");
+    assertTrue(script.indexOf("superseded before start") < body, "the prelude comes first");
+    assertTrue(body < noPom && noPom < maven && maven < add, script);
+    for (String line :
+        List.of(
+            "qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}",
+            "export QITS_MAVEN_REPOSITORY_URL=\"https://registry.qits.$qits_domain/artifacts/maven/maven\"",
+            "export QITS_MAVEN_CENTRAL_URL=\"https://mirror.qits.$qits_domain/mirror/maven/central\"",
+            "-Dgolden.update=true",
+            "-Dtest=EntityExposureTest -Dsurefire.failIfNoSpecifiedTests=false")) {
+      assertTrue(script.contains(line), line);
+    }
+    // The test phase only: no ITs, nothing packaged, nothing skipped.
+    String kind = kindScript(script);
+    String mvnw = kind.substring(kind.indexOf("./mvnw"));
+    assertTrue(mvnw.strip().endsWith("test"), mvnw);
+    for (String word : List.of("verify", "install", "package", "skipTests", "maven.test.skip")) {
+      assertFalse(mvnw.contains(word), word + " in: " + mvnw);
+    }
+    syntax(dir, kind, EXPOSURE_KIND_PATH + " (the kind's script)");
+  }
+
+  @Test
+  public void theEntityExposureKindPassesNoFlagJavaServicesQaDoesNot() throws Exception {
+    // qits-1516: a kind that runs a repository's tests passes only what its QA archetype passes,
+    // besides the update and selection switches. java-service's verify passes both of these
+    // unconditionally.
+    String javaService = Files.readString(RELEASE_ARCHETYPES.resolve("java-service.yml"));
+    String kind =
+        kindScript(
+            triggerParser
+                .parse(EXPOSURE_KIND_PATH, composedKind("entity-exposure"))
+                .pipeline()
+                .steps()
+                .get(0)
+                .script());
+    String mvnw = kind.substring(kind.indexOf("./mvnw"));
+    Matcher flags = Pattern.compile("-D[A-Za-z0-9_.-]+").matcher(mvnw);
+    List<String> found = new java.util.ArrayList<>();
+    while (flags.find()) {
+      found.add(flags.group());
+    }
+    Set<String> switches =
+        Set.of("-Dgolden.update", "-Dtest", "-Dsurefire.failIfNoSpecifiedTests");
+    for (String flag : found) {
+      if (switches.contains(flag)) {
+        continue;
+      }
+      assertTrue(
+          javaService.contains("        " + flag + "="), "java-service's QA does not pass " + flag);
+    }
+    assertEquals(
+        List.of(
+            "-Dqits.maven.repository.url",
+            "-Dquarkus.quinoa",
+            "-Dgolden.update",
+            "-Dtest",
+            "-Dsurefire.failIfNoSpecifiedTests"),
+        found);
+  }
+
+  @Test
+  public void theEntityExposureKindNeverNamesWhatItCommits() throws Exception {
+    // The carry-over invariant: docs/entities.json is the payload's to name and the test's to
+    // write, never this kind's input, so the script never mentions it.
+    String kindFile = Files.readString(SOURCE.resolve("automations/entity-exposure.yml"));
+    String script = kindFile.substring(kindFile.indexOf("\nscript: |\n"));
+    assertFalse(script.contains("entities.json"), script);
+    String composed = composedKind("entity-exposure");
+    Matcher adds = Pattern.compile("git add[^\n]*").matcher(composed);
+    List<String> found = new java.util.ArrayList<>();
+    while (adds.find()) {
+      found.add(adds.group().strip());
+    }
+    assertEquals(List.of("git add -A -- \"$@\""), found);
+    assertFalse(composed.contains("docs/entities.json"), "a path the payload did not name");
+    Matcher matcher = GUARD.matcher(composed);
+    assertTrue(matcher.find(), "the composed automation has no commit guard");
+    assertTrue(matcher.group().contains("--ignore-submodules=none"), matcher.group());
+    assertFalse(composed.contains("--force"), "a forced push");
   }
 
   // --- the composed dependency-bump automation (qits-1133) --------------------------------------

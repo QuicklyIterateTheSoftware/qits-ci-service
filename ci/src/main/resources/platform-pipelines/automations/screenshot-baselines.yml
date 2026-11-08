@@ -14,8 +14,9 @@
 #             to the payload's `branch`
 #
 # So nothing here touches a ref or makes a commit. The paths that get committed are the
-# payload's - qits-maintenance sends `__screenshots__/`, `testing/browser/renderer.txt` and
-# `testing/browser/routes.json` for this kind - and anything else the run touches stays out.
+# payload's - qits-maintenance sends `__screenshots__/`, `testing/browser/renderer.txt`,
+# `testing/browser/routes.json` and `testing/browser/freezes/` for this kind - and anything else
+# the run touches stays out.
 #
 # It runs on node-browser-base, the image the `app` QA step compares in, so the references are
 # rendered exactly as the gate renders them. Missing references are written like changed ones,
@@ -26,9 +27,9 @@
 #
 # THE SAME SCRIPT IS QA'S CHECK (qits-1179). A release-request step that declares
 # `check-outputs: [screenshot-baselines]` runs this script, verbatim, after its own script, and then
-# `git status` on the `__screenshots__/`, `testing/browser/renderer.txt` and
-# `testing/browser/routes.json` paths: a change there fails QA as stale, naming this kind. A
-# failing spec fails the check like it fails this run.
+# `git status` on the `__screenshots__/`, `testing/browser/renderer.txt`,
+# `testing/browser/routes.json` and `testing/browser/freezes/` paths: a change there fails QA as
+# stale, naming this kind. A failing spec fails the check like it fails this run.
 #
 # `../screenshot-baselines.yml`, which did the same work for the older `ScreenshotBaselines`
 # event, is retired (qits-1007): this kind file is the only way to render baselines now.

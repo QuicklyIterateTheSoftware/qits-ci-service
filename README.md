@@ -1349,7 +1349,8 @@ its steps run as written, so nothing would act on them.
   each kind's generator runs (the `script:` of `platform-pipelines/automations/<kind>.yml`, verbatim,
   so the check and the regeneration cannot disagree), then `git status --porcelain
   --untracked-files=all` over the kind's paths (`docs/database`; `**/__screenshots__/**`,
-  `**/testing/browser/renderer.txt` and `**/testing/browser/routes.json`; `tapes/golden/**` and
+  `**/testing/browser/renderer.txt`, `**/testing/browser/routes.json` and
+  `**/testing/browser/freezes/**`; `tapes/golden/**` and
   `tapes/recordings/**`). A change there fails the step with one line:
   `qits-ci: stale outputs: <kinds> — regenerate with: qits release-request regenerate --project <p>
   --repository <r> --kind <kind>`. A generator that fails (a failing spec) fails the step with its
@@ -1640,7 +1641,7 @@ the step exports `$QITS_AUTOMATION_MESSAGE`, the script writes the description o
 and an optional body after it, and the postlude commits `<word>(<item>): <description>` with that
 body — the type stays the kind file's and the scope the prelude's; a changed tree with no
 description fails the step. No `checkout:`: the run is recorded at the target's `main` head, so its
-verdict is never the fold's. Three kinds today: `screenshot-baselines` (`node-browser-base`, 1800 s)
+verdict is never the fold's. The kinds today: `screenshot-baselines` (`node-browser-base`, 1800 s)
 and `entity-diagram` (`maven-base`, 1800 s, `qits-cli: true`), which runs `test-compile` on the fold
 (`-Dmaven.test.skip=true`, so a sibling module's test-jar resolves in the reactor and no test is
 compiled or run), lists its runtime classpath (`dependency:build-classpath -DincludeScope=runtime`)
@@ -1679,6 +1680,15 @@ into `tapes/recordings/<name>.gif`; goldens and GIFs without a tape are deleted.
 compares (the `cli` archetype's `check-outputs: [cli-tapes]` step), so GIF byte noise never fails
 QA. Since step images are ignored, `vhs`, `ttyd`, `ffmpeg` and a chromium must be on the ci-slot
 image's `PATH`; the script fails saying so when `vhs` is not.
+And `entity-exposure` (`maven-base`, 1800 s, `user: build`, qits-1958), committing only
+`docs/entities.json`, qits-1945's entity exposure map: it runs the one test that keeps the map,
+`QITS_GOLDEN_UPDATE=true ./mvnw test -Dgolden.update=true -Dtest=EntityExposureTest
+-Dsurefire.failIfNoSpecifiedTests=false`, with no flag besides those java-service's QA verify passes
+(`-Dqits.maven.repository.url`, `-Dquarkus.quinoa=false`). In update mode the test writes the map
+without reading it, so the re-fold its commit causes is carried without a second run, while the
+test's other rules (EXPOSED, GAPS, MARKERS) still fail the run on a real violation and nothing is
+committed. No `check-outputs:` arm: QA's own `EntityExposureTest.map`, without the switch, fails a
+stale map.
 
 Until 2026-10-02 they were `ci-platform-event-*.yml` files in the wrapper, read at its `main` head
 per event: a fix shipped only with a wrapper release, which needs a person's approval. No repository

@@ -456,7 +456,8 @@ public final class CiReleaseComposer {
         List.of(
             ":(glob)**/__screenshots__/**",
             ":(glob)**/testing/browser/renderer.txt",
-            ":(glob)**/testing/browser/routes.json"));
+            ":(glob)**/testing/browser/routes.json",
+            ":(glob)**/testing/browser/freezes/**"));
     paths.put("cli-tapes", List.of(":(glob)tapes/golden/**", ":(glob)tapes/recordings/**"));
     return java.util.Collections.unmodifiableMap(paths);
   }

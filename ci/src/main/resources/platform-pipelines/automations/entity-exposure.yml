@@ -1,0 +1,84 @@
+# Regenerate a Java service's entity exposure map, `docs/entities.json`, on a release request's
+# fold: the `entity-exposure` kind of qits-maintenance's release-request automations (qits-1958;
+# the map is qits-1945's).
+#
+# A KIND FILE, not a pipeline. qits-ci's CiAutomationComposer composes it into a platform
+# trigger on `ReleaseRequestAutomation` selected by `kind: entity-exposure` (this file's name),
+# and wraps the script below in the platform's own prelude and postlude:
+#
+#   prelude   validates the payload, fetches the fold (`baseRef`) and refuses with
+#             "superseded before start" unless it is still `foldSha`; checks it out, gives the
+#             step a writable HOME and works out the commit subject's work item
+#   script    this file's, run as data in a child shell
+#   postlude  stages only the payload's `commitPaths`, commits `chore(<item>): update entity
+#             exposure` (or prints `unchanged` and exits 0), and makes a plain push to the
+#             payload's `branch`
+#
+# So nothing here touches a ref or makes a commit.
+#
+# WHY IT EXISTS. Each adopting service keeps an ArchUnit test, `EntityExposureTest`, whose `map`
+# rule renders which `@Entity` reaches which JAX-RS operation through which DTO and compares it
+# with the checked-in `docs/entities.json`. A fold that brings two branches' entities or DTOs
+# together changes that analysis without either branch having touched the map, and the fold's QA
+# then fails on a map nobody can regenerate except by hand.
+#
+# THE ONLY PATH COMMITTED IS `docs/entities.json` - qits-maintenance sends exactly that path for
+# this kind - and it is NEVER THIS KIND'S INPUT. In update mode `EntityExposure.verify` renders
+# the map from the compiled classes and writes it without reading the old one, so the re-fold its
+# own commit causes changes nothing it reads and is carried with no second run (the carry-over
+# invariant). Keep it that way: a step here that read the map would make every commit of this
+# kind a reason to run it again. Everything else the build writes (target/, the local
+# repository) stays out of the commit.
+#
+# THE GATE'S OWN TEST RUN IS THE CHECK. QA runs the same test WITHOUT the switch, and `map`
+# compares instead of writing: a map this run did not bring up to date fails QA as a test
+# failure. So there is no `check-outputs:` key for this kind - the check already exists, and it is
+# the test itself, as for golden-recordings-maven.
+#
+# What runs is the one test class, `EntityExposureTest`, in surefire's `test` phase and nothing
+# past it: no ITs, no packaging, no SPA, and no other test. It is an ArchUnit test that boots no
+# Quarkus. `-Dsurefire.failIfNoSpecifiedTests=false` (surefire 3's spelling) lets the reactor's
+# modules without that class pass. The update switch is `-Dgolden.update=true` and
+# `QITS_GOLDEN_UPDATE=true`, both, because `EntityExposure.updateRequested()` reads either. The
+# class's other rules (EXPOSED, GAPS, MARKERS) judge the code, not the file, so a real violation
+# still fails in update mode: the run fails and nothing is committed, which is intended.
+#
+# NO FLAG QA DOES NOT PASS (qits-1516). This kind is for java-service repositories, whose QA step
+# passes `-Dqits.maven.repository.url` and `-Dquarkus.quinoa=false` unconditionally; this script
+# passes those two and the update and selection switches, and nothing else (no test-port
+# override).
+#
+# `user: build`, as java-service's QA step and golden-recordings-maven: maven-base carries the
+# passwd-backed build user (uid 1001), and a step container starts `--cap-drop=ALL`, so the
+# script could not switch user itself. The suite this test belongs to runs as that user in QA.
+user: build
+timeout-seconds: 1800
+script: |
+  if [ ! -f pom.xml ]; then
+    echo "no pom.xml: entity-exposure regenerates a maven service's EntityExposureTest map" >&2
+    exit 1
+  fi
+
+  # The platform registry and the Central mirror, composed exactly as java-service's QA step
+  # composes them: both are code under the platform's public domain (qits-731), which the
+  # composed prelude has already demanded.
+  qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+  export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
+  export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
+
+  # The repository's own settings when it keeps them: the exact-id mirror there is what passes
+  # Maven's HTTP blocker, and its servers read the run's credential from the step environment.
+  settings=""
+  if [ -f .qits-maven-settings.xml ]; then
+    settings="-s .qits-maven-settings.xml"
+  fi
+
+  # The one test, in update mode. `test`, not `verify`: no IT runs and nothing is packaged.
+  # Quinoa off as in java-service's QA step: the clone does not recurse, so a webui submodule is
+  # an empty directory, the one state Quinoa calls a misconfiguration.
+  QITS_GOLDEN_UPDATE=true ./mvnw -B -ntp ${settings} \
+    -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
+    -Dquarkus.quinoa=false \
+    -Dgolden.update=true \
+    -Dtest=EntityExposureTest -Dsurefire.failIfNoSpecifiedTests=false \
+    test
