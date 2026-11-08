@@ -155,7 +155,7 @@
         <!-- The consumer pacts contracts/ConsumerPactVerificationTest verifies (qits-1149): each
              consumer publishes `pacts/<consumer>_qits-ci-service.json` as a jar, pinned here in test
              scope and bumped by qits-maintenance when the consumer releases a changed pact. -->
-        <qits.landing-app-pacts-qits-ci-service.version>2026.1027.141236</qits.landing-app-pacts-qits-ci-service.version>
+        <qits.landing-app-pacts-qits-ci-service.version>2026.1107.234702</qits.landing-app-pacts-qits-ci-service.version>
         <qits.artifacts-service-pacts-qits-ci-service.version>2026.1018.153037</qits.artifacts-service-pacts-qits-ci-service.version>
         <qits.bootstrap-cli-pacts-qits-ci-service.version>2026.1023.225504</qits.bootstrap-cli-pacts-qits-ci-service.version>
         <qits.maintenance-service-pacts-qits-ci-service.version>2026.1026.180147</qits.maintenance-service-pacts-qits-ci-service.version>
