@@ -17,6 +17,9 @@ artifacts:
 contracts:
   application: qits-ci
   golden-masters: { from: golden-masters/, packages: [maven, npm] }
+  # The entity exposure map EntityExposureTest keeps current (qits-1945), bundled as entities.json
+  # in @contracts/qits-ci by contract-docs.
+  entities: docs/entities.json
   pacts:
     qits-events-service: { packages: [maven] }
     qits-projects-service: { packages: [maven] }
