@@ -1349,7 +1349,8 @@ its steps run as written, so nothing would act on them.
   each kind's generator runs (the `script:` of `platform-pipelines/automations/<kind>.yml`, verbatim,
   so the check and the regeneration cannot disagree), then `git status --porcelain
   --untracked-files=all` over the kind's paths (`docs/database`; `**/__screenshots__/**`,
-  `**/testing/browser/renderer.txt` and `**/testing/browser/routes.json`; `tapes/golden/**` and
+  `**/testing/browser/renderer.txt`, `**/testing/browser/routes.json` and
+  `**/testing/browser/freezes/**`; `tapes/golden/**` and
   `tapes/recordings/**`). A change there fails the step with one line:
   `qits-ci: stale outputs: <kinds> — regenerate with: qits release-request regenerate --project <p>
   --repository <r> --kind <kind>`. A generator that fails (a failing spec) fails the step with its
