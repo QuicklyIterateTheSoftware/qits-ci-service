@@ -393,6 +393,20 @@ public class QitsCliPinIT {
               + changelog);
     }
 
+    // The routes site a `contracts.routes:` declaration publishes (qits-1948): a directory, packed
+    // by the CLI and skipped when its content hash matches the newest version. A pin to a CLI older
+    // than either option fails every release declaring the key, so it is a red build here instead.
+    String docs = usage(cli, dir, "artifacts", "publish", "docs", "submit", "--help");
+    assertTrue(
+        docs.startsWith("Usage: qits artifacts publish docs submit"),
+        "the pinned CLI carries `artifacts publish docs submit`:\n" + docs);
+    for (String option : List.of("--site=", "--dir=", "--if-changed", "--version=", "--meta=")) {
+      assertTrue(
+          docs.contains(option),
+          "the pinned CLI's `docs submit` takes " + option + " which the routes postlude passes:\n"
+              + docs);
+    }
+
     String exists = usage(cli, dir, "artifacts", "publish", "exists", "--help");
     assertTrue(
         exists.startsWith("Usage: qits artifacts publish exists"),
