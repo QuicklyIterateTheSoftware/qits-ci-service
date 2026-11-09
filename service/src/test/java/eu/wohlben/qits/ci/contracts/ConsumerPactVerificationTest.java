@@ -300,4 +300,9 @@ class ConsumerPactVerificationTest {
   Map<String, String> aFailedQaRunWithStaleOutputs() {
     return states.params(ProviderStates.A_FAILED_QA_RUN_WITH_STALE_OUTPUTS);
   }
+
+  @State(ProviderStates.A_REPOSITORY_WITH_A_FINISHED_RUN)
+  Map<String, String> aRepositoryWithAFinishedRun() {
+    return states.params(ProviderStates.A_REPOSITORY_WITH_A_FINISHED_RUN);
+  }
 }

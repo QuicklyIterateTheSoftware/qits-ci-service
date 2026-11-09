@@ -530,6 +530,81 @@
       ]
     },
     {
+      "name": "a repository with a finished run",
+      "slug": "a-repository-with-a-finished-run",
+      "params": {
+        "repositoryId": "00000000-0000-4000-8000-000000000001",
+        "runId": "00000000-0000-4000-8000-000000000002"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listFinishedRuns",
+          "method": "GET",
+          "path": "/ci/api/runs/finished",
+          "query": {
+            "limit": "100"
+          },
+          "status": 200,
+          "file": "a-repository-with-a-finished-run/listFinishedRuns.json",
+          "frozen": {
+            "ids": [
+              "$.runs[*].id",
+              "$.runs[*].repoId"
+            ],
+            "instants": [
+              "$.runs[*].createdAt",
+              "$.runs[*].startedAt",
+              "$.runs[*].finishedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": "$.runs"
+          }
+        },
+        {
+          "operationId": "listRepositoryIds",
+          "method": "GET",
+          "path": "/ci/api/repositories",
+          "status": 200,
+          "file": "a-repository-with-a-finished-run/listRepositoryIds.json",
+          "frozen": {
+            "ids": [
+              "$.repositoryIds[*]"
+            ],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": "$.repositoryIds"
+          }
+        },
+        {
+          "operationId": "listRepositorySummaries",
+          "method": "GET",
+          "path": "/ci/api/repositories/summary",
+          "status": 200,
+          "file": "a-repository-with-a-finished-run/listRepositorySummaries.json",
+          "frozen": {
+            "ids": [
+              "$.repositories[*].repositoryId",
+              "$.repositories[*].lastRun.id",
+              "$.repositories[*].lastRun.repoId",
+              "$.repositories[*].lastMainRun.id",
+              "$.repositories[*].lastMainRun.repoId"
+            ],
+            "instants": [
+              "$.repositories[*].lastRun.createdAt",
+              "$.repositories[*].lastRun.startedAt",
+              "$.repositories[*].lastRun.finishedAt",
+              "$.repositories[*].lastMainRun.createdAt",
+              "$.repositories[*].lastMainRun.startedAt",
+              "$.repositories[*].lastMainRun.finishedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": "$.repositories"
+          }
+        }
+      ]
+    },
+    {
       "name": "a repository with a ReleaseRequestAutomation platform pipeline",
       "slug": "a-repository-with-a-releaserequestautomation-platform-pipeline",
       "params": {

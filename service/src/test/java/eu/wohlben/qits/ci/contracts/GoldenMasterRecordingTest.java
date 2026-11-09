@@ -357,7 +357,32 @@ class GoldenMasterRecordingTest {
           read(
               ProviderStates.A_FAILED_QA_RUN_WITH_STALE_OUTPUTS,
               "getRunReport",
-              "/ci/api/runs/{runId}/reports/{staleOutputsReportId}"));
+              "/ci/api/runs/{runId}/reports/{staleOutputsReportId}"),
+          // --- qits-1922: the three no-golden-master operations
+          new Interaction(
+              ProviderStates.A_REPOSITORY_WITH_A_FINISHED_RUN,
+              "listRepositoryIds",
+              "GET",
+              "/ci/api/repositories",
+              Map.of(),
+              200,
+              "$.repositoryIds"),
+          new Interaction(
+              ProviderStates.A_REPOSITORY_WITH_A_FINISHED_RUN,
+              "listRepositorySummaries",
+              "GET",
+              "/ci/api/repositories/summary",
+              Map.of(),
+              200,
+              "$.repositories"),
+          new Interaction(
+              ProviderStates.A_REPOSITORY_WITH_A_FINISHED_RUN,
+              "listFinishedRuns",
+              "GET",
+              "/ci/api/runs/finished",
+              Map.of("limit", "100"),
+              200,
+              "$.runs"));
 
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final Pattern TEMPLATE_PARAM = Pattern.compile("\\{([A-Za-z][A-Za-z0-9]*)}");

@@ -149,6 +149,13 @@ public class ProviderStates {
   public static final String A_FAILED_QA_RUN_WITH_STALE_OUTPUTS =
       "a failed qa run with stale outputs";
 
+  /**
+   * One repository whose newest run is a finished (SUCCESS) run on {@code main} — what {@code GET
+   * /ci/api/repositories}, {@code GET /ci/api/repositories/summary} and {@code GET
+   * /ci/api/runs/finished} each answer with (qits-1922).
+   */
+  public static final String A_REPOSITORY_WITH_A_FINISHED_RUN = "a repository with a finished run";
+
   /** The automation kind the ReleaseRequestAutomation state names: a packaged kind file. */
   static final String AUTOMATION_KIND = "entity-diagram";
 
@@ -253,6 +260,7 @@ public class ProviderStates {
         A_REPOSITORY_WITH_RUNS_TO_FIND_BY_THE_START_OF_AN_ID, this::aRepositoryWithFinishedQaRuns);
     states.put(A_REPOSITORY_WITH_ITS_30_MOST_RECENT_RUNS, this::aRepositoryWithFinishedQaRuns);
     states.put(A_FAILED_QA_RUN_WITH_STALE_OUTPUTS, this::aFailedQaRunWithStaleOutputs);
+    states.put(A_REPOSITORY_WITH_A_FINISHED_RUN, this::aRepositoryWithAFinishedRun);
   }
 
   /** Every state name this provider answers for. */
@@ -546,6 +554,31 @@ public class ProviderStates {
     release.triggerEventName = "SCMRelease";
     release.configPath = ".config/qits/release.yml";
     persist(List.of(release), List.of());
+    return setup(params);
+  }
+
+  /**
+   * One repository whose newest run finished {@code SUCCESS} on {@code main} — the row behind
+   * {@code GET /ci/api/repositories}, {@code GET /ci/api/repositories/summary} and {@code GET
+   * /ci/api/runs/finished} (qits-1922).
+   *
+   * <p>Stamped at {@link Instant#now()} rather than at {@link #SEEDED_AT} like every other state's
+   * run: {@code listFinishedNewestFirst} orders by {@code finishedAt desc}, and every other state's
+   * runs sit at 2026-01-01, so a run stamped there would never be among the newest finished runs in
+   * the suite's shared database once another test class has run first. {@link Freezer} freezes
+   * every instant to the same placeholder regardless of its real value, so the recording stays
+   * byte-identical across runs even though {@code finishedAt} is not.
+   */
+  private Setup aRepositoryWithAFinishedRun() {
+    Map<String, String> params = ids(Map.of(), "repositoryId", "runId");
+    CiRun run =
+        run(params.get("runId"), params.get("repositoryId"), "main", 0, CiRunStatus.SUCCESS);
+    eventPipeline(run);
+    Instant now = Instant.now();
+    run.createdAt = now;
+    run.startedAt = now;
+    run.finishedAt = now;
+    persist(List.of(run), List.of());
     return setup(params);
   }
 
