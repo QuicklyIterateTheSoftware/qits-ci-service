@@ -292,7 +292,7 @@ public class CiEventTriggerService {
    * CiReleaseComposer} as an argument, so the composer stays a pure function and the mode is
    * written into the run's composed text. See the composer's class javadoc.
    */
-  @ConfigProperty(name = CiReleaseComposer.COVERAGE_GATE_PROPERTY, defaultValue = "false")
+  @ConfigProperty(name = CiReleaseComposer.COVERAGE_GATE_PROPERTY, defaultValue = "true")
   boolean goldenMasterCoverageGate;
 
   /** The config's value, and whatever a test armed after that. */

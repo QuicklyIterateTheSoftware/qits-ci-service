@@ -266,10 +266,10 @@ import java.util.Set;
  * qits-cli: true} does, so a slot that never declared the key still has {@code qits} on {@code
  * PATH}.
  *
- * <p><b>The mode is the platform's: {@value #COVERAGE_GATE_PROPERTY}</b>, default {@code false},
- * handed in by the caller like the consistency refusal below so this class reads no config. It is
- * written into the composed text, so the run's stored snapshot says which mode it ran in, and a
- * retry runs it the same way.
+ * <p><b>The mode is the platform's: {@value #COVERAGE_GATE_PROPERTY}</b>, default {@code true}
+ * since qits-1942, handed in by the caller like the consistency refusal below so this class reads
+ * no config. It is written into the composed text, so the run's stored snapshot says which mode it
+ * ran in, and a retry runs it the same way.
  *
  * <ul>
  *   <li><b>report</b> ({@code false}): the CLI's output is printed, and whatever its exit code —
@@ -487,8 +487,8 @@ public final class CiReleaseComposer {
 
   /**
    * The qits-ci property the coverage check's mode is read from, by the caller that composes:
-   * {@code false} (the default) reports, {@code true} gates. Owned by the platform, never by a
-   * repository.
+   * {@code true} (the default since qits-1942) gates, {@code false} reports. Owned by the platform,
+   * never by a repository.
    */
   public static final String COVERAGE_GATE_PROPERTY = "qits.ci.golden-master-coverage.gate";
 

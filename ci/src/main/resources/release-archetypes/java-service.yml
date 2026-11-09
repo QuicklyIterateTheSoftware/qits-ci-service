@@ -410,9 +410,10 @@ release-request:
   # `contracts:` declares none, `--index <from>index.json` when its `from:` is not golden-masters/.
   # Nothing here declares it: the composer adds it to this archetype's last QA step, so a repository
   # replacing this slot keeps it, and there is no key to drop it with. The CLI comes with the check.
-  # REPORT-ONLY until the platform says otherwise: with `qits.ci.golden-master-coverage.gate=false`
-  # (qits-ci's default) no outcome of the check, a CLI too old to know the verb included, changes
-  # this step's verdict; with `true`, uncovered operations or a missing input fail it.
+  # GATING by default since qits-1942, once all 19 java-service repositories reached full coverage:
+  # with `qits.ci.golden-master-coverage.gate=true` (qits-ci's default) uncovered operations, a
+  # missing or malformed input, or a CLI too old to know the verb fail this step; with `false`, the
+  # platform's escape hatch, the check only reports and never changes the verdict.
   #
   # `user: build`, and NOT a switch inside the script: a story IT hands the launched artifact an
   # embedded postgres, initdb refuses to run as root and calls getpwuid, so the step needs a
