@@ -170,7 +170,7 @@
              bumped like the rows above when the frontend releases a changed pact. -->
         <qits.ci-frontend-pacts-qits-ci-service.version>2026.1108.174739</qits.ci-frontend-pacts-qits-ci-service.version>
         <qits.projects-frontend-pacts-qits-ci-service.version>2026.1108.144847</qits.projects-frontend-pacts-qits-ci-service.version>
-        <qits.docs-frontend-pacts-qits-ci-service.version>2026.1109.193124</qits.docs-frontend-pacts-qits-ci-service.version>
+        <qits.docs-frontend-pacts-qits-ci-service.version>2026.1109.203135</qits.docs-frontend-pacts-qits-ci-service.version>
         <qits.events-frontend-pacts-qits-ci-service.version>2026.1108.174003</qits.events-frontend-pacts-qits-ci-service.version>
         <qits.githost-frontend-pacts-qits-ci-service.version>2026.1108.174236</qits.githost-frontend-pacts-qits-ci-service.version>
         <qits.maintenance-frontend-pacts-qits-ci-service.version>2026.1108.200007</qits.maintenance-frontend-pacts-qits-ci-service.version>
