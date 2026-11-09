@@ -1814,6 +1814,69 @@ public class CiReleaseComposerTest {
   }
 
   /**
+   * qits-1948: {@code contracts.routes:} publishes the recorded route freezes as the {@code
+   * @routes/<application>} docs site — {@code --dir}, {@code --if-changed}, the provenance meta —
+   * in the release step's publish block, after the contract packages and {@code contract-docs} and
+   * before the changelog. It is no {@code artifacts:} entry, so the join owes no row for it, and the
+   * QA slot never publishes anything, this site included.
+   */
+  @Test
+  public void anAppDeclaringRoutesPublishesTheRoutesSiteInTheReleaseStepOnly() {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            CiRepoRef.of("66666666-7777-8888-9999-000000000000", "qits", "qits-landing-app"),
+            slots(
+                """
+                archetype: app
+                artifacts:
+                  - { type: docker, name: qits/qits-landing, sbom: .sbom/sbom.json }
+                contracts:
+                  application: qits-landing
+                  golden-masters: { from: golden-masters/, packages: [npm] }
+                  routes: { from: src/testing/browser/freezes }
+                  pacts:
+                    qits-projects-service: { packages: [maven] }
+                """),
+            archetype(
+                "app",
+                """
+                release-request:
+                  - image: qits/build-images/ci-base:latest
+                    build: true
+                    script: buildctl build --frontend dockerfile.v0 --local context=.
+                release:
+                  - image: qits/build-images/ci-base:latest
+                    build: true
+                    timeout-seconds: 1800
+                    script: |
+                      npm ci && npm run test:pacts
+                      buildctl build --frontend dockerfile.v0 --local context=. \\
+                        --output "type=image,name=registry.qits.$QITS_DOMAIN/qits/qits-landing:$QITS_VERSION,push=true"
+                """));
+
+    golden("app-routes-release.yml", composed.releaseDocument());
+
+    String routes =
+        "qits artifacts publish docs submit --site '@routes/qits-landing' --dir"
+            + " 'src/testing/browser/freezes' --if-changed --version \"$QITS_VERSION\" --meta"
+            + " git.commit.hash=\"$QITS_CI_SHA\" --meta git.repository.name=\"$QITS_CI_REPO_NAME\"\n";
+    String document = composed.releaseDocument();
+    int at = document.indexOf(routes);
+    assertTrue(at >= 0, document);
+    assertEquals(at, document.lastIndexOf(routes), "published once");
+    int contractDocs = document.indexOf("qits artifacts publish contract-docs");
+    int changelog = document.indexOf("qits artifacts publish changelog");
+    assertTrue(contractDocs >= 0 && contractDocs < at, "after contract-docs");
+    assertTrue(changelog > at, "before the changelog");
+    assertFalse(
+        document.contains("name: \"@routes/") || document.contains("name: '@routes/"),
+        "no artifacts: row for the routes site");
+    assertNotNull(composed.releaseRequestDocument());
+    assertFalse(composed.releaseRequestDocument().contains("@routes/"), "never in the QA slot");
+    assertFalse(composed.releaseRequestDocument().contains("docs submit"), "never in the QA slot");
+  }
+
+  /**
    * qits-664: {@code sbom:} is now mandatory on every non-{@code docs} entry, so the shape this test
    * used to cover — a maven or npm entry publishing with no SBOM at all — can no longer be parsed out
    * of a {@code release.yml}. The refusal itself is {@code CiReleaseSlotParserTest}'s to hold; what is

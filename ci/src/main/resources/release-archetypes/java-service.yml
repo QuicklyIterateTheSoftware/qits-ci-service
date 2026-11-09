@@ -116,6 +116,12 @@
 # it needs `golden-masters:` declared too, and it needs a qits CLI that knows `contract-docs
 # --entities` — a repository must not declare the key before this qits-ci's pinned CLI carries it.
 #
+# `routes: { from: <dir> }` (qits-1948) names a frontend's recorded route freezes; the release step
+# publishes the directory as the docs site `@routes/<application>` (`qits artifacts publish docs
+# submit --dir <dir> --if-changed`), after `contract-docs`. It is deliberately no `artifacts:` entry
+# and announces no row: an unchanged tree publishes nothing, decided by the CLI's content hash. It
+# too needs a pinned CLI that knows `docs submit --dir`/`--if-changed` before anyone declares it.
+#
 # ---------------------------------------------------------------------------------------------
 # WHAT THIS RECIPE READS OUT OF A REPOSITORY, AND WHY IT IS THE DECLARATION
 #

@@ -129,7 +129,7 @@ public class CiContractsTest {
     assertTrue(
         refused("contracts:\n  application: qits-x\n")
             .getMessage()
-            .contains("declares neither 'golden-masters' nor 'pacts'"));
+            .contains("declares none of 'golden-masters', 'pacts' or 'routes'"));
   }
 
   @Test
@@ -318,5 +318,91 @@ public class CiContractsTest {
                     + " [maven] }\n  entities: docs/entities.yaml\n")
             .getMessage();
     assertTrue(notJson.contains("must end in .json"), notJson);
+  }
+
+  // --- routes (qits-1948) --------------------------------------------------------------------------
+
+  @Test
+  public void routesIsAcceptedAndExposedOnTheRecord() {
+    CiContracts accepted =
+        contracts(
+            """
+            contracts:
+              application: qits-landing
+              routes: { from: src/testing/browser/freezes }
+              pacts:
+                qits-projects-service: { packages: [maven] }
+            """);
+    assertEquals("src/testing/browser/freezes", accepted.routesFrom());
+    assertEquals(
+        List.of("eu.wohlben.qits:qits-landing-app-pacts-qits-projects-service"),
+        accepted.packages("qits-landing-app").stream().map(Package::name).toList(),
+        "routes names no package: it is a docs site, not an announced artifact");
+
+    CiContracts alone =
+        contracts(
+            """
+            contracts:
+              application: qits-landing
+              routes: { from: freezes/ }
+            """);
+    assertEquals("freezes/", alone.routesFrom(), "routes alone is a tree worth the section");
+    assertTrue(alone.packages("qits-landing-app").isEmpty());
+
+    CiContracts absent =
+        contracts(
+            """
+            contracts:
+              application: qits-x
+              golden-masters: { from: golden-masters/, packages: [maven] }
+            """);
+    assertEquals(null, absent.routesFrom());
+  }
+
+  @Test
+  public void routesRequiresTheApplication() {
+    String message =
+        refused("contracts:\n  routes: { from: freezes/ }\n").getMessage();
+    assertTrue(message.contains("contracts.application is missing"), message);
+  }
+
+  @Test
+  public void routesIsAMappingOfFromAndNothingElse() {
+    String notAMapping =
+        refused("contracts:\n  application: qits-x\n  routes: freezes/\n").getMessage();
+    assertTrue(notAMapping.contains("contracts.routes must be a mapping of { from }"), notAMapping);
+    String unknown =
+        refused("contracts:\n  application: qits-x\n  routes: { from: freezes/, packages: [npm] }\n")
+            .getMessage();
+    assertTrue(unknown.contains("contracts.routes declares an unknown key 'packages'"), unknown);
+    assertTrue(unknown.contains("it declares only 'from'"), unknown);
+    String publish =
+        refused("contracts:\n  application: qits-x\n  routes: { from: freezes/, publish: always }\n")
+            .getMessage();
+    assertTrue(publish.contains("every contract package is if-changed by definition"), publish);
+    String vocabulary =
+        refused("contracts:\n  application: qits-x\n  route: { from: freezes/ }\n").getMessage();
+    assertTrue(
+        vocabulary.contains("'application', 'golden-masters', 'entities', 'routes' and 'pacts'"),
+        vocabulary);
+  }
+
+  @Test
+  public void routesFromIsANonEmptyRelativeDownwardPath() {
+    for (String from : new String[] {"/abs/freezes", "../freezes", "a/../../b", "a/.."}) {
+      String message =
+          refused("contracts:\n  application: qits-x\n  routes: { from: '" + from + "' }\n")
+              .getMessage();
+      assertTrue(message.contains("contracts.routes.from"), message);
+      assertTrue(message.contains("downwards"), message);
+    }
+    for (String yaml :
+        new String[] {
+          "contracts:\n  application: qits-x\n  routes: {}\n",
+          "contracts:\n  application: qits-x\n  routes: { from: '' }\n"
+        }) {
+      String message = refused(yaml).getMessage();
+      assertTrue(message.contains("contracts.routes.from is missing"), message);
+    }
   }
 }

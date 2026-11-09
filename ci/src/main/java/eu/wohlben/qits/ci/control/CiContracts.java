@@ -18,6 +18,7 @@ import java.util.Set;
  *   application: qits-landing
  *   golden-masters: { from: golden-masters/, packages: [maven, npm] }
  *   entities: docs/entities.json
+ *   routes: { from: src/testing/browser/freezes }
  *   pacts:
  *     qits-projects-service: { packages: [maven] }
  * }</pre>
@@ -31,6 +32,24 @@ import java.util.Set;
  * exists only when {@code golden-masters:} is declared — so the key is refused without one. It names
  * no package of its own: there is no {@code entities} ecosystem and no coordinate, only a file
  * folded into the bundle {@code golden-masters:} already produces.
+ *
+ * <h2>{@code routes:} is a docs site, and lives here rather than under {@code artifacts:}</h2>
+ *
+ * <p>{@code routes:} (qits-1948) names the repository-relative directory of a frontend's recorded
+ * route freezes — the HTTP exchanges its browser tests replay — and the release slot's postlude
+ * publishes it as the docs site {@code @routes/<application>}, through {@code qits artifacts
+ * publish docs submit --dir <from> --if-changed}. It takes {@code from:} and nothing else: there is
+ * no ecosystem and no coordinate, the site's name is derived from {@code application:} exactly as
+ * the {@code @contracts} bundle's is, and so the key is refused without one like every other key
+ * here.
+ *
+ * <p>It lives under {@code contracts:} and not under {@code artifacts:} on purpose, for the reason
+ * {@code @contracts} does. An {@code artifacts:} entry is announced — it is a row the release join
+ * owes, and an artifact that published nothing is a missing row — while a routes site is
+ * <b>published only when its content changed</b>, a decision the CLI's {@code --if-changed} makes
+ * from the tree's content hash at publish time. An unchanged release publishes nothing, which an
+ * announcement row cannot express, so the site has no row at all: like the contract docs, it is
+ * documentation the release carries, not a deliverable it promises.
  *
  * <h2>Pacts are keyed by the provider's repository name, and picked by file name</h2>
  *
@@ -69,9 +88,15 @@ import java.util.Set;
  * @param pacts the pact packages by provider repository, in declared order, empty when none
  * @param entities the repository-relative path to the entity exposure map, or null when none is
  *     declared; never present without {@code goldenMasters}
+ * @param routesFrom the repository-relative directory of the recorded route freezes published as
+ *     the {@code @routes/<application>} docs site, or null when {@code routes:} is not declared
  */
 public record CiContracts(
-    String application, Source goldenMasters, Map<String, Source> pacts, String entities) {
+    String application,
+    Source goldenMasters,
+    Map<String, Source> pacts,
+    String entities,
+    String routesFrom) {
 
   /** The group every contract package's maven coordinate is in. */
   static final String GROUP = "eu.wohlben.qits";
@@ -85,6 +110,7 @@ public record CiContracts(
   private static final String GOLDEN_MASTERS_KEY = "golden-masters";
   private static final String PACTS_KEY = "pacts";
   private static final String ENTITIES_KEY = "entities";
+  private static final String ROUTES_KEY = "routes";
   private static final String FROM_KEY = "from";
   private static final String PACKAGES_KEY = "packages";
 
@@ -252,7 +278,8 @@ public record CiContracts(
    * Parses the section, strictly: an unknown key at any level, a missing or malformed {@code
    * application}, a section with neither tree, an empty or duplicate or unknown {@code packages}
    * entry, an {@code entities:} that is not a relative, downward {@code .json} path or that is
-   * declared without {@code golden-masters:}, and {@code publish:} anywhere inside are all {@link
+   * declared without {@code golden-masters:}, a {@code routes:} that is not exactly {@code { from:
+   * <relative, downward directory> }}, and {@code publish:} anywhere inside are all {@link
    * CiConfigException}s naming the file.
    */
   static CiContracts parse(Object raw, String configPath) {
@@ -260,13 +287,16 @@ public record CiContracts(
     if (!(raw instanceof Map<?, ?> map)) {
       throw new CiConfigException(
           where
-              + " must be a mapping of { application, golden-masters, entities, pacts }, got: "
+              + " must be a mapping of { application, golden-masters, entities, routes, pacts }, got: "
               + CiConfigSchema.typeOf(raw));
     }
     refusePublish(map, configPath, KEY);
     requireKeys(
-        map, Set.of(APPLICATION_KEY, GOLDEN_MASTERS_KEY, ENTITIES_KEY, PACTS_KEY), configPath, KEY,
-        "'application', 'golden-masters', 'entities' and 'pacts'");
+        map,
+        Set.of(APPLICATION_KEY, GOLDEN_MASTERS_KEY, ENTITIES_KEY, ROUTES_KEY, PACTS_KEY),
+        configPath,
+        KEY,
+        "'application', 'golden-masters', 'entities', 'routes' and 'pacts'");
     Object app = map.get(APPLICATION_KEY);
     if (!(app instanceof String application) || !application.matches(APPLICATION)) {
       throw new CiConfigException(
@@ -280,13 +310,17 @@ public record CiContracts(
               + " — it is the application whose contracts these are, "
               + APPLICATION);
     }
-    if (!map.containsKey(GOLDEN_MASTERS_KEY) && !map.containsKey(PACTS_KEY)) {
+    if (!map.containsKey(GOLDEN_MASTERS_KEY)
+        && !map.containsKey(PACTS_KEY)
+        && !map.containsKey(ROUTES_KEY)) {
       throw new CiConfigException(
           where
-              + " declares neither '"
+              + " declares none of '"
               + GOLDEN_MASTERS_KEY
-              + "' nor '"
+              + "', '"
               + PACTS_KEY
+              + "' or '"
+              + ROUTES_KEY
               + "' — omit the section, or name the trees this repository publishes");
     }
     Source goldenMasters =
@@ -295,6 +329,8 @@ public record CiContracts(
             : null;
     String entities =
         map.containsKey(ENTITIES_KEY) ? entities(map, goldenMasters, configPath) : null;
+    String routesFrom =
+        map.containsKey(ROUTES_KEY) ? routes(map.get(ROUTES_KEY), configPath) : null;
     Map<String, Source> pacts = new LinkedHashMap<>();
     if (map.containsKey(PACTS_KEY)) {
       Object rawPacts = map.get(PACTS_KEY);
@@ -325,7 +361,29 @@ public record CiContracts(
         pacts.put(provider, pactSource(pact.getValue(), configPath, pactsWhere + "." + provider));
       }
     }
-    return new CiContracts(application, goldenMasters, pacts, entities);
+    return new CiContracts(application, goldenMasters, pacts, entities, routesFrom);
+  }
+
+  /**
+   * The {@code routes:} mapping: {@code { from }} and nothing else, {@code from} a non-blank,
+   * relative, downward directory — the same rule as {@code golden-masters.from}, since both become
+   * a path argument of the release step. {@code publish:} is refused like everywhere in the section:
+   * the site is {@code --if-changed} by definition.
+   */
+  private static String routes(Object raw, String configPath) {
+    String where = KEY + "." + ROUTES_KEY;
+    if (!(raw instanceof Map<?, ?> map)) {
+      throw new CiConfigException(
+          configPath
+              + ": "
+              + where
+              + " must be a mapping of { from }, e.g. { from: src/testing/browser/freezes }, got: "
+              + CiConfigSchema.typeOf(raw));
+    }
+    refusePublish(map, configPath, where);
+    requireKeys(map, Set.of(FROM_KEY), configPath, where, "'from'");
+    return CiReleaseSlotParser.requireDownward(
+        map.get(FROM_KEY), configPath, where + "." + FROM_KEY);
   }
 
   /**

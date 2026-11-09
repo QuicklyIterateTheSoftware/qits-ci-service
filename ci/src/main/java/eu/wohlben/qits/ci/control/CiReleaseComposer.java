@@ -146,8 +146,8 @@ import java.util.Set;
  * $QITS_ARTIFACTS_CLI_PACKAGE} and the run's credential files. The exceptions
  * are what {@code release.yml} declares about its artifacts and contracts — an artifact's {@code
  * type}/{@code name}, its {@code sbom:}, {@code path:}, {@code link:} and {@code include:}, and a
- * contract tree's application, provider, {@code from:} and {@code entities:} — which are
- * interpolated into the postlude: held to {@link CiReleaseSlotParser#SCRIPT_SAFE} (or {@link
+ * contract tree's application, provider, {@code from:}, {@code entities:} and {@code routes.from:}
+ * — which are interpolated into the postlude: held to {@link CiReleaseSlotParser#SCRIPT_SAFE} (or {@link
  * CiReleaseSlotParser#INCLUDE_SAFE} for a glob) at parse time and single-quoted here, so the value
  * cannot be anything but a word.
  *
@@ -159,6 +159,8 @@ import java.util.Set;
  * maven or npm entry in {@code link:} dependency order (an {@code if-changed} link group asked with
  * {@code --dry-run} first, so it publishes together or not at all), then one {@code contract} per contract
  * package, then {@code contract-docs} when golden masters are declared, then one {@code docs submit
+ * --dir --if-changed} for the {@code @routes/<application>} site when {@code contracts.routes:} is
+ * declared (qits-1948; no announcement row, see {@link CiContracts}), then one {@code docs submit
  * --openapi} per {@code @apidocs} entry naming its file. Each call fails the step on a non-zero
  * exit.
  *
@@ -1928,6 +1930,18 @@ public final class CiReleaseComposer {
           out.append(" --entities ").append(quote(contracts.entities()));
         }
         out.append(" --version \"$QITS_VERSION\"").append(META).append('\n');
+      }
+      // THE ROUTES SITE (qits-1948): the recorded route freezes as a docs site of their own. No
+      // announcement row, like @contracts — an unchanged tree publishes nothing, which the CLI's
+      // --if-changed decides from its content hash, and a row cannot say "nothing this time".
+      if (contracts.routesFrom() != null) {
+        out.append("qits artifacts publish docs submit --site ")
+            .append(quote("@routes/" + contracts.application()))
+            .append(" --dir ")
+            .append(quote(contracts.routesFrom()))
+            .append(" --if-changed --version \"$QITS_VERSION\"")
+            .append(META)
+            .append('\n');
       }
     }
     for (SlotArtifact artifact : artifacts) {
