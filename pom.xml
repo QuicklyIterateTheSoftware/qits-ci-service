@@ -146,8 +146,8 @@
              consumer pacts against qits-projects, qits-githost, qits-artifacts and qits-idp are
              built from (contracts/consumer/). Bumped like every internal pin. -->
         <qits.projects-golden-masters.version>2026.1109.1559</qits.projects-golden-masters.version>
-        <qits.githost-golden-masters.version>2026.1020.204038</qits.githost-golden-masters.version>
-        <qits.artifacts-golden-masters.version>2026.1107.150727</qits.artifacts-golden-masters.version>
+        <qits.githost-golden-masters.version>2026.1109.41303</qits.githost-golden-masters.version>
+        <qits.artifacts-golden-masters.version>2026.1109.44929</qits.artifacts-golden-masters.version>
         <qits.idp-golden-masters.version>2026.1109.13349</qits.idp-golden-masters.version>
         <!-- The shared consumer-pact helper (golden-master reader, row builder, pact file) the rows
              above are written with. Released out of the qits-integrations-quarkus reactor. -->
