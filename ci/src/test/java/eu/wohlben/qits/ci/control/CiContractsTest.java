@@ -320,6 +320,73 @@ public class CiContractsTest {
     assertTrue(notJson.contains("must end in .json"), notJson);
   }
 
+  // --- database (qits-2014) -------------------------------------------------------------------------
+
+  @Test
+  public void databaseIsAcceptedBesideGoldenMastersAndExposedOnTheRecord() {
+    CiContracts withSlash =
+        contracts(
+            """
+            contracts:
+              application: qits-x
+              golden-masters: { from: golden-masters/, packages: [maven] }
+              database: docs/database/
+            """);
+    assertEquals("docs/database/", withSlash.database());
+
+    CiContracts withoutSlash =
+        contracts(
+            """
+            contracts:
+              application: qits-x
+              golden-masters: { from: golden-masters/, packages: [maven] }
+              database: docs/database
+            """);
+    assertEquals("docs/database", withoutSlash.database());
+
+    CiContracts absent =
+        contracts(
+            """
+            contracts:
+              application: qits-x
+              golden-masters: { from: golden-masters/, packages: [maven] }
+            """);
+    assertEquals(null, absent.database());
+  }
+
+  @Test
+  public void databaseRequiresGoldenMasters() {
+    String message =
+        refused(
+                "contracts:\n  application: qits-x\n  pacts:\n    qits-p-service: { packages:"
+                    + " [maven] }\n  database: docs/database/\n")
+            .getMessage();
+    assertTrue(message.contains("contracts.database"), message);
+    assertTrue(message.contains("declared without 'golden-masters'"), message);
+  }
+
+  @Test
+  public void databaseIsARelativeDownwardPath() {
+    assertTrue(
+        refused(
+                "contracts:\n  application: qits-x\n  golden-masters: { from: gm/, packages:"
+                    + " [maven] }\n  database: ../docs/database/\n")
+            .getMessage()
+            .contains("downwards"));
+    assertTrue(
+        refused(
+                "contracts:\n  application: qits-x\n  golden-masters: { from: gm/, packages:"
+                    + " [maven] }\n  database: /docs/database/\n")
+            .getMessage()
+            .contains("downwards"));
+    assertTrue(
+        refused(
+                "contracts:\n  application: qits-x\n  golden-masters: { from: gm/, packages:"
+                    + " [maven] }\n  database: ''\n")
+            .getMessage()
+            .contains("missing"));
+  }
+
   // --- routes (qits-1948) --------------------------------------------------------------------------
 
   @Test
@@ -383,7 +450,8 @@ public class CiContractsTest {
     String vocabulary =
         refused("contracts:\n  application: qits-x\n  route: { from: freezes/ }\n").getMessage();
     assertTrue(
-        vocabulary.contains("'application', 'golden-masters', 'entities', 'routes' and 'pacts'"),
+        vocabulary.contains(
+            "'application', 'golden-masters', 'entities', 'database', 'routes' and 'pacts'"),
         vocabulary);
   }
 

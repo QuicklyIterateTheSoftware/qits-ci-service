@@ -103,6 +103,7 @@
 #       application: qits-projects
 #       golden-masters: { from: golden-masters/, packages: [maven, npm] }
 #       entities: docs/entities.json
+#       database: docs/database/
 #       pacts:
 #         qits-githost-service: { packages: [maven] }
 #
@@ -115,6 +116,11 @@
 # `contract-docs` call `golden-masters:` already composes (`--entities <path>` beside `--from`), so
 # it needs `golden-masters:` declared too, and it needs a qits CLI that knows `contract-docs
 # --entities` — a repository must not declare the key before this qits-ci's pinned CLI carries it.
+#
+# `database:` (qits-2014) is the optional repository-relative directory holding `qits database
+# diagram`'s `docs/database/*.md`. It rides the same `contract-docs` call (`--database <dir>`), which
+# bundles each diagram under `database/` with a `database/index.json`; the same two rules hold:
+# `golden-masters:` declared, and a pinned CLI that knows `contract-docs --database`.
 #
 # `routes: { from: <dir> }` (qits-1948) names a frontend's recorded route freezes; the release step
 # publishes the directory as the docs site `@routes/<application>` (`qits artifacts publish docs

@@ -33,6 +33,14 @@ import java.util.Set;
  * no package of its own: there is no {@code entities} ecosystem and no coordinate, only a file
  * folded into the bundle {@code golden-masters:} already produces.
  *
+ * <h2>{@code database:} rides the golden-masters bundle too</h2>
+ *
+ * <p>{@code database:} (qits-2014) is the optional repository-relative directory holding {@code
+ * qits database diagram}'s {@code docs/database/*.md}. Like {@code entities:}, it is handed to
+ * {@code contract-docs} as {@code --database <dir>} and bundled as {@code database/} with an index
+ * — it rides the {@code @contracts} bundle, so the key is refused without {@code golden-masters:}
+ * for the identical reason.
+ *
  * <h2>{@code routes:} is a docs site, and lives here rather than under {@code artifacts:}</h2>
  *
  * <p>{@code routes:} (qits-1948) names the repository-relative directory of a frontend's recorded
@@ -88,6 +96,8 @@ import java.util.Set;
  * @param pacts the pact packages by provider repository, in declared order, empty when none
  * @param entities the repository-relative path to the entity exposure map, or null when none is
  *     declared; never present without {@code goldenMasters}
+ * @param database the repository-relative directory holding {@code qits database diagram}'s
+ *     output, or null when none is declared; never present without {@code goldenMasters}
  * @param routesFrom the repository-relative directory of the recorded route freezes published as
  *     the {@code @routes/<application>} docs site, or null when {@code routes:} is not declared
  */
@@ -96,6 +106,7 @@ public record CiContracts(
     Source goldenMasters,
     Map<String, Source> pacts,
     String entities,
+    String database,
     String routesFrom) {
 
   /** The group every contract package's maven coordinate is in. */
@@ -110,6 +121,7 @@ public record CiContracts(
   private static final String GOLDEN_MASTERS_KEY = "golden-masters";
   private static final String PACTS_KEY = "pacts";
   private static final String ENTITIES_KEY = "entities";
+  private static final String DATABASE_KEY = "database";
   private static final String ROUTES_KEY = "routes";
   private static final String FROM_KEY = "from";
   private static final String PACKAGES_KEY = "packages";
@@ -278,25 +290,28 @@ public record CiContracts(
    * Parses the section, strictly: an unknown key at any level, a missing or malformed {@code
    * application}, a section with neither tree, an empty or duplicate or unknown {@code packages}
    * entry, an {@code entities:} that is not a relative, downward {@code .json} path or that is
-   * declared without {@code golden-masters:}, a {@code routes:} that is not exactly {@code { from:
-   * <relative, downward directory> }}, and {@code publish:} anywhere inside are all {@link
-   * CiConfigException}s naming the file.
+   * declared without {@code golden-masters:}, a {@code database:} that is not a relative, downward
+   * directory or that is declared without {@code golden-masters:}, a {@code routes:} that is not
+   * exactly {@code { from: <relative, downward directory> }}, and {@code publish:} anywhere inside
+   * are all {@link CiConfigException}s naming the file.
    */
   static CiContracts parse(Object raw, String configPath) {
     String where = configPath + ": '" + KEY + "'";
     if (!(raw instanceof Map<?, ?> map)) {
       throw new CiConfigException(
           where
-              + " must be a mapping of { application, golden-masters, entities, routes, pacts }, got: "
+              + " must be a mapping of { application, golden-masters, entities, database, routes,"
+              + " pacts }, got: "
               + CiConfigSchema.typeOf(raw));
     }
     refusePublish(map, configPath, KEY);
     requireKeys(
         map,
-        Set.of(APPLICATION_KEY, GOLDEN_MASTERS_KEY, ENTITIES_KEY, ROUTES_KEY, PACTS_KEY),
+        Set.of(
+            APPLICATION_KEY, GOLDEN_MASTERS_KEY, ENTITIES_KEY, DATABASE_KEY, ROUTES_KEY, PACTS_KEY),
         configPath,
         KEY,
-        "'application', 'golden-masters', 'entities', 'routes' and 'pacts'");
+        "'application', 'golden-masters', 'entities', 'database', 'routes' and 'pacts'");
     Object app = map.get(APPLICATION_KEY);
     if (!(app instanceof String application) || !application.matches(APPLICATION)) {
       throw new CiConfigException(
@@ -329,6 +344,8 @@ public record CiContracts(
             : null;
     String entities =
         map.containsKey(ENTITIES_KEY) ? entities(map, goldenMasters, configPath) : null;
+    String database =
+        map.containsKey(DATABASE_KEY) ? database(map, goldenMasters, configPath) : null;
     String routesFrom =
         map.containsKey(ROUTES_KEY) ? routes(map.get(ROUTES_KEY), configPath) : null;
     Map<String, Source> pacts = new LinkedHashMap<>();
@@ -361,7 +378,7 @@ public record CiContracts(
         pacts.put(provider, pactSource(pact.getValue(), configPath, pactsWhere + "." + provider));
       }
     }
-    return new CiContracts(application, goldenMasters, pacts, entities, routesFrom);
+    return new CiContracts(application, goldenMasters, pacts, entities, database, routesFrom);
   }
 
   /**
@@ -417,6 +434,26 @@ public record CiContracts(
               + " end in .json");
     }
     return path;
+  }
+
+  /**
+   * The {@code database:} directory: a non-blank, relative, downward path, kept as written (a
+   * trailing slash or none), and refused without {@code golden-masters:} for {@link #entities}'s
+   * reason — {@code qits database diagram}'s output rides the same {@code @contracts} bundle.
+   */
+  private static String database(Map<?, ?> map, Source goldenMasters, String configPath) {
+    String what = KEY + "." + DATABASE_KEY;
+    if (goldenMasters == null) {
+      throw new CiConfigException(
+          configPath
+              + ": "
+              + what
+              + " is declared without '"
+              + GOLDEN_MASTERS_KEY
+              + "' — the database diagram directory is packed into the golden-masters docs bundle,"
+              + " so it needs that tree declared too");
+    }
+    return CiReleaseSlotParser.requireDownward(map.get(DATABASE_KEY), configPath, "'" + what + "'");
   }
 
   /**
