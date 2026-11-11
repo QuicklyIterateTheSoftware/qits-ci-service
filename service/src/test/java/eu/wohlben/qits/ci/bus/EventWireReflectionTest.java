@@ -85,13 +85,11 @@ public class EventWireReflectionTest {
             RepositoryRenamed.class,
             ReleaseRequestStateChanged.class,
             ApprovalRequirementChanged.class,
-            eu.wohlben.qits.ci.targethost.TargetLeaseChanged.class,
-            EventEnvelope.class,
-            EventFrame.class),
+            eu.wohlben.qits.ci.targethost.TargetLeaseChanged.class),
         Set.of(registration.targets()),
         "the four build events out, the push, the rename, the two release-request gate events and"
-            + " qits-system's lease event in, the PUT body, the frame — a twelfth wire type is added"
-            + " here");
+            + " qits-system's lease event in — a tenth event type is added here; the library's own"
+            + " wire types are the eventstream extension's (qits-2055)");
   }
 
   /**
@@ -137,23 +135,24 @@ public class EventWireReflectionTest {
   }
 
   /**
-   * The string entry, kept honest. A rename or a move of the mix-in would otherwise leave a
-   * registration that names nothing, silently — and its consequence is not a crash but {@code
-   * eventId} appearing in the canonical payload, which is a wire contract violation qits-events
-   * answers with a 400 the next time the same id is replayed.
+   * The library's wire types are qits-eventstream's to register (qits-2055): its extension names
+   * {@code EventEnvelope}, {@code EventFrame}, {@code EventPage} and the private mix-in at build
+   * time. Listing them here again is what the live check of qits-2055 removed, so this asserts the
+   * list stays free of them — the native binary running is the proof the extension does its job,
+   * and its {@code eventstream-publish} readiness check self-tests the path at boot.
    */
   @Test
-  public void theMixinNamedByStringStillExistsAndStillHidesTheEnvelopesFields() throws Exception {
-    Class<?> mixin = Class.forName(MIXIN);
-    assertEquals(
-        MIXIN,
-        Set.of(EventWireReflection.class.getAnnotation(RegisterForReflection.class).classNames())
-            .iterator()
-            .next());
-    Method eventId = mixin.getDeclaredMethod("eventId");
+  public void theLibrarysOwnWireTypesAreLeftToTheEventstreamExtension() throws Exception {
+    RegisterForReflection registration =
+        EventWireReflection.class.getAnnotation(RegisterForReflection.class);
+    assertEquals(0, registration.classNames().length, "the mix-in is the extension's to register");
+    Set<Class<?>> targets = Set.of(registration.targets());
+    assertFalse(targets.contains(EventEnvelope.class));
+    assertFalse(targets.contains(EventFrame.class));
+    Method eventId = Class.forName(MIXIN).getDeclaredMethod("eventId");
     assertNotNull(
         eventId.getAnnotation(JsonIgnore.class),
-        "the mix-in is registered because this @JsonIgnore is read by reflection");
+        "the mix-in still hides identity; the extension, not this list, makes that visible in native");
   }
 
   /**

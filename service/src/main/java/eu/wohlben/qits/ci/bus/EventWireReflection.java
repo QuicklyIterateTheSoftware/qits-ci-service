@@ -5,8 +5,6 @@ import eu.wohlben.qits.ci.events.BuildStatusChanged;
 import eu.wohlben.qits.ci.events.BuildSuccessful;
 import eu.wohlben.qits.ci.events.SoftwareRelease;
 import eu.wohlben.qits.ci.targethost.TargetLeaseChanged;
-import eu.wohlben.qits.eventstream.control.EventEnvelope;
-import eu.wohlben.qits.eventstream.control.EventFrame;
 import eu.wohlben.qits.githost.events.SCMPublishCommit;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
@@ -39,8 +37,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * serialized on the way out and deserialized on the way back in (the round trip is one service),
  * {@link SoftwareRelease} is serialized on the way out and never read back here — qits-ci publishes
  * that name and subscribes to nothing under it — {@link SCMPublishCommit} is another repository's
- * record and is only ever read <em>in</em>, {@link EventEnvelope} is the PUT body, and {@link
- * EventFrame} is what arrives on {@code /events/stream}. A listener for a second event type needs
+ * record and is only ever read <em>in</em>, the PUT body and the frame are the
+ * library's own (below). A listener for a second event type needs
  * its class added here, and {@code EventWireReflectionTest} asserts that against the registered
  * listener beans rather than leaving it to be remembered.
  *
@@ -98,21 +96,14 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * unregistered one serializes as a Jackson error or, worse, as a payload missing what the mix-in was
  * supposed to hide.
  *
- * <p><b>And why a mix-in by name — this one is measured, not reasoned.</b> {@code
- * CanonicalJson$QitsEventMixin} is the private nested class that keeps {@code QitsEvent}'s four
- * declared methods — {@code eventId} above all — out of a payload, and Jackson finds its {@code
- * @JsonIgnore}s by calling {@code getDeclaredMethods()} on it, which is reflection like any other.
- * Two binaries were built to settle what that costs. With the three targets and no mix-in entry, a
- * green build's payload was {@code {"branch":…,"commitSha":…,"eventId":"00a32ad6-…","finishedAt":…,
- * "repoId":…,"runId":…}} — no crash, no log, {@code eventId} simply present, which is a <b>wire
- * contract violation</b> and the worse of the two failure modes, since identity is supposed to
- * travel only in the envelope. With the entry, the same build published the five fields and nothing
- * else. So the fix Agent D scoped from the observed stack trace was one class short of complete, and
- * the missing one failed silently. Quarkus registers mix-ins itself when they are declared its way
- * ({@code @JacksonMixin}); this one cannot be, because it belongs to a mapper Quarkus must not
- * reach. It is named as a string because it is private and stays private — a build concern is not a
- * reason to widen a library's encapsulation — and the string cannot rot unnoticed: {@code
- * EventWireReflectionTest} resolves it.
+ * <p><b>The library's own wire types are no longer here (qits-2055).</b> {@code EventEnvelope}
+ * (the PUT body), {@code EventFrame} (what arrives on {@code /events/stream}), {@code EventPage} and
+ * the private mix-in {@code CanonicalJson$QitsEventMixin} — whose absence once published {@code
+ * eventId} inside a payload, silently — are registered by qits-eventstream's own Quarkus extension
+ * at build time, as is every {@code QitsEvent} implementor in the index. This list keeps this
+ * image's event records anyway, because it costs nothing and covers a record in a jar the index
+ * does not reach. The library's {@code eventstream-publish} readiness check self-tests the whole
+ * path at boot, so a binary that cannot serialise an envelope never goes ready.
  *
  * <p><b>The trigger engine adds nothing here, and that is worth stating rather than leaving to be
  * rediscovered</b> — it is the natural worry in this repository, since the engine parses YAML from
@@ -122,8 +113,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * <em>security</em> property first, and this is the second thing it buys); {@code CiEventTriggerParser}
  * then builds its records by hand from those maps. The event payload is read with {@code readTree}
  * into a {@code JsonNode} and walked — no binding, which is exactly why {@code EventDispatcher} uses
- * the same call to name a frame it could not bind. The only wire type the raw path touches is {@link
- * EventFrame}, already registered above because the typed path touches it too. The provenance fields
+ * the same call to name a frame it could not bind. The only wire type the raw path touches is {@code
+ * EventFrame}, which the eventstream extension registers itself. The provenance fields
  * on {@code CiRunDto} are ordinary REST serialization through the CDI mapper, which Quarkus scans.
  *
  * <p>All of this is in {@code service/} because {@code service/} is where every native concession in
@@ -141,11 +132,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       RepositoryRenamed.class,
       ReleaseRequestStateChanged.class,
       ApprovalRequirementChanged.class,
-      TargetLeaseChanged.class,
-      EventEnvelope.class,
-      EventFrame.class
-    },
-    classNames = "eu.wohlben.qits.eventstream.control.CanonicalJson$QitsEventMixin")
+      TargetLeaseChanged.class
+    })
 public final class EventWireReflection {
 
   private EventWireReflection() {}
