@@ -2679,6 +2679,8 @@ public class CiReleaseComposerTest {
                 if [ -n "${QITS_TEST_STALE:-}" ]; then
                   mkdir -p src/__screenshots__
                   echo png > src/__screenshots__/new.png
+                  mkdir -p src/testing/browser
+                  echo new-routes > src/testing/browser/routes.json
                 fi
                 echo unrelated > unrelated.txt
                 """,
@@ -2706,6 +2708,29 @@ public class CiReleaseComposerTest {
       Process init =
           new ProcessBuilder("git", "init", "-q").directory(checkout.toFile()).start();
       assertEquals(0, init.waitFor());
+      // A tracked file the stale generator rewrites (qits-2056): the status line alone cannot show
+      // which content changed, so the stale case below asserts the printed git diff names it.
+      Files.createDirectories(checkout.resolve("src/testing/browser"));
+      Files.writeString(checkout.resolve("src/testing/browser/routes.json"), "old-routes\n");
+      Process add =
+          new ProcessBuilder("git", "add", "src/testing/browser/routes.json")
+              .directory(checkout.toFile())
+              .start();
+      assertEquals(0, add.waitFor());
+      Process seedCommit =
+          new ProcessBuilder(
+                  "git",
+                  "-c",
+                  "user.email=qits@example.invalid",
+                  "-c",
+                  "user.name=qits",
+                  "commit",
+                  "-q",
+                  "-m",
+                  "seed")
+              .directory(checkout.toFile())
+              .start();
+      assertEquals(0, seedCommit.waitFor());
       Files.writeString(
           work.resolve("stub-qits"),
           "#!/bin/sh\nprintf '%s\\n' \"$*\" > '"
@@ -2755,6 +2780,11 @@ public class CiReleaseComposerTest {
                       + " --kind screenshot-baselines"),
           stale.output());
       assertTrue(stale.output().contains("src/__screenshots__/new.png"), stale.output());
+      // The git diff of the tracked change, printed right after the status line (qits-2056): the
+      // status alone says routes.json changed, the diff says how.
+      assertTrue(stale.output().contains("-old-routes"), stale.output());
+      assertTrue(stale.output().contains("+new-routes"), stale.output());
+      assertFalse(stale.output().contains("diff truncated"), stale.output());
       assertEquals("ci report submit --exit-code 1\n", read(work, "qits-argv.txt"));
       // ...and the same kind and command as one tab-separated line for the hook's CLI (qits-1920).
       assertEquals(staleFile + "\n", read(work, "qits-stale-env.txt"));

@@ -790,6 +790,12 @@ steps:
           qits_step_exit=1
         elif [ -n "$qits_changed" ]; then
           printf '%s\n' "$qits_changed" >&2
+          git --no-pager diff --no-color -- 'docs/database' > /tmp/qits-check-entity-diagram.diff || true
+          head -n 200 /tmp/qits-check-entity-diagram.diff >&2 || true
+          qits_diff_lines=$(wc -l < /tmp/qits-check-entity-diagram.diff) || qits_diff_lines=0
+          if [ "${qits_diff_lines:-0}" -gt 200 ]; then
+            echo "qits-ci: diff truncated at 200 lines" >&2
+          fi
           qits_stale="${qits_stale:+$qits_stale, }entity-diagram"
           qits_regenerate="${qits_regenerate:+$qits_regenerate; }qits release-request regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository ${QITS_CI_REPO_NAME:-<repository>} --kind entity-diagram"
           printf '%s\t%s\n' entity-diagram "qits release-request regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository ${QITS_CI_REPO_NAME:-<repository>} --kind entity-diagram" >> "$QITS_CI_STALE_OUTPUTS"

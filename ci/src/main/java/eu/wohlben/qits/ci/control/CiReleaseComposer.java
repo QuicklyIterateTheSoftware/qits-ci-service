@@ -235,7 +235,9 @@ import java.util.Set;
  * platform-pipelines/automations/<kind>.yml}, verbatim, so the check and the regeneration cannot
  * disagree — and then {@code git status --porcelain --untracked-files=all} over the kind's paths.
  * Any change there means the committed output is stale: the step prints one line naming the stale
- * kinds and the {@code qits release-request regenerate} call for each, and exits 1. A generator that
+ * kinds, the {@code qits release-request regenerate} call for each, and — so the actual content
+ * change is visible rather than just the status line that named it — the {@code git diff} of the
+ * same paths, capped at 200 lines (qits-2056), and exits 1. A generator that
  * fails (a real test failure, for screenshots) fails the step with its own code and is never called
  * stale. Nothing is regenerated or committed here. The check runs before the report hook, so the
  * hook still runs and reports the step's final code. A kind whose kind file declares {@code
@@ -1242,6 +1244,7 @@ public final class CiReleaseComposer {
         }
       }
       String file = OUTPUT_CHECK_PREFIX + check.kind() + ".sh";
+      String diffFile = OUTPUT_CHECK_PREFIX + check.kind() + ".diff";
       StringBuilder paths = new StringBuilder();
       for (String path : OUTPUT_CHECK_PATHS.get(check.kind())) {
         paths.append(' ').append(shellQuote(path));
@@ -1275,6 +1278,20 @@ public final class CiReleaseComposer {
       out.append("    qits_step_exit=1\n");
       out.append("  elif [ -n \"$qits_changed\" ]; then\n");
       out.append("    printf '%s\\n' \"$qits_changed\" >&2\n");
+      // The status line above says WHAT changed; this says HOW (qits-2056). Never allowed to move
+      // qits_step_exit or trip under `set -e`: the diff is captured to a file (so a binary file's
+      // "Binary files ... differ" line is the whole of what it prints) and every command here is
+      // guarded with `|| true`.
+      out.append("    git --no-pager diff --no-color --")
+          .append(paths)
+          .append(" > ")
+          .append(diffFile)
+          .append(" || true\n");
+      out.append("    head -n 200 ").append(diffFile).append(" >&2 || true\n");
+      out.append("    qits_diff_lines=$(wc -l < ").append(diffFile).append(") || qits_diff_lines=0\n");
+      out.append("    if [ \"${qits_diff_lines:-0}\" -gt 200 ]; then\n");
+      out.append("      echo \"qits-ci: diff truncated at 200 lines\" >&2\n");
+      out.append("    fi\n");
       out.append("    qits_stale=\"${qits_stale:+$qits_stale, }").append(check.kind()).append("\"\n");
       String regenerate =
           "qits release-request regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository"

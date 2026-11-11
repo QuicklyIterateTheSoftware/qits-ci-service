@@ -514,6 +514,12 @@ steps:
           qits_step_exit=1
         elif [ -n "$qits_changed" ]; then
           printf '%s\n' "$qits_changed" >&2
+          git --no-pager diff --no-color -- ':(glob)tapes/golden/**' ':(glob)tapes/recordings/**' > /tmp/qits-check-cli-tapes.diff || true
+          head -n 200 /tmp/qits-check-cli-tapes.diff >&2 || true
+          qits_diff_lines=$(wc -l < /tmp/qits-check-cli-tapes.diff) || qits_diff_lines=0
+          if [ "${qits_diff_lines:-0}" -gt 200 ]; then
+            echo "qits-ci: diff truncated at 200 lines" >&2
+          fi
           qits_stale="${qits_stale:+$qits_stale, }cli-tapes"
           qits_regenerate="${qits_regenerate:+$qits_regenerate; }qits release-request regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository ${QITS_CI_REPO_NAME:-<repository>} --kind cli-tapes"
           printf '%s\t%s\n' cli-tapes "qits release-request regenerate --project ${QITS_CI_PROJECT_ID:-<project>} --repository ${QITS_CI_REPO_NAME:-<repository>} --kind cli-tapes" >> "$QITS_CI_STALE_OUTPUTS"
