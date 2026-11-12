@@ -86,7 +86,7 @@
              snapshot nobody published"; qits-githost released the jar on 2026-08-12 and this is that
              release. What kept the snapshot working until then was the bootstrap seed-publishing it
              into the registry, which is not a release and does not survive one being re-seeded. -->
-        <qits.githost-events.version>2026.1109.171513</qits.githost-events.version>
+        <qits.githost-events.version>2026.1111.82105</qits.githost-events.version>
         <qits.auth-core.version>2026.1106.507</qits.auth-core.version>
         <!-- qits-http-core's QitsHttpClients: every hand-rolled java.net.http client under
              service/…/{githost,projects,registry,idp}/ is wrapped through it, so the CLIENT span and
@@ -138,16 +138,16 @@
              qits-platform-maintenance moves it like any internal pin, on a maintenance/* branch, and
              THIS repository's own release request is what gates the move. Do not hand-edit it to
              chase a release. -->
-        <qits.platform-access-cli-binary.version>2026.1111.34038</qits.platform-access-cli-binary.version>
+        <qits.platform-access-cli-binary.version>2026.1112.94349</qits.platform-access-cli-binary.version>
         <!-- pact-jvm's JUnit 5 provider, for contracts/ConsumerPactVerificationTest: the version every
              provider on the estate verifies with, so a consumer's pact is read the same way. -->
         <pact.version>4.7.5</pact.version>
         <!-- The other providers' golden masters (qits-1149), test scope: what this repository's
              consumer pacts against qits-projects, qits-githost, qits-artifacts and qits-idp are
              built from (contracts/consumer/). Bumped like every internal pin. -->
-        <qits.projects-golden-masters.version>2026.1110.31824</qits.projects-golden-masters.version>
+        <qits.projects-golden-masters.version>2026.1112.85411</qits.projects-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1109.41303</qits.githost-golden-masters.version>
-        <qits.artifacts-golden-masters.version>2026.1109.145731</qits.artifacts-golden-masters.version>
+        <qits.artifacts-golden-masters.version>2026.1111.62703</qits.artifacts-golden-masters.version>
         <qits.idp-golden-masters.version>2026.1109.13349</qits.idp-golden-masters.version>
         <!-- The shared consumer-pact helper (golden-master reader, row builder, pact file) the rows
              above are written with. Released out of the qits-integrations-quarkus reactor. -->
@@ -168,18 +168,18 @@
         <!-- The frontends' pacts of what @qits/ui-components asks qits-ci for them (qits-1284): one
              jar per frontend, `pacts/<frontend>_qits-ui-components-jslib_qits-ci-service.json`,
              bumped like the rows above when the frontend releases a changed pact. -->
-        <qits.ci-frontend-pacts-qits-ci-service.version>2026.1110.192835</qits.ci-frontend-pacts-qits-ci-service.version>
-        <qits.projects-frontend-pacts-qits-ci-service.version>2026.1110.192846</qits.projects-frontend-pacts-qits-ci-service.version>
-        <qits.docs-frontend-pacts-qits-ci-service.version>2026.1110.191841</qits.docs-frontend-pacts-qits-ci-service.version>
-        <qits.events-frontend-pacts-qits-ci-service.version>2026.1110.203406</qits.events-frontend-pacts-qits-ci-service.version>
-        <qits.githost-frontend-pacts-qits-ci-service.version>2026.1110.192739</qits.githost-frontend-pacts-qits-ci-service.version>
-        <qits.maintenance-frontend-pacts-qits-ci-service.version>2026.1110.214500</qits.maintenance-frontend-pacts-qits-ci-service.version>
-        <qits.artifacts-frontend-pacts-qits-ci-service.version>2026.1110.104136</qits.artifacts-frontend-pacts-qits-ci-service.version>
-        <qits.deployments-frontend-pacts-qits-ci-service.version>2026.1110.213201</qits.deployments-frontend-pacts-qits-ci-service.version>
-        <qits.mirror-frontend-pacts-qits-ci-service.version>2026.1110.214555</qits.mirror-frontend-pacts-qits-ci-service.version>
-        <qits.observability-frontend-pacts-qits-ci-service.version>2026.1110.191956</qits.observability-frontend-pacts-qits-ci-service.version>
-        <qits.orchestrator-frontend-pacts-qits-ci-service.version>2026.1110.214704</qits.orchestrator-frontend-pacts-qits-ci-service.version>
-        <qits.system-frontend-pacts-qits-ci-service.version>2026.1110.214810</qits.system-frontend-pacts-qits-ci-service.version>
+        <qits.ci-frontend-pacts-qits-ci-service.version>2026.1112.100834</qits.ci-frontend-pacts-qits-ci-service.version>
+        <qits.projects-frontend-pacts-qits-ci-service.version>2026.1112.100555</qits.projects-frontend-pacts-qits-ci-service.version>
+        <qits.docs-frontend-pacts-qits-ci-service.version>2026.1112.101040</qits.docs-frontend-pacts-qits-ci-service.version>
+        <qits.events-frontend-pacts-qits-ci-service.version>2026.1112.104335</qits.events-frontend-pacts-qits-ci-service.version>
+        <qits.githost-frontend-pacts-qits-ci-service.version>2026.1112.100621</qits.githost-frontend-pacts-qits-ci-service.version>
+        <qits.maintenance-frontend-pacts-qits-ci-service.version>2026.1111.174610</qits.maintenance-frontend-pacts-qits-ci-service.version>
+        <qits.artifacts-frontend-pacts-qits-ci-service.version>2026.1112.100550</qits.artifacts-frontend-pacts-qits-ci-service.version>
+        <qits.deployments-frontend-pacts-qits-ci-service.version>2026.1112.104332</qits.deployments-frontend-pacts-qits-ci-service.version>
+        <qits.mirror-frontend-pacts-qits-ci-service.version>2026.1112.101512</qits.mirror-frontend-pacts-qits-ci-service.version>
+        <qits.observability-frontend-pacts-qits-ci-service.version>2026.1112.101008</qits.observability-frontend-pacts-qits-ci-service.version>
+        <qits.orchestrator-frontend-pacts-qits-ci-service.version>2026.1111.174606</qits.orchestrator-frontend-pacts-qits-ci-service.version>
+        <qits.system-frontend-pacts-qits-ci-service.version>2026.1111.174607</qits.system-frontend-pacts-qits-ci-service.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
