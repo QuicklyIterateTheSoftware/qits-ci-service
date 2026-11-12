@@ -179,7 +179,7 @@
         <qits.mirror-frontend-pacts-qits-ci-service.version>2026.1112.164610</qits.mirror-frontend-pacts-qits-ci-service.version>
         <qits.observability-frontend-pacts-qits-ci-service.version>2026.1112.153402</qits.observability-frontend-pacts-qits-ci-service.version>
         <qits.orchestrator-frontend-pacts-qits-ci-service.version>2026.1112.164611</qits.orchestrator-frontend-pacts-qits-ci-service.version>
-        <qits.system-frontend-pacts-qits-ci-service.version>2026.1111.174607</qits.system-frontend-pacts-qits-ci-service.version>
+        <qits.system-frontend-pacts-qits-ci-service.version>2026.1112.184123</qits.system-frontend-pacts-qits-ci-service.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
