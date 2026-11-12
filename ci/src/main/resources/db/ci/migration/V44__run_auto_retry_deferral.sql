@@ -13,11 +13,18 @@
 --                                       whole of "awaiting its automatic retry", which is what the
 --                                       sweep reads after a restart.
 --   ci_run.auto_retry_deferred_reason   the retry_reason the retry will carry when it is made.
+--   ci_run.auto_retry_next_attempt_at   until when one sweeper holds the wait — a LEASE, pushed
+--                                       forward by a conditional UPDATE before each attempt, so a
+--                                       process that dies mid-attempt strands nothing: the next
+--                                       sweep after it takes the run again. Null is "nobody holds
+--                                       it, ask at the next tick".
 --
--- Cleared together, by the one conditional UPDATE that claims the deferral: the retry's own accept
--- (automatic or a person's), the deadline, a refusal that is not transient, and the release
--- request's cancellation. Both nullable, no default, no backfill: no run waited before this, and
--- null says so. V8's shape: part of no constraint, carrying no index — the sweep reads a handful of
--- rows a minute at most, and every one of them is a failed run.
+-- Cleared together, only once the wait is over: by the retry's own insert (automatic or a
+-- person's), or by the sweep when the deadline passes, a refusal is not transient or a newer run of
+-- the question exists, and by the release request's cancellation. All nullable, no default, no
+-- backfill: no run waited before this, and null says so. V8's shape: part of no constraint,
+-- carrying no index — the sweep reads a handful of rows a minute at most, and every one of them is
+-- a failed run.
 alter table ci_run add column auto_retry_deferred_until timestamp(6) with time zone;
 alter table ci_run add column auto_retry_deferred_reason varchar(255);
+alter table ci_run add column auto_retry_next_attempt_at timestamp(6) with time zone;

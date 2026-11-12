@@ -58,6 +58,7 @@ erDiagram
     string archetype_version "length 64"
     string auto_retry_deferred_reason "length 255"
     instant auto_retry_deferred_until
+    instant auto_retry_next_attempt_at
     string branch "not null"
     string cancellation_reason "length 255"
     int carried_steps

@@ -180,9 +180,10 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
    * (qits-2163, {@code V44__run_auto_retry_deferral.sql}). Set when the retry its infra failure
    * earned could not be accepted for a transient reason — a registry that did not answer, the
    * database or a service briefly gone — and the run's {@code BuildFailed} is held back meanwhile.
-   * {@code CiRunService.sweepDeferredRetries} asks again each tick; the retry's accept, a person's
-   * retry, a refusal that is not transient, the request's cancellation and this deadline each clear
-   * it, and only the last two settle the red. Non-null is the whole of "awaiting".
+   * {@code CiRunService.sweepDeferredRetries} asks again each tick; the retry's accept (a person's
+   * included), a refusal that is not transient, a newer run of the question, the request's
+   * cancellation and this deadline each clear it, and only a refusal or the deadline settles the
+   * red. Non-null is the whole of "awaiting".
    */
   @Column(name = "auto_retry_deferred_until")
   public Instant autoRetryDeferredUntil;
@@ -190,6 +191,14 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   /** The {@link #retryReason} the deferred retry will carry, null with the deadline beside it. */
   @Column(name = "auto_retry_deferred_reason", length = 255)
   public String autoRetryDeferredReason;
+
+  /**
+   * Until when one sweeper holds this run's deferred retry, or null when nobody does (qits-2163) —
+   * a lease rather than a claim, so a process that dies holding it strands nothing: the next sweep
+   * after this instant takes the run again. Null whenever {@link #autoRetryDeferredUntil} is.
+   */
+  @Column(name = "auto_retry_next_attempt_at")
+  public Instant autoRetryNextAttemptAt;
 
   /**
    * How many leading steps this retry <b>carried over</b> from {@link #retryOfRunId} instead of

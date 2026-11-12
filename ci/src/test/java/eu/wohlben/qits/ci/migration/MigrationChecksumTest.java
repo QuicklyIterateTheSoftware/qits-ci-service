@@ -175,7 +175,7 @@ public class MigrationChecksumTest {
         "832ecd2d92382f2cf6211170da99b93d3a04f78457c785c559b119fc63c5832e");
     PINS.put(
         "V44__run_auto_retry_deferral.sql",
-        "4353ab9c1c4a3155eb63d517d08d6083b3620f9784e41a7194b4e7876c631ee2");
+        "257059baf7225e9def72c1feb9677b6c5e898580e445940bafe27a8b7f1db51d");
   }
 
   @Test

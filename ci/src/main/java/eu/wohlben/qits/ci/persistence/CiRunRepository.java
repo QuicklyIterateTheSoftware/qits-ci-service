@@ -511,13 +511,14 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   /**
    * <b>Marks a failed run as awaiting its automatic retry</b> until {@code until} (qits-2163), as
    * one conditional UPDATE — only while the row is still {@code FAILED} and awaits none, so a
-   * deferral is written once and never moved by a second writer.
+   * deferral is written once and never moved by a second writer. Unleased: the next sweep may take
+   * it at once.
    *
    * @return 1 when the run now waits, 0 when it did not qualify
    */
   public int deferAutoRetry(String runId, Instant until, String reason) {
     return update(
-        "autoRetryDeferredUntil = ?1, autoRetryDeferredReason = ?2"
+        "autoRetryDeferredUntil = ?1, autoRetryDeferredReason = ?2, autoRetryNextAttemptAt = null"
             + " where id = ?3 and status = ?4 and autoRetryDeferredUntil is null",
         until,
         reason,
@@ -526,35 +527,46 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   }
 
   /**
-   * <b>Takes a run's deferred automatic retry</b> (qits-2163): clears both columns, only while they
-   * are set. The one way a deferral ends, whoever ends it — the sweep before it re-fires, settles or
-   * drops, a person's retry in its insert, a cancellation — and the row lock the UPDATE takes is what
-   * makes it end once: a second writer racing the first waits for its commit and then matches
-   * nothing.
+   * <b>Leases a run's deferred automatic retry to one sweeper until {@code leaseUntil}</b>
+   * (qits-2163): pushes {@code auto_retry_next_attempt_at} forward, only while the run still waits
+   * and no unexpired lease is on it. A lease, not a clear, so a process that dies between this and
+   * the retry's accept strands nothing: once the lease has passed, the next sweep finds the row
+   * again. The row lock the UPDATE takes makes concurrent sweepers serialise, and the second then
+   * matches nothing.
    *
-   * @return 1 for the caller that took it, 0 for every other
+   * @return 1 for the sweeper that holds it, 0 for every other
    */
-  public int claimDeferredAutoRetry(String runId) {
+  public int leaseDeferredAutoRetry(String runId, Instant now, Instant leaseUntil) {
     return update(
-        "autoRetryDeferredUntil = null, autoRetryDeferredReason = null"
-            + " where id = ?1 and autoRetryDeferredUntil is not null",
-        runId);
+        "autoRetryNextAttemptAt = ?1"
+            + " where id = ?2 and autoRetryDeferredUntil is not null"
+            + " and (autoRetryNextAttemptAt is null or autoRetryNextAttemptAt <= ?3)",
+        leaseUntil,
+        runId,
+        now);
   }
 
   /**
-   * Hands a claimed deferral back after a re-fire the environment refused again (qits-2163) — only
-   * while no retry of the run exists: a person's retry made between the claim and this is the one
-   * re-asking the question, and the wait must not outlive it.
-   *
-   * @return 1 when the run waits again, 0 when a retry of it stands for it
+   * Gives a lease back after a re-fire the environment refused again (qits-2163), so the next tick
+   * asks again rather than waiting the lease out. Matches nothing once the deferral has ended.
    */
-  public int reinstateDeferredAutoRetry(String runId, Instant until, String reason) {
+  public int releaseDeferredAutoRetryLease(String runId) {
     return update(
-        "autoRetryDeferredUntil = ?1, autoRetryDeferredReason = ?2"
-            + " where id = ?3 and autoRetryDeferredUntil is null"
-            + " and not exists (select r.id from CiRun r where r.retryOfRunId = ?3)",
-        until,
-        reason,
+        "autoRetryNextAttemptAt = null where id = ?1 and autoRetryDeferredUntil is not null", runId);
+  }
+
+  /**
+   * <b>Ends a run's deferred automatic retry</b> (qits-2163): clears all three columns, only while
+   * they are set. The retry's own insert does this in its transaction (an automatic retry's or a
+   * person's), and the sweep does it when it settles or drops the wait; nothing else ends one.
+   *
+   * @return 1 for the caller that ended it, 0 when it had already ended
+   */
+  public int endDeferredAutoRetry(String runId) {
+    return update(
+        "autoRetryDeferredUntil = null, autoRetryDeferredReason = null,"
+            + " autoRetryNextAttemptAt = null"
+            + " where id = ?1 and autoRetryDeferredUntil is not null",
         runId);
   }
 
@@ -563,9 +575,16 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
     return count("retryOfRunId", runId) > 0;
   }
 
-  /** Every run awaiting its automatic retry, the nearest deadline first (qits-2163). */
-  public List<CiRun> listDeferredAutoRetries() {
-    return list("autoRetryDeferredUntil is not null order by autoRetryDeferredUntil, id");
+  /**
+   * Every run awaiting its automatic retry whose lease, if any, has passed by {@code now}, the
+   * nearest deadline first (qits-2163).
+   */
+  public List<CiRun> listDeferredAutoRetries(Instant now) {
+    return list(
+        "autoRetryDeferredUntil is not null"
+            + " and (autoRetryNextAttemptAt is null or autoRetryNextAttemptAt <= ?1)"
+            + " order by autoRetryDeferredUntil, id",
+        now);
   }
 
   /**
@@ -574,15 +593,18 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
    * announced for them, which is what a cancelled run's contract is.
    */
   public int dropDeferredAutoRetries(String repoId, String releaseRequestId, CiRunPhase phase) {
+    String clear =
+        "autoRetryDeferredUntil = null, autoRetryDeferredReason = null,"
+            + " autoRetryNextAttemptAt = null";
     if (phase == null) {
       return update(
-          "autoRetryDeferredUntil = null, autoRetryDeferredReason = null"
+          clear
               + " where repoId = ?1 and releaseRequestId = ?2 and autoRetryDeferredUntil is not null",
           repoId,
           releaseRequestId);
     }
     return update(
-        "autoRetryDeferredUntil = null, autoRetryDeferredReason = null"
+        clear
             + " where repoId = ?1 and releaseRequestId = ?2 and phase = ?3"
             + " and autoRetryDeferredUntil is not null",
         repoId,

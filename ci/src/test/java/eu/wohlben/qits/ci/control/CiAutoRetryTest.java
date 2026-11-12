@@ -431,6 +431,45 @@ public class CiAutoRetryTest extends CiTestSupport {
   }
 
   @Test
+  public void aSweepThatDiesHoldingTheLeaseStrandsNothing() throws Exception {
+    String repo = "auto-" + UUID.randomUUID();
+    fakeRunner.during(0, spec -> fakeImagePins.unresolvable(CiSlot.IMAGE_TAG));
+    fakeRunner.scriptSequence(0, LOST);
+
+    String original = accept(repo, "rr-a");
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    assertNotNull(service.requireRun(original).autoRetryDeferredUntil);
+
+    // A pass leases the run and dies before its re-fire: no retry row, and no clear either.
+    Instant now = Instant.now();
+    assertEquals(
+        1,
+        (int)
+            QuarkusTransaction.requiringNew()
+                .call(() -> runs.leaseDeferredAutoRetry(original, now, now.plusSeconds(120))));
+    fakeRunner.reset();
+    fakeImagePins.reset();
+
+    assertEquals(0, service.sweepDeferredRetries(now.plusSeconds(60)), "the lease still holds");
+    forgetLoadedEntities();
+    assertEquals(1, chain(repo).size());
+    assertNotNull(service.requireRun(original).autoRetryDeferredUntil, "the wait is not lost");
+
+    assertEquals(1, service.sweepDeferredRetries(now.plusSeconds(180)), "taken over after it");
+    assertEquals(0, service.sweepDeferredRetries(now.plusSeconds(600)), "and only once");
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    List<CiRun> all = chain(repo);
+    assertEquals(2, all.size(), "exactly one retry");
+    assertEquals(original, all.get(1).retryOfRunId);
+    assertTrue(all.get(1).retryReason.endsWith("automatic retry 1 of 2"), all.get(1).retryReason);
+    assertNull(service.requireRun(original).autoRetryDeferredUntil);
+    assertNull(service.requireRun(original).autoRetryNextAttemptAt);
+    assertTrue(announcer.failed().isEmpty());
+  }
+
+  @Test
   public void aCancelledRequestDropsItsDeferredRetryAndAnnouncesNothing() throws Exception {
     String repo = "auto-" + UUID.randomUUID();
     fakeRunner.during(0, spec -> fakeImagePins.unresolvable(CiSlot.IMAGE_TAG));
@@ -522,6 +561,32 @@ public class CiAutoRetryTest extends CiTestSupport {
         retry.retryReason);
     assertEquals(CiRunStatus.SUCCESS, retry.status);
     assertTrue(announcer.failed().isEmpty(), "no BuildFailed for an infra failure");
+  }
+
+  @Test
+  public void aRunsRecordPatienceIsSpentOnceNotPerWrite() throws Exception {
+    // The launch record waits the deadline out; the step's fallback row after it must not wait it
+    // out again (nor would the SKIPPED rows behind it).
+    String repo = "auto-" + UUID.randomUUID();
+    java.time.Duration shipped = service.stepRecordRetryDeadline();
+    service.stepRecordRetryDeadline(java.time.Duration.ofMillis(1500));
+    fakeRunner.launchAs("daemon-" + UUID.randomUUID(), "subject");
+    service.failStepWrites(-1, Integer.MAX_VALUE, CiAutoRetryTest::refusedCommit);
+    long began = System.nanoTime();
+    String original;
+    try {
+      original = accept(repo, "rr-a");
+      suiteRunner.awaitIdle();
+    } finally {
+      service.clearStepWriteFaults();
+      service.stepRecordRetryDeadline(shipped);
+    }
+    long tookMillis = (System.nanoTime() - began) / 1_000_000;
+    forgetLoadedEntities();
+
+    assertTrue(tookMillis >= 1500, "the first write waited: " + tookMillis + " ms");
+    assertTrue(tookMillis < 2700, "the later writes did not wait again: " + tookMillis + " ms");
+    assertEquals(CiRunStatus.FAILED, service.requireRun(original).status, "and the run settled");
   }
 
   @Test

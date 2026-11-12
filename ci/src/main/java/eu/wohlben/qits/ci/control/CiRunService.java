@@ -541,12 +541,36 @@ public class CiRunService {
   Duration autoRetryDeferDeadline;
 
   /**
+   * How long one sweep holds a deferred retry while it re-asks it (qits-2163). Longer than one
+   * re-fire can take (the digest retries, the git host's reads, the accept's database patience), so
+   * a live pass is never overtaken; a pass that died holding it is taken over once it passes.
+   */
+  @ConfigProperty(name = "qits.ci.auto-retry.defer-lease", defaultValue = "2M")
+  Duration autoRetryDeferLease;
+
+  /**
    * How long a transient database failure may hold the write of a step's row before the step is
    * given up (qits-2163). A postgres recreate is a minute; the step's own result is worth that wait,
    * since recording it red is a verdict about a build that may well have passed.
    */
   @ConfigProperty(name = "qits.ci.step-record-retry-deadline", defaultValue = "5M")
   Duration stepRecordRetryDeadline;
+
+  /**
+   * The runs whose step-record patience is spent (qits-2163) — see {@link #recordPatiently}. In
+   * memory: it is about writes this process is making for a run it is driving, and a run's close
+   * forgets it.
+   */
+  private final Set<String> recordsGaveUp = ConcurrentHashMap.newKeySet();
+
+  /** The suites' handle on {@code qits.ci.step-record-retry-deadline}. */
+  void stepRecordRetryDeadline(Duration deadline) {
+    this.stepRecordRetryDeadline = deadline;
+  }
+
+  Duration stepRecordRetryDeadline() {
+    return stepRecordRetryDeadline;
+  }
 
   /** The suites' hook into a step-record write — see {@link #failStepWrites}. Null ships. */
   private final java.util.concurrent.atomic.AtomicReference<StepWriteFault> stepWriteFault =
@@ -1625,6 +1649,7 @@ public class CiRunService {
   private void recordLaunch(String runId, int stepIndex, String daemonId, String tokenSubject) {
     try {
       recordPatiently(
+          runId,
           "Recording the launch of step " + stepIndex + " of CI run " + runId,
           () ->
               QuarkusTransaction.requiringNew()
@@ -1636,6 +1661,11 @@ public class CiRunService {
                           row.inflightDaemonId = daemonId;
                           row.inflightTokenSubject = tokenSubject;
                           row.inflightStartedAt = null;
+                        }
+                        runs.flush();
+                        StepWriteFault fault = stepWriteFault.get();
+                        if (fault != null) {
+                          fault.strike(stepIndex);
                         }
                       }));
     } catch (RuntimeException e) {
@@ -1672,6 +1702,7 @@ public class CiRunService {
   }
 
   private void closeWith(String runId) {
+    recordsGaveUp.remove(runId);
     try {
       stepRunnerFor(runId).runClosed(runId);
     } catch (RuntimeException e) {
@@ -3591,6 +3622,7 @@ public class CiRunService {
       Instant startedAt,
       Instant finishedAt) {
     recordPatiently(
+        runId,
         "Recording step " + stepIndex + " of CI run " + runId,
         () ->
             QuarkusTransaction.requiringNew()
@@ -3625,20 +3657,36 @@ public class CiRunService {
    * 15 s. The last failure is rethrown as it arrived, so a caller that classifies it sees what a
    * single attempt would have thrown. {@code write} must be idempotent: a commit that failed may
    * have committed.
+   *
+   * <p><b>The patience is spent once per run.</b> A write of {@code runId} that waited the whole
+   * deadline out marks the run ({@link #recordsGaveUp}), and its later writes — the fallback row,
+   * the remaining {@code SKIPPED} rows — are tried once each instead of each waiting it out again,
+   * until one of them lands and the mark is lifted.
    */
-  private void recordPatiently(String what, Runnable write) {
-    long expiry = System.nanoTime() + stepRecordRetryDeadline.toNanos();
+  private void recordPatiently(String runId, String what, Runnable write) {
+    boolean gaveUp = recordsGaveUp.contains(runId);
+    long expiry = System.nanoTime() + (gaveUp ? 0 : stepRecordRetryDeadline.toNanos());
     long pauseMillis = 500;
     for (int attempt = 1; ; attempt++) {
       try {
         write.run();
-        if (attempt > 1) {
+        if (attempt > 1 || gaveUp) {
           LOG.infof("%s succeeded on attempt %d — the database came back", what, attempt);
         }
+        recordsGaveUp.remove(runId);
         return;
       } catch (RuntimeException e) {
         long left = expiry - System.nanoTime();
-        if (!transientDatabaseFailure(e) || left <= 0 || Thread.currentThread().isInterrupted()) {
+        if (!transientDatabaseFailure(e)) {
+          throw e;
+        }
+        if (left <= 0 || Thread.currentThread().isInterrupted()) {
+          if (recordsGaveUp.add(runId)) {
+            LOG.warnf(
+                "%s: the database did not answer within %s — CI run %s's later writes are tried"
+                    + " once each until one lands",
+                what, stepRecordRetryDeadline, runId);
+          }
           throw e;
         }
         LOG.warnf(
@@ -3708,7 +3756,7 @@ public class CiRunService {
     }
 
     void strike(int index) {
-      if (index == stepIndex && left.getAndUpdate(n -> n > 0 ? n - 1 : n) > 0) {
+      if ((stepIndex < 0 || index == stepIndex) && left.getAndUpdate(n -> n > 0 ? n - 1 : n) > 0) {
         throw failure.get();
       }
     }
@@ -3716,7 +3764,8 @@ public class CiRunService {
 
   /**
    * The suites' handle on a failing step-record write: the next {@code times} writes of {@code
-   * stepIndex}'s row throw {@code failure}. {@code times} of {@link Integer#MAX_VALUE} is a database
+   * stepIndex}'s row — or of any step's, for a negative index; a launch's record counts as its
+   * step's — throw {@code failure}. {@code times} of {@link Integer#MAX_VALUE} is a database
    * that does not come back. Null-safe to clear with {@link #clearStepWriteFaults}.
    */
   void failStepWrites(
@@ -4270,7 +4319,7 @@ public class CiRunService {
    * retry that was made, and {@link #sweepDeferredRetries} asks again each tick until {@code
    * qits.ci.auto-retry.defer-deadline} — through this same method, with a null {@code failure}: the
    * words and the reason are then the ones the deferral stored, and a transient refusal hands the
-   * deferral back ({@link #reinstateDeferral}) rather than writing a new one.
+   * sweep's lease back ({@link #releaseDeferralLease}) rather than writing a new deferral.
    *
    * @param failure the step's infra failure, or null for the sweep re-asking a deferred retry
    * @return whether the retry was made, deferred, or refused — only the last lets the red settle
@@ -4309,7 +4358,7 @@ public class CiRunService {
     } catch (RuntimeException e) {
       if (transientRefusal(e)
           && (reasking
-              ? reinstateDeferral(run, e)
+              ? releaseDeferralLease(run, e)
               : deferAutoRetry(run, failedStep, what, reason, e))) {
         return AutoRetried.DEFERRED;
       }
@@ -4333,24 +4382,20 @@ public class CiRunService {
   }
 
   /**
-   * Hands a deferral the sweep claimed back after the environment refused the retry again — unless
-   * a retry of the run was made meanwhile, which then stands for it. True either way: neither case
-   * is a red to announce.
+   * Gives the sweep's lease on a deferral back after the environment refused the retry again, so
+   * the next tick asks again (qits-2163). True: the red stays held back. A deferral a person's retry
+   * ended meanwhile is left ended — the lease release matches nothing then.
    */
-  private boolean reinstateDeferral(CiRun run, RuntimeException refusal) {
-    int back =
-        QuarkusTransaction.requiringNew()
-            .call(
-                () ->
-                    runs.reinstateDeferredAutoRetry(
-                        run.id, run.autoRetryDeferredUntil, run.autoRetryDeferredReason));
+  private boolean releaseDeferralLease(CiRun run, RuntimeException refusal) {
+    try {
+      QuarkusTransaction.requiringNew().call(() -> runs.releaseDeferredAutoRetryLease(run.id));
+    } catch (RuntimeException e) {
+      // The lease then simply runs out, and the sweep after it asks again.
+      LOG.warnf(e, "CI run %s: the lease on its deferred retry could not be given back", run.id);
+    }
     LOG.infof(
-        "CI run %s: its automatic retry could still not be accepted (%s) — %s",
-        run.id,
-        refusal.getMessage(),
-        back == 1
-            ? "asked again until " + run.autoRetryDeferredUntil
-            : "a retry of it was made meanwhile, which stands for it");
+        "CI run %s: its automatic retry could still not be accepted (%s) — asked again until %s",
+        run.id, refusal.getMessage(), run.autoRetryDeferredUntil);
     return true;
   }
 
@@ -4463,9 +4508,11 @@ public class CiRunService {
 
   /**
    * One pass over the runs awaiting their automatic retry, as of {@code now} — package-private so
-   * a suite drives it. Per row, each decided by whoever {@link CiRunRepository#claimDeferredAutoRetry
-   * claims} the deferral, so a second pass, or a person's retry (whose insert ends the wait), never
-   * acts on it again:
+   * a suite drives it. Per row, decided by whoever {@link CiRunRepository#leaseDeferredAutoRetry
+   * leases} the deferral for {@code qits.ci.auto-retry.defer-lease}, so two passes never act on one
+   * wait at once, and a pass that dies mid-attempt leaves a row the first pass after its lease takes
+   * again. The wait ends only once its retry row exists (the insert ends it) or it is settled or
+   * dropped, so it never fires twice:
    *
    * <ul>
    *   <li>a run whose question went away — a newer run of the same release question was accepted
@@ -4473,7 +4520,9 @@ public class CiRunService {
    *       queued retry it stands for would have been superseded;
    *   <li>past the deadline, it settles: the step says so and {@code BuildFailed} is announced, as
    *       {@link #autoRetry} did at once before this change;
-   *   <li>otherwise {@link #refire} is asked again. A transient refusal hands the wait back for the
+   *   <li>a run that already has a retry — a person's, or one whose insert committed before its
+   *       process died — is ended, announcing nothing;
+   *   <li>otherwise {@link #refire} is asked again. A transient refusal gives the lease back for the
    *       next tick; any other settles it.
    * </ul>
    *
@@ -4482,7 +4531,7 @@ public class CiRunService {
   int sweepDeferredRetries(Instant now) {
     List<CiRun> waiting;
     try {
-      waiting = QuarkusTransaction.requiringNew().call(() -> runs.listDeferredAutoRetries());
+      waiting = QuarkusTransaction.requiringNew().call(() -> runs.listDeferredAutoRetries(now));
     } catch (RuntimeException e) {
       LOG.warnf(e, "Could not read the runs awaiting their automatic retry");
       return 0;
@@ -4503,20 +4552,26 @@ public class CiRunService {
   /**
    * One row of {@link #sweepDeferredRetries}; true when the retry was made.
    *
-   * <p><b>The deferral is claimed first and the re-fire made second</b>, so two passes, or a pass
-   * and a person, never both act on one wait. The re-fire is {@link #autoRetry}'s own, so it is the
-   * same accept a retry made at once would have been. A refusal that is not transient settles the
-   * red — unless a retry of the run exists by then: a run a person already re-asked has no red of
-   * its own left to announce.
+   * <p><b>The deferral is leased first and the re-fire made second</b>, so two passes never both
+   * act on one wait, and a crash anywhere in between costs one lease's delay rather than the run.
+   * The re-fire is {@link #autoRetry}'s own, so it is the same accept a retry made at once would
+   * have been. A refusal that is not transient settles the red — unless a retry of the run exists by
+   * then: a run a person already re-asked has no red of its own left to announce.
    */
   private boolean retryDeferred(CiRun run, Instant now) {
+    if (!leaseDeferral(run.id, now)) {
+      return false;
+    }
     int failedStep = failedStepOf(run.id);
-    if (!claimDeferral(run.id)) {
+    if (QuarkusTransaction.requiringNew().call(() -> runs.hasRetry(run.id))) {
+      endDeferral(run.id);
+      LOG.infof("CI run %s: its deferred automatic retry is not needed — a retry of it stands", run.id);
       return false;
     }
     boolean superseded =
         QuarkusTransaction.requiringNew().call(() -> runs.supersededSinceAccept(run));
     if (superseded) {
+      endDeferral(run.id);
       LOG.infof(
           "CI run %s: a newer run of its release question was accepted while its automatic retry"
               + " waited — the retry is dropped",
@@ -4535,6 +4590,7 @@ public class CiRunService {
       return outcome == AutoRetried.RETRIED;
     }
     if (QuarkusTransaction.requiringNew().call(() -> runs.hasRetry(run.id))) {
+      endDeferral(run.id);
       LOG.infof("CI run %s: its deferred automatic retry is not needed — a retry of it stands", run.id);
       return false;
     }
@@ -4544,8 +4600,10 @@ public class CiRunService {
 
   /**
    * Ends a deferral with the red it held back: the step says why and {@code BuildFailed} is
-   * announced with the run's own {@code finishedAt}. Only by whoever claimed the deferral, so a red
-   * is announced once.
+   * announced with the run's own {@code finishedAt}, by the pass holding the lease. Announced BEFORE
+   * the wait is ended, on purpose: a process dying in between announces the same red again after
+   * the lease — the same verdict about the same run — where the other order would leave a run whose
+   * red is never announced, which is the stranding the lease exists to prevent.
    */
   private void settleDeferral(CiRun run, int failedStep, String why) {
     LOG.warnf("CI run %s: %s — it settles FAILED", run.id, why);
@@ -4556,17 +4614,27 @@ public class CiRunService {
     }
     announceFailedRun(
         run, run.finishedAt == null ? Instant.now() : run.finishedAt, CiRunStatus.FAILED);
+    endDeferral(run.id);
   }
 
-  /** {@link CiRunRepository#claimDeferredAutoRetry} in its own transaction; true for the taker. */
-  private boolean claimDeferral(String runId) {
+  /** {@link CiRunRepository#leaseDeferredAutoRetry} in its own transaction; true for the holder. */
+  private boolean leaseDeferral(String runId, Instant now) {
+    Instant leaseUntil = now.plus(autoRetryDeferLease);
     return DbRetry.call(
-            "Claiming the deferred retry of CI run " + runId,
+            "Leasing the deferred retry of CI run " + runId,
             () ->
                 QuarkusTransaction.requiringNew()
-                    .call(() -> runs.claimDeferredAutoRetry(runId)),
+                    .call(() -> runs.leaseDeferredAutoRetry(runId, now, leaseUntil)),
             retryDeadline())
         == 1;
+  }
+
+  /** {@link CiRunRepository#endDeferredAutoRetry} in its own transaction. */
+  private void endDeferral(String runId) {
+    DbRetry.call(
+        "Ending the deferred retry of CI run " + runId,
+        () -> QuarkusTransaction.requiringNew().call(() -> runs.endDeferredAutoRetry(runId)),
+        retryDeadline());
   }
 
   /** The failed step a deferral's lines are appended to: the run's last {@code FAILED} row. */
@@ -5040,8 +5108,8 @@ public class CiRunService {
     retry.retryReason = autoRetryReason;
     // Any retry of a source still awaiting its automatic one ends that wait, in this transaction
     // (qits-2163): a person's retry takes it over, and the sweep then finds nothing to re-fire. The
-    // sweep's own re-fire claimed the wait before it got here, so for it this matches nothing.
-    runs.claimDeferredAutoRetry(source.id);
+    // sweep's own re-fire ends the wait it leased here too, in the transaction that makes its retry.
+    runs.endDeferredAutoRetry(source.id);
     // runner_id and target_runner_id are deliberately NOT copied: a retry re-enters the ordinary
     // queue, and pinning an infra failure's retry to the runner that just failed it would be perverse.
     // Nor is it kept OFF that runner (qits-443): any worker may take it.
