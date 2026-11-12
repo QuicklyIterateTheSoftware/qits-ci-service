@@ -14,13 +14,18 @@ import eu.wohlben.qits.ci.error.BadRequestException;
 import eu.wohlben.qits.ci.error.ConflictException;
 import eu.wohlben.qits.ci.error.NotFoundException;
 import eu.wohlben.qits.ci.error.UnavailableException;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -471,6 +476,195 @@ public class CiRunCancelAndRetryTest extends CiTestSupport {
     assertEquals(3, service.runsFor(repo).size());
     assertEquals(first.id, service.requireRun(second.id).retryOfRunId, "a chain, not a star");
     assertEquals("rr-a", service.requireRun(second.id).releaseRequestId);
+  }
+
+  // --- one standing retry per run (qits-2164) --------------------------------------------------
+
+  @Test
+  public void aRunWithAQueuedOrGreenRetryRefusesASecondOneNamingTheFirst() throws Exception {
+    // Run c83fea5b, a red publish, was retried twice 13 s apart: the first went green, the second
+    // built the same version again and the store refused it. Its first retry is the answer to the
+    // second press, whether it is still queued or already green.
+    String repo = "consumer-" + UUID.randomUUID();
+    fakeRunner.script(1, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
+    String original = accept(repo, "rr-a");
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    assertEquals(CiRunStatus.FAILED, service.requireRun(original).status);
+
+    fakeRunner.reset();
+    occupyTheWorker();
+    CiRun first = service.retry(original);
+
+    ConflictException whileQueued =
+        assertThrows(ConflictException.class, () -> service.retry(original));
+    assertTrue(whileQueued.getMessage().contains(first.id), whileQueued.getMessage());
+    assertTrue(whileQueued.getMessage().contains("QUEUED"), whileQueued.getMessage());
+
+    release.countDown();
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    assertEquals(CiRunStatus.SUCCESS, service.requireRun(first.id).status);
+
+    ConflictException onceGreen =
+        assertThrows(ConflictException.class, () -> service.retry(original));
+    assertTrue(onceGreen.getMessage().contains(first.id), onceGreen.getMessage());
+    assertTrue(onceGreen.getMessage().contains("SUCCESS"), onceGreen.getMessage());
+    assertEquals(2, service.runsFor(repo).size(), "a refused retry records nothing");
+  }
+
+  @Test
+  public void aRetryThatWentRedLeavesItsSourceRetryableAgain() throws Exception {
+    // A red retry answered nothing the source had not already answered, so the question is open:
+    // the source may be re-fired again, a star of red retries with at most one standing among them,
+    // and the red retry itself stays retryable as before — the chain is the same work either way.
+    String repo = "consumer-" + UUID.randomUUID();
+    fakeRunner.script(1, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
+    String original = accept(repo, "rr-a");
+    suiteRunner.awaitIdle();
+    CiRun first = service.retry(original);
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    assertEquals(CiRunStatus.FAILED, service.requireRun(first.id).status);
+
+    fakeRunner.reset();
+    CiRun second = service.retry(original);
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+
+    assertEquals(original, service.requireRun(second.id).retryOfRunId);
+    assertEquals(CiRunStatus.SUCCESS, service.requireRun(second.id).status);
+    assertEquals(3, service.runsFor(repo).size());
+  }
+
+  @Test
+  public void twoConcurrentRetriesOfOneRunCreateOneRun() throws Exception {
+    // Both presses must get past the unlocked pre-check before either inserts, which is the race
+    // the row lock exists for. Holding the source row from here makes that certain rather than
+    // likely: each retry passes its pre-check and then parks on the lock, and only once both are
+    // parked is the row let go.
+    String repo = "consumer-" + UUID.randomUUID();
+    fakeRunner.script(1, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
+    String original = accept(repo, "rr-a");
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    fakeRunner.reset();
+    occupyTheWorker();
+
+    List<Object> outcomes = raceTwoPressesOnTheRowOf(original, () -> service.retry(original).id);
+
+    assertOneAcceptedAndOneRefusedNamingIt(outcomes);
+    assertEquals(2, service.runsFor(repo).size(), "two presses, one retry");
+  }
+
+  @Test
+  public void twoConcurrentRerunsOfOnePhaseCreateOneRun() throws Exception {
+    // The rerun door's newest-run check is the same read-then-insert, and serialises on the same
+    // row: the phase's newest run, which is the source of the retry it asks for.
+    String repo = "consumer-" + UUID.randomUUID();
+    fakeRunner.script(1, new CiStepRunner.StepResult(1, false, CiStepRunner.StepOutcome.OK, "boom"));
+    String original = accept(repo, "rr-a");
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    CiRunPhase phase = service.requireRun(original).phase;
+    fakeRunner.reset();
+    occupyTheWorker();
+
+    List<Object> outcomes =
+        raceTwoPressesOnTheRowOf(
+            original, () -> service.retryReleaseRequestPhase(repo, "rr-a", phase).id);
+
+    assertOneAcceptedAndOneRefusedNamingIt(outcomes);
+    assertEquals(2, service.runsFor(repo).size(), "two presses, one rerun");
+  }
+
+  /**
+   * Runs {@code press} on two threads while this test holds {@code runId}'s row lock, lets go once
+   * both are waiting on it, and answers each press's run id or the exception it threw.
+   */
+  private List<Object> raceTwoPressesOnTheRowOf(String runId, Callable<String> press)
+      throws Exception {
+    CountDownLatch locked = new CountDownLatch(1);
+    CountDownLatch letGo = new CountDownLatch(1);
+    // Threads of its own: the common pool can be one thread wide on a small host, and the holder
+    // parks in it.
+    ExecutorService threads = Executors.newFixedThreadPool(3);
+    CompletableFuture<Void> holder =
+        CompletableFuture.runAsync(
+            () ->
+                QuarkusTransaction.requiringNew()
+                    .run(
+                        () -> {
+                          runs.findByIdLocked(runId);
+                          locked.countDown();
+                          try {
+                            letGo.await(30, TimeUnit.SECONDS);
+                          } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                          }
+                        }),
+            threads);
+    try {
+      assertTrue(locked.await(20, TimeUnit.SECONDS), "the test took the row lock");
+      List<CompletableFuture<Object>> presses = new ArrayList<>();
+      for (int i = 0; i < 2; i++) {
+        presses.add(
+            CompletableFuture.supplyAsync(
+                () -> {
+                  try {
+                    return press.call();
+                  } catch (Exception e) {
+                    return e;
+                  }
+                },
+                threads));
+      }
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+      while (waitingOnALock() < 2) {
+        assertTrue(System.nanoTime() < deadline, "both presses reached the row lock");
+        assertTrue(presses.stream().noneMatch(CompletableFuture::isDone), "a press got past the lock");
+        Thread.sleep(20);
+      }
+      letGo.countDown();
+      holder.get(20, TimeUnit.SECONDS);
+      List<Object> outcomes = new ArrayList<>();
+      for (CompletableFuture<Object> each : presses) {
+        outcomes.add(each.get(20, TimeUnit.SECONDS));
+      }
+      forgetLoadedEntities();
+      return outcomes;
+    } finally {
+      letGo.countDown();
+      threads.shutdown();
+    }
+  }
+
+  private static long waitingOnALock() {
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () ->
+                ((Number)
+                        CiRun.getEntityManager()
+                            .createNativeQuery(
+                                "select count(*) from pg_stat_activity where wait_event_type ="
+                                    + " 'Lock' and datname = current_database()")
+                            .getSingleResult())
+                    .longValue());
+  }
+
+  private static void assertOneAcceptedAndOneRefusedNamingIt(List<Object> outcomes) {
+    List<String> accepted =
+        outcomes.stream().filter(String.class::isInstance).map(String.class::cast).toList();
+    List<ConflictException> refused =
+        outcomes.stream()
+            .filter(ConflictException.class::isInstance)
+            .map(ConflictException.class::cast)
+            .toList();
+    assertEquals(1, accepted.size(), "exactly one press is accepted: " + outcomes);
+    assertEquals(1, refused.size(), "and the other is a 409: " + outcomes);
+    assertTrue(
+        refused.get(0).getMessage().contains(accepted.get(0)),
+        "naming the run the first press made: " + refused.get(0).getMessage());
   }
 
   @Test

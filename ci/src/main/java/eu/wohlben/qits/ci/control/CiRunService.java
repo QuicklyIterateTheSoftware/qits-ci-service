@@ -39,6 +39,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.TreeMap;
@@ -3846,6 +3847,17 @@ public class CiRunService {
    * verdict. Everything terminal is fair game, cancelled runs included — re-fire is precisely what a
    * cancellation invites.
    *
+   * <p><b>A run is retried once at a time</b> (qits-2164): a source that already has a retry {@code
+   * QUEUED}, {@code RUNNING} or {@code SUCCESS} is a 409 naming that retry. Its question is being
+   * asked, or was answered green, and a second re-fire of the same work races it — for a publishing
+   * run, a second build of one version the store then refuses (run c83fea5b, retried twice 13 s
+   * apart on 2026-11-12). A retry that went red, was cancelled or timed out leaves the question
+   * open, so the source may be re-fired again, and so may the retry itself — the chain is the same
+   * work either way. The check runs twice: once before anything is resolved, so a refusal is cheap
+   * and never masked by a registry's 503, and once more inside the accept transaction with the
+   * source row locked ({@code FOR UPDATE}, see {@link #insertRetry}), which is what makes two
+   * concurrent presses create one run rather than two.
+   *
    * <p><b>The dedupe is bypassed rather than weakened</b>, by minting a synthetic trigger identity
    * for the new row — see {@link #RETRY_TRIGGER_PREFIX} and {@link #insertRetry}. Nothing about
    * {@code unique (trigger_event_id, repo_id, config_path)} changes, and no replay of a real event
@@ -3892,13 +3904,19 @@ public class CiRunService {
    * either refusal is raised before any row exists.
    *
    * @return the new run, already {@code QUEUED} and announced to the runners
-   * @throws ConflictException when the run has not finished, is a retired runner's health check, or
-   *     is a release-request automation's run (qits-1816) — nothing is written
+   * @throws ConflictException when the run has not finished, is a retired runner's health check, is
+   *     a release-request automation's run (qits-1816), or already has a retry that is queued,
+   *     running or green (qits-2164) — nothing is written
    * @throws UnavailableException when the retry's re-pin of a platform step image could not be had
    *     — no row is written, and the caller's next attempt asks a registry that has probably come
    *     back
    */
   public CiRun retry(String runId) {
+    return retry(runId, null);
+  }
+
+  /** {@link #retry}, carrying the phase a {@link #retryReleaseRequestPhase} press named, or null. */
+  private CiRun retry(String runId, PhaseRerun phaseRerun) {
     CiRun source = requireRun(runId);
     if (CiAutomationComposer.EVENT.equals(source.triggerEventName)
         && source.status != CiRunStatus.QUEUED
@@ -3913,7 +3931,7 @@ public class CiRunService {
               + " request; run it again with: qits release-request regenerate --kind "
               + kind);
     }
-    return refire(runId, null);
+    return refire(runId, null, phaseRerun);
   }
 
   /**
@@ -3947,7 +3965,7 @@ public class CiRunService {
    * before, exactly as it does for any other {@link RuntimeException} the accept can throw — a
    * person's own call is the one path that lets {@link UnavailableException} reach a caller.
    */
-  private CiRun refire(String runId, String autoRetryReason) {
+  private CiRun refire(String runId, String autoRetryReason, PhaseRerun phaseRerun) {
     CiRun source = requireRun(runId);
     if (source.status == CiRunStatus.QUEUED || source.status == CiRunStatus.RUNNING) {
       throw new ConflictException(
@@ -3959,6 +3977,14 @@ public class CiRunService {
       throw new ConflictException(
           "CI run " + runId + " is a retired CI runner's health check — there is nothing to retry");
     }
+    // The cheap half of qits-2164's rule, before the git host and the registry are asked anything:
+    // a second press is answered with the retry it duplicates, not with whatever a re-pin says. The
+    // binding half runs again under the source's row lock in insertRetry.
+    DbRetry.call(
+            "run standing retry lookup " + runId,
+            () -> QuarkusTransaction.requiringNew().call(() -> runs.findStandingRetryOf(runId)),
+            retryDeadline())
+        .ifPresent(standing -> refuseStandingRetry(runId, standing));
     RetriedPipeline pipeline = retriedPipeline(source);
     // Predicted rather than copied, unlike priority and the downstream closure beside it: those are
     // what the run is WORTH and a re-fire must be worth what it re-fires, while this is how long the
@@ -3994,7 +4020,8 @@ public class CiRunService {
     Accepted accepted =
         DbRetry.inNewTx(
             "run retry accept",
-            () -> insertRetry(source.id, expected, pipeline, pins, autoRetryReason, carry),
+            () ->
+                insertRetry(source.id, expected, pipeline, pins, autoRetryReason, carry, phaseRerun),
             retryDeadline());
     if (accepted == null) {
       throw new NotFoundException("No such CI run: " + runId);
@@ -4014,6 +4041,31 @@ public class CiRunService {
     announceQueued(retry.id);
     return retry;
   }
+
+  /**
+   * The 409 for a source that already has a standing retry (qits-2164), naming that retry in full so
+   * the caller can follow it rather than press again.
+   */
+  private static void refuseStandingRetry(String sourceRunId, CiRun standing) {
+    throw new ConflictException(
+        "CI run "
+            + sourceRunId
+            + " already has a retry, CI run "
+            + standing.id
+            + " ("
+            + standing.status
+            + ") — "
+            + (standing.status == CiRunStatus.SUCCESS
+                ? "it went green, so there is nothing left to ask again"
+                : "that question is still being answered; follow that run instead"));
+  }
+
+  /**
+   * Which phase of which release request a re-fire was asked for through {@link
+   * #retryReleaseRequestPhase}, so the accept transaction can confirm, under its lock, that the run
+   * it re-fires is still that phase's newest (qits-2164). Null for every other re-fire.
+   */
+  private record PhaseRerun(String repoId, String releaseRequestId, CiRunPhase phase) {}
 
   /**
    * <b>A run the infrastructure failed is asked again at once</b> (qits-440): called by {@code
@@ -4077,7 +4129,10 @@ public class CiRunService {
             255);
     CiRun retry;
     try {
-      retry = refire(run.id, reason);
+      // The source just went FAILED and nothing has re-fired it, so qits-2164's guard has nothing
+      // to find. Were a person's press to land in between, the guard refuses this one, the catch
+      // below settles the run FAILED, and the person's retry is the one re-asking — one run, not two.
+      retry = refire(run.id, reason, null);
     } catch (RuntimeException e) {
       LOG.warnf(
           e, "CI run %s failed by the infrastructure (%s) and its automatic retry could not be"
@@ -4239,6 +4294,18 @@ public class CiRunService {
                             + " run in "
                             + repoId
                             + " — there is nothing to ask again until that phase has run once"));
+    refuseUnaskablePhase(newest, releaseRequestId, phase);
+    // Through retry's checks, and on to an accept that re-reads this phase's newest run with that
+    // run's row locked (qits-2164): two presses that read the same newest run serialise on its row,
+    // and the second finds the first's retry; a press that read it stale finds a newer run there.
+    return retry(newest.id, new PhaseRerun(repoId, releaseRequestId, phase));
+  }
+
+  /**
+   * Refuses a phase whose newest run is still going or already green — {@link
+   * #retryReleaseRequestPhase}'s two 409s, asked once before the accept and once inside it.
+   */
+  private void refuseUnaskablePhase(CiRun newest, String releaseRequestId, CiRunPhase phase) {
     if (newest.status == CiRunStatus.QUEUED || newest.status == CiRunStatus.RUNNING) {
       throw new ConflictException(
           "The "
@@ -4254,7 +4321,6 @@ public class CiRunService {
     if (newest.status == CiRunStatus.SUCCESS) {
       throw new ConflictException(spentPhaseMessage(newest, releaseRequestId, phase));
     }
-    return retry(newest.id);
   }
 
   /**
@@ -4497,6 +4563,10 @@ public class CiRunService {
    *
    * @param pipeline the trigger document and its archetype provenance, handed in by {@link
    *     #retriedPipeline} and computed outside this transaction because it reads the git host
+   * @param phaseRerun the release-request phase a rerun named, re-checked here under the source's
+   *     row lock (qits-2164); null for every other re-fire
+   * @throws ConflictException the source already has a standing retry, or (a phase rerun) is no
+   *     longer that phase's newest run, or that run is going or green — nothing is written
    */
   private Accepted insertRetry(
       String sourceRunId,
@@ -4504,10 +4574,44 @@ public class CiRunService {
       RetriedPipeline pipeline,
       String stepImages,
       String autoRetryReason,
-      Carry carry) {
-    CiRun source = runs.findById(sourceRunId);
+      Carry carry,
+      PhaseRerun phaseRerun) {
+    // Locked, and that is qits-2164's guarantee rather than its pre-check: the row lock is held until
+    // this transaction commits, so a second re-fire of the same source waits here for the first's
+    // row to exist and then refuses on it. The lock adds no cycle: the only other rows this
+    // transaction writes are the unfinished runs supersedeOtherRequests cancels, and a source is
+    // always finished, so no re-fire ever holds a row another one waits to lock first.
+    CiRun source = runs.findByIdLocked(sourceRunId);
     if (source == null) {
       return null;
+    }
+    Optional<CiRun> standing = runs.findStandingRetryOf(source.id);
+    if (standing.isPresent()) {
+      refuseStandingRetry(source.id, standing.get());
+    }
+    if (phaseRerun != null) {
+      // The phase's newest run, read again now that its row is held: a rerun re-asks the latest
+      // question, and between the door's read and this lock a retry of it, or a newer fold, may
+      // have landed. Anything newer than the source is that phase's answer now.
+      CiRun newest =
+          runs.findNewestForReleaseRequestPhase(
+                  phaseRerun.repoId(), phaseRerun.releaseRequestId(), phaseRerun.phase())
+              .orElse(source);
+      refuseUnaskablePhase(newest, phaseRerun.releaseRequestId(), phaseRerun.phase());
+      if (!newest.id.equals(source.id)) {
+        throw new ConflictException(
+            "The "
+                + phaseRerun.phase()
+                + " phase of release request "
+                + requestName(newest, phaseRerun.releaseRequestId())
+                + " has a newer run than "
+                + source.id
+                + " since it was asked for, CI run "
+                + newest.id
+                + " ("
+                + newest.status
+                + ") — ask again to re-run that one");
+      }
     }
     CiRun retry = new CiRun();
     retry.id = UUID.randomUUID().toString();

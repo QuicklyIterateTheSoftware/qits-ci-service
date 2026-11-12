@@ -994,9 +994,10 @@ public class CiRunController {
   @APIResponse(
       responseCode = "409",
       description =
-          "The run has not finished, so there is nothing to retry yet; or it is a release-request"
-              + " automation's run, which a retry would not count for — run `qits release-request"
-              + " regenerate --kind <kind>` instead")
+          "The run has not finished, so there is nothing to retry yet; it already has a retry that is"
+              + " queued, running or green, which the message names (qits-2164); or it is a"
+              + " release-request automation's run, which a retry would not count for — run `qits"
+              + " release-request regenerate --kind <kind>` instead")
   @APIResponse(
       responseCode = "503",
       description = "A step image's digest could not be resolved; ask again")

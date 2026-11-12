@@ -6,6 +6,7 @@ import eu.wohlben.qits.ci.entity.CiRunPurpose;
 import eu.wohlben.qits.ci.entity.CiRunStatus;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.persistence.LockModeType;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -451,6 +452,30 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
         .createQuery("select distinct r.repoId from CiRun r where r.purpose = ?1", String.class)
         .setParameter(1, CiRunPurpose.BUILD)
         .getResultList();
+  }
+
+  /**
+   * One run, read with its row locked for the rest of the caller's transaction ({@code SELECT ...
+   * FOR UPDATE}), or null. What serialises the re-fires of one run (qits-2164): a retry's insert
+   * holds its source's row while it asks {@link #findStandingRetryOf} and writes the new row, so a
+   * second retry of the same source waits for the first to commit and then sees it.
+   */
+  public CiRun findByIdLocked(String runId) {
+    return findById(runId, LockModeType.PESSIMISTIC_WRITE);
+  }
+
+  /**
+   * The newest retry of {@code sourceRunId} that still stands — {@code QUEUED}, {@code RUNNING} or
+   * {@code SUCCESS} — or empty (qits-2164). A retry that went red, was cancelled or timed out does
+   * not stand: the question it re-asked is still open, so the source may be asked again.
+   */
+  public Optional<CiRun> findStandingRetryOf(String sourceRunId) {
+    return find(
+            "retryOfRunId = ?1 and status in ?2 order by createdAt desc, id desc",
+            sourceRunId,
+            List.of(CiRunStatus.QUEUED, CiRunStatus.RUNNING, CiRunStatus.SUCCESS))
+        .range(0, 0)
+        .firstResultOptional();
   }
 
   /**
