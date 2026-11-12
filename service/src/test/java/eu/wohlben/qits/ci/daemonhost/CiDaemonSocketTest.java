@@ -276,20 +276,18 @@ public class CiDaemonSocketTest {
     }
   }
 
+  /**
+   * Before its worktree is ready, a launch runs no step and the grace still bounds it; a socket lost
+   * mid-step is held past the grace instead (qits-2163, {@code CiDaemonRegistryReconnectTest}).
+   */
   @Test
-  public void aSocketLostMidStepCompletesTheAwaitAsConnectionLostWhenTheGraceRunsOut()
+  public void aSocketLostBeforeTheWorktreeIsReadyCompletesTheAwaitAsConnectionLostWhenTheGraceRunsOut()
       throws Exception {
     Duration grace = Duration.ofMillis(800);
     registry.reconnectGrace(grace);
     String daemonId = launch("run-drop");
     try {
       FakeCiDaemon daemon = admitted("run-drop", daemonId);
-      daemon.send(new Initialized());
-      assertEquals(
-          CiDaemonRegistry.Initialization.Status.INITIALIZED,
-          registry.awaitInitialized(daemonId, SOON).status());
-      registry.sendRunStep(daemonId, 0, "sleep 600", 600, java.util.Map.of(), null);
-      assertInstanceOf(RunStep.class, daemon.next(SOON));
 
       long start = System.nanoTime();
       daemon.close();
@@ -297,10 +295,11 @@ public class CiDaemonSocketTest {
       // A generous deadline that must NOT be spent: the grace running out with nobody back
       // resolves the await, which is the difference between a distinguishable outcome and a run
       // that looks merely slow — and it is the grace, not the close, that resolves it (qits-748).
-      CiDaemonRegistry.Completion completion =
-          registry.awaitFinished(daemonId, Duration.ofSeconds(30));
+      CiDaemonRegistry.Initialization initialization =
+          registry.awaitInitialized(daemonId, Duration.ofSeconds(30));
       long elapsedMs = (System.nanoTime() - start) / 1_000_000;
-      assertEquals(CiDaemonRegistry.Completion.Status.CONNECTION_LOST, completion.status());
+      assertEquals(
+          CiDaemonRegistry.Initialization.Status.CONNECTION_LOST, initialization.status());
       assertTrue(elapsedMs >= grace.toMillis() - 50, "lost at the close: " + elapsedMs + "ms");
       assertTrue(elapsedMs < 10_000, "the lost socket must resolve the await, not expire it");
     } finally {

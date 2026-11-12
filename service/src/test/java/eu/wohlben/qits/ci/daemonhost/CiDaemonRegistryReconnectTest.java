@@ -31,7 +31,8 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The daemon socket's reconnect grace (qits-748), at the registry: a dropped connection is a gap
- * the launch waits out for its daemon to come back, not the step's end.
+ * the launch waits out for its daemon to come back, not the step's end — and a running step is held
+ * past the grace until its lease ends, its deadline passes or it is cancelled (qits-2163).
  *
  * <p>Plain JUnit, {@link CiDaemonRegistryTimeoutTest}'s reason: the registry is driven through its
  * own socket-side methods with a recording stand-in for the connection, so nothing here races for a
@@ -105,11 +106,207 @@ public class CiDaemonRegistryReconnectTest {
     registry.reap(daemonId);
   }
 
+  /**
+   * Before its worktree is ready a launch is running no step, so the grace still bounds it
+   * (qits-2163 holds only a running step): the daemon has no step deadline to re-dial against.
+   */
   @Test
-  public void aDaemonThatDoesNotComeBackIsLostWhenTheGraceRunsOutAndNotAtTheClose() {
+  public void aDaemonThatDoesNotComeBackBeforeItInitializesIsLostWhenTheGraceRunsOut() {
     Duration grace = Duration.ofMillis(600);
     CiDaemonRegistry registry = registry(grace);
     String daemonId = registry.registerLaunch("run-gone", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+
+    long start = System.nanoTime();
+    first.drop(registry, daemonId);
+    CiDaemonRegistry.Initialization initialization =
+        registry.awaitInitialized(daemonId, Duration.ofSeconds(30));
+    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+    assertEquals(CiDaemonRegistry.Initialization.Status.CONNECTION_LOST, initialization.status());
+    assertTrue(elapsedMs >= grace.toMillis() - 50, "lost at the close, not at the grace: " + elapsedMs);
+    assertTrue(elapsedMs < 10_000, "the grace, not the init deadline: " + elapsedMs);
+    registry.reap(daemonId);
+  }
+
+  @Test
+  public void aDaemonDroppedBetweenStepsIsLostWhenTheGraceRunsOut() throws Exception {
+    Duration grace = Duration.ofMillis(600);
+    CiDaemonRegistry registry = registry(grace);
+    String daemonId = registry.registerLaunch("run-between", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    String correlationId = registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+    registry.onMessage(daemonId, first.connection, new StepFinished(correlationId, 0, 0, false));
+
+    first.drop(registry, daemonId);
+    long start = System.nanoTime();
+    while (!registry.lost(daemonId) && (System.nanoTime() - start) < SOON.toNanos()) {
+      Thread.sleep(10);
+    }
+    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+    assertTrue(registry.lost(daemonId), "between steps the grace is the bound");
+    assertTrue(elapsedMs >= grace.toMillis() - 50, "lost at the grace: " + elapsedMs);
+    registry.reap(daemonId);
+  }
+
+  // --- a running step is held past the grace (qits-2163) ------------------------------------------
+
+  /**
+   * The 2026-11-12 edge outage in miniature: three runs' sockets drop at once with their steps
+   * running, and nobody is back until three graces later. Every step is held, every daemon's late
+   * Hello is re-admitted and sent its step again, and each step ends with its own exit code.
+   */
+  @Test
+  public void runningStepsOutliveAGapThreeGracesLongAndFinishWithTheirOwnExitCodes()
+      throws Exception {
+    Duration grace = Duration.ofMillis(600);
+    CiDaemonRegistry registry = registry(grace);
+    List<String> daemonIds = new ArrayList<>();
+    List<String> correlationIds = new ArrayList<>();
+    List<FakeConnection> firsts = new ArrayList<>();
+    List<CompletableFuture<CiDaemonRegistry.Completion>> finished = new ArrayList<>();
+    for (int run = 0; run < 3; run++) {
+      String daemonId = registry.registerLaunch("run-outage-" + run, SUBJECT);
+      FakeConnection first = admit(registry, daemonId, "c1-" + run);
+      registry.onMessage(daemonId, first.connection, new Initialized());
+      correlationIds.add(
+          registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null));
+      daemonIds.add(daemonId);
+      firsts.add(first);
+      finished.add(
+          CompletableFuture.supplyAsync(
+              () -> registry.awaitFinished(daemonId, Duration.ofSeconds(30))));
+    }
+
+    for (int run = 0; run < 3; run++) {
+      firsts.get(run).drop(registry, daemonIds.get(run));
+    }
+    Thread.sleep(grace.toMillis() * 3);
+
+    for (int run = 0; run < 3; run++) {
+      String daemonId = daemonIds.get(run);
+      assertFalse(finished.get(run).isDone(), "a running step must outlive the grace");
+      assertFalse(registry.lost(daemonId));
+      assertEquals(CiDaemonRegistry.Phase.RUNNING, registry.phaseOf(daemonId));
+      FakeConnection back = admit(registry, daemonId, "c2-" + run);
+      List<CiDaemonMessage> resent = back.sent();
+      assertEquals(2, resent.size(), "an Ack, then the RunStep: " + resent);
+      assertInstanceOf(Ack.class, resent.get(0));
+      assertEquals(
+          correlationIds.get(run), assertInstanceOf(RunStep.class, resent.get(1)).correlationId());
+      registry.onMessage(
+          daemonId, back.connection, new StepFinished(correlationIds.get(run), 0, 10 + run, false));
+    }
+
+    for (int run = 0; run < 3; run++) {
+      CiDaemonRegistry.Completion completion =
+          finished.get(run).get(SOON.toMillis(), TimeUnit.MILLISECONDS);
+      assertEquals(CiDaemonRegistry.Completion.Status.FINISHED, completion.status());
+      assertEquals(10 + run, completion.exitCode());
+      registry.reap(daemonIds.get(run));
+    }
+  }
+
+  /** The lease ending during the gap is what LeaseStepRunner.leaseEnded reports: a reap. */
+  @Test
+  public void aHeldStepWhoseLeaseEndsDuringTheGapIsLostAtOnceAndItsDaemonRefused()
+      throws Exception {
+    Duration grace = Duration.ofMillis(600);
+    CiDaemonRegistry registry = registry(grace);
+    String daemonId = registry.registerLaunch("run-lease-ended", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+    CompletableFuture<CiDaemonRegistry.Completion> finished =
+        CompletableFuture.supplyAsync(() -> registry.awaitFinished(daemonId, Duration.ofSeconds(30)));
+
+    first.drop(registry, daemonId);
+    Thread.sleep(grace.toMillis() * 2);
+    assertFalse(finished.isDone(), "held past the grace");
+
+    long start = System.nanoTime();
+    registry.reap(daemonId);
+    assertEquals(
+        CiDaemonRegistry.Completion.Status.CONNECTION_LOST,
+        finished.get(SOON.toMillis(), TimeUnit.MILLISECONDS).status());
+    assertTrue((System.nanoTime() - start) / 1_000_000 < 5_000, "the lease's end, not the deadline");
+    assertEquals(
+        CiDaemonRegistry.Admission.UNKNOWN_DAEMON,
+        registry.admitByToken(daemonId, SUBJECT, new FakeConnection("c2").connection),
+        "a daemon coming back after its lease ended names a launch that is gone");
+  }
+
+  @Test
+  public void aHeldStepWhoseDaemonIsNotBackByItsDeadlineIsLostNotUnanswered() {
+    Duration grace = Duration.ofMillis(300);
+    CiDaemonRegistry registry = registry(grace);
+    String daemonId = registry.registerLaunch("run-deadline", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+    first.drop(registry, daemonId);
+
+    long start = System.nanoTime();
+    Duration deadline = Duration.ofMillis(1_500);
+    CiDaemonRegistry.Completion completion = registry.awaitFinished(daemonId, deadline);
+    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+    assertEquals(CiDaemonRegistry.Completion.Status.CONNECTION_LOST, completion.status());
+    assertTrue(elapsedMs >= deadline.toMillis() - 50, "at the deadline, not the grace: " + elapsedMs);
+    assertTrue(registry.lost(daemonId), "and the launch is lost, so a next step is answered at once");
+    registry.reap(daemonId);
+  }
+
+  @Test
+  public void aHeldStepThatIsCancelledGetsTheGraceFromTheCancelAndIsLostWhenItRunsOut()
+      throws Exception {
+    Duration grace = Duration.ofMillis(500);
+    CiDaemonRegistry registry = registry(grace);
+    String daemonId = registry.registerLaunch("run-cancelled", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+    first.drop(registry, daemonId);
+    Thread.sleep(grace.toMillis() * 2);
+
+    long start = System.nanoTime();
+    registry.cancel(daemonId);
+    CiDaemonRegistry.Completion completion =
+        registry.awaitFinished(daemonId, Duration.ofSeconds(30));
+    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+    assertEquals(CiDaemonRegistry.Completion.Status.CONNECTION_LOST, completion.status());
+    assertTrue(elapsedMs >= grace.toMillis() - 50, "the grace runs from the cancel: " + elapsedMs);
+    assertTrue(elapsedMs < 10_000, "not the step's deadline: " + elapsedMs);
+    registry.reap(daemonId);
+  }
+
+  @Test
+  public void aHeldStepThatIsCancelledHearsTheCancelWhenItsDaemonIsBackInsideTheGrace() {
+    CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
+    String daemonId = registry.registerLaunch("run-cancel-back", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    String correlationId = registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+    first.drop(registry, daemonId);
+    registry.cancel(daemonId);
+
+    FakeConnection second = admit(registry, daemonId, "c2");
+    List<CiDaemonMessage> resent = second.sent();
+    assertEquals(3, resent.size(), "Ack, RunStep, Cancel: " + resent);
+    assertEquals(correlationId, assertInstanceOf(Cancel.class, resent.get(2)).correlationId());
+    registry.onMessage(daemonId, second.connection, new StepFinished(correlationId, 0, 143, false));
+    assertEquals(143, registry.awaitFinished(daemonId, SOON).exitCode());
+    registry.reap(daemonId);
+  }
+
+  @Test
+  public void withTheHoldOffARunningStepIsLostWhenTheGraceRunsOut() {
+    Duration grace = Duration.ofMillis(600);
+    CiDaemonRegistry registry = registry(grace);
+    registry.holdRunningSteps(false);
+    String daemonId = registry.registerLaunch("run-nohold", SUBJECT);
     FakeConnection first = admit(registry, daemonId, "c1");
     registry.onMessage(daemonId, first.connection, new Initialized());
     registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
@@ -121,14 +318,15 @@ public class CiDaemonRegistryReconnectTest {
     long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
     assertEquals(CiDaemonRegistry.Completion.Status.CONNECTION_LOST, completion.status());
-    assertTrue(elapsedMs >= grace.toMillis() - 50, "lost at the close, not at the grace: " + elapsedMs);
+    assertTrue(elapsedMs >= grace.toMillis() - 50, "lost at the grace: " + elapsedMs);
     assertTrue(elapsedMs < 10_000, "the grace, not the step's deadline: " + elapsedMs);
     registry.reap(daemonId);
   }
 
   @Test
-  public void aZeroGraceIsTheOldBehaviourLostAtTheClose() {
+  public void aZeroGraceWithTheHoldOffIsTheOldBehaviourLostAtTheClose() {
     CiDaemonRegistry registry = registry(Duration.ZERO);
+    registry.holdRunningSteps(false);
     String daemonId = registry.registerLaunch("run-nograce", SUBJECT);
     FakeConnection first = admit(registry, daemonId, "c1");
     registry.onMessage(daemonId, first.connection, new Initialized());
@@ -428,6 +626,8 @@ public class CiDaemonRegistryReconnectTest {
     Duration grace = Duration.ofMillis(500);
     Duration limit = Duration.ofMillis(400);
     CiDaemonRegistry registry = registry(grace, limit);
+    // A running step would be held (qits-2163); this is about the silence handing over to the grace.
+    registry.holdRunningSteps(false);
     String daemonId = registry.registerLaunch("run-silent", SUBJECT);
     FakeConnection first = admit(registry, daemonId, "c1");
     registry.onMessage(daemonId, first.connection, new Initialized());
@@ -445,6 +645,25 @@ public class CiDaemonRegistryReconnectTest {
     assertEquals(CiDaemonRegistry.Completion.Status.CONNECTION_LOST, completion.status());
     assertTrue(closedMs < 5_000, "closed at the limit: " + closedMs);
     assertTrue(lostMs >= grace.toMillis(), "lost at the grace, not at the close: " + lostMs);
+    registry.reap(daemonId);
+  }
+
+  @Test
+  public void aRunningStepSilentPastTheLimitIsClosedAndHeldPastTheGrace() throws Exception {
+    Duration grace = Duration.ofMillis(300);
+    CiDaemonRegistry registry = registry(grace, Duration.ofMillis(300));
+    String daemonId = registry.registerLaunch("run-silent-held", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    String correlationId = registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+    first.awaitClosed();
+    assertEquals(CiDaemonRegistry.SILENT, first.closeReason);
+    Thread.sleep(grace.toMillis() * 3);
+    assertFalse(registry.lost(daemonId), "silence starts the hold, not the grace, for a running step");
+
+    FakeConnection second = admit(registry, daemonId, "c2");
+    registry.onMessage(daemonId, second.connection, new StepFinished(correlationId, 0, 7, false));
+    assertEquals(7, registry.awaitFinished(daemonId, SOON).exitCode());
     registry.reap(daemonId);
   }
 

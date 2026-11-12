@@ -100,6 +100,21 @@ import org.jboss.logging.Logger;
  * daemon that does not re-dial (one older than the re-dial) costs its step the grace and no more.
  * {@code 0} restores the old behaviour.
  *
+ * <p><b>A running step is held past the grace</b> (qits-2163). The edge sits on both legs, so an
+ * edge outage longer than the grace used to cost every step on every target its run while the
+ * containers kept running (2026-11-12: 85 minutes, every step lost at second 60). So a launch whose
+ * socket drops while a step is {@link Phase#RUNNING} starts no grace at all: it stays pending, and
+ * its daemon's re-dial is admitted and resumed exactly as inside the grace, for as long as the step
+ * can still be running. Three things end the hold, each completing the step {@code CONNECTION_LOST}:
+ * its lease is known to have ended ({@code LeaseStepRunner.leaseEnded} reaps the launch); the step's
+ * own backstop passes ({@link #awaitFinished} answers a deadline that ran out with no connection
+ * bound as lost rather than {@code NO_ANSWER}); or the step is cancelled ({@link #cancel}: the
+ * {@code Cancel} is kept for the daemon and the ordinary grace runs from the cancel). A launch that is
+ * not running a step — still dialling, making its worktree, or between two steps — keeps the grace:
+ * its daemon has no step deadline to re-dial against and gives up on its own budget, so holding it
+ * longer would only hold a launch nobody comes back for. {@code
+ * qits.ci.daemon.hold-running-steps=false} restores the grace for a running step too.
+ *
  * <p><b>A drop the host never hears about is found by silence</b> (qits-1728). The edge splices the
  * daemon's leg and this host's into one tunnel, so a daemon leg that dies with no FIN or RST
  * leaves this side's socket open — for the edge's idle timeout, an hour — and {@link #onClose}
@@ -184,6 +199,18 @@ public class CiDaemonRegistry {
   public Duration reconnectGrace() {
     Duration set = reconnectGrace;
     return set != null ? set : Duration.ofSeconds(reconnectGraceSeconds);
+  }
+
+  /**
+   * Whether a launch whose socket drops with a step running is held past the grace (qits-2163).
+   * True before injection as well, so a registry a suite builds by hand holds as the shipped one does.
+   */
+  @ConfigProperty(name = "qits.ci.daemon.hold-running-steps", defaultValue = "true")
+  boolean holdRunningSteps = true;
+
+  /** {@link #reconnectGrace(Duration)}'s reason, for the hold. */
+  void holdRunningSteps(boolean hold) {
+    this.holdRunningSteps = hold;
   }
 
   /**
@@ -384,12 +411,7 @@ public class CiDaemonRegistry {
                 inFlight.env());
         launch.phase = Phase.RUNNING;
       }
-      if (!grace.isZero() && !grace.isNegative()) {
-        Object token = new Object();
-        launch.expiryToken = token;
-        launch.expiry =
-            graces.schedule(() -> expire(launch, token), grace.toMillis(), TimeUnit.MILLISECONDS);
-      }
+      startGrace(launch, grace);
     }
     if (launches.putIfAbsent(daemonId, launch) != null) {
       synchronized (launch) {
@@ -624,13 +646,37 @@ public class CiDaemonRegistry {
   /**
    * Block until the step in flight has its terminal frame, the socket is lost, or the host's backstop
    * deadline passes.
+   *
+   * <p>A deadline that passes while a step's daemon is away is the end of a held step (qits-2163):
+   * its daemon did not come back for as long as the step could have been running, so the step is
+   * {@code CONNECTION_LOST} and the launch lost, rather than {@code NO_ANSWER} — that one is for a
+   * daemon the host could still reach and that stopped answering.
    */
   public Completion awaitFinished(String daemonId, Duration timeout) {
     Launch launch = launches.get(daemonId);
     if (launch == null) {
       return Completion.of(Completion.Status.CONNECTION_LOST);
     }
-    return await(launch.stepFinished, timeout, Completion.of(Completion.Status.NO_ANSWER));
+    CompletableFuture<Completion> step = launch.stepFinished;
+    Completion completion = await(step, timeout, null);
+    if (completion != null) {
+      return completion;
+    }
+    synchronized (launch) {
+      // Only a step whose daemon was there and went: one that never dialled is the never-started
+      // case, and its own clock's to report.
+      if (launch.connection != null
+          || launch.admissions == 0
+          || launch.phase != Phase.RUNNING
+          || step.isDone()) {
+        return step.getNow(Completion.of(Completion.Status.NO_ANSWER));
+      }
+    }
+    LOG.warnf(
+        "ci-daemon %s of run %s did not come back before step %d's deadline; its step is lost",
+        daemonId, launch.runId, launch.stepIndex);
+    completeLost(launch);
+    return step.getNow(Completion.of(Completion.Status.CONNECTION_LOST));
   }
 
   /**
@@ -639,6 +685,11 @@ public class CiDaemonRegistry {
    * When nothing is connected — the daemon's socket is inside its reconnect grace — the {@code
    * Cancel} is kept and delivered on the re-admission; a launch nobody comes back for is reaped by
    * the caller either way.
+   *
+   * <p>A cancel is also one of the three ends of a held step (qits-2163): a launch held with no
+   * connection gets the ordinary grace from now, so a daemon back inside it still hears the {@code
+   * Cancel} and answers it, and one that is not is lost when it runs out rather than at the step's
+   * backstop, hours later.
    */
   public void cancel(String daemonId) {
     Launch launch = launches.get(daemonId);
@@ -650,6 +701,16 @@ public class CiDaemonRegistry {
     launch.cancelPending = true;
     if (send(launch, new Cancel(launch.correlationId))) {
       launch.cancelPending = false;
+      return;
+    }
+    boolean now = false;
+    synchronized (launch) {
+      if (launch.connection == null && launch.expiry == null && !launch.lost) {
+        now = !startGrace(launch, reconnectGrace());
+      }
+    }
+    if (now) {
+      completeLost(launch);
     }
   }
 
@@ -957,15 +1018,24 @@ public class CiDaemonRegistry {
       case StepFinished finished -> {
         // It ends the step it names, not the lease. A StepFinished for any other step — a replay
         // of an earlier one after a reconnect — has nothing left to complete.
+        boolean now = false;
         synchronized (launch) {
           if (launch.phase == Phase.RUNNING && finished.stepIndex() == launch.stepIndex) {
             launch.phase = Phase.INITIALIZED;
             launch.stepFinished.complete(Completion.finished(finished));
+            // Arrived on a superseded connection while none is bound: a held launch is between
+            // steps now, and between steps the grace is the bound again (qits-2163).
+            if (launch.connection == null && launch.expiry == null && !launch.lost) {
+              now = !startGrace(launch, reconnectGrace());
+            }
           } else {
             LOG.debugf(
                 "ci-daemon %s finished step %d, and step %d is the one in flight — ignored",
                 daemonId, finished.stepIndex(), launch.stepIndex);
           }
+        }
+        if (now) {
+          completeLost(launch);
         }
       }
       // Answers to a Continue (capability 3, epic qits-732). Nothing sends a Continue yet — the
@@ -1011,6 +1081,11 @@ public class CiDaemonRegistry {
    * every close used to. The launch record itself survives either way: the caller still has to reap
    * the container.
    *
+   * <p>A launch with a step {@link Phase#RUNNING} starts no grace at all (qits-2163): it is held
+   * until its daemon comes back, its lease ends, the step's backstop passes or it is cancelled — see
+   * the class javadoc. A {@code Cancel} still owed to it means the run is stopping, so that one gets
+   * the grace.
+   *
    * <p>Only the <b>bound</b> connection's close counts. A connection a re-dial superseded closes
    * after its successor is bound (qits-1728), and that close starts no grace; nor does a second
    * report of a close already handled, which is what {@link #checkSilence} relies on.
@@ -1022,6 +1097,7 @@ public class CiDaemonRegistry {
     }
     Duration grace = reconnectGrace();
     boolean now;
+    boolean held;
     synchronized (launch) {
       WebSocketConnection bound = launch.connection;
       if (bound == null || !bound.id().equals(connection.id())) {
@@ -1029,14 +1105,12 @@ public class CiDaemonRegistry {
       }
       launch.connection = null;
       cancelWatch(launch);
-      now = grace.isZero() || grace.isNegative() || launch.phase == Phase.DONE;
-      if (!now) {
+      held = holdRunningSteps && launch.phase == Phase.RUNNING && !launch.cancelPending;
+      if (held) {
         cancelExpiry(launch);
-        Object token = new Object();
-        launch.expiryToken = token;
-        launch.expiry =
-            graces.schedule(
-                () -> expire(launch, token), grace.toMillis(), TimeUnit.MILLISECONDS);
+        now = false;
+      } else {
+        now = launch.phase == Phase.DONE || !startGrace(launch, grace);
       }
     }
     if (now) {
@@ -1044,9 +1118,32 @@ public class CiDaemonRegistry {
       LOG.debugf("ci-daemon %s disconnected (connection %s)", daemonId, connection.id());
       return;
     }
+    if (held) {
+      LOG.warnf(
+          "ci-daemon %s of run %s disconnected with step %d running; holding the step until its"
+              + " daemon comes back, its lease ends, its deadline passes or it is cancelled",
+          daemonId, launch.runId, launch.stepIndex);
+      return;
+    }
     LOG.infof(
         "ci-daemon %s of run %s disconnected in phase %s; waiting %ss for it to come back",
         daemonId, launch.runId, launch.phase, grace.toSeconds());
+  }
+
+  /**
+   * Holding the launch's lock: the reconnect grace, from now, replacing any pending one. False when
+   * the grace is zero — nothing was scheduled, and the caller completes the launch lost at once.
+   */
+  private boolean startGrace(Launch launch, Duration grace) {
+    cancelExpiry(launch);
+    if (grace.isZero() || grace.isNegative()) {
+      return false;
+    }
+    Object token = new Object();
+    launch.expiryToken = token;
+    launch.expiry =
+        graces.schedule(() -> expire(launch, token), grace.toMillis(), TimeUnit.MILLISECONDS);
+    return true;
   }
 
   /** The grace ran out: unless the daemon came back (or the launch was reaped) first, it is lost. */
@@ -1328,7 +1425,10 @@ public class CiDaemonRegistry {
     /** A {@link Cancel} that found no live socket, owed to the daemon when it comes back. */
     private volatile boolean cancelPending;
 
-    /** Set once the launch is lost — its grace ran out, or it was reaped; guarded by the launch. */
+    /**
+     * Set once the launch is lost — its grace ran out, its held step's deadline passed (qits-2163),
+     * or it was reaped; guarded by the launch.
+     */
     private boolean lost;
 
     /** The reconnect grace's end, while the launch has no connection; guarded by the launch. */
