@@ -1274,10 +1274,10 @@ public class CiReleaseComposerTest {
                 """),
             null);
     String document = composed.releaseDocument();
-    String script = extractStepScript(document);
 
     Path work = Files.createTempDirectory("cli-download-fragment");
     try {
+      String script = extractStepScript(document, work);
       Path bin = work.resolve("bin");
       Files.createDirectories(bin);
       Path stubCurl = bin.resolve("curl");
@@ -1300,9 +1300,9 @@ public class CiReleaseComposerTest {
       stubCurl.toFile().setExecutable(true);
 
       // The extracted fragment still opens with the release phase's own git fetch/checkout —
-      // extractStepScript only rewrites the CLI-package guard, deliberately, so the fragment stays
-      // the composer's real text. A stub `git` that no-ops keeps that preamble truthful without
-      // this test standing up a real repository.
+      // extractStepScript only rewrites the CLI-package guard and the cache directory (qits-2101),
+      // deliberately, so the fragment stays the composer's real text otherwise. A stub `git` that
+      // no-ops keeps that preamble truthful without this test standing up a real repository.
       Path stubGit = bin.resolve("git");
       Files.writeString(stubGit, "#!/bin/sh\nexit 0\n");
       stubGit.toFile().setExecutable(true);
@@ -1374,8 +1374,14 @@ public class CiReleaseComposerTest {
    * step script, dropping the qits-artifacts-cli-package guard so a test with the package unset
    * still exercises the fetch itself (this class's fixtures never inject
    * {@code QITS_ARTIFACTS_CLI_PACKAGE}, and the real guard would just skip the block).
+   *
+   * <p>Also moves {@link CiReleaseComposer#CLI_CACHE_DIR} under {@code work} (qits-2101), the same
+   * rewrite {@link #hermeticStepScript} applies: this fragment really does execute the cache check
+   * (the fetch is forced open below), and {@code /caches/ci-daemon} may be a real, writable volume
+   * when a QA step running this suite does, which would cache the stub CLI this test downloads
+   * under a fake version for every later step on that target.
    */
-  private static String extractStepScript(String document) {
+  private static String extractStepScript(String document, Path work) {
     int begin = document.indexOf("      set -eu\n");
     int end = document.indexOf("# --- the declared step");
     assertTrue(begin >= 0 && end > begin, document);
@@ -1392,7 +1398,8 @@ public class CiReleaseComposerTest {
         .replace(
             "if [ -n \"${QITS_ARTIFACTS_CLI_PACKAGE:-}\" ]; then",
             "QITS_ARTIFACTS_CLI_PACKAGE=qits\nQITS_ARTIFACTS_CLI_VERSION=1\n"
-                + "if true; then");
+                + "if true; then")
+        .replace(CiReleaseComposer.CLI_CACHE_DIR, work.resolve("no-cli-cache").toString());
   }
 
   // --- the properties the goldens are there to hold ------------------------------------------------
@@ -2652,7 +2659,7 @@ public class CiReleaseComposerTest {
             null);
     Path work = Files.createTempDirectory("qa-report-hook");
     try {
-      String script = stepScript(composed.releaseRequestDocument()).replace("/tmp/", work + "/");
+      String script = hermeticStepScript(composed.releaseRequestDocument(), work);
       Path scriptFile = work.resolve("step.sh");
       Files.writeString(scriptFile, script);
       Path checkout = Files.createDirectories(work.resolve("checkout"));
@@ -2964,7 +2971,7 @@ public class CiReleaseComposerTest {
             stub);
     Path work = Files.createTempDirectory("qa-output-check");
     try {
-      String script = stepScript(composed.releaseRequestDocument()).replace("/tmp/", work + "/");
+      String script = hermeticStepScript(composed.releaseRequestDocument(), work);
       Path scriptFile = work.resolve("step.sh");
       Files.writeString(scriptFile, script);
       Path checkout = Files.createDirectories(work.resolve("checkout"));
@@ -3321,7 +3328,7 @@ public class CiReleaseComposerTest {
             CiReleaseComposer.compose(REPO, slots(declaration), null, Map.of(), null, gate)
                 .releaseRequestDocument();
         Path scriptFile = work.resolve("step-" + gate + ".sh");
-        Files.writeString(scriptFile, stepScript(document).replace("/tmp/", work + "/"));
+        Files.writeString(scriptFile, hermeticStepScript(document, work));
         for (int coverage : new int[] {0, 3, 1, 2, 127}) {
           String label = (gate ? "gate" : "report") + " exit " + coverage;
           HookRun run =
@@ -3435,6 +3442,21 @@ public class CiReleaseComposerTest {
       out.append(line.length() >= 6 ? line.substring(6) : line).append('\n');
     }
     return out.toString();
+  }
+
+  /**
+   * {@link #stepScript(String)}, with every fixed host path moved under {@code work} — the same
+   * rewrite {@code CiAutomationComposerTest.hermetic()} and {@code QitsCliPinIT} apply to their own
+   * copies of a composed script. {@code "/tmp/"} alone misses the qits CLI cache (qits-2101): {@link
+   * CiReleaseComposer#CLI_CACHE_DIR} is {@code /caches/ci-daemon}, not under {@code /tmp}, and a QA
+   * step running this very suite may have that volume mounted and writable — a stub CLI cached there
+   * under a fake version becomes every later step's CLI on that target. Moving it to a path under
+   * {@code work} that this method never creates turns the cache off instead.
+   */
+  private static String hermeticStepScript(String document, Path work) {
+    return stepScript(document)
+        .replace("/tmp/", work + "/")
+        .replace(CiReleaseComposer.CLI_CACHE_DIR, work.resolve("no-cli-cache").toString());
   }
 
   private static String read(Path work, String name) throws IOException {
