@@ -2135,7 +2135,7 @@ public class CiRunService {
         outcome == CiRunStatus.FAILED
             && infraResult != null
             && retriesSafely(run, release, infraResult)
-            && autoRetry(run, infraStep, infraResult);
+            && autoRetry(run, infraStep, infraResult) != AutoRetried.REFUSED;
     // BEFORE the verdict too (epic qits-732): a slot held for the release is recorded before
     // BuildSuccessful leaves, so a gate event answering that verdict always finds the hold to end.
     boolean held = outcome == CiRunStatus.SUCCESS && holdSlot(run);
@@ -4266,50 +4266,91 @@ public class CiRunService {
    * 2026-11-12 an edge outage lost every running step, and every retry those losses earned was
    * refused by the same outage: re-pinning the step images asks the registry through the dark edge.
    * So a {@link #transientRefusal} — the registry, the database or a service briefly gone — leaves
-   * the run awaiting its retry ({@link #deferAutoRetry}) and answers true: no {@code BuildFailed},
-   * exactly as for a retry that was made, and {@link #sweepDeferredRetries} asks again each tick
-   * until {@code qits.ci.auto-retry.defer-deadline}.
+   * the run awaiting its retry ({@link #deferAutoRetry}): no {@code BuildFailed}, exactly as for a
+   * retry that was made, and {@link #sweepDeferredRetries} asks again each tick until {@code
+   * qits.ci.auto-retry.defer-deadline} — through this same method, with a null {@code failure}: the
+   * words and the reason are then the ones the deferral stored, and a transient refusal hands the
+   * deferral back ({@link #reinstateDeferral}) rather than writing a new one.
    *
-   * @return true when the red is not to be announced: the retry was made, or it is deferred
+   * @param failure the step's infra failure, or null for the sweep re-asking a deferred retry
+   * @return whether the retry was made, deferred, or refused — only the last lets the red settle
    */
-  private boolean autoRetry(CiRun run, int failedStep, StepResult failure) {
+  private AutoRetried autoRetry(CiRun run, int failedStep, StepResult failure) {
+    boolean reasking = failure == null;
     if (autoRetryMax <= 0) {
-      return false;
+      return AutoRetried.REFUSED;
     }
     String what;
     int behind;
     try {
       behind = automaticRetriesBehind(run.id);
-      what = infraFailureWords(run, failure);
+      what = reasking ? deferredWhat(run.autoRetryDeferredReason) : infraFailureWords(run, failure);
     } catch (RuntimeException e) {
       LOG.warnf(
           e, "CI run %s failed by the infrastructure and could not be weighed for a retry", run.id);
-      return false;
+      return AutoRetried.REFUSED;
     }
     if (behind >= autoRetryMax) {
       LOG.infof(
           "CI run %s failed by the infrastructure (%s) after %d automatic retr%s — it settles FAILED",
           run.id, what, behind, behind == 1 ? "y" : "ies");
-      return false;
+      return AutoRetried.REFUSED;
     }
     String reason =
-        bounded(
-            "infra failure (" + what + ") on run " + run.id + " — automatic retry " + (behind + 1)
-                + " of " + autoRetryMax,
-            255);
+        reasking
+            ? run.autoRetryDeferredReason
+            : bounded(
+                "infra failure (" + what + ") on run " + run.id + " — automatic retry "
+                    + (behind + 1) + " of " + autoRetryMax,
+                255);
     CiRun retry;
     try {
       retry = refire(run.id, reason);
     } catch (RuntimeException e) {
-      if (transientRefusal(e) && deferAutoRetry(run, failedStep, what, reason, e)) {
-        return true;
+      if (transientRefusal(e)
+          && (reasking
+              ? reinstateDeferral(run, e)
+              : deferAutoRetry(run, failedStep, what, reason, e))) {
+        return AutoRetried.DEFERRED;
       }
       LOG.warnf(
           e, "CI run %s failed by the infrastructure (%s) and its automatic retry could not be"
               + " accepted — it settles FAILED", run.id, what);
-      return false;
+      return AutoRetried.REFUSED;
     }
     noteRetriedAs(run.id, failedStep, what, retry.id);
+    return AutoRetried.RETRIED;
+  }
+
+  /** What {@link #autoRetry} did about an infra failure (qits-2163). */
+  enum AutoRetried {
+    /** A retry was accepted, and the red is not announced. */
+    RETRIED,
+    /** The retry waits for an environment that refused it, and the red is held back meanwhile. */
+    DEFERRED,
+    /** No retry, and none coming: the red settles. */
+    REFUSED
+  }
+
+  /**
+   * Hands a deferral the sweep claimed back after the environment refused the retry again — unless
+   * a retry of the run was made meanwhile, which then stands for it. True either way: neither case
+   * is a red to announce.
+   */
+  private boolean reinstateDeferral(CiRun run, RuntimeException refusal) {
+    int back =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    runs.reinstateDeferredAutoRetry(
+                        run.id, run.autoRetryDeferredUntil, run.autoRetryDeferredReason));
+    LOG.infof(
+        "CI run %s: its automatic retry could still not be accepted (%s) — %s",
+        run.id,
+        refusal.getMessage(),
+        back == 1
+            ? "asked again until " + run.autoRetryDeferredUntil
+            : "a retry of it was made meanwhile, which stands for it");
     return true;
   }
 
@@ -4463,10 +4504,10 @@ public class CiRunService {
    * One row of {@link #sweepDeferredRetries}; true when the retry was made.
    *
    * <p><b>The deferral is claimed first and the re-fire made second</b>, so two passes, or a pass
-   * and a person, never both act on one wait. A transient refusal hands the wait back ({@link
-   * CiRunRepository#reinstateDeferredAutoRetry}) unless a retry of the run was made meanwhile — a
-   * person's, which then stands for it. Any other refusal settles the red, unless such a retry
-   * exists: a run a person already re-asked has no red of its own left to announce.
+   * and a person, never both act on one wait. The re-fire is {@link #autoRetry}'s own, so it is the
+   * same accept a retry made at once would have been. A refusal that is not transient settles the
+   * red — unless a retry of the run exists by then: a run a person already re-asked has no red of
+   * its own left to announce.
    */
   private boolean retryDeferred(CiRun run, Instant now) {
     int failedStep = failedStepOf(run.id);
@@ -4484,41 +4525,21 @@ public class CiRunService {
     }
     if (!now.isBefore(run.autoRetryDeferredUntil)) {
       settleDeferral(
-          run, failedStep, "its automatic retry could not be accepted before " + run.autoRetryDeferredUntil);
+          run,
+          failedStep,
+          "its automatic retry could not be accepted before " + run.autoRetryDeferredUntil);
       return false;
     }
-    CiRun retry;
-    try {
-      retry = refire(run.id, run.autoRetryDeferredReason);
-    } catch (RuntimeException e) {
-      if (transientRefusal(e)) {
-        int back =
-            QuarkusTransaction.requiringNew()
-                .call(
-                    () ->
-                        runs.reinstateDeferredAutoRetry(
-                            run.id, run.autoRetryDeferredUntil, run.autoRetryDeferredReason));
-        LOG.infof(
-            "CI run %s: its automatic retry could still not be accepted (%s) — %s",
-            run.id,
-            e.getMessage(),
-            back == 1
-                ? "asked again until " + run.autoRetryDeferredUntil
-                : "a retry of it was made meanwhile, which stands for it");
-        return false;
-      }
-      if (QuarkusTransaction.requiringNew().call(() -> runs.hasRetry(run.id))) {
-        LOG.infof(
-            "CI run %s: its deferred automatic retry was refused (%s) — a retry of it already"
-                + " stands for it",
-            run.id, e.getMessage());
-        return false;
-      }
-      settleDeferral(run, failedStep, "its automatic retry was refused: " + e.getMessage());
+    AutoRetried outcome = autoRetry(run, failedStep, null);
+    if (outcome != AutoRetried.REFUSED) {
+      return outcome == AutoRetried.RETRIED;
+    }
+    if (QuarkusTransaction.requiringNew().call(() -> runs.hasRetry(run.id))) {
+      LOG.infof("CI run %s: its deferred automatic retry is not needed — a retry of it stands", run.id);
       return false;
     }
-    noteRetriedAs(run.id, failedStep, deferredWhat(run.autoRetryDeferredReason), retry.id);
-    return true;
+    settleDeferral(run, failedStep, "its automatic retry was refused");
+    return false;
   }
 
   /**
