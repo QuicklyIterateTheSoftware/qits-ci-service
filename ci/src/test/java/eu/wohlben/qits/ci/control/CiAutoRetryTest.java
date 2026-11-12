@@ -307,6 +307,244 @@ public class CiAutoRetryTest extends CiTestSupport {
     assertNotNull(dto.withSteps(List.of(), null).retryReason());
   }
 
+  // --- qits-2163: a retry the environment refused waits for it ------------------------------------
+
+  private static final String DIGEST = "sha256:" + "d".repeat(64);
+
+  @Test
+  public void aRetryTheRegistryRefusesIsDeferredAndTheGateHearsNoRed() throws Exception {
+    // 2026-11-12: the edge was dark, so the retry's re-pin could not reach the registry. The run is
+    // accepted with the ci-slot image answering; the registry goes dark while its step is lost.
+    String repo = "auto-" + UUID.randomUUID();
+    fakeRunner.during(0, spec -> fakeImagePins.unresolvable(CiSlot.IMAGE_TAG));
+    fakeRunner.scriptSequence(0, LOST);
+
+    String original = accept(repo, "rr-a");
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+
+    assertEquals(1, chain(repo).size(), "no retry could be made yet");
+    CiRun waiting = service.requireRun(original);
+    assertEquals(CiRunStatus.FAILED, waiting.status, "the row says what happened");
+    assertNotNull(waiting.autoRetryDeferredUntil, "and that it awaits its automatic retry");
+    assertTrue(waiting.autoRetryDeferredReason.endsWith("automatic retry 1 of 2"));
+    assertTrue(announcer.failed().isEmpty(), "no BuildFailed while the retry is deferred");
+    assertTrue(
+        service.stepsFor(original).get(0).output.contains("its automatic retry is deferred until"),
+        service.stepsFor(original).get(0).output);
+
+    // Still dark at the next tick: nothing changes.
+    fakeRunner.reset();
+    assertEquals(0, service.sweepDeferredRetries(Instant.now()));
+    forgetLoadedEntities();
+    assertEquals(1, chain(repo).size());
+    assertNotNull(service.requireRun(original).autoRetryDeferredUntil);
+
+    // The registry comes back after one more blip; the tick after that makes the retry.
+    fakeImagePins.unresolvableThenPins(CiSlot.IMAGE_TAG, 3, DIGEST);
+    assertEquals(0, service.sweepDeferredRetries(Instant.now()), "the blip (three tries) refuses");
+    assertEquals(1, service.sweepDeferredRetries(Instant.now()));
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+
+    List<CiRun> all = chain(repo);
+    assertEquals(2, all.size(), "exactly one retry");
+    CiRun retry = all.get(1);
+    assertEquals(original, retry.retryOfRunId);
+    assertEquals(
+        "infra failure (the connection to the run's lease container was lost on target "
+            + suiteRunner.id()
+            + ") on run "
+            + original
+            + " — automatic retry 1 of 2",
+        retry.retryReason);
+    assertEquals(CiRunStatus.SUCCESS, retry.status);
+    assertNull(service.requireRun(original).autoRetryDeferredUntil, "the deferral is taken");
+    assertTrue(announcer.failed().isEmpty(), "the gate never heard a red");
+    assertTrue(
+        service.stepsFor(original).get(0).output.endsWith(
+            " — retried automatically as run " + retry.id + "]"),
+        service.stepsFor(original).get(0).output);
+
+    // A second pass finds nothing: the deferral fires once.
+    assertEquals(0, service.sweepDeferredRetries(Instant.now()));
+    forgetLoadedEntities();
+    assertEquals(2, chain(repo).size());
+  }
+
+  @Test
+  public void aDeferralPastItsDeadlineSettlesFailedAndAnnouncesTheRed() throws Exception {
+    String repo = "auto-" + UUID.randomUUID();
+    fakeRunner.during(0, spec -> fakeImagePins.unresolvable(CiSlot.IMAGE_TAG));
+    fakeRunner.scriptSequence(0, LOST);
+
+    String original = accept(repo, "rr-a");
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    Instant until = service.requireRun(original).autoRetryDeferredUntil;
+    assertNotNull(until);
+    assertTrue(announcer.failed().isEmpty());
+
+    assertEquals(0, service.sweepDeferredRetries(until.plusSeconds(1)));
+    forgetLoadedEntities();
+
+    assertEquals(1, chain(repo).size(), "no retry was made");
+    assertNull(service.requireRun(original).autoRetryDeferredUntil);
+    assertEquals(
+        List.of(original), announcer.failed().stream().map(f -> f.runId()).toList(),
+        "the red is announced once the wait gives up");
+    assertTrue(
+        service.stepsFor(original).get(0).output.endsWith("— the run settles FAILED]"),
+        service.stepsFor(original).get(0).output);
+
+    // Settled once: a later pass announces nothing more.
+    service.sweepDeferredRetries(until.plusSeconds(120));
+    assertEquals(1, announcer.failed().size());
+  }
+
+  @Test
+  public void aPersonsRetryDuringTheDeferralTakesItOver() throws Exception {
+    String repo = "auto-" + UUID.randomUUID();
+    fakeRunner.during(0, spec -> fakeImagePins.unresolvable(CiSlot.IMAGE_TAG));
+    fakeRunner.scriptSequence(0, LOST);
+
+    String original = accept(repo, "rr-a");
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    assertNotNull(service.requireRun(original).autoRetryDeferredUntil);
+
+    fakeRunner.reset();
+    fakeImagePins.reset();
+    CiRun manual = service.retry(original);
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    assertNull(service.requireRun(manual.id).retryReason, "a person's retry, not an automatic one");
+    assertNull(service.requireRun(original).autoRetryDeferredUntil, "the deferral is cancelled");
+
+    // The sweep finds nothing to re-fire and nothing to settle, even past the deadline.
+    assertEquals(0, service.sweepDeferredRetries(Instant.now()));
+    assertEquals(0, service.sweepDeferredRetries(Instant.now().plusSeconds(86_400)));
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    assertEquals(2, chain(repo).size(), "one retry, the person's");
+    assertTrue(announcer.failed().isEmpty());
+  }
+
+  @Test
+  public void aCancelledRequestDropsItsDeferredRetryAndAnnouncesNothing() throws Exception {
+    String repo = "auto-" + UUID.randomUUID();
+    fakeRunner.during(0, spec -> fakeImagePins.unresolvable(CiSlot.IMAGE_TAG));
+    fakeRunner.scriptSequence(0, LOST);
+
+    String original = accept(repo, "rr-a");
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+    assertNotNull(service.requireRun(original).autoRetryDeferredUntil);
+
+    service.cancelReleaseRequestRuns(repo, "rr-a", null);
+    forgetLoadedEntities();
+    assertNull(service.requireRun(original).autoRetryDeferredUntil);
+
+    fakeImagePins.reset();
+    assertEquals(0, service.sweepDeferredRetries(Instant.now()));
+    assertEquals(0, service.sweepDeferredRetries(Instant.now().plusSeconds(86_400)));
+    forgetLoadedEntities();
+    assertEquals(1, chain(repo).size(), "the withdrawn question is not re-asked");
+    assertTrue(announcer.failed().isEmpty(), "nor answered red");
+  }
+
+  @Test
+  public void aRefusalThatIsNotTransientStillSettlesAtOnce() {
+    // The classification: an environment that may come back defers, everything else settles.
+    assertTrue(CiRunService.transientRefusal(new eu.wohlben.qits.ci.error.UnavailableException("x")));
+    assertTrue(
+        CiRunService.transientRefusal(
+            new io.quarkus.narayana.jta.QuarkusTransactionException(
+                new jakarta.transaction.RollbackException(
+                    "ARJUNA016053: Could not commit transaction."))));
+    assertTrue(
+        CiRunService.transientRefusal(
+            new IllegalStateException(new java.sql.SQLException("gone", "08006"))));
+    assertFalse(
+        CiRunService.transientRefusal(new eu.wohlben.qits.ci.error.ConflictException("x")));
+    assertFalse(CiRunService.transientRefusal(new IllegalArgumentException("unparseable")));
+    assertFalse(
+        CiRunService.transientRefusal(
+            new IllegalStateException(new java.sql.SQLException("duplicate key", "23505"))));
+  }
+
+  // --- qits-2163: a step's row waits for its database ---------------------------------------------
+
+  @Test
+  public void aStepRecordWriteRefusedOnceIsAskedAgainAndTheRealResultIsRecorded() throws Exception {
+    String repo = "auto-" + UUID.randomUUID();
+    service.failStepWrites(0, 1, CiAutoRetryTest::refusedCommit);
+    try {
+      accept(repo, "rr-a");
+      suiteRunner.awaitIdle();
+    } finally {
+      service.clearStepWriteFaults();
+    }
+    forgetLoadedEntities();
+
+    List<CiRun> all = chain(repo);
+    assertEquals(1, all.size(), "no retry: nothing failed");
+    assertEquals(CiRunStatus.SUCCESS, all.get(0).status);
+    List<CiStep> recorded = service.stepsFor(all.get(0).id);
+    assertEquals(2, recorded.size(), "one row per step, the refused attempt left none behind");
+    assertEquals(eu.wohlben.qits.ci.entity.CiStepStatus.SUCCESS, recorded.get(0).status);
+    assertEquals(0, recorded.get(0).exitCode);
+    assertTrue(announcer.failed().isEmpty());
+  }
+
+  @Test
+  public void aDatabaseThatStaysGoneBeforeTheStepLaunchedIsAnInfraFailure() throws Exception {
+    // Nothing of the step ran, so it is NEVER_STARTED and retried automatically.
+    String repo = "auto-" + UUID.randomUUID();
+    fakeRunner.throwOnceOn(0, refusedCommit());
+
+    String original = accept(repo, "rr-a");
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+
+    List<CiRun> all = chain(repo);
+    assertEquals(2, all.size(), "retried automatically");
+    assertEquals(CiRunStatus.FAILED, all.get(0).status);
+    assertTrue(
+        service.stepsFor(original).get(0).output.startsWith(
+            CiRunService.STEP_NOT_STARTED_DATABASE),
+        service.stepsFor(original).get(0).output);
+    CiRun retry = all.get(1);
+    assertEquals(original, retry.retryOfRunId);
+    assertTrue(
+        retry.retryReason.startsWith(
+            "infra failure (the step could not be recorded before it started"),
+        retry.retryReason);
+    assertEquals(CiRunStatus.SUCCESS, retry.status);
+    assertTrue(announcer.failed().isEmpty(), "no BuildFailed for an infra failure");
+  }
+
+  @Test
+  public void aNonTransientThrowStillFailsTheStepAsBefore() throws Exception {
+    String repo = "auto-" + UUID.randomUUID();
+    fakeRunner.throwOn(0, new IllegalStateException("a bug"));
+
+    String original = accept(repo, "rr-a");
+    suiteRunner.awaitIdle();
+    forgetLoadedEntities();
+
+    assertEquals(1, chain(repo).size());
+    assertTrue(
+        service.stepsFor(original).get(0).output.startsWith("[the step could not be executed:"),
+        service.stepsFor(original).get(0).output);
+    assertEquals(List.of(original), announcer.failed().stream().map(f -> f.runId()).toList());
+  }
+
+  private static RuntimeException refusedCommit() {
+    return new io.quarkus.narayana.jta.QuarkusTransactionException(
+        new jakarta.transaction.RollbackException("ARJUNA016053: Could not commit transaction."));
+  }
+
   // --- fixture -----------------------------------------------------------------------------------
 
   /** The repository's runs, oldest first. */

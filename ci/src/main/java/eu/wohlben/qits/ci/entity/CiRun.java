@@ -176,6 +176,22 @@ public class CiRun extends PanacheEntityBase implements CausedRow {
   public String retryReason;
 
   /**
+   * Until when this failed run waits for its automatic retry, or null when it waits for none
+   * (qits-2163, {@code V44__run_auto_retry_deferral.sql}). Set when the retry its infra failure
+   * earned could not be accepted for a transient reason — a registry that did not answer, the
+   * database or a service briefly gone — and the run's {@code BuildFailed} is held back meanwhile.
+   * {@code CiRunService.sweepDeferredRetries} asks again each tick; the retry's accept, a person's
+   * retry, a refusal that is not transient, the request's cancellation and this deadline each clear
+   * it, and only the last two settle the red. Non-null is the whole of "awaiting".
+   */
+  @Column(name = "auto_retry_deferred_until")
+  public Instant autoRetryDeferredUntil;
+
+  /** The {@link #retryReason} the deferred retry will carry, null with the deadline beside it. */
+  @Column(name = "auto_retry_deferred_reason", length = 255)
+  public String autoRetryDeferredReason;
+
+  /**
    * How many leading steps this retry <b>carried over</b> from {@link #retryOfRunId} instead of
    * running them again, or null when it carried none — every run that is not a retry, every retry
    * of a phase other than {@link CiRunPhase#RELEASE}, and every historical row (qits-1222, {@code

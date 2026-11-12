@@ -507,4 +507,116 @@ public class CiRunRepository implements PanacheRepositoryBase<CiRun, String> {
   public int renameRepository(String repoId, String projectId, String repoName) {
     return update("set projectId = ?1, repoName = ?2 where repoId = ?3", projectId, repoName, repoId);
   }
+
+  /**
+   * <b>Marks a failed run as awaiting its automatic retry</b> until {@code until} (qits-2163), as
+   * one conditional UPDATE — only while the row is still {@code FAILED} and awaits none, so a
+   * deferral is written once and never moved by a second writer.
+   *
+   * @return 1 when the run now waits, 0 when it did not qualify
+   */
+  public int deferAutoRetry(String runId, Instant until, String reason) {
+    return update(
+        "autoRetryDeferredUntil = ?1, autoRetryDeferredReason = ?2"
+            + " where id = ?3 and status = ?4 and autoRetryDeferredUntil is null",
+        until,
+        reason,
+        runId,
+        CiRunStatus.FAILED);
+  }
+
+  /**
+   * <b>Takes a run's deferred automatic retry</b> (qits-2163): clears both columns, only while they
+   * are set. The one way a deferral ends, whoever ends it — the sweep before it re-fires, settles or
+   * drops, a person's retry in its insert, a cancellation — and the row lock the UPDATE takes is what
+   * makes it end once: a second writer racing the first waits for its commit and then matches
+   * nothing.
+   *
+   * @return 1 for the caller that took it, 0 for every other
+   */
+  public int claimDeferredAutoRetry(String runId) {
+    return update(
+        "autoRetryDeferredUntil = null, autoRetryDeferredReason = null"
+            + " where id = ?1 and autoRetryDeferredUntil is not null",
+        runId);
+  }
+
+  /**
+   * Hands a claimed deferral back after a re-fire the environment refused again (qits-2163) — only
+   * while no retry of the run exists: a person's retry made between the claim and this is the one
+   * re-asking the question, and the wait must not outlive it.
+   *
+   * @return 1 when the run waits again, 0 when a retry of it stands for it
+   */
+  public int reinstateDeferredAutoRetry(String runId, Instant until, String reason) {
+    return update(
+        "autoRetryDeferredUntil = ?1, autoRetryDeferredReason = ?2"
+            + " where id = ?3 and autoRetryDeferredUntil is null"
+            + " and not exists (select r.id from CiRun r where r.retryOfRunId = ?3)",
+        until,
+        reason,
+        runId);
+  }
+
+  /** Whether any run re-fires {@code runId} (qits-2163). */
+  public boolean hasRetry(String runId) {
+    return count("retryOfRunId", runId) > 0;
+  }
+
+  /** Every run awaiting its automatic retry, the nearest deadline first (qits-2163). */
+  public List<CiRun> listDeferredAutoRetries() {
+    return list("autoRetryDeferredUntil is not null order by autoRetryDeferredUntil, id");
+  }
+
+  /**
+   * Drops the deferred automatic retries of one release request's runs — {@code phase} only when
+   * given — because the question they were waiting to re-ask went away (qits-2163). Nothing is
+   * announced for them, which is what a cancelled run's contract is.
+   */
+  public int dropDeferredAutoRetries(String repoId, String releaseRequestId, CiRunPhase phase) {
+    if (phase == null) {
+      return update(
+          "autoRetryDeferredUntil = null, autoRetryDeferredReason = null"
+              + " where repoId = ?1 and releaseRequestId = ?2 and autoRetryDeferredUntil is not null",
+          repoId,
+          releaseRequestId);
+    }
+    return update(
+        "autoRetryDeferredUntil = null, autoRetryDeferredReason = null"
+            + " where repoId = ?1 and releaseRequestId = ?2 and phase = ?3"
+            + " and autoRetryDeferredUntil is not null",
+        repoId,
+        releaseRequestId,
+        phase);
+  }
+
+  /**
+   * Whether a run of the same release question was accepted after {@code run} — a re-fold of its
+   * request, or (for a {@link CiRunPhase#RELEASE_REQUEST} run) any newer request's gating build of
+   * the repository, which qits-552 makes the one it builds. A deferred retry of {@code run} would
+   * re-ask a superseded question, so the sweep drops it instead (qits-2163). Always false for a run
+   * that is no part of a release.
+   */
+  public boolean supersededSinceAccept(CiRun run) {
+    if (run.phase == null || run.releaseRequestId == null || run.createdAt == null) {
+      return false;
+    }
+    if (run.phase == CiRunPhase.RELEASE_REQUEST) {
+      return count(
+              "repoId = ?1 and phase = ?2 and createdAt > ?3 and id <> ?4",
+              run.repoId,
+              run.phase,
+              run.createdAt,
+              run.id)
+          > 0;
+    }
+    return count(
+            "repoId = ?1 and releaseRequestId = ?2 and phase = ?3 and createdAt > ?4 and id <> ?5",
+            run.repoId,
+            run.releaseRequestId,
+            run.phase,
+            run.createdAt,
+            run.id)
+        > 0;
+  }
 }

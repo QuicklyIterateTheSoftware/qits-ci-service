@@ -173,6 +173,9 @@ public class MigrationChecksumTest {
     PINS.put(
         "V43__run_oom_kills.sql",
         "832ecd2d92382f2cf6211170da99b93d3a04f78457c785c559b119fc63c5832e");
+    PINS.put(
+        "V44__run_auto_retry_deferral.sql",
+        "4353ab9c1c4a3155eb63d517d08d6083b3620f9784e41a7194b4e7876c631ee2");
   }
 
   @Test

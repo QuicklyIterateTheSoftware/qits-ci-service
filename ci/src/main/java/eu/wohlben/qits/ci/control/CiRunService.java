@@ -25,6 +25,7 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.runtime.LaunchMode;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
+import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PreDestroy;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -495,6 +496,13 @@ public class CiRunService {
   public static final int AUTO_RETRY_MAX = 2;
 
   /**
+   * The start of a step's output when a database that stayed gone kept the step from being sent
+   * (qits-2163) — the step is then {@code NEVER_STARTED}, and this is how its words say why.
+   */
+  static final String STEP_NOT_STARTED_DATABASE =
+      "[the step was not started: the database did not answer: ";
+
+  /**
    * {@link #AUTO_RETRY_MAX}, except where a suite has turned it off through {@link
    * #autoRetryMax(int)} — a test staging an infra failure to assert something else must not grow a
    * second, QUEUED run it never asked for.
@@ -522,6 +530,27 @@ public class CiRunService {
    */
   @ConfigProperty(name = "qits.ci.step-image-pin-retry-delays", defaultValue = "2S,5S")
   List<Duration> pinRetryDelays;
+
+  /**
+   * How long a failed run waits for an automatic retry that could not be accepted for a transient
+   * reason before it settles {@code FAILED} and announces {@code BuildFailed} (qits-2163). Two hours
+   * covers the outage that measured it — an edge dark for 86 minutes — and stays short of what a
+   * release request should sit on a verdict nobody can make.
+   */
+  @ConfigProperty(name = "qits.ci.auto-retry.defer-deadline", defaultValue = "2H")
+  Duration autoRetryDeferDeadline;
+
+  /**
+   * How long a transient database failure may hold the write of a step's row before the step is
+   * given up (qits-2163). A postgres recreate is a minute; the step's own result is worth that wait,
+   * since recording it red is a verdict about a build that may well have passed.
+   */
+  @ConfigProperty(name = "qits.ci.step-record-retry-deadline", defaultValue = "5M")
+  Duration stepRecordRetryDeadline;
+
+  /** The suites' hook into a step-record write — see {@link #failStepWrites}. Null ships. */
+  private final java.util.concurrent.atomic.AtomicReference<StepWriteFault> stepWriteFault =
+      new java.util.concurrent.atomic.AtomicReference<>();
 
   /**
    * Runs a user asked to stop. In memory and deliberately so: a cancellation is only meaningful
@@ -1586,20 +1615,29 @@ public class CiRunService {
    * what a successor needs to take the container back. <b>Fails closed</b>: a launch that could not
    * be recorded throws, and the seam does not make it — a container nobody could take back after a
    * restart is one a restart would start a second time.
+   *
+   * <p>A transient database failure is asked again first ({@link #recordPatiently}, qits-2163): the
+   * write sets fixed values, so a commit that landed and lost its answer is harmless to repeat. One
+   * that never lands is a step that was never sent, which the seam reports as {@code
+   * LAUNCH_FAILED} — an infra failure, retried automatically even for a publishing run, since
+   * nothing ran.
    */
   private void recordLaunch(String runId, int stepIndex, String daemonId, String tokenSubject) {
     try {
-      QuarkusTransaction.requiringNew()
-          .run(
-              () -> {
-                CiRun row = runs.findById(runId);
-                if (row != null) {
-                  row.inflightStepIndex = stepIndex;
-                  row.inflightDaemonId = daemonId;
-                  row.inflightTokenSubject = tokenSubject;
-                  row.inflightStartedAt = null;
-                }
-              });
+      recordPatiently(
+          "Recording the launch of step " + stepIndex + " of CI run " + runId,
+          () ->
+              QuarkusTransaction.requiringNew()
+                  .run(
+                      () -> {
+                        CiRun row = runs.findById(runId);
+                        if (row != null) {
+                          row.inflightStepIndex = stepIndex;
+                          row.inflightDaemonId = daemonId;
+                          row.inflightTokenSubject = tokenSubject;
+                          row.inflightStartedAt = null;
+                        }
+                      }));
     } catch (RuntimeException e) {
       throw new IllegalStateException(
           "the launch of step " + stepIndex + " could not be recorded on the run row: " + e.getMessage(),
@@ -1927,6 +1965,9 @@ public class CiRunService {
     // InfraFailures.isInfra, and what autoRetry acts on.
     StepResult infraResult = null;
     int infraStep = -1;
+    // The step the loop is on, for the catch below: whether it may have run decides what a database
+    // failure on its way is (qits-2163).
+    Stamps current = null;
 
     try {
       while (index < declared.size() && !failed && !cancelled.contains(run.id)) {
@@ -1934,6 +1975,7 @@ public class CiRunService {
         // The in-flight step of an inherited run is taken back, never launched again (qits-1192).
         boolean reattach = resume.reattach() && index == resume.from();
         Stamps stamps = new Stamps(run.id, index, reattach ? resume.startedAt() : null);
+        current = stamps;
         CiStepRunner.StepSpec spec =
             new CiStepRunner.StepSpec(
                 run.id,
@@ -2026,6 +2068,17 @@ public class CiRunService {
       // The step blew up instead of answering — an infrastructure error, not a pipeline verdict.
       // Record it against the step it happened on so no declared step vanishes from the run.
       LOG.errorf(e, "CI run %s: step %d failed unexpectedly", run.id, index);
+      // A database that stayed gone past the record's own patience, on a step nothing of which ran,
+      // is the infrastructure's failure and not the build's (qits-2163): it is classed NEVER_STARTED
+      // so autoRetry re-fires it — even for a publishing run, since nothing was published. A step
+      // that may have run, and any other throw, is recorded as it always was.
+      StepResult unrecorded =
+          index < declared.size()
+                  && transientDatabaseFailure(e)
+                  && (current == null || !current.launched())
+              ? new StepResult(
+                  -1, false, StepOutcome.NEVER_STARTED, STEP_NOT_STARTED_DATABASE + e + "]")
+              : null;
       if (index < declared.size()) {
         Instant now = Instant.now();
         insertStep(
@@ -2035,9 +2088,15 @@ public class CiRunService {
             declared.get(index).name(),
             CiStepStatus.FAILED,
             null,
-            "[the step could not be executed: " + e + "]",
+            unrecorded != null
+                ? unrecorded.output()
+                : "[the step could not be executed: " + e + "]",
             now,
             now);
+        if (unrecorded != null) {
+          infraResult = unrecorded;
+          infraStep = index;
+        }
         index++;
       }
       failed = true;
@@ -2070,18 +2129,20 @@ public class CiRunService {
     announceStatus(run, outcome, CiRunStatus.RUNNING, finishedAt);
     // BEFORE the verdict: an infra failure re-fired here is not announced as BuildFailed at all, so
     // a release request's gate never hears a red it would reject on — it waits for the retry, whose
-    // verdict carries retryOfRunId and lands on the same commit. See autoRetry.
-    CiRun autoRetried =
-        outcome == CiRunStatus.FAILED && infraResult != null && retriesSafely(run, release, infraResult)
-            ? autoRetry(run, infraStep, infraResult)
-            : null;
+    // verdict carries retryOfRunId and lands on the same commit. One whose retry is deferred
+    // (qits-2163) is not announced either, until the deferral gives up. See autoRetry.
+    boolean autoRetried =
+        outcome == CiRunStatus.FAILED
+            && infraResult != null
+            && retriesSafely(run, release, infraResult)
+            && autoRetry(run, infraStep, infraResult);
     // BEFORE the verdict too (epic qits-732): a slot held for the release is recorded before
     // BuildSuccessful leaves, so a gate event answering that verdict always finds the hold to end.
     boolean held = outcome == CiRunStatus.SUCCESS && holdSlot(run);
     if (outcome == CiRunStatus.SUCCESS) {
       announceRun(run, finishedAt);
       announceRelease(run, finishedAt, release);
-    } else if (outcome != CiRunStatus.CANCELLED && autoRetried == null) {
+    } else if (outcome != CiRunStatus.CANCELLED && !autoRetried) {
       announceFailedRun(run, finishedAt, outcome);
     }
     return held;
@@ -3503,7 +3564,22 @@ public class CiRunService {
     return run;
   }
 
-  /** Writes one step row. Every row this class writes is already in a terminal state. */
+  /**
+   * Writes one step row. Every row this class writes is already in a terminal state.
+   *
+   * <p><b>A transient database failure is waited out, not recorded</b> (qits-2163). On 2026-11-12 a
+   * postgres recreate failed one commit, and a publish step that had run was recorded {@code
+   * [the step could not be executed: … ARJUNA016053: Could not commit transaction.]} — a red about a
+   * build nobody judged. So the write is asked again with backoff ({@link #recordPatiently}) for up
+   * to {@code qits.ci.step-record-retry-deadline}.
+   *
+   * <p><b>Asking again is safe because the write is made idempotent here.</b> A commit failure is
+   * the one round trip {@link DbRetry#inNewTx} will not repeat — the row may be in the database with
+   * the answer lost — so every attempt first looks for the row it would write: one step index has
+   * one row ({@code runSteps} writes each index once, the remainder loop only past it), and a row
+   * already there is the earlier attempt's, carrying these same values. The flush moves every
+   * statement failure into the body, so what is left for the commit is the commit.
+   */
   private void insertStep(
       String runId,
       int stepIndex,
@@ -3514,22 +3590,142 @@ public class CiRunService {
       String output,
       Instant startedAt,
       Instant finishedAt) {
-    QuarkusTransaction.requiringNew()
-        .run(
-            () -> {
-              CiStep step = new CiStep();
-              step.id = UUID.randomUUID().toString();
-              step.runId = runId;
-              step.stepIndex = stepIndex;
-              step.image = image;
-              step.name = name;
-              step.status = status;
-              step.exitCode = exitCode;
-              step.output = output;
-              step.startedAt = startedAt;
-              step.finishedAt = finishedAt;
-              steps.persist(step);
-            });
+    recordPatiently(
+        "Recording step " + stepIndex + " of CI run " + runId,
+        () ->
+            QuarkusTransaction.requiringNew()
+                .run(
+                    () -> {
+                      if (steps.count("runId = ?1 and stepIndex = ?2", runId, stepIndex) > 0) {
+                        return;
+                      }
+                      CiStep step = new CiStep();
+                      step.id = UUID.randomUUID().toString();
+                      step.runId = runId;
+                      step.stepIndex = stepIndex;
+                      step.image = image;
+                      step.name = name;
+                      step.status = status;
+                      step.exitCode = exitCode;
+                      step.output = output;
+                      step.startedAt = startedAt;
+                      step.finishedAt = finishedAt;
+                      steps.persist(step);
+                      steps.flush();
+                      StepWriteFault fault = stepWriteFault.get();
+                      if (fault != null) {
+                        fault.strike(stepIndex);
+                      }
+                    }));
+  }
+
+  /**
+   * Runs {@code write}, asking again while it fails for a {@link #transientDatabaseFailure} and
+   * {@code qits.ci.step-record-retry-deadline} has not passed (qits-2163). Waits 0.5 s, doubling to
+   * 15 s. The last failure is rethrown as it arrived, so a caller that classifies it sees what a
+   * single attempt would have thrown. {@code write} must be idempotent: a commit that failed may
+   * have committed.
+   */
+  private void recordPatiently(String what, Runnable write) {
+    long expiry = System.nanoTime() + stepRecordRetryDeadline.toNanos();
+    long pauseMillis = 500;
+    for (int attempt = 1; ; attempt++) {
+      try {
+        write.run();
+        if (attempt > 1) {
+          LOG.infof("%s succeeded on attempt %d — the database came back", what, attempt);
+        }
+        return;
+      } catch (RuntimeException e) {
+        long left = expiry - System.nanoTime();
+        if (!transientDatabaseFailure(e) || left <= 0 || Thread.currentThread().isInterrupted()) {
+          throw e;
+        }
+        LOG.warnf(
+            "%s failed on the database (attempt %d): %s — asking again within %s",
+            what, attempt, e.getMessage(), stepRecordRetryDeadline);
+        try {
+          Thread.sleep(Math.min(pauseMillis, Math.max(1, left / 1_000_000)));
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          throw e;
+        }
+        pauseMillis = Math.min(pauseMillis * 2, 15_000);
+      }
+    }
+  }
+
+  /**
+   * Whether a failure is the database being briefly gone rather than the statement being wrong
+   * (qits-2163): {@link DbRetry#isConnectionFailure} (SQLState {@code 08xxx}, a terminated backend,
+   * the pool's acquisition timeout), or the transaction manager refusing a commit ({@code
+   * RollbackException}, {@code ARJUNA016053}) with no constraint violation or other statement
+   * failure under it. The commit arm is the one {@link DbRetry} deliberately does not retry,
+   * because the write may have landed; a caller of this must therefore write idempotently.
+   */
+  static boolean transientDatabaseFailure(Throwable thrown) {
+    if (thrown == null) {
+      return false;
+    }
+    if (DbRetry.isConnectionFailure(thrown)) {
+      return true;
+    }
+    boolean commitRefused = false;
+    int depth = 0;
+    for (Throwable cause = thrown; cause != null && depth < 30; cause = cause.getCause(), depth++) {
+      if (cause instanceof ConstraintViolationException
+          || cause instanceof SQLIntegrityConstraintViolationException
+          || cause instanceof java.sql.SQLException) {
+        return false;
+      }
+      if (cause instanceof jakarta.transaction.RollbackException
+          || cause instanceof jakarta.transaction.HeuristicMixedException
+          || cause instanceof jakarta.transaction.HeuristicRollbackException
+          || (cause.getMessage() != null && cause.getMessage().contains("ARJUNA016053"))) {
+        commitRefused = true;
+      }
+      if (cause.getCause() == cause) {
+        break;
+      }
+    }
+    return commitRefused;
+  }
+
+  /**
+   * A suite's stand-in for a database that fails a step-record write — see {@link
+   * #failStepWrites}. Thrown from inside the write's transaction, after its flush, so the attempt
+   * rolls back exactly as a refused commit leaves it.
+   */
+  static final class StepWriteFault {
+    private final int stepIndex;
+    private final java.util.concurrent.atomic.AtomicInteger left;
+    private final java.util.function.Supplier<RuntimeException> failure;
+
+    StepWriteFault(int stepIndex, int times, java.util.function.Supplier<RuntimeException> failure) {
+      this.stepIndex = stepIndex;
+      this.left = new java.util.concurrent.atomic.AtomicInteger(times);
+      this.failure = failure;
+    }
+
+    void strike(int index) {
+      if (index == stepIndex && left.getAndUpdate(n -> n > 0 ? n - 1 : n) > 0) {
+        throw failure.get();
+      }
+    }
+  }
+
+  /**
+   * The suites' handle on a failing step-record write: the next {@code times} writes of {@code
+   * stepIndex}'s row throw {@code failure}. {@code times} of {@link Integer#MAX_VALUE} is a database
+   * that does not come back. Null-safe to clear with {@link #clearStepWriteFaults}.
+   */
+  void failStepWrites(
+      int stepIndex, int times, java.util.function.Supplier<RuntimeException> failure) {
+    stepWriteFault.set(new StepWriteFault(stepIndex, times, failure));
+  }
+
+  void clearStepWriteFaults() {
+    stepWriteFault.set(null);
   }
 
   /**
@@ -3784,6 +3980,21 @@ public class CiRunService {
                     .call(
                         () -> runs.listUnfinishedForReleaseRequest(repoId, releaseRequestId, phase)),
             retryDeadline());
+    // A failed run of the request still waiting for its automatic retry (qits-2163) is a question
+    // nobody will read either: the retry it stands for would have been cancelled here had it been
+    // made, so the wait is dropped, announcing nothing — a cancelled run's contract.
+    int dropped =
+        DbRetry.call(
+            "release request deferred-retry drop",
+            () ->
+                QuarkusTransaction.requiringNew()
+                    .call(() -> runs.dropDeferredAutoRetries(repoId, releaseRequestId, phase)),
+            retryDeadline());
+    if (dropped > 0) {
+      LOG.infof(
+          "Release request %s in %s: dropped %d deferred automatic retr%s (%s)",
+          releaseRequestId, repoId, dropped, dropped == 1 ? "y" : "ies", resolvedReason);
+    }
     List<String> stopped = new ArrayList<>();
     for (CiRun run : unfinished) {
       try {
@@ -4019,8 +4230,8 @@ public class CiRunService {
    * <b>A run the infrastructure failed is asked again at once</b> (qits-440): called by {@code
    * runSteps} for a run that just went {@code FAILED} on a step {@link InfraFailures#isInfra}
    * classifies as the host's fault — the runner quarantine's own classifier, so "infra failure" means
-   * one thing on this service — and answers the retry, or null when there is none and the failure
-   * must settle as an ordinary red verdict.
+   * one thing on this service — and answers whether the red is held back: true for a retry made or
+   * deferred, false when the failure must settle as an ordinary red verdict.
    *
    * <p><b>The set, and what is deliberately outside it.</b> {@code LAUNCH_FAILED} (the container
    * could not be started), {@code NEVER_STARTED} (its daemon never dialled back — the "never
@@ -4046,13 +4257,24 @@ public class CiRunService {
    * person pressed carries no {@code retry_reason}, so the count restarts behind it — a person
    * re-asking is a new question.
    *
-   * <p><b>Never a failure of the run.</b> A retry that could not be accepted (the git host, the
-   * registry, the database) is logged and answers null, so the red is announced as it always was.
-   * The retry is pinned to no target: it is a lease like any other.
+   * <p><b>Never a failure of the run.</b> A retry refused for a reason that is the run's own — a
+   * pipeline that no longer parses, a run that cannot be retried — is logged and answers false, so
+   * the red is announced as it always was. The retry is pinned to no target: it is a lease like any
+   * other.
+   *
+   * <p><b>A refusal that is the environment's is deferred, not dropped</b> (qits-2163). On
+   * 2026-11-12 an edge outage lost every running step, and every retry those losses earned was
+   * refused by the same outage: re-pinning the step images asks the registry through the dark edge.
+   * So a {@link #transientRefusal} — the registry, the database or a service briefly gone — leaves
+   * the run awaiting its retry ({@link #deferAutoRetry}) and answers true: no {@code BuildFailed},
+   * exactly as for a retry that was made, and {@link #sweepDeferredRetries} asks again each tick
+   * until {@code qits.ci.auto-retry.defer-deadline}.
+   *
+   * @return true when the red is not to be announced: the retry was made, or it is deferred
    */
-  private CiRun autoRetry(CiRun run, int failedStep, StepResult failure) {
+  private boolean autoRetry(CiRun run, int failedStep, StepResult failure) {
     if (autoRetryMax <= 0) {
-      return null;
+      return false;
     }
     String what;
     int behind;
@@ -4062,13 +4284,13 @@ public class CiRunService {
     } catch (RuntimeException e) {
       LOG.warnf(
           e, "CI run %s failed by the infrastructure and could not be weighed for a retry", run.id);
-      return null;
+      return false;
     }
     if (behind >= autoRetryMax) {
       LOG.infof(
           "CI run %s failed by the infrastructure (%s) after %d automatic retr%s — it settles FAILED",
           run.id, what, behind, behind == 1 ? "y" : "ies");
-      return null;
+      return false;
     }
     String reason =
         bounded(
@@ -4079,22 +4301,275 @@ public class CiRunService {
     try {
       retry = refire(run.id, reason);
     } catch (RuntimeException e) {
+      if (transientRefusal(e) && deferAutoRetry(run, failedStep, what, reason, e)) {
+        return true;
+      }
       LOG.warnf(
           e, "CI run %s failed by the infrastructure (%s) and its automatic retry could not be"
               + " accepted — it settles FAILED", run.id, what);
-      return null;
+      return false;
     }
-    // The failed run's own record says where its question went. Best effort: the retry exists
-    // whether or not this line lands, and its row names the run it re-fires either way.
+    noteRetriedAs(run.id, failedStep, what, retry.id);
+    return true;
+  }
+
+  /**
+   * The failed run's own record says where its question went. Best effort: the retry exists whether
+   * or not this line lands, and its row names the run it re-fires either way. qits-maintenance reads
+   * the line ({@code retried automatically as run <id>}) to follow the chain, so its words stay.
+   */
+  private void noteRetriedAs(String runId, int failedStep, String what, String retryId) {
+    try {
+      appendToStepOutput(
+          runId,
+          failedStep,
+          "[infra failure (" + what + ") — retried automatically as run " + retryId + "]");
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "CI run %s: could not note its automatic retry %s", runId, retryId);
+    }
+  }
+
+  /**
+   * Whether a refused retry was refused by the environment rather than by the run (qits-2163): the
+   * registry did not pin a step image ({@link StepImageUnpinned}, which {@link #refire} hands on as
+   * {@link UnavailableException}), something this service depends on said it is unavailable, the
+   * database was briefly gone ({@link #transientDatabaseFailure}), or a connection to a peer was
+   * refused or timed out. Everything else — a conflict, a run that is gone, a document that no
+   * longer parses — would be refused the same way in an hour, so it settles at once.
+   */
+  static boolean transientRefusal(Throwable thrown) {
+    if (thrown instanceof UnavailableException
+        || thrown instanceof StepImageUnpinned
+        || transientDatabaseFailure(thrown)) {
+      return true;
+    }
+    int depth = 0;
+    for (Throwable cause = thrown; cause != null && depth < 30; cause = cause.getCause(), depth++) {
+      if (cause instanceof java.net.ConnectException
+          || cause instanceof java.net.http.HttpTimeoutException
+          || cause instanceof java.net.SocketTimeoutException
+          || cause instanceof java.net.UnknownHostException) {
+        return true;
+      }
+      if (cause.getCause() == cause) {
+        break;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Leaves a failed run awaiting the automatic retry {@code reason} describes, until {@code
+   * qits.ci.auto-retry.defer-deadline} from now (qits-2163), and says so on its failed step — the
+   * line a person reading the run, and a follower of its chain, finds instead of a retry id.
+   *
+   * @return false when the deferral could not be written, and the red is then announced as before
+   */
+  private boolean deferAutoRetry(
+      CiRun run, int failedStep, String what, String reason, RuntimeException refusal) {
+    Instant until = Instant.now().plus(autoRetryDeferDeadline);
+    int marked;
+    try {
+      marked =
+          DbRetry.call(
+              "Deferring the automatic retry of CI run " + run.id,
+              () ->
+                  QuarkusTransaction.requiringNew()
+                      .call(() -> runs.deferAutoRetry(run.id, until, reason)),
+              retryDeadline());
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "CI run %s: its automatic retry could not be deferred", run.id);
+      return false;
+    }
+    if (marked == 0) {
+      return false;
+    }
+    LOG.warnf(
+        "CI run %s failed by the infrastructure (%s) and its automatic retry could not be accepted"
+            + " yet (%s) — asked again until %s; no BuildFailed meanwhile",
+        run.id, what, refusal.getMessage(), until);
     try {
       appendToStepOutput(
           run.id,
           failedStep,
-          "[infra failure (" + what + ") — retried automatically as run " + retry.id + "]");
+          "[infra failure (" + what + ") — its automatic retry is deferred until " + until
+              + ": " + firstLine(String.valueOf(refusal.getMessage())) + "]");
     } catch (RuntimeException e) {
-      LOG.warnf(e, "CI run %s: could not note its automatic retry %s", run.id, retry.id);
+      LOG.warnf(e, "CI run %s: could not note its deferred automatic retry", run.id);
     }
-    return retry;
+    return true;
+  }
+
+  /**
+   * <b>Asks again for every deferred automatic retry</b> (qits-2163), on the scheduler every other
+   * recovery of this service ticks on. A schedule over the rows rather than a timer in memory: the
+   * deferral is {@code ci_run.auto_retry_deferred_until}, so a restart loses nothing and the
+   * successor's first tick carries on.
+   *
+   * <p>{@code SKIP}: a slow registry must not stack sweeps. A draining process sweeps nothing, for
+   * {@link #draining}'s reason.
+   */
+  @Scheduled(
+      every = "{qits.ci.auto-retry.defer-interval}",
+      delayed = "{qits.ci.auto-retry.defer-interval}",
+      concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+  void sweepDeferredRetriesTick() {
+    if (draining) {
+      return;
+    }
+    sweepDeferredRetries(Instant.now());
+  }
+
+  /**
+   * One pass over the runs awaiting their automatic retry, as of {@code now} — package-private so
+   * a suite drives it. Per row, each decided by whoever {@link CiRunRepository#claimDeferredAutoRetry
+   * claims} the deferral, so a second pass, or a person's retry (whose insert ends the wait), never
+   * acts on it again:
+   *
+   * <ul>
+   *   <li>a run whose question went away — a newer run of the same release question was accepted
+   *       ({@link CiRunRepository#supersededSinceAccept}) — is dropped, announcing nothing, as the
+   *       queued retry it stands for would have been superseded;
+   *   <li>past the deadline, it settles: the step says so and {@code BuildFailed} is announced, as
+   *       {@link #autoRetry} did at once before this change;
+   *   <li>otherwise {@link #refire} is asked again. A transient refusal hands the wait back for the
+   *       next tick; any other settles it.
+   * </ul>
+   *
+   * @return how many runs were retried
+   */
+  int sweepDeferredRetries(Instant now) {
+    List<CiRun> waiting;
+    try {
+      waiting = QuarkusTransaction.requiringNew().call(() -> runs.listDeferredAutoRetries());
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Could not read the runs awaiting their automatic retry");
+      return 0;
+    }
+    int retried = 0;
+    for (CiRun run : waiting) {
+      try {
+        if (retryDeferred(run, now)) {
+          retried++;
+        }
+      } catch (RuntimeException e) {
+        LOG.warnf(e, "CI run %s: its deferred automatic retry could not be swept", run.id);
+      }
+    }
+    return retried;
+  }
+
+  /**
+   * One row of {@link #sweepDeferredRetries}; true when the retry was made.
+   *
+   * <p><b>The deferral is claimed first and the re-fire made second</b>, so two passes, or a pass
+   * and a person, never both act on one wait. A transient refusal hands the wait back ({@link
+   * CiRunRepository#reinstateDeferredAutoRetry}) unless a retry of the run was made meanwhile — a
+   * person's, which then stands for it. Any other refusal settles the red, unless such a retry
+   * exists: a run a person already re-asked has no red of its own left to announce.
+   */
+  private boolean retryDeferred(CiRun run, Instant now) {
+    int failedStep = failedStepOf(run.id);
+    if (!claimDeferral(run.id)) {
+      return false;
+    }
+    boolean superseded =
+        QuarkusTransaction.requiringNew().call(() -> runs.supersededSinceAccept(run));
+    if (superseded) {
+      LOG.infof(
+          "CI run %s: a newer run of its release question was accepted while its automatic retry"
+              + " waited — the retry is dropped",
+          run.id);
+      return false;
+    }
+    if (!now.isBefore(run.autoRetryDeferredUntil)) {
+      settleDeferral(
+          run, failedStep, "its automatic retry could not be accepted before " + run.autoRetryDeferredUntil);
+      return false;
+    }
+    CiRun retry;
+    try {
+      retry = refire(run.id, run.autoRetryDeferredReason);
+    } catch (RuntimeException e) {
+      if (transientRefusal(e)) {
+        int back =
+            QuarkusTransaction.requiringNew()
+                .call(
+                    () ->
+                        runs.reinstateDeferredAutoRetry(
+                            run.id, run.autoRetryDeferredUntil, run.autoRetryDeferredReason));
+        LOG.infof(
+            "CI run %s: its automatic retry could still not be accepted (%s) — %s",
+            run.id,
+            e.getMessage(),
+            back == 1
+                ? "asked again until " + run.autoRetryDeferredUntil
+                : "a retry of it was made meanwhile, which stands for it");
+        return false;
+      }
+      if (QuarkusTransaction.requiringNew().call(() -> runs.hasRetry(run.id))) {
+        LOG.infof(
+            "CI run %s: its deferred automatic retry was refused (%s) — a retry of it already"
+                + " stands for it",
+            run.id, e.getMessage());
+        return false;
+      }
+      settleDeferral(run, failedStep, "its automatic retry was refused: " + e.getMessage());
+      return false;
+    }
+    noteRetriedAs(run.id, failedStep, deferredWhat(run.autoRetryDeferredReason), retry.id);
+    return true;
+  }
+
+  /**
+   * Ends a deferral with the red it held back: the step says why and {@code BuildFailed} is
+   * announced with the run's own {@code finishedAt}. Only by whoever claimed the deferral, so a red
+   * is announced once.
+   */
+  private void settleDeferral(CiRun run, int failedStep, String why) {
+    LOG.warnf("CI run %s: %s — it settles FAILED", run.id, why);
+    try {
+      appendToStepOutput(run.id, failedStep, "[" + why + " — the run settles FAILED]");
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "CI run %s: could not note that its deferred retry settled", run.id);
+    }
+    announceFailedRun(
+        run, run.finishedAt == null ? Instant.now() : run.finishedAt, CiRunStatus.FAILED);
+  }
+
+  /** {@link CiRunRepository#claimDeferredAutoRetry} in its own transaction; true for the taker. */
+  private boolean claimDeferral(String runId) {
+    return DbRetry.call(
+            "Claiming the deferred retry of CI run " + runId,
+            () ->
+                QuarkusTransaction.requiringNew()
+                    .call(() -> runs.claimDeferredAutoRetry(runId)),
+            retryDeadline())
+        == 1;
+  }
+
+  /** The failed step a deferral's lines are appended to: the run's last {@code FAILED} row. */
+  private int failedStepOf(String runId) {
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () -> {
+              int failed = -1;
+              for (CiStep step : steps.listByRunIdOrdered(runId)) {
+                if (step.status == CiStepStatus.FAILED) {
+                  failed = step.stepIndex;
+                }
+              }
+              return failed;
+            });
+  }
+
+  /** The infra failure's words back out of a stored reason, {@code "infra failure (<what>) on…"}. */
+  private static String deferredWhat(String reason) {
+    String prefix = "infra failure (";
+    int end = reason == null ? -1 : reason.lastIndexOf(") on run ");
+    return reason != null && reason.startsWith(prefix) && end > prefix.length()
+        ? reason.substring(prefix.length(), end)
+        : "an infra failure";
   }
 
   /**
@@ -4147,8 +4622,10 @@ public class CiRunService {
       case LAUNCH_FAILED ->
           "the run's lease could not start it" + (target == null ? "" : " on " + target);
       case NEVER_STARTED ->
-          "the run's lease container never started its ci daemon"
-              + (target == null ? "" : " on " + target);
+          failure.output() != null && failure.output().startsWith(STEP_NOT_STARTED_DATABASE)
+              ? "the step could not be recorded before it started — the database did not answer"
+              : "the run's lease container never started its ci daemon"
+                  + (target == null ? "" : " on " + target);
       default -> failure.outcome().name() + (target == null ? "" : " on " + target);
     };
   }
@@ -4540,6 +5017,10 @@ public class CiRunService {
     // Null for a person's retry, the words for an automatic one — see autoRetry. Never copied from
     // the source: it is about THIS row's firing, and a person re-firing an automatic retry is not one.
     retry.retryReason = autoRetryReason;
+    // Any retry of a source still awaiting its automatic one ends that wait, in this transaction
+    // (qits-2163): a person's retry takes it over, and the sweep then finds nothing to re-fire. The
+    // sweep's own re-fire claimed the wait before it got here, so for it this matches nothing.
+    runs.claimDeferredAutoRetry(source.id);
     // runner_id and target_runner_id are deliberately NOT copied: a retry re-enters the ordinary
     // queue, and pinning an infra failure's retry to the runner that just failed it would be perverse.
     // Nor is it kept OFF that runner (qits-443): any worker may take it.
@@ -5028,8 +5509,18 @@ public class CiRunService {
 
     @Override
     public void onLaunched(String daemonId, String tokenSubject) {
-      this.daemonId = daemonId;
       recordLaunch(runId, stepIndex, daemonId, tokenSubject);
+      // After the record, not before: a launch that could not be recorded is a step never sent, and
+      // launched() must say so to runSteps (qits-2163).
+      this.daemonId = daemonId;
+    }
+
+    /**
+     * Whether the step may have reached its daemon: its launch was recorded, or the host sent it
+     * (an inherited step's recorded start counts). False is "nothing of this step ran" (qits-2163).
+     */
+    boolean launched() {
+      return daemonId != null || started != null;
     }
 
     @Override
