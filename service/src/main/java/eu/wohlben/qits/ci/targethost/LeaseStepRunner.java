@@ -63,6 +63,14 @@ import org.jboss.logging.Logger;
  * every await at once: before the daemon initialized, the step is {@code LAUNCH_FAILED} with the
  * lease's detail; after, {@code CONNECTION_LOST} saying the lease ended.
  *
+ * <p><b>That is also what ends a held step</b> (qits-2163). A step whose daemon's socket drops is
+ * no longer lost when the reconnect grace runs out: {@link CiDaemonRegistry} holds it for as long as
+ * it can still be running, so an edge outage longer than a minute costs nothing while the lease's
+ * container goes on. The hold has three ends, and this class owns two of them: the lease seen ended
+ * (above — an older daemon that gives up on its own budget exits, and its lease with it), and the
+ * step's backstop ({@link #backstopOf}), which the registry answers as {@code CONNECTION_LOST}
+ * rather than {@code NO_ANSWER} when no connection is bound by then. The third is {@link #cancel}.
+ *
  * <p><b>A restart of this process ends no step</b> (qits-1192), exactly as on a runner: once the
  * process is stopping, a step that has not ended is left alone — no {@code Cancel}, no {@code
  * Close}, no lease ended — and comes back as {@link ProcessStopping}. The run's launch was recorded

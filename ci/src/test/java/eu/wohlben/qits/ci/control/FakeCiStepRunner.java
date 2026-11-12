@@ -64,6 +64,7 @@ public class FakeCiStepRunner implements CiStepRunner {
   private final Map<Integer, Script> scripted = new HashMap<>();
   private final Map<Integer, Deque<StepResult>> sequenced = new HashMap<>();
   private final Map<Integer, RuntimeException> failures = new HashMap<>();
+  private final java.util.Set<Integer> failOnce = java.util.concurrent.ConcurrentHashMap.newKeySet();
   private final Map<Integer, Consumer<StepSpec>> during = new HashMap<>();
   private final List<String> cancelled = java.util.Collections.synchronizedList(new ArrayList<>());
   private final List<String> closed = java.util.Collections.synchronizedList(new ArrayList<>());
@@ -216,6 +217,12 @@ public class FakeCiStepRunner implements CiStepRunner {
     failures.put(stepIndex, failure);
   }
 
+  /** {@link #throwOn}, for the next execution of that step only — a retry of it then runs green. */
+  public void throwOnceOn(int stepIndex, RuntimeException failure) {
+    failures.put(stepIndex, failure);
+    failOnce.add(stepIndex);
+  }
+
   /**
    * Run something on the worker thread <b>while</b> this step is executing — after it started, before
    * it answers. It is how a test stages the events that only exist mid-step (a cancellation arriving
@@ -249,6 +256,7 @@ public class FakeCiStepRunner implements CiStepRunner {
       sequenced.clear();
     }
     failures.clear();
+    failOnce.clear();
     during.clear();
     cancelled.clear();
     closed.clear();
@@ -295,7 +303,10 @@ public class FakeCiStepRunner implements CiStepRunner {
     if (launchDaemonId != null) {
       listener.onLaunched(launchDaemonId + "-" + spec.stepIndex(), launchSubject);
     }
-    RuntimeException failure = failures.get(spec.stepIndex());
+    RuntimeException failure =
+        failOnce.remove(spec.stepIndex())
+            ? failures.remove(spec.stepIndex())
+            : failures.get(spec.stepIndex());
     if (failure != null) {
       throw failure;
     }
