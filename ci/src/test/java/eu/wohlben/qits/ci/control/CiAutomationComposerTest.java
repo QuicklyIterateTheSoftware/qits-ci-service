@@ -167,7 +167,10 @@ public class CiAutomationComposerTest {
             + CiReleaseComposer.CLI_DOWNLOAD_BASE
             + "$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
     for (String shared :
-        List.of(url, "-o " + CiReleaseComposer.CLI_DIR + "/qits", "Authorization: Bearer $QITS_TOKEN")) {
+        List.of(
+            url,
+            "qits_cli_out=" + CiReleaseComposer.CLI_DIR + "/qits\n",
+            "Authorization: Bearer $QITS_TOKEN")) {
       assertTrue(release.toString().contains(shared), "release: " + shared);
       assertTrue(fetch.contains(shared), "automation: " + shared);
     }
@@ -2403,8 +2406,13 @@ public class CiAutomationComposerTest {
      * path, rather than the host's /tmp being written.
      */
     String hermetic(String step) {
+      // The CLI cache (qits-2101) goes to a directory that does not exist, which turns it off: a
+      // QA step running these tests may have the real ci-daemon volume mounted.
       return step.replace(
               CiReleaseComposer.CLI_DIR, root.resolve("qits-bin").toAbsolutePath().toString())
+          .replace(
+              CiReleaseComposer.CLI_CACHE_DIR,
+              root.resolve("no-cli-cache").toAbsolutePath().toString())
           .replace(AUTOMATION_FILES, automationFiles());
     }
 

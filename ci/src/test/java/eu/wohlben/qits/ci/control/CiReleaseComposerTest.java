@@ -1,5 +1,6 @@
 package eu.wohlben.qits.ci.control;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -19,6 +20,7 @@ import java.util.Map;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * The composer, against <b>golden documents</b>.
@@ -323,7 +325,7 @@ public class CiReleaseComposerTest {
         document);
     assertTrue(
         document.contains("elif command -v wget > /dev/null 2>&1; then")
-            && document.contains("wget -q \"$@\" -O /tmp/qits-bin/qits"),
+            && document.contains("wget -q -T 20 \"$@\" -O \"$qits_cli_out\""),
         document);
     // And the refusal names the image, so an author reads a sentence about their own file rather
     // than `curl: not found` out of a line they never wrote.
@@ -355,8 +357,9 @@ public class CiReleaseComposerTest {
         composed
             .releaseDocument()
             .contains(
-                "curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o /tmp/qits-bin/qits"
-                    + " \"https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n"),
+                "curl -fsSL --connect-timeout 10 --speed-limit 10240 --speed-time 30 \"$@\" -o"
+                    + " \"$qits_cli_out\""
+                    + " \"https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"; then\n"),
         composed.releaseDocument());
   }
 
@@ -558,6 +561,265 @@ public class CiReleaseComposerTest {
     assertTrue(process.waitFor(60, java.util.concurrent.TimeUnit.SECONDS), "sh never exited");
     assertEquals(0, process.exitValue(), Files.readString(err));
     return new String[] {Files.readString(out), Files.readString(err)};
+  }
+
+  // --- the qits CLI fetch: retried and cached (qits-2101) ----------------------------------------
+
+  private static final String CLI_VERSION = "2026.1111.34038";
+
+  @Test
+  public void aCliDownloadCutOffMidBodyIsRetriedAndThenCached(@TempDir Path work) throws Exception {
+    // The live failure: `curl: (18) transfer closed with 37487784 bytes remaining to read`, which
+    // curl's own --retry never retries. The release prelude runs under the wrapper's `set -eu`, so
+    // that is how it runs here: a fetcher failing inside the loop must not end the shell.
+    assumeTrue(Files.isExecutable(Path.of("/bin/sh")), "/bin/sh is required for this test");
+    assumeTrue(onPath("curl"), "curl is required for this test");
+    byte[] binary = cliBytes();
+    Path cache = Files.createDirectories(work.resolve("cache"));
+    try (CliStore store = new CliStore(binary, true, false)) {
+      CliRun run = runCliFetch(work, CiReleaseComposer.CliFetch.RELEASE, store.base(), cache);
+
+      assertEquals(0, run.exit(), run.stderr());
+      assertEquals(2, store.requests(), run.stderr());
+      assertEquals(
+          1, occurrences(run.stderr(), "qits-ci: could not fetch the qits CLI (attempt 1), retrying\n"),
+          run.stderr());
+      assertEquals(1, occurrences(run.stderr(), "retrying"), run.stderr());
+      assertTrue(run.stderr().contains("qits-ci: fetched qits " + CLI_VERSION + "\n"), run.stderr());
+      assertArrayEquals(binary, Files.readAllBytes(run.dir().resolve("qits")));
+      assertTrue(Files.isExecutable(run.dir().resolve("qits")));
+      // The cut-off attempt's part file is gone, and the retry went straight into place, as the
+      // bootstrap's does: nothing half-downloaded is ever under the cache name.
+      assertEquals(List.of(), listing(cache), run.stderr());
+    }
+    // The next step's first attempt succeeds: downloaded through a part file, renamed into the
+    // cache under its version, and copied out.
+    try (CliStore store = new CliStore(binary, false, false)) {
+      CliRun run =
+          runCliFetch(
+              Files.createDirectories(work.resolve("next")),
+              CiReleaseComposer.CliFetch.RELEASE,
+              store.base(),
+              cache);
+
+      assertEquals(0, run.exit(), run.stderr());
+      assertEquals(1, store.requests(), run.stderr());
+      assertArrayEquals(binary, Files.readAllBytes(run.dir().resolve("qits")));
+      assertArrayEquals(binary, Files.readAllBytes(cache.resolve("qits-cli-" + CLI_VERSION)));
+      assertEquals(List.of("qits-cli-" + CLI_VERSION), listing(cache));
+    }
+  }
+
+  @Test
+  public void aCliDownloadThatNeverCompletesFailsWithTheModesLineAndCachesNothing(
+      @TempDir Path work) throws Exception {
+    assumeTrue(Files.isExecutable(Path.of("/bin/sh")), "/bin/sh is required for this test");
+    assumeTrue(onPath("curl"), "curl is required for this test");
+    Map<CiReleaseComposer.CliFetch, String> failures =
+        Map.of(
+            CiReleaseComposer.CliFetch.AUTOMATION,
+            "qits-ci: the qits CLI could not be fetched: the download of qits "
+                + CLI_VERSION
+                + " failed\n",
+            CiReleaseComposer.CliFetch.REPORT_HOOK,
+            "qits-ci: could not fetch qits " + CLI_VERSION + "\n",
+            CiReleaseComposer.CliFetch.RELEASE,
+            "qits-ci: could not fetch qits " + CLI_VERSION + "\n");
+    for (Map.Entry<CiReleaseComposer.CliFetch, String> mode : failures.entrySet()) {
+      Path root = Files.createDirectories(work.resolve(mode.getKey().name()));
+      Path cache = Files.createDirectories(root.resolve("cache"));
+      try (CliStore store = new CliStore(cliBytes(), true, true)) {
+        CliRun run = runCliFetch(root, mode.getKey(), store.base(), cache);
+
+        assertEquals(1, run.exit(), mode.getKey() + ": " + run.stderr());
+        assertEquals(CiReleaseComposer.CLI_FETCH_ATTEMPTS, store.requests(), run.stderr());
+        assertEquals(
+            CiReleaseComposer.CLI_FETCH_ATTEMPTS - 1, occurrences(run.stderr(), "retrying\n"),
+            run.stderr());
+        assertTrue(run.stderr().endsWith(mode.getValue()), mode.getKey() + ": " + run.stderr());
+        assertFalse(run.stderr().contains("qits-ci: fetched"), run.stderr());
+        // No partial download under the cache name, and no part file left behind.
+        assertEquals(List.of(), listing(cache), mode.getKey().name());
+      }
+    }
+  }
+
+  @Test
+  public void aCachedCliIsUsedWithoutAskingTheStore(@TempDir Path work) throws Exception {
+    assumeTrue(Files.isExecutable(Path.of("/bin/sh")), "/bin/sh is required for this test");
+    assumeTrue(onPath("curl"), "curl is required for this test");
+    byte[] binary = cliBytes();
+    Path cache = Files.createDirectories(work.resolve("cache"));
+    Files.write(cache.resolve("qits-cli-" + CLI_VERSION), binary);
+    try (CliStore store = new CliStore(binary, true, true)) {
+      for (CiReleaseComposer.CliFetch mode : CiReleaseComposer.CliFetch.values()) {
+        CliRun run =
+            runCliFetch(
+                Files.createDirectories(work.resolve(mode.name())), mode, store.base(), cache);
+
+        assertEquals(0, run.exit(), mode + ": " + run.stderr());
+        assertTrue(
+            run.stderr().contains("qits-ci: using cached qits CLI qits " + CLI_VERSION + "\n"),
+            mode + ": " + run.stderr());
+        assertFalse(run.stderr().contains("retrying"), run.stderr());
+        assertArrayEquals(binary, Files.readAllBytes(run.dir().resolve("qits")));
+        assertTrue(Files.isExecutable(run.dir().resolve("qits")));
+      }
+      assertEquals(0, store.requests(), "a cache hit downloads nothing");
+    }
+  }
+
+  @Test
+  public void anUnusableCacheFallsBackToThePlainDownload(@TempDir Path work) throws Exception {
+    // A cache directory that does not exist (a target without the volume): the fetch neither
+    // creates it nor fails, it downloads straight into place.
+    assumeTrue(Files.isExecutable(Path.of("/bin/sh")), "/bin/sh is required for this test");
+    assumeTrue(onPath("curl"), "curl is required for this test");
+    byte[] binary = cliBytes();
+    try (CliStore store = new CliStore(binary, false, false)) {
+      CliRun run =
+          runCliFetch(
+              work, CiReleaseComposer.CliFetch.AUTOMATION, store.base(), work.resolve("absent"));
+      assertEquals(0, run.exit(), run.stderr());
+      assertArrayEquals(binary, Files.readAllBytes(run.dir().resolve("qits")));
+      assertFalse(Files.exists(work.resolve("absent")));
+    }
+  }
+
+  private record CliRun(int exit, String stderr, Path dir) {}
+
+  /**
+   * {@link CiReleaseComposer#cliFetch}'s text for {@code mode}, run under {@code sh} with its store,
+   * its directory and its cache moved into {@code work} — never the host's {@code /tmp/qits-bin} or
+   * {@code /caches}, which a QA step running this suite may really use — and its pause made zero.
+   * The release mode runs under {@code set -eu}, as the wrapper runs it.
+   */
+  private static CliRun runCliFetch(
+      Path work, CiReleaseComposer.CliFetch mode, String store, Path cache) throws Exception {
+    StringBuilder fetch = new StringBuilder();
+    CiReleaseComposer.cliFetch(fetch, "ignored", mode);
+    Path dir = work.resolve("bin");
+    String text =
+        fetch
+            .toString()
+            .replace(CiReleaseComposer.CLI_CACHE_DIR, cache.toAbsolutePath().toString())
+            .replace(CiReleaseComposer.CLI_DOWNLOAD_BASE, store + "/")
+            .replace(CiReleaseComposer.CLI_DIR, dir.toAbsolutePath().toString())
+            .replace(CiReleaseComposer.REPORT_CLI_DIR, dir.toAbsolutePath().toString())
+            .replace("  sleep " + CiReleaseComposer.CLI_FETCH_RETRY_SECONDS + "\n", "  sleep 0\n");
+    assertFalse(text.contains("/caches/"), text);
+    Files.createDirectories(dir);
+    Path file = work.resolve("fetch.sh");
+    Files.writeString(
+        file,
+        (mode == CiReleaseComposer.CliFetch.RELEASE ? "set -eu\n" : "set -u\n") + text,
+        StandardCharsets.UTF_8);
+    ProcessBuilder builder = new ProcessBuilder("/bin/sh", file.toString());
+    builder.environment().clear();
+    builder.environment().put("PATH", System.getenv("PATH"));
+    builder.environment().put("QITS_ARTIFACTS_CLI_PACKAGE", "qits");
+    builder.environment().put("QITS_ARTIFACTS_CLI_VERSION", CLI_VERSION);
+    builder.environment().put("QITS_TOKEN", "qits_tok_test");
+    Path err = work.resolve("fetch.err");
+    builder.redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(err.toFile());
+    Process process = builder.start();
+    assertTrue(process.waitFor(120, java.util.concurrent.TimeUnit.SECONDS), "sh never exited");
+    return new CliRun(process.exitValue(), Files.readString(err), dir);
+  }
+
+  private static byte[] cliBytes() {
+    byte[] bytes = new byte[256 * 1024];
+    new java.util.Random(2101).nextBytes(bytes);
+    return bytes;
+  }
+
+  private static boolean onPath(String program) {
+    for (String entry : System.getenv("PATH").split(":")) {
+      if (Files.isExecutable(Path.of(entry, program))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static List<String> listing(Path dir) throws IOException {
+    try (java.util.stream.Stream<Path> files = Files.list(dir)) {
+      return files.map(f -> f.getFileName().toString()).sorted().toList();
+    }
+  }
+
+  /**
+   * A one-route daemons store on a raw socket, so a response can be cut off mid-body the way the
+   * live one was: a {@code Content-Length} of the whole binary, half of it sent, then the connection
+   * closed — curl's exit 18. {@code cutFirst} cuts the first answer; {@code cutAll} every answer.
+   * Every request must carry the run's bearer, or it is answered 401.
+   */
+  private static final class CliStore implements AutoCloseable {
+    private final java.net.ServerSocket server;
+    private final java.util.concurrent.atomic.AtomicInteger requests =
+        new java.util.concurrent.atomic.AtomicInteger();
+    private final Thread thread;
+
+    CliStore(byte[] binary, boolean cutFirst, boolean cutAll) throws IOException {
+      server = new java.net.ServerSocket(0, 50, java.net.InetAddress.getLoopbackAddress());
+      thread =
+          new Thread(
+              () -> {
+                while (!server.isClosed()) {
+                  try (java.net.Socket socket = server.accept()) {
+                    String head = readHead(socket.getInputStream());
+                    int n = requests.incrementAndGet();
+                    java.io.OutputStream out = socket.getOutputStream();
+                    if (!head.startsWith("GET /qits/" + CLI_VERSION + " ")
+                        || !head.contains("Authorization: Bearer qits_tok_test")) {
+                      out.write(
+                          "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                              .getBytes(StandardCharsets.US_ASCII));
+                      continue;
+                    }
+                    boolean cut = cutAll || (cutFirst && n == 1);
+                    out.write(
+                        ("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
+                                + "Content-Length: "
+                                + binary.length
+                                + "\r\nConnection: close\r\n\r\n")
+                            .getBytes(StandardCharsets.US_ASCII));
+                    out.write(binary, 0, cut ? binary.length / 2 : binary.length);
+                    out.flush();
+                  } catch (IOException e) {
+                    // closed, or the client gave up: the next accept decides
+                  }
+                }
+              },
+              "cli-store");
+      thread.setDaemon(true);
+      thread.start();
+    }
+
+    private static String readHead(InputStream in) throws IOException {
+      StringBuilder head = new StringBuilder();
+      int c;
+      while ((c = in.read()) != -1) {
+        head.append((char) c);
+        if (head.toString().endsWith("\r\n\r\n")) {
+          break;
+        }
+      }
+      return head.toString();
+    }
+
+    String base() {
+      return "http://127.0.0.1:" + server.getLocalPort();
+    }
+
+    int requests() {
+      return requests.get();
+    }
+
+    @Override
+    public void close() throws IOException {
+      server.close();
+    }
   }
 
   /** A lockfile entry, the shape npm writes it in. */
@@ -854,13 +1116,14 @@ public class CiReleaseComposerTest {
         document);
     assertTrue(
         document.contains(
-            "curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o /tmp/qits-bin/qits"
-                + " \"https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n"),
+            "curl -fsSL --connect-timeout 10 --speed-limit 10240 --speed-time 30 \"$@\" -o"
+                + " \"$qits_cli_out\""
+                + " \"https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"; then\n"),
         document);
     assertTrue(
         document.contains(
-            "wget -q \"$@\" -O /tmp/qits-bin/qits"
-                + " \"https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"\n"),
+            "wget -q -T 20 \"$@\" -O \"$qits_cli_out\""
+                + " \"https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"; then\n"),
         document);
     // The `set --` block sits ONCE, before both arms, rather than once per arm — a second copy
     // would be a second place for the two to drift.

@@ -236,6 +236,14 @@ public class QitsCliPinIT {
       stubbed =
           stubbed.replace(
               CiReleaseComposer.CLI_DIR, work.resolve("qits-bin").toAbsolutePath().toString());
+      // AND NEVER INTO A REAL CACHE (qits-2101). The prelude caches the CLI per version in the
+      // target's ci-daemon volume, which a QA step running this test may have mounted: the stand-in
+      // cached there under the pinned version would be every later step's CLI on that target. A
+      // directory that does not exist turns the cache off, so the store is asked exactly once.
+      stubbed =
+          stubbed.replace(
+              CiReleaseComposer.CLI_CACHE_DIR,
+              work.resolve("no-cli-cache").toAbsolutePath().toString());
 
       Path scriptFile = work.resolve("step.sh");
       Files.writeString(scriptFile, stubbed, StandardCharsets.UTF_8);

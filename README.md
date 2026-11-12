@@ -1534,6 +1534,20 @@ and it is wrong the moment that image changes underneath the declaration.
   runner does: `curl` where the image has it, `wget -O` where it does not, and a refusal **naming the
   image** where neither exists rather than an obscure `not found`. Only the fetch is at issue; the
   CLI is a static binary, so the postlude's `qits artifacts publish …` works whichever arm ran.
+  **The fetch is retried and cached (qits-2101)**, in all three of its forms (this prelude, the QA
+  report hook, and a `qits-cli: true` step or automation kind). Retried by the shell, not by curl:
+  curl's `--retry` does not retry exit 18 (the connection closed mid-body), and live runs died on
+  exactly that — `curl: (18) transfer closed with 37487784 bytes remaining to read`, then `the qits
+  CLI could not be fetched`. So any failed attempt of either fetcher is retried, up to 5 attempts 3
+  seconds apart, each failed one saying `qits-ci: could not fetch the qits CLI (attempt n),
+  retrying`; only the last prints the form's own failure line and exits 1. curl gets the daemon
+  bootstrap's stall bounds (`--connect-timeout 10 --speed-limit 10240 --speed-time 30`), wget `-T 20`.
+  And the ~40 MB binary is cached per version in the target's `/caches/ci-daemon` volume — the one
+  the bootstrap caches the ci daemon in, so no new mount — as `qits-cli-<version>`: a hit is copied
+  into place and logged `qits-ci: using cached qits CLI <package> <version>`, a miss downloads into
+  a part file and renames it into the cache only once the download succeeded, `qits-cli-*` files
+  unused for 14 days are pruned, and every failure of the cache falls back silently to the plain
+  download. A target without the volume fetches exactly as before.
 - `build: true` — `${BUILDKIT_HOST:?}`, which fails the step naming the cause when the target did not
   fill the builder's address in
 - `build:`/`docker:` — the run's token and its subject written to `/tmp/qits-client-*` under `umask 077`, in a
@@ -1620,8 +1634,9 @@ more. A `ScreenshotBaselines` event today matches no trigger file and starts no 
 **Release-request automations are composed from kind files.** Each
 `ci/src/main/resources/platform-pipelines/automations/<kind>.yml` declares only `image`, `timeout-seconds`,
 the regeneration `script` and, optionally, `qits-cli: true` (the pinned qits CLI on `PATH`, fetched
-by the same emitter as the release prelude and the QA report hook, but hard: a failed fetch ends the
-step with `the qits CLI could not be fetched`), optionally, `commit-type: <word>` (below) and,
+by the same emitter as the release prelude and the QA report hook — retried and cached the same way,
+qits-2101 — but hard: a fetch that failed every attempt ends the step with `the qits CLI could not be
+fetched`), optionally, `commit-type: <word>` (below) and,
 optionally, `user: <name>` (the composed step's `user:`, qits-1516) and, optionally, `build: true`
 (exactly a slot step's `build: true`: the composed step declares it, and its prelude carries the
 slot step's own text — `$BUILDKIT_HOST` demanded, the run's credential written to

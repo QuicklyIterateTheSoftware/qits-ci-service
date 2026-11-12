@@ -416,6 +416,26 @@ public final class CiReleaseComposer {
   static final String REPORT_CLI_DIR = "/tmp/qits-cli";
 
   /**
+   * Where every mode of {@link #cliFetch} caches the qits CLI per version (qits-2101): the target's
+   * {@code ci-daemon} cache volume, which the bootstrap already caches the ci daemon in ({@code
+   * CiSlotSettings.BOOTSTRAP}, qits-1809) — the same mount, so no runner change, and file names of
+   * its own ({@code qits-cli-<version>}) that the daemon's prune never matches, nor this one the
+   * daemon's.
+   *
+   * <p>Public for the tests that execute a composed fetch ({@code QitsCliPinIT} among them): each
+   * moves exactly this text to a scratch path, because a QA step running them may have the real
+   * volume mounted, and a stand-in CLI cached there under a real version would be every later
+   * step's CLI on that target.
+   */
+  public static final String CLI_CACHE_DIR = CACHE_ROOT + "ci-daemon";
+
+  /** How many times {@link #cliDownload} tries the store before the step's failure line. */
+  static final int CLI_FETCH_ATTEMPTS = 5;
+
+  /** The pause between two of {@link #cliDownload}'s attempts, in seconds. */
+  static final int CLI_FETCH_RETRY_SECONDS = 3;
+
+  /**
    * Where a release-phase prelude downloads the qits CLI from: the daemons store of qits-artifacts'
    * public name, {@code registry.qits.$QITS_DOMAIN} (qits-731). The host is code under the domain,
    * never a variable a step is handed, so nothing in a step's environment can move the download.
@@ -1391,7 +1411,11 @@ public final class CiReleaseComposer {
     return out.toString();
   }
 
-  /** Which of the qits CLI download's three callers {@link #cliFetch} is writing for. */
+  /**
+   * Which of the qits CLI download's three callers {@link #cliFetch} is writing for. All three share
+   * the retry loop and the per-version cache (qits-2101); they differ only in where the binary goes
+   * and what a failure ends.
+   */
   enum CliFetch {
     /** The release prelude: hard on the version, soft on the package, onto {@code PATH}. */
     RELEASE,
@@ -1409,14 +1433,21 @@ public final class CiReleaseComposer {
   /**
    * The qits CLI download, one text for all three of its callers ({@link CliFetch}).
    *
+   * <p>In every mode the download itself is {@link #cliDownload}'s (qits-2101): a per-version cache
+   * in {@value #CLI_CACHE_DIR} that a hit is copied from, and otherwise up to {@value
+   * #CLI_FETCH_ATTEMPTS} attempts {@value #CLI_FETCH_RETRY_SECONDS} seconds apart over curl, then
+   * wget, then the refusal naming the image. Only after the last attempt does a mode print its
+   * failure line and exit, as described below.
+   *
    * <p><b>{@link CliFetch#RELEASE}</b> is the release prelude: inside {@code if
-   * $QITS_ARTIFACTS_CLI_PACKAGE is set}, into {@value #CLI_DIR}, a missing fetcher {@code exit 1}s
+   * $QITS_ARTIFACTS_CLI_PACKAGE is set}, into {@value #CLI_DIR}, a missing fetcher or a download
+   * that failed every attempt ({@code qits-ci: could not fetch <package> <version>}) {@code exit 1}s
    * the step, and the binary goes on {@code PATH}. Its bytes are what the release goldens hold.
    *
    * <p><b>{@link CliFetch#REPORT_HOOK}</b> is the QA report hook's: top level of the hook file (the
    * package check is the hook's own), into {@value #REPORT_CLI_DIR}, and every failure — no version,
-   * no directory, no fetcher, a failed download, no chmod — echoes what happened and exits the HOOK
-   * non-zero. The bearer is a named variable spent through {@code ${v:+…}} rather than {@code set
+   * no directory, no fetcher, a download failed on every attempt, no chmod — echoes what happened
+   * and exits the HOOK non-zero. The bearer is a named variable spent through {@code ${v:+…}} rather than {@code set
    * --}, because the hook's {@code $1} is the exit code it reports.
    *
    * <p><b>{@link CliFetch#AUTOMATION}</b> is the report hook's text with every failure made the
@@ -1434,10 +1465,6 @@ public final class CiReleaseComposer {
     boolean soft = mode != CliFetch.RELEASE;
     boolean automation = mode == CliFetch.AUTOMATION;
     String dir = mode == CliFetch.REPORT_HOOK ? REPORT_CLI_DIR : CLI_DIR;
-    // The store is qits-artifacts' public name, code under the domain (qits-731): no URL
-    // variable is read, so nothing in a step's environment decides where its CLI comes from.
-    String cliUrl =
-        " \"" + CLI_DOWNLOAD_BASE + "$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
     String noFetcher =
         shellQuote(
             automation
@@ -1486,33 +1513,16 @@ public final class CiReleaseComposer {
       out.append("  qits_cli_bearer=\"Authorization: Bearer $QITS_TOKEN\"\n");
       out.append("fi\n");
       String header = " ${qits_cli_bearer:+--header} ${qits_cli_bearer:+\"$qits_cli_bearer\"}";
-      String failed =
-          " || { echo \""
-              + failure
+      cliDownload(
+          out,
+          "",
+          dir,
+          header,
+          noFetcher,
+          failure
               + (automation ? "the download of " : "could not fetch ")
               + "$QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION"
-              + (automation ? " failed" : "")
-              + "\" >&2; exit 1; }\n";
-      out.append("if command -v curl > /dev/null 2>&1; then\n");
-      out.append("  curl -fsSL --retry 2 --retry-delay 2")
-          .append(header)
-          .append(" -o ")
-          .append(dir)
-          .append("/qits")
-          .append(cliUrl)
-          .append(failed);
-      out.append("elif command -v wget > /dev/null 2>&1; then\n");
-      out.append("  wget -q")
-          .append(header)
-          .append(" -O ")
-          .append(dir)
-          .append("/qits")
-          .append(cliUrl)
-          .append(failed);
-      out.append("else\n");
-      out.append("  echo ").append(noFetcher).append(" >&2\n");
-      out.append("  exit 1\n");
-      out.append("fi\n");
+              + (automation ? " failed" : ""));
       out.append("chmod +x ")
           .append(dir)
           .append("/qits || { echo \"")
@@ -1557,18 +1567,15 @@ public final class CiReleaseComposer {
     out.append("  if [ -n \"${QITS_TOKEN:-}\" ]; then\n");
     out.append("    set -- --header \"Authorization: Bearer $QITS_TOKEN\"\n");
     out.append("  fi\n");
-    out.append("  if command -v curl > /dev/null 2>&1; then\n");
-    out.append("    curl -fsSL --retry 2 --retry-delay 2 \"$@\" -o ")
-        .append(dir)
-        .append("/qits")
-        .append(cliUrl)
-        .append('\n');
-    out.append("  elif command -v wget > /dev/null 2>&1; then\n");
-    out.append("    wget -q \"$@\" -O ").append(dir).append("/qits").append(cliUrl).append('\n');
-    out.append("  else\n");
-    out.append("    echo ").append(noFetcher).append(" >&2\n");
-    out.append("    exit 1\n");
-    out.append("  fi\n");
+    // The release prelude had no failure line of its own: `set -eu` ended the step on curl's own
+    // stderr. The loop's last attempt says what failed, in the report hook's words, and exits 1.
+    cliDownload(
+        out,
+        "  ",
+        dir,
+        " \"$@\"",
+        noFetcher,
+        "qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION");
     out.append("  chmod +x ").append(dir).append("/qits\n");
     out.append("  ln -sf ").append(dir).append("/qits ").append(dir).append("/qits-publish\n");
     out.append(
@@ -1577,6 +1584,132 @@ public final class CiReleaseComposer {
     out.append("  PATH=\"").append(dir).append(":$PATH\"\n");
     out.append("  export PATH\n");
     out.append("fi\n");
+  }
+
+  /**
+   * The download half of {@link #cliFetch}, shared by all three modes (qits-2101): the per-version
+   * cache in {@value #CLI_CACHE_DIR}, then a bounded retry loop over curl, wget and the refusal, in
+   * that order. It leaves the binary at {@code <dir>/qits} or ends the shell with {@code exit 1}; the
+   * caller writes everything around it — the directory, the bearer, chmod, the log line, {@code
+   * PATH}.
+   *
+   * <p><b>Every failure is retried, by the shell rather than by curl.</b> curl's own {@code --retry}
+   * does not retry exit 18 ({@code CURLE_PARTIAL_FILE}, the connection closed mid-body), and on
+   * 2026-11-11 live runs died on exactly that — {@code curl: (18) transfer closed with 37487784 bytes
+   * remaining to read} — with {@code --retry 2} on the line. The loop is {@code CiSlotSettings
+   * .BOOTSTRAP}'s idiom (qits-1809): any non-zero exit of either fetcher is one failed attempt, a
+   * failed non-final attempt says {@code qits-ci: could not fetch the qits CLI (attempt n),
+   * retrying}, and only the last prints {@code failureLine} and exits 1 — so each mode keeps the
+   * failure line and the exit it always had. curl gets the bootstrap's stall bounds ({@code
+   * --connect-timeout 10 --speed-limit 10240 --speed-time 30}: a slow transfer that still moves is
+   * never cut off) and wget its idle timeout {@code -T 20}, which busybox and GNU wget both take.
+   * Safe under the release prelude's {@code set -eu}: each fetcher runs as an {@code if} condition,
+   * and every cache command that may fail is guarded.
+   *
+   * <p><b>The binary is cached per version</b> in {@value #CLI_CACHE_DIR}, the target's {@code
+   * ci-daemon} volume, as {@code qits-cli-<version>} — only when that is a writable directory and the
+   * version passes the bootstrap's character check. A version's bytes never change (the daemons
+   * store serves it immutable), so a hit is {@code touch}ed, copied to {@code <dir>/qits} and logged
+   * {@code qits-ci: using cached qits CLI <package> <version>}, and nothing is downloaded. A miss
+   * downloads into a {@code mktemp} part file beside the cache name and renames it into place only
+   * after the fetcher succeeded, so neither a partial download nor a concurrent step's half-written
+   * one is ever read under that name; a failed attempt removes its part file and the later attempts
+   * go straight to {@code <dir>/qits}. Files unused for 14 days are pruned — {@code qits-cli-*} only,
+   * never the daemon's. Every failure of the cache falls back silently to the uncached fetch.
+   */
+  private static void cliDownload(
+      StringBuilder out,
+      String indent,
+      String dir,
+      String header,
+      String noFetcher,
+      String failureLine) {
+    String target = dir + "/qits";
+    // The store is qits-artifacts' public name, code under the domain (qits-731): no URL
+    // variable is read, so nothing in a step's environment decides where its CLI comes from.
+    String cliUrl =
+        " \"" + CLI_DOWNLOAD_BASE + "$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION\"";
+    String pkg = "$QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION";
+    List<String> lines =
+        List.of(
+            "qits_cli_cache=",
+            "qits_cli_part=",
+            "qits_cli_out=" + target,
+            "if [ -d " + CLI_CACHE_DIR + " ] && [ -w " + CLI_CACHE_DIR + " ]; then",
+            "  case \"$QITS_ARTIFACTS_CLI_VERSION\" in",
+            "    .*|*[!A-Za-z0-9._-]*) ;;",
+            "    *) qits_cli_cache=\"" + CLI_CACHE_DIR + "/qits-cli-$QITS_ARTIFACTS_CLI_VERSION\" ;;",
+            "  esac",
+            "  find "
+                + CLI_CACHE_DIR
+                + " -maxdepth 1 -name 'qits-cli-*' -mtime +14 -delete 2>/dev/null || true",
+            "fi",
+            "if [ -n \"$qits_cli_cache\" ] && [ -s \"$qits_cli_cache\" ]; then",
+            "  touch \"$qits_cli_cache\" 2>/dev/null || true",
+            "  if cp \"$qits_cli_cache\" " + target + " 2>/dev/null; then",
+            "    echo \"qits-ci: using cached qits CLI " + pkg + "\" >&2",
+            "    qits_cli_out=",
+            "  fi",
+            "fi",
+            "if [ -n \"$qits_cli_out\" ] && [ -n \"$qits_cli_cache\" ]; then",
+            "  qits_cli_part=$(mktemp \"$qits_cli_cache.part.XXXXXX\" 2>/dev/null) || qits_cli_part=",
+            "  if [ -n \"$qits_cli_part\" ]; then",
+            "    qits_cli_out=$qits_cli_part",
+            "  fi",
+            "fi",
+            "qits_cli_attempt=1",
+            "while [ -n \"$qits_cli_out\" ]; do",
+            "  if command -v curl > /dev/null 2>&1; then",
+            "    if curl -fsSL --connect-timeout 10 --speed-limit 10240 --speed-time 30"
+                + header
+                + " -o \"$qits_cli_out\""
+                + cliUrl
+                + "; then",
+            "      break",
+            "    fi",
+            "  elif command -v wget > /dev/null 2>&1; then",
+            "    if wget -q -T 20" + header + " -O \"$qits_cli_out\"" + cliUrl + "; then",
+            "      break",
+            "    fi",
+            "  else",
+            "    echo " + noFetcher + " >&2",
+            "    exit 1",
+            "  fi",
+            "  if [ -n \"$qits_cli_part\" ]; then",
+            "    rm -f \"$qits_cli_part\" 2>/dev/null || true",
+            "    qits_cli_part=",
+            "    qits_cli_out=" + target,
+            "  fi",
+            "  if [ \"$qits_cli_attempt\" -ge " + CLI_FETCH_ATTEMPTS + " ]; then",
+            "    echo \"" + failureLine + "\" >&2",
+            "    exit 1",
+            "  fi",
+            "  echo \"qits-ci: could not fetch the qits CLI (attempt $qits_cli_attempt), retrying\""
+                + " >&2",
+            "  qits_cli_attempt=$((qits_cli_attempt + 1))",
+            "  sleep " + CLI_FETCH_RETRY_SECONDS,
+            "done",
+            // The download succeeded into the part file: renamed into the cache name, then copied
+            // out. A rename that fails leaves the part file to copy from and then removes it.
+            "if [ -n \"$qits_cli_part\" ]; then",
+            "  if mv -f \"$qits_cli_part\" \"$qits_cli_cache\" 2>/dev/null; then",
+            "    qits_cli_part=$qits_cli_cache",
+            "  fi",
+            "  qits_cli_copied=",
+            "  if cp \"$qits_cli_part\" " + target + " 2>/dev/null; then",
+            "    qits_cli_copied=1",
+            "  fi",
+            "  if [ \"$qits_cli_part\" != \"$qits_cli_cache\" ]; then",
+            "    rm -f \"$qits_cli_part\" 2>/dev/null || true",
+            "  fi",
+            "  if [ -z \"$qits_cli_copied\" ]; then",
+            "    echo \"" + failureLine + "\" >&2",
+            "    exit 1",
+            "  fi",
+            "fi");
+    for (String line : lines) {
+      out.append(indent).append(line).append('\n');
+    }
   }
 
   /**

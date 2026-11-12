@@ -135,13 +135,71 @@ steps:
         if [ -n "${QITS_TOKEN:-}" ]; then
           set -- --header "Authorization: Bearer $QITS_TOKEN"
         fi
-        if command -v curl > /dev/null 2>&1; then
-          curl -fsSL --retry 2 --retry-delay 2 "$@" -o /tmp/qits-bin/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
-        elif command -v wget > /dev/null 2>&1; then
-          wget -q "$@" -O /tmp/qits-bin/qits "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"
-        else
-          echo 'qits-ci: the image for this step (qits/build-images/ci-slot) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
-          exit 1
+        qits_cli_cache=
+        qits_cli_part=
+        qits_cli_out=/tmp/qits-bin/qits
+        if [ -d /caches/ci-daemon ] && [ -w /caches/ci-daemon ]; then
+          case "$QITS_ARTIFACTS_CLI_VERSION" in
+            .*|*[!A-Za-z0-9._-]*) ;;
+            *) qits_cli_cache="/caches/ci-daemon/qits-cli-$QITS_ARTIFACTS_CLI_VERSION" ;;
+          esac
+          find /caches/ci-daemon -maxdepth 1 -name 'qits-cli-*' -mtime +14 -delete 2>/dev/null || true
+        fi
+        if [ -n "$qits_cli_cache" ] && [ -s "$qits_cli_cache" ]; then
+          touch "$qits_cli_cache" 2>/dev/null || true
+          if cp "$qits_cli_cache" /tmp/qits-bin/qits 2>/dev/null; then
+            echo "qits-ci: using cached qits CLI $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+            qits_cli_out=
+          fi
+        fi
+        if [ -n "$qits_cli_out" ] && [ -n "$qits_cli_cache" ]; then
+          qits_cli_part=$(mktemp "$qits_cli_cache.part.XXXXXX" 2>/dev/null) || qits_cli_part=
+          if [ -n "$qits_cli_part" ]; then
+            qits_cli_out=$qits_cli_part
+          fi
+        fi
+        qits_cli_attempt=1
+        while [ -n "$qits_cli_out" ]; do
+          if command -v curl > /dev/null 2>&1; then
+            if curl -fsSL --connect-timeout 10 --speed-limit 10240 --speed-time 30 "$@" -o "$qits_cli_out" "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"; then
+              break
+            fi
+          elif command -v wget > /dev/null 2>&1; then
+            if wget -q -T 20 "$@" -O "$qits_cli_out" "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"; then
+              break
+            fi
+          else
+            echo 'qits-ci: the image for this step (qits/build-images/ci-slot) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
+            exit 1
+          fi
+          if [ -n "$qits_cli_part" ]; then
+            rm -f "$qits_cli_part" 2>/dev/null || true
+            qits_cli_part=
+            qits_cli_out=/tmp/qits-bin/qits
+          fi
+          if [ "$qits_cli_attempt" -ge 5 ]; then
+            echo "qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+            exit 1
+          fi
+          echo "qits-ci: could not fetch the qits CLI (attempt $qits_cli_attempt), retrying" >&2
+          qits_cli_attempt=$((qits_cli_attempt + 1))
+          sleep 3
+        done
+        if [ -n "$qits_cli_part" ]; then
+          if mv -f "$qits_cli_part" "$qits_cli_cache" 2>/dev/null; then
+            qits_cli_part=$qits_cli_cache
+          fi
+          qits_cli_copied=
+          if cp "$qits_cli_part" /tmp/qits-bin/qits 2>/dev/null; then
+            qits_cli_copied=1
+          fi
+          if [ "$qits_cli_part" != "$qits_cli_cache" ]; then
+            rm -f "$qits_cli_part" 2>/dev/null || true
+          fi
+          if [ -z "$qits_cli_copied" ]; then
+            echo "qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+            exit 1
+          fi
         fi
         chmod +x /tmp/qits-bin/qits
         ln -sf /tmp/qits-bin/qits /tmp/qits-bin/qits-publish
