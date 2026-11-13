@@ -145,7 +145,7 @@
         <!-- The other providers' golden masters (qits-1149), test scope: what this repository's
              consumer pacts against qits-projects, qits-githost, qits-artifacts and qits-idp are
              built from (contracts/consumer/). Bumped like every internal pin. -->
-        <qits.projects-golden-masters.version>2026.1112.114615</qits.projects-golden-masters.version>
+        <qits.projects-golden-masters.version>2026.1113.65138</qits.projects-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1109.41303</qits.githost-golden-masters.version>
         <qits.artifacts-golden-masters.version>2026.1111.62703</qits.artifacts-golden-masters.version>
         <qits.idp-golden-masters.version>2026.1109.13349</qits.idp-golden-masters.version>
