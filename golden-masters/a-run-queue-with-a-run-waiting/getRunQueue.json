@@ -42,7 +42,8 @@
       "autoRetry": false,
       "continuedFromRunId": null,
       "oomKills": null,
-      "oomScope": null
+      "oomScope": null,
+      "autoRetryDeferredUntil": null
     }
   ],
   "queued": [
@@ -94,7 +95,8 @@
       "autoRetry": false,
       "continuedFromRunId": null,
       "oomKills": null,
-      "oomScope": null
+      "oomScope": null,
+      "autoRetryDeferredUntil": null
     }
   ]
 }

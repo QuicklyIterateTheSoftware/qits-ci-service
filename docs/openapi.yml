@@ -263,6 +263,8 @@ components:
           format: int64
         oomScope:
           type: string
+        autoRetryDeferredUntil:
+          $ref: "#/components/schemas/Instant"
     CiRunOrderingDto:
       type: object
       properties:

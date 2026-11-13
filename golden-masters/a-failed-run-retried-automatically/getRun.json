@@ -50,5 +50,6 @@
   "autoRetry": false,
   "continuedFromRunId": null,
   "oomKills": null,
-  "oomScope": null
+  "oomScope": null,
+  "autoRetryDeferredUntil": null
 }

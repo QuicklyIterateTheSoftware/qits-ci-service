@@ -62,7 +62,8 @@
       "autoRetry": true,
       "continuedFromRunId": null,
       "oomKills": null,
-      "oomScope": null
+      "oomScope": null,
+      "autoRetryDeferredUntil": null
     },
     {
       "id": "00000000-0000-4000-8000-000000000002",
@@ -116,7 +117,8 @@
       "autoRetry": false,
       "continuedFromRunId": null,
       "oomKills": null,
-      "oomScope": null
+      "oomScope": null,
+      "autoRetryDeferredUntil": null
     }
   ]
 }

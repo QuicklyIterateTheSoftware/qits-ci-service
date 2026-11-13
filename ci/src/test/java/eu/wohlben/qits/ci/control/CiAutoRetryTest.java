@@ -327,6 +327,10 @@ public class CiAutoRetryTest extends CiTestSupport {
     CiRun waiting = service.requireRun(original);
     assertEquals(CiRunStatus.FAILED, waiting.status, "the row says what happened");
     assertNotNull(waiting.autoRetryDeferredUntil, "and that it awaits its automatic retry");
+    assertEquals(
+        waiting.autoRetryDeferredUntil,
+        mapper.toDto(waiting).autoRetryDeferredUntil(),
+        "and the run DTO says so too (qits-2165)");
     assertTrue(waiting.autoRetryDeferredReason.endsWith("automatic retry 1 of 2"));
     assertTrue(announcer.failed().isEmpty(), "no BuildFailed while the retry is deferred");
     assertTrue(
@@ -360,6 +364,9 @@ public class CiAutoRetryTest extends CiTestSupport {
         retry.retryReason);
     assertEquals(CiRunStatus.SUCCESS, retry.status);
     assertNull(service.requireRun(original).autoRetryDeferredUntil, "the deferral is taken");
+    assertNull(
+        mapper.toDto(service.requireRun(original)).autoRetryDeferredUntil(),
+        "and the run DTO stops saying so");
     assertTrue(announcer.failed().isEmpty(), "the gate never heard a red");
     assertTrue(
         service.stepsFor(original).get(0).output.endsWith(

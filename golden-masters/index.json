@@ -84,6 +84,42 @@
       ]
     },
     {
+      "name": "a failed run awaiting a deferred retry",
+      "slug": "a-failed-run-awaiting-a-deferred-retry",
+      "params": {
+        "repositoryId": "00000000-0000-4000-8000-000000000001",
+        "runId": "00000000-0000-4000-8000-000000000002"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getRun",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}",
+          "status": 200,
+          "file": "a-failed-run-awaiting-a-deferred-retry/getRun.json",
+          "frozen": {
+            "ids": [
+              "$.id",
+              "$.repoId"
+            ],
+            "instants": [
+              "$.createdAt",
+              "$.startedAt",
+              "$.finishedAt",
+              "$.steps[*].startedAt",
+              "$.steps[*].finishedAt",
+              "$.autoRetryDeferredUntil"
+            ],
+            "strings": [
+              "$.steps[*].output"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a failed run retried automatically",
       "slug": "a-failed-run-retried-automatically",
       "params": {

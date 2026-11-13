@@ -294,6 +294,10 @@ class GoldenMasterRecordingTest {
               null),
           write(ProviderStates.A_RUNNING_RUN, "retryRun", "POST", "/ci/api/runs/{runId}/retry", 409, null),
           read(ProviderStates.A_FAILED_RUN_RETRIED_AUTOMATICALLY, "getRun", "/ci/api/runs/{runId}"),
+          read(
+              ProviderStates.A_FAILED_RUN_AWAITING_A_DEFERRED_RETRY,
+              "getRun",
+              "/ci/api/runs/{runId}"),
           write(
               ProviderStates.A_RELEASE_REQUEST_WITH_QA_RUNS_IN_FLIGHT,
               "cancelReleaseRequestRuns",

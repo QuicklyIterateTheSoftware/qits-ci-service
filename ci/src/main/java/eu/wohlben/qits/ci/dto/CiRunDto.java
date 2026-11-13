@@ -213,6 +213,14 @@ import java.util.UUID;
  * exited {@code 137} itself; the step that was running when the count rose also carries a bracketed
  * line saying so. Both null when no kill was seen — including every run on a qits-system that does
  * not report the count, so null is "none seen", never "none happened".
+ *
+ * <p><b>{@code autoRetryDeferredUntil} says a {@code FAILED} run is still owed its automatic
+ * retry</b> (qits-2165): until when qits-ci keeps asking for the retry its infra failure earned,
+ * which could not be accepted yet for a transient reason, and holds the run's {@code BuildFailed}
+ * back meanwhile (qits-2163). While it is set the red is not settled, and a client must not read the
+ * run as a finished failure; its failing step's output ends with a line saying the retry is
+ * deferred. It is cleared atomically with the retry's insert, or when the deferral settles or is
+ * dropped, and is <b>null</b> whenever no deferral stands — every run that never had one included.
  */
 public record CiRunDto(
     String id,
@@ -255,7 +263,8 @@ public record CiRunDto(
     boolean autoRetry,
     String continuedFromRunId,
     Long oomKills,
-    String oomScope) {
+    String oomScope,
+    Instant autoRetryDeferredUntil) {
 
   /**
    * This run with its steps and its live step attached — the single-run shape.
@@ -306,7 +315,8 @@ public record CiRunDto(
         autoRetry,
         continuedFromRunId,
         oomKills,
-        oomScope);
+        oomScope,
+        autoRetryDeferredUntil);
   }
 
   /**
@@ -367,6 +377,7 @@ public record CiRunDto(
         autoRetry,
         continuedFromRunId,
         oomKills,
-        oomScope);
+        oomScope,
+        autoRetryDeferredUntil);
   }
 }

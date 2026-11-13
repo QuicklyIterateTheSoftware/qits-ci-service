@@ -159,6 +159,45 @@ public class CiRunProgressSurfaceTest {
         "the prediction is written once and is still what the run was accepted expecting");
   }
 
+  /**
+   * A failed run still owed its automatic retry says so on the single-run read, and stops saying
+   * so once the deferral ends (qits-2165) — the field qits-maintenance reads to tell such a run
+   * from a settled red.
+   */
+  @Test
+  public void aFailedRunAwaitingADeferredRetryServesTheDeferralUntilItEnds() {
+    String repoId = "progress-" + UUID.randomUUID();
+    Instant until = Instant.parse("2026-11-13T02:00:00Z");
+    String runId = UUID.randomUUID().toString();
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              CiRun run = new CiRun();
+              run.id = runId;
+              run.repoId = repoId;
+              run.branch = "main";
+              run.commitSha = "a".repeat(40);
+              run.status = CiRunStatus.FAILED;
+              run.triggerType = CiTriggerType.EVENT;
+              run.configPath = TRIGGER_PATH;
+              run.triggerEventId = UUID.randomUUID().toString();
+              run.createdAt = nextFinish;
+              run.startedAt = nextFinish;
+              run.finishedAt = nextFinish;
+              run.autoRetryDeferredUntil = until;
+              run.autoRetryDeferredReason = "infra failure on run " + runId;
+              runs.persist(run);
+            });
+
+    assertEquals(until.toString(), run(runId).get("autoRetryDeferredUntil"));
+
+    assertEquals(
+        1, QuarkusTransaction.requiringNew().call(() -> runs.endDeferredAutoRetry(runId)));
+    Map<String, Object> ended = run(runId);
+    assertTrue(ended.containsKey("autoRetryDeferredUntil"), "the key is always on the wire");
+    assertNull(ended.get("autoRetryDeferredUntil"), "and null once no deferral stands");
+  }
+
   /** Accepts one run of this class's pipeline and answers its id. */
   private String accept(String repoId) {
     String sha = String.format("%08x", repoId.hashCode()).repeat(5);

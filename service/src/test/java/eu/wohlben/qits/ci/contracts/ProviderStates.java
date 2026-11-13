@@ -125,6 +125,9 @@ public class ProviderStates {
   public static final String A_FAILED_RUN_RETRIED_AUTOMATICALLY =
       "a failed run retried automatically";
 
+  public static final String A_FAILED_RUN_AWAITING_A_DEFERRED_RETRY =
+      "a failed run awaiting a deferred retry";
+
   public static final String A_RELEASE_REQUEST_WITH_QA_RUNS_IN_FLIGHT =
       "a release request with QA runs in flight";
 
@@ -248,6 +251,7 @@ public class ProviderStates {
     states.put(A_RELEASE_RUN_WHOSE_GATE_RUN_HAS_REPORTS, this::aReleaseRunWhoseGateRunHasReports);
     states.put(NO_RUN_WITH_THE_GIVEN_ID, this::noRunWithTheGivenId);
     states.put(A_FAILED_RUN_RETRIED_AUTOMATICALLY, this::aFailedRunRetriedAutomatically);
+    states.put(A_FAILED_RUN_AWAITING_A_DEFERRED_RETRY, this::aFailedRunAwaitingADeferredRetry);
     states.put(A_RELEASE_REQUEST_WITH_QA_RUNS_IN_FLIGHT, this::aReleaseRequestWithRunsInFlight);
     states.put(NO_CANDIDATE_REPOSITORY_CAN_BE_READ, this::noCandidateRepositoryCanBeRead);
     states.put(
@@ -898,6 +902,35 @@ public class ProviderStates {
   }
 
   /**
+   * A failed run ({@code runId}) whose step 0 lost its runner and whose automatic retry is deferred
+   * (qits-2163/qits-2165): {@code autoRetryDeferredUntil} is set, no retry row exists, and the
+   * failed step's output ends with the bracketed line qits-ci appends when it defers — what a
+   * consumer reads to tell a run still owed its retry from a settled red. The suite's deferral sweep
+   * is stretched to a day, so nothing settles or re-fires the row while the state stands.
+   */
+  private Setup aFailedRunAwaitingADeferredRetry() {
+    Map<String, String> params = ids(Map.of(), "repositoryId", "runId");
+    CiRun failed =
+        run(params.get("runId"), params.get("repositoryId"), "main", 1, CiRunStatus.FAILED);
+    eventPipeline(failed);
+    failed.autoRetryDeferredUntil = DEFERRED_UNTIL;
+    failed.autoRetryDeferredReason = "the runner lost its connection during step 0";
+    persist(
+        List.of(failed),
+        List.of(
+            step(
+                failed,
+                0,
+                CiStepStatus.FAILED,
+                1,
+                "Cloning into 'contract-service'...\nthe runner went away\n[infra failure (the"
+                    + " runner went away) — its automatic retry is deferred until "
+                    + DEFERRED_UNTIL
+                    + ": registry unreachable]\n")));
+    return setup(params);
+  }
+
+  /**
    * One candidate repository the git host does not hold: the trigger reads nothing, so it answers
    * 503 — "could not evaluate yet" — rather than a verdict.
    */
@@ -1352,6 +1385,9 @@ public class ProviderStates {
   }
 
   /** A finished event-triggered run, {@code minute} minutes after {@link #SEEDED_AT}. */
+  /** Until when {@link #aFailedRunAwaitingADeferredRetry}'s run waits for its retry. */
+  private static final Instant DEFERRED_UNTIL = Instant.parse("2026-01-01T02:00:00Z");
+
   private static CiRun run(String id, String repo, String branch, int minute, CiRunStatus status) {
     Instant at = SEEDED_AT.plus(Duration.ofMinutes(minute));
     CiRun run = new CiRun();

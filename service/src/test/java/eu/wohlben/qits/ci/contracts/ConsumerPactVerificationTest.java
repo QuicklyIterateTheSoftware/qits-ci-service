@@ -261,6 +261,11 @@ class ConsumerPactVerificationTest {
     return states.params(ProviderStates.A_FAILED_RUN_RETRIED_AUTOMATICALLY);
   }
 
+  @State(ProviderStates.A_FAILED_RUN_AWAITING_A_DEFERRED_RETRY)
+  Map<String, String> aFailedRunAwaitingADeferredRetry() {
+    return states.params(ProviderStates.A_FAILED_RUN_AWAITING_A_DEFERRED_RETRY);
+  }
+
   @State(ProviderStates.A_RELEASE_REQUEST_WITH_QA_RUNS_IN_FLIGHT)
   Map<String, String> aReleaseRequestWithQaRunsInFlight() {
     return states.params(ProviderStates.A_RELEASE_REQUEST_WITH_QA_RUNS_IN_FLIGHT);

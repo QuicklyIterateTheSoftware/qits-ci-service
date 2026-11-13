@@ -56,6 +56,9 @@ public interface CiRunMapper {
   // The lease's out-of-memory kills (qits-1818), spelled out for `phase`'s reason.
   @Mapping(target = "oomKills", source = "oomKills")
   @Mapping(target = "oomScope", source = "oomScope")
+  // A failed run's deferred automatic retry (qits-2163, served since qits-2165), spelled out for
+  // `phase`'s reason.
+  @Mapping(target = "autoRetryDeferredUntil", source = "autoRetryDeferredUntil")
   CiRunDto toDto(CiRun entity);
 
   // The step's declared name (qits-757), spelled out for `phase`'s reason.
