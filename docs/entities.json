@@ -1,5 +1,5 @@
 {
-  "formatVersion" : 1,
+  "formatVersion" : 2,
   "application" : "qits-ci",
   "entities" : [
     {
@@ -29,7 +29,8 @@
           "method" : "POST",
           "path" : "/events/trigger",
           "dto" : "eu.wohlben.qits.ci.control.CiEventTriggerService$Arrival",
-          "kind" : "body"
+          "kind" : "body",
+          "cardinality" : "single"
         }
       ]
     },
@@ -60,7 +61,8 @@
           "method" : "GET",
           "path" : "/repositories/{repoId}/releases/{version}/artifacts",
           "dto" : "eu.wohlben.qits.ci.api.CiRepositoryController$ReleaseArtifactsResponse",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         }
       ]
     },
@@ -109,35 +111,40 @@
           "method" : "GET",
           "path" : "/runs/{runId}/reports/{reportId}",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportDto",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "single"
         },
         {
           "operationId" : "listRunBaselineReports",
           "method" : "GET",
           "path" : "/runs/{runId}/baseline/reports/{kind}",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportDto",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "listRunGateReports",
           "method" : "GET",
           "path" : "/runs/{runId}/gate/reports",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportHighlightDto",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "listRunReports",
           "method" : "GET",
           "path" : "/runs/{runId}/reports",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportHighlightDto",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "putRunStepReport",
           "method" : "PUT",
           "path" : "/runs/{runId}/steps/{stepIndex}/reports/{kind}",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportHighlightDto",
-          "kind" : "body"
+          "kind" : "body",
+          "cardinality" : "collection"
         }
       ]
     },
@@ -270,105 +277,120 @@
           "method" : "GET",
           "path" : "/repositories/summary",
           "dto" : "eu.wohlben.qits.ci.api.CiRepositoryController$ListRepositorySummariesResponse",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "CiRunController.listFinishedRuns",
           "method" : "GET",
           "path" : "/runs/finished",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$ListRunsResponse",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "getRun",
           "method" : "GET",
           "path" : "/runs/{runId}",
           "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "single"
         },
         {
           "operationId" : "getRunBaseline",
           "method" : "GET",
           "path" : "/runs/{runId}/baseline",
           "dto" : "eu.wohlben.qits.ci.dto.CiBaselineAnswer",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "single"
         },
         {
           "operationId" : "getRunQueue",
           "method" : "GET",
           "path" : "/runs/queue",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$QueueResponse",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "single"
         },
         {
           "operationId" : "getRunReport",
           "method" : "GET",
           "path" : "/runs/{runId}/reports/{reportId}",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportDto",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "single"
         },
         {
           "operationId" : "listActiveRuns",
           "method" : "GET",
           "path" : "/runs/active",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$ListRunsResponse",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "listRunBaselineReports",
           "method" : "GET",
           "path" : "/runs/{runId}/baseline/reports/{kind}",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportDto",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "listRunGateReports",
           "method" : "GET",
           "path" : "/runs/{runId}/gate/reports",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportBaselineDto",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "single"
         },
         {
           "operationId" : "listRunReports",
           "method" : "GET",
           "path" : "/runs/{runId}/reports",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportBaselineDto",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "single"
         },
         {
           "operationId" : "listRuns",
           "method" : "GET",
           "path" : "/runs",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$ListRunsResponse",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "putRunStepReport",
           "method" : "PUT",
           "path" : "/runs/{runId}/steps/{stepIndex}/reports/{kind}",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportHighlightDto",
-          "kind" : "body"
+          "kind" : "body",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "rerunReleaseRequestPhase",
           "method" : "POST",
           "path" : "/runs/rerun",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$RetryRunResponse",
-          "kind" : "schema"
+          "kind" : "schema",
+          "cardinality" : "single"
         },
         {
           "operationId" : "retryRun",
           "method" : "POST",
           "path" : "/runs/{runId}/retry",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$RetryRunResponse",
-          "kind" : "schema"
+          "kind" : "schema",
+          "cardinality" : "single"
         },
         {
           "operationId" : "triggerEvent",
           "method" : "POST",
           "path" : "/events/trigger",
           "dto" : "eu.wohlben.qits.ci.control.CiEventTriggerService$Evaluation",
-          "kind" : "body"
+          "kind" : "body",
+          "cardinality" : "single"
         }
       ]
     },
@@ -399,21 +421,24 @@
           "method" : "GET",
           "path" : "/runs/{runId}/baseline",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportBaselineDto",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "single"
         },
         {
           "operationId" : "listRunGateReports",
           "method" : "GET",
           "path" : "/runs/{runId}/gate/reports",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportBaselineDto",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "single"
         },
         {
           "operationId" : "listRunReports",
           "method" : "GET",
           "path" : "/runs/{runId}/reports",
           "dto" : "eu.wohlben.qits.ci.dto.CiReportBaselineDto",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "single"
         }
       ]
     },
@@ -490,42 +515,48 @@
           "method" : "GET",
           "path" : "/repositories/summary",
           "dto" : "eu.wohlben.qits.ci.api.CiRepositoryController$ListRepositorySummariesResponse",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "CiRunController.listFinishedRuns",
           "method" : "GET",
           "path" : "/runs/finished",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$ListRunsResponse",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "getRun",
           "method" : "GET",
           "path" : "/runs/{runId}",
           "dto" : "eu.wohlben.qits.ci.dto.CiLiveStepDto",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "single"
         },
         {
           "operationId" : "getRunQueue",
           "method" : "GET",
           "path" : "/runs/queue",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$QueueResponse",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "listActiveRuns",
           "method" : "GET",
           "path" : "/runs/active",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$ListRunsResponse",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "listRuns",
           "method" : "GET",
           "path" : "/runs",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$ListRunsResponse",
-          "kind" : "returns"
+          "kind" : "returns",
+          "cardinality" : "collection"
         }
       ]
     }
