@@ -1384,10 +1384,10 @@ public class ProviderStates {
     run.configPath = ".config/qits/release-request.yml";
   }
 
-  /** A finished event-triggered run, {@code minute} minutes after {@link #SEEDED_AT}. */
   /** Until when {@link #aFailedRunAwaitingADeferredRetry}'s run waits for its retry. */
   private static final Instant DEFERRED_UNTIL = Instant.parse("2026-01-01T02:00:00Z");
 
+  /** A finished event-triggered run, {@code minute} minutes after {@link #SEEDED_AT}. */
   private static CiRun run(String id, String repo, String branch, int minute, CiRunStatus status) {
     Instant at = SEEDED_AT.plus(Duration.ofMinutes(minute));
     CiRun run = new CiRun();
