@@ -145,7 +145,7 @@
         <!-- The other providers' golden masters (qits-1149), test scope: what this repository's
              consumer pacts against qits-projects, qits-githost, qits-artifacts and qits-idp are
              built from (contracts/consumer/). Bumped like every internal pin. -->
-        <qits.projects-golden-masters.version>2026.1113.65138</qits.projects-golden-masters.version>
+        <qits.projects-golden-masters.version>2026.1113.120648</qits.projects-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1109.41303</qits.githost-golden-masters.version>
         <qits.artifacts-golden-masters.version>2026.1111.62703</qits.artifacts-golden-masters.version>
         <qits.idp-golden-masters.version>2026.1109.13349</qits.idp-golden-masters.version>
@@ -173,13 +173,13 @@
         <qits.docs-frontend-pacts-qits-ci-service.version>2026.1113.112914</qits.docs-frontend-pacts-qits-ci-service.version>
         <qits.events-frontend-pacts-qits-ci-service.version>2026.1113.110709</qits.events-frontend-pacts-qits-ci-service.version>
         <qits.githost-frontend-pacts-qits-ci-service.version>2026.1113.93300</qits.githost-frontend-pacts-qits-ci-service.version>
-        <qits.maintenance-frontend-pacts-qits-ci-service.version>2026.1113.93349</qits.maintenance-frontend-pacts-qits-ci-service.version>
+        <qits.maintenance-frontend-pacts-qits-ci-service.version>2026.1113.123629</qits.maintenance-frontend-pacts-qits-ci-service.version>
         <qits.artifacts-frontend-pacts-qits-ci-service.version>2026.1113.113903</qits.artifacts-frontend-pacts-qits-ci-service.version>
         <qits.deployments-frontend-pacts-qits-ci-service.version>2026.1113.110705</qits.deployments-frontend-pacts-qits-ci-service.version>
-        <qits.mirror-frontend-pacts-qits-ci-service.version>2026.1113.93405</qits.mirror-frontend-pacts-qits-ci-service.version>
+        <qits.mirror-frontend-pacts-qits-ci-service.version>2026.1113.123640</qits.mirror-frontend-pacts-qits-ci-service.version>
         <qits.observability-frontend-pacts-qits-ci-service.version>2026.1113.105418</qits.observability-frontend-pacts-qits-ci-service.version>
-        <qits.orchestrator-frontend-pacts-qits-ci-service.version>2026.1113.93521</qits.orchestrator-frontend-pacts-qits-ci-service.version>
-        <qits.system-frontend-pacts-qits-ci-service.version>2026.1113.93714</qits.system-frontend-pacts-qits-ci-service.version>
+        <qits.orchestrator-frontend-pacts-qits-ci-service.version>2026.1113.123645</qits.orchestrator-frontend-pacts-qits-ci-service.version>
+        <qits.system-frontend-pacts-qits-ci-service.version>2026.1113.123648</qits.system-frontend-pacts-qits-ci-service.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
