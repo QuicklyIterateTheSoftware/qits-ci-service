@@ -290,12 +290,25 @@ steps:
       pnpm test --reporters=junit --reporters=default \
         --output-file=.qits-reports/vitest-unit.xml $coverage_flags
 
+      # THE BROWSER SPECS (qits-2167). Both npm-library repositories keep `*.browser.spec.ts` out of
+      # `test` in a separate `test:browser` script; until now no gate ran them, so a regression
+      # reached consumers via the maintenance bump instead. Every step runs in the ci-slot image
+      # (qits-1544), which carries Playwright's Chromium at the renderer pin, 1.63.0 (see app.yml
+      # and the ci-slot Dockerfile) — a jslib's own `playwright` must match it for the specs to
+      # launch. No reporter or coverage flags: pnpm forwards a script's arguments to its LAST
+      # command, which here is not `ng test`, and that is also why this is not folded into `test`.
+      # Not `check-outputs: [screenshot-baselines]` either — that generator runs `npm ci` and these
+      # repositories are pnpm; a stale reference is regenerated locally.
+      if node -e "process.exit((require('./package.json').scripts||{})['test:browser']?0:1)"; then
+        pnpm test:browser
+      fi
+
       pnpm build
       # The workbench ships nothing FROM HERE — storybook-static/ dies with the container. It runs
       # so the workbench cannot rot unnoticed: a story that stops compiling, a broken .storybook
       # config or a compodoc pass that fails to produce the property tables all fail here instead of
       # the next time somebody runs `pnpm storybook`. Like the build it is Vite compiling, not a
-      # browser rendering, so the browserless image is enough.
+      # browser rendering; it needs no browser.
       if node -e "process.exit((require('./package.json').scripts||{})['build-storybook']?0:1)"; then
         pnpm build-storybook
       fi
