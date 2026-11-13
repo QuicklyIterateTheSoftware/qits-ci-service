@@ -158,7 +158,7 @@
         <qits.landing-app-pacts-qits-ci-service.version>2026.1107.234702</qits.landing-app-pacts-qits-ci-service.version>
         <qits.artifacts-service-pacts-qits-ci-service.version>2026.1018.153037</qits.artifacts-service-pacts-qits-ci-service.version>
         <qits.bootstrap-cli-pacts-qits-ci-service.version>2026.1023.225504</qits.bootstrap-cli-pacts-qits-ci-service.version>
-        <qits.maintenance-service-pacts-qits-ci-service.version>2026.1026.180147</qits.maintenance-service-pacts-qits-ci-service.version>
+        <qits.maintenance-service-pacts-qits-ci-service.version>2026.1113.54601</qits.maintenance-service-pacts-qits-ci-service.version>
         <qits.orchestrator-service-pacts-qits-ci-service.version>2026.1018.172917</qits.orchestrator-service-pacts-qits-ci-service.version>
         <qits.platform-access-monorepo-pacts-qits-ci-service.version>2026.1109.214128</qits.platform-access-monorepo-pacts-qits-ci-service.version>
         <qits.projects-service-pacts-qits-ci-service.version>2026.1107.105401</qits.projects-service-pacts-qits-ci-service.version>
