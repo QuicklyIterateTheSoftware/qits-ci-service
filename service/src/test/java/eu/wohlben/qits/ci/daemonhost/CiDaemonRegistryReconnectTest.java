@@ -32,7 +32,9 @@ import org.junit.jupiter.api.Test;
 /**
  * The daemon socket's reconnect grace (qits-748), at the registry: a dropped connection is a gap
  * the launch waits out for its daemon to come back, not the step's end — and a running step is held
- * past the grace until its lease ends, its deadline passes or it is cancelled (qits-2163).
+ * past the grace until its lease ends, its deadline passes or it is cancelled (qits-2163) — and a
+ * cancelled step is lost by the cancel deadline whatever its socket does, unless its daemon answers
+ * first (qits-2227).
  *
  * <p>Plain JUnit, {@link CiDaemonRegistryTimeoutTest}'s reason: the registry is driven through its
  * own socket-side methods with a recording stand-in for the connection, so nothing here races for a
@@ -298,6 +300,145 @@ public class CiDaemonRegistryReconnectTest {
     assertEquals(correlationId, assertInstanceOf(Cancel.class, resent.get(2)).correlationId());
     registry.onMessage(daemonId, second.connection, new StepFinished(correlationId, 0, 143, false));
     assertEquals(143, registry.awaitFinished(daemonId, SOON).exitCode());
+    registry.reap(daemonId);
+  }
+
+  // --- the cancel deadline (qits-2227) ----------------------------------------------------------
+
+  /**
+   * The 2026-11-14 shape: the {@code Cancel} goes out on a socket that still reads open, and the drop
+   * is only found afterwards (by the silence check, here by the endpoint). The cancel is still owed,
+   * so the drop starts the grace rather than the hold, and the step is lost when it runs out.
+   */
+  @Test
+  public void aCancelSentOnAnOpenSocketIsStillOwedSoTheDropAfterItIsNotHeld() {
+    Duration grace = Duration.ofMillis(400);
+    CiDaemonRegistry registry = registry(grace);
+    registry.stepTimeoutGrace(Duration.ofSeconds(30));
+    String daemonId = registry.registerLaunch("run-cancel-then-drop", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    String correlationId = registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+
+    registry.cancel(daemonId);
+    List<CiDaemonMessage> sent = first.sent();
+    assertEquals(
+        correlationId,
+        assertInstanceOf(Cancel.class, sent.get(sent.size() - 1)).correlationId(),
+        "the Cancel went out on the open socket: " + sent);
+
+    long start = System.nanoTime();
+    first.drop(registry, daemonId);
+    CiDaemonRegistry.Completion completion =
+        registry.awaitFinished(daemonId, Duration.ofSeconds(30));
+    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+    assertEquals(CiDaemonRegistry.Completion.Status.CONNECTION_LOST, completion.status());
+    assertTrue(elapsedMs >= grace.toMillis() - 50, "lost at the grace: " + elapsedMs);
+    assertTrue(elapsedMs < 10_000, "not held to the step's deadline: " + elapsedMs);
+    assertTrue(registry.lost(daemonId));
+    registry.reap(daemonId);
+  }
+
+  /**
+   * A socket that reads open and a daemon that never answers: nothing drops, nothing closes, and the
+   * cancel deadline alone ends the step.
+   */
+  @Test
+  public void aCancelOnAnOpenButSilentSocketIsLostAtTheCancelDeadline() {
+    Duration grace = Duration.ofMillis(300);
+    Duration stepGrace = Duration.ofMillis(400);
+    CiDaemonRegistry registry = registry(grace);
+    registry.stepTimeoutGrace(stepGrace);
+    String daemonId = registry.registerLaunch("run-cancel-silent", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+
+    long start = System.nanoTime();
+    registry.cancel(daemonId);
+    CiDaemonRegistry.Completion completion =
+        registry.awaitFinished(daemonId, Duration.ofSeconds(30));
+    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+    assertEquals(CiDaemonRegistry.Completion.Status.CONNECTION_LOST, completion.status());
+    long deadlineMs = grace.plus(stepGrace).toMillis();
+    assertTrue(elapsedMs >= deadlineMs - 50, "at the cancel deadline: " + elapsedMs);
+    assertTrue(elapsedMs < 10_000, "not the step's backstop: " + elapsedMs);
+    assertTrue(registry.connected(daemonId), "the socket still reads open, and that changes nothing");
+    assertTrue(registry.lost(daemonId));
+    registry.reap(daemonId);
+  }
+
+  /**
+   * The deadline bounds the cancel across a reconnect: the daemon comes back inside the grace, is
+   * sent the {@code Cancel} again (it is still owed), and still does not answer.
+   */
+  @Test
+  public void aReconnectResendsTheOwedCancelAndDoesNotResetTheCancelDeadline() {
+    Duration grace = Duration.ofMillis(500);
+    Duration stepGrace = Duration.ofMillis(500);
+    CiDaemonRegistry registry = registry(grace);
+    registry.stepTimeoutGrace(stepGrace);
+    String daemonId = registry.registerLaunch("run-cancel-redial", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    String correlationId = registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+
+    long start = System.nanoTime();
+    registry.cancel(daemonId);
+    first.drop(registry, daemonId);
+    FakeConnection second = admit(registry, daemonId, "c2");
+    List<CiDaemonMessage> resent = second.sent();
+    assertEquals(3, resent.size(), "Ack, RunStep, Cancel: " + resent);
+    assertEquals(correlationId, assertInstanceOf(Cancel.class, resent.get(2)).correlationId());
+
+    CiDaemonRegistry.Completion completion =
+        registry.awaitFinished(daemonId, Duration.ofSeconds(30));
+    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+    assertEquals(CiDaemonRegistry.Completion.Status.CONNECTION_LOST, completion.status());
+    long deadlineMs = grace.plus(stepGrace).toMillis();
+    assertTrue(elapsedMs >= deadlineMs - 50, "the deadline runs from the cancel: " + elapsedMs);
+    assertTrue(elapsedMs < 10_000, "and is not reset by the re-dial: " + elapsedMs);
+    registry.reap(daemonId);
+  }
+
+  /**
+   * A daemon that answers the cancel inside the deadline ends the step as ever, and the deadline
+   * then fires nothing: the launch is not lost and its next step runs.
+   */
+  @Test
+  public void aCancelAnsweredInsideTheDeadlineFinishesAndTheDeadlineFiresNothing()
+      throws Exception {
+    Duration grace = Duration.ofMillis(200);
+    Duration stepGrace = Duration.ofMillis(200);
+    CiDaemonRegistry registry = registry(grace);
+    registry.stepTimeoutGrace(stepGrace);
+    String daemonId = registry.registerLaunch("run-cancel-answered", SUBJECT);
+    FakeConnection first = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, first.connection, new Initialized());
+    String correlationId = registry.sendRunStep(daemonId, 0, "make", 600, java.util.Map.of(), null);
+
+    registry.cancel(daemonId);
+    registry.onMessage(daemonId, first.connection, new StepFinished(correlationId, 0, 143, false));
+    CiDaemonRegistry.Completion completion = registry.awaitFinished(daemonId, SOON);
+    assertEquals(CiDaemonRegistry.Completion.Status.FINISHED, completion.status());
+    assertEquals(143, completion.exitCode());
+
+    Thread.sleep(grace.plus(stepGrace).toMillis() * 3);
+    assertFalse(registry.lost(daemonId), "the answered cancel's deadline fired nothing");
+    assertEquals(CiDaemonRegistry.Phase.INITIALIZED, registry.phaseOf(daemonId));
+
+    // The next step is sent and pending, not answered lost at once.
+    registry.sendRunStep(daemonId, 1, "make again", 600, java.util.Map.of(), null);
+    assertEquals(
+        CiDaemonRegistry.Completion.Status.NO_ANSWER,
+        registry.awaitFinished(daemonId, Duration.ofMillis(300)).status());
+    // A drop with nothing owed is held again, as any running step is (qits-2163).
+    first.drop(registry, daemonId);
+    Thread.sleep(grace.toMillis() * 3);
+    assertFalse(registry.lost(daemonId), "no cancel is owed for the new step, so it is held");
     registry.reap(daemonId);
   }
 

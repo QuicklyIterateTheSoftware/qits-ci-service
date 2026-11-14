@@ -109,11 +109,22 @@ import org.jboss.logging.Logger;
  * its lease is known to have ended ({@code LeaseStepRunner.leaseEnded} reaps the launch); the step's
  * own backstop passes ({@link #awaitFinished} answers a deadline that ran out with no connection
  * bound as lost rather than {@code NO_ANSWER}); or the step is cancelled ({@link #cancel}: the
- * {@code Cancel} is kept for the daemon and the ordinary grace runs from the cancel). A launch that is
+ * {@code Cancel} is kept for the daemon and the ordinary grace runs from the cancel — and from a
+ * later drop too, since a launch with a cancel outstanding is never held). A launch that is
  * not running a step — still dialling, making its worktree, or between two steps — keeps the grace:
  * its daemon has no step deadline to re-dial against and gives up on its own budget, so holding it
  * longer would only hold a launch nobody comes back for. {@code
  * qits.ci.daemon.hold-running-steps=false} restores the grace for a running step too.
+ *
+ * <p><b>A cancelled step is bounded whatever its socket does</b> (qits-2227). A {@code Cancel} that
+ * went out on a socket that still read open — inside the silence limit below, or on a half-open edge
+ * tunnel — used to count as delivered, so the drop the silence check then found held the step again
+ * until its backstop, up to two hours, and {@code qits ci cancel} settled nothing. Now a cancel stays
+ * owed until the step's terminal frame (re-sent on every re-admission, and never held on a drop), and
+ * {@link #cancel} starts a deadline of {@code qits.ci.daemon.reconnect-grace-seconds} plus {@code
+ * qits.ci.step-timeout-grace-seconds}: a daemon that answers inside it ends the step as ever, one that
+ * does not — connected and silent, or away and re-dialling — has the step {@code CONNECTION_LOST}
+ * when it passes. A reconnect does not reset it, so a cancelled run settles in about two minutes.
  *
  * <p><b>A drop the host never hears about is found by silence</b> (qits-1728). The edge splices the
  * daemon's leg and this host's into one tunnel, so a daemon leg that dies with no FIN or RST
@@ -211,6 +222,33 @@ public class CiDaemonRegistry {
   /** {@link #reconnectGrace(Duration)}'s reason, for the hold. */
   void holdRunningSteps(boolean hold) {
     this.holdRunningSteps = hold;
+  }
+
+  /**
+   * The step-timeout grace {@code LeaseStepRunner} adds to a step's backstop: the daemon's
+   * SIGTERM/SIGKILL and one frame's flight. Here it is the second half of the cancel deadline
+   * (qits-2227), which is {@link #reconnectGrace()} plus this — see {@link #cancelDeadline()}.
+   */
+  @ConfigProperty(name = "qits.ci.step-timeout-grace-seconds")
+  long stepTimeoutGraceSeconds;
+
+  /** Set by a suite only; otherwise {@link #stepTimeoutGraceSeconds}. */
+  private volatile Duration stepTimeoutGrace;
+
+  /** {@link #reconnectGrace(Duration)}'s reason, for the step-timeout grace. */
+  void stepTimeoutGrace(Duration grace) {
+    this.stepTimeoutGrace = grace;
+  }
+
+  /**
+   * How long a cancelled step may go unanswered before it is lost (qits-2227): one reconnect grace
+   * for a daemon whose socket is dropping to come back and hear the {@code Cancel}, plus the
+   * step-timeout grace for it to kill the step and say so. Runs from the cancel, whatever the socket
+   * does meanwhile.
+   */
+  Duration cancelDeadline() {
+    Duration set = stepTimeoutGrace;
+    return reconnectGrace().plus(set != null ? set : Duration.ofSeconds(stepTimeoutGraceSeconds));
   }
 
   /**
@@ -605,6 +643,7 @@ public class CiDaemonRegistry {
       launch.runId = runId;
       launch.runStep = null;
       launch.cancelPending = false;
+      cancelCancelDeadline(launch);
       launch.stepIndex = -1;
       launch.correlationId = null;
       launch.listener = null;
@@ -690,6 +729,22 @@ public class CiDaemonRegistry {
    * connection gets the ordinary grace from now, so a daemon back inside it still hears the {@code
    * Cancel} and answers it, and one that is not is lost when it runs out rather than at the step's
    * backstop, hours later.
+   *
+   * <p><b>A {@code Cancel} that went out is still owed until the step's terminal frame</b>
+   * (qits-2227). A send only proves the frame left on a socket that read open — inside the silence
+   * limit, or on a half-open edge tunnel, it reaches nobody. So the cancel stays pending after a
+   * successful send: {@link #onClose} never holds a launch with a cancel outstanding (the ordinary
+   * grace runs instead), and every re-admission sends the {@code Cancel} again ({@link #resume}).
+   * Only the step's {@link StepFinished}, a new step, a re-key or a reap clears it.
+   *
+   * <p><b>And a cancel is bounded whatever the socket does</b> (qits-2227). It starts the cancel
+   * deadline, {@link #cancelDeadline()} from now: a daemon that answers inside it ends the step as
+   * ever ({@code FINISHED}, and the run records the cancel); one that does not — connected and
+   * silent, or away and re-dialling — has the launch completed {@code CONNECTION_LOST} when it
+   * passes. A re-admission does not reset it and a second cancel does not extend it, so a cancelled
+   * run settles within about two minutes rather than at the step's backstop (2026-11-14: a target
+   * went offline with steps running, a send into the socket that still read open succeeded, the
+   * silence check then dropped it into a hold, and {@code qits ci cancel} settled nothing).
    */
   public void cancel(String daemonId) {
     Launch launch = launches.get(daemonId);
@@ -698,9 +753,12 @@ public class CiDaemonRegistry {
       // first step makes it exit. The run's close is what ends the lease.
       return;
     }
-    launch.cancelPending = true;
+    synchronized (launch) {
+      launch.cancelPending = true;
+      startCancelDeadline(launch);
+    }
     if (send(launch, new Cancel(launch.correlationId))) {
-      launch.cancelPending = false;
+      // Delivered as far as this host can tell, and still pending: see the javadoc.
       return;
     }
     boolean now = false;
@@ -733,6 +791,7 @@ public class CiDaemonRegistry {
     synchronized (launch) {
       cancelExpiry(launch);
       cancelWatch(launch);
+      cancelCancelDeadline(launch);
     }
     launch.registered.complete(Boolean.FALSE);
     completeLost(launch);
@@ -1023,6 +1082,9 @@ public class CiDaemonRegistry {
           if (launch.phase == Phase.RUNNING && finished.stepIndex() == launch.stepIndex) {
             launch.phase = Phase.INITIALIZED;
             launch.stepFinished.complete(Completion.finished(finished));
+            // The step's answer, a cancelled one's included: nothing is owed and nothing to bound.
+            launch.cancelPending = false;
+            cancelCancelDeadline(launch);
             // Arrived on a superseded connection while none is bound: a held launch is between
             // steps now, and between steps the grace is the bound again (qits-2163).
             if (launch.connection == null && launch.expiry == null && !launch.lost) {
@@ -1084,7 +1146,8 @@ public class CiDaemonRegistry {
    * <p>A launch with a step {@link Phase#RUNNING} starts no grace at all (qits-2163): it is held
    * until its daemon comes back, its lease ends, the step's backstop passes or it is cancelled — see
    * the class javadoc. A {@code Cancel} still owed to it means the run is stopping, so that one gets
-   * the grace.
+   * the grace — and since qits-2227 a {@code Cancel} is owed until the step answers it, even after a
+   * send that went out on this very socket while it still read open.
    *
    * <p>Only the <b>bound</b> connection's close counts. A connection a re-dial superseded closes
    * after its successor is bound (qits-1728), and that close starts no grace; nor does a second
@@ -1168,6 +1231,67 @@ public class CiDaemonRegistry {
     ScheduledFuture<?> pending = launch.expiry;
     launch.expiry = null;
     launch.expiryToken = null;
+    if (pending != null) {
+      pending.cancel(false);
+    }
+  }
+
+  /**
+   * Holding the launch's lock: the cancel deadline (qits-2227), {@link #cancelDeadline()} from now —
+   * unless one is already running for this step, which a second cancel does not extend. Scheduled
+   * on the grace thread beside the reconnect grace but separate from it, because a re-admission
+   * cancels the grace and must not cancel this. A zero deadline schedules nothing.
+   */
+  private void startCancelDeadline(Launch launch) {
+    if (launch.cancelDeadline != null) {
+      return;
+    }
+    Duration deadline = cancelDeadline();
+    if (deadline.isZero() || deadline.isNegative()) {
+      return;
+    }
+    Object token = new Object();
+    launch.cancelDeadlineToken = token;
+    launch.cancelDeadline =
+        graces.schedule(
+            () -> cancelUnanswered(launch, token, deadline),
+            deadline.toMillis(),
+            TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * The cancel deadline passed: unless the step's terminal frame arrived (or a new step, a re-key or
+   * a reap cleared it) first, the daemon did not answer the {@code Cancel} in time — connected or
+   * not — and the launch is lost, completing the step {@code CONNECTION_LOST}.
+   */
+  private void cancelUnanswered(Launch launch, Object token, Duration deadline) {
+    synchronized (launch) {
+      if (launch.cancelDeadlineToken != token) {
+        return;
+      }
+      launch.cancelDeadline = null;
+      launch.cancelDeadlineToken = null;
+      if (launch.phase != Phase.RUNNING || launch.stepFinished.isDone()) {
+        return;
+      }
+      cancelExpiry(launch);
+    }
+    LOG.warnf(
+        "ci-daemon %s of run %s did not answer the cancel of step %d within %ss (connection %s);"
+            + " its step is lost",
+        launch.daemonId,
+        launch.runId,
+        launch.stepIndex,
+        deadline.toSeconds(),
+        launch.connection == null ? "none" : launch.connection.id());
+    completeLost(launch);
+  }
+
+  /** Called holding the launch's lock: a pending cancel deadline, if any, will not fire. */
+  private static void cancelCancelDeadline(Launch launch) {
+    ScheduledFuture<?> pending = launch.cancelDeadline;
+    launch.cancelDeadline = null;
+    launch.cancelDeadlineToken = null;
     if (pending != null) {
       pending.cancel(false);
     }
@@ -1284,9 +1408,10 @@ public class CiDaemonRegistry {
       send(launch, runStep);
     }
     if (launch.cancelPending && launch.correlationId != null) {
-      if (send(launch, new Cancel(launch.correlationId))) {
-        launch.cancelPending = false;
-      }
+      // Sent on every re-admission until the step's terminal frame clears it (qits-2227): one that
+      // went out on a socket about to be found dead reached nobody. A daemon that already has it
+      // kills nothing twice.
+      send(launch, new Cancel(launch.correlationId));
     }
   }
 
@@ -1422,8 +1547,22 @@ public class CiDaemonRegistry {
     /** The step in flight, once sent — what a daemon that comes back is sent again ({@link #resume}). */
     private volatile RunStep runStep;
 
-    /** A {@link Cancel} that found no live socket, owed to the daemon when it comes back. */
+    /**
+     * A {@link Cancel} the step's daemon has not answered yet: sent again on every re-admission, and
+     * the reason {@link #onClose} does not hold the step. Set by {@link #cancel}, and since qits-2227
+     * kept after a send that went out too — a socket that reads open may reach nobody — until the
+     * step's {@link StepFinished}, a new step, a re-key or a reap.
+     */
     private volatile boolean cancelPending;
+
+    /**
+     * The cancel deadline (qits-2227) while a cancelled step is unanswered; guarded by the launch.
+     * Unlike {@link #expiry}, a re-admission leaves it running.
+     */
+    private ScheduledFuture<?> cancelDeadline;
+
+    /** Which scheduled cancel deadline is the live one; guarded by the launch. */
+    private Object cancelDeadlineToken;
 
     /**
      * Set once the launch is lost — its grace ran out, its held step's deadline passed (qits-2163),
@@ -1467,11 +1606,15 @@ public class CiDaemonRegistry {
       this.tokenSubject = tokenSubject;
     }
 
-    /** A new step in flight: its own terminal future, its own listener. Holding the launch. */
+    /**
+     * A new step in flight: its own terminal future, its own listener, and no cancel owed or bounded
+     * — the previous step's was about the previous step. Holding the launch.
+     */
     void beginStep(int index, StepListener stepListener) {
       this.stepIndex = index;
       this.listener = stepListener;
       this.cancelPending = false;
+      cancelCancelDeadline(this);
       this.stepFinished = new CompletableFuture<>();
     }
   }
