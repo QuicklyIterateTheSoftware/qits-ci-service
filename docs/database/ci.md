@@ -104,6 +104,7 @@ erDiagram
   ci_scm_release {
     string id PK "not null"
     string commit_sha
+    boolean deploy_hold "not null"
     string event_id "not null"
     instant occurred_at "not null"
     string priority "length 32"
