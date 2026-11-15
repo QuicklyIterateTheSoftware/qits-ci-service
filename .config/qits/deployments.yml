@@ -60,6 +60,15 @@ navigation-entries: services.details.CI:5, daemons.details.CI:5, libs.details.CI
 # Ticket qits-162, epic qits-540 contract C3.
 resources: postgresql:db, postgresql:eventstream:qits_ci_eventstream, idp:client
 
+# PRIVATE (qits-1980, task qits-2132): served by qits-edge-private only, reached through the WireGuard
+# tunnel or the qits-private overlay; the public edge answers 404 for ci. It moves in the
+# release-path window with maintenance, projects, ci, workspaces and deployments (owner ruling
+# 2026-11-13, qits-2174), because they call each other; projects, the orchestrator and the public apps' UIs call it.
+# Its databases live on the private Postgres, qits-oci-postgresql-private: a private exposure
+# moves them there (qits-2175). Revert: delete this line, which moves the databases back to the
+# public server with the service.
+exposure: private
+
 # STOP-FIRST: one CI process at a time. A start-first successor swept while the predecessor was
 # still claiming queued rows, and left a RUNNING run no worker owned (2026-08-23).
 update_order: stop-first
