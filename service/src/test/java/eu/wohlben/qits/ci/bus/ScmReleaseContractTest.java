@@ -61,6 +61,16 @@ import org.junit.jupiter.api.Test;
  * before it, and its absence is the live state of the rollout rather than an edge case — see {@link
  * #aReleaseFromBeforeTheReleaseRequestIdCarriesNoSuchKeyAndIsOtherwiseIdentical}.
  *
+ * <p><b>{@code deployHold}</b> — whether the release request that cut this release asked
+ * qits-deployments to hold the deploy (qits-2268). The fourth field added the same way: nullable
+ * and additive, read like {@code priority} and judged like it — {@code ScmReleaseListener} reads
+ * it, {@code ReleaseJoin} records it on the fact row and hands it to {@code SoftwareRelease}
+ * verbatim, and nothing in between compares it to anything. Unlike the strings before it the
+ * column it lands on is {@code not null default false} rather than nullable, because a release
+ * before the field existed really did not hold anything — there is no "unknown" to preserve —
+ * but the WIRE field is still read as an optional boolean defaulting to false on absence, since
+ * that is the shape qits-projects publishes.
+ *
  * <p><b>That nothing had to change is the finding, and it is a property of how this consumer is
  * written rather than luck.</b> Nothing here keys on the producer: the durable seam subscribes by
  * SIGNATURE, {@code EventFrame} carries no publisher and no source service, {@code ReleaseJoin}'s key
@@ -140,7 +150,8 @@ public class ScmReleaseContractTest {
       String releaseRequestId,
       String releaseRequestQualifiedId,
       Instant occurredAt,
-      String priority)
+      String priority,
+      Boolean deployHold)
       implements QitsEvent {}
 
   /**
@@ -210,6 +221,36 @@ public class ScmReleaseContractTest {
       String priority,
       String releaseRequestId,
       String releaseRequestQualifiedId) {
+    return release(
+        repository,
+        repositoryName,
+        version,
+        branch,
+        commitSha,
+        priority,
+        releaseRequestId,
+        releaseRequestQualifiedId,
+        null);
+  }
+
+  /**
+   * The same, with {@code deployHold} stated — for qits-2268's cases.
+   *
+   * <p>Null is the default above rather than a value, the rule {@code priority} set two components
+   * earlier and for its reason exactly: every case written before this field existed must keep
+   * producing the bytes it produced then, which is what makes the addition additive in this file as
+   * well as on the wire.
+   */
+  static SCMRelease release(
+      String repository,
+      String repositoryName,
+      String version,
+      String branch,
+      String commitSha,
+      String priority,
+      String releaseRequestId,
+      String releaseRequestQualifiedId,
+      Boolean deployHold) {
     return new SCMRelease(
         UUID.randomUUID(),
         "p-1",
@@ -221,7 +262,8 @@ public class ScmReleaseContractTest {
         releaseRequestId,
         releaseRequestQualifiedId,
         Instant.parse("2026-08-12T15:34:38Z"),
-        priority);
+        priority,
+        deployHold);
   }
 
   /** The release request a release came out of, as qits-projects spells one. */
@@ -268,6 +310,20 @@ public class ScmReleaseContractTest {
       String version,
       String priority,
       boolean withRequest) {
+    return canonicalPayload(repository, repositoryName, version, priority, withRequest, null);
+  }
+
+  /**
+   * The same, naming {@code deployHold} too — the bytes {@code DurableBusConsumptionTest} drives
+   * through the real listener to prove the hold reaches the fact row.
+   */
+  static String canonicalPayload(
+      String repository,
+      String repositoryName,
+      String version,
+      String priority,
+      boolean withRequest,
+      Boolean deployHold) {
     return CanonicalJson.payload(
         release(
             repository,
@@ -277,7 +333,8 @@ public class ScmReleaseContractTest {
             RELEASED_SHA,
             priority,
             withRequest ? RELEASE_REQUEST_ID : null,
-            withRequest ? RELEASE_REQUEST_QUALIFIED_ID : null));
+            withRequest ? RELEASE_REQUEST_QUALIFIED_ID : null,
+            deployHold));
   }
 
   @Test
@@ -601,6 +658,66 @@ public class ScmReleaseContractTest {
         MAPPER.readTree(canonicalPayload("qits-ci", "qits-ci", "2026.812.153438"))
             .has(ScmReleaseListener.RELEASE_REQUEST_QUALIFIED_ID_FIELD),
         "NON_NULL: an older release carries no such key");
+  }
+
+  /**
+   * <b>The twelfth component (qits-2268), and the one a release request flags to hold the
+   * deploy.</b>
+   *
+   * <p>{@code deployHold} is read by {@code ScmReleaseListener} like every other optional field on
+   * this payload: {@code ReleaseJoin} records it on the fact row, and it leaves again on {@code
+   * SoftwareRelease} for qits-deployments to act on. Nothing in qits-ci between those two points
+   * compares it to anything, which is why the assertion here is about the STRING and not about a
+   * decision: the field name is the whole of what the two repositories have to agree on.
+   */
+  @Test
+  public void theDeployHoldTheJoinRecordsIsInTheCanonicalPayload() throws Exception {
+    JsonNode payload =
+        MAPPER.readTree(
+            canonicalPayload("qits-ci", "qits-ci", "2026.812.153438", null, false, Boolean.TRUE));
+
+    assertTrue(
+        payload.has(ScmReleaseListener.DEPLOY_HOLD_FIELD),
+        "the canonical payload carries no " + ScmReleaseListener.DEPLOY_HOLD_FIELD);
+    assertTrue(payload.get(ScmReleaseListener.DEPLOY_HOLD_FIELD).asBoolean());
+  }
+
+  /**
+   * <b>The compatibility arm for it, which is the ordinary case rather than the exception.</b>
+   *
+   * <p>The field is additive, so a release that did not ask for the hold — every release published
+   * before the field existed, and every ordinary release since — carries no {@code deployHold} KEY
+   * at all rather than a {@code false}, {@code CanonicalJson}'s {@code NON_NULL} inclusion once
+   * more: qits-projects must never write {@code Boolean.FALSE} for "not held", because that is not
+   * null and {@code NON_NULL} would still serialize it. The rest of the assertion is that every
+   * field this service DOES read is byte-identical either way.
+   */
+  @Test
+  public void aReleaseStatingNoDeployHoldCarriesNoSuchKeyAndIsOtherwiseIdentical()
+      throws Exception {
+    JsonNode held =
+        MAPPER.readTree(
+            canonicalPayload("qits-ci", "qits-ci", "2026.812.153438", "HIGHER", false, Boolean.TRUE));
+    JsonNode without =
+        MAPPER.readTree(canonicalPayload("qits-ci", "qits-ci", "2026.812.153438", "HIGHER"));
+
+    assertFalse(
+        without.has(ScmReleaseListener.DEPLOY_HOLD_FIELD),
+        "NON_NULL: a release that did not ask for the hold states it by the key not being there,"
+            + " never by a literal false");
+    for (String field :
+        List.of(
+            ScmReleaseListener.REPOSITORY_FIELD,
+            ScmReleaseListener.REPOSITORY_NAME_FIELD,
+            ScmReleaseListener.VERSION_FIELD,
+            ScmReleaseListener.PRIORITY_FIELD,
+            "branch",
+            "commitSha")) {
+      assertEquals(
+          held.get(field),
+          without.get(field),
+          field + " moved with deployHold, so the addition was not additive after all");
+    }
   }
 
   @Test

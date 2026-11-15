@@ -328,6 +328,55 @@ public class DurableBusConsumptionTest {
   }
 
   /**
+   * <b>{@code deployHold}, from the real canonical bytes onto the fact row, through the real
+   * listener (qits-2268).</b> Same measurement {@code anScmReleaseCarryingAPriorityRecordsItVerbatim}
+   * makes about {@code priority}: the payload is {@code ScmReleaseContractTest}'s transcription run
+   * through {@code CanonicalJson}, so what is proved is the whole hop rather than agreement between
+   * a hand-typed string and the reader alone.
+   */
+  @Test
+  public void anScmReleaseAskingForTheHoldRecordsItOnTheFactRow() {
+    String repository = "held-repo-" + anId().substring(0, 8);
+
+    assertEquals(
+        DurableFunnel.Result.HANDLED,
+        funnel.offer(
+            scmReleases,
+            new EventFrame(
+                anId(),
+                ReleaseJoin.RELEASE_EVENT_NAME,
+                T0,
+                ScmReleaseContractTest.canonicalPayload(
+                    repository, repository, "2026.906.170000", null, false, Boolean.TRUE),
+                null,
+                null,
+                null)));
+
+    assertTrue(
+        QuarkusTransaction.requiringNew()
+            .call(() -> releases.deployHoldOf(repository, "2026.906.170000")),
+        "the release asked for the hold, on the row the announcement reads it back off");
+  }
+
+  /**
+   * And the ordinary case: a release that did not ask for the hold is recorded as not held, exactly
+   * as every historical row — written before the column existed — reads back through the column's
+   * own default.
+   */
+  @Test
+  public void anScmReleaseNotAskingForTheHoldIsRecordedAsNotHeld() {
+    String repository = "unheld-repo-" + anId().substring(0, 8);
+
+    assertEquals(
+        DurableFunnel.Result.HANDLED,
+        funnel.offer(scmReleases, releaseFrame(anId(), repository, "2026.906.180000")));
+
+    assertFalse(
+        QuarkusTransaction.requiringNew()
+            .call(() -> releases.deployHoldOf(repository, "2026.906.180000")));
+  }
+
+  /**
    * And a release from before the field: no {@code releaseRequestId} key, recorded with none and
    * never poison. (The transcription's default commit rides along; a payload without one is the
    * {@code commitSha} compatibility arm of {@code ScmReleaseContractTest}.)

@@ -43,6 +43,12 @@ import java.time.Instant;
  * section} is {@code artifacts} or {@code contracts}, which the composer marked on the composed
  * trigger document and the join copied onto the owed row. Null in either is a missing key.
  *
+ * <p><b>{@code deployHold} and {@code releaseRequestQualifiedId} (qits-2268) are handed on exactly as
+ * {@link eu.wohlben.qits.ci.control.ReleaseJoin} resolved them, and read nowhere in between.</b> {@code deployHold} is already
+ * {@code Boolean.TRUE} or {@code null} by the time it reaches this method — never {@code
+ * Boolean.FALSE} — so there is nothing left for this class to decide beyond naming it on the wire.
+ * qits-deployments is the reader; this service orders no queue by it and holds no lease over it.
+ *
  * <p><b>qits-ci publishes this name and subscribes to nothing under it.</b> The wire name is the
  * simple class name, and qits-workspaces is simultaneously renaming <em>its</em> release event
  * {@code SoftwareRelease → SCMRelease} — the two halves of one cutover, after which this is the only
@@ -66,7 +72,9 @@ public class SoftwareReleaseAnnouncer implements ReleaseAnnouncer {
       Instant finishedAt,
       String triggerEventId,
       String priority,
-      String section) {
+      String section,
+      Boolean deployHold,
+      String releaseRequestQualifiedId) {
     bus.publish(
         new SoftwareRelease(
             repoId,
@@ -79,7 +87,9 @@ public class SoftwareReleaseAnnouncer implements ReleaseAnnouncer {
             finishedAt,
             priority,
             section,
-            runId),
+            runId,
+            deployHold,
+            releaseRequestQualifiedId),
         CausingEvent.parentOf(triggerEventId, runId));
   }
 }

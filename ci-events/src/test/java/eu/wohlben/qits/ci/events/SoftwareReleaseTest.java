@@ -3,7 +3,9 @@ package eu.wohlben.qits.ci.events;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import eu.wohlben.qits.eventstream.control.CanonicalJson;
@@ -224,6 +226,116 @@ class SoftwareReleaseTest {
     assertEquals(before, CanonicalJson.payload(oldCanonical));
     assertEquals(null, oldCanonical.section());
     assertEquals(null, oldCanonical.runId());
+  }
+
+  /**
+   * qits-2268: {@code deployHold} and {@code releaseRequestQualifiedId}, appended after {@code
+   * runId}. Set, they are two more keys in the canonical order; unset — every construction that
+   * predates them — they are absent rather than null, and the payload is byte-identical to what it
+   * was.
+   */
+  @Test
+  void theDeployHoldAndTheReleaseRequestQualifiedIdAreKeysWhenSetAndAbsentWhenNot() {
+    SoftwareRelease held =
+        new SoftwareRelease(
+            "repo-1",
+            "p-1",
+            "repo-1",
+            "qits-landing-app",
+            "2026.1002.1",
+            "docker",
+            "qits/qits-landing",
+            PUBLISHED,
+            null,
+            null,
+            "run-1",
+            Boolean.TRUE,
+            "qits-landing-app-rr-9");
+
+    assertEquals(
+        "{\"deployHold\":true,\"packageName\":\"qits/qits-landing\",\"packageType\":\"docker\","
+            + "\"projectId\":\"p-1\",\"releaseRequestQualifiedId\":\"qits-landing-app-rr-9\","
+            + "\"repoId\":\"repo-1\",\"repoName\":\"qits-landing-app\",\"repository\":\"repo-1\","
+            + "\"runId\":\"run-1\",\"version\":\"2026.1002.1\"}",
+        CanonicalJson.payload(held));
+
+    // Every older constructor still compiles and still means "neither": no key, not a null — and
+    // never Boolean.FALSE, which NON_NULL would still have written.
+    String before =
+        "{\"packageName\":\"@qits/ui-components\",\"packageType\":\"npm\","
+            + "\"projectId\":\"p-1\",\"repoId\":\"qits-spa-ui-components\","
+            + "\"repoName\":\"qits-spa-ui-components\","
+            + "\"repository\":\"qits-spa-ui-components\",\"version\":\"1.4.0\"}";
+    assertEquals(before, CanonicalJson.payload(anEvent()));
+    SoftwareRelease withSectionAndRunId =
+        new SoftwareRelease(
+            "qits-spa-ui-components",
+            "p-1",
+            "qits-spa-ui-components",
+            "qits-spa-ui-components",
+            "1.4.0",
+            "npm",
+            "@qits/ui-components",
+            PUBLISHED,
+            null,
+            null,
+            null);
+    assertEquals(before, CanonicalJson.payload(withSectionAndRunId));
+    assertNull(withSectionAndRunId.deployHold());
+    assertNull(withSectionAndRunId.releaseRequestQualifiedId());
+  }
+
+  /**
+   * A release that did not ask for the hold is not held, and that is the ordinary case rather than
+   * the exception: the wire never carries {@code "deployHold":false}.
+   */
+  @Test
+  void aReleaseThatDidNotAskForTheHoldCarriesNoDeployHoldKey() {
+    SoftwareRelease notHeld =
+        new SoftwareRelease(
+            "repo-1",
+            "p-1",
+            "repo-1",
+            "qits-landing-app",
+            "2026.1002.1",
+            "docker",
+            "qits/qits-landing",
+            PUBLISHED,
+            null,
+            null,
+            "run-1",
+            null,
+            "qits-landing-app-rr-9");
+
+    String payload = CanonicalJson.payload(notHeld);
+
+    assertFalse(payload.contains("deployHold"), payload);
+    assertTrue(payload.contains("releaseRequestQualifiedId"), payload);
+  }
+
+  @Test
+  void aHeldArtifactRoundTripsItsHoldAndTheRequestsQualifiedId() {
+    SoftwareRelease published =
+        new SoftwareRelease(
+            "repo-1",
+            "p-1",
+            "repo-1",
+            "qits-ci-service",
+            "2026.1002.1",
+            "docker",
+            "qits/qits-ci",
+            PUBLISHED,
+            "HIGH",
+            SoftwareRelease.SECTION_ARTIFACTS,
+            "run-1",
+            Boolean.TRUE,
+            "qits-ci-service-rr-3");
+
+    SoftwareRelease received =
+        CanonicalJson.payloadTo(CanonicalJson.payload(published), SoftwareRelease.class);
+
+    assertEquals(Boolean.TRUE, received.deployHold());
+    assertEquals("qits-ci-service-rr-3", received.releaseRequestQualifiedId());
   }
 
   @Test

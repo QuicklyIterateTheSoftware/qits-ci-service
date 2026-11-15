@@ -97,6 +97,28 @@ import java.util.UUID;
  * steps, its artifacts' publish decisions) without a search. Both <b>nullable</b>: an announcement
  * owed before the fields existed carries no section, and a hand-built event carries neither — and
  * absent is, as ever, a missing key rather than a null.
+ *
+ * <p><b>{@code deployHold} and {@code releaseRequestQualifiedId} are additive a fourth time
+ * (qits-2268)</b>, appended after {@code runId} on the same terms. A release request in qits-projects
+ * may be flagged to hold the deploy; {@code SCMRelease} carries that flag down beside {@code
+ * priority}, qits-ci records it on the release fact and transcribes it here verbatim, exactly as it
+ * does {@code priority} — nothing in this service compares it to anything or orders a queue by it.
+ * qits-deployments is the reader, and it is also where {@code releaseRequestQualifiedId} travels for:
+ * a consumer that wants to show a person which release request asked for the hold needs the request's
+ * readable id, not only the UUID a run's own {@code releaseRequestId} would have carried had this
+ * event grown one.
+ *
+ * <ul>
+ *   <li>{@code deployHold} is a {@link Boolean}, never a primitive, because <b>{@code TRUE} or
+ *       absent are the only two shapes on the wire</b> — a release that did not ask for the hold
+ *       carries no such key, which is what {@code CanonicalJson}'s {@code NON_NULL} inclusion does
+ *       with a {@code null} value. A publisher must never pass {@link Boolean#FALSE}: that is not
+ *       null, so {@code NON_NULL} would still write it, and {@code "deployHold":false} would be a
+ *       second, confusable spelling of the same fact an absent key already states unambiguously.
+ *   <li>{@code releaseRequestQualifiedId} is nullable for the same reasons {@code priority} is: a
+ *       release announced by a publisher that predates the field, a replay, and a run whose join
+ *       closed with no recorded release fact (the manual door) all carry none.
+ * </ul>
  */
 public record SoftwareRelease(
     UUID eventId,
@@ -110,7 +132,9 @@ public record SoftwareRelease(
     Instant occurredAt,
     String priority,
     String section,
-    String runId)
+    String runId,
+    Boolean deployHold,
+    String releaseRequestQualifiedId)
     implements QitsEvent {
 
   /** {@code section} for a package an {@code artifacts:} entry of {@code release.yml} declared. */
@@ -137,7 +161,9 @@ public record SoftwareRelease(
       Instant occurredAt,
       String priority,
       String section,
-      String runId) {
+      String runId,
+      Boolean deployHold,
+      String releaseRequestQualifiedId) {
     this(
         null,
         repository,
@@ -150,12 +176,47 @@ public record SoftwareRelease(
         occurredAt,
         priority,
         section,
-        runId);
+        runId,
+        deployHold,
+        releaseRequestQualifiedId);
   }
 
   /**
-   * The canonical shape before {@code section} and {@code runId} — kept, delegating, so that adding
-   * two components at the end makes no existing construction site fail to compile.
+   * The shape before {@code deployHold} and {@code releaseRequestQualifiedId} — kept, delegating,
+   * so that adding two components at the end makes no existing construction site fail to compile.
+   */
+  public SoftwareRelease(
+      String repository,
+      String projectId,
+      String repoId,
+      String repoName,
+      String version,
+      String packageType,
+      String packageName,
+      Instant occurredAt,
+      String priority,
+      String section,
+      String runId) {
+    this(
+        repository,
+        projectId,
+        repoId,
+        repoName,
+        version,
+        packageType,
+        packageName,
+        occurredAt,
+        priority,
+        section,
+        runId,
+        null,
+        null);
+  }
+
+  /**
+   * The canonical shape before {@code section}, {@code runId}, {@code deployHold} and {@code
+   * releaseRequestQualifiedId} — kept, delegating, so that adding components at the end makes no
+   * existing construction site fail to compile.
    */
   public SoftwareRelease(
       UUID eventId,
@@ -179,6 +240,8 @@ public record SoftwareRelease(
         packageName,
         occurredAt,
         priority,
+        null,
+        null,
         null,
         null);
   }

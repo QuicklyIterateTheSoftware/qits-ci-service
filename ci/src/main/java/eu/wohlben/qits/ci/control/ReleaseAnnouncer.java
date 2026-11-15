@@ -75,6 +75,17 @@ public interface ReleaseAnnouncer {
    *     contracts} ({@link CiArtifact.Section#declared()}), read off the owed row (qits-666).
    *     <b>Null</b> on a row owed before the column existed; absent reaches the wire as a missing
    *     key.
+   * @param deployHold whether the release request that cut this release asked qits-deployments to
+   *     hold the deploy (qits-2268), read off the recorded {@code SCMRelease} fact by {@link
+   *     ReleaseJoin} exactly as {@code priority} is. <b>{@code Boolean.TRUE}</b> when held, never
+   *     {@code Boolean.FALSE} — a release that did not ask for the hold passes <b>null</b>, the same
+   *     NON_NULL spelling {@code priority} uses for "none was stated", because the column it is read
+   *     off is {@code not null default false} and the honest wire shape for "not held" is an absent
+   *     key, not a value a consumer would have to compare against false.
+   * @param releaseRequestQualifiedId the release request's logical id, {@code <repository>-rr-<n>}
+   *     (qits-1158), read off the same recorded fact beside {@code deployHold}. <b>Null</b> whenever
+   *     no release fact stands behind the announcement, or the release named no request — the same
+   *     cases {@code priority} is null for.
    */
   void onArtifactPublished(
       String runId,
@@ -87,5 +98,7 @@ public interface ReleaseAnnouncer {
       Instant finishedAt,
       String triggerEventId,
       String priority,
-      String section);
+      String section,
+      Boolean deployHold,
+      String releaseRequestQualifiedId);
 }

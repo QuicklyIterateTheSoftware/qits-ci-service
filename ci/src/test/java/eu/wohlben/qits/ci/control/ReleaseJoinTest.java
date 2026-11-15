@@ -521,6 +521,120 @@ public class ReleaseJoinTest extends CiTestSupport {
     assertEquals("CATASTROPHIC", releaseAnnouncer.published().get(0).priority());
   }
 
+  // --- the deploy hold and the request's qualified id, carried through and acted on nowhere
+  // (qits-2268) ----------------------------------------------------------------------------------
+
+  /**
+   * <b>Tag first: the hold a release asks for reaches the announcement made after it.</b> Same
+   * order, same reasoning as {@link #thePriorityAReleaseStatesReachesAnAnnouncementOwedBeforeIt}:
+   * the owed row is written when the run goes green, before any release exists, so the hold can
+   * only be read off the fact row the later {@code SCMRelease} writes.
+   */
+  @Test
+  public void theHoldAReleaseAsksForReachesAnAnnouncementOwedBeforeIt() throws Exception {
+    tagRun();
+
+    join.onScmRelease(
+        repoId,
+        repoId,
+        VERSION,
+        UUID.randomUUID().toString(),
+        Instant.now(),
+        null,
+        null,
+        null,
+        null,
+        true);
+
+    assertEquals(1, releaseAnnouncer.published().size());
+    assertEquals(
+        Boolean.TRUE,
+        releaseAnnouncer.published().get(0).deployHold(),
+        "the release asked for the hold, and the announcement it unblocked says so too");
+  }
+
+  /** Release first, and the same answer — the fact row is durable, so the arrival order is a race. */
+  @Test
+  public void theHoldIsCarriedWhenTheReleaseArrivedBeforeTheRun() throws Exception {
+    join.onScmRelease(
+        repoId,
+        repoId,
+        VERSION,
+        UUID.randomUUID().toString(),
+        Instant.now(),
+        null,
+        null,
+        null,
+        null,
+        true);
+
+    tagRun();
+
+    assertEquals(1, releaseAnnouncer.published().size());
+    assertEquals(Boolean.TRUE, releaseAnnouncer.published().get(0).deployHold());
+  }
+
+  /**
+   * A release that did not ask for the hold announces {@code null}, never {@code Boolean.FALSE} —
+   * the wire's NON_NULL rule, applied by this class rather than merely stated by it.
+   */
+  @Test
+  public void aReleaseNotAskingForTheHoldAnnouncesNullNeverFalse() throws Exception {
+    tagRun();
+
+    releaseArrives(repoId, repoId, VERSION);
+
+    assertEquals(1, releaseAnnouncer.published().size());
+    assertNull(releaseAnnouncer.published().get(0).deployHold());
+  }
+
+  /**
+   * No fact row, no hold — the manual door's ordinary shape, exactly as
+   * {@link #aRunWithNoReleaseFactBehindItAnnouncesNoPriority} states for priority.
+   */
+  @Test
+  public void aRunWithNoReleaseFactBehindItAnnouncesNoHold() throws Exception {
+    releaseRun(releasePayload());
+
+    assertEquals(1, releaseAnnouncer.published().size());
+    assertNull(releaseAnnouncer.published().get(0).deployHold());
+  }
+
+  /**
+   * The release request's logical id travels the same way, read off the same fact row the hold is
+   * read off — for people to read on the far side, exactly as it already does on {@code
+   * ci_run.releaseRequestQualifiedId}.
+   */
+  @Test
+  public void theRequestsQualifiedIdReachesTheAnnouncement() throws Exception {
+    tagRun();
+
+    join.onScmRelease(
+        repoId,
+        repoId,
+        VERSION,
+        UUID.randomUUID().toString(),
+        Instant.now(),
+        null,
+        "9f2c1a7e-4b31-4c8e-9a11-6d0f5c2e8b44",
+        "releaser-rr-3",
+        null,
+        false);
+
+    assertEquals(1, releaseAnnouncer.published().size());
+    assertEquals("releaser-rr-3", releaseAnnouncer.published().get(0).releaseRequestQualifiedId());
+  }
+
+  /** No fact row, no qualified id — the manual door's shape, same as priority and the hold. */
+  @Test
+  public void aRunWithNoReleaseFactBehindItAnnouncesNoReleaseRequestQualifiedId()
+      throws Exception {
+    releaseRun(releasePayload());
+
+    assertEquals(1, releaseAnnouncer.published().size());
+    assertNull(releaseAnnouncer.published().get(0).releaseRequestQualifiedId());
+  }
+
   // --- the store check: publish: if-changed (qits-620; announce: if-published until qits-648)
 
   private static final String MAVEN_NAME = "eu.wohlben.qits:qits-thing-javalib";

@@ -30,7 +30,8 @@ import org.jboss.logging.Logger;
  * <h2>What it reads, and why by name</h2>
  *
  * <p>{@code repository}, {@code repositoryName}, {@code version}, {@code priority}, {@code
- * releaseRequestId} and {@code commitSha} are read out of the payload with a {@code readTree} walk,
+ * releaseRequestId}, {@code releaseRequestQualifiedId}, {@code commitSha} and {@code deployHold}
+ * are read out of the payload with a {@code readTree} walk,
  * the trigger engine's own precedent — no binding, so no native-image reflection metadata and no
  * dependency on a vocabulary jar — qits-projects publishes none, as qits-workspaces published none
  * before it. That
@@ -109,6 +110,18 @@ public class ScmReleaseListener implements QitsDurableEventListener {
   /** What the release's tag points at, read and recorded beside {@link #RELEASE_REQUEST_ID_FIELD}. */
   static final String COMMIT_SHA_FIELD = "commitSha";
 
+  /**
+   * Whether the release request that cut this release asked qits-deployments to hold the deploy
+   * (qits-2268), read like {@link #PRIORITY_FIELD} and judged like it: no part of the join key, no
+   * part of any decision here. qits-ci carries the value onto {@code SoftwareRelease} verbatim and
+   * acts on it nowhere.
+   *
+   * <p>Unlike the other optional fields on this payload, absence here means a plain, true fact —
+   * "not held" — rather than "unknown", so it is read as a boolean with a {@code false} default
+   * rather than as a nullable string: the column behind it is {@code not null default false}.
+   */
+  static final String DEPLOY_HOLD_FIELD = "deployHold";
+
   @Inject ReleaseJoin join;
 
   @Override
@@ -156,7 +169,10 @@ public class ScmReleaseListener implements QitsDurableEventListener {
         // poison — the baseline lookup falls back to the release run for such a row.
         text(payload, RELEASE_REQUEST_ID_FIELD),
         text(payload, RELEASE_REQUEST_QUALIFIED_ID_FIELD),
-        text(payload, COMMIT_SHA_FIELD));
+        text(payload, COMMIT_SHA_FIELD),
+        // Absent or explicitly false are the same fact here — "not held" — never poison and never a
+        // gate: nothing in this service reads the value before it lands on the fact row.
+        payload.path(DEPLOY_HOLD_FIELD).asBoolean(false));
   }
 
   /** One payload field as a non-blank string, or null. */

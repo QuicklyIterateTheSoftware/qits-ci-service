@@ -93,4 +93,72 @@ public class CiScmReleaseRepository implements PanacheRepositoryBase<CiScmReleas
         .firstResultOptional()
         .map(release -> release.priority);
   }
+
+  /**
+   * Whether the recorded release asked for its deploy to be held, asked with the storage id alone —
+   * what the boot sweep has, exactly as {@link #priorityOf(String, String)} is.
+   */
+  public boolean deployHoldOf(String repoId, String version) {
+    return deployHoldOf(repoId, null, version);
+  }
+
+  /**
+   * Whether the recorded release asked for its deploy to be held, asked with <b>both</b> spellings
+   * of the repository — {@link #priorityOf(String, String, String)}'s matcher verbatim, and
+   * deliberately so (see that method's javadoc for why the predicate is kept identical).
+   *
+   * <p>No such release, or a release that stated no hold, both answer {@code false}: the column is
+   * {@code not null default false}, so there is no "unknown" to distinguish from "not held" the way
+   * {@link #priorityOf} must distinguish "unknown" from "stated none".
+   *
+   * @param repoName the run's own public name, or null when its push was id-addressed
+   */
+  public boolean deployHoldOf(String repoId, String repoName, String version) {
+    if (repoName == null || repoName.isBlank()) {
+      return find("(repoId = ?1 or repoName = ?1) and version = ?2", repoId, version)
+          .firstResultOptional()
+          .map(release -> release.deployHold)
+          .orElse(false);
+    }
+    return find(
+            "(repoName = ?1 or repoId = ?1 or repoId = ?2 or repoName = ?2) and version = ?3",
+            repoName,
+            repoId,
+            version)
+        .firstResultOptional()
+        .map(release -> release.deployHold)
+        .orElse(false);
+  }
+
+  /**
+   * The request's logical id the recorded release stated, asked with the storage id alone — what
+   * the boot sweep has, exactly as {@link #priorityOf(String, String)} is.
+   */
+  public Optional<String> releaseRequestQualifiedIdOf(String repoId, String version) {
+    return releaseRequestQualifiedIdOf(repoId, null, version);
+  }
+
+  /**
+   * The request's logical id the recorded release stated, asked with <b>both</b> spellings of the
+   * repository — {@link #priorityOf(String, String, String)}'s matcher verbatim, and deliberately
+   * so, for its reason exactly: the announcement must read the id off the same row the gate just
+   * closed on.
+   *
+   * @param repoName the run's own public name, or null when its push was id-addressed
+   */
+  public Optional<String> releaseRequestQualifiedIdOf(
+      String repoId, String repoName, String version) {
+    if (repoName == null || repoName.isBlank()) {
+      return find("(repoId = ?1 or repoName = ?1) and version = ?2", repoId, version)
+          .firstResultOptional()
+          .map(release -> release.releaseRequestQualifiedId);
+    }
+    return find(
+            "(repoName = ?1 or repoId = ?1 or repoId = ?2 or repoName = ?2) and version = ?3",
+            repoName,
+            repoId,
+            version)
+        .firstResultOptional()
+        .map(release -> release.releaseRequestQualifiedId);
+  }
 }

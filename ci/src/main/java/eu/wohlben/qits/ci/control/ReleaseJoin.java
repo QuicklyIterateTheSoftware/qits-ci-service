@@ -106,6 +106,23 @@ import org.jboss.logging.Logger;
  * with no fact row behind it (a run whose own trigger was the release, which is the manual door's
  * shape) resolves null, and null reaches the wire as an absent key.
  *
+ * <h2>{@code deployHold} and {@code releaseRequestQualifiedId} ride the same way (qits-2268)</h2>
+ *
+ * <p>A release request may be flagged to hold the deploy, and {@code SCMRelease} carries that flag
+ * down the same way it carries {@code priority}: qits-ci <b>transcribes</b> it onto {@code
+ * SoftwareRelease} and acts on it nowhere — qits-deployments is the reader, and this run queue is
+ * unaffected by it precisely as it is by priority. It lands on {@link CiScmRelease} and is resolved
+ * at announce time for the identical reason priority is: the obligation may exist long before the
+ * release does, so the fact row is the only half of the join that can answer the question. Unlike
+ * priority it is {@code not null default false} rather than nullable, because a release before the
+ * field existed really did not hold anything — there is no "unknown" to preserve — so the resolved
+ * value is a plain boolean, turned into the wire's {@code TRUE}-or-absent spelling only at the point
+ * of announcing (never a stored {@code FALSE}, the same NON_NULL rule priority's absence uses).
+ * {@code releaseRequestQualifiedId} travels for a different reason: it is read by people, exactly as
+ * {@link eu.wohlben.qits.ci.entity.CiRun#releaseRequestQualifiedId} is, and it is resolved here rather than carried in for
+ * {@code priority}'s reason — it is already on the fact row (qits-1158), and the only new work is
+ * reading it back out at the moment of announcing instead of leaving it there unread.
+ *
  * <h2>{@code publish: if-changed}: the one entry this class checks before announcing</h2>
  *
  * <p>An {@code if-changed} row (a declared maven or npm entry, or a contract package the composer
@@ -405,6 +422,38 @@ public class ReleaseJoin {
       String releaseRequestId,
       String releaseRequestQualifiedId,
       String commitSha) {
+    onScmRelease(
+        repoId,
+        repoName,
+        version,
+        eventId,
+        occurredAt,
+        priority,
+        releaseRequestId,
+        releaseRequestQualifiedId,
+        commitSha,
+        false);
+  }
+
+  /**
+   * The same, with whether the release asked qits-deployments to hold the deploy (qits-2268) —
+   * {@code false} rather than null when the event named none, because the column behind it is
+   * {@code not null default false} and "did not ask" is a plain fact rather than an unknown one, the
+   * way {@link #priorityToRecord} must treat a stated priority differently from an absent one.
+   *
+   * @param deployHold whether the release's own request flagged the deploy to be held
+   */
+  public void onScmRelease(
+      String repoId,
+      String repoName,
+      String version,
+      String eventId,
+      Instant occurredAt,
+      String priority,
+      String releaseRequestId,
+      String releaseRequestQualifiedId,
+      String commitSha,
+      boolean deployHold) {
     QuarkusTransaction.requiringNew()
         .run(
             () ->
@@ -417,7 +466,8 @@ public class ReleaseJoin {
                     priority,
                     releaseRequestId,
                     releaseRequestQualifiedId,
-                    commitSha));
+                    commitSha,
+                    deployHold));
     announceOwed(repoId, repoName, version);
     if (repoName != null && !repoName.isBlank() && !repoName.equals(repoId)) {
       announceOwed(repoName, repoId, version);
@@ -434,7 +484,8 @@ public class ReleaseJoin {
       String priority,
       String releaseRequestId,
       String releaseRequestQualifiedId,
-      String commitSha) {
+      String commitSha,
+      boolean deployHold) {
     if (releases.findRelease(repoId, version).isPresent()) {
       return;
     }
@@ -450,6 +501,7 @@ public class ReleaseJoin {
     release.releaseRequestId = withinColumn(releaseRequestId);
     release.releaseRequestQualifiedId = withinColumn(releaseRequestQualifiedId);
     release.commitSha = withinColumn(commitSha);
+    release.deployHold = deployHold;
     releases.persist(release);
   }
 
@@ -532,6 +584,12 @@ public class ReleaseJoin {
               // release (the manual door leaves no row), or a release that stated no priority. Both
               // reach the wire as an absent key, which is the honest spelling of "none was stated".
               String priority = releases.priorityOf(repoId, repoName, version).orElse(null);
+              // Same lookup, same answer, resolved at the same moment and for the same reason: the
+              // obligation may have been written long before the release existed, so the hold and
+              // the request's logical id can only be read off the fact row the gate just closed on.
+              boolean deployHold = releases.deployHoldOf(repoId, repoName, version);
+              String releaseRequestQualifiedId =
+                  releases.releaseRequestQualifiedIdOf(repoId, repoName, version).orElse(null);
               Instant now = Instant.now();
               for (CiReleaseAnnouncement row : owed) {
                 if (isIfChanged(row)) {
@@ -574,7 +632,11 @@ public class ReleaseJoin {
                         row.finishedAt,
                         row.triggerEventId,
                         priority,
-                        row.section);
+                        row.section,
+                        // TRUE when held, never FALSE: the wire spelling of "not held" is the key
+                        // being absent, the same NON_NULL rule priority above is spelled by.
+                        deployHold ? Boolean.TRUE : null,
+                        releaseRequestQualifiedId);
                   } catch (RuntimeException e) {
                     LOG.warnf(
                         e, "Announcing artifact %s of run %s failed", row.packageName, row.runId);

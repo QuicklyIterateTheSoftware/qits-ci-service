@@ -100,4 +100,21 @@ public class CiScmRelease extends PanacheEntityBase {
    */
   @Column(name = "commit_sha")
   public String commitSha;
+
+  /**
+   * Whether the release request that cut this release asked qits-deployments to hold the deploy
+   * (qits-2268), verbatim from {@code SCMRelease}'s {@code deployHold} — read like {@link #priority}
+   * and judged like it: no part of the join key, acted on nowhere in this service, carried to {@code
+   * SoftwareRelease} for qits-deployments to act on.
+   *
+   * <p><b>{@code not null default false}, unlike every other column this release join added.</b>
+   * {@link #priority}, {@link #releaseRequestId} and {@link #releaseRequestQualifiedId} are nullable
+   * because a release published before any of them existed genuinely did not state one — null means
+   * "unknown" there. A release before this field existed, by contrast, really did not hold anything:
+   * there was no such thing to ask for, so {@code false} is the correct fact for every historical
+   * row rather than a placeholder standing in for "unknown". The migration's own default is what
+   * backfills it; no Java default is needed here beyond the field's own.
+   */
+  @Column(name = "deploy_hold", nullable = false)
+  public boolean deployHold;
 }

@@ -1,0 +1,18 @@
+-- A release request may flag its release "hold deploy" (qits-2268).
+--
+-- qits-projects grows SCMRelease with an optional deployHold: true when the release request that
+-- cut the tag asked qits-deployments to hold the deploy, absent (NON_NULL) otherwise.
+-- ScmReleaseListener reads it the way it already reads priority and the two release-request
+-- columns beside it, and ReleaseJoin records it on the fact row so the hold can be resolved at
+-- announce time — an owed row is written when a run goes green, often before the release exists,
+-- and this is the row that knows what the release said.
+--
+--   ci_scm_release.deploy_hold   true when the release asked for the hold, false otherwise.
+--
+-- `not null default false`, unlike V14's priority or the two release-request columns V34/V36 added:
+-- those are nullable because a release published before the field existed genuinely stated nothing,
+-- and null is the honest "unknown". This one is different — a release before this field existed
+-- really did not hold anything, so false is the correct fact for every historical row rather than a
+-- stand-in for "unknown", and the column's own default backfills every one of them without a second
+-- statement.
+alter table ci_scm_release add column deploy_hold boolean not null default false;
