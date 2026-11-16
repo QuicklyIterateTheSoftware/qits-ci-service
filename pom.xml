@@ -168,7 +168,7 @@
         <!-- The frontends' pacts of what @qits/ui-components asks qits-ci for them (qits-1284): one
              jar per frontend, `pacts/<frontend>_qits-ui-components-jslib_qits-ci-service.json`,
              bumped like the rows above when the frontend releases a changed pact. -->
-        <qits.ci-frontend-pacts-qits-ci-service.version>2026.1114.172132</qits.ci-frontend-pacts-qits-ci-service.version>
+        <qits.ci-frontend-pacts-qits-ci-service.version>2026.1116.93445</qits.ci-frontend-pacts-qits-ci-service.version>
         <qits.projects-frontend-pacts-qits-ci-service.version>2026.1116.73043</qits.projects-frontend-pacts-qits-ci-service.version>
         <qits.docs-frontend-pacts-qits-ci-service.version>2026.1116.60238</qits.docs-frontend-pacts-qits-ci-service.version>
         <qits.events-frontend-pacts-qits-ci-service.version>2026.1116.71600</qits.events-frontend-pacts-qits-ci-service.version>
@@ -177,7 +177,7 @@
         <qits.artifacts-frontend-pacts-qits-ci-service.version>2026.1114.172754</qits.artifacts-frontend-pacts-qits-ci-service.version>
         <qits.deployments-frontend-pacts-qits-ci-service.version>2026.1114.163051</qits.deployments-frontend-pacts-qits-ci-service.version>
         <qits.mirror-frontend-pacts-qits-ci-service.version>2026.1116.73616</qits.mirror-frontend-pacts-qits-ci-service.version>
-        <qits.observability-frontend-pacts-qits-ci-service.version>2026.1114.165546</qits.observability-frontend-pacts-qits-ci-service.version>
+        <qits.observability-frontend-pacts-qits-ci-service.version>2026.1116.93308</qits.observability-frontend-pacts-qits-ci-service.version>
         <qits.orchestrator-frontend-pacts-qits-ci-service.version>2026.1116.73651</qits.orchestrator-frontend-pacts-qits-ci-service.version>
         <qits.system-frontend-pacts-qits-ci-service.version>2026.1116.73546</qits.system-frontend-pacts-qits-ci-service.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
