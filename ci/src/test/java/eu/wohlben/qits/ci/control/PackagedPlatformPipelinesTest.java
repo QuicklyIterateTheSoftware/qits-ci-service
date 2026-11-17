@@ -238,8 +238,8 @@ public class PackagedPlatformPipelinesTest {
           new java.util.ArrayList<>(
               List.of("git checkout", "git add", "git commit", "git push", "git reset"));
       // dependency-bump and estate-pins are the two kinds whose payload says what to change, and
-      // whose gitlinks are fetched from a sibling: both are allowed it, confined, and asserted
-      // below.
+      // whose gitlinks are read from a sibling (and fetched into a populated submodule only,
+      // qits-2305): both are allowed it, confined, and asserted below.
       if (!kind.equals(DEPENDENCY_BUMP) && !kind.equals(ESTATE_PINS)) {
         forbidden.addAll(List.of("git fetch", "QITS_EVENT"));
       } else {
@@ -743,18 +743,40 @@ public class PackagedPlatformPipelinesTest {
     for (String field : List.of(".branch", ".baseRef", ".foldSha", ".workItem")) {
       assertFalse(script.contains(field), "the kind reads the prelude's " + field);
     }
-    // The one fetch: a gitlink's sibling, at a tag — never a ref of this repository. Made twice
-    // over when the submodule is populated (qits-1696): the second writes into that checkout.
+    siblingReads(script);
+  }
+
+  /**
+   * How a gitlink kind reads a sibling (qits-2305): its tag is RESOLVED with one {@code ls-remote},
+   * never fetched into this repository - which shares no commit with a sibling, so every such fetch
+   * pulled the sibling's whole history. The one fetch left is a populated submodule's (qits-1696),
+   * shallow and into that checkout, and the only FETCH_HEAD read is that checkout's own.
+   */
+  private static void siblingReads(String script) {
     Matcher fetches = Pattern.compile("git (?:-C \"\\$manifest\" )?fetch[^\n]*").matcher(script);
     List<String> found = new java.util.ArrayList<>();
     while (fetches.find()) {
       found.add(fetches.group().strip());
     }
     assertEquals(
-        List.of(
-            "git fetch -q \"$sibling\" \"refs/tags/$to\"; then",
-            "git -C \"$manifest\" fetch -q \"$sibling\" \"refs/tags/$to\"; then"),
+        List.of("git -C \"$manifest\" fetch -q --depth=1 \"$sibling\" \"refs/tags/$to\"; then"),
         found);
+    Matcher remotes = Pattern.compile("git ls-remote[^\n]*").matcher(script);
+    found.clear();
+    while (remotes.find()) {
+      found.add(remotes.group().strip());
+    }
+    assertEquals(
+        List.of("git ls-remote \"$sibling\" \"refs/tags/$to\" \"refs/tags/$to^{}\"); then"), found);
+    Matcher heads = Pattern.compile("[^\n]*FETCH_HEAD[^\n]*").matcher(script);
+    found.clear();
+    while (heads.find()) {
+      if (!heads.group().strip().startsWith("#")) {
+        found.add(heads.group().strip());
+      }
+    }
+    assertEquals(
+        List.of("fetched=$(git -C \"$manifest\" rev-parse --verify \"FETCH_HEAD^{commit}\")"), found);
   }
 
   @Test
@@ -909,18 +931,7 @@ public class PackagedPlatformPipelinesTest {
     for (String field : List.of(".branch", ".baseRef", ".foldSha", ".commitPaths", ".workItem")) {
       assertFalse(script.contains(field), "the kind reads the prelude's " + field);
     }
-    // The one fetch: a gitlink's sibling, at a tag - never a ref of this repository. Made twice
-    // over when the submodule is populated (qits-1696): the second writes into that checkout.
-    Matcher fetches = Pattern.compile("git (?:-C \"\\$manifest\" )?fetch[^\n]*").matcher(script);
-    List<String> found = new java.util.ArrayList<>();
-    while (fetches.find()) {
-      found.add(fetches.group().strip());
-    }
-    assertEquals(
-        List.of(
-            "git fetch -q \"$sibling\" \"refs/tags/$to\"; then",
-            "git -C \"$manifest\" fetch -q \"$sibling\" \"refs/tags/$to\"; then"),
-        found);
+    siblingReads(script);
   }
 
   @Test
@@ -947,7 +958,7 @@ public class PackagedPlatformPipelinesTest {
 
   @Test
   public void theEstatePinsKindSharesTheGitlinkMechanismOfDependencyBump() throws Exception {
-    // qits-1258: the name charset check, the sibling fetch, the peel, the populated-or-empty
+    // qits-1258: the name charset check, the sibling's ls-remote (qits-2305), the peel, the populated-or-empty
     // handling of the path and the staged-entry guard (qits-1696) are lifted from dependency-bump.yml's gitlink arm rather than shared code - two
     // YAML kind files cannot `import` one Java string - so this is the drift guard.
     String dependencyBump = Files.readString(SOURCE.resolve("automations/dependency-bump.yml"));

@@ -1330,6 +1330,37 @@ public class CiAutomationComposerTest {
     assertEquals(
         "160000 commit " + released + "\tlibs/new\n160000 commit " + released + "\tlibs/old",
         scratch.git(scratch.origin, "ls-tree", pushed, "libs/"));
+    // qits-2305: the tag was resolved, never fetched - the sibling's commit and its tag object are
+    // in neither the step's clone nor the origin it pushed to.
+    String tag = scratch.git(sibling, "rev-parse", "refs/tags/2026.2.2");
+    for (Path repo : List.of(scratch.work, scratch.origin)) {
+      assertFalse(scratch.hasObject(repo, released), repo + " holds the sibling's commit");
+      assertFalse(scratch.hasObject(repo, tag), repo + " holds the sibling's tag");
+    }
+  }
+
+  @Test
+  public void aGitlinkToATagTheSiblingLacksFailsTheBumpAndPushesNothing(@TempDir Path dir)
+      throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "dependency-bump", "bump");
+    String old = sibling(scratch, dir);
+    scratch.foldWith(Map.of("pom.xml", POM), Map.of("libs/old", old));
+    release(scratch, dir);
+    String changes =
+        "[{\"ecosystem\":\"gitlink\",\"manifestPath\":\"libs/old\",\"name\":\"qits-sibling\","
+            + "\"to\":\"2026.9.9\"}]";
+    Result run =
+        scratch.runStep(
+            "bash",
+            dependencyBumpStep(fakeChangelogCli(dir.resolve("store"), "", 0)),
+            bumpPayload(scratch, changes, "\"libs/old\""),
+            FAKE_CLI_ENV);
+
+    assertEquals(1, run.exit, run.output);
+    assertTrue(
+        run.output.contains("no tag 2026.9.9 in " + scratch.root.resolve("qits-sibling")), run.output);
+    assertFalse(run.output.contains("bumped qits-sibling"), run.output);
+    assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BUMP_BRANCH), "nothing was pushed");
   }
 
   @Test
@@ -2055,6 +2086,98 @@ public class CiAutomationComposerTest {
         "160000 commit " + released + "\tcomponents/qits-sibling",
         scratch.git(scratch.origin, "ls-tree", pushed, "components/qits-sibling"));
     assertEquals("gitlink\tqits-sibling\n", Files.readString(applied));
+    // qits-2305, THE REGRESSION GUARD: the tag was resolved with ls-remote, never fetched into the
+    // wrapper - which shares no history with a sibling and so used to pull all of it. Neither the
+    // commit nor the annotated tag object is in the step's clone or the origin it pushed to.
+    String tag = scratch.git(sibling, "rev-parse", "refs/tags/2026.2.2");
+    for (Path repo : List.of(scratch.work, scratch.origin)) {
+      assertFalse(scratch.hasObject(repo, released), repo + " holds the sibling's commit");
+      assertFalse(scratch.hasObject(repo, tag), repo + " holds the sibling's tag");
+    }
+  }
+
+  @Test
+  public void anEstatePinToALightweightTagPinsItsCommit(@TempDir Path dir) throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "estate-pins", "bump");
+    String old = sibling(scratch, dir);
+    Path sibling = dir.resolve("scratch").resolve("qits-sibling");
+    scratch.git(
+        sibling, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "two");
+    String released = scratch.git(sibling, "rev-parse", "HEAD");
+    // Lightweight: the ref names the commit itself, and there is no peeled `^{}` line to prefer.
+    scratch.git(sibling, "tag", "2026.2.2");
+    // A tag whose name ENDS like the one asked for, on another commit: ls-remote matches patterns
+    // as ref-name tails, so only an exact match may be read.
+    scratch.git(sibling, "tag", "x/refs/tags/2026.2.2", old);
+    scratch.foldWith(Map.of(), Map.of("libs/old", old));
+
+    String changes =
+        "[{\"ecosystem\":\"gitlink\",\"manifestPath\":\"libs/old\",\"name\":\"qits-sibling\","
+            + "\"to\":\"2026.2.2\"}]";
+    Result run =
+        scratch.runStep(
+            "bash",
+            estatePinsStep(fakeChangelogCli(dir.resolve("store"), "", 0)),
+            estatePinsPayload(scratch, changes, "\"libs/old\""),
+            FAKE_CLI_ENV);
+
+    assertEquals(0, run.exit, run.output);
+    String pushed = scratch.originRev("refs/heads/" + ESTATE_PINS_BRANCH);
+    assertEquals(
+        "160000 commit " + released + "\tlibs/old",
+        scratch.git(scratch.origin, "ls-tree", pushed, "libs/old"));
+    assertFalse(scratch.hasObject(scratch.work, released), "the wrapper holds the sibling's commit");
+  }
+
+  @Test
+  public void anEstatePinToATagTheSiblingLacksFailsAndPushesNothing(@TempDir Path dir)
+      throws Exception {
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "estate-pins", "bump");
+    String old = sibling(scratch, dir);
+    release(scratch, dir);
+    scratch.foldWith(Map.of(), Map.of("libs/old", old));
+
+    String changes =
+        "[{\"ecosystem\":\"gitlink\",\"manifestPath\":\"libs/old\",\"name\":\"qits-sibling\","
+            + "\"to\":\"2026.9.9\"}]";
+    Result run =
+        scratch.runStep(
+            "bash",
+            estatePinsStep(fakeChangelogCli(dir.resolve("store"), "", 0)),
+            estatePinsPayload(scratch, changes, "\"libs/old\""),
+            FAKE_CLI_ENV);
+
+    assertEquals(1, run.exit, run.output);
+    assertTrue(
+        run.output.contains("no tag 2026.9.9 in " + scratch.root.resolve("qits-sibling")), run.output);
+    assertFalse(run.output.contains("bumped qits-sibling"), run.output);
+    assertEquals(
+        "", scratch.originRevOrEmpty("refs/heads/" + ESTATE_PINS_BRANCH), "nothing was pushed");
+  }
+
+  @Test
+  public void anEstatePinToASiblingThatCannotBeReadFailsAndPushesNothing(@TempDir Path dir)
+      throws Exception {
+    // No sibling repository at all: ls-remote itself fails, which is not "no such tag".
+    Scratch scratch = new Scratch(dir.resolve("scratch"), "estate-pins", "bump");
+    scratch.foldWith(Map.of("pom.xml", POM), Map.of());
+    String changes =
+        "[{\"ecosystem\":\"gitlink\",\"manifestPath\":\"libs/old\",\"name\":\"qits-sibling\","
+            + "\"to\":\"2026.2.2\"}]";
+    Result run =
+        scratch.runStep(
+            "bash",
+            estatePinsStep(fakeChangelogCli(dir.resolve("store"), "", 0)),
+            estatePinsPayload(scratch, changes, "\"libs/old\""),
+            FAKE_CLI_ENV);
+
+    assertEquals(1, run.exit, run.output);
+    assertTrue(
+        run.output.contains(
+            "could not read " + scratch.root.resolve("qits-sibling") + " to resolve tag 2026.2.2"),
+        run.output);
+    assertEquals(
+        "", scratch.originRevOrEmpty("refs/heads/" + ESTATE_PINS_BRANCH), "nothing was pushed");
   }
 
   @Test
@@ -2260,6 +2383,12 @@ public class CiAutomationComposerTest {
     assertEquals(
         "160000 commit " + released + "\tservice/src/main/webui",
         scratch.git(scratch.origin, "ls-tree", pushed, "service/src/main/webui"));
+    // qits-2305: the tag's commit was fetched into the SUBMODULE's own repository, which the
+    // checkout needs, and moved there - and never into the wrapper's.
+    Path checkout = scratch.work.resolve("service/src/main/webui");
+    assertTrue(scratch.hasObject(checkout, released), "the submodule lacks the tag's commit");
+    assertEquals(released, scratch.git(checkout, "rev-parse", "HEAD"));
+    assertFalse(scratch.hasObject(scratch.work, released), "the wrapper holds the sibling's commit");
   }
 
   // --- the scratch origin ------------------------------------------------------------------------
@@ -2460,6 +2589,17 @@ public class CiAutomationComposerTest {
       String out = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
       assertTrue(process.waitFor(30, TimeUnit.SECONDS));
       return process.exitValue() == 0 ? out : "";
+    }
+
+    /**
+     * Whether {@code repo}'s object store holds {@code sha} (qits-2305): a gitlink's sibling commit
+     * must never land in the wrapper, only in a populated submodule's own gitdir.
+     */
+    boolean hasObject(Path repo, String sha) throws Exception {
+      Process process = start(repo, "cat-file", "-e", sha + "^{object}");
+      process.getInputStream().readAllBytes();
+      assertTrue(process.waitFor(30, TimeUnit.SECONDS));
+      return process.exitValue() == 0;
     }
 
     String git(Path dir, String... args) throws Exception {

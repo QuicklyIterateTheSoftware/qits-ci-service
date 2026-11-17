@@ -370,13 +370,33 @@ steps:
           # every repository of a project is a sibling path under one host, and the url
           # this run was given is the only address that is certainly reachable from here.
           sibling="${QITS_CI_REPOSITORY_URL%/*}/$name"
-          if ! git fetch -q "$sibling" "refs/tags/$to"; then
+          # RESOLVED, NOT FETCHED (qits-2305): the tag is read with `ls-remote`, which names the
+          # commit and moves no object. A fetch into this repository shares no commit with the
+          # sibling, so it negotiates nothing away and pulls the sibling's WHOLE HISTORY - 8-23 s
+          # and ~100 MB a sibling, measured, and a run of 21 gitlinks outlived its 600 s - for an
+          # object nothing here reads: `update-index --cacheinfo` and the commit record a gitlink
+          # whose commit is absent. Peeled: a release tag may be annotated, and the entry is the
+          # commit it points at, so the `^{}` line wins and the bare tag's line is the lightweight
+          # case. Matched EXACTLY, because `ls-remote` matches its patterns as ref-name tails.
+          if ! refs=$(git ls-remote "$sibling" "refs/tags/$to" "refs/tags/$to^{}"); then
+            echo "could not read $sibling to resolve tag $to" >&2
+            exit 1
+          fi
+          sha=$(printf '%s\n' "$refs" | awk -v ref="refs/tags/$to^{}" '$2 == ref { print $1; exit }')
+          if [ -z "$sha" ]; then
+            sha=$(printf '%s\n' "$refs" | awk -v ref="refs/tags/$to" '$2 == ref { print $1; exit }')
+          fi
+          if [ -z "$sha" ]; then
             echo "no tag $to in $sibling" >&2
             exit 1
           fi
-          # Peeled: a release tag may be annotated, and the index entry has to be the
-          # commit it points at rather than the tag object.
-          sha=$(git rev-parse --verify "FETCH_HEAD^{commit}")
+          case "$sha" in
+            *[!0-9a-f]*) echo "refusing an implausible commit for tag $to in $sibling: $sha" >&2; exit 1 ;;
+          esac
+          if [ "${#sha}" -ne 40 ]; then
+            echo "refusing an implausible commit for tag $to in $sibling: $sha" >&2
+            exit 1
+          fi
           # --add because the entry may be absent from a tree built off baseRef, and
           # --cacheinfo because there is nothing on disk to add: the mode says gitlink.
           git update-index --add --cacheinfo "160000,$sha,$manifest"

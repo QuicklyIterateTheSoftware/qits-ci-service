@@ -26,7 +26,7 @@
 #                 DIRECTORY the submodule sits at and no file exists
 #   name          npm/docker: the thing to install or the image to re-tag
 #                 maven: the commit message only - `location` carries the coordinates
-#                 gitlink: the SIBLING REPOSITORY, which the fetch url is derived from
+#                 gitlink: the SIBLING REPOSITORY, which the ls-remote url is derived from
 #   to            the new version, refused unless [0-9A-Za-z._+-]+
 #   from          the commit message only, never a precondition: a manifest already holding
 #                 `to` is a no-op
@@ -83,11 +83,14 @@
 # A run whose edits changed nothing (every manifest already at its pin - the fold carries an
 # earlier run's commit) never calls the CLI: the postlude prints `unchanged` and reads no message.
 #
-# READING THE PAYLOAD AND FETCHING A SIBLING are the two things this kind does that the others
+# READING THE PAYLOAD AND READING A SIBLING are the two things this kind does that the others
 # do not, and both are confined: the payload is read for `.changes`, and for `.commitPaths` only
 # by a pact adopt's check of what it may edit (`branch`, `baseRef` and the rest stay the
-# prelude's), and the one fetch is a gitlink's sibling tag, which writes
-# no ref of this repository.
+# prelude's), and a gitlink's sibling is read with `ls-remote` for its tag's commit and nothing
+# else - no object of a sibling ever lands in this repository (qits-2305: such a fetch has no
+# common commit to negotiate from and pulls the sibling's whole history, 8-23 s and ~100 MB
+# each). The one fetch left is a POPULATED submodule's, into that submodule's own repository, at
+# `--depth=1`, and it writes no ref of this repository.
 timeout-seconds: 1800
 qits-cli: true
 commit-type: bump
@@ -667,27 +670,54 @@ script: |
         # Every repository of a project is a sibling path under one host, and the url this run
         # was given is the only address that is certainly reachable from here.
         sibling="${QITS_CI_REPOSITORY_URL%/*}/$name"
-        if ! git fetch -q "$sibling" "refs/tags/$to"; then
+        # RESOLVED, NOT FETCHED (qits-2305): the tag is read with `ls-remote`, which names the
+        # commit and moves no object. A fetch into this repository shares no commit with the
+        # sibling, so it negotiates nothing away and pulls the sibling's WHOLE HISTORY - 8-23 s and
+        # ~100 MB a sibling, measured, and a run of 21 gitlinks outlived its 600 s - for an object
+        # nothing here reads: `update-index --cacheinfo` and the commit record a gitlink whose
+        # commit is absent. Peeled: a release tag may be annotated, and the entry is the commit it
+        # points at, so the `^{}` line wins and the bare tag's line is the lightweight case. Matched
+        # EXACTLY, because `ls-remote` matches its patterns as ref-name tails.
+        if ! refs=$(git ls-remote "$sibling" "refs/tags/$to" "refs/tags/$to^{}"); then
+          echo "could not read $sibling to resolve tag $to" >&2
+          exit 1
+        fi
+        sha=$(printf '%s\n' "$refs" | awk -v ref="refs/tags/$to^{}" '$2 == ref { print $1; exit }')
+        if [ -z "$sha" ]; then
+          sha=$(printf '%s\n' "$refs" | awk -v ref="refs/tags/$to" '$2 == ref { print $1; exit }')
+        fi
+        if [ -z "$sha" ]; then
           echo "no tag $to in $sibling" >&2
           exit 1
         fi
-        # Peeled: a release tag may be annotated, and the entry is the commit it points at.
-        sha=$(git rev-parse --verify "FETCH_HEAD^{commit}")
+        case "$sha" in
+          *[!0-9a-f]*) echo "refusing an implausible commit for tag $to in $sibling: $sha" >&2; exit 1 ;;
+        esac
+        if [ "${#sha}" -ne 40 ]; then
+          echo "refusing an implausible commit for tag $to in $sibling: $sha" >&2
+          exit 1
+        fi
         # THE PATH IS ONE OF TWO THINGS, and the postlude's `add -A` reads them differently.
         # POPULATED (qits-1696): since qits-1541 the step's worktree runs `git submodule update
         # --init` wherever a .gitmodules exists, automation runs included, so a declared
         # submodule is a real checkout at the FOLD's gitlink (qits-1836: the worktree is prepared
         # at the fold, not at main's head) - and staging a populated submodule records ITS HEAD,
         # which put the old sha straight back over the index entry while this line still printed
-        # `bumped`. So the checkout itself is moved to the tag's commit,
-        # fetched INTO it from the sibling: it may be shallow, and the tag is the one name
-        # certain to carry the object. EMPTY OR MISSING: an uninitialised submodule's empty
+        # `bumped`. So the checkout itself is moved to the tag's commit, fetched INTO it from
+        # the sibling at `--depth=1` - it may be shallow, and the tag is the one name certain to
+        # carry the object - and refused unless that fetch lands on the commit `ls-remote`
+        # named. EMPTY OR MISSING: an uninitialised submodule's empty
         # directory reads as "unchanged" and keeps the entry, but a MISSING one reads as a
         # deletion and drops it - so a gitlink new to the tree gets the directory every other
         # unpopulated gitlink has.
         if [ -e "$manifest/.git" ]; then
-          if ! git -C "$manifest" fetch -q "$sibling" "refs/tags/$to"; then
+          if ! git -C "$manifest" fetch -q --depth=1 "$sibling" "refs/tags/$to"; then
             echo "no tag $to in $sibling for the submodule checkout at $manifest" >&2
+            exit 1
+          fi
+          fetched=$(git -C "$manifest" rev-parse --verify "FETCH_HEAD^{commit}")
+          if [ "$fetched" != "$sha" ]; then
+            echo "tag $to in $sibling fetched at $fetched for the submodule checkout at $manifest, but ls-remote resolved it to $sha" >&2
             exit 1
           fi
           git -C "$manifest" checkout -q --detach "$sha"
