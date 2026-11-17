@@ -170,9 +170,9 @@
              bumped like the rows above when the frontend releases a changed pact. -->
         <qits.ci-frontend-pacts-qits-ci-service.version>2026.1117.2846</qits.ci-frontend-pacts-qits-ci-service.version>
         <qits.projects-frontend-pacts-qits-ci-service.version>2026.1117.2744</qits.projects-frontend-pacts-qits-ci-service.version>
-        <qits.docs-frontend-pacts-qits-ci-service.version>2026.1116.171708</qits.docs-frontend-pacts-qits-ci-service.version>
+        <qits.docs-frontend-pacts-qits-ci-service.version>2026.1117.114611</qits.docs-frontend-pacts-qits-ci-service.version>
         <qits.events-frontend-pacts-qits-ci-service.version>2026.1117.45012</qits.events-frontend-pacts-qits-ci-service.version>
-        <qits.githost-frontend-pacts-qits-ci-service.version>2026.1116.171756</qits.githost-frontend-pacts-qits-ci-service.version>
+        <qits.githost-frontend-pacts-qits-ci-service.version>2026.1117.114747</qits.githost-frontend-pacts-qits-ci-service.version>
         <qits.maintenance-frontend-pacts-qits-ci-service.version>2026.1117.43725</qits.maintenance-frontend-pacts-qits-ci-service.version>
         <qits.artifacts-frontend-pacts-qits-ci-service.version>2026.1117.24628</qits.artifacts-frontend-pacts-qits-ci-service.version>
         <qits.deployments-frontend-pacts-qits-ci-service.version>2026.1117.44127</qits.deployments-frontend-pacts-qits-ci-service.version>
