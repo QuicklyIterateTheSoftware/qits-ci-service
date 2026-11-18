@@ -172,6 +172,14 @@ public class ProviderStates {
   /** No run seeded: the same two reads answering empty lists (qits-2314). */
   public static final String NO_RUNS_RECORDED = "no runs recorded";
 
+  /**
+   * Runs only of repositories that are not {@link #A_PROJECT_WHOSE_REPOSITORIES_HAVE_RUNS}' ids:
+   * qits-landing-app's empty {@code projects/:slug/ci} page, recorded with non-empty lists so a
+   * consumer's pact can type-match them (qits-2314).
+   */
+  public static final String RUNS_ONLY_OF_REPOSITORIES_OUTSIDE_THE_PROJECT =
+      "runs only of repositories outside the project";
+
   /** The automation kind the ReleaseRequestAutomation state names: a packaged kind file. */
   static final String AUTOMATION_KIND = "entity-diagram";
 
@@ -280,6 +288,9 @@ public class ProviderStates {
     states.put(A_REPOSITORY_WITH_A_FINISHED_RUN, this::aRepositoryWithAFinishedRun);
     states.put(A_PROJECT_WHOSE_REPOSITORIES_HAVE_RUNS, this::aProjectWhoseRepositoriesHaveRuns);
     states.put(NO_RUNS_RECORDED, this::noRunsRecorded);
+    states.put(
+        RUNS_ONLY_OF_REPOSITORIES_OUTSIDE_THE_PROJECT,
+        this::runsOnlyOfRepositoriesOutsideTheProject);
   }
 
   /** Every state name this provider answers for. */
@@ -680,6 +691,69 @@ public class ProviderStates {
     run.projectId = project;
     run.repoName = repoName;
     return run;
+  }
+
+  /**
+   * Two repositories of another project, so the summary and the active runs are non-empty while no
+   * row names qits-projects' {@code a project with 3 repositories} — its project {@code …0001} and
+   * repositories {@code …0002} to {@code …0005}:
+   *
+   * <ol>
+   *   <li>{@code outsideRepository1Id}, {@code outside-frontend}: a failed run on {@code
+   *       feature/csv-export} ({@code branchRunId}) after a green one on {@code main} ({@code
+   *       greenRunId});
+   *   <li>{@code outsideRepository2Id}, {@code outside-service}: green ({@code otherGreenRunId}),
+   *       failed ({@code failedRunId}), green ({@code mainRunId}) on {@code main}, then {@code
+   *       runningRunId} {@code RUNNING} — the run {@code /ci/api/runs/active} answers with.
+   * </ol>
+   *
+   * <p><b>The key names are what keeps the ids out of that range.</b> {@link #ids} and the
+   * recorder's {@link Freezer} number the params in sorted-key order, so the five run keys that
+   * sort before {@code outside…} take {@code …0001} to {@code …0005}, and the project and its
+   * repositories {@code …0006} to {@code …0008}. Once recorded, the committed index pins those
+   * numbers ({@link Freezer#seed(Map, Map)}). Renaming a key so that it sorts differently, or adding
+   * a run key that sorts before {@code outside…}, changes the numbering only for a state that is
+   * not committed yet — but check the recording either way.
+   */
+  private Setup runsOnlyOfRepositoriesOutsideTheProject() {
+    Map<String, String> params =
+        ids(
+            Map.of(),
+            "branchRunId",
+            "failedRunId",
+            "greenRunId",
+            "mainRunId",
+            "otherGreenRunId",
+            "outsideProjectId",
+            "outsideRepository1Id",
+            "outsideRepository2Id",
+            "runningRunId");
+    String project = params.get("outsideProjectId");
+    String frontend = params.get("outsideRepository1Id");
+    String service = params.get("outsideRepository2Id");
+    List<CiRun> seeded = new ArrayList<>();
+    seeded.add(
+        projectRun(params.get("greenRunId"), frontend, project, "outside-frontend", "main", 20,
+            CiRunStatus.SUCCESS));
+    seeded.add(
+        projectRun(params.get("branchRunId"), frontend, project, "outside-frontend",
+            "feature/csv-export", 21, CiRunStatus.FAILED));
+    seeded.add(
+        projectRun(params.get("otherGreenRunId"), service, project, "outside-service", "main", 22,
+            CiRunStatus.SUCCESS));
+    seeded.add(
+        projectRun(params.get("failedRunId"), service, project, "outside-service", "main", 23,
+            CiRunStatus.FAILED));
+    seeded.add(
+        projectRun(params.get("mainRunId"), service, project, "outside-service", "main", 24,
+            CiRunStatus.SUCCESS));
+    CiRun running =
+        projectRun(params.get("runningRunId"), service, project, "outside-service", "main", 25,
+            CiRunStatus.RUNNING);
+    running.finishedAt = null;
+    seeded.add(running);
+    persist(seeded, List.of());
+    return setup(params);
   }
 
   /**

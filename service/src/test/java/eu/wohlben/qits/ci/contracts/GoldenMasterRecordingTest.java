@@ -419,6 +419,22 @@ class GoldenMasterRecordingTest {
               "/ci/api/runs/active",
               Map.of(),
               200,
+              "$.runs"),
+          new Interaction(
+              ProviderStates.RUNS_ONLY_OF_REPOSITORIES_OUTSIDE_THE_PROJECT,
+              "listRepositorySummaries",
+              "GET",
+              "/ci/api/repositories/summary",
+              Map.of(),
+              200,
+              "$.repositories"),
+          new Interaction(
+              ProviderStates.RUNS_ONLY_OF_REPOSITORIES_OUTSIDE_THE_PROJECT,
+              "listActiveRuns",
+              "GET",
+              "/ci/api/runs/active",
+              Map.of(),
+              200,
               "$.runs"));
 
   private static final ObjectMapper JSON = new ObjectMapper();

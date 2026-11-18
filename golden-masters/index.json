@@ -1269,6 +1269,73 @@
       ]
     },
     {
+      "name": "runs only of repositories outside the project",
+      "slug": "runs-only-of-repositories-outside-the-project",
+      "params": {
+        "branchRunId": "00000000-0000-4000-8000-000000000001",
+        "failedRunId": "00000000-0000-4000-8000-000000000002",
+        "greenRunId": "00000000-0000-4000-8000-000000000003",
+        "mainRunId": "00000000-0000-4000-8000-000000000004",
+        "otherGreenRunId": "00000000-0000-4000-8000-000000000005",
+        "outsideProjectId": "00000000-0000-4000-8000-000000000006",
+        "outsideRepository1Id": "00000000-0000-4000-8000-000000000007",
+        "outsideRepository2Id": "00000000-0000-4000-8000-000000000008",
+        "runningRunId": "00000000-0000-4000-8000-000000000009"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listActiveRuns",
+          "method": "GET",
+          "path": "/ci/api/runs/active",
+          "status": 200,
+          "file": "runs-only-of-repositories-outside-the-project/listActiveRuns.json",
+          "frozen": {
+            "ids": [
+              "$.runs[*].id",
+              "$.runs[*].repoId",
+              "$.runs[*].projectId"
+            ],
+            "instants": [
+              "$.runs[*].createdAt",
+              "$.runs[*].startedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": "$.runs"
+          }
+        },
+        {
+          "operationId": "listRepositorySummaries",
+          "method": "GET",
+          "path": "/ci/api/repositories/summary",
+          "status": 200,
+          "file": "runs-only-of-repositories-outside-the-project/listRepositorySummaries.json",
+          "frozen": {
+            "ids": [
+              "$.repositories[*].repositoryId",
+              "$.repositories[*].projectId",
+              "$.repositories[*].lastRun.id",
+              "$.repositories[*].lastRun.repoId",
+              "$.repositories[*].lastRun.projectId",
+              "$.repositories[*].lastMainRun.id",
+              "$.repositories[*].lastMainRun.repoId",
+              "$.repositories[*].lastMainRun.projectId"
+            ],
+            "instants": [
+              "$.repositories[*].lastRun.createdAt",
+              "$.repositories[*].lastRun.startedAt",
+              "$.repositories[*].lastRun.finishedAt",
+              "$.repositories[*].lastMainRun.createdAt",
+              "$.repositories[*].lastMainRun.startedAt",
+              "$.repositories[*].lastMainRun.finishedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": "$.repositories"
+          }
+        }
+      ]
+    },
+    {
       "name": "the machine gate is on",
       "slug": "the-machine-gate-is-on",
       "params": {
