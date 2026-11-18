@@ -273,14 +273,6 @@
       ],
       "operations" : [
         {
-          "operationId" : "CiRepositoryController.listRepositorySummaries",
-          "method" : "GET",
-          "path" : "/repositories/summary",
-          "dto" : "eu.wohlben.qits.ci.api.CiRepositoryController$ListRepositorySummariesResponse",
-          "kind" : "returns",
-          "cardinality" : "collection"
-        },
-        {
           "operationId" : "CiRunController.listFinishedRuns",
           "method" : "GET",
           "path" : "/runs/finished",
@@ -325,6 +317,14 @@
           "method" : "GET",
           "path" : "/runs/active",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$ListRunsResponse",
+          "kind" : "returns",
+          "cardinality" : "collection"
+        },
+        {
+          "operationId" : "listRepositorySummaries",
+          "method" : "GET",
+          "path" : "/repositories/summary",
+          "dto" : "eu.wohlben.qits.ci.api.CiRepositoryController$ListRepositorySummariesResponse",
           "kind" : "returns",
           "cardinality" : "collection"
         },
@@ -511,14 +511,6 @@
       ],
       "operations" : [
         {
-          "operationId" : "CiRepositoryController.listRepositorySummaries",
-          "method" : "GET",
-          "path" : "/repositories/summary",
-          "dto" : "eu.wohlben.qits.ci.api.CiRepositoryController$ListRepositorySummariesResponse",
-          "kind" : "returns",
-          "cardinality" : "collection"
-        },
-        {
           "operationId" : "CiRunController.listFinishedRuns",
           "method" : "GET",
           "path" : "/runs/finished",
@@ -547,6 +539,14 @@
           "method" : "GET",
           "path" : "/runs/active",
           "dto" : "eu.wohlben.qits.ci.api.CiRunController$ListRunsResponse",
+          "kind" : "returns",
+          "cardinality" : "collection"
+        },
+        {
+          "operationId" : "listRepositorySummaries",
+          "method" : "GET",
+          "path" : "/repositories/summary",
+          "dto" : "eu.wohlben.qits.ci.api.CiRepositoryController$ListRepositorySummariesResponse",
           "kind" : "returns",
           "cardinality" : "collection"
         },

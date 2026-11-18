@@ -159,6 +159,19 @@ public class ProviderStates {
    */
   public static final String A_REPOSITORY_WITH_A_FINISHED_RUN = "a repository with a finished run";
 
+  /**
+   * Four repositories of one project with runs: what qits-landing-app's {@code projects/:slug/ci}
+   * page reads, {@code GET /ci/api/repositories/summary} and {@code GET /ci/api/runs/active}
+   * (qits-2314). The project and repository ids are the ones qits-projects' golden master state
+   * {@code a project with 3 repositories} records, with the same repository names, so the page joins
+   * the two answers row by row.
+   */
+  public static final String A_PROJECT_WHOSE_REPOSITORIES_HAVE_RUNS =
+      "a project whose repositories have runs";
+
+  /** No run seeded: the same two reads answering empty lists (qits-2314). */
+  public static final String NO_RUNS_RECORDED = "no runs recorded";
+
   /** The automation kind the ReleaseRequestAutomation state names: a packaged kind file. */
   static final String AUTOMATION_KIND = "entity-diagram";
 
@@ -265,6 +278,8 @@ public class ProviderStates {
     states.put(A_REPOSITORY_WITH_ITS_30_MOST_RECENT_RUNS, this::aRepositoryWithFinishedQaRuns);
     states.put(A_FAILED_QA_RUN_WITH_STALE_OUTPUTS, this::aFailedQaRunWithStaleOutputs);
     states.put(A_REPOSITORY_WITH_A_FINISHED_RUN, this::aRepositoryWithAFinishedRun);
+    states.put(A_PROJECT_WHOSE_REPOSITORIES_HAVE_RUNS, this::aProjectWhoseRepositoriesHaveRuns);
+    states.put(NO_RUNS_RECORDED, this::noRunsRecorded);
   }
 
   /** Every state name this provider answers for. */
@@ -584,6 +599,96 @@ public class ProviderStates {
     run.finishedAt = now;
     persist(List.of(run), List.of());
     return setup(params);
+  }
+
+  /**
+   * One project ({@code projectId}) and four of its repositories, each newest run first:
+   *
+   * <ol>
+   *   <li>{@code repository1Id}, {@code contract-00000001-contract-00000001}: a failed run on {@code
+   *       main} after a green one — {@code lastRun} and {@code lastMainRun} are the failed run;
+   *   <li>{@code repository2Id}, {@code contract-daemon}: one green run on {@code main};
+   *   <li>{@code repository3Id}, {@code contract-frontend}: a failed run on {@code
+   *       feature/csv-export} after a green one on {@code main} — {@code lastRun} is the branch run,
+   *       {@code lastMainRun} the green one;
+   *   <li>{@code repository4Id}, {@code contract-service}: a run {@code RUNNING} on {@code main}
+   *       after a green one — the run {@code /ci/api/runs/active} answers with.
+   * </ol>
+   *
+   * <p>The ids are qits-projects' {@code a project with 3 repositories} ids: the param keys sort
+   * project, repositories, runs, so {@link #ids} numbers the project 1 and the repositories 2 to 5,
+   * which is the numbering qits-projects' recording gives them. The running run carries no steps, so
+   * the queue forecast has nothing in the shared database to read for it ({@link
+   * #aCommitWithARunInFlight}'s shape).
+   */
+  private Setup aProjectWhoseRepositoriesHaveRuns() {
+    Map<String, String> params =
+        ids(
+            Map.of(),
+            "projectId",
+            "repository1Id",
+            "repository2Id",
+            "repository3Id",
+            "repository4Id",
+            "runningRunId",
+            "run1FailedRunId",
+            "run1GreenRunId",
+            "run2GreenRunId",
+            "run3BranchRunId",
+            "run3GreenRunId",
+            "run4GreenRunId");
+    String project = params.get("projectId");
+    List<CiRun> seeded = new ArrayList<>();
+    seeded.add(
+        projectRun(params.get("run1GreenRunId"), params.get("repository1Id"), project,
+            "contract-00000001-contract-00000001", "main", 10, CiRunStatus.SUCCESS));
+    seeded.add(
+        projectRun(params.get("run1FailedRunId"), params.get("repository1Id"), project,
+            "contract-00000001-contract-00000001", "main", 11, CiRunStatus.FAILED));
+    seeded.add(
+        projectRun(params.get("run2GreenRunId"), params.get("repository2Id"), project,
+            "contract-daemon", "main", 12, CiRunStatus.SUCCESS));
+    seeded.add(
+        projectRun(params.get("run3GreenRunId"), params.get("repository3Id"), project,
+            "contract-frontend", "main", 13, CiRunStatus.SUCCESS));
+    seeded.add(
+        projectRun(params.get("run3BranchRunId"), params.get("repository3Id"), project,
+            "contract-frontend", "feature/csv-export", 14, CiRunStatus.FAILED));
+    seeded.add(
+        projectRun(params.get("run4GreenRunId"), params.get("repository4Id"), project,
+            "contract-service", "main", 15, CiRunStatus.SUCCESS));
+    CiRun running =
+        projectRun(params.get("runningRunId"), params.get("repository4Id"), project,
+            "contract-service", "main", 16, CiRunStatus.RUNNING);
+    running.finishedAt = null;
+    seeded.add(running);
+    persist(seeded, List.of());
+    return setup(params);
+  }
+
+  /** One of {@link #aProjectWhoseRepositoriesHaveRuns}' runs: the project's, under the name. */
+  private static CiRun projectRun(
+      String id,
+      String repo,
+      String project,
+      String repoName,
+      String branch,
+      int minute,
+      CiRunStatus status) {
+    CiRun run = run(id, repo, branch, minute, status);
+    eventPipeline(run);
+    run.projectId = project;
+    run.repoName = repoName;
+    return run;
+  }
+
+  /**
+   * Nothing seeded. Its recordings filter their lists to the state's own entries, as every other
+   * state's do, so the answer is the empty list whatever another test class left in the shared
+   * database.
+   */
+  private Setup noRunsRecorded() {
+    return setup(new TreeMap<>());
   }
 
   /**

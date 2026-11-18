@@ -139,7 +139,9 @@ public class CiRepositoryController {
    */
   @GET
   @Path("/summary")
-  @Operation(summary = "Each repository with its newest run and its newest run on main")
+  @Operation(
+      operationId = "listRepositorySummaries",
+      summary = "Each repository with its newest run and its newest run on main")
   @APIResponse(responseCode = "200", description = "One entry per repository, ascending by id")
   public ListRepositorySummariesResponse listRepositorySummaries() {
     return new ListRepositorySummariesResponse(

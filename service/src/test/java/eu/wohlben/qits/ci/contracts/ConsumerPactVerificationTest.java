@@ -310,4 +310,14 @@ class ConsumerPactVerificationTest {
   Map<String, String> aRepositoryWithAFinishedRun() {
     return states.params(ProviderStates.A_REPOSITORY_WITH_A_FINISHED_RUN);
   }
+
+  @State(ProviderStates.A_PROJECT_WHOSE_REPOSITORIES_HAVE_RUNS)
+  Map<String, String> aProjectWhoseRepositoriesHaveRuns() {
+    return states.params(ProviderStates.A_PROJECT_WHOSE_REPOSITORIES_HAVE_RUNS);
+  }
+
+  @State(ProviderStates.NO_RUNS_RECORDED)
+  Map<String, String> noRunsRecorded() {
+    return states.params(ProviderStates.NO_RUNS_RECORDED);
+  }
 }

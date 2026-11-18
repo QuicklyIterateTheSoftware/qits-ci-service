@@ -681,6 +681,7 @@ paths:
   /ci/api/repositories/summary:
     get:
       summary: Each repository with its newest run and its newest run on main
+      operationId: listRepositorySummaries
       responses:
         "200":
           description: "One entry per repository, ascending by id"

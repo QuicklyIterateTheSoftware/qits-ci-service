@@ -292,6 +292,76 @@
       ]
     },
     {
+      "name": "a project whose repositories have runs",
+      "slug": "a-project-whose-repositories-have-runs",
+      "params": {
+        "projectId": "00000000-0000-4000-8000-000000000001",
+        "repository1Id": "00000000-0000-4000-8000-000000000002",
+        "repository2Id": "00000000-0000-4000-8000-000000000003",
+        "repository3Id": "00000000-0000-4000-8000-000000000004",
+        "repository4Id": "00000000-0000-4000-8000-000000000005",
+        "run1FailedRunId": "00000000-0000-4000-8000-000000000006",
+        "run1GreenRunId": "00000000-0000-4000-8000-000000000007",
+        "run2GreenRunId": "00000000-0000-4000-8000-000000000008",
+        "run3BranchRunId": "00000000-0000-4000-8000-000000000009",
+        "run3GreenRunId": "00000000-0000-4000-8000-00000000000a",
+        "run4GreenRunId": "00000000-0000-4000-8000-00000000000b",
+        "runningRunId": "00000000-0000-4000-8000-00000000000c"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listActiveRuns",
+          "method": "GET",
+          "path": "/ci/api/runs/active",
+          "status": 200,
+          "file": "a-project-whose-repositories-have-runs/listActiveRuns.json",
+          "frozen": {
+            "ids": [
+              "$.runs[*].id",
+              "$.runs[*].repoId",
+              "$.runs[*].projectId"
+            ],
+            "instants": [
+              "$.runs[*].createdAt",
+              "$.runs[*].startedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": "$.runs"
+          }
+        },
+        {
+          "operationId": "listRepositorySummaries",
+          "method": "GET",
+          "path": "/ci/api/repositories/summary",
+          "status": 200,
+          "file": "a-project-whose-repositories-have-runs/listRepositorySummaries.json",
+          "frozen": {
+            "ids": [
+              "$.repositories[*].repositoryId",
+              "$.repositories[*].projectId",
+              "$.repositories[*].lastRun.id",
+              "$.repositories[*].lastRun.repoId",
+              "$.repositories[*].lastRun.projectId",
+              "$.repositories[*].lastMainRun.id",
+              "$.repositories[*].lastMainRun.repoId",
+              "$.repositories[*].lastMainRun.projectId"
+            ],
+            "instants": [
+              "$.repositories[*].lastRun.createdAt",
+              "$.repositories[*].lastRun.startedAt",
+              "$.repositories[*].lastRun.finishedAt",
+              "$.repositories[*].lastMainRun.createdAt",
+              "$.repositories[*].lastMainRun.startedAt",
+              "$.repositories[*].lastMainRun.finishedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": "$.repositories"
+          }
+        }
+      ]
+    },
+    {
       "name": "a release request whose QA run failed",
       "slug": "a-release-request-whose-qa-run-failed",
       "params": {
@@ -1160,6 +1230,40 @@
               "$.message"
             ],
             "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "no runs recorded",
+      "slug": "no-runs-recorded",
+      "params": {},
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listActiveRuns",
+          "method": "GET",
+          "path": "/ci/api/runs/active",
+          "status": 200,
+          "file": "no-runs-recorded/listActiveRuns.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": "$.runs"
+          }
+        },
+        {
+          "operationId": "listRepositorySummaries",
+          "method": "GET",
+          "path": "/ci/api/repositories/summary",
+          "status": 200,
+          "file": "no-runs-recorded/listRepositorySummaries.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": "$.repositories"
           }
         }
       ]
