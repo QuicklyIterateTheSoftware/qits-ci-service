@@ -325,4 +325,14 @@ class ConsumerPactVerificationTest {
   Map<String, String> runsOnlyOfRepositoriesOutsideTheProject() {
     return states.params(ProviderStates.RUNS_ONLY_OF_REPOSITORIES_OUTSIDE_THE_PROJECT);
   }
+
+  @State(ProviderStates.A_REPOSITORY_OF_THE_PROJECT_WITH_A_RUN_HISTORY)
+  Map<String, String> aRepositoryOfTheProjectWithARunHistory() {
+    return states.params(ProviderStates.A_REPOSITORY_OF_THE_PROJECT_WITH_A_RUN_HISTORY);
+  }
+
+  @State(ProviderStates.A_REPOSITORY_OF_THE_PROJECT_WITH_NO_RUNS)
+  Map<String, String> aRepositoryOfTheProjectWithNoRuns() {
+    return states.params(ProviderStates.A_REPOSITORY_OF_THE_PROJECT_WITH_NO_RUNS);
+  }
 }

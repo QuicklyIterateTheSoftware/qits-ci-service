@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.ci.control.CiDaemonPins;
 import eu.wohlben.qits.ci.control.CiEventTriggerService;
 import eu.wohlben.qits.ci.control.CiRepoRef;
+import eu.wohlben.qits.ci.control.CiRunService;
 import eu.wohlben.qits.ci.control.PlatformPipelineSwitch;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import eu.wohlben.qits.ci.entity.CiReleaseAnnouncement;
@@ -180,6 +181,29 @@ public class ProviderStates {
   public static final String RUNS_ONLY_OF_REPOSITORIES_OUTSIDE_THE_PROJECT =
       "runs only of repositories outside the project";
 
+  /**
+   * One repository's run history: what qits-landing-app's {@code projects/:slug/ci/:repo} page
+   * reads, {@code GET /ci/api/runs?repositoryId=…&limit=100} (qits-2320). The {@code repositoryId}
+   * is {@code …0005}, the id qits-projects' golden master state {@code a project with 3
+   * repositories} gives {@code contract-service}, and the runs carry that name, so the page joins
+   * the answer with qits-projects' repository.
+   */
+  public static final String A_REPOSITORY_OF_THE_PROJECT_WITH_A_RUN_HISTORY =
+      "a repository of the project with a run history";
+
+  /**
+   * The same repository with no run: the same read answering an empty list (qits-2320). The state
+   * clears the repository's runs itself, so the empty answer holds against a shared database.
+   */
+  public static final String A_REPOSITORY_OF_THE_PROJECT_WITH_NO_RUNS =
+      "a repository of the project with no runs";
+
+  /**
+   * The repository both qits-2320 states are about: qits-projects' {@code contract-service} in
+   * {@code a project with 3 repositories}.
+   */
+  private static final String HISTORY_REPOSITORY_ID = Freezer.frozenId(5);
+
   /** The automation kind the ReleaseRequestAutomation state names: a packaged kind file. */
   static final String AUTOMATION_KIND = "entity-diagram";
 
@@ -291,6 +315,11 @@ public class ProviderStates {
     states.put(
         RUNS_ONLY_OF_REPOSITORIES_OUTSIDE_THE_PROJECT,
         this::runsOnlyOfRepositoriesOutsideTheProject);
+    states.put(
+        A_REPOSITORY_OF_THE_PROJECT_WITH_A_RUN_HISTORY,
+        this::aRepositoryOfTheProjectWithARunHistory);
+    states.put(
+        A_REPOSITORY_OF_THE_PROJECT_WITH_NO_RUNS, this::aRepositoryOfTheProjectWithNoRuns);
   }
 
   /** Every state name this provider answers for. */
@@ -365,7 +394,10 @@ public class ProviderStates {
 
   /**
    * The params, each id-valued key given the frozen id the recorder would give it: the keys sorted,
-   * the id keys numbered in that order from 1. The other values stay as given.
+   * the id keys numbered in that order from 1. The other values stay as given. A fixed value that is
+   * itself a UUID takes its place in that numbering, as the recorder's {@link Freezer} numbers it,
+   * so it must be the frozen id of its position — which is how a state pins one param to an id
+   * another provider's golden master records.
    */
   private static Map<String, String> ids(Map<String, String> fixed, String... idKeys) {
     Map<String, String> params = new TreeMap<>(fixed);
@@ -376,6 +408,10 @@ public class ProviderStates {
     for (Map.Entry<String, String> entry : params.entrySet()) {
       if (entry.getValue() == null) {
         entry.setValue(Freezer.frozenId(++n));
+      } else if (Freezer.UUID.matcher(entry.getValue()).matches()
+          && !entry.getValue().equals(Freezer.frozenId(++n))) {
+        throw new IllegalStateException(
+            entry.getKey() + " is fixed to " + entry.getValue() + ", but sorts to " + n);
       }
     }
     return params;
@@ -754,6 +790,116 @@ public class ProviderStates {
     seeded.add(running);
     persist(seeded, List.of());
     return setup(params);
+  }
+
+  /**
+   * {@code contract-service}'s run history, newest first as {@code GET /ci/api/runs} answers:
+   *
+   * <ol>
+   *   <li>{@code runningRunId}: {@code RUNNING} on {@code main}, started, not finished;
+   *   <li>{@code mainSucceededRunId}: green on {@code main};
+   *   <li>{@code triggeredByPushRunId}: green on {@code main}, a historical {@code POST_RECEIVE}
+   *       run — no trigger event, {@code ci-post-receive.yml};
+   *   <li>{@code mainFailedRunId}: failed on {@code main};
+   *   <li>{@code dedupedRunId}: {@code CANCELLED} before it started, {@code DEDUPED} by {@code
+   *       mainFailedRunId}, which {@code supersededByRunId} names;
+   *   <li>{@code branchFailedRunId}: failed on {@code feature/csv-export}.
+   * </ol>
+   *
+   * <p>The event runs carry {@code SoftwareRelease} and {@code ci-event-build.yml}. <b>The key names
+   * are what puts {@code repositoryId} at {@code …0005}</b>: four run keys sort before it and two
+   * after, so {@link #ids} and the recorder's {@link Freezer} number it fifth. The repository's runs
+   * are cleared first: the recording keeps every run naming the repository id, and the id is one
+   * other states share.
+   */
+  private Setup aRepositoryOfTheProjectWithARunHistory() {
+    Map<String, String> params =
+        ids(
+            Map.of("repositoryId", HISTORY_REPOSITORY_ID),
+            "branchFailedRunId",
+            "dedupedRunId",
+            "mainFailedRunId",
+            "mainSucceededRunId",
+            "runningRunId",
+            "triggeredByPushRunId");
+    String repo = params.get("repositoryId");
+    clearRuns(repo);
+    List<CiRun> seeded = new ArrayList<>();
+    seeded.add(
+        historyRun(params.get("branchFailedRunId"), repo, "feature/csv-export", 30,
+            CiRunStatus.FAILED));
+    CiRun deduped =
+        historyRun(params.get("dedupedRunId"), repo, "main", 31, CiRunStatus.CANCELLED);
+    CiRun mainFailed =
+        historyRun(params.get("mainFailedRunId"), repo, "main", 32, CiRunStatus.FAILED);
+    // What CiRunService's dedupe writes: the loser never started, and settles when the winner was
+    // accepted.
+    deduped.startedAt = null;
+    deduped.finishedAt = mainFailed.createdAt;
+    deduped.cancellationReason = CiRunService.DEDUPED;
+    deduped.supersededByRunId = mainFailed.id;
+    seeded.add(deduped);
+    seeded.add(mainFailed);
+    CiRun push =
+        historyRun(params.get("triggeredByPushRunId"), repo, "main", 33, CiRunStatus.SUCCESS);
+    push.triggerType = CiTriggerType.POST_RECEIVE;
+    push.triggerEventId = null;
+    push.triggerEventName = null;
+    push.triggerEventPayload = null;
+    push.configPath = ".config/qits/ci-post-receive.yml";
+    seeded.add(push);
+    seeded.add(
+        historyRun(params.get("mainSucceededRunId"), repo, "main", 34, CiRunStatus.SUCCESS));
+    CiRun running =
+        historyRun(params.get("runningRunId"), repo, "main", 35, CiRunStatus.RUNNING);
+    running.finishedAt = null;
+    seeded.add(running);
+    persist(seeded, List.of());
+    return setup(params);
+  }
+
+  /**
+   * {@link #aRepositoryOfTheProjectWithARunHistory}'s repository with its runs cleared and nothing
+   * seeded: {@code GET /ci/api/runs} answers an empty list for it.
+   *
+   * <p>A lone {@code repositoryId} would freeze to {@code …0001}, so the state also names the rest
+   * of qits-projects' {@code a project with 3 repositories}: {@code projectId} {@code …0001} and
+   * {@code repository1Id} to {@code repository3Id} {@code …0002} to {@code …0004}, which sort before
+   * {@code repositoryId} and leave it {@code …0005}. Nothing is seeded under them.
+   */
+  private Setup aRepositoryOfTheProjectWithNoRuns() {
+    Map<String, String> params =
+        ids(
+            Map.of("repositoryId", HISTORY_REPOSITORY_ID),
+            "projectId",
+            "repository1Id",
+            "repository2Id",
+            "repository3Id");
+    clearRuns(HISTORY_REPOSITORY_ID);
+    return setup(params);
+  }
+
+  /** One of {@link #aRepositoryOfTheProjectWithARunHistory}'s runs: an event run, under the name. */
+  private static CiRun historyRun(
+      String id, String repo, String branch, int minute, CiRunStatus status) {
+    CiRun run = run(id, repo, branch, minute, status);
+    eventPipeline(run);
+    run.repoName = "contract-service";
+    return run;
+  }
+
+  /** Deletes every run of the repository, with its steps and reports, in a transaction of its own. */
+  private void clearRuns(String repo) {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              List<String> ids = runs.list("repoId", repo).stream().map(r -> r.id).toList();
+              if (!ids.isEmpty()) {
+                steps.delete("runId in ?1", ids);
+                reports.delete("runId in ?1", ids);
+                runs.delete("id in ?1", ids);
+              }
+            });
   }
 
   /**

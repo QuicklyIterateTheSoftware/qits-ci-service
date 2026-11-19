@@ -435,6 +435,23 @@ class GoldenMasterRecordingTest {
               "/ci/api/runs/active",
               Map.of(),
               200,
+              "$.runs"),
+          // --- qits-2320: qits-landing-app's projects/:slug/ci/:repo page, populated and empty
+          new Interaction(
+              ProviderStates.A_REPOSITORY_OF_THE_PROJECT_WITH_A_RUN_HISTORY,
+              "listRuns",
+              "GET",
+              "/ci/api/runs",
+              Map.of("repositoryId", "{repositoryId}", "limit", "100"),
+              200,
+              "$.runs"),
+          new Interaction(
+              ProviderStates.A_REPOSITORY_OF_THE_PROJECT_WITH_NO_RUNS,
+              "listRuns",
+              "GET",
+              "/ci/api/runs",
+              Map.of("repositoryId", "{repositoryId}", "limit", "100"),
+              200,
               "$.runs"));
 
   private static final ObjectMapper JSON = new ObjectMapper();
