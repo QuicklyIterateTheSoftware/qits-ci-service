@@ -233,6 +233,84 @@
       ]
     },
     {
+      "name": "a finished run of the project",
+      "slug": "a-finished-run-of-the-project",
+      "params": {
+        "leaseId": "00000000-0000-4000-8000-000000000001",
+        "originalRunId": "00000000-0000-4000-8000-000000000002",
+        "releaseRequestId": "00000000-0000-4000-8000-000000000003",
+        "reportId": "00000000-0000-4000-8000-000000000004",
+        "repositoryId": "00000000-0000-4000-8000-000000000005",
+        "runId": "00000000-0000-4000-8000-000000000006",
+        "targetId": "00000000-0000-4000-8000-000000000007"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getRun",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}",
+          "status": 200,
+          "file": "a-finished-run-of-the-project/getRun.json",
+          "frozen": {
+            "ids": [
+              "$.id",
+              "$.repoId",
+              "$.releaseRequestId",
+              "$.retryOfRunId",
+              "$.leaseId",
+              "$.targetId"
+            ],
+            "instants": [
+              "$.createdAt",
+              "$.startedAt",
+              "$.finishedAt",
+              "$.steps[*].startedAt",
+              "$.steps[*].finishedAt"
+            ],
+            "strings": [
+              "$.retryReason"
+            ],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "listRunReports",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}/reports",
+          "status": 200,
+          "file": "a-finished-run-of-the-project/listRunReports.json",
+          "frozen": {
+            "ids": [
+              "$.runId",
+              "$.releaseRequestId",
+              "$.reports[*].id"
+            ],
+            "instants": [
+              "$.reports[*].submittedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "retryRun",
+          "method": "POST",
+          "path": "/ci/api/runs/{runId}/retry",
+          "status": 202,
+          "file": "a-finished-run-of-the-project/retryRun.json",
+          "frozen": {
+            "ids": [
+              "$.runId"
+            ],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a green release run",
       "slug": "a-green-release-run",
       "params": {
@@ -357,6 +435,41 @@
             ],
             "strings": [],
             "listFilteredTo": "$.repositories"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a queued run of the project",
+      "slug": "a-queued-run-of-the-project",
+      "params": {
+        "aheadRunId": "00000000-0000-4000-8000-000000000001",
+        "inFlightRunId": "00000000-0000-4000-8000-000000000002",
+        "leaseId": "00000000-0000-4000-8000-000000000003",
+        "releaseRequestId": "00000000-0000-4000-8000-000000000004",
+        "repositoryId": "00000000-0000-4000-8000-000000000005",
+        "runId": "00000000-0000-4000-8000-000000000006",
+        "targetId": "00000000-0000-4000-8000-000000000007"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getRun",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}",
+          "status": 200,
+          "file": "a-queued-run-of-the-project/getRun.json",
+          "frozen": {
+            "ids": [
+              "$.id",
+              "$.repoId",
+              "$.releaseRequestId"
+            ],
+            "instants": [
+              "$.createdAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
           }
         }
       ]
@@ -1220,6 +1333,64 @@
             "strings": [
               "$.message"
             ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a running run of the project",
+      "slug": "a-running-run-of-the-project",
+      "params": {
+        "failedRunId": "00000000-0000-4000-8000-000000000001",
+        "gateRunId": "00000000-0000-4000-8000-000000000002",
+        "leaseId": "00000000-0000-4000-8000-000000000003",
+        "releaseRequestId": "00000000-0000-4000-8000-000000000004",
+        "repositoryId": "00000000-0000-4000-8000-000000000005",
+        "runId": "00000000-0000-4000-8000-000000000006",
+        "targetId": "00000000-0000-4000-8000-000000000007"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "cancelRun",
+          "method": "POST",
+          "path": "/ci/api/runs/{runId}/cancel",
+          "body": {
+            "reason": "..."
+          },
+          "status": 202,
+          "file": "a-running-run-of-the-project/cancelRun.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "getRun",
+          "method": "GET",
+          "path": "/ci/api/runs/{runId}",
+          "status": 200,
+          "file": "a-running-run-of-the-project/getRun.json",
+          "frozen": {
+            "ids": [
+              "$.id",
+              "$.repoId",
+              "$.releaseRequestId",
+              "$.leaseId",
+              "$.targetId",
+              "$.continuedFromRunId"
+            ],
+            "instants": [
+              "$.createdAt",
+              "$.startedAt",
+              "$.steps[*].startedAt",
+              "$.steps[*].finishedAt",
+              "$.live.startedAt"
+            ],
+            "strings": [],
             "listFilteredTo": null
           }
         }

@@ -452,7 +452,31 @@ class GoldenMasterRecordingTest {
               "/ci/api/runs",
               Map.of("repositoryId", "{repositoryId}", "limit", "100"),
               200,
-              "$.runs"));
+              "$.runs"),
+          // --- qits-2321: qits-landing-app's run page, a run of contract-service finished, running
+          // and queued, with what the page can press on each
+          read(ProviderStates.A_FINISHED_RUN_OF_THE_PROJECT, "getRun", "/ci/api/runs/{runId}"),
+          read(
+              ProviderStates.A_FINISHED_RUN_OF_THE_PROJECT,
+              "listRunReports",
+              "/ci/api/runs/{runId}/reports"),
+          write(
+              ProviderStates.A_FINISHED_RUN_OF_THE_PROJECT,
+              "retryRun",
+              "POST",
+              "/ci/api/runs/{runId}/retry",
+              202,
+              null),
+          read(ProviderStates.A_RUNNING_RUN_OF_THE_PROJECT, "getRun", "/ci/api/runs/{runId}"),
+          write(
+              ProviderStates.A_RUNNING_RUN_OF_THE_PROJECT,
+              "cancelRun",
+              "POST",
+              "/ci/api/runs/{runId}/cancel",
+              202,
+              """
+              {"reason":"..."}"""),
+          read(ProviderStates.A_QUEUED_RUN_OF_THE_PROJECT, "getRun", "/ci/api/runs/{runId}"));
 
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final Pattern TEMPLATE_PARAM = Pattern.compile("\\{([A-Za-z][A-Za-z0-9]*)}");

@@ -17,6 +17,7 @@ import eu.wohlben.qits.ci.entity.CiScmRelease;
 import eu.wohlben.qits.ci.entity.CiStep;
 import eu.wohlben.qits.ci.entity.CiStepStatus;
 import eu.wohlben.qits.ci.entity.CiTriggerType;
+import eu.wohlben.qits.ci.entity.ExpectedStepDurations;
 import eu.wohlben.qits.ci.githost.FakeGitHostRepoListing;
 import eu.wohlben.qits.ci.githost.StubGitHost;
 import eu.wohlben.qits.ci.idp.RunCommissions;
@@ -204,6 +205,30 @@ public class ProviderStates {
    */
   private static final String HISTORY_REPOSITORY_ID = Freezer.frozenId(5);
 
+  /**
+   * One finished run of {@code contract-service} (qits-2321), read whole by qits-landing-app's run
+   * page: {@code GET /ci/api/runs/{runId}}, its reports, and a retry of it. A {@code FAILED} QA run
+   * of a release request, composed from a packaged archetype, that is itself qits-ci's automatic
+   * retry of an earlier run and whose last step the out-of-memory killer ended with {@code 137}.
+   * {@code repositoryId} is {@link #HISTORY_REPOSITORY_ID}, so the page joins it with qits-projects'
+   * repository.
+   */
+  public static final String A_FINISHED_RUN_OF_THE_PROJECT = "a finished run of the project";
+
+  /**
+   * One run of {@code contract-service} in flight (qits-2321): a release run continued in its gate
+   * run's held CI slot, one step finished and the next one live, with its prediction — read by
+   * {@code GET /ci/api/runs/{runId}} and stopped by {@code POST /ci/api/runs/{runId}/cancel}.
+   */
+  public static final String A_RUNNING_RUN_OF_THE_PROJECT = "a running run of the project";
+
+  /**
+   * One run of {@code contract-service} waiting in the queue behind a run in flight and another
+   * queued one (qits-2321): its {@code queuePosition} and both ETAs, read by {@code GET
+   * /ci/api/runs/{runId}}.
+   */
+  public static final String A_QUEUED_RUN_OF_THE_PROJECT = "a queued run of the project";
+
   /** The automation kind the ReleaseRequestAutomation state names: a packaged kind file. */
   static final String AUTOMATION_KIND = "entity-diagram";
 
@@ -320,6 +345,9 @@ public class ProviderStates {
         this::aRepositoryOfTheProjectWithARunHistory);
     states.put(
         A_REPOSITORY_OF_THE_PROJECT_WITH_NO_RUNS, this::aRepositoryOfTheProjectWithNoRuns);
+    states.put(A_FINISHED_RUN_OF_THE_PROJECT, this::aFinishedRunOfTheProject);
+    states.put(A_RUNNING_RUN_OF_THE_PROJECT, this::aRunningRunOfTheProject);
+    states.put(A_QUEUED_RUN_OF_THE_PROJECT, this::aQueuedRunOfTheProject);
   }
 
   /** Every state name this provider answers for. */
@@ -877,6 +905,297 @@ public class ProviderStates {
             "repository3Id");
     clearRuns(HISTORY_REPOSITORY_ID);
     return setup(params);
+  }
+
+  /**
+   * {@code contract-service}'s run {@code runId}, finished {@code FAILED} with every field the run
+   * page draws set (qits-2321): a QA run ({@code RELEASE_REQUEST}) of {@code releaseRequestId}
+   * ({@code contract-service-rr-7}) on its backing branch, composed from {@code release.yml} with
+   * the packaged {@code java-service} archetype, run in lease {@code leaseId} on target {@code
+   * targetId} by a pinned daemon. It is qits-ci's automatic retry ({@code retryReason}, so {@code
+   * autoRetry}) of {@code originalRunId}, whose only step lost its lease container. Three named
+   * steps:
+   *
+   * <ol>
+   *   <li>{@code build}: {@code SUCCESS}, exit 0, its output a kept tail starting with {@link
+   *       CiRunService#TRUNCATION_MARKER};
+   *   <li>{@code unit tests}: {@code SUCCESS}, exit 0, ANSI-coloured {@code PASS} lines, and the
+   *       {@code test-results} report {@code reportId} it submitted;
+   *   <li>{@code integration tests}: {@code FAILED}, exit 137, ANSI-coloured {@code PASS}/{@code
+   *       FAIL} lines and the bracketed out-of-memory line — the run's {@code oomKills} is 1, its
+   *       {@code oomScope} {@code LEASE}.
+   * </ol>
+   *
+   * <p>Its stored pipeline replays as it is (the stub git host holds no {@code release.yml} to
+   * re-compose from), so {@code retryRun} answers 202 with a new {@code QUEUED} run. <b>The key names
+   * put {@code repositoryId} at {@code …0005}</b>, as {@link #aRepositoryOfTheProjectWithARunHistory}'s
+   * do: four id keys sort before it and two after.
+   */
+  private Setup aFinishedRunOfTheProject() {
+    Map<String, String> params =
+        ids(
+            Map.of("repositoryId", HISTORY_REPOSITORY_ID),
+            "leaseId",
+            "originalRunId",
+            "releaseRequestId",
+            "reportId",
+            "runId",
+            "targetId");
+    String repo = params.get("repositoryId");
+    String request = params.get("releaseRequestId");
+    clearRuns(repo);
+    CiRun original =
+        run(params.get("originalRunId"), repo, REQUEST_BRANCH, 40, CiRunStatus.FAILED);
+    composed(original, ComposedKind.QA, request);
+    CiRun run = run(params.get("runId"), repo, REQUEST_BRANCH, 41, CiRunStatus.FAILED);
+    composed(run, ComposedKind.QA, request);
+    run.retryOfRunId = original.id;
+    run.retryReason =
+        "infra failure (the connection to the run's lease container was lost) on run "
+            + original.id
+            + " — automatic retry 1 of 2";
+    run.leaseId = UUID.fromString(params.get("leaseId"));
+    run.targetId = UUID.fromString(params.get("targetId"));
+    run.daemonVersion = DAEMON_VERSION;
+    run.oomKills = 1L;
+    run.oomScope = "LEASE";
+    persist(
+        List.of(original, run),
+        List.of(
+            named(
+                step(
+                    original,
+                    0,
+                    CiStepStatus.FAILED,
+                    1,
+                    "[the connection to the run's lease container was lost]\nretried automatically"
+                        + " as run "
+                        + run.id
+                        + "\n"),
+                "build"),
+            named(
+                step(
+                    run,
+                    0,
+                    CiStepStatus.SUCCESS,
+                    0,
+                    CiRunService.TRUNCATION_MARKER
+                        + "[INFO] Compiling 214 source files with javac [debug release 21] to"
+                        + " target/classes\n[INFO] BUILD SUCCESS\n"),
+                "build"),
+            named(
+                step(
+                    run,
+                    1,
+                    CiStepStatus.SUCCESS,
+                    0,
+                    "\u001b[32mPASS\u001b[0m BillingServiceTest (42 tests)\n"
+                        + "\u001b[32mPASS\u001b[0m RefundServiceTest (86 tests)\n"
+                        + "\u001b[1mTests run: 128, Failures: 0, Errors: 0, Skipped: 2\u001b[0m\n"),
+                "unit tests"),
+            named(
+                step(
+                    run,
+                    2,
+                    CiStepStatus.FAILED,
+                    137,
+                    "\u001b[32mPASS\u001b[0m BillingIT.chargesTheCard\n"
+                        + "\u001b[1;31mFAIL\u001b[0m BillingIT.refundsInBulk — the JVM was killed\n"
+                        + "[the out-of-memory killer killed 1 process in this run's lease (scope"
+                        + " LEASE)]\n"),
+                "integration tests")));
+    Map<String, Object> totals =
+        ordered(
+            "tests", 128, "passed", 126, "failed", 0, "errored", 0, "skipped", 2, "durationMs",
+            44400);
+    Map<String, Object> suite =
+        ordered(
+            "language", "java", "tool", "surefire", "module", "service", "tests", 128, "failed", 0,
+            "errored", 0, "skipped", 2, "durationMs", 44400);
+    CiReport testResults =
+        report(
+            params.get("reportId"),
+            run.id,
+            "test-results",
+            ordered(
+                "totals", totals, "suites", List.of(suite), "failures", List.of(), "truncated",
+                false),
+            null,
+            null,
+            List.of(highlight("good", "128 tests, none failed", "tests.total", 128.0, null)));
+    QuarkusTransaction.requiringNew().run(() -> reports.persist(testResults));
+    return setup(params);
+  }
+
+  /**
+   * {@code contract-service}'s run {@code runId} in flight (qits-2321): the publish run ({@code
+   * RELEASE}, {@code SCMRelease}, on {@link #VERSION}) of {@code releaseRequestId}, continued in the
+   * CI slot its gate run {@code gateRunId} held ({@code continuedFromRunId}) — so it runs in that run's
+   * lease {@code leaseId} on target {@code targetId}. An earlier QA run of the request, {@code
+   * failedRunId}, failed. Step {@code build} finished; step 1 is {@code live}, its output so far
+   * ANSI-coloured. The run carries its prediction ({@code expectedStepDurationsMillis}), so it
+   * forecasts an {@code expectedFinishInMillis}: the prediction less the time since {@code
+   * startedAt}, floored at zero — and the seeded {@code startedAt} is long past, so it reads 0 on
+   * every recording.
+   *
+   * <p>Four id keys sort before {@code repositoryId} and two after, which puts it at {@code …0005}.
+   */
+  private Setup aRunningRunOfTheProject() {
+    Map<String, String> params =
+        ids(
+            Map.of("repositoryId", HISTORY_REPOSITORY_ID),
+            "failedRunId",
+            "gateRunId",
+            "leaseId",
+            "releaseRequestId",
+            "runId",
+            "targetId");
+    String repo = params.get("repositoryId");
+    String request = params.get("releaseRequestId");
+    UUID lease = UUID.fromString(params.get("leaseId"));
+    UUID target = UUID.fromString(params.get("targetId"));
+    clearRuns(repo);
+    CiRun failed = run(params.get("failedRunId"), repo, REQUEST_BRANCH, 42, CiRunStatus.FAILED);
+    composed(failed, ComposedKind.QA, request);
+    CiRun gate = run(params.get("gateRunId"), repo, REQUEST_BRANCH, 43, CiRunStatus.SUCCESS);
+    composed(gate, ComposedKind.QA, request);
+    gate.leaseId = lease;
+    gate.targetId = target;
+    gate.daemonVersion = DAEMON_VERSION;
+    CiRun running = run(params.get("runId"), repo, VERSION, 44, CiRunStatus.RUNNING);
+    composed(running, ComposedKind.RELEASE, request);
+    running.continuedFromRunId = gate.id;
+    running.leaseId = lease;
+    running.targetId = target;
+    running.daemonVersion = DAEMON_VERSION;
+    running.finishedAt = null;
+    persist(
+        List.of(failed, gate, running),
+        List.of(
+            named(
+                step(running, 0, CiStepStatus.SUCCESS, 0,
+                    "[INFO] Building contract-service " + VERSION + "\n[INFO] BUILD SUCCESS\n"),
+                "build")));
+    relay.begin(running.id, 1);
+    relay.started(running.id, running.startedAt.plusSeconds(10));
+    relay.append(
+        running.id,
+        "\u001b[36mpushing\u001b[0m qits/contract-service:" + VERSION + "\n"
+            + "\u001b[32mpushed\u001b[0m layer 3 of 7\n");
+    return setup(params);
+  }
+
+  /**
+   * {@code contract-service}'s run {@code runId} waiting (qits-2321): a QA run of {@code
+   * releaseRequestId}, {@code QUEUED} with no steps, behind two other runs of the repository on
+   * {@code main} — {@code inFlightRunId}, {@code RUNNING} in lease {@code leaseId} on target {@code
+   * targetId} but not handed a step yet (no {@code startedAt}, so none of its prediction is spent),
+   * and {@code aheadRunId}, {@code QUEUED} before it. Every one of the three carries a prediction, so
+   * the queue forecasts the run: {@code queuePosition} 1, {@code expectedStartInMillis} 240000 (the
+   * two one-step runs ahead, 120 s each, through the one slot the running lease implies) and {@code
+   * expectedFinishInMillis} 705000 (its own 465 s on top). The forecast reads every active run, so
+   * it holds for a database no other class left a run in flight in — the same footing {@code a run
+   * queue with a run waiting} records on.
+   *
+   * <p>Four id keys sort before {@code repositoryId} and two after, which puts it at {@code …0005}.
+   */
+  private Setup aQueuedRunOfTheProject() {
+    Map<String, String> params =
+        ids(
+            Map.of("repositoryId", HISTORY_REPOSITORY_ID),
+            "aheadRunId",
+            "inFlightRunId",
+            "leaseId",
+            "releaseRequestId",
+            "runId",
+            "targetId");
+    String repo = params.get("repositoryId");
+    clearRuns(repo);
+    // One entry per step of the event pipeline both carry: a prediction is whole or absent.
+    List<Long> oneStep = List.of(120_000L);
+    CiRun inFlight = historyRun(params.get("inFlightRunId"), repo, "main", 45, CiRunStatus.RUNNING);
+    inFlight.expectedStepDurations = ExpectedStepDurations.encode(oneStep);
+    inFlight.leaseId = UUID.fromString(params.get("leaseId"));
+    inFlight.targetId = UUID.fromString(params.get("targetId"));
+    inFlight.startedAt = null;
+    inFlight.finishedAt = null;
+    CiRun ahead = historyRun(params.get("aheadRunId"), repo, "main", 46, CiRunStatus.QUEUED);
+    ahead.expectedStepDurations = ExpectedStepDurations.encode(oneStep);
+    ahead.startedAt = null;
+    ahead.finishedAt = null;
+    CiRun queued = run(params.get("runId"), repo, REQUEST_BRANCH, 47, CiRunStatus.QUEUED);
+    composed(queued, ComposedKind.QA, params.get("releaseRequestId"));
+    queued.startedAt = null;
+    queued.finishedAt = null;
+    persist(List.of(inFlight, ahead, queued), List.of());
+    return setup(params);
+  }
+
+  /** The release request the qits-2321 runs serve, by its logical id, and its backing branch. */
+  private static final String REQUEST_QUALIFIED_ID = "contract-service-rr-7";
+
+  private static final String REQUEST_BRANCH = "release/" + REQUEST_QUALIFIED_ID;
+
+  /** The daemon build the qits-2321 runs that launched a container record. */
+  private static final String DAEMON_VERSION = "2026.1101.120000";
+
+  /** The two release events a composed run is triggered by, with the steps each one runs. */
+  private enum ComposedKind {
+    QA(
+        "ReleaseRequestChanged",
+        CiRunPhase.RELEASE_REQUEST,
+        List.of("build", "unit tests", "integration tests"),
+        List.of(45_000L, 120_000L, 300_000L)),
+    RELEASE(
+        "SCMRelease",
+        CiRunPhase.RELEASE,
+        List.of("build", "publish", "announce"),
+        List.of(30_000L, 240_000L, 60_000L));
+
+    final String event;
+    final CiRunPhase phase;
+    final List<String> steps;
+    final List<Long> durations;
+
+    ComposedKind(
+        String event, CiRunPhase phase, List<String> steps, List<Long> durations) {
+      this.event = event;
+      this.phase = phase;
+      this.steps = steps;
+      this.durations = durations;
+    }
+  }
+
+  /**
+   * A run of the request composed from {@code .config/qits/release.yml} with the packaged {@code
+   * java-service} archetype — so {@code archetypeVersion} is qits-ci's own and {@code archetypeRev}
+   * null — storing the composed document it runs and the prediction it was accepted with.
+   */
+  private static void composed(CiRun run, ComposedKind kind, String request) {
+    run.phase = kind.phase;
+    run.releaseRequestId = request;
+    run.releaseRequestQualifiedId = REQUEST_QUALIFIED_ID;
+    run.triggerEventName = kind.event;
+    run.triggerEventPayload = "{}";
+    run.configPath = ".config/qits/release.yml";
+    run.archetypeName = "java-service";
+    run.archetypeConfigPath = "ci/src/main/resources/release-archetypes/java-service.yml";
+    run.archetypeVersion = "2026.1101.1";
+    StringBuilder document = new StringBuilder("event: " + kind.event + "\nsteps:\n");
+    for (String name : kind.steps) {
+      document
+          .append("  - name: ")
+          .append(name)
+          .append("\n    image: alpine:3\n    script: ./mvnw verify\n");
+    }
+    run.triggerConfig = document.toString();
+    run.expectedStepDurations = ExpectedStepDurations.encode(kind.durations);
+  }
+
+  /** The step under its declared name. */
+  private static CiStep named(CiStep step, String name) {
+    step.name = name;
+    return step;
   }
 
   /** One of {@link #aRepositoryOfTheProjectWithARunHistory}'s runs: an event run, under the name. */

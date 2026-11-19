@@ -335,4 +335,19 @@ class ConsumerPactVerificationTest {
   Map<String, String> aRepositoryOfTheProjectWithNoRuns() {
     return states.params(ProviderStates.A_REPOSITORY_OF_THE_PROJECT_WITH_NO_RUNS);
   }
+
+  @State(ProviderStates.A_FINISHED_RUN_OF_THE_PROJECT)
+  Map<String, String> aFinishedRunOfTheProject() {
+    return states.params(ProviderStates.A_FINISHED_RUN_OF_THE_PROJECT);
+  }
+
+  @State(ProviderStates.A_RUNNING_RUN_OF_THE_PROJECT)
+  Map<String, String> aRunningRunOfTheProject() {
+    return states.params(ProviderStates.A_RUNNING_RUN_OF_THE_PROJECT);
+  }
+
+  @State(ProviderStates.A_QUEUED_RUN_OF_THE_PROJECT)
+  Map<String, String> aQueuedRunOfTheProject() {
+    return states.params(ProviderStates.A_QUEUED_RUN_OF_THE_PROJECT);
+  }
 }

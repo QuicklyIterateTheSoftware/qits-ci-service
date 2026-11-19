@@ -1,0 +1,63 @@
+{
+  "id": "00000000-0000-4000-8000-000000000006",
+  "repoId": "00000000-0000-4000-8000-000000000005",
+  "projectId": "contract-project",
+  "repoName": "contract-service",
+  "branch": "2026.1001.1",
+  "commitSha": "000000000000000000000000000000000000002c",
+  "status": "RUNNING",
+  "createdAt": "2026-01-01T00:00:00Z",
+  "startedAt": "2026-01-01T00:00:00Z",
+  "finishedAt": null,
+  "cancellationReason": null,
+  "supersededByRunId": null,
+  "daemonVersion": "2026.1101.120000",
+  "triggerType": "EVENT",
+  "triggerEventId": "contract-event-44",
+  "triggerEventName": "SCMRelease",
+  "releaseRequestId": "00000000-0000-4000-8000-000000000004",
+  "releaseRequestQualifiedId": "contract-service-rr-7",
+  "retryOfRunId": null,
+  "configPath": ".config/qits/release.yml",
+  "archetypeName": "java-service",
+  "archetypeConfigPath": "ci/src/main/resources/release-archetypes/java-service.yml",
+  "archetypeRev": null,
+  "archetypeVersion": "2026.1101.1",
+  "priority": null,
+  "expectedStepDurationsMillis": [
+    30000,
+    240000,
+    60000
+  ],
+  "steps": [
+    {
+      "stepIndex": 0,
+      "image": "alpine:3",
+      "status": "SUCCESS",
+      "exitCode": 0,
+      "startedAt": "2026-01-01T00:00:00Z",
+      "finishedAt": "2026-01-01T00:00:00Z",
+      "output": "[INFO] Building contract-service 2026.1001.1\n[INFO] BUILD SUCCESS\n",
+      "name": "build"
+    }
+  ],
+  "live": {
+    "stepIndex": 1,
+    "startedAt": "2026-01-01T00:00:00Z",
+    "output": "\u001B[36mpushing\u001B[0m qits/contract-service:2026.1001.1\n\u001B[32mpushed\u001B[0m layer 3 of 7\n"
+  },
+  "phase": "RELEASE",
+  "queuePosition": null,
+  "expectedStartInMillis": null,
+  "expectedFinishInMillis": 0,
+  "predictionUnavailable": null,
+  "ordering": null,
+  "leaseId": "00000000-0000-4000-8000-000000000003",
+  "targetId": "00000000-0000-4000-8000-000000000007",
+  "retryReason": null,
+  "autoRetry": false,
+  "continuedFromRunId": "00000000-0000-4000-8000-000000000002",
+  "oomKills": null,
+  "oomScope": null,
+  "autoRetryDeferredUntil": null
+}

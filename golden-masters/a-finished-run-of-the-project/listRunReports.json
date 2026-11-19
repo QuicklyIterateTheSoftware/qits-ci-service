@@ -1,0 +1,28 @@
+{
+  "runId": "00000000-0000-4000-8000-000000000006",
+  "commitSha": "0000000000000000000000000000000000000029",
+  "releaseRequestId": "00000000-0000-4000-8000-000000000003",
+  "releaseRequestQualifiedId": "contract-service-rr-7",
+  "baseline": null,
+  "reports": [
+    {
+      "id": "00000000-0000-4000-8000-000000000004",
+      "kind": "test-results",
+      "kindVersion": 1,
+      "stepIndex": 1,
+      "highlights": [
+        {
+          "severity": "good",
+          "text": "128 tests, none failed",
+          "metric": "tests.total",
+          "value": 128.0,
+          "delta": null
+        }
+      ],
+      "baselineRunId": null,
+      "baselineVersion": null,
+      "payloadBytes": 257,
+      "submittedAt": "2026-01-01T00:00:00Z"
+    }
+  ]
+}
