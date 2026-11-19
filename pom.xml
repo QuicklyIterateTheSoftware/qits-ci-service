@@ -86,7 +86,7 @@
              snapshot nobody published"; qits-githost released the jar on 2026-08-12 and this is that
              release. What kept the snapshot working until then was the bootstrap seed-publishing it
              into the registry, which is not a release and does not survive one being re-seeded. -->
-        <qits.githost-events.version>2026.1111.82105</qits.githost-events.version>
+        <qits.githost-events.version>2026.1119.45706</qits.githost-events.version>
         <qits.auth-core.version>2026.1106.507</qits.auth-core.version>
         <!-- qits-http-core's QitsHttpClients: every hand-rolled java.net.http client under
              service/…/{githost,projects,registry,idp}/ is wrapped through it, so the CLIENT span and
@@ -155,7 +155,7 @@
         <!-- The consumer pacts contracts/ConsumerPactVerificationTest verifies (qits-1149): each
              consumer publishes `pacts/<consumer>_qits-ci-service.json` as a jar, pinned here in test
              scope and bumped by qits-maintenance when the consumer releases a changed pact. -->
-        <qits.landing-app-pacts-qits-ci-service.version>2026.1119.10252</qits.landing-app-pacts-qits-ci-service.version>
+        <qits.landing-app-pacts-qits-ci-service.version>2026.1119.45821</qits.landing-app-pacts-qits-ci-service.version>
         <qits.artifacts-service-pacts-qits-ci-service.version>2026.1018.153037</qits.artifacts-service-pacts-qits-ci-service.version>
         <qits.bootstrap-cli-pacts-qits-ci-service.version>2026.1023.225504</qits.bootstrap-cli-pacts-qits-ci-service.version>
         <qits.maintenance-service-pacts-qits-ci-service.version>2026.1113.54601</qits.maintenance-service-pacts-qits-ci-service.version>
