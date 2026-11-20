@@ -174,7 +174,7 @@ table, the quarantine and health check, the runner lifecycle events and the `ci-
 - **The spec** (`CiSlotSpecs`) is the `qits/build-images/ci-slot` image pinned by digest at accept
   (`pinStepImages`), on the registry's public name; the run's environment without any per-step part
   (`QITS_CI_STEP_INDEX` rides each `RunStep` instead); user `1001`; limits
-  `qits.ci.slot.{memory,memory-swap,pids-limit,cpus}` (4g / 4g / 4096 / 2). qits-system refuses
+  `qits.ci.slot.{memory,memory-swap,pids-limit,cpus}` (6g / 6g / 4096 / 2). qits-system refuses
   `BUILDKIT_HOST`, `HOME` and `CLAUDE_CONFIG_DIR` in a spec, and user 0; this service sends none of
   them. The slot's command rides the env too: the spec has no entrypoint field, so
   `QITS_CI_BOOTSTRAP` carries `CiSlotSettings.BOOTSTRAP` and the ci-slot image's entrypoint runs

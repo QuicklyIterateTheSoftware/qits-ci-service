@@ -33,7 +33,7 @@ class CiSlotSpecsTest {
         spec.image(),
         "the run's pinned digest, under the registry's public name qits-system allows");
     assertEquals("1001", spec.user(), "the ci-slot image's build user");
-    assertEquals(new SystemLeases.Limits("4g", "4g", 4096L, "2", 1000), spec.limits());
+    assertEquals(new SystemLeases.Limits("6g", "6g", 4096L, "2", 1000), spec.limits());
     assertEquals(
         List.of(
             "QITS_CI_DAEMON_ID=" + SlotFixtures.DAEMON_ID,

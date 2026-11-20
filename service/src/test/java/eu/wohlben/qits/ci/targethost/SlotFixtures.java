@@ -37,8 +37,8 @@ public final class SlotFixtures {
   /** The shipped defaults — everything a spec is composed from but addresses. */
   public static CiSlotSettings shippedSettings() {
     CiSlotSettings settings = new CiSlotSettings();
-    settings.memory = "4g";
-    settings.memorySwap = "4g";
+    settings.memory = "6g";
+    settings.memorySwap = "6g";
     settings.pidsLimit = 4096;
     settings.cpus = "2";
     settings.oomScoreAdj = 1000;
