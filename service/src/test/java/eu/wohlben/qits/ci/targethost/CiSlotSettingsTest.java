@@ -171,8 +171,8 @@ class CiSlotSettingsTest {
   @Test
   void theSlotLimitsAreTheSettingsSpecs() {
     CiSlotSpecs.Settings settings = SlotFixtures.shippedSettings().settings();
-    assertEquals("4g", settings.memory());
-    assertEquals("4g", settings.memorySwap());
+    assertEquals("6g", settings.memory());
+    assertEquals("6g", settings.memorySwap());
     assertEquals(4096L, settings.pidsLimit());
     assertEquals("2", settings.cpus());
     assertEquals(1000, settings.oomScoreAdj());
