@@ -232,7 +232,14 @@ steps:
       npm run --if-present test -- --reporters=junit --reporters=default \
         --output-file=.qits-reports/vitest-unit.xml $coverage_flags
 
-      npm run build
+      # THE STEP'S OWN LIMITS (qits-2390), printed whether or not the build passed: an `ng build`
+      # OOM-killed here shows only exit 137 with nothing to explain it, and this is the step whose
+      # build peaks near the lease's own memory cap. `pids.peak` needs kernel >= 6.1, hence the
+      # `n/a` fallbacks (see java-service.yml's release step for the same line, qits-1509).
+      build_status=0
+      npm run build || build_status=$?
+      echo "step limits: pids.peak=$(cat /sys/fs/cgroup/pids.peak 2>/dev/null || echo n/a) pids.max=$(cat /sys/fs/cgroup/pids.max 2>/dev/null || echo n/a) memory.peak=$(cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo n/a) zombies=$(grep -l '^State:.Z' /proc/[0-9]*/status 2>/dev/null | wc -l | tr -d ' ') nproc=$(ulimit -u 2>/dev/null || echo n/a)"
+      [ "$build_status" -eq 0 ] || exit "$build_status"
       QITS_SLOT_EOF
       set +e
       if command -v bash > /dev/null 2>&1; then
