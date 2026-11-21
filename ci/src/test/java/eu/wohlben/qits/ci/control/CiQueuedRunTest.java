@@ -481,7 +481,12 @@ public class CiQueuedRunTest extends CiTestSupport {
     insertQueuedEventRun(first, Instant.now().minusSeconds(30));
     insertQueuedEventRun(second, Instant.now().minusSeconds(20));
 
+    // The target grants nothing until the whole sweep is leased: a grant pass is timed from each
+    // lease, so on a slow node it would otherwise rank a partial queue (qits-2364).
+    suiteRunner.slots(0);
     service.sweepInterrupted();
+    suiteRunner.awaitIdle();
+    suiteRunner.slots(1);
     suiteRunner.awaitIdle();
 
     assertEquals(
@@ -503,7 +508,11 @@ public class CiQueuedRunTest extends CiTestSupport {
     insertQueuedEventRun(ordinary, Instant.now().minusSeconds(20), null);
     insertQueuedEventRun(urgent, Instant.now().minusSeconds(10), "BLOCKING");
 
+    // Grants held until the sweep has leased every row, as above (qits-2364).
+    suiteRunner.slots(0);
     service.sweepInterrupted();
+    suiteRunner.awaitIdle();
+    suiteRunner.slots(1);
     suiteRunner.awaitIdle();
 
     assertEquals(

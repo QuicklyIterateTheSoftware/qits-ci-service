@@ -59,7 +59,9 @@ public class SuiteRunner {
 
   /**
    * Grants wait a moment after a lease, so a burst of leases — a boot sweep's — is ranked as one
-   * queue rather than granted one by one as each arrives.
+   * queue rather than granted one by one as each arrives. This is best effort, timed from each
+   * lease, so a test asserting the order a burst is granted in holds grants with {@code slots(0)}
+   * until the burst is leased (qits-2364).
    */
   private final java.util.concurrent.ScheduledExecutorService grants =
       Executors.newSingleThreadScheduledExecutor(
