@@ -140,8 +140,10 @@ public class LeaseStepRunner implements CiStepRunner {
   private final ConcurrentHashMap<String, String> endedLeases = new ConcurrentHashMap<>();
 
   /**
-   * Runs whose first step ended {@code NEVER_STARTED} — their lease ran and its daemon never dialled
-   * back — so the run's close ends the lease with {@link SystemLeases#NEVER_DIALLED_BACK} (qits-1809).
+   * Runs whose lease ran and whose daemon never dialled back to register — whether that answered
+   * {@code NEVER_STARTED} (the register wait simply timed out) or {@code LAUNCH_FAILED} (the lease
+   * ended, exited or failed, before the register wait returned) — so the run's close ends the lease
+   * with {@link SystemLeases#NEVER_DIALLED_BACK} (qits-1809, qits-2382).
    */
   private final Set<String> neverDialledBack = ConcurrentHashMap.newKeySet();
 
@@ -259,6 +261,14 @@ public class LeaseStepRunner implements CiStepRunner {
       abandonIfStopping(spec);
       String ended = endedLeases.get(spec.runId());
       if (ended != null) {
+        // The lease ran (awaitLeaseStarted above answered null) and then ended — EXITED, FAILED, or
+        // gone — before its daemon ever registered: qits-system never otherwise learns the daemon
+        // did not dial back, so it is told here (qits-2382). The same branch is also reachable by a
+        // lease that FAILED while still GRANTED, reaped before it ever ran (awaitLeaseStarted's own
+        // phase==null arm answers null rather than failing it, leaving this the first failure); that
+        // is harmless, because qits-system counts a GRANTED lease's own FAILED transition itself and
+        // ignores this reason on it.
+        neverDialledBack.add(spec.runId());
         return failed(StepOutcome.LAUNCH_FAILED, ended);
       }
       neverDialledBack.add(spec.runId());
