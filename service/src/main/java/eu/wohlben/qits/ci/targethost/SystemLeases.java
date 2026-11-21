@@ -128,9 +128,21 @@ public class SystemLeases {
     }
   }
 
-  /** qits-system's {@code CreateLeaseRequest}. Absent members are left out of the body. */
+  /**
+   * qits-system's {@code CreateLeaseRequest}. Absent members are left out of the body. {@code
+   * avoidTargetId} (qits-2382) is the one hint a retry's create carries: the target its predecessor
+   * ran and never dialled back from, so qits-system prefers any other target over granting the same
+   * one a second time. Null — no hint — for every first run.
+   */
   @JsonInclude(JsonInclude.Include.NON_NULL)
-  public record CreateLease(String slotType, String ownerRef, Integer priority, LeaseSpec spec) {}
+  public record CreateLease(
+      String slotType, String ownerRef, Integer priority, LeaseSpec spec, UUID avoidTargetId) {
+
+    /** A create with no target to avoid — every first run's. */
+    public CreateLease(String slotType, String ownerRef, Integer priority, LeaseSpec spec) {
+      this(slotType, ownerRef, priority, spec, null);
+    }
+  }
 
   /** {@code LeaseSpec{image, env, user, limits}}, the shape qits-system-runner decodes. */
   @JsonInclude(JsonInclude.Include.NON_NULL)
