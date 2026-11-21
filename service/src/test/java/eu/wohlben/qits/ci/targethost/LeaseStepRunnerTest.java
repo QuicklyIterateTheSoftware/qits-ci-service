@@ -333,7 +333,7 @@ class LeaseStepRunnerTest {
   }
 
   @Test
-  void aLeaseThatFailedBeforeItsDaemonDialledIsEndedWithNoReason() {
+  void aLeaseThatFailedBeforeTheFirstStepWasEvenAskedForIsEndedWithNoReason() {
     String daemonId = registry.registerLaunch(RUN, SUBJECT);
     leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
 
@@ -343,6 +343,10 @@ class LeaseStepRunnerTest {
         runner.run(step(0, "./verify.sh"), new Listened()).outcome());
     runner.runClosed(RUN);
 
+    // The lease had already ended before the driver ever called run() for the first step, so this
+    // never reaches awaitReady and its daemon's dialling is never in question — qits.ci's own first
+    // check (launch gone) answers LAUNCH_FAILED directly. No reason travels with it (qits-2382): this
+    // is not the "ran and never dialled back" fact qits-system counts, and nothing here claims it is.
     assertEquals(List.of("none"), endReasons, "LAUNCH_FAILED is the lease's own failure");
   }
 
@@ -359,6 +363,42 @@ class LeaseStepRunnerTest {
     CiStepRunner.StepResult first = result.get(5, TimeUnit.SECONDS);
     assertEquals(CiStepRunner.StepOutcome.LAUNCH_FAILED, first.outcome());
     assertEquals("lease " + LEASE + " FAILED: pull access denied", first.output());
+
+    // qits-2382: this lease never reported running (leaseRunning was never called), so this is the
+    // GRANTED-to-FAILED transition qits-system's own bump counts without being told — but this code
+    // cannot tell that apart from "ran and exited before registering" once the lease has been reaped
+    // out from under awaitRegistered, so it is ended with the same reason. That is harmless: qits-
+    // system's counting reads the lease's own FAILED/EXITED state, not this field, on a lease that
+    // never ran.
+    runner.runClosed(RUN);
+    assertEquals(List.of(RUN), ended);
+    assertEquals(List.of(SystemLeases.NEVER_DIALLED_BACK), endReasons);
+  }
+
+  @Test
+  void aLeaseThatRanThenExitedBeforeItsDaemonRegisteredIsEndedWithNeverDialledBack()
+      throws Exception {
+    runner.registerTimeoutSeconds = 30;
+    runner.leaseStartTimeoutSeconds = 30;
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+
+    CompletableFuture<CiStepRunner.StepResult> result = firstStep();
+    Thread.sleep(500);
+    runner.leaseRunning(RUN);
+    runner.leaseEnded(RUN, "lease " + LEASE + " EXITED: exit status 3");
+
+    CiStepRunner.StepResult first = result.get(5, TimeUnit.SECONDS);
+    assertEquals(CiStepRunner.StepOutcome.LAUNCH_FAILED, first.outcome());
+    assertEquals("lease " + LEASE + " EXITED: exit status 3", first.output());
+
+    // qits-2382: the lease ran and then ended by itself before its ci-daemon ever dialled back to
+    // register — exit 3, the daemon could not reach the host — so qits-system is told
+    // NEVER_DIALLED_BACK, the same reason a register timeout ends a lease with, rather than no
+    // reason at all. qits-system counts this against the target's quarantine the same way.
+    runner.runClosed(RUN);
+    assertEquals(List.of(RUN), ended);
+    assertEquals(List.of(SystemLeases.NEVER_DIALLED_BACK), endReasons);
   }
 
   // --- an inherited run (qits-1192, qits-1893) ----------------------------------------------------

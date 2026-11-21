@@ -235,7 +235,11 @@ public class CiLeases {
       lease =
           system.create(
               new SystemLeases.CreateLease(
-                  SystemLeases.SLOT_TYPE, runId, CiRunOrdering.leasePriority(row), spec));
+                  SystemLeases.SLOT_TYPE,
+                  runId,
+                  CiRunOrdering.leasePriority(row),
+                  spec,
+                  avoidTargetIdFor(row)));
     } catch (SystemLeases.SystemUnavailable unavailable) {
       daemons.reap(daemonId);
       if (unavailable.status() == 409) {
@@ -266,6 +270,28 @@ public class CiLeases {
         "CI run %s asked lease %s (priority %d, %s)",
         runId, lease.id(), CiRunOrdering.leasePriority(row), spec.image());
     observe(lease);
+  }
+
+  /**
+   * The target to steer this run's lease away from, when it has one (qits-2382): a retry's
+   * predecessor's target, so an automatic re-fire does not land back on a target whose lease just
+   * ran and never dialled back. Null for a run that is not a retry, for a predecessor whose row
+   * cannot be read, or for one that recorded no target of its own — avoiding nothing is the correct
+   * fallback for every one of those, never a reason to leave the run waiting.
+   */
+  private UUID avoidTargetIdFor(CiRun row) {
+    if (row.retryOfRunId == null) {
+      return null;
+    }
+    try {
+      CiRun predecessor = runs.runRow(row.retryOfRunId);
+      return predecessor == null ? null : predecessor.targetId;
+    } catch (RuntimeException e) {
+      LOG.debugf(
+          "CI run %s: its predecessor %s could not be read to avoid its target: %s",
+          row.id, row.retryOfRunId, e.getMessage());
+      return null;
+    }
   }
 
   /**

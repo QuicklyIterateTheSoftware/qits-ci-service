@@ -148,6 +148,7 @@ class CiLeasesTest {
     assertEquals("CI", request.slotType());
     assertEquals(RUN, request.ownerRef());
     assertEquals(0, request.priority(), "an ordinary run asks what every other slot asks");
+    assertNull(request.avoidTargetId(), "a first run names no predecessor to avoid (qits-2382)");
     assertEquals("qits_tok_stub-1", request.spec().env().get("QITS_TOKEN"));
     assertEquals("1001", request.spec().user());
     assertTrue(
@@ -159,6 +160,51 @@ class CiLeasesTest {
     assertEquals(request.spec().env().get("QITS_CI_DAEMON_ID"), launch.daemonId());
     assertEquals(request.spec().env().get("QITS_TOKEN_SUBJECT"), launch.tokenSubject());
     assertEquals(CiDaemonRegistry.Phase.LAUNCHED, registry.phaseOf(launch.daemonId()));
+  }
+
+  /**
+   * qits-2382: a retry's lease carries its predecessor's target so an automatic re-fire does not
+   * land back on a target whose lease just ran and never dialled back — the predecessor's own row,
+   * read by {@code retry_of_run_id}, names it.
+   */
+  @Test
+  void aRetrysLeaseCarriesItsPredecessorsTargetToAvoid() {
+    CiRun predecessor = new CiRun();
+    predecessor.id = "predecessor-run-id";
+    predecessor.targetId = TARGET;
+    ((StandInRuns) leases.runs).predecessor = predecessor;
+    row.retryOfRunId = predecessor.id;
+
+    leases.requestNow(RUN);
+
+    assertEquals(1, created.size());
+    assertEquals(TARGET, created.get(0).avoidTargetId());
+  }
+
+  /** The predecessor's row carries no target of its own — nothing was ever claimed on one. */
+  @Test
+  void aRetrysLeaseAvoidsNoTargetWhenItsPredecessorNeverClaimedOne() {
+    CiRun predecessor = new CiRun();
+    predecessor.id = "predecessor-run-id";
+    predecessor.targetId = null;
+    ((StandInRuns) leases.runs).predecessor = predecessor;
+    row.retryOfRunId = predecessor.id;
+
+    leases.requestNow(RUN);
+
+    assertEquals(1, created.size());
+    assertNull(created.get(0).avoidTargetId());
+  }
+
+  /** A predecessor row this process cannot read costs the hint, never the request. */
+  @Test
+  void aRetrysLeaseAvoidsNoTargetWhenItsPredecessorsRowCannotBeRead() {
+    row.retryOfRunId = "a-run-id-nothing-answers-for";
+
+    leases.requestNow(RUN);
+
+    assertEquals(1, created.size());
+    assertNull(created.get(0).avoidTargetId());
   }
 
   @Test
@@ -224,6 +270,51 @@ class CiLeasesTest {
             "DELETE /system/api/leases/" + LEASE,
             "DELETE /system/api/leases/" + LEASE),
         requested);
+  }
+
+  /**
+   * qits-2382: {@code avoidTargetId} is left out of the body entirely when a create names none, and
+   * carried as a plain UUID string when it does — {@code CreateLease} is {@code @JsonInclude(NON_NULL)}
+   * like every other request record here, and this is what proves it rather than trusting it.
+   */
+  @Test
+  void theCreateBodyOmitsAvoidTargetIdWhenAbsentAndCarriesItWhenSet() throws Exception {
+    List<String> bodies = Collections.synchronizedList(new ArrayList<>());
+    com.sun.net.httpserver.HttpServer server =
+        com.sun.net.httpserver.HttpServer.create(
+            new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext(
+        "/",
+        exchange -> {
+          bodies.add(
+              new String(
+                  exchange.getRequestBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+          byte[] response =
+              ("{\"id\":\"" + LEASE + "\",\"ownerRef\":\"run-1\",\"state\":\"QUEUED\"}")
+                  .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().add("Content-Type", "application/json");
+          exchange.sendResponseHeaders(201, response.length);
+          exchange.getResponseBody().write(response);
+          exchange.close();
+        });
+    server.start();
+    try {
+      SystemLeases client =
+          SystemLeasesClients.against(
+              "http://127.0.0.1:" + server.getAddress().getPort(), Optional.empty());
+      SystemLeases.LeaseSpec spec =
+          new SystemLeases.LeaseSpec("image", java.util.Map.of(), "1001", null);
+
+      client.create(new SystemLeases.CreateLease(SystemLeases.SLOT_TYPE, "run-1", 0, spec));
+      client.create(
+          new SystemLeases.CreateLease(SystemLeases.SLOT_TYPE, "run-2", 0, spec, TARGET));
+    } finally {
+      server.stop(0);
+    }
+
+    assertEquals(2, bodies.size());
+    assertFalse(bodies.get(0).contains("avoidTargetId"), bodies.get(0));
+    assertTrue(bodies.get(1).contains("\"avoidTargetId\":\"" + TARGET + "\""), bodies.get(1));
   }
 
   @Test
@@ -751,9 +842,15 @@ class CiLeasesTest {
       }
     }
 
+    /** A retry's predecessor row, found by {@link #runRow} under its own id (qits-2382). */
+    volatile CiRun predecessor;
+
     @Override
     public CiRun runRow(String runId) {
-      return row;
+      if (RUN.equals(runId)) {
+        return row;
+      }
+      return predecessor != null && predecessor.id.equals(runId) ? predecessor : null;
     }
 
     /** The one row, once it holds a lease — what the reconcile walks. */
