@@ -731,7 +731,7 @@ release-request:
         -X PUT --data-binary @/tmp/userstories.tgz "$@" \
         -H "X-Artifacts-Meta-git.branch.name: $QITS_CI_BRANCH" \
         -H "X-Artifacts-Meta-git.commit.hash: $QITS_CI_SHA" \
-        -H "X-Artifacts-Meta-git.repository.name: ${site##*/}" \
+        -H "X-Artifacts-Meta-git.repository.name: $QITS_CI_REPO_NAME" \
         "https://registry.qits.$qits_domain/artifacts/docs/docs/@userflows/$site/-/$QITS_CI_SHA")
       case "$status" in
         201) echo "published userflows for $site@$QITS_CI_SHA ($QITS_CI_BRANCH)" ;;

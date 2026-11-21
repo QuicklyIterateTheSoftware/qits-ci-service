@@ -113,4 +113,4 @@ release:
       qits artifacts publish docs submit \
         --site "@apidocs/qits-ci" --version "$QITS_VERSION" --archive /tmp/apidocs.tgz \
         --meta git.commit.hash="$QITS_CI_SHA" \
-        --meta git.repository.name=qits-ci
+        --meta git.repository.name="$QITS_CI_REPO_NAME"
