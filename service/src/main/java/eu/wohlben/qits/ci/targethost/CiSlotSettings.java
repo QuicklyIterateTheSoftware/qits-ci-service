@@ -115,12 +115,16 @@ public class CiSlotSettings {
    *       in a repository, a repository-authored submodule included, and handing the credential to
    *       an arbitrary host would be an exfiltration vulnerability. The edge reads the password of
    *       git's Basic as a {@code qits_tok_} and introspects it. The same global config raises
-   *       {@code http.postBuffer} to 64 MiB, qits-githost's {@code max-pack-size}: a request body
-   *       past git's 1 MB default is streamed through libcurl's read callback, and the step images'
-   *       libcurl 7.88.1 over HTTP/2 intermittently asks that callback for more after it returned
-   *       EOF — git-remote-https then blocks on a pipe send-pack has finished writing, the body
-   *       never ends, and the push hangs until the step times out (qits-887). A buffered body
-   *       goes with a {@code Content-Length} and never takes that path.
+   *       {@code http.postBuffer} to 64 MiB, so an ordinary push still leaves as ONE buffered POST
+   *       with a {@code Content-Length}. qits-githost no longer caps a pack's size at all
+   *       (qits-2512: receive-pack streams the pack rather than buffering it, and {@code
+   *       max-pack-size} is gone), so a push past 64 MiB is accepted — and such a push is streamed
+   *       through libcurl's read callback as a chunked body instead. The step images' libcurl
+   *       7.88.1 intermittently asks that callback for more after it returned EOF, but only over
+   *       HTTP/2: git-remote-https then blocks on a pipe send-pack has finished writing, the body
+   *       never ends, and the push hangs until the step times out (qits-887). {@code http.version}
+   *       is pinned to {@code HTTP/1.1} for exactly that reason, so a chunked push never takes the
+   *       HTTP/2 read-callback path.
    *   <li>{@link #DEPLOY_SETTINGS_FILE}, with the bearer as an {@code Authorization} header on every
    *       server id the estate's settings use ({@code qits}, {@code qits-maven-network}, {@code
    *       qits-central-proxy}), plus a re-declared {@code maven-default-http-blocker} mirror, and
@@ -297,13 +301,15 @@ public class CiSlotSettings {
       printf 'username=oauth2\\npassword=%s\\n\\n' "$QITS_TOKEN"
       EOF
         chmod 0700 /tmp/qits-git-credential
-        # http.postBuffer at qits-githost's own max-pack-size (64M), so every push it would accept
-        # leaves git as ONE buffered POST with a Content-Length. At git's 1 MB default a larger
-        # push is streamed through a curl read callback instead, and the images' libcurl (7.88.1)
-        # over HTTP/2 can call that callback again after it returned EOF: git-remote-https then
-        # blocks reading a pipe send-pack will never write to again, the request body never ends,
-        # and the push hangs until the step's timeout (qits-887).
-        printf '[credential]\n\thelper = /tmp/qits-git-credential\n[http]\n\tpostBuffer = 67108864\n' > "$GIT_CONFIG_GLOBAL"
+        # http.postBuffer stays at 64M, so an ordinary push still leaves git as ONE buffered POST
+        # with a Content-Length. qits-githost no longer caps a pack's size (qits-2512: receive-pack
+        # streams it rather than buffering it, and max-pack-size is gone), so a push past 64M is
+        # accepted now too, streamed through a curl read callback as a chunked body instead. The
+        # images' libcurl (7.88.1) can call that callback again after it returned EOF, but only over
+        # HTTP/2: git-remote-https then blocks reading a pipe send-pack will never write to again,
+        # the request body never ends, and the push hangs until the step's timeout (qits-887).
+        # http.version=HTTP/1.1 keeps a chunked push off that path.
+        printf '[credential]\n\thelper = /tmp/qits-git-credential\n[http]\n\tpostBuffer = 67108864\n\tversion = HTTP/1.1\n' > "$GIT_CONFIG_GLOBAL"
         QITS_PUBLISH_TOKEN=$QITS_TOKEN
         export QITS_PUBLISH_TOKEN
         # Maven's credential for every platform repository a step dials through the edge, every one

@@ -56,7 +56,10 @@ public class CiDaemonBootstrapTokenTest {
   /** The prefix of the target's cache volumes, moved under this test's directory. */
   private static final String CACHES = "/caches/";
 
-  /** The step's {@code http.postBuffer}: qits-githost's 64 MiB {@code max-pack-size}. */
+  /**
+   * The step's {@code http.postBuffer}: 64 MiB, so an ordinary push still goes out buffered. A
+   * push past this is chunked instead — qits-githost no longer caps a pack's size (qits-2512).
+   */
   private static final long GIT_POST_BUFFER = 64L * 1024 * 1024;
 
   private HttpServer server;
@@ -134,7 +137,7 @@ public class CiDaemonBootstrapTokenTest {
             + path(GIT_HELPER_PATH)
             + "\n[http]\n\tpostBuffer = "
             + GIT_POST_BUFFER
-            + "\n",
+            + "\n\tversion = HTTP/1.1\n",
         Files.readString(work.resolve("gitconfig")));
     assertEquals(
         "username=oauth2\npassword=" + TOKEN + "\n\n",
@@ -302,17 +305,20 @@ public class CiDaemonBootstrapTokenTest {
   }
 
   /**
-   * qits-887: git reads the bootstrap's global config as a post buffer as large as qits-githost's
-   * {@code max-pack-size}, so no push the git host would accept is streamed. A pack past git's 1 MB
-   * default used to go through libcurl's read callback, which the step images' libcurl 7.88.1 over
-   * HTTP/2 can call again after it returned EOF; git-remote-https then blocked on a pipe send-pack
-   * had finished writing, and qits-landing-app's 89-image baselines push (runs 636c3918, b9ecf9ce)
-   * hung until the step's 1800 s timeout. Asked of git itself, not of the text, so a config the
-   * real git does not parse fails here.
+   * qits-887: git reads the bootstrap's global config as a 64 MiB post buffer, so an ordinary push
+   * still goes out as one buffered POST with a Content-Length. A pack past that buffer used to go
+   * through libcurl's read callback, which the step images' libcurl 7.88.1 over HTTP/2 can call
+   * again after it returned EOF; git-remote-https then blocked on a pipe send-pack had finished
+   * writing, and qits-landing-app's 89-image baselines push (runs 636c3918, b9ecf9ce) hung until
+   * the step's 1800 s timeout. qits-githost no longer caps a pack's size at all (qits-2512:
+   * receive-pack streams it rather than buffering it), so a push past the post buffer is accepted
+   * and chunked rather than refused — which is exactly the body the libcurl bug above needs, so
+   * {@code http.version} is pinned to {@code HTTP/1.1} to keep it off the HTTP/2 path that hung.
+   * Asked of git itself, not of the text, so a config the real git does not parse fails here.
    */
   @Test
   @EnabledOnOs(OS.LINUX)
-  public void gitBuffersEveryPushTheGitHostAcceptsRatherThanStreamingIt() throws Exception {
+  public void gitStaysOnHttp1SoAPushPastThePostBufferIsChunkedRatherThanStuck() throws Exception {
     assumeShell();
     assumeTrue(onPath("git"), "git is required to read the config back");
 
@@ -328,10 +334,17 @@ public class CiDaemonBootstrapTokenTest {
     assertTrue(read.waitFor(30, TimeUnit.SECONDS), "git config never exited");
     assertEquals(0, read.exitValue(), "git found no http.postBuffer in the step's global config");
     assertEquals(GIT_POST_BUFFER, Long.parseLong(value));
-    // The git host's own bound (qits-githost qits.repositories.git.max-pack-size=64M): anything
-    // larger is refused there whatever framing it arrives in.
-    assertTrue(GIT_POST_BUFFER >= 64L * 1024 * 1024, "smaller than the git host's pack limit");
     assertTrue(GIT_POST_BUFFER > 1024 * 1024, "not above git's 1 MB streaming default");
+
+    Process readVersion =
+        stripped(new ProcessBuilder("git", "config", "--global", "http.version"), composedEnv())
+            .start();
+    readVersion.getOutputStream().close();
+    String version =
+        new String(readVersion.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+    assertTrue(readVersion.waitFor(30, TimeUnit.SECONDS), "git config never exited");
+    assertEquals(0, readVersion.exitValue(), "git found no http.version in the step's global config");
+    assertEquals("HTTP/1.1", version);
   }
 
   /**
