@@ -169,7 +169,7 @@
              jar per frontend, `pacts/<frontend>_qits-ui-components-jslib_qits-ci-service.json`,
              bumped like the rows above when the frontend releases a changed pact. -->
         <qits.ci-frontend-pacts-qits-ci-service.version>2026.1122.10</qits.ci-frontend-pacts-qits-ci-service.version>
-        <qits.projects-frontend-pacts-qits-ci-service.version>2026.1121.225747</qits.projects-frontend-pacts-qits-ci-service.version>
+        <qits.projects-frontend-pacts-qits-ci-service.version>2026.1122.105526</qits.projects-frontend-pacts-qits-ci-service.version>
         <qits.docs-frontend-pacts-qits-ci-service.version>2026.1121.235856</qits.docs-frontend-pacts-qits-ci-service.version>
         <qits.events-frontend-pacts-qits-ci-service.version>2026.1122.105220</qits.events-frontend-pacts-qits-ci-service.version>
         <qits.githost-frontend-pacts-qits-ci-service.version>2026.1122.105246</qits.githost-frontend-pacts-qits-ci-service.version>
