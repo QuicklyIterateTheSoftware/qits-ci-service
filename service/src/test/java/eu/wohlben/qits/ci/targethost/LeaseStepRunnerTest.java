@@ -14,6 +14,7 @@ import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.cidaemon.protocol.Ack;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonMessage;
 import eu.wohlben.qits.cidaemon.protocol.Close;
+import eu.wohlben.qits.cidaemon.protocol.InitProgress;
 import eu.wohlben.qits.cidaemon.protocol.RunStep;
 import java.time.Duration;
 import java.time.Instant;
@@ -456,7 +457,10 @@ class LeaseStepRunnerTest {
       throws Exception {
     // qits-ci 650ee0a2: the successor's sweep took the run back before its first step, sent RunStep
     // 0 to a daemon that had just dialled for the first time, and waited out the 2h01m backstop.
+    // The daemon announces capability 4 and reports nothing, so the clock is its stall window
+    // (qits-2539); the flat budget is set as short for a daemon that would announce less.
     runner.initTimeoutSeconds = 1;
+    runner.initStallSeconds = 1;
     CompletableFuture<CiStepRunner.StepResult> first =
         inherit(inheritedBeforeTheFirstStep(), () -> runner.run(step(0, "./verify.sh"), new Listened()));
     awaitReattached();
@@ -541,5 +545,128 @@ class LeaseStepRunnerTest {
         List.of(0, 1),
         runStepsSent().stream().map(RunStep::stepIndex).toList(),
         "the in-flight step resent after the Ack, then the next one");
+  }
+
+  // --- the worktree budget follows progress (qits-2539) -----------------------------------------
+
+  @Test
+  void aCapabilityFourDaemonThatStopsReportingProgressNamesWhereItStoodInTheStepOutput() {
+    runner.initTimeoutSeconds = 1;
+    runner.initStallSeconds = 1;
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+    daemon = ScriptedLeaseDaemon.dialUninitialized(registry, daemonId, SUBJECT, 4);
+    daemon.say(new InitProgress(InitProgress.Phase.MIRROR_FETCH, 37_958_042L));
+
+    CiStepRunner.StepResult result = runner.run(step(0, "./verify.sh"), new Listened());
+
+    assertEquals(CiStepRunner.StepOutcome.NEVER_INITIALIZED, result.outcome(), result.output());
+    assertEquals(
+        "the run's ci-daemon never finished making its worktree: fetching the mirror, 36.2 MiB"
+            + " received, no progress for 1 s",
+        result.output());
+    assertTrue(runStepsSent().isEmpty(), "no step goes to a daemon that has no worktree");
+  }
+
+  @Test
+  void aCapabilityFourDaemonThatKeepsMovingPastTheFlatBudgetIsWaitedForAndRunsItsStep()
+      throws Exception {
+    runner.initTimeoutSeconds = 1;
+    runner.initStallSeconds = 1;
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+    daemon = ScriptedLeaseDaemon.dialUninitialized(registry, daemonId, SUBJECT, 4);
+    Thread feeder =
+        new Thread(
+            () -> {
+              try {
+                for (long bytes = 1; bytes <= 8; bytes++) {
+                  daemon.say(new InitProgress(InitProgress.Phase.MIRROR_FETCH, bytes << 20));
+                  Thread.sleep(300);
+                }
+                daemon.sayInitialized();
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+              }
+            });
+    long began = System.nanoTime();
+    feeder.start();
+
+    CiStepRunner.StepResult result = runner.run(step(0, "./verify.sh"), new Listened());
+    long tookMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - began);
+    feeder.join(10_000);
+
+    assertEquals(CiStepRunner.StepOutcome.OK, result.outcome(), result.output());
+    assertTrue(tookMillis > 2_000, "waited past the 1 s flat budget: " + tookMillis);
+    assertEquals(List.of(0), runStepsSent().stream().map(RunStep::stepIndex).toList());
+  }
+
+  @Test
+  void aCapabilityThreeDaemonKeepsTheFlatBudgetAndTheOldSentence() {
+    runner.initTimeoutSeconds = 1;
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+    daemon = ScriptedLeaseDaemon.dialUninitialized(registry, daemonId, SUBJECT, 3);
+    long began = System.nanoTime();
+
+    CiStepRunner.StepResult result = runner.run(step(0, "./verify.sh"), new Listened());
+    long tookMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - began);
+
+    assertEquals(CiStepRunner.StepOutcome.NEVER_INITIALIZED, result.outcome(), result.output());
+    assertEquals("the run's ci-daemon never finished making its worktree", result.output());
+    assertTrue(tookMillis < 5_000, "the flat 1 s, not the 300 s stall window: " + tookMillis);
+    assertEquals(
+        List.of(new Ack(3)),
+        daemon.received().stream().filter(Ack.class::isInstance).toList(),
+        "the daemon in production now is answered in kind, so it never sends InitProgress");
+  }
+
+  @Test
+  void theNeverInitializedSentenceNamesThePhaseTheBytesAndTheBoundThatEndedIt() {
+    InitProgress fetching = new InitProgress(InitProgress.Phase.MIRROR_FETCH, 37_958_042L);
+    assertEquals(
+        "the run's ci-daemon never finished making its worktree: fetching the mirror, 36.2 MiB"
+            + " received, no progress for 300 s",
+        LeaseStepRunner.neverInitialized(
+            new CiDaemonRegistry.Overrun(
+                fetching, CiDaemonRegistry.Overrun.Kind.STALLED, Duration.ofSeconds(300))));
+    assertEquals(
+        "the run's ci-daemon never finished making its worktree: fetching the mirror, 512.0 MiB"
+            + " received, still not done after 1800 s",
+        LeaseStepRunner.neverInitialized(
+            new CiDaemonRegistry.Overrun(
+                new InitProgress(InitProgress.Phase.MIRROR_FETCH, 512L << 20),
+                CiDaemonRegistry.Overrun.Kind.NOT_DONE,
+                Duration.ofSeconds(1800))));
+    assertEquals(
+        "the run's ci-daemon never finished making its worktree: it reported no progress within"
+            + " 300 s",
+        LeaseStepRunner.neverInitialized(
+            new CiDaemonRegistry.Overrun(
+                null, CiDaemonRegistry.Overrun.Kind.STALLED, Duration.ofSeconds(300))));
+    assertEquals(
+        "the run's ci-daemon never finished making its worktree",
+        LeaseStepRunner.neverInitialized(null),
+        "the flat budget's outcome reads as it always did");
+
+    assertEquals("waiting for the mirror's lock", LeaseStepRunner.phaseWords(InitProgress.Phase.LOCK_WAIT));
+    assertEquals("cloning the mirror", LeaseStepRunner.phaseWords(InitProgress.Phase.MIRROR_CLONE));
+    assertEquals("adding the worktree", LeaseStepRunner.phaseWords(InitProgress.Phase.WORKTREE));
+    assertEquals("updating submodules", LeaseStepRunner.phaseWords(InitProgress.Phase.SUBMODULES));
+    assertEquals("0 B", LeaseStepRunner.bytes(0));
+    assertEquals("1023 B", LeaseStepRunner.bytes(1023));
+    assertEquals("1.0 KiB", LeaseStepRunner.bytes(1024));
+    assertEquals("4.7 GiB", LeaseStepRunner.bytes(5_000_000_000L));
+  }
+
+  @Test
+  void theInitDeadlineIsComposedFromTheThreeKeys() {
+    runner.initTimeoutSeconds = 120;
+    runner.initStallSeconds = 300;
+    runner.initMaxSeconds = 1800;
+    assertEquals(
+        new CiDaemonRegistry.InitDeadline(
+            Duration.ofSeconds(120), Duration.ofSeconds(300), Duration.ofSeconds(1800)),
+        runner.initDeadline());
   }
 }

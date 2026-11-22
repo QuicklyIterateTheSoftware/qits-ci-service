@@ -8,6 +8,7 @@ import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.cidaemon.protocol.Continue;
 import eu.wohlben.qits.cidaemon.protocol.InitFailed;
+import eu.wohlben.qits.cidaemon.protocol.InitProgress;
 import io.quarkus.runtime.ShutdownEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -15,6 +16,7 @@ import jakarta.enterprise.inject.Typed;
 import jakarta.inject.Inject;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -34,8 +36,9 @@ import org.jboss.logging.Logger;
  * connection.
  *
  * <p><b>The sequence.</b> The first step waits, on two clocks, for the lease's container to start
- * and its daemon to dial in, and then for the daemon to report its worktree ready ({@code
- * qits.ci.daemon-init-timeout-seconds}); every step, the first included, is then one
+ * and its daemon to dial in, and then for the daemon to report its worktree ready ({@link
+ * #initDeadline} — flat for a daemon below capability 4, waited out by its progress at 4 and above,
+ * qits-2539); every step, the first included, is then one
  * {@code RunStep{stepIndex, script, timeoutSeconds, env}} on that connection, answered by {@code
  * StepChunk}s and a {@code StepFinished} naming the step, with the host's backstop behind the
  * daemon's own deadline: {@code qits.ci.step-timeout-grace-seconds}, widened since qits-1807 by
@@ -107,6 +110,18 @@ public class LeaseStepRunner implements CiStepRunner {
   @ConfigProperty(name = "qits.ci.daemon-init-timeout-seconds")
   long initTimeoutSeconds;
 
+  /**
+   * How long a capability-4 daemon's setup may report no changed progress before it is given up on
+   * (qits-2539). Initialised to the shipped value, so a runner a suite builds by hand waits as the
+   * shipped one does.
+   */
+  @ConfigProperty(name = "qits.ci.daemon-init-stall-seconds")
+  long initStallSeconds = 300;
+
+  /** The total cap on a capability-4 daemon's setup however it moves (qits-2539); shipped value. */
+  @ConfigProperty(name = "qits.ci.daemon-init-max-seconds")
+  long initMaxSeconds = 1800;
+
   @ConfigProperty(name = "qits.ci.step-timeout-grace-seconds")
   long stepTimeoutGraceSeconds;
 
@@ -120,6 +135,19 @@ public class LeaseStepRunner implements CiStepRunner {
 
   long registerTimeoutSeconds() {
     return registerTimeoutSeconds;
+  }
+
+  /**
+   * The worktree budget every init await and the {@code Continue}'s await use (qits-2539): the
+   * flat {@code qits.ci.daemon-init-timeout-seconds} for a daemon below capability 4, and the stall
+   * window and total cap for one at or above it. Composed here, where the config is; the registry
+   * only applies it.
+   */
+  CiDaemonRegistry.InitDeadline initDeadline() {
+    return new CiDaemonRegistry.InitDeadline(
+        Duration.ofSeconds(initTimeoutSeconds),
+        Duration.ofSeconds(initStallSeconds),
+        Duration.ofSeconds(initMaxSeconds));
   }
 
   /** How often the lease-start wait looks again at its launch and at the process stopping. */
@@ -279,7 +307,7 @@ public class LeaseStepRunner implements CiStepRunner {
               + "s of its lease running; its own log is on its execution target");
     }
     CiDaemonRegistry.Initialization initialization =
-        daemons.awaitInitialized(daemonId, Duration.ofSeconds(initTimeoutSeconds));
+        daemons.awaitInitialized(daemonId, initDeadline());
     if (initialization.status() != CiDaemonRegistry.Initialization.Status.INITIALIZED) {
       abandonIfStopping(spec);
       String ended = endedLeases.get(spec.runId());
@@ -296,9 +324,7 @@ public class LeaseStepRunner implements CiStepRunner {
         return failed(outcomeOf(initialization.reason()), detailOf(initialization));
       }
       case NEVER_INITIALIZED -> {
-        return failed(
-            StepOutcome.NEVER_INITIALIZED,
-            "the run's ci-daemon never finished making its worktree");
+        return failed(StepOutcome.NEVER_INITIALIZED, neverInitialized(initialization.overrun()));
       }
       default -> {
         return failed(StepOutcome.CONNECTION_LOST, "");
@@ -570,7 +596,7 @@ public class LeaseStepRunner implements CiStepRunner {
     // step in it. Before the first step it may not (qits-1893): it may be dialling for the first
     // time with its checkout still ahead of it, and a RunStep sent then — before its Ack, even — is
     // one it drops, leaving the step to the backstop with no output. So that run's first step waits
-    // for Initialized as a fresh run's does, under qits.ci.daemon-init-timeout-seconds: a daemon
+    // for Initialized as a fresh run's does, under initDeadline() (qits-2539): a daemon
     // that said it to the previous process says it again after this Ack, since no step answered it
     // (qits-748), and one that never says it ends NEVER_INITIALIZED on that clock.
     if (!run.awaitsInitialized()) {
@@ -609,7 +635,7 @@ public class LeaseStepRunner implements CiStepRunner {
         // Not started when the previous process stopped: the daemon is owed its step — unless it
         // ends first, having had it after all.
         CiDaemonRegistry.Initialization initialization =
-            daemons.awaitInitializedUnlessFinished(daemonId, Duration.ofSeconds(initTimeoutSeconds));
+            daemons.awaitInitializedUnlessFinished(daemonId, initDeadline());
         if (initialization != null) {
           switch (initialization.status()) {
             case INITIALIZED -> {
@@ -630,8 +656,7 @@ public class LeaseStepRunner implements CiStepRunner {
             case NEVER_INITIALIZED -> {
               abandonIfStopping(spec);
               return failed(
-                  StepOutcome.NEVER_INITIALIZED,
-                  "the run's ci-daemon never finished making its worktree");
+                  StepOutcome.NEVER_INITIALIZED, neverInitialized(initialization.overrun()));
             }
             case CONNECTION_LOST -> {
               abandonIfStopping(spec);
@@ -782,7 +807,9 @@ public class LeaseStepRunner implements CiStepRunner {
    * launch handed to the run (in the daemon registry, re-keyed to the new token's subject, and in
    * {@link CiLeases}), the frame sent, and its answer awaited under {@code
    * qits.ci.daemon-init-timeout-seconds} — the budget a daemon has to make a worktree, which is what
-   * moving one is. {@code Continued}: the run is driven ({@code continued}) and the phase-1 token is
+   * moving one is; for a capability-4 daemon, its progress-aware {@link #initDeadline} (qits-2539),
+   * since a {@code Continue} re-fetches the mirror like a setup does. {@code Continued}: the run
+   * is driven ({@code continued}) and the phase-1 token is
    * kept until this run's lease is torn down ({@link #phaseOneOf}), its first {@code RunStep} index 0, since the daemon counts the new run's steps from
    * nothing. Anything else: {@link #abandon} and {@code failed}.
    */
@@ -841,17 +868,18 @@ public class LeaseStepRunner implements CiStepRunner {
                 plane.get(), runId, continuation.branch(), worktreeSha, token, runEnv));
     CiDaemonRegistry.Continuation answer =
         daemons.sendContinue(daemonId, next)
-            ? daemons.awaitContinued(daemonId, Duration.ofSeconds(initTimeoutSeconds))
+            ? daemons.awaitContinued(daemonId, initDeadline())
             : new CiDaemonRegistry.Continuation(
                 CiDaemonRegistry.Continuation.Status.CONNECTION_LOST, null, null);
     if (answer.status() != CiDaemonRegistry.Continuation.Status.CONTINUED) {
       LOG.warnf(
-          "CI run %s: the daemon %s did not continue on held lease %s (%s%s)",
+          "CI run %s: the daemon %s did not continue on held lease %s (%s%s%s)",
           runId,
           daemonId,
           hold.leaseId(),
           answer.status(),
-          answer.reason() == null ? "" : ": " + answer.reason() + " " + answer.detail());
+          answer.reason() == null ? "" : ": " + answer.reason() + " " + answer.detail(),
+          answer.overrun() == null ? "" : ": " + describe(answer.overrun()));
       abandon(runId, hold, "Continue answered " + answer.status());
       failed.run();
       return;
@@ -901,6 +929,75 @@ public class LeaseStepRunner implements CiStepRunner {
   /** A failed worktree whose commit is gone is its own outcome; every other refusal is INIT_FAILED. */
   static StepOutcome outcomeOf(InitFailed.Reason reason) {
     return reason == InitFailed.Reason.SHA_GONE ? StepOutcome.SHA_GONE : StepOutcome.INIT_FAILED;
+  }
+
+  /** What a worktree that was never finished is recorded with, before what the daemon reported. */
+  static final String NEVER_INITIALIZED = "the run's ci-daemon never finished making its worktree";
+
+  /**
+   * The step output of a {@code NEVER_INITIALIZED} first step: the old sentence alone for the flat
+   * budget (a daemon below capability 4, {@code overrun} null), and for a progress-aware one
+   * (qits-2539) where it stood when the host gave up — so a run that failed on a slow target says
+   * whether it was still fetching, how far it had got, and which bound ended it.
+   */
+  static String neverInitialized(CiDaemonRegistry.Overrun overrun) {
+    return overrun == null ? NEVER_INITIALIZED : NEVER_INITIALIZED + ": " + describe(overrun);
+  }
+
+  /**
+   * Where a progress-aware wait left the daemon (qits-2539), in words: {@code fetching the mirror,
+   * 36.2 MiB received, no progress for 300 s}, {@code …, still not done after 1800 s}, or {@code it
+   * reported no progress within 300 s} when no snapshot arrived at all.
+   */
+  static String describe(CiDaemonRegistry.Overrun overrun) {
+    InitProgress last = overrun.last();
+    String window = span(overrun.window());
+    if (last == null) {
+      return "it reported no progress within " + window;
+    }
+    return phaseWords(last.phase())
+        + ", "
+        + bytes(last.bytes())
+        + " received, "
+        + (overrun.kind() == CiDaemonRegistry.Overrun.Kind.STALLED
+            ? "no progress for " + window
+            : "still not done after " + window);
+  }
+
+  /** The daemon's setup phase as a step output reads it. */
+  static String phaseWords(InitProgress.Phase phase) {
+    if (phase == null) {
+      return "at an unnamed step";
+    }
+    return switch (phase) {
+      case LOCK_WAIT -> "waiting for the mirror's lock";
+      case MIRROR_CLONE -> "cloning the mirror";
+      case MIRROR_FETCH -> "fetching the mirror";
+      case WORKTREE -> "adding the worktree";
+      case SUBMODULES -> "updating submodules";
+    };
+  }
+
+  /** A byte count in binary units with one decimal: {@code 512 B}, {@code 36.2 MiB}. */
+  static String bytes(long bytes) {
+    if (bytes < 1024) {
+      return bytes + " B";
+    }
+    String[] units = {"KiB", "MiB", "GiB", "TiB"};
+    double value = bytes;
+    int unit = -1;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit++;
+    }
+    return String.format(Locale.ROOT, "%.1f %s", value, units[unit]);
+  }
+
+  /** A window in whole seconds, or milliseconds when a suite's is shorter than that. */
+  private static String span(Duration window) {
+    return window.toMillis() % 1000 == 0
+        ? window.toSeconds() + " s"
+        : window.toMillis() + " ms";
   }
 
   /** The daemon's reason and detail for a failed initialization, as the step's recorded output. */

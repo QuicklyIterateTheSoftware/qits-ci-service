@@ -12,6 +12,7 @@ import eu.wohlben.qits.cidaemon.protocol.Continued;
 import eu.wohlben.qits.cidaemon.protocol.Heartbeat;
 import eu.wohlben.qits.cidaemon.protocol.Hello;
 import eu.wohlben.qits.cidaemon.protocol.InitFailed;
+import eu.wohlben.qits.cidaemon.protocol.InitProgress;
 import eu.wohlben.qits.cidaemon.protocol.Initialized;
 import eu.wohlben.qits.cidaemon.protocol.RunStep;
 import eu.wohlben.qits.cidaemon.protocol.StepChunk;
@@ -137,6 +138,20 @@ import org.jboss.logging.Logger;
  * refused, because nothing else can make it — see {@link #admitByToken}. A step's results that
  * still arrive on the superseded connection are kept: the daemon resends only a frame whose write
  * failed, so a late {@code StepFinished} there may be the only copy there is ({@link #onMessage}).
+ *
+ * <p><b>Making a worktree is waited out for as long as it moves</b> (qits-2539). The wait for
+ * {@code Initialized} — and for a {@code Continue}'s answer, which is the same fetch — used to be one
+ * flat {@code qits.ci.daemon-init-timeout-seconds} (120 s) from the host's side. Inside it the daemon
+ * fetches its repository's bare mirror, and on 2026-11-21 qits-landing-app's mirror on the slow-link
+ * target ws-proof was 233 MiB behind: about thirteen minutes there. The host gave up at 120 s, ended
+ * the lease, the half-fetched pack died with the container and every retry started from zero — a run
+ * that could never converge. A daemon announcing capability {@value #INIT_PROGRESS_CAPABILITY} or
+ * more now sends {@link InitProgress} — a phase and a snapshot of unfinished pack bytes — about every
+ * ten seconds while it works, and for such a launch the wait is an {@link InitDeadline}: it fails
+ * only when no snapshot has <em>changed</em> for its stall window, or when its total cap passes.
+ * It is still a loop of bounded {@link #await}s on the one lifecycle future, re-reading the last
+ * change between slices, so the package rule below holds unchanged. A daemon below 4 says nothing
+ * while it works and keeps the flat budget exactly as before.
  *
  * <p>{@code targethost/LeaseStepRunner} is what drives this in production, one step at a time.
  */
@@ -310,14 +325,24 @@ public class CiDaemonRegistry {
    * failed", "the sha is gone" and "the socket dropped" are five different things a run must record
    * differently (finish-ci-feature.md §3, the transferred failure-state rule).
    */
-  public record Initialization(Status status, InitFailed.Reason reason, String detail) {
+  public record Initialization(
+      Status status, InitFailed.Reason reason, String detail, Overrun overrun) {
+
+    /** Every outcome but a progress-aware {@code NEVER_INITIALIZED}: no {@link #overrun}. */
+    public Initialization(Status status, InitFailed.Reason reason, String detail) {
+      this(status, reason, detail, null);
+    }
 
     public enum Status {
       /** Clone and checkout done; the step's script is the reply to this. */
       INITIALIZED,
       /** The daemon reported a structured setup failure — {@link #reason} says which. */
       INIT_FAILED,
-      /** It registered and then said nothing before the deadline. */
+      /**
+       * It registered and did not finish before its deadline: the flat budget for a daemon below
+       * capability 4, or — with {@link #overrun} saying which — its progress stalled or its total cap
+       * passed (qits-2539).
+       */
       NEVER_INITIALIZED,
       /** The socket closed before either. */
       CONNECTION_LOST
@@ -333,6 +358,52 @@ public class CiDaemonRegistry {
 
     static Initialization of(Status status) {
       return new Initialization(status, null, null);
+    }
+
+    static Initialization neverInitialized(Overrun overrun) {
+      return new Initialization(Status.NEVER_INITIALIZED, null, null, overrun);
+    }
+  }
+
+  /** The first capability whose daemon reports {@link InitProgress} while it works (qits-2539). */
+  public static final int INIT_PROGRESS_CAPABILITY = 4;
+
+  /**
+   * How long a worktree may take — the initialization's, or a {@code Continue}'s re-fetch (qits-2539).
+   * {@code flat} is the whole budget of a daemon below {@link #INIT_PROGRESS_CAPABILITY}, which says
+   * nothing while it works, and of one whose {@code Hello} has not arrived yet. A daemon at 4 or
+   * above is failed only when no {@link InitProgress} snapshot has changed for {@code stall}, or when
+   * {@code max} has passed since the wait began, whichever is first; it is never failed for being
+   * slow while it moves. {@code LeaseStepRunner} owns the three values (its config); this class only
+   * applies them.
+   */
+  public record InitDeadline(Duration flat, Duration stall, Duration max) {
+
+    public InitDeadline {
+      Objects.requireNonNull(flat, "flat");
+      Objects.requireNonNull(stall, "stall");
+      Objects.requireNonNull(max, "max");
+    }
+
+    /** One budget for every daemon, progress or not: what the {@link Duration} overloads mean. */
+    public static InitDeadline flat(Duration budget) {
+      return new InitDeadline(budget, budget, budget);
+    }
+  }
+
+  /**
+   * Why a progress-aware wait gave up (qits-2539), for the step's recorded output and the log: the
+   * last snapshot the daemon reported in this wait ({@code null} when it reported none), and whether
+   * it {@link Kind#STALLED} — no change for {@code window} — or was {@link Kind#NOT_DONE} when the
+   * total cap of {@code window} passed while it still moved. Null on an outcome the flat budget
+   * decided, so a daemon below capability 4 is described exactly as before.
+   */
+  public record Overrun(InitProgress last, Kind kind, Duration window) {
+    public enum Kind {
+      /** No snapshot changed for the stall window. */
+      STALLED,
+      /** It kept moving, and the total cap passed anyway. */
+      NOT_DONE
     }
   }
 
@@ -471,20 +542,28 @@ public class CiDaemonRegistry {
    * step after all), or the deadline expires. Null means the terminal frame came first.
    */
   public Initialization awaitInitializedUnlessFinished(String daemonId, Duration timeout) {
+    return awaitInitializedUnlessFinished(daemonId, InitDeadline.flat(timeout));
+  }
+
+  /**
+   * {@link #awaitInitializedUnlessFinished(String, Duration)} under an {@link InitDeadline}: waited
+   * out for as long as a capability-4 daemon's progress moves (qits-2539), flat below that.
+   */
+  public Initialization awaitInitializedUnlessFinished(String daemonId, InitDeadline deadline) {
     Launch launch = launches.get(daemonId);
     if (launch == null) {
       return Initialization.of(Initialization.Status.CONNECTION_LOST);
     }
     CompletableFuture<Completion> step = launch.stepFinished;
-    await(CompletableFuture.anyOf(launch.initialized, step), timeout, null);
+    Overrun overrun =
+        awaitWhileMoving(
+            launch, CompletableFuture.anyOf(launch.initialized, step), deadline, "its worktree");
     Initialization initialized = launch.initialized.getNow(null);
     Completion finished = step.getNow(null);
     if (finished != null && finished.status() == Completion.Status.FINISHED) {
       return null;
     }
-    return initialized != null
-        ? initialized
-        : Initialization.of(Initialization.Status.NEVER_INITIALIZED);
+    return initialized != null ? initialized : Initialization.neverInitialized(overrun);
   }
 
   /**
@@ -550,12 +629,22 @@ public class CiDaemonRegistry {
 
   /** Block until the daemon reports its checkout done, fails it, drops, or the deadline expires. */
   public Initialization awaitInitialized(String daemonId, Duration timeout) {
+    return awaitInitialized(daemonId, InitDeadline.flat(timeout));
+  }
+
+  /**
+   * Block until the daemon reports its checkout done, fails it or drops — or until {@code deadline}
+   * gives up on it: flat for a daemon below {@link #INIT_PROGRESS_CAPABILITY}, and for one at or
+   * above it only when its {@link InitProgress} stalls or the total cap passes (qits-2539), which
+   * the {@code NEVER_INITIALIZED} answer's {@link Initialization#overrun} then describes.
+   */
+  public Initialization awaitInitialized(String daemonId, InitDeadline deadline) {
     Launch launch = launches.get(daemonId);
     if (launch == null) {
       return Initialization.of(Initialization.Status.CONNECTION_LOST);
     }
-    return await(
-        launch.initialized, timeout, Initialization.of(Initialization.Status.NEVER_INITIALIZED));
+    Overrun overrun = awaitWhileMoving(launch, launch.initialized, deadline, "its worktree");
+    return launch.initialized.getNow(Initialization.neverInitialized(overrun));
   }
 
   /**
@@ -598,7 +687,14 @@ public class CiDaemonRegistry {
    * new run's ({@code CONTINUED}), it could not ({@code FAILED}, with its reason), it said nothing in
    * time ({@code NO_ANSWER}), or its launch is gone ({@code CONNECTION_LOST}).
    */
-  public record Continuation(Status status, ContinueFailed.Reason reason, String detail) {
+  public record Continuation(
+      Status status, ContinueFailed.Reason reason, String detail, Overrun overrun) {
+
+    /** Every outcome but a progress-aware {@code NO_ANSWER}: no {@link #overrun}. */
+    public Continuation(Status status, ContinueFailed.Reason reason, String detail) {
+      this(status, reason, detail, null);
+    }
+
     public enum Status {
       CONTINUED,
       FAILED,
@@ -616,6 +712,10 @@ public class CiDaemonRegistry {
 
     static Continuation failed(ContinueFailed failed) {
       return new Continuation(Status.FAILED, failed.reason(), failed.detail());
+    }
+
+    static Continuation noAnswer(Overrun overrun) {
+      return new Continuation(Status.NO_ANSWER, null, null, overrun);
     }
   }
 
@@ -648,6 +748,9 @@ public class CiDaemonRegistry {
       launch.correlationId = null;
       launch.listener = null;
       launch.continuation = new CompletableFuture<>();
+      // A Continue's re-fetch reports its own progress (qits-2539); the setup's last snapshot is
+      // about the previous run and must neither count as this wait's progress nor describe it.
+      launch.progress = null;
     }
     LOG.infof("ci-daemon %s now serves run %s", daemonId, runId);
     return true;
@@ -661,11 +764,99 @@ public class CiDaemonRegistry {
 
   /** Block until the {@code Continue} in flight is answered, the launch is lost, or the deadline. */
   public Continuation awaitContinued(String daemonId, Duration timeout) {
+    return awaitContinued(daemonId, InitDeadline.flat(timeout));
+  }
+
+  /**
+   * Block until the {@code Continue} in flight is answered or the launch is lost — or until {@code
+   * deadline} gives up on it. A {@code Continue} re-fetches the mirror, which is the slow part of
+   * making a worktree, so it is waited out the way {@link #awaitInitialized(String, InitDeadline)}
+   * is (qits-2539): {@code NO_ANSWER} for a capability-4 daemon only once its progress stalls or the
+   * cap passes, with {@link Continuation#overrun} saying which; flat below that.
+   */
+  public Continuation awaitContinued(String daemonId, InitDeadline deadline) {
     Launch launch = launches.get(daemonId);
     if (launch == null) {
       return Continuation.of(Continuation.Status.CONNECTION_LOST);
     }
-    return await(launch.continuation, timeout, Continuation.of(Continuation.Status.NO_ANSWER));
+    CompletableFuture<Continuation> continuation = launch.continuation;
+    Overrun overrun = awaitWhileMoving(launch, continuation, deadline, "its Continue");
+    return continuation.getNow(Continuation.noAnswer(overrun));
+  }
+
+  /**
+   * The progress-aware wait every worktree await shares (qits-2539): a loop of bounded {@link
+   * #await}s on {@code future}, each slice up to the nearest deadline, re-reading between slices what
+   * the deadline depends on — the capability the daemon announced, and when its {@link InitProgress}
+   * last changed. Returns when {@code future} completes (null), when a deadline passed (the {@link
+   * Overrun} for a capability-4 daemon, null for the flat budget), or on an interrupt (null — the
+   * caller reads the future, as every await here answers an interrupt with its failure value).
+   *
+   * <p>The deadlines only ever move later — a change can only push the stall window out, and the cap
+   * and the flat budget are fixed at the start — so waking at the nearest one never sleeps past a
+   * deadline. The one value that can change the shape is the capability, unknown until the {@code
+   * Hello}: while it is, the wait is the flat budget re-checked every second, so a {@code Hello}
+   * arriving a moment after the dial is picked up at once. The stall clock never starts before the
+   * wait: a snapshot that changed before it (the setup was already moving when the wait began, or a
+   * re-dial replayed one) counts from the wait's start.
+   */
+  private Overrun awaitWhileMoving(
+      Launch launch, CompletableFuture<?> future, InitDeadline deadline, String what) {
+    long start = System.nanoTime();
+    long flatAt = start + deadline.flat().toNanos();
+    long maxAt = start + deadline.max().toNanos();
+    while (!future.isDone()) {
+      if (Thread.currentThread().isInterrupted()) {
+        return null;
+      }
+      long now = System.nanoTime();
+      int capability = launch.capabilityVersion;
+      long wake;
+      if (capability >= INIT_PROGRESS_CAPABILITY) {
+        InitProgress last;
+        long changed;
+        synchronized (launch) {
+          last = launch.progress;
+          changed = last == null ? start : launch.progressChangedNanos;
+        }
+        long stallAt = (changed - start > 0 ? changed : start) + deadline.stall().toNanos();
+        if (now - maxAt >= 0) {
+          return overran(launch, new Overrun(last, Overrun.Kind.NOT_DONE, deadline.max()), what);
+        }
+        if (now - stallAt >= 0) {
+          return overran(launch, new Overrun(last, Overrun.Kind.STALLED, deadline.stall()), what);
+        }
+        wake = stallAt - maxAt < 0 ? stallAt : maxAt;
+      } else {
+        if (now - flatAt >= 0) {
+          return null;
+        }
+        wake = capability < 0 ? Math.min(flatAt - now, ONE_SECOND_NANOS) + now : flatAt;
+      }
+      await(future, Duration.ofNanos(Math.max(1_000_000L, wake - now)), null);
+    }
+    return null;
+  }
+
+  private static final long ONE_SECOND_NANOS = TimeUnit.SECONDS.toNanos(1);
+
+  /** A window as a log line reads it: whole seconds, or milliseconds for a suite's short ones. */
+  private static String span(Duration window) {
+    return window.toMillis() % 1000 == 0 ? window.toSeconds() + "s" : window.toMillis() + "ms";
+  }
+
+  /** One INFO line for a progress-aware wait that gave up, naming where the daemon stood. */
+  private Overrun overran(Launch launch, Overrun overrun, String what) {
+    InitProgress last = overrun.last();
+    LOG.infof(
+        "ci-daemon %s of run %s did not finish %s: %s %s (last progress: %s)",
+        launch.daemonId,
+        launch.runId,
+        what,
+        overrun.kind() == Overrun.Kind.STALLED ? "no progress for" : "still not done after",
+        span(overrun.window()),
+        last == null ? "none reported" : last.phase() + ", " + last.bytes() + " bytes");
+    return overrun;
   }
 
   /**
@@ -841,6 +1032,10 @@ public class CiDaemonRegistry {
    * speaks it too — a capability-2 daemon from a lease asked before this host was deployed exits on
    * an Ack version it does not know, and must keep running its run — and this host's otherwise. Only
    * a launch whose daemon announced capability 3 or more is ever held for a release (epic qits-732).
+   * The same holds one version up (qits-2539): a capability-3 daemon, the one leases ran before
+   * InitProgress, is answered 3, so it never sends the frame, and its worktree keeps the flat budget
+   * ({@link InitDeadline#flat()}); only a daemon that announced 4 hears 4 and is waited out by its
+   * progress.
    */
   static int ackVersion(int announced) {
     return announced >= MIN_ACK_VERSION && announced <= CiDaemonProtocol.CAPABILITY_VERSION
@@ -1001,7 +1196,10 @@ public class CiDaemonRegistry {
    * its index and only once, and a late {@code Initialized} never moves the phase back. Its {@code
    * Hello}, {@code Heartbeat} and {@code AckReceived} are ignored, since they speak for a
    * connection the launch no longer holds, and nothing from it counts towards the bound one's
-   * liveness or ever closes the bound one.
+   * liveness or ever closes the bound one. So is its {@link InitProgress} (qits-2539), for the
+   * {@code Heartbeat}'s reason: it is advisory and never resent, the daemon sends the next one on
+   * the connection it holds now, and a snapshot from a socket it has left must not keep a setup
+   * whose daemon may be gone looking alive.
    *
    * <p>Any frame from the bound connection, a {@code Heartbeat} included, is what keeps it inside
    * {@link #silenceLimit()}.
@@ -1017,7 +1215,8 @@ public class CiDaemonRegistry {
     if (bound != null && !bound.id().equals(connection.id())) {
       if (message instanceof Hello
           || message instanceof Heartbeat
-          || message instanceof AckReceived) {
+          || message instanceof AckReceived
+          || message instanceof InitProgress) {
         LOG.debugf(
             "%s from superseded connection %s of ci-daemon %s ignored",
             message.getClass().getSimpleName(), connection.id(), daemonId);
@@ -1059,6 +1258,7 @@ public class CiDaemonRegistry {
         // Liveness only, and stamped above like every frame: an open socket is not the signal,
         // because one whose far leg died behind the edge stays open here (qits-1728).
       }
+      case InitProgress progress -> recordProgress(launch, progress);
       case Initialized ignored -> {
         // Once per lease. A daemon that re-dials resends an Initialized it could not deliver; one
         // arriving after a step was sent must not move the phase back.
@@ -1191,6 +1391,31 @@ public class CiDaemonRegistry {
     LOG.infof(
         "ci-daemon %s of run %s disconnected in phase %s; waiting %ss for it to come back",
         daemonId, launch.runId, launch.phase, grace.toSeconds());
+  }
+
+  /**
+   * Where the daemon's setup stands (qits-2539): kept as the launch's latest snapshot, and when it
+   * differs from the one before it in phase or bytes, the instant of that change — the clock the
+   * stall window of {@link #awaitWhileMoving} runs from. An identical snapshot is a daemon still
+   * there, which its heartbeat already says, and not a setup getting anywhere. Bytes are a snapshot
+   * of unfinished pack data and drop when a pack completes, so a change in either direction counts.
+   * Host-stamped like every timestamp here: the frame carries no time.
+   */
+  private static void recordProgress(Launch launch, InitProgress progress) {
+    boolean changed;
+    synchronized (launch) {
+      InitProgress before = launch.progress;
+      changed = !progress.equals(before);
+      if (changed) {
+        launch.progress = progress;
+        launch.progressChangedNanos = System.nanoTime();
+      }
+    }
+    if (changed) {
+      LOG.debugf(
+          "ci-daemon %s of run %s: %s, %d bytes",
+          launch.daemonId, launch.runId, progress.phase(), progress.bytes());
+    }
   }
 
   /**
@@ -1584,6 +1809,15 @@ public class CiDaemonRegistry {
 
     /** Which scheduled silence check is the live one; guarded by the launch. */
     private Object watchToken;
+    /**
+     * The latest {@link InitProgress} of the setup or {@code Continue} in progress (qits-2539), null
+     * before the first and after a re-key; guarded by the launch, with {@link #progressChangedNanos}.
+     */
+    private InitProgress progress;
+
+    /** When {@link #progress} last changed ({@link System#nanoTime}); guarded by the launch. */
+    private long progressChangedNanos;
+
     /** -1 until a {@link Hello} arrives — see {@link #capabilityVersionOf(String)}. */
     private volatile int capabilityVersion = -1;
 

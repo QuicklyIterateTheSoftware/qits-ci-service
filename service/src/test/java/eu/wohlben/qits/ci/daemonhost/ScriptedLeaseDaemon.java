@@ -110,7 +110,8 @@ public final class ScriptedLeaseDaemon implements AutoCloseable {
     return dialUninitialized(registry, daemonId, subject, CiDaemonProtocol.CAPABILITY_VERSION);
   }
 
-  private static ScriptedLeaseDaemon dialUninitialized(
+  /** {@link #dialUninitialized(CiDaemonRegistry, String, String)}, announcing {@code capability}. */
+  public static ScriptedLeaseDaemon dialUninitialized(
       CiDaemonRegistry registry, String daemonId, String subject, int capability) {
     ScriptedLeaseDaemon daemon = new ScriptedLeaseDaemon(registry, daemonId);
     if (registry.admitByToken(daemonId, subject, daemon.connection)
@@ -119,6 +120,11 @@ public final class ScriptedLeaseDaemon implements AutoCloseable {
     }
     registry.onMessage(daemonId, daemon.connection, new Hello(daemonId, capability));
     return daemon;
+  }
+
+  /** Says {@code message} on the connection it holds — an {@code InitProgress}, say (qits-2539). */
+  public void say(CiDaemonMessage message) {
+    registry.onMessage(daemonId, connection, message);
   }
 
   /** Says {@code Initialized} on the connection it holds: its worktree is ready. */
