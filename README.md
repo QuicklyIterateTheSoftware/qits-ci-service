@@ -1914,7 +1914,16 @@ the next. The run:
    container.
 3. **Initialize.** The daemon clones and checks out the run's sha once, then says `Initialized` — or
    reports a structured failure. A checkout that cannot find the commit makes qits-ci re-read the
-   config source and discard a run that describes a push which no longer exists.
+   config source and discard a run that describes a push which no longer exists. **The wait for it
+   follows progress** (qits-2539): a daemon announcing capability 4 sends `InitProgress` (a phase
+   and the pack bytes still being written) about every ten seconds, and is given up on only when no
+   snapshot changes for `qits.ci.daemon-init-stall-seconds` (300) or after
+   `qits.ci.daemon-init-max-seconds` (1800) in all — so a mirror thirteen minutes behind on a slow
+   target finishes instead of being cut off and restarted from zero by every retry. A daemon below
+   capability 4 says nothing while it works and keeps the flat
+   `qits.ci.daemon-init-timeout-seconds` (120). The step output of a progress-aware failure names
+   where it stood: `the run's ci-daemon never finished making its worktree: fetching the mirror,
+   36.2 MiB received, no progress for 300 s`.
 4. **Each step arrives as a `RunStep`** — `{correlationId, stepIndex, script, timeoutSeconds,
    env}`, the env carrying `QITS_CI_STEP_INDEX` — the first as the answer to `Initialized`, each
    later one after the previous `StepFinished`. The slot never receives the config file.
@@ -2008,8 +2017,9 @@ depends on no target, no lease and no inbound connection.)
 
 **Failures stay distinguishable.** A lease that ended `FAILED` or `EXITED` before its daemon said
 `Initialized` (its detail becomes the step's output), a daemon that never dialled within
-`qits.ci.daemon-register-timeout-seconds`, a daemon that registered and then went quiet, a
-structured setup failure, a lost socket and a genuine step timeout are different recorded outcomes —
+`qits.ci.daemon-register-timeout-seconds`, a daemon that registered and then went quiet (for a
+capability-4 daemon: whose `InitProgress` stopped changing, or that was still not done at the cap —
+the output says which, with the last phase and bytes), a structured setup failure, a lost socket and a genuine step timeout are different recorded outcomes —
 none of them is "the step failed with exit −1".
 
 ## Following a run, stopping one, and asking again

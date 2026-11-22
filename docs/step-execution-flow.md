@@ -78,6 +78,7 @@ sequenceDiagram
     Slot-->>Ci: dials the control WebSocket as the run's token, Hello{daemonId}
     Note over Ci: the dial is also a cue: qits-ci reads the lease and claims the run<br/>(RUNNING, target_id) if no event got there first
     Slot->>Git: clone with the token, checkout $QITS_CI_SHA
+    Slot-->>Ci: InitProgress{phase, bytes} every ~10 s meanwhile (capability 4, qits-2539)<br/>qits-ci waits while it changes: stall 300 s, cap 1800 s; flat 120 s below 4
     Slot-->>Ci: Initialized
 
     loop every step, on the same connection
@@ -145,7 +146,10 @@ has warm. So phase 1's container is kept for phase 2 where it can be:
   on its `ci-run-<runId>` thread from step **0** — the daemon counts the new run's steps afresh, the
   output `seq` goes on counting. Phase 2 closes the lease at its end as any run does, and is never
   held itself.
-- **`ContinueFailed`**, no answer within `qits.ci.daemon-init-timeout-seconds`, or the daemon or the
+- **`ContinueFailed`**, no answer in time — `qits.ci.daemon-init-timeout-seconds` for a daemon below
+  capability 4; for one at 4 or above, whose `Continue` re-fetch reports `InitProgress`, no changed
+  snapshot within `qits.ci.daemon-init-stall-seconds` or no answer within
+  `qits.ci.daemon-init-max-seconds` (qits-2539) — or the daemon or the
   lease gone before the answer: the held lease is ended (`Close`, `DELETE`, both tokens revoked) and
   the run goes back to `QUEUED` with no lease, target, pin or `continued_from_run_id`, and asks a
   lease of its own. No verdict is announced and no automatic retry is counted — nothing ran.

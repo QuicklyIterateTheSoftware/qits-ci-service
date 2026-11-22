@@ -339,6 +339,32 @@ Four things bite:
   the lease's detail; a lease no live run names is ended by the reconcile. Do not reintroduce a
   docker or orchestrator call here: the target owns its host.
 
+**The worktree is waited out for as long as it moves (qits-2539).** Between the dial and
+`Initialized` the daemon fetches its repository's bare mirror on the target's cache volume, and the
+host used to give that a flat `qits.ci.daemon-init-timeout-seconds` (120). On ws-proof, a slow-link
+target, qits-landing-app's mirror was 233 MiB behind — about thirteen minutes — so every lease was
+ended at 120 s, the half-written pack died with the container and every retry started from zero:
+"the run's ci-daemon never finished making its worktree", forever. A daemon at capability 4 sends
+`InitProgress{phase, bytes}` about every ten seconds (only to a host whose `Ack` said 4), and
+`CiDaemonRegistry.awaitInitialized`/`awaitInitializedUnlessFinished`/`awaitContinued` take a
+`CiDaemonRegistry.InitDeadline(flat, stall, max)`, composed by `LeaseStepRunner.initDeadline()` from
+the three keys: such a daemon is failed only when no snapshot has **changed** for
+`qits.ci.daemon-init-stall-seconds` (300) or `qits.ci.daemon-init-max-seconds` (1800) has passed. An
+identical snapshot is not progress; `bytes` is a snapshot of unfinished pack data and drops when a
+pack completes, so a change either way is. 300 rather than 120 because the git host can spend a
+minute preparing a pack before its first byte and the daemon's own git low-speed abort is 300 s —
+the host never gives up on a fetch the daemon still considers alive; 1800 is the daemon's own
+mirror-sync bound. Below capability 4 — capability 3 is answered `Ack(3)` and never sends the frame
+— and before the `Hello`, the flat 120 applies unchanged, and so does the old step output. Three
+rules: the wait is still a loop of bounded `await`s on the one future (slices to the nearest
+deadline, which only ever moves later), so `CiDaemonRegistryTimeoutTest` stays the guard; an
+`InitProgress` from a superseded connection is ignored like its `Heartbeat`; and `rekeyLaunch`
+forgets the setup's last snapshot, so a `Continue`'s re-fetch is judged by its own. A progress-aware
+failure's output names the last phase and bytes and the bound (`…: fetching the mirror, 36.2 MiB
+received, no progress for 300 s` / `…, still not done after 1800 s` / `…: it reported no progress
+within 300 s`), with one INFO line from the registry naming daemon, run, phase and bytes.
+`CiDaemonRegistryInitProgressTest` and `LeaseStepRunnerTest` are the cases.
+
 ### A green QA run may hold its slot for the release
 
 Epic qits-732 (qits-1788 the hold, qits-1789 the adoption). A release request's QA run
@@ -375,7 +401,8 @@ and it is never `QUEUED`; a run that is not accepted gives the slot back (`giveB
 lease ended). `continueOnHeldSlot` then runs on the run's `ci-run-<id>` driver: mint the run's token,
 `CiDaemonRegistry.rekeyLaunch` (the old subject stays admitted until the daemon answers),
 `CiLeases.adopt`, `recordContinuedLaunch` for a restart, `Continue{env: CiSlotSpecs.runEnv}`, await
-the answer under `qits.ci.daemon-init-timeout-seconds`. `Continued` drives the run from step 0
+the answer under `LeaseStepRunner.initDeadline()` (the flat `qits.ci.daemon-init-timeout-seconds` below
+capability 4, progress-aware at 4 — see below). `Continued` drives the run from step 0
 (`executeAdopted`) and keeps the phase-1 token until the lease is torn down, because the target's
 shared buildkit may hold a registry authorizer made with it; anything else ends the held lease, revokes both
 tokens and `requeueAdopted` puts the run back `QUEUED` with no lease, target, pin or
