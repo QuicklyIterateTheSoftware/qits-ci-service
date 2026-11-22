@@ -25,6 +25,15 @@ final class FlakyGit {
   static final String FAILURE =
       "fatal: unable to access 'x': The requested URL returned error: 503";
 
+  /**
+   * The git host's own refusal by HTTP status (qits-2512, run 9f14a7ab) rather than a bad moment:
+   * a push answered this way is never retried, and the fold is never to blame for it.
+   */
+  static final String FAILURE_HTTP_413 =
+      "error: RPC failed; HTTP 413 curl 22 The requested URL returned error: 413\n"
+          + "send-pack: unexpected disconnect while reading sideband packet\n"
+          + "fatal: the remote end hung up unexpectedly";
+
   final Path bin;
   final Path state;
 
@@ -52,7 +61,12 @@ final class FlakyGit {
           n=$(grep -cxF "$sub" "$state/calls")
           fail=$(cat "$state/fail-$sub" 2>/dev/null || true)
           case " $fail " in
-            *" all "*|*" $n "*) echo "%s" >&2; exit 128 ;;
+            *" all "*|*" $n "*)
+              text=$(cat "$state/fail-text-$sub" 2>/dev/null || true)
+              if [ -z "$text" ]; then text="%s"; fi
+              printf '%%s\\n' "$text" >&2
+              exit 128
+              ;;
           esac
         fi
         exec '%s' "$@"
@@ -71,6 +85,17 @@ final class FlakyGit {
   /** Fails these invocations of {@code subcommand}: numbers from 1, or {@code all}. */
   FlakyGit fail(String subcommand, String invocations) throws Exception {
     Files.writeString(state.resolve("fail-" + subcommand), invocations);
+    return this;
+  }
+
+  /**
+   * The same thing, failing with {@code failureText} (which may hold several lines) rather than
+   * the default 503 — {@link #FAILURE_HTTP_413}, say, for a host that refused the request outright
+   * rather than having a bad moment.
+   */
+  FlakyGit fail(String subcommand, String invocations, String failureText) throws Exception {
+    Files.writeString(state.resolve("fail-" + subcommand), invocations);
+    Files.writeString(state.resolve("fail-text-" + subcommand), failureText);
     return this;
   }
 

@@ -107,9 +107,11 @@ import java.util.regex.Pattern;
  * fetches the branch: a tip whose one parent is the fold and whose tree is this step's is the same
  * step executed again after its first execution pushed (a runner re-dispatch), so it prints {@code
  * already pushed: <branch> at <sha> carries the same content (fold <sha> of <base>)} and is green,
- * the branch having moved as a fresh push would have moved it. Any other rejection means the fold
- * no longer contains the branch, and the step fails saying so. It ends {@code pushed <sha> to
- * <branch> (fold <sha> of <base>)}.
+ * the branch having moved as a fresh push would have moved it. A genuine ref rejection ({@code
+ * [rejected]}, {@code non-fast-forward}, {@code fetch first}, {@code stale info}) means the fold no
+ * longer contains the branch, and the step fails saying so; a push the git host instead refused by
+ * HTTP status (qits-2512, below) says that instead. It ends {@code pushed <sha> to <branch> (fold
+ * <sha> of <base>)}.
  *
  * <p><b>Both endings name the fold, and both report what they did not commit</b> (qits-1687). The
  * CI service keeps only a step's last lines, so a bare {@code unchanged} read beside a run list's
@@ -132,6 +134,16 @@ import java.util.regex.Pattern;
  * times, 2s then 5s apart, and one that outlasts them is said as the host's — {@code the git host
  * is unavailable} in the prelude, {@code the git host did not answer the push} in the postlude, each
  * asking for a re-run — never as a missing branch or a fold that dropped the branch.
+ *
+ * <p><b>A push the git host refuses by HTTP status is not a verdict about the fold either</b>
+ * (qits-2512). Run 9f14a7ab's push met a 413 — the host's own request-body-size limit — and the
+ * postlude's already-pushed fetch found nothing, so the step fell through to {@code rejected - the
+ * fold no longer contains it}: a cause the git host never gave, for a request it refused outright.
+ * The push's own words are read a second time, after the already-pushed check and the transient
+ * one: a genuine ref rejection still reads as the fold having moved, but a status the ref words do
+ * not explain — {@code returned error: <nnn>} or {@code HTTP <nnn>}, 413 included — is named as the
+ * git host's own refusal, {@code the git host refused the push to <branch> with HTTP <status>;
+ * nothing was pushed}, and the step still fails, since nothing reached the branch either way.
  *
  * <h2>A kind that says what it changed: {@code commit-type}</h2>
  *
@@ -744,9 +756,12 @@ public final class CiAutomationComposer {
     // Plain, never forced. After the first join the fold contains the branch, so a later run on a
     // newer fold is a fast-forward of it.
     out.append("if ! git_net push \"$QITS_CI_REPOSITORY_URL\" \"HEAD:refs/heads/$branch\"; then\n");
-    // Which kind of failure the push was, kept before the fetch below overwrites git_net's words.
+    // Which kind of failure the push was, kept before the fetch below overwrites git_net's words
+    // (qits-2512: push_out is the push's own words, read again further down to tell a genuine ref
+    // rejection from a host that refused the request by HTTP status).
     out.append("  push_transient=no\n");
     out.append("  push_last=\n");
+    out.append("  push_out=\"$git_net_out\"\n");
     out.append("  if git_net_transient; then\n");
     out.append("    push_transient=yes\n");
     out.append("    push_last=$(git_net_last)\n");
@@ -780,6 +795,36 @@ public final class CiAutomationComposer {
             + " automation\" >&2\n");
     out.append("    exit 1\n");
     out.append("  fi\n");
+    // qits-2512: run 9f14a7ab's push met a 413 (the git host's own body-size limit) and this step
+    // blamed the fold anyway - "rejected - the fold no longer contains it" names a cause the git
+    // host never gave, the same shape of mistake qits-1253 fixed for a host that did not answer at
+    // all. A GENUINE ref rejection (the branch moved, or something else holds it) is the only
+    // case that sentence is true for, so push_out - the push's own words, kept above before the
+    // already-pushed fetch overwrote them - is read again to tell the two apart.
+    out.append("  if printf '%s\\n' \"$push_out\" \\\n");
+    out.append(
+        "      | grep -Eqi '\\[rejected\\]|non-fast-forward|fetch first|stale info|couldn.t find"
+            + " remote ref'; then\n");
+    out.append(
+        "    echo \"push to $branch was rejected - the fold no longer contains it; remove the"
+            + " branch or join it again\" >&2\n");
+    out.append("    exit 1\n");
+    out.append("  fi\n");
+    // Not a ref rejection: a host that answered with an HTTP status (4xx here, since a 5xx or a
+    // dropped connection already took the transient branch above) refused the REQUEST, not the
+    // branch. Name the status rather than repeating the fold sentence over it.
+    out.append("  push_status=$(printf '%s\\n' \"$push_out\" \\\n");
+    out.append(
+        "    | grep -Eo 'returned error: [0-9]{3}|HTTP [0-9]{3}' | grep -Eo '[0-9]{3}' | tail -n"
+            + " 1)\n");
+    out.append("  if [ -n \"$push_status\" ]; then\n");
+    out.append(
+        "    echo \"the git host refused the push to $branch with HTTP $push_status; nothing was"
+            + " pushed\" >&2\n");
+    out.append("    exit 1\n");
+    out.append("  fi\n");
+    // Neither a recognised ref rejection nor a named status: say what used to be said, since the
+    // fold IS the likeliest cause left once both of the above are ruled out.
     out.append(
         "  echo \"push to $branch was rejected - the fold no longer contains it; remove the branch"
             + " or join it again\" >&2\n");

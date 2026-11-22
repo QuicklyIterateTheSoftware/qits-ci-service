@@ -202,6 +202,7 @@ steps:
       if ! git_net push "$QITS_CI_REPOSITORY_URL" "HEAD:refs/heads/$branch"; then
         push_transient=no
         push_last=
+        push_out="$git_net_out"
         if git_net_transient; then
           push_transient=yes
           push_last=$(git_net_last)
@@ -220,6 +221,17 @@ steps:
         fi
         if [ "$push_transient" = yes ]; then
           echo "the git host did not answer the push to $branch ($push_last); re-run this automation" >&2
+          exit 1
+        fi
+        if printf '%s\n' "$push_out" \
+            | grep -Eqi '\[rejected\]|non-fast-forward|fetch first|stale info|couldn.t find remote ref'; then
+          echo "push to $branch was rejected - the fold no longer contains it; remove the branch or join it again" >&2
+          exit 1
+        fi
+        push_status=$(printf '%s\n' "$push_out" \
+          | grep -Eo 'returned error: [0-9]{3}|HTTP [0-9]{3}' | grep -Eo '[0-9]{3}' | tail -n 1)
+        if [ -n "$push_status" ]; then
+          echo "the git host refused the push to $branch with HTTP $push_status; nothing was pushed" >&2
           exit 1
         fi
         echo "push to $branch was rejected - the fold no longer contains it; remove the branch or join it again" >&2

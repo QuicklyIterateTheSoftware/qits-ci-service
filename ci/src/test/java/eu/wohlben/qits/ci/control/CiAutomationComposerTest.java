@@ -197,10 +197,12 @@ public class CiAutomationComposerTest {
   @Test
   public void theScreenshotBaselinesKindIsComposedByteIdenticallyToBefore() throws Exception {
     // composed/automation-screenshot-baselines.yml is the composition from before qits-cli: the
-    // key is additive, so a kind that does not set it must not move by a byte. It moved three
+    // key is additive, so a kind that does not set it must not move by a byte. It moved four
     // times since, on purpose: qits-1253 put git_net into every kind's platform prelude and
-    // postlude, qits-1687 named the fold on every ending and added the outside-paths report, and
-    // qits-1563 moved every file the step writes into a mktemp directory of the run's own.
+    // postlude, qits-1687 named the fold on every ending and added the outside-paths report,
+    // qits-1563 moved every file the step writes into a mktemp directory of the run's own, and
+    // qits-2512 told a push the git host refused by HTTP status apart from a genuine ref
+    // rejection, so the postlude no longer blames the fold for the host's own refusal.
     String path = "ci/src/main/resources/platform-pipelines/automations/screenshot-baselines.yml";
     String kindFile = Files.readString(Path.of("..").resolve(path));
     try (var in =
@@ -789,6 +791,36 @@ public class CiAutomationComposerTest {
       assertEquals(1, host.calls("push"), run.output);
       assertEquals(List.of(), host.sleeps());
       assertEquals(stranger, scratch.originRev("refs/heads/" + BRANCH), "never forced");
+    }
+  }
+
+  @Test
+  public void aPushTheGitHostRefusedByHttpStatusIsNamedAndNeverBlamedOnTheFold(@TempDir Path dir)
+      throws Exception {
+    // qits-2512, run 9f14a7ab: the push met a 413 (the git host's own request-body-size limit),
+    // the already-pushed fetch found nothing because nothing was pushed, and the step blamed the
+    // fold anyway. A 413 is a 4xx, so git_net_transient already answers "not transient" for it
+    // (the comment above it: "a push refused with a 4xx says 'RPC failed' too") and it is never
+    // retried — what this fixes is the message once the push is answered.
+    for (String shell : List.of("bash", "sh")) {
+      Scratch scratch = new Scratch(dir.resolve(shell));
+      FlakyGit host = new FlakyGit(scratch.root).fail("push", "1", FlakyGit.FAILURE_HTTP_413);
+      Result run =
+          scratch.run(
+              shell, WRITES, scratch.payload(BRANCH, scratch.fold, "\"out/**\""), false, null,
+              host.env());
+
+      assertEquals(1, run.exit, shell + ":\n" + run.output);
+      assertTrue(
+          run.output.contains(
+              "the git host refused the push to " + BRANCH + " with HTTP 413; nothing was"
+                  + " pushed"),
+          run.output);
+      assertFalse(run.output.contains("the fold no longer contains it"), run.output);
+      assertFalse(run.output.contains("did not answer the push"), run.output);
+      assertEquals(1, host.calls("push"), "a 413 is an answer and is never retried");
+      assertEquals(List.of(), host.sleeps());
+      assertEquals("", scratch.originRevOrEmpty("refs/heads/" + BRANCH), "nothing was pushed");
     }
   }
 
