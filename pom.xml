@@ -175,7 +175,7 @@
         <qits.githost-frontend-pacts-qits-ci-service.version>2026.1122.105246</qits.githost-frontend-pacts-qits-ci-service.version>
         <qits.maintenance-frontend-pacts-qits-ci-service.version>2026.1122.3519</qits.maintenance-frontend-pacts-qits-ci-service.version>
         <qits.artifacts-frontend-pacts-qits-ci-service.version>2026.1122.40</qits.artifacts-frontend-pacts-qits-ci-service.version>
-        <qits.deployments-frontend-pacts-qits-ci-service.version>2026.1121.225821</qits.deployments-frontend-pacts-qits-ci-service.version>
+        <qits.deployments-frontend-pacts-qits-ci-service.version>2026.1122.124221</qits.deployments-frontend-pacts-qits-ci-service.version>
         <qits.mirror-frontend-pacts-qits-ci-service.version>2026.1122.105307</qits.mirror-frontend-pacts-qits-ci-service.version>
         <qits.observability-frontend-pacts-qits-ci-service.version>2026.1122.71949</qits.observability-frontend-pacts-qits-ci-service.version>
         <qits.orchestrator-frontend-pacts-qits-ci-service.version>2026.1122.105400</qits.orchestrator-frontend-pacts-qits-ci-service.version>
