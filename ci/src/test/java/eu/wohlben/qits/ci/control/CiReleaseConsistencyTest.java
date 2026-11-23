@@ -211,7 +211,9 @@ public class CiReleaseConsistencyTest {
     Map.Entry<Integer, String> first = runSh(work, qa.steps().get(0).script());
 
     assertEquals(1, first.getKey(), first.getValue());
-    assertTrue(first.getValue().contains("it's `$(touch pwned)` exit 0"), first.getValue());
+    // A newline ends the echoed line rather than the quoted string: each line of a refusal is its
+    // own quoted echo (qits-2465's refusals are several lines), so "exit 0" is printed, not run.
+    assertTrue(first.getValue().contains("it's `$(touch pwned)`\nexit 0"), first.getValue());
     assertFalse(Files.exists(work.resolve("pwned")), "nothing in the sentence was executed");
   }
 

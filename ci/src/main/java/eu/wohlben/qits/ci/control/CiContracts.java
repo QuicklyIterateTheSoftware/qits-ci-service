@@ -21,7 +21,26 @@ import java.util.Set;
  *   routes: { from: src/testing/browser/freezes }
  *   pacts:
  *     qits-projects-service: { packages: [maven] }
+ *   mirror:
+ *     repository: qits-platform-access-monorepo
+ *     framework: pact-js
+ *     excluded:
+ *       qits-system-service: "the CLI has no system verbs"
+ *       qits-workspaces-service:
+ *         getAgentActiveProcess: "a live terminal view, not a command"
  * }</pre>
+ *
+ * <h2>{@code mirror:} names the consumer whose pacts must match these (qits-2465)</h2>
+ *
+ * <p>Two consumers that front the same platform — the landing app and the {@code qits} CLI — are
+ * meant to make the same calls, and {@code mirror:} says so: {@code repository} is the counterpart
+ * consumer's repository name, {@code framework} the pact framework THIS repository records with
+ * (one of {@link PactParityAdapter#ADAPTERS}'s names, checked by {@link CiPactParity} rather than
+ * here, so an unknown one is a red QA run and not a run that never exists), and {@code excluded}
+ * the counterpart's operations this repository deliberately does not make, each with its reason:
+ * a string excludes a whole provider, a mapping excludes one {@code operationId} per key. A blank
+ * reason is refused — an exclusion is a decision somebody has to be able to read. Without the key
+ * nothing is checked; the check itself is {@link CiPactParity}'s javadoc.
  *
  * <h2>{@code entities:} rides the golden-masters bundle</h2>
  *
@@ -100,6 +119,8 @@ import java.util.Set;
  *     output, or null when none is declared; never present without {@code goldenMasters}
  * @param routesFrom the repository-relative directory of the recorded route freezes published as
  *     the {@code @routes/<application>} docs site, or null when {@code routes:} is not declared
+ * @param mirror the counterpart consumer whose pacts must match these, or null when {@code mirror:}
+ *     is not declared
  */
 public record CiContracts(
     String application,
@@ -107,7 +128,8 @@ public record CiContracts(
     Map<String, Source> pacts,
     String entities,
     String database,
-    String routesFrom) {
+    String routesFrom,
+    Mirror mirror) {
 
   /** The group every contract package's maven coordinate is in. */
   static final String GROUP = "eu.wohlben.qits";
@@ -125,6 +147,10 @@ public record CiContracts(
   private static final String ROUTES_KEY = "routes";
   private static final String FROM_KEY = "from";
   private static final String PACKAGES_KEY = "packages";
+  private static final String MIRROR_KEY = "mirror";
+  private static final String REPOSITORY_KEY = "repository";
+  private static final String FRAMEWORK_KEY = "framework";
+  private static final String EXCLUDED_KEY = "excluded";
 
   /** What an application name, the section's own, may be. */
   static final String APPLICATION = "[a-z][a-z0-9-]*";
@@ -138,6 +164,12 @@ public record CiContracts(
 
   /** The one directory every pact sits in, flat. */
   static final String PACTS_DIRECTORY = "pacts/";
+
+  /**
+   * What {@code mirror.repository} may be: a repository name. Looser than {@link
+   * #PROVIDER_REPOSITORY} on purpose — a consumer may be a {@code monorepo}, which no provider is.
+   */
+  static final String MIRROR_REPOSITORY = "[a-z][a-z0-9-]*";
 
   public CiContracts {
     pacts = Collections.unmodifiableMap(new LinkedHashMap<>(pacts));
@@ -154,6 +186,48 @@ public record CiContracts(
 
     public Source {
       packages = List.copyOf(packages);
+    }
+  }
+
+  /**
+   * The path of one consumer's pact with one provider — the flat naming {@link #PACTS_DIRECTORY}
+   * states, spelled once.
+   */
+  static String pactPath(String consumerRepository, String providerRepository) {
+    return PACTS_DIRECTORY + consumerRepository + "_" + providerRepository + ".json";
+  }
+
+  /**
+   * The {@code mirror:} declaration (qits-2465).
+   *
+   * @param repository the counterpart consumer's repository name
+   * @param framework the pact framework this repository records with, as declared — or null when
+   *     none is; {@link CiPactParity} decides whether it names an adapter
+   * @param excluded the counterpart's operations this repository does not make, by provider
+   *     repository, in declared order, empty when none
+   */
+  public record Mirror(String repository, String framework, Map<String, Exclusion> excluded) {
+
+    public Mirror {
+      excluded = Collections.unmodifiableMap(new LinkedHashMap<>(excluded));
+    }
+
+    /** Whether this repository declared that it does not make {@code operationId} of {@code provider}. */
+    public boolean excludes(String provider, String operationId) {
+      Exclusion exclusion = excluded.get(provider);
+      return exclusion != null
+          && (exclusion.reason() != null || exclusion.operations().containsKey(operationId));
+    }
+  }
+
+  /**
+   * One provider's exclusion: the whole provider ({@code reason} set, {@code operations} empty) or
+   * named operations ({@code reason} null, each operationId with its own reason).
+   */
+  public record Exclusion(String reason, Map<String, String> operations) {
+
+    public Exclusion {
+      operations = Collections.unmodifiableMap(new LinkedHashMap<>(operations));
     }
   }
 
@@ -292,8 +366,9 @@ public record CiContracts(
    * entry, an {@code entities:} that is not a relative, downward {@code .json} path or that is
    * declared without {@code golden-masters:}, a {@code database:} that is not a relative, downward
    * directory or that is declared without {@code golden-masters:}, a {@code routes:} that is not
-   * exactly {@code { from: <relative, downward directory> }}, and {@code publish:} anywhere inside
-   * are all {@link CiConfigException}s naming the file.
+   * exactly {@code { from: <relative, downward directory> }}, a {@code mirror:} without a {@code
+   * repository} or with a blank exclusion reason, and {@code publish:} anywhere inside are all
+   * {@link CiConfigException}s naming the file.
    */
   static CiContracts parse(Object raw, String configPath) {
     String where = configPath + ": '" + KEY + "'";
@@ -301,17 +376,23 @@ public record CiContracts(
       throw new CiConfigException(
           where
               + " must be a mapping of { application, golden-masters, entities, database, routes,"
-              + " pacts }, got: "
+              + " pacts, mirror }, got: "
               + CiConfigSchema.typeOf(raw));
     }
     refusePublish(map, configPath, KEY);
     requireKeys(
         map,
         Set.of(
-            APPLICATION_KEY, GOLDEN_MASTERS_KEY, ENTITIES_KEY, DATABASE_KEY, ROUTES_KEY, PACTS_KEY),
+            APPLICATION_KEY,
+            GOLDEN_MASTERS_KEY,
+            ENTITIES_KEY,
+            DATABASE_KEY,
+            ROUTES_KEY,
+            PACTS_KEY,
+            MIRROR_KEY),
         configPath,
         KEY,
-        "'application', 'golden-masters', 'entities', 'database', 'routes' and 'pacts'");
+        "'application', 'golden-masters', 'entities', 'database', 'routes', 'pacts' and 'mirror'");
     Object app = map.get(APPLICATION_KEY);
     if (!(app instanceof String application) || !application.matches(APPLICATION)) {
       throw new CiConfigException(
@@ -378,7 +459,127 @@ public record CiContracts(
         pacts.put(provider, pactSource(pact.getValue(), configPath, pactsWhere + "." + provider));
       }
     }
-    return new CiContracts(application, goldenMasters, pacts, entities, database, routesFrom);
+    Mirror mirror = map.containsKey(MIRROR_KEY) ? mirror(map.get(MIRROR_KEY), configPath) : null;
+    return new CiContracts(
+        application, goldenMasters, pacts, entities, database, routesFrom, mirror);
+  }
+
+  /**
+   * The {@code mirror:} mapping: {@code repository} required and a repository name, {@code
+   * framework} an optional non-blank string (whether it names an adapter is {@link CiPactParity}'s
+   * question), {@code excluded} an optional mapping of provider repository to a reason or to a
+   * mapping of operationId to a reason, every reason non-blank.
+   */
+  private static Mirror mirror(Object raw, String configPath) {
+    String where = KEY + "." + MIRROR_KEY;
+    if (!(raw instanceof Map<?, ?> map)) {
+      throw new CiConfigException(
+          configPath
+              + ": "
+              + where
+              + " must be a mapping of { repository, framework, excluded }, got: "
+              + CiConfigSchema.typeOf(raw));
+    }
+    requireKeys(
+        map,
+        Set.of(REPOSITORY_KEY, FRAMEWORK_KEY, EXCLUDED_KEY),
+        configPath,
+        where,
+        "'repository', 'framework' and 'excluded'");
+    Object repo = map.get(REPOSITORY_KEY);
+    if (!(repo instanceof String repository) || !repository.matches(MIRROR_REPOSITORY)) {
+      throw new CiConfigException(
+          configPath
+              + ": "
+              + where
+              + "."
+              + REPOSITORY_KEY
+              + " is "
+              + (repo == null ? "missing" : "'" + repo + "'")
+              + " — it is the counterpart consumer's repository name, "
+              + MIRROR_REPOSITORY);
+    }
+    String framework = null;
+    if (map.containsKey(FRAMEWORK_KEY)) {
+      Object declared = map.get(FRAMEWORK_KEY);
+      if (!(declared instanceof String named) || named.isBlank()) {
+        throw new CiConfigException(
+            configPath
+                + ": "
+                + where
+                + "."
+                + FRAMEWORK_KEY
+                + " must be the name of this repository's pact framework, e.g. pact-js, got: "
+                + CiConfigSchema.typeOf(declared));
+      }
+      framework = named.trim();
+    }
+    Map<String, Exclusion> excluded = new LinkedHashMap<>();
+    if (map.containsKey(EXCLUDED_KEY)) {
+      String excludedWhere = where + "." + EXCLUDED_KEY;
+      if (!(map.get(EXCLUDED_KEY) instanceof Map<?, ?> byProvider)) {
+        throw new CiConfigException(
+            configPath
+                + ": "
+                + excludedWhere
+                + " must be a mapping keyed by provider repository, got: "
+                + CiConfigSchema.typeOf(map.get(EXCLUDED_KEY)));
+      }
+      for (Map.Entry<?, ?> entry : byProvider.entrySet()) {
+        if (!(entry.getKey() instanceof String provider) || !provider.matches(PROVIDER_REPOSITORY)) {
+          throw new CiConfigException(
+              configPath
+                  + ": "
+                  + excludedWhere
+                  + " names provider '"
+                  + entry.getKey()
+                  + "' — a provider is the provider's REPOSITORY name, ending in its role");
+        }
+        String providerWhere = excludedWhere + "." + provider;
+        if (entry.getValue() instanceof Map<?, ?> byOperation) {
+          if (byOperation.isEmpty()) {
+            throw new CiConfigException(
+                configPath
+                    + ": "
+                    + providerWhere
+                    + " excludes no operation — give the provider a reason, or name operations");
+          }
+          Map<String, String> operations = new LinkedHashMap<>();
+          for (Map.Entry<?, ?> operation : byOperation.entrySet()) {
+            if (!(operation.getKey() instanceof String operationId) || operationId.isBlank()) {
+              throw new CiConfigException(
+                  configPath
+                      + ": "
+                      + providerWhere
+                      + " names operation '"
+                      + operation.getKey()
+                      + "' — an operation is its operationId");
+            }
+            operations.put(
+                operationId,
+                reason(operation.getValue(), configPath, providerWhere + "." + operationId));
+          }
+          excluded.put(provider, new Exclusion(null, operations));
+        } else {
+          excluded.put(
+              provider, new Exclusion(reason(entry.getValue(), configPath, providerWhere), Map.of()));
+        }
+      }
+    }
+    return new Mirror(repository, framework, excluded);
+  }
+
+  /** An exclusion's reason: a non-blank string, because an exclusion is a decision to be read. */
+  private static String reason(Object raw, String configPath, String where) {
+    if (!(raw instanceof String reason) || reason.isBlank()) {
+      throw new CiConfigException(
+          configPath
+              + ": "
+              + where
+              + " must be the reason it is excluded, a non-blank string, got: "
+              + (raw instanceof String ? "a blank string" : CiConfigSchema.typeOf(raw)));
+    }
+    return reason.trim();
   }
 
   /**

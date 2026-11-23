@@ -1332,4 +1332,147 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
             .anyMatch(read -> read.endsWith(CiReleaseConsistency.DEPLOYMENTS_PATH)),
         "the check is QA's, before the tag: " + fakeConfig.fileReads());
   }
+
+  // --- the pact parity check (qits-2465): a fold whose pacts drift from its mirror's is refused --
+
+  private static final String MIRROR = "qits-mirror-app";
+  private static final String MIRROR_VERSION = "2026.1123.1";
+  private static final String MIRROR_TAG = "refs/tags/" + MIRROR_VERSION;
+
+  /** A slot file pacting with qits-ci-service, mirroring {@link #MIRROR}, or {@code mirrors}. */
+  private static String pactSlots(String mirrors) {
+    return """
+        release-request:
+          - image: qits/build-images/ci-base:latest
+            script: echo qa-ran
+        release:
+          - image: qits/build-images/ci-base:latest
+            script: echo released
+        contracts:
+          application: %s
+          pacts:
+            qits-ci-service: { packages: [maven] }
+          mirror:
+            repository: %s
+            framework: pact-js
+        """
+        .formatted("qits-x", mirrors);
+  }
+
+  private static String pact(String... operationIds) {
+    StringBuilder interactions = new StringBuilder();
+    for (String id : operationIds) {
+      interactions
+          .append(interactions.isEmpty() ? "" : ",")
+          .append("{\"description\":\"")
+          .append(id)
+          .append("\",\"comments\":{\"references\":{\"qits-call\":{\"operationId\":\"")
+          .append(id)
+          .append("\"}}}}");
+    }
+    return "{\"provider\":{\"name\":\"qits-ci-service\"},\"interactions\":["
+        + interactions
+        + "]}";
+  }
+
+  /** The gated repository's pact at the fold, and the counterpart released with its own. */
+  private String seedMirror(String[] ours, String[] theirs) {
+    seedSlots(pactSlots(MIRROR));
+    fakeConfig.putFile(
+        repoId, MERGED_SHA, CiContracts.pactPath("qits-target", "qits-ci-service"), pact(ours));
+    String mirrorId = "mirror-" + UUID.randomUUID().toString().substring(0, 8);
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              eu.wohlben.qits.ci.entity.CiScmRelease release =
+                  new eu.wohlben.qits.ci.entity.CiScmRelease();
+              release.id = UUID.randomUUID().toString();
+              release.repoId = mirrorId;
+              release.repoName = MIRROR;
+              release.version = MIRROR_VERSION;
+              release.eventId = UUID.randomUUID().toString();
+              release.occurredAt = Instant.now();
+              release.seenAt = Instant.now();
+              scmReleases.persist(release);
+            });
+    fakeConfig.putFile(
+        mirrorId,
+        MIRROR_TAG,
+        CiReleaseSlotParser.CONFIG_PATH,
+        pactSlots("qits-target").replace("qits-x", MIRROR));
+    fakeConfig.putFile(
+        mirrorId, MIRROR_TAG, CiContracts.pactPath(MIRROR, "qits-ci-service"), pact(theirs));
+    return mirrorId;
+  }
+
+  @Test
+  public void aFoldWhosePactsDriftFromItsMirrorsReleaseIsRefusedByARedQaRun() throws Exception {
+    seedMirror(new String[] {"listRuns", "getRun"}, new String[] {"listRuns", "retryRun"});
+    runTheScripts();
+
+    deliver(releaseRequest());
+
+    CiRun run = runService.runsFor(repoId).get(0);
+    assertEquals(CiRunStatus.FAILED, run.status, "red, so the request is REJECTED before any tag");
+    assertEquals(1, fakeRunner.executed().size(), "the first QA step refuses; nothing after it runs");
+    String output = runService.stepsFor(run.id).get(0).output;
+    assertTrue(
+        output.contains(
+            "qits-ci: this fold is refused: pact parity between qits-target and qits-mirror-app"
+                + " fails (contracts.mirror):\n"
+                + "qits-ci-service getRun: made by qits-target, not by qits-mirror-app and not"
+                + " excluded\n"
+                + "qits-ci-service retryRun: made by qits-mirror-app, not by qits-target and not"
+                + " excluded"),
+        output);
+  }
+
+  @Test
+  public void aFoldInParityWithItsMirrorComposesNoRefusalAndReadsTheMirrorAtItsTag()
+      throws Exception {
+    String mirrorId = seedMirror(new String[] {"listRuns"}, new String[] {"listRuns"});
+
+    deliver(releaseRequest());
+
+    CiRun run = runService.runsFor(repoId).get(0);
+    assertEquals(CiRunStatus.SUCCESS, run.status);
+    assertFalse(run.triggerConfig.contains("this fold is refused"), run.triggerConfig);
+    assertTrue(
+        fakeConfig
+            .fileReads()
+            .contains(mirrorId + "@" + MIRROR_TAG + "/" + CiReleaseSlotParser.CONFIG_PATH),
+        "the counterpart is read at its newest release: " + fakeConfig.fileReads());
+    assertTrue(
+        fakeConfig.addressed().stream()
+            .anyMatch(ref -> mirrorId.equals(ref.repoId()) && MIRROR.equals(ref.name())),
+        "by name, in the gated repository's project: " + fakeConfig.addressed());
+  }
+
+  @Test
+  public void anUnreadableMirrorRecordsNoQaRunAndLeavesTheEventOwed() throws Exception {
+    String mirrorId = seedMirror(new String[] {"listRuns"}, new String[] {"listRuns"});
+    fakeConfig.putFileUnreachable(mirrorId, MIRROR_TAG, CiReleaseSlotParser.CONFIG_PATH);
+
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(List.of(), runService.runsFor(repoId), "nothing was learned, so nothing ran");
+    assertTrue(stillOwed(arrival.eventId()), "owed, so a sweep asks the git host again");
+  }
+
+  @Test
+  public void aMirrorWithNoReleaseIsARefusalNotASilentPass() throws Exception {
+    seedSlots(pactSlots(MIRROR));
+    fakeConfig.putFile(
+        repoId, MERGED_SHA, CiContracts.pactPath("qits-target", "qits-ci-service"), pact("a"));
+    runTheScripts();
+
+    deliver(releaseRequest());
+
+    CiRun run = runService.runsFor(repoId).get(0);
+    assertEquals(CiRunStatus.FAILED, run.status);
+    String output = runService.stepsFor(run.id).get(0).output;
+    assertTrue(
+        output.contains("qits-mirror-app has no release this qits-ci recorded"), output);
+  }
 }

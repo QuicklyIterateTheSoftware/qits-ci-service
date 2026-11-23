@@ -291,7 +291,9 @@ import java.util.Set;
  * caller reads the fold's {@code deployments.yml} and hands the sentence in; the first QA step then
  * prints it and exits 1 right after {@code set -eu}, before the prelude, the declared script or the
  * report hook. The rest of the document is composed as usual, so the refusal is one readable block
- * in the stored text rather than a different pipeline, and the release half is untouched.
+ * in the stored text rather than a different pipeline, and the release half is untouched. The pact
+ * parity check ({@link CiPactParity}, qits-2465) refuses the same way, joined below the consistency
+ * sentence when both refuse; a refusal of several lines is printed one line per {@code echo}.
  */
 public final class CiReleaseComposer {
 
@@ -1057,13 +1059,17 @@ public final class CiReleaseComposer {
     out.append("set -eu\n");
     if (refusal != null) {
       // THE FOLD IS REFUSED (qits-1400): its release.yml and deployments.yml disagree about which
-      // application this is. First, so nothing is built for a fold that cannot ship; a red QA step
-      // is what turns the release request REJECTED, with this sentence as the reason.
+      // application this is, or its pacts are not in parity with its mirror's (qits-2465). First, so nothing is built for a fold that cannot ship; a red QA step
+      // is what turns the release request REJECTED, with this sentence as the reason. A refusal of
+      // several lines (the pact parity check's, qits-2465) is echoed a line at a time, so the log
+      // keeps its shape and no line can carry a control character into the script.
       out.append(
-          "# --- platform consistency check: release.yml and deployments.yml disagree -------\n");
-      out.append("echo ")
-          .append(shellQuote("qits-ci: this fold is refused: " + oneLine(refusal)))
-          .append(" >&2\n");
+          "# --- platform consistency checks: this fold is refused --------------------------\n");
+      String prefix = "qits-ci: this fold is refused: ";
+      for (String line : refusal.split("\n", -1)) {
+        out.append("echo ").append(shellQuote(prefix + oneLine(line))).append(" >&2\n");
+        prefix = "";
+      }
       out.append("exit 1\n");
     }
     out.append("# --- platform prelude ---------------------------------------------------------\n");

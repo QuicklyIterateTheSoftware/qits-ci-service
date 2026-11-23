@@ -1,6 +1,7 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -8,6 +9,7 @@ import eu.wohlben.qits.ci.control.CiContracts.Ecosystem;
 import eu.wohlben.qits.ci.control.CiContracts.Kind;
 import eu.wohlben.qits.ci.control.CiContracts.Package;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -451,7 +453,8 @@ public class CiContractsTest {
         refused("contracts:\n  application: qits-x\n  route: { from: freezes/ }\n").getMessage();
     assertTrue(
         vocabulary.contains(
-            "'application', 'golden-masters', 'entities', 'database', 'routes' and 'pacts'"),
+            "'application', 'golden-masters', 'entities', 'database', 'routes', 'pacts' and"
+                + " 'mirror'"),
         vocabulary);
   }
 
@@ -472,5 +475,100 @@ public class CiContractsTest {
       String message = refused(yaml).getMessage();
       assertTrue(message.contains("contracts.routes.from is missing"), message);
     }
+  }
+
+  // --- mirror (qits-2465) --------------------------------------------------------------------------
+
+  private static final String PACTS =
+      """
+      contracts:
+        application: qits-landing
+        pacts:
+          qits-projects-service: { packages: [maven] }
+      """;
+
+  @Test
+  public void mirrorIsAcceptedAndExposedOnTheRecord() {
+    CiContracts accepted =
+        contracts(
+            PACTS
+                + """
+                  mirror:
+                    repository: qits-platform-access-monorepo
+                    framework: pact-js
+                    excluded:
+                      qits-system-service: "the CLI has no system verbs"
+                      qits-workspaces-service:
+                        getAgentActiveProcess: "a live terminal view"
+                """);
+    CiContracts.Mirror mirror = accepted.mirror();
+    assertEquals("qits-platform-access-monorepo", mirror.repository());
+    assertEquals("pact-js", mirror.framework());
+    assertEquals("the CLI has no system verbs", mirror.excluded().get("qits-system-service").reason());
+    assertEquals(
+        Map.of("getAgentActiveProcess", "a live terminal view"),
+        mirror.excluded().get("qits-workspaces-service").operations());
+    assertTrue(mirror.excludes("qits-system-service", "anything"), "a string excludes the provider");
+    assertTrue(mirror.excludes("qits-workspaces-service", "getAgentActiveProcess"));
+    assertFalse(mirror.excludes("qits-workspaces-service", "listWorkspaces"));
+    assertFalse(mirror.excludes("qits-projects-service", "listProjects"));
+    assertEquals(
+        List.of("eu.wohlben.qits:qits-landing-app-pacts-qits-projects-service"),
+        accepted.packages("qits-landing-app").stream().map(Package::name).toList(),
+        "a mirror names no package");
+
+    CiContracts bare =
+        contracts(PACTS + "  mirror: { repository: qits-platform-access-monorepo }\n");
+    assertEquals(null, bare.mirror().framework(), "the framework is the check's to demand");
+    assertTrue(bare.mirror().excluded().isEmpty());
+    assertEquals(null, contracts(PACTS).mirror(), "without the key nothing is mirrored");
+  }
+
+  @Test
+  public void anUnknownFrameworkIsNotAParseError() {
+    // A parse error records no run at all; the check names the supported frameworks in a red QA run.
+    assertEquals(
+        "pact-python",
+        contracts(PACTS + "  mirror: { repository: qits-x-app, framework: pact-python }\n")
+            .mirror()
+            .framework());
+  }
+
+  @Test
+  public void aBlankExclusionReasonIsRefused() {
+    for (String excluded :
+        List.of(
+            "      qits-system-service: \"\"\n",
+            "      qits-system-service: \"  \"\n",
+            "      qits-system-service:\n",
+            "      qits-workspaces-service:\n        getAgentActiveProcess: \"\"\n",
+            "      qits-workspaces-service:\n        getAgentActiveProcess:\n")) {
+      String message =
+          refused(PACTS + "  mirror:\n    repository: qits-x-app\n    excluded:\n" + excluded)
+              .getMessage();
+      assertTrue(message.startsWith(PATH), message);
+      assertTrue(message.contains("must be the reason it is excluded"), message);
+    }
+  }
+
+  @Test
+  public void mirrorNeedsARepositoryAndKnowsOnlyItsKeys() {
+    String missing = refused(PACTS + "  mirror: { framework: pact-js }\n").getMessage();
+    assertTrue(missing.contains("contracts.mirror.repository is missing"), missing);
+    String malformed = refused(PACTS + "  mirror: { repository: Qits_X }\n").getMessage();
+    assertTrue(malformed.contains("'Qits_X'"), malformed);
+    String unknown =
+        refused(PACTS + "  mirror: { repository: qits-x-app, frameworks: pact-js }\n")
+            .getMessage();
+    assertTrue(unknown.contains("unknown key 'frameworks'"), unknown);
+    String empty =
+        refused(
+                PACTS
+                    + "  mirror:\n    repository: qits-x-app\n    excluded:\n"
+                    + "      qits-system-service: {}\n")
+            .getMessage();
+    assertTrue(empty.contains("excludes no operation"), empty);
+    String notAMap = refused(PACTS + "  mirror: qits-x-app\n").getMessage();
+    assertTrue(notAMap.contains("must be a mapping of { repository, framework, excluded }"), notAMap);
   }
 }

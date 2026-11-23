@@ -1374,6 +1374,38 @@ when `contracts:` declares none, `--index <from>index.json` for a `from:` other 
 the step on uncovered operations, a missing or malformed input, or a pinned CLI without the verb;
 `false` reports only, and never changes the verdict — the platform's escape hatch.
 
+**Two mirrored consumers keep pact parity** (qits-2465). `contracts:` takes a `mirror:` naming the
+counterpart consumer that is meant to make the same calls — the landing app and the `qits` CLI:
+
+```yaml
+contracts:
+  mirror:
+    repository: qits-landing-app        # the counterpart consumer repository (required)
+    framework: pact-jvm                 # THIS repository's pact framework: pact-js or pact-jvm
+    excluded:                           # counterpart operations this repository does not make
+      qits-system-service: "<reason>"   # a string: the whole provider
+      qits-workspaces-service:
+        getAgentActiveProcess: "<reason>"   # a map: one operationId each
+```
+
+A blank reason is a parse error; an unknown or missing `framework` is not — it is a red QA run
+naming the supported frameworks, since a parse error records no run at all. Without `mirror:`
+nothing is checked. When a release request's QA half is composed, the repository's pacts at the
+fold (`pacts/<repository>_<provider>.json` for every `contracts.pacts` key, read by the declared
+framework's adapter from each interaction's `comments.references.qits-call.operationId`) are
+compared with the counterpart's at its **newest release** (`refs/tags/<version>`). "X's operations
+must be made by Y" is checked only when Y declares `mirror.repository: X`: the counterpart's
+operations must always be made here, while this repository's need be made by the counterpart only
+when the counterpart's released `release.yml` mirrors it back — otherwise that direction is skipped
+and the output says so. Every operationId one side records against a provider must be recorded by
+the other or excluded in the other's `mirror.excluded`. A failure is refused exactly like the
+qits-1400 consistency check — the first QA step prints it and exits 1 — as a heading line, then one
+line per missing operation, sorted:
+`<provider> <operationId>: made by <X>, not by <Y> and not excluded`. An interaction without an
+operationId, a declared pact file that is missing, and a counterpart with no recorded release (or
+no readable `release.yml` at it) fail too, naming what is missing; a read the git host could not
+answer keeps the release-request event owed instead.
+
 **Every release publishes a changelog** (qits-893). The last release step's publish block always
 ends with `qits artifacts publish changelog --version "$QITS_VERSION"` and the provenance `--meta`
 the docs bundle carries, and it is required: a red publish is a red release run and a failed PUBLISH

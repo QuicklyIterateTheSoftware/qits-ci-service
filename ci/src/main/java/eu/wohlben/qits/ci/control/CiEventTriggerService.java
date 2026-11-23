@@ -247,6 +247,7 @@ public class CiEventTriggerService {
   @Inject CiEventTriggerParser triggerParser;
   @Inject CiReleaseSlotParser slotParser;
   @Inject CiReleaseArchetypes archetypes;
+  @Inject CiPactParityInputs pactParityInputs;
   @Inject CiCandidateRepos candidateRepos;
   @Inject CiRunService runService;
   @Inject CiOwedEventRepository owed;
@@ -1300,7 +1301,8 @@ public class CiEventTriggerService {
             "no release run",
             CiReleaseComposer.RELEASE_REQUEST_EVENT.equals(arrival.eventName()));
     if (attempt.outcome() == ComposeOutcome.ARCHETYPE_UNREADABLE
-        || attempt.outcome() == ComposeOutcome.DEPLOYMENTS_UNREADABLE) {
+        || attempt.outcome() == ComposeOutcome.DEPLOYMENTS_UNREADABLE
+        || attempt.outcome() == ComposeOutcome.PACTS_UNREADABLE) {
       // THE REPOSITORY COULD NOT BE ASKED WHETHER IT CARRIES THE RECIPE, which is a verdict about
       // nothing — the UNREACHABLE slot file's case, one read later. ARCHETYPE_UNKNOWN is the
       // opposite: committed content (a name in neither place, or a local recipe that does not
@@ -1572,7 +1574,13 @@ public class CiEventTriggerService {
      * evaluation, never a QA run composed without the check. Only the QA half reads the file, so the
      * release-phase door never meets it.
      */
-    DEPLOYMENTS_UNREADABLE
+    DEPLOYMENTS_UNREADABLE,
+    /**
+     * A file the pact parity check ({@link CiPactParity}, qits-2465) needs — a pact at the fold, or
+     * the mirrored counterpart's {@code release.yml} or a pact at its newest release — could not be
+     * read: {@code UNREACHABLE}. {@link #DEPLOYMENTS_UNREADABLE}'s case exactly, and handled like it.
+     */
+    PACTS_UNREADABLE
   }
 
   /**
@@ -1699,6 +1707,25 @@ public class CiEventTriggerService {
               deployments.status() == CiConfigSource.FileLookup.Status.FOUND
                   ? deployments.content()
                   : null);
+      // THE PACT PARITY CHECK (qits-2465), for a repository whose contracts declare a mirror: its
+      // pacts at the fold against the counterpart's at its newest release. A refusal joins the
+      // consistency check's, one line below it, so the first QA step prints both.
+      CiContracts contracts = slots.contracts();
+      if (contracts != null && contracts.mirror() != null) {
+        CiPactParityInputs.Inputs inputs = pactParityInputs.load(repo, rev, contracts);
+        if (inputs.unreachable() != null) {
+          LOG.warnf(
+              "%s: %s, so the pact parity check cannot be made — %s",
+              repoId, inputs.unreachable(), consequence);
+          return ComposeAttempt.failed(ComposeOutcome.PACTS_UNREADABLE, inputs.unreachable());
+        }
+        CiPactParity.Verdict parity = CiPactParity.check(inputs.gated(), inputs.counterpart());
+        if (parity.refusal() != null) {
+          qaRefusal = qaRefusal == null ? parity.refusal() : qaRefusal + "\n" + parity.refusal();
+        } else if (parity.note() != null) {
+          LOG.infof("%s: pact parity holds at %s; %s", repoId, rev, parity.note());
+        }
+      }
       if (qaRefusal != null) {
         LOG.warnf("%s: the fold at %s is refused in QA — %s", repoId, rev, qaRefusal);
       }
@@ -1923,7 +1950,7 @@ public class CiEventTriggerService {
                   + attempt.detail()
                   + " — reported as declared, because a pipeline that must be fixed is recoverable"
                   + " and a release waved through unchecked is not");
-      case ARCHETYPE_UNREADABLE, DEPLOYMENTS_UNREADABLE ->
+      case ARCHETYPE_UNREADABLE, DEPLOYMENTS_UNREADABLE, PACTS_UNREADABLE ->
           new ReleasePhase(Verdict.UNKNOWN, repoId + ": " + attempt.detail());
       case COMPOSED ->
           attempt.composed().releaseDocument() != null
