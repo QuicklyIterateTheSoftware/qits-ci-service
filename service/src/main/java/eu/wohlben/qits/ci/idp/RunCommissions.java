@@ -143,6 +143,41 @@ public class RunCommissions {
   }
 
   /**
+   * Tokens taken off their run by {@link #detach} and not yet given back: still in use by a daemon
+   * finishing up after its {@code Close} (qits-2572), so {@link #holdsToken} keeps the reconciler off
+   * them exactly as it does a run's.
+   */
+  private final Set<IdpCommissioner.CommissionedToken> detached = ConcurrentHashMap.newKeySet();
+
+  /**
+   * Take the run's token off the run without giving it back yet, or null when it holds none: the run
+   * is closed, and a re-queued run of the same id commissions a token of its own rather than
+   * inheriting one about to be deleted — but its lease's daemon still presents this one until it
+   * hangs up (qits-2572). {@link #release(IdpCommissioner.CommissionedToken)} gives it back.
+   */
+  public IdpCommissioner.CommissionedToken detach(String runId) {
+    IdpCommissioner.CommissionedToken token = tokenByRun.remove(runId);
+    if (token != null) {
+      detached.add(token);
+    }
+    return token;
+  }
+
+  /** Give back a token {@link #detach} took off its run. Null is nothing. <b>Never throws.</b> */
+  public void release(IdpCommissioner.CommissionedToken token) {
+    if (token == null) {
+      return;
+    }
+    try {
+      if (idp != null && !idp.deleteToken(token.tokenId())) {
+        LOG.debugf("ci-run token %s is left to the reconciliation", token.tokenId());
+      }
+    } finally {
+      detached.remove(token);
+    }
+  }
+
+  /**
    * Runs whose predecessor-commissioned tokens could not be revoked yet, because qits-idp's listing
    * could not be read — retried by {@link #revokeOwed}, which the reconciliation's every pass calls.
    * A re-queued run is {@code QUEUED}, which the reconciliation spares, so without this a token it
@@ -231,10 +266,15 @@ public class RunCommissions {
   /**
    * Whether a run of this process holds that {@code ci-run} token right now — what keeps {@link
    * CommissionReconciler} off a credential a run is using, in the window between a run's row going
-   * terminal and its {@code runClosed}.
+   * terminal and its {@code runClosed}, and after it while its daemon finishes up ({@link #detach}).
    */
   public boolean holdsToken(String tokenId) {
     for (IdpCommissioner.CommissionedToken each : tokenByRun.values()) {
+      if (each.tokenId().equals(tokenId)) {
+        return true;
+      }
+    }
+    for (IdpCommissioner.CommissionedToken each : detached) {
       if (each.tokenId().equals(tokenId)) {
         return true;
       }

@@ -249,6 +249,42 @@ class CiSlotHoldTest {
     assertReleased(lease, daemon, "token-1");
   }
 
+  /**
+   * qits-2572: the daemon flushes its last telemetry on the phase-1 token from inside the held lease
+   * after its Close, so the lease and the token go only once it has hung up — and the reconcile's
+   * orphan sweep leaves the lease alone meanwhile.
+   */
+  @Test
+  public void aReleasedHoldEndsItsLeaseAndTokenOnlyOnceItsDaemonHasHungUp() throws Exception {
+    ScriptedLeaseDaemon.closeGrace(registry, Duration.ofSeconds(30));
+    ScriptedLeaseDaemon daemon = held(RUN);
+    daemon.keepOpenOnClose();
+    UUID lease = leaseOf.get(RUN);
+
+    assertTrue(holds.release(lease, CiSlotHolds.TIMEOUT));
+
+    assertTrue(sent(daemon).stream().anyMatch(Close.class::isInstance), "Close at once");
+    assertFalse(holds.holds(lease), "the hold is gone at once");
+    listed.add(
+        new SystemLeases.LeaseView(lease, RUN, "RUNNING", null, null, null, NOW.minusSeconds(600)));
+    leases.reconcile();
+    Thread.sleep(300);
+    assertFalse(calls.contains("DELETE " + lease), "not ended, by the release or the reconcile");
+    assertTrue(idp.deletedTokens.isEmpty(), "and the token the daemon flushes on is kept");
+    assertEquals(Set.of(lease), holds.closingLeases());
+
+    daemon.hangUp();
+
+    long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+    while (!(calls.contains("DELETE " + lease) && idp.deletedTokens.contains("token-1"))) {
+      assertTrue(System.nanoTime() < deadline, "torn down once it hung up: " + calls);
+      Thread.sleep(10);
+    }
+    assertEquals(1L, calls.stream().filter(("DELETE " + lease)::equals).count(), "ended once");
+    assertTrue(holds.closingLeases().isEmpty());
+    assertEquals(0, registry.size(), "and its launch reaped");
+  }
+
   @Test
   public void aGatesUnmetStateEndsTheHoldAtOnce() {
     ScriptedLeaseDaemon daemon = held(RUN);

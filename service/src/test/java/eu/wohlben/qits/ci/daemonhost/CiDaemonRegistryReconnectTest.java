@@ -10,6 +10,7 @@ import eu.wohlben.qits.cidaemon.protocol.Ack;
 import eu.wohlben.qits.cidaemon.protocol.Cancel;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonMessage;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonProtocol;
+import eu.wohlben.qits.cidaemon.protocol.Close;
 import eu.wohlben.qits.cidaemon.protocol.Heartbeat;
 import eu.wohlben.qits.cidaemon.protocol.Hello;
 import eu.wohlben.qits.cidaemon.protocol.Initialized;
@@ -34,7 +35,8 @@ import org.junit.jupiter.api.Test;
  * the launch waits out for its daemon to come back, not the step's end — and a running step is held
  * past the grace until its lease ends, its deadline passes or it is cancelled (qits-2163) — and a
  * cancelled step is lost by the cancel deadline whatever its socket does, unless its daemon answers
- * first (qits-2227).
+ * first (qits-2227). And a socket its daemon closes after being told {@code Close} is no drop at all:
+ * it answers the run's teardown, which waits for it (qits-2572).
  *
  * <p>Plain JUnit, {@link CiDaemonRegistryTimeoutTest}'s reason: the registry is driven through its
  * own socket-side methods with a recording stand-in for the connection, so nothing here races for a
@@ -846,6 +848,112 @@ public class CiDaemonRegistryReconnectTest {
   // --- the stand-in -------------------------------------------------------------------------------
 
   /** Admit a connection for the launch and say its Hello on it, as the socket does. */
+  // --- a run's close waits for its daemon to hang up (qits-2572) ---------------------------------
+
+  /** An initialized launch on one connection, with {@code closeGrace} as its close grace. */
+  private String initializedLaunch(CiDaemonRegistry registry, Duration closeGrace, FakeConnection[] bound) {
+    registry.closeGrace(closeGrace);
+    String daemonId = registry.registerLaunch("run-closing", SUBJECT);
+    bound[0] = admit(registry, daemonId, "c1");
+    registry.onMessage(daemonId, bound[0].connection, new Initialized());
+    return daemonId;
+  }
+
+  @Test
+  public void theDaemonHangingUpAfterCloseAnswersTheWaitAndStartsNoGraceAndLosesNothing()
+      throws Exception {
+    Duration grace = Duration.ofMillis(300);
+    CiDaemonRegistry registry = registry(grace);
+    FakeConnection[] bound = new FakeConnection[1];
+    String daemonId = initializedLaunch(registry, Duration.ofSeconds(30), bound);
+
+    CompletableFuture<Void> gone = registry.sendCloseUntilGone(daemonId).toCompletableFuture();
+    assertInstanceOf(Close.class, bound[0].sent().getLast(), "the daemon is told Close");
+    Thread.sleep(200);
+    assertFalse(gone.isDone(), "nothing is torn down while the daemon is still finishing up");
+    assertTrue(
+        registry.sendCloseUntilGone(daemonId).toCompletableFuture() == gone,
+        "a second close joins the first rather than sending another");
+
+    bound[0].drop(registry, daemonId);
+    gone.get(SOON.toMillis(), TimeUnit.MILLISECONDS);
+
+    // Well past the reconnect grace: a close after Close is the answer, not a drop to wait out.
+    Thread.sleep(grace.toMillis() * 3);
+    assertFalse(registry.lost(daemonId), "no grace ran out on it, and nothing was completed lost");
+    assertEquals(CiDaemonRegistry.Phase.INITIALIZED, registry.phaseOf(daemonId));
+    assertEquals(
+        1L, bound[0].sent().stream().filter(Close.class::isInstance).count(), "one Close only");
+    registry.reap(daemonId);
+  }
+
+  @Test
+  public void aDaemonThatNeverHangsUpIsLetGoWhenTheCloseGracePasses() throws Exception {
+    CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
+    FakeConnection[] bound = new FakeConnection[1];
+    Duration closeGrace = Duration.ofMillis(400);
+    String daemonId = initializedLaunch(registry, closeGrace, bound);
+
+    long start = System.nanoTime();
+    CompletableFuture<Void> gone = registry.sendCloseUntilGone(daemonId).toCompletableFuture();
+    gone.get(SOON.toMillis(), TimeUnit.MILLISECONDS);
+    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+    assertTrue(elapsedMs >= closeGrace.toMillis() - 50, "at the close grace: " + elapsedMs);
+    assertTrue(elapsedMs < 5_000, "and not much later: " + elapsedMs);
+    registry.reap(daemonId);
+  }
+
+  @Test
+  public void aLaunchWithNoLiveConnectionAnswersTheCloseWaitBeforeItReturns() {
+    CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
+    registry.closeGrace(Duration.ofSeconds(30));
+
+    assertTrue(
+        registry.sendCloseUntilGone("nobody").toCompletableFuture().isDone(), "an unknown launch");
+
+    String neverDialled = registry.registerLaunch("run-never", SUBJECT);
+    assertTrue(
+        registry.sendCloseUntilGone(neverDialled).toCompletableFuture().isDone(),
+        "a launch whose daemon never dialled");
+    registry.reap(neverDialled);
+
+    String dropped = registry.registerLaunch("run-dropped", SUBJECT);
+    FakeConnection first = admit(registry, dropped, "c1");
+    first.drop(registry, dropped);
+    assertTrue(
+        registry.sendCloseUntilGone(dropped).toCompletableFuture().isDone(),
+        "a launch inside its reconnect grace");
+    assertFalse(first.sent().stream().anyMatch(Close.class::isInstance), "nothing to send it on");
+    registry.reap(dropped);
+  }
+
+  @Test
+  public void aReapOrAStoppingProcessAnswersAPendingCloseWait() throws Exception {
+    CiDaemonRegistry registry = registry(Duration.ofSeconds(30));
+    FakeConnection[] bound = new FakeConnection[1];
+    String reaped = initializedLaunch(registry, Duration.ofSeconds(30), bound);
+    CompletableFuture<Void> gone = registry.sendCloseUntilGone(reaped).toCompletableFuture();
+    assertFalse(gone.isDone());
+    registry.reap(reaped);
+    gone.get(SOON.toMillis(), TimeUnit.MILLISECONDS);
+
+    String pending = initializedLaunch(registry, Duration.ofSeconds(30), bound);
+    CompletableFuture<Void> waiting = registry.sendCloseUntilGone(pending).toCompletableFuture();
+    assertFalse(waiting.isDone());
+    registry.onShutdown(null);
+    assertTrue(waiting.isDone(), "answered on the stopping thread, so nothing is left behind");
+
+    String late = registry.registerLaunch("run-late", SUBJECT);
+    FakeConnection lateConnection = admit(registry, late, "c-late");
+    assertTrue(
+        registry.sendCloseUntilGone(late).toCompletableFuture().isDone(),
+        "a process that is stopping waits for nobody");
+    assertInstanceOf(Close.class, lateConnection.sent().getLast(), "but still says Close");
+    registry.reap(pending);
+    registry.reap(late);
+  }
+
   private FakeConnection admit(CiDaemonRegistry registry, String daemonId, String id) {
     FakeConnection connection = new FakeConnection(id);
     assertEquals(

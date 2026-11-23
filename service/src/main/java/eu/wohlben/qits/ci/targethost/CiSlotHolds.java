@@ -3,6 +3,7 @@ package eu.wohlben.qits.ci.targethost;
 import eu.wohlben.qits.ci.control.CiStepRunner;
 import eu.wohlben.qits.ci.daemonhost.CiDaemonRegistry;
 import eu.wohlben.qits.ci.entity.CiSlotHold;
+import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
 import io.quarkus.runtime.LaunchMode;
 import io.quarkus.runtime.StartupEvent;
@@ -17,6 +18,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -41,8 +44,9 @@ import org.jboss.logging.Logger;
  * <h2>Ending ({@link #release})</h2>
  *
  * <p>One method, idempotent, and the run's close made late: the row deleted, {@code Close} to the
- * daemon, the launch reaped, the lease ended at qits-system and the run's token deleted, then one INFO
- * line naming why. It fires on the first of:
+ * daemon, and — once the daemon has hung up or the close grace has passed (qits-2572) — the launch
+ * reaped, the lease ended at qits-system and the run's token deleted, then one INFO line naming why.
+ * It fires on the first of:
  *
  * <ul>
  *   <li>{@code gates-unmet:<STATE>} — {@code ReleaseRequestStateChanged} in {@link #GATES_UNMET};
@@ -252,8 +256,9 @@ public class CiSlotHolds {
 
   /**
    * Ends the hold of one lease: the row deleted, {@code Close} to its daemon, the launch reaped, the
-   * lease ended and the phase-1 run's token deleted — the close the run did not make — and one INFO
-   * line naming {@code reason}. Idempotent and never throws: a second call, or one for a lease
+   * lease ended and the phase-1 run's token deleted — the close the run did not make, and like it
+   * waiting for the daemon to hang up before the last three ({@link #teardown}) — and one INFO line
+   * naming {@code reason}. Idempotent and never throws: a second call, or one for a lease
    * nothing holds, does nothing.
    *
    * @return true when this call ended the hold
@@ -284,26 +289,63 @@ public class CiSlotHolds {
 
   /**
    * What {@code LeaseStepRunner.runClosed} does for a run, for a hold — also for one {@link #take}
-   * handed out that is given back unused. Never throws.
+   * handed out that is given back unused. Never throws, and never waits.
+   *
+   * <p>{@code Close} goes to the daemon now; the rest — the launch reaped, the lease ended, the
+   * phase-1 run's token deleted and the INFO line — once the daemon has hung up or {@code
+   * qits.ci.daemon.close-grace-seconds} has passed ({@link CiDaemonRegistry#sendCloseUntilGone},
+   * qits-2572), because its last telemetry travels on that token from inside that lease. At once when
+   * there is no live connection to wait for. Meanwhile the lease stays named ({@link
+   * #closingLeases}), so the reconcile's orphan sweep leaves it to this.
    */
   void teardown(Hold hold, String reason) {
+    closing.add(hold.leaseId());
+    IdpCommissioner.CommissionedToken token = commissions.detach(hold.heldFromRunId());
+    CompletionStage<Void> gone;
     try {
-      daemons.sendClose(hold.daemonId());
-      daemons.reap(hold.daemonId());
+      gone = daemons.sendCloseUntilGone(hold.daemonId());
     } catch (RuntimeException e) {
       LOG.debugf("CI slot hold %s: its daemon could not be closed: %s", hold.leaseId(), e.getMessage());
+      gone = CompletableFuture.completedFuture(null);
+    }
+    gone.whenComplete((done, failed) -> endTeardown(hold, token, reason));
+  }
+
+  /** {@link #teardown}'s second half, once the daemon is gone. Never throws. */
+  private void endTeardown(Hold hold, IdpCommissioner.CommissionedToken token, String reason) {
+    try {
+      daemons.reap(hold.daemonId());
+    } catch (RuntimeException e) {
+      LOG.debugf("CI slot hold %s: its daemon could not be reaped: %s", hold.leaseId(), e.getMessage());
     }
     try {
       system.end(hold.leaseId());
     } catch (RuntimeException e) {
       LOG.warnf(
           "Could not end held lease %s (%s); the reconcile ends it", hold.leaseId(), e.getMessage());
+    } finally {
+      closing.remove(hold.leaseId());
     }
     String runId = hold.heldFromRunId();
-    commissions.endAdoption(runId);
-    commissions.release(runId);
-    commissions.revokeOrphaned(runId);
+    try {
+      commissions.endAdoption(runId);
+      commissions.release(token);
+      commissions.revokeOrphaned(runId);
+    } catch (RuntimeException e) {
+      LOG.warnf("CI slot hold %s: its token could not be given back: %s", hold.leaseId(), e.getMessage());
+    }
     LOG.infof("CI slot hold %s of %s released: %s", hold.leaseId(), hold.requestName(), reason);
+  }
+
+  /**
+   * Leases of holds being torn down whose daemon is still hanging up (qits-2572): no longer held,
+   * still named for the reconcile, until {@link #teardown} ends them.
+   */
+  private final Set<UUID> closing = ConcurrentHashMap.newKeySet();
+
+  /** The leases {@link #teardown} is still waiting to end — what the reconcile also counts as named. */
+  public Set<UUID> closingLeases() {
+    return Set.copyOf(closing);
   }
 
   // --- the reasons ------------------------------------------------------------------------------

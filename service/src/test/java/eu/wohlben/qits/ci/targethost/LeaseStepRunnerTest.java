@@ -10,6 +10,7 @@ import eu.wohlben.qits.ci.control.CiStepRunner;
 import eu.wohlben.qits.ci.daemonhost.CiDaemonRegistry;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import eu.wohlben.qits.ci.daemonhost.ScriptedLeaseDaemon;
+import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.cidaemon.protocol.Ack;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonMessage;
@@ -19,6 +20,7 @@ import eu.wohlben.qits.cidaemon.protocol.RunStep;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -26,6 +28,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -46,10 +49,13 @@ class LeaseStepRunnerTest {
 
   private final CiDaemonRegistry registry = ScriptedLeaseDaemon.registry(Duration.ofSeconds(30));
 
-  private final List<String> ended = new ArrayList<>();
+  private final List<String> ended = Collections.synchronizedList(new ArrayList<>());
 
   /** The reason each ended lease was ended with, "none" for a bare end (qits-1809). */
-  private final List<String> endReasons = new ArrayList<>();
+  private final List<String> endReasons = Collections.synchronizedList(new ArrayList<>());
+
+  /** The run's teardown, in order: "lease <id>" ended, "token <id>" given back (qits-2572). */
+  private final List<String> teardown = Collections.synchronizedList(new ArrayList<>());
 
   private final StandInLeases leases = new StandInLeases();
 
@@ -70,6 +76,20 @@ class LeaseStepRunnerTest {
     public void end(String runId, String reason) {
       ended.add(runId);
       endReasons.add(reason == null ? "none" : reason);
+      teardown.add("lease of " + runId);
+    }
+
+    /** The closed run's lease, ended by its id once its daemon is gone (qits-2572). */
+    @Override
+    void endClosed(String runId, UUID leaseId, String reason) {
+      ended.add(runId);
+      endReasons.add(reason == null ? "none" : reason);
+      teardown.add("lease " + leaseId);
+    }
+
+    @Override
+    void forgetLaunch(String runId) {
+      launch = null;
     }
 
     @Override
@@ -91,11 +111,26 @@ class LeaseStepRunnerTest {
     }
   }
 
-  /** qits-idp's listing of the run's live tokens, naming the one its launch was recorded with. */
-  private static final class ListedCommissions extends RunCommissions {
+  /**
+   * qits-idp's listing of the run's live tokens, naming the one its launch was recorded with; the
+   * run's own token, which its close takes off it and gives back (qits-2572), recorded.
+   */
+  private final class ListedCommissions extends RunCommissions {
     @Override
     public Optional<Set<String>> liveSubjectsOf(String runId) {
       return Optional.of(Set.of(SUBJECT));
+    }
+
+    @Override
+    public IdpCommissioner.CommissionedToken detach(String runId) {
+      return new IdpCommissioner.CommissionedToken("token-" + runId, "qits_tok_x", SUBJECT);
+    }
+
+    @Override
+    public void release(IdpCommissioner.CommissionedToken token) {
+      if (token != null) {
+        teardown.add("token " + token.tokenId());
+      }
     }
   }
 
@@ -400,6 +435,92 @@ class LeaseStepRunnerTest {
     runner.runClosed(RUN);
     assertEquals(List.of(RUN), ended);
     assertEquals(List.of(SystemLeases.NEVER_DIALLED_BACK), endReasons);
+  }
+
+  // --- the close waits for the daemon to hang up (qits-2572) -------------------------------------
+  //
+  // The daemon flushes its last telemetry on the run's token, from inside the lease's container,
+  // between the Close and its own socket close: the lease and the token go only after that.
+
+  /** Polls {@code done} for up to five seconds. */
+  private static void eventually(BooleanSupplier done, String what) throws InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (!done.getAsBoolean()) {
+      assertTrue(System.nanoTime() < deadline, what);
+      Thread.sleep(10);
+    }
+  }
+
+  @Test
+  void theLeaseAndTheTokenGoOnlyOnceTheDaemonHasHungUpAfterItsClose() throws Exception {
+    ScriptedLeaseDaemon.closeGrace(registry, Duration.ofSeconds(30));
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+    daemon = ScriptedLeaseDaemon.dial(registry, daemonId, SUBJECT);
+    daemon.keepOpenOnClose();
+
+    runner.runClosed(RUN);
+
+    assertInstanceOf(Close.class, daemon.received().getLast(), "the daemon is told Close at once");
+    assertTrue(leases.launchOf(RUN).isEmpty(), "and the run lets go of its launch at once");
+    Thread.sleep(300);
+    assertTrue(teardown.isEmpty(), "no lease ended and no token given back yet: " + teardown);
+    assertEquals(1, registry.size(), "the launch waits for its daemon");
+
+    daemon.hangUp();
+
+    eventually(() -> teardown.size() == 2, "torn down once the daemon hung up: " + teardown);
+    assertEquals(List.of("lease " + LEASE, "token token-" + RUN), teardown, "lease, then token");
+    assertEquals(List.of("none"), endReasons);
+    assertEquals(0, registry.size(), "and the launch is reaped");
+  }
+
+  @Test
+  void aDaemonThatNeverHangsUpIsTornDownWhenTheCloseGracePasses() throws Exception {
+    ScriptedLeaseDaemon.closeGrace(registry, Duration.ofMillis(500));
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+    daemon = ScriptedLeaseDaemon.dial(registry, daemonId, SUBJECT);
+    daemon.keepOpenOnClose();
+
+    long began = System.nanoTime();
+    runner.runClosed(RUN);
+    assertTrue(teardown.isEmpty(), "not at once: " + teardown);
+
+    eventually(() -> teardown.size() == 2, "torn down at the close grace: " + teardown);
+    long tookMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - began);
+    assertTrue(tookMillis >= 450, "at the grace, not before: " + tookMillis);
+    assertEquals(List.of("lease " + LEASE, "token token-" + RUN), teardown);
+    assertEquals(0, registry.size());
+    assertTrue(daemon.closed(), "the host closes the socket the daemon kept open");
+  }
+
+  @Test
+  void aLaunchWhoseDaemonNeverDialledIsTornDownAtOnce() {
+    ScriptedLeaseDaemon.closeGrace(registry, Duration.ofSeconds(30));
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+
+    runner.runClosed(RUN);
+
+    assertEquals(List.of("lease " + LEASE, "token token-" + RUN), teardown, "before it returned");
+    assertEquals(0, registry.size());
+  }
+
+  @Test
+  void aLaunchWhoseDaemonIsAwayIsTornDownAtOnce() {
+    ScriptedLeaseDaemon.closeGrace(registry, Duration.ofSeconds(30));
+    String daemonId = registry.registerLaunch(RUN, SUBJECT);
+    leases.launch = new CiLeases.Launch(LEASE, daemonId, SUBJECT);
+    daemon = ScriptedLeaseDaemon.dial(registry, daemonId, SUBJECT);
+    // Dropped and inside its reconnect grace: there is no socket to say Close on, nor to wait for.
+    daemon.hangUp();
+
+    runner.runClosed(RUN);
+
+    assertEquals(List.of("lease " + LEASE, "token token-" + RUN), teardown, "before it returned");
+    assertFalse(daemon.received().stream().anyMatch(Close.class::isInstance));
+    assertEquals(0, registry.size());
   }
 
   // --- an inherited run (qits-1192, qits-1893) ----------------------------------------------------

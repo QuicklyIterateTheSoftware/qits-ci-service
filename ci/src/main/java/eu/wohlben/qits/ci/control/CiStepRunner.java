@@ -10,7 +10,7 @@ import java.util.UUID;
  * service module's {@code targethost/LeaseStepRunner} asks qits-system for the run's lease when the
  * run is queued ({@link #queued}), the lease's one container runs {@code qits-ci-daemon}, which dials
  * back once, and every step of the run is a {@code RunStep} on that one connection; {@link
- * #runClosed} sends {@code Close} and ends the lease. <b>Nothing on this side of the seam ever runs
+ * #runClosed} sends {@code Close} and, once the daemon has hung up, ends the lease. <b>Nothing on this side of the seam ever runs
  * a step's script</b> — see the invariant in {@code CLAUDE.md}.
  *
  * <p>The seam survived the swap as a name and as a <em>shape</em>: still exactly one blocking call
@@ -289,6 +289,8 @@ public interface CiStepRunner {
   /**
    * The run reached a terminal state, or was settled while it was still queued: release everything
    * still held for it — the daemon is told {@code Close}, the lease is ended, the token deleted.
+   * Never blocks: the lease and the token may go a little later, once the daemon has hung up
+   * (qits-2572), but the run holds neither from here on.
    */
   void runClosed(String runId);
 

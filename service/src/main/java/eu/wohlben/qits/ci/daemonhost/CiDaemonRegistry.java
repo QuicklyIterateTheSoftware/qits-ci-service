@@ -18,20 +18,24 @@ import eu.wohlben.qits.cidaemon.protocol.RunStep;
 import eu.wohlben.qits.cidaemon.protocol.StepChunk;
 import eu.wohlben.qits.cidaemon.protocol.StepFinished;
 import eu.wohlben.qits.cidaemon.protocol.Stream;
+import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.websockets.next.CloseReason;
 import io.quarkus.websockets.next.WebSocketConnection;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Event;
+import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -152,6 +156,17 @@ import org.jboss.logging.Logger;
  * It is still a loop of bounded {@link #await}s on the one lifecycle future, re-reading the last
  * change between slices, so the package rule below holds unchanged. A daemon below 4 says nothing
  * while it works and keeps the flat budget exactly as before.
+ *
+ * <p><b>A run's end waits for its daemon to hang up</b> (qits-2572). On {@link Close} the daemon
+ * removes its worktree, flushes its telemetry (up to the daemon's {@code qits.ci.telemetry-flush-ms},
+ * 3 s) and only then closes its socket and exits — and that flush is carried by the run's own {@code
+ * ci-run} token, inside the lease's container. Reaping, ending the lease and deleting the token
+ * straight after the {@code Close} raced it and usually won. So {@link #sendCloseUntilGone} marks
+ * the launch closing and answers a stage that completes when the daemon's own close reaches {@link
+ * #onClose} — which for a closing launch starts no grace and loses nothing: the run is already
+ * settled — or when {@code qits.ci.daemon.close-grace-seconds} passes, and callers compose their
+ * teardown on it. It never parks the caller: the stage completes on a virtual thread of its own, or
+ * at once when there is no live connection to wait for.
  *
  * <p>{@code targethost/LeaseStepRunner} is what drives this in production, one step at a time.
  */
@@ -285,6 +300,54 @@ public class CiDaemonRegistry {
   public Duration silenceLimit() {
     Duration set = silenceLimit;
     return set != null ? set : Duration.ofSeconds(silenceLimitSeconds);
+  }
+
+  /**
+   * How long a launch told {@link Close} waits for its daemon to close its own socket before the
+   * caller tears down anyway (qits-2572): the daemon's worktree removal and its telemetry flush, with
+   * margin. Initialised to the shipped value, so a registry a suite builds by hand waits as the
+   * shipped one does.
+   */
+  @ConfigProperty(name = "qits.ci.daemon.close-grace-seconds")
+  long closeGraceSeconds = 20;
+
+  /** Set by a suite only; otherwise {@link #closeGraceSeconds}. */
+  private volatile Duration closeGrace;
+
+  /** {@link #reconnectGrace(Duration)}'s reason, for the close grace. */
+  void closeGrace(Duration grace) {
+    this.closeGrace = grace;
+  }
+
+  /** How long {@link #sendCloseUntilGone} waits for the daemon to hang up. */
+  public Duration closeGrace() {
+    Duration set = closeGrace;
+    return set != null ? set : Duration.ofSeconds(closeGraceSeconds);
+  }
+
+  /**
+   * Raised once this process is stopping: from then on a {@code Close} is not waited out, and every
+   * close still waiting is answered at once ({@link #onShutdown}).
+   */
+  private volatile boolean stopping;
+
+  /**
+   * The process is stopping: every launch still waiting for its daemon to hang up is answered now,
+   * on this thread, so the leases and tokens behind them are given back before the beans that give
+   * them back are destroyed rather than leaked with the grace thread.
+   */
+  void onShutdown(@Observes ShutdownEvent event) {
+    stopping = true;
+    for (Launch launch : launches.values()) {
+      CompletableFuture<Void> gone;
+      synchronized (launch) {
+        gone = launch.gone;
+        cancelCloseDeadline(launch);
+      }
+      if (gone != null) {
+        gone.complete(null);
+      }
+    }
   }
 
   @PreDestroy
@@ -860,17 +923,105 @@ public class CiDaemonRegistry {
   }
 
   /**
-   * Tell the daemon the run is over: it kills a step still running, removes the run's worktree and
-   * exits 0. There is no answer frame; the socket closing is the answer, and the lease is ended
-   * after this. Best effort: a daemon with no live socket is not owed it — ending the lease removes
-   * its container either way.
+   * Tell the daemon the run is over — it kills a step still running, removes the run's worktree,
+   * flushes its telemetry and exits 0 — and answer when it has hung up (qits-2572). There is no
+   * answer frame; the daemon closing its socket is the answer. The caller reaps the launch, ends the
+   * lease and deletes the token on the returned stage, never before it: the daemon's last telemetry
+   * travels on that token, from inside that lease's container.
+   *
+   * <p>The launch is marked closing, so its daemon's close reaches {@link #onClose} as the end it
+   * is rather than as a drop: no reconnect grace, nothing completed lost. The stage completes:
+   *
+   * <ul>
+   *   <li>when that close arrives — or the connection is otherwise gone, a reap included;
+   *   <li>when {@link #closeGrace()} passes without it, logged at INFO;
+   *   <li>at once, before this returns, when there is nothing to wait for: an unknown or reaped
+   *       launch, no live connection (never dialled, inside its reconnect grace, already closed), a
+   *       {@code Close} that could not be sent, a zero grace, or a process that is stopping.
+   * </ul>
+   *
+   * <p>It never parks the caller. A stage that completes later completes on a virtual thread of its
+   * own — never the socket's or the grace thread — so the teardown a caller composes on it may block
+   * on its own bounded calls. A second call for the same launch answers the first one's stage.
    */
-  public void sendClose(String daemonId) {
+  public CompletionStage<Void> sendCloseUntilGone(String daemonId) {
     Launch launch = launches.get(daemonId);
     if (launch == null) {
+      return CompletableFuture.completedFuture(null);
+    }
+    Duration grace = closeGrace();
+    CompletableFuture<Void> gone;
+    synchronized (launch) {
+      if (launch.gone != null) {
+        return launch.gone;
+      }
+      gone = new CompletableFuture<>();
+      launch.gone = gone;
+      WebSocketConnection connection = launch.connection;
+      if (connection != null
+          && connection.isOpen()
+          && !stopping
+          && !grace.isZero()
+          && !grace.isNegative()) {
+        try {
+          launch.closeDeadline =
+              graces.schedule(
+                  () -> closeUnanswered(launch, gone, grace),
+                  grace.toMillis(),
+                  TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException shutDown) {
+          // The grace thread is gone with the bean: nothing would end the wait, so there is none.
+          launch.closeDeadline = null;
+        }
+      }
+    }
+    boolean sent = send(launch, new Close());
+    synchronized (launch) {
+      // Nothing to wait for — no deadline was set, the send failed, or the daemon hung up while it
+      // went out — is answered here, on the caller, so its teardown runs at once as it always did.
+      if (launch.closeDeadline != null && sent && launch.connection != null) {
+        return gone;
+      }
+      cancelCloseDeadline(launch);
+    }
+    gone.complete(null);
+    return gone;
+  }
+
+  /** The close grace passed: the daemon did not hang up after its {@code Close}; tear down anyway. */
+  private void closeUnanswered(Launch launch, CompletableFuture<Void> gone, Duration grace) {
+    synchronized (launch) {
+      if (launch.gone != gone || launch.closeDeadline == null) {
+        return;
+      }
+      launch.closeDeadline = null;
+    }
+    LOG.infof(
+        "ci-daemon %s of run %s did not close its socket within %ss of its Close; its lease is"
+            + " ended anyway",
+        launch.daemonId, launch.runId, grace.toSeconds());
+    completeGone(gone);
+  }
+
+  /** Called holding the launch's lock: a pending close grace, if any, will not fire. */
+  private static void cancelCloseDeadline(Launch launch) {
+    ScheduledFuture<?> pending = launch.closeDeadline;
+    launch.closeDeadline = null;
+    if (pending != null) {
+      pending.cancel(false);
+    }
+  }
+
+  /**
+   * A closing launch's wait, answered on a virtual thread of its own: the callers compose a teardown
+   * of bounded but blocking calls on it, and neither the socket's thread nor the one grace thread may
+   * run that.
+   */
+  private static void completeGone(CompletableFuture<Void> gone) {
+    if (gone == null || gone.isDone()) {
       return;
     }
-    send(launch, new Close());
+    Thread.ofVirtual().name("ci-daemon-closed").start(() -> gone.complete(null));
   }
 
   /**
@@ -965,8 +1116,10 @@ public class CiDaemonRegistry {
 
   /**
    * Forget a launch: close its socket and complete anything still pending so no await can outlive
-   * the record. Called on every teardown path — after this a dial naming the launch is closed 1008
-   * like any stranger's.
+   * the record — a {@link #sendCloseUntilGone} wait included. Called on every teardown path — after
+   * this a dial naming the launch is closed 1008 like any stranger's. A run's end reaps only once
+   * that wait is answered (qits-2572), by which time the daemon has normally closed the socket
+   * itself and there is nothing left here to close.
    *
    * <p>The close is <b>bounded</b>, for the reason the whole package is: this runs on the run
    * worker, and the caller's very next statement is the {@code docker rm -f} that removes the
@@ -979,11 +1132,15 @@ public class CiDaemonRegistry {
       return;
     }
     launch.phase = Phase.DONE;
+    CompletableFuture<Void> gone;
     synchronized (launch) {
       cancelExpiry(launch);
       cancelWatch(launch);
       cancelCancelDeadline(launch);
+      cancelCloseDeadline(launch);
+      gone = launch.gone;
     }
+    completeGone(gone);
     launch.registered.complete(Boolean.FALSE);
     completeLost(launch);
     WebSocketConnection connection = launch.connection;
@@ -1352,6 +1509,11 @@ public class CiDaemonRegistry {
    * <p>Only the <b>bound</b> connection's close counts. A connection a re-dial superseded closes
    * after its successor is bound (qits-1728), and that close starts no grace; nor does a second
    * report of a close already handled, which is what {@link #checkSilence} relies on.
+   *
+   * <p><b>A launch told {@link Close} is not dropped by its close</b> (qits-2572): that close is the
+   * daemon hanging up once its worktree is gone and its telemetry flushed. It starts no grace, holds
+   * nothing, completes nothing lost and is no WARN — the run is settled already — and only answers
+   * {@link #sendCloseUntilGone}'s wait, so the caller's teardown runs now.
    */
   public void onClose(String daemonId, WebSocketConnection connection) {
     Launch launch = launches.get(daemonId);
@@ -1359,8 +1521,9 @@ public class CiDaemonRegistry {
       return;
     }
     Duration grace = reconnectGrace();
-    boolean now;
-    boolean held;
+    boolean now = false;
+    boolean held = false;
+    CompletableFuture<Void> gone;
     synchronized (launch) {
       WebSocketConnection bound = launch.connection;
       if (bound == null || !bound.id().equals(connection.id())) {
@@ -1368,13 +1531,26 @@ public class CiDaemonRegistry {
       }
       launch.connection = null;
       cancelWatch(launch);
-      held = holdRunningSteps && launch.phase == Phase.RUNNING && !launch.cancelPending;
-      if (held) {
+      gone = launch.gone;
+      if (gone != null) {
+        // Told Close: this is the daemon hanging up when it is done — the answer, not a drop.
         cancelExpiry(launch);
-        now = false;
+        cancelCloseDeadline(launch);
       } else {
-        now = launch.phase == Phase.DONE || !startGrace(launch, grace);
+        held = holdRunningSteps && launch.phase == Phase.RUNNING && !launch.cancelPending;
+        if (held) {
+          cancelExpiry(launch);
+        } else {
+          now = launch.phase == Phase.DONE || !startGrace(launch, grace);
+        }
       }
+    }
+    if (gone != null) {
+      LOG.debugf(
+          "ci-daemon %s of run %s closed its socket after its Close (connection %s)",
+          daemonId, launch.runId, connection.id());
+      completeGone(gone);
+      return;
     }
     if (now) {
       completeLost(launch);
@@ -1794,6 +1970,16 @@ public class CiDaemonRegistry {
      * or it was reaped; guarded by the launch.
      */
     private boolean lost;
+
+    /**
+     * Set once the launch is told {@link Close} (qits-2572): completed when its daemon hangs up, the
+     * close grace passes or the launch is reaped — see {@link #sendCloseUntilGone}. Null before;
+     * guarded by the launch.
+     */
+    private CompletableFuture<Void> gone;
+
+    /** The close grace's end while {@link #gone} waits; guarded by the launch. */
+    private ScheduledFuture<?> closeDeadline;
 
     /** The reconnect grace's end, while the launch has no connection; guarded by the launch. */
     private ScheduledFuture<?> expiry;
