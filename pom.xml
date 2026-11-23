@@ -171,14 +171,14 @@
         <qits.ci-frontend-pacts-qits-ci-service.version>2026.1123.84719</qits.ci-frontend-pacts-qits-ci-service.version>
         <qits.projects-frontend-pacts-qits-ci-service.version>2026.1123.85114</qits.projects-frontend-pacts-qits-ci-service.version>
         <qits.docs-frontend-pacts-qits-ci-service.version>2026.1123.84215</qits.docs-frontend-pacts-qits-ci-service.version>
-        <qits.events-frontend-pacts-qits-ci-service.version>2026.1123.64019</qits.events-frontend-pacts-qits-ci-service.version>
+        <qits.events-frontend-pacts-qits-ci-service.version>2026.1123.93309</qits.events-frontend-pacts-qits-ci-service.version>
         <qits.githost-frontend-pacts-qits-ci-service.version>2026.1123.63405</qits.githost-frontend-pacts-qits-ci-service.version>
         <qits.maintenance-frontend-pacts-qits-ci-service.version>2026.1123.85455</qits.maintenance-frontend-pacts-qits-ci-service.version>
         <qits.artifacts-frontend-pacts-qits-ci-service.version>2026.1123.85546</qits.artifacts-frontend-pacts-qits-ci-service.version>
         <qits.deployments-frontend-pacts-qits-ci-service.version>2026.1123.63936</qits.deployments-frontend-pacts-qits-ci-service.version>
         <qits.mirror-frontend-pacts-qits-ci-service.version>2026.1123.84522</qits.mirror-frontend-pacts-qits-ci-service.version>
         <qits.observability-frontend-pacts-qits-ci-service.version>2026.1123.93025</qits.observability-frontend-pacts-qits-ci-service.version>
-        <qits.orchestrator-frontend-pacts-qits-ci-service.version>2026.1123.51409</qits.orchestrator-frontend-pacts-qits-ci-service.version>
+        <qits.orchestrator-frontend-pacts-qits-ci-service.version>2026.1123.93148</qits.orchestrator-frontend-pacts-qits-ci-service.version>
         <qits.system-frontend-pacts-qits-ci-service.version>2026.1123.85159</qits.system-frontend-pacts-qits-ci-service.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
