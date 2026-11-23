@@ -1059,8 +1059,9 @@ public final class CiReleaseComposer {
     out.append("set -eu\n");
     if (refusal != null) {
       // THE FOLD IS REFUSED (qits-1400): its release.yml and deployments.yml disagree about which
-      // application this is, or its pacts are not in parity with its mirror's (qits-2465). First, so nothing is built for a fold that cannot ship; a red QA step
-      // is what turns the release request REJECTED, with this sentence as the reason. A refusal of
+      // application this is, or its pacts are not in parity with its mirror's (qits-2465). First,
+      // so nothing is built for a fold that cannot ship; a red QA step is what turns the release
+      // request REJECTED, with this sentence as the reason. A refusal of
       // several lines (the pact parity check's, qits-2465) is echoed a line at a time, so the log
       // keeps its shape and no line can carry a control character into the script.
       out.append(
