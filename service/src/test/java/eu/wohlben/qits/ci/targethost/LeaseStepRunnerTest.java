@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiStepRunner;
+import eu.wohlben.qits.ci.control.CiStepRunner.InheritedRun.FirstStepWait;
 import eu.wohlben.qits.ci.daemonhost.CiDaemonRegistry;
 import eu.wohlben.qits.ci.daemonhost.CiStepRelay;
 import eu.wohlben.qits.ci.daemonhost.ScriptedLeaseDaemon;
@@ -14,6 +15,8 @@ import eu.wohlben.qits.ci.idp.RunCommissions;
 import eu.wohlben.qits.cidaemon.protocol.Ack;
 import eu.wohlben.qits.cidaemon.protocol.CiDaemonMessage;
 import eu.wohlben.qits.cidaemon.protocol.Close;
+import eu.wohlben.qits.cidaemon.protocol.ContinueFailed;
+import eu.wohlben.qits.cidaemon.protocol.Continued;
 import eu.wohlben.qits.cidaemon.protocol.InitProgress;
 import eu.wohlben.qits.cidaemon.protocol.RunStep;
 import java.time.Duration;
@@ -442,7 +445,7 @@ class LeaseStepRunnerTest {
   }
 
   private static CiStepRunner.InheritedRun inheritedBeforeTheFirstStep() {
-    return new CiStepRunner.InheritedRun(RUN, LEASE, INHERITED_DAEMON, SUBJECT, null, true);
+    return new CiStepRunner.InheritedRun(RUN, LEASE, INHERITED_DAEMON, SUBJECT, null, FirstStepWait.INITIALIZED);
   }
 
   private List<RunStep> runStepsSent() {
@@ -509,7 +512,7 @@ class LeaseStepRunnerTest {
     runner.initTimeoutSeconds = 30;
     CompletableFuture<CiStepRunner.StepResult> next =
         inherit(
-            new CiStepRunner.InheritedRun(RUN, LEASE, INHERITED_DAEMON, SUBJECT, null, false),
+            new CiStepRunner.InheritedRun(RUN, LEASE, INHERITED_DAEMON, SUBJECT, null, FirstStepWait.NOTHING),
             () -> runner.run(step(1, "./step-1.sh"), new Listened()));
     awaitReattached();
     daemon = ScriptedLeaseDaemon.dialUninitialized(registry, INHERITED_DAEMON, SUBJECT);
@@ -522,6 +525,85 @@ class LeaseStepRunnerTest {
         List.of(1), runStepsSent().stream().map(RunStep::stepIndex).distinct().toList());
   }
 
+  // --- an inherited run continued in a held slot, before its first step (qits-2576) -------------
+  //
+  // The phase-2 run's row is written before its Continue goes out, so a restart can leave the daemon
+  // mid-Continue — fetching, checking out, its step count still phase 1's — and a RunStep 0 sent
+  // then is dropped as a repeat. The first step waits for the Continue's answer instead.
+
+  private static CiStepRunner.InheritedRun continuedBeforeTheFirstStep() {
+    return new CiStepRunner.InheritedRun(
+        RUN, LEASE, INHERITED_DAEMON, SUBJECT, null, FirstStepWait.CONTINUED);
+  }
+
+  @Test
+  void anInheritedContinuedRunSendsItsFirstStepOnlyOnceItsDaemonSaysContinued() throws Exception {
+    runner.initTimeoutSeconds = 30;
+    CompletableFuture<CiStepRunner.StepResult> first =
+        inherit(
+            continuedBeforeTheFirstStep(), () -> runner.run(step(0, "./release.sh"), new Listened()));
+    awaitReattached();
+    daemon = ScriptedLeaseDaemon.dialUninitialized(registry, INHERITED_DAEMON, SUBJECT);
+
+    // Back, and still moving its worktree to the release's commit.
+    Thread.sleep(500);
+    assertFalse(first.isDone(), "the first step waits for the Continue's answer");
+    assertTrue(runStepsSent().isEmpty(), "and nothing is sent before it");
+
+    int sentBeforeContinued = daemon.received().size();
+    daemon.say(new Continued(RUN));
+    CiStepRunner.StepResult result = first.get(10, TimeUnit.SECONDS);
+
+    assertEquals(CiStepRunner.StepOutcome.OK, result.outcome(), result.output());
+    assertEquals(0, result.exitCode());
+    assertEquals(List.of(0), runStepsSent().stream().map(RunStep::stepIndex).toList());
+    assertTrue(
+        daemon.received().indexOf(runStepsSent().getFirst()) >= sentBeforeContinued,
+        "step 0 left only after Continued: " + daemon.received());
+  }
+
+  @Test
+  void anInheritedContinuedRunWhoseContinueFailedFailsItsFirstStepWithTheDaemonsReason()
+      throws Exception {
+    runner.initTimeoutSeconds = 30;
+    CompletableFuture<CiStepRunner.StepResult> first =
+        inherit(
+            continuedBeforeTheFirstStep(), () -> runner.run(step(0, "./release.sh"), new Listened()));
+    awaitReattached();
+    daemon = ScriptedLeaseDaemon.dialUninitialized(registry, INHERITED_DAEMON, SUBJECT);
+
+    daemon.say(
+        new ContinueFailed(
+            RUN, ContinueFailed.Reason.CHECKOUT_FAILED, "error: pathspec 'v1' did not match"));
+    CiStepRunner.StepResult result = first.get(10, TimeUnit.SECONDS);
+
+    assertEquals(CiStepRunner.StepOutcome.INIT_FAILED, result.outcome(), result.output());
+    assertEquals("CHECKOUT_FAILED: error: pathspec 'v1' did not match", result.output());
+    assertTrue(runStepsSent().isEmpty(), "no step goes to a daemon whose Continue failed");
+  }
+
+  @Test
+  void anInheritedContinuedRunWhoseDaemonNeverAnswersIsNeverInitializedOnTheInitClock()
+      throws Exception {
+    runner.initTimeoutSeconds = 1;
+    runner.initStallSeconds = 1;
+    CompletableFuture<CiStepRunner.StepResult> first =
+        inherit(
+            continuedBeforeTheFirstStep(), () -> runner.run(step(0, "./release.sh"), new Listened()));
+    awaitReattached();
+    long began = System.nanoTime();
+    daemon = ScriptedLeaseDaemon.dialUninitialized(registry, INHERITED_DAEMON, SUBJECT);
+
+    CiStepRunner.StepResult result = first.get(10, TimeUnit.SECONDS);
+    long tookMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - began);
+
+    assertEquals(CiStepRunner.StepOutcome.NEVER_INITIALIZED, result.outcome(), result.output());
+    assertTrue(
+        result.output().startsWith(LeaseStepRunner.NEVER_INITIALIZED), result.output());
+    assertTrue(tookMillis < 5_000, "the init clock, not the step's backstop: " + tookMillis);
+    assertTrue(runStepsSent().isEmpty(), "no step goes to a daemon still continuing");
+  }
+
   @Test
   void anInheritedRunWithAStepInFlightTakesItBackAndRunsTheNextWithoutWaiting() throws Exception {
     runner.initTimeoutSeconds = 30;
@@ -530,7 +612,7 @@ class LeaseStepRunnerTest {
             0, INHERITED_DAEMON, SUBJECT, Instant.parse("2026-11-05T10:00:00Z"), "./verify.sh", 60);
     CompletableFuture<CiStepRunner.StepResult> taken =
         inherit(
-            new CiStepRunner.InheritedRun(RUN, LEASE, INHERITED_DAEMON, SUBJECT, inFlight, false),
+            new CiStepRunner.InheritedRun(RUN, LEASE, INHERITED_DAEMON, SUBJECT, inFlight, FirstStepWait.NOTHING),
             () -> {
               CiStepRunner.StepResult back = runner.reattach(step(0, "./verify.sh"), new Listened());
               assertEquals(CiStepRunner.StepOutcome.OK, back.outcome(), back.output());

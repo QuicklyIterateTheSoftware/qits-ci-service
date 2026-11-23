@@ -774,9 +774,7 @@ public class CiRunService {
                   orphan.inflightDaemonId,
                   orphan.inflightTokenSubject,
                   inheritance.inFlight(),
-                  // Before the first step — no index was ever recorded, so no RunStep ever left —
-                  // in a lease the run did not continue in (qits-1893).
-                  orphan.inflightStepIndex == null && orphan.continuedFromRunId == null));
+                  firstStepWaitOf(orphan)));
         } else {
           LOG.warnf(
               "CI run %s cannot be taken back: %s — it is settled instead",
@@ -794,6 +792,21 @@ public class CiRunService {
     }
     List<String> queued = runs.listQueuedOldestFirst().stream().map(run -> run.id).toList();
     return new Sweep(queued, failed, restarted, inherited, unsound);
+  }
+
+  /**
+   * What an inherited run's next step waits for: nothing once an index was recorded, since a {@code
+   * RunStep} then left and the daemon has its worktree; before that, the {@code Initialized} of a
+   * lease of its own (qits-1893), or the {@code Continue}'s answer for a run continued in a held slot
+   * (qits-2576), whose row is written before its {@code Continue} goes out.
+   */
+  private static CiStepRunner.InheritedRun.FirstStepWait firstStepWaitOf(CiRun orphan) {
+    if (orphan.inflightStepIndex != null) {
+      return CiStepRunner.InheritedRun.FirstStepWait.NOTHING;
+    }
+    return orphan.continuedFromRunId == null
+        ? CiStepRunner.InheritedRun.FirstStepWait.INITIALIZED
+        : CiStepRunner.InheritedRun.FirstStepWait.CONTINUED;
   }
 
   /**

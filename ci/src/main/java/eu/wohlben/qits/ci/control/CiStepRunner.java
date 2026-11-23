@@ -188,14 +188,8 @@ public interface CiStepRunner {
    * {@code tokenSubject} are the run's launch as its row recorded it; {@code inFlight} is null when
    * no step was in flight — between two steps, or before the first.
    *
-   * <p>{@code awaitsInitialized} is true only before the first step of a run in a lease of its own
-   * (qits-1893): no {@code RunStep} ever left for its daemon, so nothing yet says its worktree is
-   * ready — the daemon may have said {@code Initialized} to the previous process, or may be dialling
-   * for the first time with the checkout still ahead of it. Its first step therefore waits for the
-   * {@code Initialized} a fresh run waits for, which such a daemon resends after every re-{@code Ack}
-   * until a step reaches it. False between two steps, where that resend stopped at the first step,
-   * and for a run continued in a held slot (epic qits-732), whose daemon answers its {@code
-   * Continue} again instead.
+   * <p>{@code firstStepWait} is what the run's next step waits for before it leaves, which only a
+   * run that never sent a step waits for at all — see {@link FirstStepWait}.
    */
   record InheritedRun(
       String runId,
@@ -203,7 +197,35 @@ public interface CiStepRunner {
       String daemonId,
       String tokenSubject,
       InFlightStep inFlight,
-      boolean awaitsInitialized) {}
+      FirstStepWait firstStepWait) {
+
+    /**
+     * What an inherited run's next step waits for before its {@code RunStep} leaves.
+     *
+     * <p>{@code NOTHING} between two steps or with one in flight: the daemon ran a step in its
+     * worktree, so the next goes out right after the re-{@code Ack}.
+     *
+     * <p>{@code INITIALIZED} before the first step of a run in a lease of its own (qits-1893): no
+     * {@code RunStep} ever left for its daemon, so nothing yet says its worktree is ready — the
+     * daemon may have said {@code Initialized} to the previous process, or may be dialling for the
+     * first time with the checkout still ahead of it. Its first step therefore waits for the {@code
+     * Initialized} a fresh run waits for, which such a daemon resends after every re-{@code Ack}
+     * until a step reaches it.
+     *
+     * <p>{@code CONTINUED} before the first step of a run continued in a held slot (epic qits-732,
+     * qits-2576): its row is written before the {@code Continue} goes out, so the previous process
+     * may have died with the daemon still fetching and checking out — its step count still at the
+     * phase-1 run's, so a {@code RunStep 0} sent then is dropped as a repeat and the step hangs to
+     * the backstop with no output. Its first step waits for the {@code Continue}'s answer instead,
+     * which the daemon sends on the live socket when it finishes and resends after every
+     * re-{@code Ack} until a step follows.
+     */
+    public enum FirstStepWait {
+      NOTHING,
+      INITIALIZED,
+      CONTINUED
+    }
+  }
 
   /**
    * Wait for the daemon of a run a previous process left {@code RUNNING} to dial back (qits-1192):

@@ -1,11 +1,11 @@
 package eu.wohlben.qits.ci.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.ci.control.CiStepRunner.InheritedRun.FirstStepWait;
 import eu.wohlben.qits.ci.control.CiStepRunner.StepOutcome;
 import eu.wohlben.qits.ci.control.CiStepRunner.StepResult;
 import eu.wohlben.qits.ci.entity.CiRun;
@@ -101,7 +101,10 @@ public class CiInheritedRunTest extends CiTestSupport {
         new CiStepRunner.InFlightStep(1, DAEMON_1, "sub-run", STARTED, "echo publish", 600),
         inherited.inFlight(),
         "the in-flight step as the row recorded it, with its script for a daemon still owed it");
-    assertFalse(inherited.awaitsInitialized(), "a daemon that was sent a step has its worktree");
+    assertEquals(
+        FirstStepWait.NOTHING,
+        inherited.firstStepWait(),
+        "a daemon that was sent a step has its worktree");
     assertTrue(fakeRunner.executed().isEmpty(), "nothing is sent before the daemon is back");
     assertTrue(fakeRunner.revoked().isEmpty(), "its old token is still the running step's");
   }
@@ -145,8 +148,9 @@ public class CiInheritedRunTest extends CiTestSupport {
     String runId = insertRunning(null, false);
     service.sweepInterrupted();
     assertNull(fakeRunner.inheritances().get(0).run().inFlight());
-    assertFalse(
-        fakeRunner.inheritances().get(0).run().awaitsInitialized(),
+    assertEquals(
+        FirstStepWait.NOTHING,
+        fakeRunner.inheritances().get(0).run().firstStepWait(),
         "it ran step 0 in its worktree, and resends no Initialized (qits-1893)");
 
     fakeRunner.inheritances().get(0).adopted().run();
@@ -285,8 +289,9 @@ public class CiInheritedRunTest extends CiTestSupport {
     service.sweepInterrupted();
     assertEquals(1, fakeRunner.inheritances().size(), "it is taken back, not settled");
     assertNull(fakeRunner.inheritances().get(0).run().inFlight());
-    assertTrue(
-        fakeRunner.inheritances().get(0).run().awaitsInitialized(),
+    assertEquals(
+        FirstStepWait.INITIALIZED,
+        fakeRunner.inheritances().get(0).run().firstStepWait(),
         "no step ever left: its first waits for the daemon's Initialized (qits-1893)");
 
     fakeRunner.inheritances().get(0).adopted().run();
@@ -296,6 +301,61 @@ public class CiInheritedRunTest extends CiTestSupport {
         List.of(1, 2), fakeRunner.executed().stream().map(CiStepRunner.StepSpec::stepIndex).toList(),
         "the carried step is never sent");
     assertEquals(CiRunStatus.SUCCESS, service.requireRun(runId).status);
+  }
+
+  @Test
+  public void aRunContinuedInAHeldSlotBeforeItsFirstStepAwaitsItsContinuesAnswer()
+      throws Exception {
+    // qits-2576: the phase-2 run's row is written before its Continue goes out, so the previous
+    // process may have died with the daemon still moving its worktree. Its first step waits for the
+    // Continue's answer — not for an Initialized the daemon will not send, and not for nothing.
+    String runId = insertContinued(null);
+
+    service.sweepInterrupted();
+    assertEquals(1, fakeRunner.inheritances().size(), "it is taken back, not settled");
+    assertNull(fakeRunner.inheritances().get(0).run().inFlight());
+    assertEquals(
+        FirstStepWait.CONTINUED,
+        fakeRunner.inheritances().get(0).run().firstStepWait(),
+        "no step ever left the continued run: its first waits for Continued");
+
+    fakeRunner.inheritances().get(0).adopted().run();
+    forgetLoadedEntities();
+    assertEquals(CiRunStatus.SUCCESS, service.requireRun(runId).status);
+  }
+
+  @Test
+  public void aRunContinuedInAHeldSlotThatRanAStepAwaitsNothing() throws Exception {
+    // Once a step index is recorded the daemon had answered Continued and taken a step.
+    insertContinued(0);
+
+    service.sweepInterrupted();
+    assertEquals(1, fakeRunner.inheritances().size(), "it is taken back, not settled");
+    assertEquals(
+        FirstStepWait.NOTHING,
+        fakeRunner.inheritances().get(0).run().firstStepWait(),
+        "a continued run that ran a step has its worktree at the release's commit");
+  }
+
+  /**
+   * A release run continued in a held slot (epic qits-732), its launch recorded with {@code
+   * stepIndex} in flight (null: none yet). Step 0 has a row in both cases — carried over by the
+   * retry it stands for when no step left, run when one did.
+   */
+  private String insertContinued(Integer stepIndex) {
+    String runId = insertRunning(CiRunPhase.RELEASE, false);
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              CiRun row = runs.findById(runId);
+              row.continuedFromRunId = UUID.randomUUID().toString();
+              row.inflightStepIndex = stepIndex;
+              if (stepIndex == null) {
+                row.carriedSteps = 1;
+                row.inflightStartedAt = null;
+              }
+            });
+    return runId;
   }
 
   @Test

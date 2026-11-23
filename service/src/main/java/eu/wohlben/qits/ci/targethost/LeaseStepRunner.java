@@ -179,6 +179,13 @@ public class LeaseStepRunner implements CiStepRunner {
   private final Set<String> initialized = ConcurrentHashMap.newKeySet();
 
   /**
+   * Inherited runs continued in a held slot whose first step was never sent (qits-2576): the
+   * previous process died between the run's row and its {@code Continue}'s answer, so the first
+   * step waits for that answer rather than for an {@code Initialized} the daemon will not send.
+   */
+  private final Set<String> awaitingContinued = ConcurrentHashMap.newKeySet();
+
+  /**
    * A continued run's phase-1 run (qits-732), whose token outlives the {@code Continue} until this
    * run's lease is torn down: the target's shared buildkit caches registry authorizers per host and
    * scope across sessions, so a token revoked while its container still lives can fail another
@@ -306,6 +313,9 @@ public class LeaseStepRunner implements CiStepRunner {
               + registerTimeoutSeconds
               + "s of its lease running; its own log is on its execution target");
     }
+    if (awaitingContinued.contains(spec.runId())) {
+      return awaitContinued(spec, daemonId);
+    }
     CiDaemonRegistry.Initialization initialization =
         daemons.awaitInitialized(daemonId, initDeadline());
     if (initialization.status() != CiDaemonRegistry.Initialization.Status.INITIALIZED) {
@@ -325,6 +335,41 @@ public class LeaseStepRunner implements CiStepRunner {
       }
       case NEVER_INITIALIZED -> {
         return failed(StepOutcome.NEVER_INITIALIZED, neverInitialized(initialization.overrun()));
+      }
+      default -> {
+        return failed(StepOutcome.CONNECTION_LOST, "");
+      }
+    }
+  }
+
+  /**
+   * {@link #awaitReady}'s last wait for an inherited run continued in a held slot whose first step
+   * was never sent (qits-2576): the answer to the {@code Continue} the previous process sent, which
+   * the daemon gives on the live socket when it finishes moving its worktree and repeats after every
+   * re-{@code Ack} until a step follows — under {@link #initDeadline}, as {@link #continueNow}
+   * waits for it. {@code Continued} lets step 0 go out; anything else fails it the way the matching
+   * {@code Initialized} wait would.
+   */
+  private StepResult awaitContinued(StepSpec spec, String daemonId) {
+    CiDaemonRegistry.Continuation answer = daemons.awaitContinued(daemonId, initDeadline());
+    if (answer.status() != CiDaemonRegistry.Continuation.Status.CONTINUED) {
+      abandonIfStopping(spec);
+      String ended = endedLeases.get(spec.runId());
+      if (ended != null && answer.status() != CiDaemonRegistry.Continuation.Status.FAILED) {
+        return failed(StepOutcome.LAUNCH_FAILED, ended);
+      }
+    }
+    switch (answer.status()) {
+      case CONTINUED -> {
+        initialized.add(spec.runId());
+        awaitingContinued.remove(spec.runId());
+        return null;
+      }
+      case FAILED -> {
+        return failed(StepOutcome.INIT_FAILED, detailOf(answer));
+      }
+      case NO_ANSWER -> {
+        return failed(StepOutcome.NEVER_INITIALIZED, neverInitialized(answer.overrun()));
       }
       default -> {
         return failed(StepOutcome.CONNECTION_LOST, "");
@@ -526,6 +571,7 @@ public class LeaseStepRunner implements CiStepRunner {
                 leases.driveInherited(runId, adopted);
               } else {
                 givenUp.add(runId);
+                awaitingContinued.remove(runId);
                 leases.launchOf(runId).ifPresent(launch -> daemons.reap(launch.daemonId()));
                 leases.forgetLaunch(runId);
                 relay.drop(runId);
@@ -599,8 +645,14 @@ public class LeaseStepRunner implements CiStepRunner {
     // for Initialized as a fresh run's does, under initDeadline() (qits-2539): a daemon
     // that said it to the previous process says it again after this Ack, since no step answered it
     // (qits-748), and one that never says it ends NEVER_INITIALIZED on that clock.
-    if (!run.awaitsInitialized()) {
-      initialized.add(runId);
+    // A run continued in a held slot that never sent a step (qits-2576) may have lost its process
+    // mid-Continue, with the daemon still fetching and its step count still at the phase-1 run's: a
+    // RunStep 0 sent now is dropped as a repeat. Its first step waits for the Continue's answer
+    // instead, which the daemon sends when it finishes and resends after every re-Ack.
+    switch (run.firstStepWait()) {
+      case NOTHING -> initialized.add(runId);
+      case INITIALIZED -> {}
+      case CONTINUED -> awaitingContinued.add(runId);
     }
     return !givenUp.contains(runId);
   }
@@ -711,6 +763,7 @@ public class LeaseStepRunner implements CiStepRunner {
     relay.drop(runId);
     inFlight.remove(runId);
     initialized.remove(runId);
+    awaitingContinued.remove(runId);
     givenUp.remove(runId);
     Optional<CiLeases.Launch> launch = leases.launchOf(runId);
     launch.ifPresent(
@@ -767,6 +820,7 @@ public class LeaseStepRunner implements CiStepRunner {
     relay.drop(runId);
     inFlight.remove(runId);
     initialized.remove(runId);
+    awaitingContinued.remove(runId);
     givenUp.remove(runId);
     endedLeases.remove(runId);
     leaseStarts.remove(runId);
@@ -911,6 +965,7 @@ public class LeaseStepRunner implements CiStepRunner {
     }
     leases.endLease(hold.leaseId());
     initialized.remove(runId);
+    awaitingContinued.remove(runId);
     leaseStarts.remove(runId);
     endedLeases.remove(runId);
     commissions.endAdoption(runId);
@@ -1004,6 +1059,18 @@ public class LeaseStepRunner implements CiStepRunner {
   static String detailOf(CiDaemonRegistry.Initialization initialization) {
     String reason = initialization.reason() == null ? "unspecified" : initialization.reason().name();
     String detail = initialization.detail();
+    return detail == null || detail.isBlank() ? reason : reason + ": " + detail;
+  }
+
+  /**
+   * The daemon's reason and detail for a {@code Continue} that did not take (qits-2576), as the
+   * first step's recorded output. Every {@code ContinueFailed} reason is recorded {@code
+   * INIT_FAILED}: unlike {@code InitFailed}'s {@code SHA_GONE}, none of them says the commit is
+   * gone — a {@code FETCH_FAILED} may as well be the network — so none earns {@code SHA_GONE}.
+   */
+  static String detailOf(CiDaemonRegistry.Continuation continuation) {
+    String reason = continuation.reason() == null ? "unspecified" : continuation.reason().name();
+    String detail = continuation.detail();
     return detail == null || detail.isBlank() ? reason : reason + ": " + detail;
   }
 
