@@ -195,7 +195,9 @@ public class CiDaemonSocket {
   /**
    * A close is handed to the registry, which does <em>not</em> end the step on it: the launch waits
    * its reconnect grace for the daemon to dial again — a new connection, admitted here by its {@code
-   * Hello} exactly as the first was (qits-748). See {@link CiDaemonRegistry#onClose}.
+   * Hello} exactly as the first was (qits-748). A launch told {@code Close} is the exception: its
+   * close is the daemon hanging up when done, and answers the run's teardown (qits-2572). See {@link
+   * CiDaemonRegistry#onClose}.
    */
   @OnClose
   public void onClose(WebSocketConnection connection) {

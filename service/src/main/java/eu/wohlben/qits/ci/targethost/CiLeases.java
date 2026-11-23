@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -585,11 +586,6 @@ public class CiLeases {
     driveOn(runId, work);
   }
 
-  /** Ends one lease at qits-system by its id. Never throws: the reconcile ends what this could not. */
-  void endLease(UUID leaseId) {
-    endQuietly(leaseId);
-  }
-
   /** {@link CiRunService#recordContinuedLaunch}, for the seam. */
   boolean recordContinuedLaunch(String runId, UUID leaseId, String daemonId, String tokenSubject) {
     return runs.recordContinuedLaunch(runId, leaseId, daemonId, tokenSubject);
@@ -650,6 +646,35 @@ public class CiLeases {
     }
     if (leaseId != null) {
       endQuietly(leaseId, reason);
+    }
+  }
+
+  /**
+   * Leases whose run closed (or whose held slot was abandoned) and whose daemon is still finishing
+   * up after its {@code Close} (qits-2572): no longer any run's launch, and still named, so the
+   * reconcile's orphan sweep does not end one under the daemon's telemetry flush. {@link #endClosed}
+   * ends and forgets each.
+   */
+  private final Set<UUID> closing = ConcurrentHashMap.newKeySet();
+
+  /**
+   * A lease whose run is done with it, kept named until {@link #endClosed} ends it once its daemon
+   * has hung up. The caller forgets the run's launch beside it ({@link #forgetLaunch}), so a
+   * re-queued run of the same id asks a lease of its own and is never confused with this one.
+   */
+  void closing(UUID leaseId) {
+    closing.add(leaseId);
+  }
+
+  /**
+   * Ends a lease {@link #closing} kept, by its id — never by the run's, which may name a newer one by
+   * now — with {@code reason} as {@link #end(String, String)} takes it. Never throws.
+   */
+  void endClosed(String runId, UUID leaseId, String reason) {
+    try {
+      endQuietly(leaseId, reason);
+    } finally {
+      closing.remove(leaseId);
     }
   }
 
@@ -734,6 +759,14 @@ public class CiLeases {
       }
       named.put(heldLease, lease.ownerRef());
       holds.leaseObserved(lease);
+    }
+    // A closed run's lease whose daemon is still hanging up (qits-2572), and a released hold's: the
+    // teardown waiting on the daemon ends them.
+    for (UUID closed : closing) {
+      named.put(closed, "closing");
+    }
+    for (UUID closed : holds.closingLeases()) {
+      named.put(closed, "closing");
     }
     for (CiRun run : runs.leasedRuns()) {
       named.put(run.leaseId, run.id);

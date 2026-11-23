@@ -22,6 +22,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -46,8 +47,9 @@ import org.jboss.logging.Logger;
  * own deadline for up to that long while the step's {@code buildctl build} waits at the target's
  * shared builder gate rather than running at all, and the host must not mistake that pause for a
  * daemon that stopped answering. {@link #runClosed} tells the
- * daemon {@code Close}, ends the lease and deletes the run's token. No container is started or
- * removed here: the lease's container is the target's.
+ * daemon {@code Close} and, once it has hung up (bounded by {@code qits.ci.daemon.close-grace-seconds},
+ * qits-2572), ends the lease and deletes the run's token. No container is started or removed here:
+ * the lease's container is the target's.
  *
  * <p><b>The two clocks (qits-1544).</b> A run is claimed when its lease is {@code GRANTED}, but a
  * granted lease's container does not exist yet: the target pulls the pinned ci-slot image first
@@ -753,10 +755,22 @@ public class LeaseStepRunner implements CiStepRunner {
   }
 
   /**
-   * Everything the run held, given back: the relay's buffer and the in-flight record; the daemon,
-   * told {@code Close} so it removes its worktree, then forgotten; the lease, ended — with {@link
-   * SystemLeases#NEVER_DIALLED_BACK} when its daemon never dialled back (qits-1809); and the run's
-   * {@code ci-run} token, deleted — with any a previous process or an earlier lease of the run left.
+   * Everything the run held, given back: the relay's buffer and the in-flight record, at once; the
+   * daemon, told {@code Close} so it removes its worktree and flushes its telemetry; and — once it
+   * has hung up, or {@code qits.ci.daemon.close-grace-seconds} has passed ({@link
+   * CiDaemonRegistry#sendCloseUntilGone}, qits-2572) — the daemon forgotten, the lease ended — with
+   * {@link SystemLeases#NEVER_DIALLED_BACK} when its daemon never dialled back (qits-1809) — and the
+   * run's {@code ci-run} token deleted, with any a previous process or an earlier lease of the run
+   * left and a continued run's phase-1 token. Those three wait because the daemon's last telemetry
+   * travels on that token from inside that lease: ended straight after the {@code Close}, they raced
+   * the flush and usually won.
+   *
+   * <p>Never parks the caller: the wait is a stage, and a launch with no live connection — never
+   * dialled, lost, inside its reconnect grace, already closed — or no launch at all is torn down
+   * before this returns, as always. The launch, the lease and the token are taken off the run
+   * <em>now</em> ({@link CiLeases#closing}, {@link RunCommissions#detach}) and the deferred half
+   * ends exactly those, so a re-queued run of the same id that asks a lease and a token meanwhile
+   * is never confused with them.
    */
   @Override
   public void runClosed(String runId) {
@@ -765,21 +779,55 @@ public class LeaseStepRunner implements CiStepRunner {
     initialized.remove(runId);
     awaitingContinued.remove(runId);
     givenUp.remove(runId);
-    Optional<CiLeases.Launch> launch = leases.launchOf(runId);
-    launch.ifPresent(
-        held -> {
-          daemons.sendClose(held.daemonId());
-          daemons.reap(held.daemonId());
-        });
-    leases.end(runId, neverDialledBack.remove(runId) ? SystemLeases.NEVER_DIALLED_BACK : null);
+    String reason = neverDialledBack.remove(runId) ? SystemLeases.NEVER_DIALLED_BACK : null;
     endedLeases.remove(runId);
     leaseStarts.remove(runId);
-    commissions.endAdoption(runId);
-    commissions.release(runId);
-    commissions.revokeOrphaned(runId);
     String phaseOne = phaseOneOf.remove(runId);
-    if (phaseOne != null) {
-      revokePhaseOne(phaseOne);
+    Optional<CiLeases.Launch> launch = leases.launchOf(runId);
+    if (launch.isEmpty()) {
+      // No launch held here: its row may still name a lease, which end() reads and ends at once.
+      leases.end(runId, reason);
+      giveBackTokens(runId, commissions.detach(runId), phaseOne);
+      return;
+    }
+    CiLeases.Launch held = launch.get();
+    leases.closing(held.leaseId());
+    leases.forgetLaunch(runId);
+    IdpCommissioner.CommissionedToken token = commissions.detach(runId);
+    CompletionStage<Void> gone;
+    try {
+      gone = daemons.sendCloseUntilGone(held.daemonId());
+    } catch (RuntimeException e) {
+      LOG.debugf("CI run %s: its daemon could not be told Close: %s", runId, e.getMessage());
+      gone = CompletableFuture.completedFuture(null);
+    }
+    gone.whenComplete(
+        (done, failed) -> {
+          try {
+            daemons.reap(held.daemonId());
+          } catch (RuntimeException e) {
+            LOG.debugf("CI run %s: its daemon could not be reaped: %s", runId, e.getMessage());
+          }
+          leases.endClosed(runId, held.leaseId(), reason);
+          giveBackTokens(runId, token, phaseOne);
+        });
+  }
+
+  /**
+   * The run's token given back — {@code token}, which {@link RunCommissions#detach} took off it —
+   * then any a previous process left, then a continued run's phase-1 run's. Never throws.
+   */
+  private void giveBackTokens(
+      String runId, IdpCommissioner.CommissionedToken token, String phaseOne) {
+    try {
+      commissions.endAdoption(runId);
+      commissions.release(token);
+      commissions.revokeOrphaned(runId);
+      if (phaseOne != null) {
+        revokePhaseOne(phaseOne);
+      }
+    } catch (RuntimeException e) {
+      LOG.warnf("CI run %s: its tokens could not be given back: %s", runId, e.getMessage());
     }
   }
 
@@ -947,30 +995,51 @@ public class LeaseStepRunner implements CiStepRunner {
   }
 
   /**
-   * A held slot nothing continues in, after it was taken: {@code Close}, the launch reaped and
-   * forgotten, the lease ended, the new run's token and the phase-1 run's both given back. The new
-   * run goes back to the queue (its caller's {@code failed}).
+   * A held slot nothing continues in, after it was taken: the launch forgotten by the run and the
+   * run's own bookkeeping dropped at once; {@code Close} to the daemon; and once it has hung up or the
+   * close grace has passed (qits-2572, as in {@link #runClosed}) the launch reaped, the lease ended,
+   * and the new run's token and the phase-1 run's both given back. The new run goes back to the queue
+   * (its caller's {@code failed}) at once, and its token is taken off it first ({@link
+   * RunCommissions#detach}), so the fresh lease it asks commissions a token of its own.
    */
   private void abandon(String runId, CiSlotHolds.Hold hold, String why) {
     LOG.infof("Held lease %s is not continued in by run %s: %s", hold.leaseId(), runId, why);
-    try {
-      daemons.sendClose(hold.daemonId());
-      daemons.reap(hold.daemonId());
-    } catch (RuntimeException e) {
-      LOG.debugf("Held lease %s: its daemon could not be closed: %s", hold.leaseId(), e.getMessage());
-    }
+    leases.closing(hold.leaseId());
     Optional<CiLeases.Launch> launch = leases.launchOf(runId);
     if (launch.isPresent() && launch.get().leaseId().equals(hold.leaseId())) {
       leases.forgetLaunch(runId);
     }
-    leases.endLease(hold.leaseId());
     initialized.remove(runId);
     awaitingContinued.remove(runId);
     leaseStarts.remove(runId);
     endedLeases.remove(runId);
+    IdpCommissioner.CommissionedToken token = commissions.detach(runId);
     commissions.endAdoption(runId);
-    commissions.release(runId);
-    revokePhaseOne(hold.heldFromRunId());
+    CompletionStage<Void> gone;
+    try {
+      gone = daemons.sendCloseUntilGone(hold.daemonId());
+    } catch (RuntimeException e) {
+      LOG.debugf("Held lease %s: its daemon could not be closed: %s", hold.leaseId(), e.getMessage());
+      gone = CompletableFuture.completedFuture(null);
+    }
+    gone.whenComplete(
+        (done, failed) -> {
+          try {
+            daemons.reap(hold.daemonId());
+          } catch (RuntimeException e) {
+            LOG.debugf(
+                "Held lease %s: its daemon could not be reaped: %s", hold.leaseId(), e.getMessage());
+          }
+          leases.endClosed(runId, hold.leaseId(), null);
+          try {
+            commissions.release(token);
+            revokePhaseOne(hold.heldFromRunId());
+          } catch (RuntimeException e) {
+            LOG.warnf(
+                "Held lease %s: its tokens could not be given back: %s",
+                hold.leaseId(), e.getMessage());
+          }
+        });
   }
 
   private void revokePhaseOne(String phaseOneRunId) {

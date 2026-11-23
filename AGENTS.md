@@ -169,6 +169,20 @@ and the token deleted. qits-ci never dials in, and — the invariant the whole f
 code path here runs repo-controlled code as a host process or through `docker exec`**. qits-ci has
 no container vocabulary at all: the container is the lease's.
 
+**The lease and the token wait for the daemon to hang up (qits-2572).** On `Close` the daemon
+removes its worktree, flushes its telemetry (≤3 s, on the run's own token, from inside the lease's
+container) and only then closes its socket. Reaping, ending the lease and deleting the token right
+after the `Close` raced that flush and usually won, so `LeaseStepRunner.runClosed`,
+`CiSlotHolds.teardown` and `LeaseStepRunner.abandon` compose them on
+`CiDaemonRegistry.sendCloseUntilGone`, a stage that completes when the daemon's close reaches
+`onClose` or `qits.ci.daemon.close-grace-seconds` (20) passes — at once with no live socket, or while
+the process is stopping. It parks no thread (it completes on a virtual thread), so the package rule
+below holds. A close after `Close` starts no reconnect grace and loses nothing. The run lets go of
+its launch and token *before* the wait (`CiLeases.closing`/`forgetLaunch`, `RunCommissions.detach`),
+and the deferred half ends exactly those by id, so a re-queued run of the same id is never confused
+with them; meanwhile the lease stays named for the reconcile's orphan sweep, and the detached token
+for the commission reconciler.
+
 **The slot's command is `CiSlotSettings.BOOTSTRAP`, carried in the spec's env as
 `QITS_CI_BOOTSTRAP`.** A `LeaseSpec{image, env, user, limits}` has no entrypoint field, so the
 ci-slot image's entrypoint runs `/bin/sh -c "$QITS_CI_BOOTSTRAP"`. `CiSlotSpecs.compose` puts it

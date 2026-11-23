@@ -25,7 +25,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * package that drives the step seam against a real {@link CiDaemonRegistry} with no socket: it is
  * admitted once, says {@code Initialized}, and answers every {@link RunStep} it is sent with one
  * chunk naming the step and a {@link StepFinished} naming its index, on its own thread, the way the
- * capability-2 daemon answers (one {@code seq} counter for the whole lease).
+ * capability-2 daemon answers (one {@code seq} counter for the whole lease). A {@code Close} it
+ * answers by hanging up, as the real daemon does once its worktree is gone and its telemetry flushed
+ * (qits-2572) — unless {@link #keepOpenOnClose} says otherwise.
  */
 public final class ScriptedLeaseDaemon implements AutoCloseable {
 
@@ -53,6 +55,28 @@ public final class ScriptedLeaseDaemon implements AutoCloseable {
    * the latch opens — a step held mid-flight, for a suite that acts while it runs (qits-1818).
    */
   private volatile java.util.concurrent.CountDownLatch stepGate;
+
+  /**
+   * Whether a {@code Close} is answered the way the real daemon answers it — by closing its socket
+   * (qits-2572) — at once, inside the send. Off, the socket stays open until {@link #hangUp}.
+   */
+  private volatile boolean hangsUpOnClose = true;
+
+  /** Keep the socket open after a {@code Close}: a daemon still flushing, or one that never ends. */
+  public void keepOpenOnClose() {
+    hangsUpOnClose = false;
+  }
+
+  /** Close this daemon's socket from its side, as the daemon does when it is done after Close. */
+  public void hangUp() {
+    open = false;
+    registry.onClose(daemonId, connection);
+  }
+
+  /** {@code registry}'s close grace, for a suite outside this package (qits-2572). */
+  public static void closeGrace(CiDaemonRegistry registry, Duration grace) {
+    registry.closeGrace(grace);
+  }
 
   /** Holds every later step after its chunk until {@link #releaseSteps}. */
   public void holdSteps() {
@@ -189,6 +213,10 @@ public final class ScriptedLeaseDaemon implements AutoCloseable {
 
   private void received(CiDaemonMessage message) {
     received.add(message);
+    if (message instanceof eu.wohlben.qits.cidaemon.protocol.Close && hangsUpOnClose) {
+      hangUp();
+      return;
+    }
     if (message instanceof eu.wohlben.qits.cidaemon.protocol.Continue next) {
       java.util.function.Function<eu.wohlben.qits.cidaemon.protocol.Continue, CiDaemonMessage>
           answer = continueAnswer;
