@@ -185,6 +185,16 @@ public class HttpGitConfigSource implements CiConfigSource {
    */
   @Override
   public FileLookup readFile(CiRepoRef repo, String rev, String path) {
+    return readFile(repo, rev, path, MAX_CONFIG_BYTES);
+  }
+
+  /**
+   * The same read, bounded by {@code maxBytes} rather than always by {@link #MAX_CONFIG_BYTES} — see
+   * {@link CiConfigSource#readFile(CiRepoRef, String, String, int)} for who needs a bound of their
+   * own.
+   */
+  @Override
+  public FileLookup readFile(CiRepoRef repo, String rev, String path, int maxBytes) {
     CiIdentifiers.requireRepo(repo);
     // A rev is a sha or a ref name and both live inside requireBranch's charset, which is what keeps
     // this method's one free value out of a URL it was not checked for.
@@ -198,9 +208,8 @@ public class HttpGitConfigSource implements CiConfigSource {
       LOG.debugf("ci could not read %s at %s in %s: HTTP %d", path, rev, repo.display(), answer.status());
       return FileLookup.unreachable();
     }
-    if (answer.body().length > MAX_CONFIG_BYTES) {
-      LOG.warnf(
-          "%s in %s is larger than %d bytes — not read", path, repo.display(), MAX_CONFIG_BYTES);
+    if (answer.body().length > maxBytes) {
+      LOG.warnf("%s in %s is larger than %d bytes — not read", path, repo.display(), maxBytes);
       return FileLookup.unreachable();
     }
     return FileLookup.found(answer.text());

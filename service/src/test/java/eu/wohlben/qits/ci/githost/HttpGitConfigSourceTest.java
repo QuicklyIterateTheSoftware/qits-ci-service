@@ -340,6 +340,24 @@ public class HttpGitConfigSourceTest {
   }
 
   @Test
+  public void aCallerWithItsOwnBoundReadsPastTheConfigBound() throws Exception {
+    // CiPactParityInputs (qits-2465): a pact is data, not a config, and the repository that commits
+    // it decides nothing about qits-ci's read bound — so it names its own, larger one.
+    String repoId = "repo-big-pact";
+    String content = "x".repeat(HttpGitConfigSource.MAX_CONFIG_BYTES + 1);
+    String sha = seed(repoId, null, Map.of("pacts/big.json", content));
+
+    assertEquals(
+        CiConfigSource.FileLookup.Status.UNREACHABLE,
+        source.readFile(id(repoId), sha, "pacts/big.json").status(),
+        "the three-argument read still answers the config bound");
+    CiConfigSource.FileLookup found =
+        source.readFile(id(repoId), sha, "pacts/big.json", HttpGitConfigSource.MAX_CONFIG_BYTES + 2);
+    assertEquals(CiConfigSource.FileLookup.Status.FOUND, found.status());
+    assertEquals(content, found.content());
+  }
+
+  @Test
   public void hostileRevsAreRejectedBeforeTheyReachAUrlOnThisReadToo() {
     // The archetype NAME is repository content, so the path it builds is bounded by the slot parser;
     // the rev is bounded here, by the same check every other read on this class makes.

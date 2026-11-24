@@ -35,6 +35,9 @@ public class CiPactParityInputs {
   /** The tag namespace a release version is read under. */
   static final String TAGS = "refs/tags/";
 
+  /** A pact is data, not a config: qits-landing-app's qits-projects-service pact is 1.5 MB at qits-2465. */
+  static final int MAX_PACT_BYTES = 32 * 1024 * 1024;
+
   @Inject CiConfigSource configSource;
   @Inject CiReleaseSlotParser slotParser;
   @Inject CiScmReleaseRepository scmReleases;
@@ -65,7 +68,7 @@ public class CiPactParityInputs {
     String repository = repo.display();
     Map<String, String> pacts = new LinkedHashMap<>();
     for (String path : CiPactParity.pactPaths(repository, contracts)) {
-      CiConfigSource.FileLookup pact = configSource.readFile(repo, rev, path);
+      CiConfigSource.FileLookup pact = configSource.readFile(repo, rev, path, MAX_PACT_BYTES);
       if (pact.status() == CiConfigSource.FileLookup.Status.UNREACHABLE) {
         return Inputs.unreachable(path + " could not be read at " + rev);
       }
@@ -134,7 +137,7 @@ public class CiPactParityInputs {
     }
     Map<String, String> theirPacts = new LinkedHashMap<>();
     for (String path : CiPactParity.pactPaths(counterpartName, theirs)) {
-      CiConfigSource.FileLookup pact = configSource.readFile(counterpart, tag, path);
+      CiConfigSource.FileLookup pact = configSource.readFile(counterpart, tag, path, MAX_PACT_BYTES);
       if (pact.status() == CiConfigSource.FileLookup.Status.UNREACHABLE) {
         return Inputs.unreachable(counterpartName + "'s " + path + " could not be read at " + tag);
       }

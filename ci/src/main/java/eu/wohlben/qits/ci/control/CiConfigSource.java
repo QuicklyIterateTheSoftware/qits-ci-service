@@ -127,6 +127,20 @@ public interface CiConfigSource {
   FileLookup readFile(CiRepoRef repo, String rev, String path);
 
   /**
+   * The same read, with the caller's own size bound rather than the config bound {@link #readFile}
+   * applies. {@code CiPactParityInputs} is the reason this overload exists: a pact file is data, not
+   * a config, and the repository that commits it decides nothing about whether qits-ci can read it
+   * back — so a caller reading something that is not a config file names its own bound instead of
+   * borrowing the one sized for {@code release.yml} and the release-slot recipes.
+   *
+   * <p>{@code default}, delegating to the three-argument form, so the one production implementation
+   * is the only one that has to answer for a bound and every test fake keeps compiling unchanged.
+   */
+  default FileLookup readFile(CiRepoRef repo, String rev, String path, int maxBytes) {
+    return readFile(repo, rev, path);
+  }
+
+  /**
    * Does {@code repo} still hold {@code sha}? Asked in exactly one place — {@code
    * CiRunService.runSteps}, when a step container reports it could not check the commit out — and
    * the two causes it tells apart mean opposite things to the record. The commit force-pushed away
