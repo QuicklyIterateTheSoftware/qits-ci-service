@@ -3294,34 +3294,7 @@ public class CiReleaseComposerTest {
     try {
       Path checkout = Files.createDirectories(work.resolve("checkout"));
       Path uncovered = work.resolve("qits-uncovered-operations.tsv");
-      Files.writeString(
-          work.resolve("stub-qits"),
-          "#!/bin/sh\n"
-              + "if [ \"$1\" = contracts ]; then\n"
-              + "  printf '%s\\n' \"$*\" > '" + work.resolve("coverage-argv.txt") + "'\n"
-              + "  out=; prev=\n"
-              + "  for a in \"$@\"; do if [ \"$prev\" = --out ]; then out=$a; fi; prev=$a; done\n"
-              + "  case \"$QITS_TEST_COVERAGE\" in\n"
-              + "    0) : > \"$out\" ;;\n"
-              + "    3) echo 'uncovered: qits-x GET /x'; printf 'qits-x\\tGET\\t/x\\n' > \"$out\" ;;\n"
-              + "  esac\n"
-              + "  exit \"$QITS_TEST_COVERAGE\"\n"
-              + "fi\n"
-              + "printf '%s\\n' \"$*\" > '" + work.resolve("qits-argv.txt") + "'\n"
-              + "printf '%s\\n' \"${QITS_CI_UNCOVERED_OPERATIONS:-unset}\" > '"
-              + work.resolve("qits-uncovered-env.txt") + "'\n");
-      Path bin = Files.createDirectories(work.resolve("bin"));
-      Path curl = bin.resolve("curl");
-      Files.writeString(
-          curl,
-          "#!/bin/sh\n"
-              + "prev=\n"
-              + "for a in \"$@\"; do\n"
-              + "  if [ \"$prev\" = \"-o\" ]; then cp '" + work.resolve("stub-qits") + "' \"$a\"; fi\n"
-              + "  prev=\"$a\"\n"
-              + "done\n");
-      assertTrue(curl.toFile().setExecutable(true));
-      String path = bin + ":" + System.getenv("PATH");
+      String path = coverageStubPath(work);
 
       for (boolean gate : List.of(false, true)) {
         String document =
@@ -3383,6 +3356,137 @@ public class CiReleaseComposerTest {
     } finally {
       deleteTree(work);
     }
+  }
+
+  /**
+   * A pacts-only {@code java-service} — qits-agents-daemon's shape (qits-2602) — EXECUTED: without
+   * golden masters and without {@code docs/openapi.yml} it serves nothing to cover, so the check is
+   * not applicable in either mode — one line, no CLI call, no uncovered file, the step's code
+   * untouched and the hook told it. With the document present it is the check as before, with
+   * {@code --no-golden-masters}: an HTTP service that records no golden masters is still gated.
+   */
+  @Test
+  public void withoutGoldenMastersOrAnOpenApiTheCheckIsNotApplicable() throws Exception {
+    String declaration =
+        """
+        archetype: java-service
+        release-request:
+          - image: alpine:3
+            script: |
+              echo declared-script-ran
+              exit "$QITS_TEST_EXIT"
+        contracts:
+          application: qits-x
+          pacts:
+            qits-projects-service: { packages: [maven] }
+        """;
+    String notApplicable =
+        "qits-ci: golden-master coverage not applicable: no golden masters declared and no exported"
+            + " OpenAPI at docs/openapi.yml";
+    Path work = Files.createTempDirectory("qa-coverage-not-applicable");
+    try {
+      Path checkout = Files.createDirectories(work.resolve("checkout"));
+      Path uncovered = work.resolve("qits-uncovered-operations.tsv");
+      Path argv = work.resolve("coverage-argv.txt");
+      String path = coverageStubPath(work);
+      for (boolean gate : List.of(false, true)) {
+        String mode = gate ? "gate" : "report";
+        String document =
+            CiReleaseComposer.compose(REPO, slots(declaration), null, Map.of(), null, gate)
+                .releaseRequestDocument();
+        Path scriptFile = work.resolve("step-" + gate + ".sh");
+        Files.writeString(scriptFile, hermeticStepScript(document, work));
+
+        // (a) No docs/openapi.yml: not applicable, whatever the CLI would have said.
+        Files.deleteIfExists(checkout.resolve("docs/openapi.yml"));
+        Files.deleteIfExists(argv);
+        Files.writeString(uncovered, "left by an earlier attempt\n");
+        HookRun green =
+            runQaStep(scriptFile, checkout, path, Map.of("QITS_TEST_EXIT", "0", "QITS_TEST_COVERAGE", "1"));
+        assertEquals(0, green.exit(), mode + "\n" + green.output());
+        assertTrue(green.output().contains("declared-script-ran"), mode);
+        assertEquals(1, occurrences(green.output(), notApplicable), mode + "\n" + green.output());
+        assertFalse(green.output().contains("checking golden-master coverage"), mode + "\n" + green.output());
+        assertFalse(green.output().contains("coverage failed"), mode + "\n" + green.output());
+        assertFalse(green.output().contains("report-only"), mode + "\n" + green.output());
+        assertFalse(Files.exists(argv), mode + ": the coverage CLI is never called");
+        assertFalse(Files.exists(uncovered), mode + ": nothing to report, so no uncovered file");
+        assertEquals("ci report submit --exit-code 0\n", read(work, "qits-argv.txt"), mode);
+        assertEquals(uncovered + "\n", read(work, "qits-uncovered-env.txt"), mode);
+
+        // A red script stays red with its own code and never reaches the check at all.
+        HookRun red =
+            runQaStep(scriptFile, checkout, path, Map.of("QITS_TEST_EXIT", "5", "QITS_TEST_COVERAGE", "1"));
+        assertEquals(5, red.exit(), mode + "\n" + red.output());
+        assertFalse(red.output().contains(notApplicable), mode + "\n" + red.output());
+        assertFalse(Files.exists(argv), mode + "\n" + red.output());
+        assertEquals("ci report submit --exit-code 5\n", read(work, "qits-argv.txt"), mode);
+
+        // (b) docs/openapi.yml exported: checked as before, with --no-golden-masters.
+        Files.createDirectories(checkout.resolve("docs"));
+        Files.writeString(checkout.resolve("docs/openapi.yml"), "openapi: 3.0.3\n");
+        for (int coverage : new int[] {1, 3}) {
+          String label = mode + " with openapi, exit " + coverage;
+          int expected = gate ? 1 : 0;
+          HookRun run =
+              runQaStep(
+                  scriptFile,
+                  checkout,
+                  path,
+                  Map.of("QITS_TEST_EXIT", "0", "QITS_TEST_COVERAGE", String.valueOf(coverage)));
+          assertEquals(expected, run.exit(), label + "\n" + run.output());
+          assertEquals(
+              "contracts coverage --out " + uncovered + " --no-golden-masters\n",
+              read(work, "coverage-argv.txt"),
+              label);
+          assertFalse(run.output().contains(notApplicable), label + "\n" + run.output());
+          assertTrue(run.output().contains("checking golden-master coverage"), label + "\n" + run.output());
+          assertEquals(gate, run.output().contains("qits-ci: golden-master coverage failed: "), label + "\n" + run.output());
+          assertEquals(
+              "ci report submit --exit-code " + expected + "\n", read(work, "qits-argv.txt"), label);
+        }
+      }
+    } finally {
+      deleteTree(work);
+    }
+  }
+
+  /**
+   * A {@code PATH} whose {@code curl} "downloads" a stand-in qits CLI (qits-1940): {@code qits
+   * contracts ...} records its argv in {@code coverage-argv.txt}, writes the {@code --out} file per
+   * {@code QITS_TEST_COVERAGE} (empty for 0, one uncovered operation for 3) and exits with it;
+   * anything else is the report hook's call, recorded in {@code qits-argv.txt} with the uncovered
+   * file it inherited in {@code qits-uncovered-env.txt}.
+   */
+  private static String coverageStubPath(Path work) throws IOException {
+    Files.writeString(
+        work.resolve("stub-qits"),
+        "#!/bin/sh\n"
+            + "if [ \"$1\" = contracts ]; then\n"
+            + "  printf '%s\\n' \"$*\" > '" + work.resolve("coverage-argv.txt") + "'\n"
+            + "  out=; prev=\n"
+            + "  for a in \"$@\"; do if [ \"$prev\" = --out ]; then out=$a; fi; prev=$a; done\n"
+            + "  case \"$QITS_TEST_COVERAGE\" in\n"
+            + "    0) : > \"$out\" ;;\n"
+            + "    3) echo 'uncovered: qits-x GET /x'; printf 'qits-x\\tGET\\t/x\\n' > \"$out\" ;;\n"
+            + "  esac\n"
+            + "  exit \"$QITS_TEST_COVERAGE\"\n"
+            + "fi\n"
+            + "printf '%s\\n' \"$*\" > '" + work.resolve("qits-argv.txt") + "'\n"
+            + "printf '%s\\n' \"${QITS_CI_UNCOVERED_OPERATIONS:-unset}\" > '"
+            + work.resolve("qits-uncovered-env.txt") + "'\n");
+    Path bin = Files.createDirectories(work.resolve("bin"));
+    Path curl = bin.resolve("curl");
+    Files.writeString(
+        curl,
+        "#!/bin/sh\n"
+            + "prev=\n"
+            + "for a in \"$@\"; do\n"
+            + "  if [ \"$prev\" = \"-o\" ]; then cp '" + work.resolve("stub-qits") + "' \"$a\"; fi\n"
+            + "  prev=\"$a\"\n"
+            + "done\n");
+    assertTrue(curl.toFile().setExecutable(true));
+    return bin + ":" + System.getenv("PATH");
   }
 
   private static Map<String, String> with(Map<String, String> base, String key, String value) {
