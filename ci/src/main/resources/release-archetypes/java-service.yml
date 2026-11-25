@@ -206,7 +206,10 @@
 # composer adds it to the LAST QA step — `build and test` below, and the last step of a repository's
 # own `release-request:` slot too, because the verify is always last — after that step's script and
 # its entity-diagram check, before the report hook. No release.yml key turns it on or off; whether
-# it gates or only reports is qits-ci's `qits.ci.golden-master-coverage.gate`. See that step.
+# it gates or only reports is qits-ci's `qits.ci.golden-master-coverage.gate`. See that step. A
+# repository on this archetype that declares no golden masters AND exports no docs/openapi.yml
+# serves nothing to cover (qits-agents-daemon: no HTTP, pacts only), and there the check is not
+# applicable rather than failed (qits-2602).
 #
 # WHAT THE SCRIPTS THEREFORE STILL DO: they GENERATE the SBOM at the declared path. Generating is
 # the build's business; submitting is the platform's.
@@ -414,6 +417,11 @@ release-request:
   # line, and the file is exported as QITS_CI_UNCOVERED_OPERATIONS so the report hook submits it as
   # a `golden-master-coverage` report. `--no-golden-masters` is added when release.yml's
   # `contracts:` declares none, `--index <from>index.json` when its `from:` is not golden-masters/.
+  # Declaring none, the composed text first tests for docs/openapi.yml (qits-2602): absent, it
+  # prints one `golden-master coverage not applicable` line and calls no CLI, reports nothing and
+  # never changes the verdict, in either mode — there is no HTTP served and nothing recorded, so
+  # nothing to cover. Present, the check runs as below: an HTTP service exporting its OpenAPI with
+  # no golden masters has every operation uncovered.
   # Nothing here declares it: the composer adds it to this archetype's last QA step, so a repository
   # replacing this slot keeps it, and there is no key to drop it with. The CLI comes with the check.
   # GATING by default since qits-1942, once all 19 java-service repositories reached full coverage:

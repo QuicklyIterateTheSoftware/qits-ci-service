@@ -261,6 +261,18 @@ import java.util.Set;
  * exported as {@code QITS_CI_UNCOVERED_OPERATIONS}, removed first, and the hook's CLI submits it
  * as a {@code golden-master-coverage} report: absent is not reported, empty is a clean pass.
  *
+ * <p><b>Not applicable without golden masters AND without an OpenAPI (qits-2602).</b> A {@code
+ * java-service} whose {@code contracts:} declares no golden masters and whose suite exported no
+ * {@code docs/openapi.yml} serves nothing to cover — qits-agents-daemon serves no HTTP and declares
+ * only pacts — and the CLI, which always reads the document, would exit 1 on its absence and gate
+ * every release of it. So for that case only the composed text tests {@code [ -f docs/openapi.yml
+ * ]} first and, when it is absent, prints one line saying the check is not applicable, never calls
+ * the CLI, leaves the uncovered file absent (not reported) and the step's code untouched, in either
+ * mode. An HTTP service that exports its OpenAPI but records no golden masters is still checked,
+ * with {@code --no-golden-masters}: every operation uncovered, which is the honest answer. A
+ * repository that declares golden masters gets no such test — a missing document there is a broken
+ * export, and the check says so as before.
+ *
  * <p><b>Per archetype, not per repository.</b> It is composed for a repository whose {@code
  * release.yml} names {@value #COVERAGE_ARCHETYPE} and for no other, and there is no key to turn it
  * off. A repository that replaces the QA slot keeps it: the check goes on the slot's LAST step
@@ -795,8 +807,13 @@ public final class CiReleaseComposer {
    * it, and every repository on the archetype that replaces the slot ends it with its verify for
    * the same reason. That holds whichever document the slot came from, so overriding the QA slot
    * is not a way out of the rule — there is no key to opt out with, and an override is not one.
+   *
+   * <p>{@code goldenMastersDeclared} is whether {@code contracts:} declares golden masters: when it
+   * does not, the composed check first asks whether {@code docs/openapi.yml} exists and, when it
+   * does not, says the check is not applicable instead of calling the CLI (qits-2602) — there is
+   * then nothing served and nothing recorded, so nothing to cover.
    */
-  private record Coverage(boolean gate, String arguments) {}
+  private record Coverage(boolean gate, boolean goldenMastersDeclared, String arguments) {}
 
   /**
    * The coverage check {@code slots} owes, or null when it owes none: only a repository naming the
@@ -804,7 +821,10 @@ public final class CiReleaseComposer {
    *
    * <p>{@code --no-golden-masters} when the repository's {@code contracts:} declares no golden
    * masters (or there is no section at all): every operation is then uncovered, which is the honest
-   * answer, and the CLI does not go looking for an index that nothing declares. {@code --index}
+   * answer, and the CLI does not go looking for an index that nothing declares — unless the suite
+   * exported no {@code docs/openapi.yml} either, which the composed text tests for and answers as
+   * not applicable (qits-2602): a repository on the archetype that serves no HTTP, such as
+   * qits-agents-daemon, has no operations to cover. {@code --index}
    * only when the declared {@code from:} is not the CLI's own default, so the common case reads as
    * the bare command.
    */
@@ -814,7 +834,7 @@ public final class CiReleaseComposer {
     }
     CiContracts.Source goldenMasters = contracts == null ? null : contracts.goldenMasters();
     if (goldenMasters == null) {
-      return new Coverage(gate, " --no-golden-masters");
+      return new Coverage(gate, false, " --no-golden-masters");
     }
     String from = goldenMasters.from();
     while (from.endsWith("/")) {
@@ -822,6 +842,7 @@ public final class CiReleaseComposer {
     }
     return new Coverage(
         gate,
+        true,
         from.equals(DEFAULT_GOLDEN_MASTERS)
             ? ""
             : " --index " + shellQuote(from + "/index.json"));
@@ -1348,6 +1369,12 @@ public final class CiReleaseComposer {
    * #UNCOVERED_OPERATIONS_FILE}. See the class javadoc. Like the output check it only ever moves
    * {@code qits_step_exit} — and only in gate mode, and only from 0 — so the hook still runs and
    * reports the final code.
+   *
+   * <p>Without declared golden masters the call is nested in {@code if [ ! -f docs/openapi.yml ]}
+   * (qits-2602): absent, one not-applicable line and nothing else — no CLI, no uncovered file, no
+   * change to {@code qits_step_exit}, in either mode. The body is composed once and indented one
+   * level deeper there, so the text for a repository that declares golden masters is exactly what
+   * it was before.
    */
   private static void coverageCheck(StringBuilder out, Coverage coverage) {
     out.append(
@@ -1359,41 +1386,65 @@ public final class CiReleaseComposer {
     out.append("export QITS_CI_UNCOVERED_OPERATIONS=").append(UNCOVERED_OPERATIONS_FILE).append('\n');
     out.append("rm -f \"$QITS_CI_UNCOVERED_OPERATIONS\"\n");
     out.append("if [ \"$qits_script_exit\" -eq 0 ]; then\n");
-    out.append("  echo \"qits-ci: checking golden-master coverage\" >&2\n");
+    StringBuilder check = new StringBuilder();
+    check.append("  echo \"qits-ci: checking golden-master coverage\" >&2\n");
     // `|| rc=$?`: the wrapper is `set -eu`, and a bare non-zero call would end the step here.
-    out.append("  qits_coverage_exit=0\n");
-    out.append("  qits contracts coverage --out \"$QITS_CI_UNCOVERED_OPERATIONS\"")
+    check.append("  qits_coverage_exit=0\n");
+    check.append("  qits contracts coverage --out \"$QITS_CI_UNCOVERED_OPERATIONS\"")
         .append(coverage.arguments())
         .append(" || qits_coverage_exit=$?\n");
     if (!coverage.gate()) {
-      out.append("  if [ \"$qits_coverage_exit\" -ne 0 ]; then\n");
-      out.append(
+      check.append("  if [ \"$qits_coverage_exit\" -ne 0 ]; then\n");
+      check.append(
           "    echo \"qits-ci: golden-master coverage is report-only (exit $qits_coverage_exit);"
               + " the step's verdict is unchanged\" >&2\n");
-      out.append("  fi\n");
-      out.append("fi\n");
+      check.append("  fi\n");
+      closeCoverageCheck(out, coverage, check);
       return;
     }
-    out.append("  qits_coverage_failed=\n");
-    out.append("  case \"$qits_coverage_exit\" in\n");
-    out.append("    0) ;;\n");
-    out.append(
+    check.append("  qits_coverage_failed=\n");
+    check.append("  case \"$qits_coverage_exit\" in\n");
+    check.append("    0) ;;\n");
+    check.append(
         "    3) qits_coverage_failed=\"some operations have no golden master (the uncovered: lines"
             + " above)\" ;;\n");
-    out.append(
+    check.append(
         "    1) qits_coverage_failed=\"the exported OpenAPI or the golden-master index is missing or"
             + " malformed\" ;;\n");
-    out.append(
+    check.append(
         "    2) qits_coverage_failed=\"the pinned qits CLI lacks 'qits contracts coverage'\" ;;\n");
-    out.append("    *) qits_coverage_failed=\"the check could not run (exit $qits_coverage_exit)\" ;;\n");
-    out.append("  esac\n");
-    out.append("  if [ -n \"$qits_coverage_failed\" ]; then\n");
-    out.append("    echo \"qits-ci: golden-master coverage failed: $qits_coverage_failed\" >&2\n");
+    check.append("    *) qits_coverage_failed=\"the check could not run (exit $qits_coverage_exit)\" ;;\n");
+    check.append("  esac\n");
+    check.append("  if [ -n \"$qits_coverage_failed\" ]; then\n");
+    check.append("    echo \"qits-ci: golden-master coverage failed: $qits_coverage_failed\" >&2\n");
     // From 0 only: a red output check keeps its own code, which is the more specific verdict.
-    out.append("    if [ \"$qits_step_exit\" -eq 0 ]; then\n");
-    out.append("      qits_step_exit=1\n");
-    out.append("    fi\n");
-    out.append("  fi\n");
+    check.append("    if [ \"$qits_step_exit\" -eq 0 ]; then\n");
+    check.append("      qits_step_exit=1\n");
+    check.append("    fi\n");
+    check.append("  fi\n");
+    closeCoverageCheck(out, coverage, check);
+  }
+
+  /**
+   * Appends {@code check} — the coverage check's body, composed at one level inside {@code if [
+   * "$qits_script_exit" -eq 0 ]} — and closes that {@code if}. With declared golden masters the
+   * body goes in as it is; without, it goes one level deeper, under a test for the exported OpenAPI
+   * whose absence means there is nothing to cover (qits-2602), with {@code set -eu} untouched: the
+   * test is an {@code if} condition, which never ends the step.
+   */
+  private static void closeCoverageCheck(
+      StringBuilder out, Coverage coverage, StringBuilder check) {
+    if (coverage.goldenMastersDeclared()) {
+      out.append(check);
+    } else {
+      out.append("  if [ ! -f docs/openapi.yml ]; then\n");
+      out.append(
+          "    echo \"qits-ci: golden-master coverage not applicable: no golden masters declared"
+              + " and no exported OpenAPI at docs/openapi.yml\" >&2\n");
+      out.append("  else\n");
+      out.append(check.toString().replaceAll("(?m)^(?=.)", "  "));
+      out.append("  fi\n");
+    }
     out.append("fi\n");
   }
 
