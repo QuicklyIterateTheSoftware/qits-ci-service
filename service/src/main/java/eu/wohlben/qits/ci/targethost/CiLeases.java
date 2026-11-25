@@ -122,6 +122,15 @@ public class CiLeases {
 
   @Inject CiSlotHolds holds;
 
+  /**
+   * The platform's PEM trust bundle, empty until one is held (epic qits-2524, "anchor delivery").
+   * Read once per lease ASKED — never per lease observed, compared or re-sent, since there is no
+   * such door — so {@link CiSlotSpecs#compose} carries the bundle this process holds at the moment
+   * it composes a brand-new spec and nothing afterwards ever revisits that choice for the same
+   * lease. {@code envEntry()} never throws.
+   */
+  @Inject eu.wohlben.qits.trust.TrustAnchors trustAnchors;
+
   /** One run's lease and the launch its daemon names. */
   public record Launch(UUID leaseId, String daemonId, String tokenSubject) {}
 
@@ -230,7 +239,8 @@ public class CiLeases {
                 settings.resolveBinaryUrl(version),
                 slotImageOf(row),
                 CiRunService.runEnv(candidate.get().request())),
-            token);
+            token,
+            trustAnchors.envEntry());
     SystemLeases.LeaseView lease;
     try {
       lease =

@@ -2,6 +2,8 @@ package eu.wohlben.qits.ci.targethost;
 
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
+import eu.wohlben.qits.trust.TrustAnchors;
+import jakarta.enterprise.inject.Vetoed;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -74,6 +76,50 @@ public final class SlotFixtures {
   /** The sample run's lease spec, composed the way {@link CiLeases} composes one. */
   public static SystemLeases.LeaseSpec compose() {
     return CiSlotSpecs.compose(shippedSettings().settings(), plane(), sampleRun(), token());
+  }
+
+  /**
+   * A {@link TrustAnchors} standing in for the real poller (epic qits-2524, "anchor delivery"):
+   * {@code envEntry()}/{@code pem()} answer whatever {@link #held} is, read fresh on every call —
+   * default {@code null}, the "no bundle yet" case. It dials nothing and starts no scheduler: the
+   * injected fields the real class carries (its http client, its bearer source) are never touched
+   * because every method that would reach them is overridden here.
+   *
+   * <p><b>{@code @Vetoed}</b>, deliberately: Quarkus' test bean archive turns every concrete class
+   * on the test classpath into a {@code @Default} bean candidate with no annotation needed at all,
+   * so an unvetoed subclass of {@code TrustAnchors} made every {@code @QuarkusTest} in this module
+   * (whether or not it is about anchors) fail to boot with {@code AmbiguousResolutionException}
+   * between the real poller and this one. {@code @Mock} looked like the fix — it is how {@code
+   * FakeGitHostRepoListing} and {@code FakeCiStepRunner} replace a port's real implementation — but
+   * it does not apply here: {@code TrustAnchors} is a concrete class with its own
+   * package-private {@code @Observes StartupEvent} method, and declaring this subclass (in a
+   * different package) a SEPARATE bean made Arc generate that observer's notifier against the
+   * wrong classloader (`IllegalAccessError` at boot). {@code @Vetoed} removes it from CDI discovery
+   * entirely — this fake is never {@code @Inject}ed, only {@code new}ed by the plain-JUnit suites in
+   * this package — which answers both problems at once.
+   */
+  @Vetoed
+  public static class FakeTrustAnchors extends TrustAnchors {
+
+    /** The PEM bundle this fake currently holds, or {@code null} for none. Mutable on purpose: a
+     * no-roll test changes it mid-test to prove a live lease never notices. */
+    public volatile String held;
+
+    @Override
+    public Optional<String> pem() {
+      return Optional.ofNullable(held);
+    }
+
+    @Override
+    public Optional<Map.Entry<String, String>> envEntry() {
+      return held == null ? Optional.empty() : Optional.of(Map.entry(TrustAnchors.ENV, held));
+    }
+  }
+
+  /** A {@link FakeTrustAnchors} holding no bundle — the shipped "library disabled or not yet
+   * polled" case every suite not about anchors should wire in. */
+  public static FakeTrustAnchors noTrustAnchors() {
+    return new FakeTrustAnchors();
   }
 
   /** The env as {@code KEY=value} lines in its own iteration order, so order is asserted too. */

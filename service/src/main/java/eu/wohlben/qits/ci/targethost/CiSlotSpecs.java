@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
@@ -73,14 +74,46 @@ public final class CiSlotSpecs {
       Map<String, String> env) {}
 
   /**
-   * The lease's spec. {@code token} is the run's {@code ci-run} token, and it is required: a lease
-   * with no token can reach nothing, so the caller asks for none rather than composing it.
+   * {@link #compose(Settings, CiSlotAddresses.Plane, LeaseRun, IdpCommissioner.CommissionedToken,
+   * Optional)} with no trust bundle — every caller but {@link CiLeases#ask} and this class's own
+   * suite, and the shape every test fixture composed before epic qits-2524 landed.
    */
   public static SystemLeases.LeaseSpec compose(
       Settings settings,
       CiSlotAddresses.Plane plane,
       LeaseRun run,
       IdpCommissioner.CommissionedToken token) {
+    return compose(settings, plane, run, token, Optional.empty());
+  }
+
+  /**
+   * The lease's spec. {@code token} is the run's {@code ci-run} token, and it is required: a lease
+   * with no token can reach nothing, so the caller asks for none rather than composing it.
+   *
+   * <p>{@code trustAnchors} is {@code TrustAnchors.envEntry()} (epic qits-2524, "anchor delivery")
+   * — {@code Optional.empty()} until a bundle is held, never thrown — and the caller's own read, not
+   * this class's: {@link #compose} stays the pure function its javadoc already promises, so the
+   * seam is one {@code Map.Entry} in, not a new injected dependency. <b>This is also the WHOLE of
+   * how the no-roll rule holds</b>: a lease's spec is composed here exactly once, the moment {@link
+   * CiLeases#ask} creates it — nothing in this service ever recomputes, re-sends or diffs a spec
+   * against a lease that is already live (there is no such door on {@link SystemLeases}: create,
+   * get, list, end, and nothing that updates one in place). So a bundle that changes between two
+   * runs changes what the NEXT lease this method composes carries, never a container already
+   * running; a slot held across runs for a release keeps the env its own container started with,
+   * and {@link #runEnv}/{@link #continueEnv} — what rides a {@code Continue} over the daemon's live
+   * socket for such a run — carry no entry for it, on purpose, so an anchors key never becomes
+   * something a later run could rewrite mid-lease. Added last among the fixed keys, after the
+   * registry document and before the run-scoped extras loop: an event's own env only ever carries
+   * {@code QITS_EVENT_NAME}/{@code QITS_EVENT_PAYLOAD}/{@code QITS_VERSION} ({@code
+   * CiRunService#runEnv}), so there is no attacker-chosen key there to shadow it with — the ordering
+   * is for readability, not for a guard this key does not need.
+   */
+  public static SystemLeases.LeaseSpec compose(
+      Settings settings,
+      CiSlotAddresses.Plane plane,
+      LeaseRun run,
+      IdpCommissioner.CommissionedToken token,
+      Optional<Map.Entry<String, String>> trustAnchors) {
     Objects.requireNonNull(token, "a lease is never composed without its run's token");
     // The run-scoped keys, from the one place a Continue's env is made too (epic qits-732), so the
     // two can never drift; laid in at their own positions below. QITS_CI_SHA is the worktree's
@@ -134,6 +167,11 @@ public final class CiSlotSpecs {
     // container; a lease is the whole run's, and its token is already in this environment raw.
     env.put("DOCKER_CONFIG", CiSlotSettings.REGISTRY_AUTH_DIR);
     env.put("QITS_CI_REGISTRY_AUTH_CONFIG", runScoped.get("QITS_CI_REGISTRY_AUTH_CONFIG"));
+    // QITS_TRUST_ANCHORS (epic qits-2524): the PEM bundle this qits-ci currently holds, added only
+    // when TrustAnchors.envEntry() answers one — absent rather than blank until a bundle is held,
+    // and absent for good when the library is disabled. A later bundle change reaches only the
+    // NEXT lease composed here; see this method's own javadoc for why that is the whole mechanism.
+    trustAnchors.ifPresent(entry -> env.put(entry.getKey(), value(entry.getValue())));
     // Run-scoped extras, LAST and in sorted key order: the QITS_EVENT_* of the trigger and
     // QITS_VERSION. None of them is repository-authored, and none may shadow a policy key.
     for (Map.Entry<String, String> extra : new TreeMap<>(run.env()).entrySet()) {

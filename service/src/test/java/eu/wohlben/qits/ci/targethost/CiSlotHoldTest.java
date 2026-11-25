@@ -126,6 +126,7 @@ class CiSlotHoldTest {
     leases.settings.pins.versionOverride = Optional.empty();
     leases.addresses = CiSlotAddresses.forDomain(SlotFixtures.DOMAIN);
     leases.holds = holds;
+    leases.trustAnchors = SlotFixtures.noTrustAnchors();
 
     steps = new LeaseStepRunner();
     steps.daemons = registry;

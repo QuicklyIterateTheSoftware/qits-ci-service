@@ -160,6 +160,65 @@ class CiSlotSpecsTest {
     assertEquals("E", env.get("QITS_EVENT_NAME"));
   }
 
+  // --- the platform's trust bundle (epic qits-2524, "anchor delivery") --------------------------
+
+  /**
+   * {@code QITS_TRUST_ANCHORS} rides the env only when the caller's {@code
+   * TrustAnchors.envEntry()} answered one — never on the strength of the library being wired up —
+   * and the plain four-argument {@link CiSlotSpecs#compose} every other fixture here uses is
+   * exactly that absent case.
+   */
+  @Test
+  void theEnvCarriesTrustAnchorsOnlyWhenTheCallersBundleIsPresent() {
+    Map<String, String> noBundle =
+        CiSlotSpecs.compose(
+                SlotFixtures.shippedSettings().settings(),
+                SlotFixtures.plane(),
+                SlotFixtures.sampleRun(),
+                SlotFixtures.token(),
+                java.util.Optional.empty())
+            .env();
+    assertFalse(noBundle.containsKey("QITS_TRUST_ANCHORS"), noBundle.toString());
+    assertFalse(
+        SlotFixtures.compose().env().containsKey("QITS_TRUST_ANCHORS"),
+        "the four-argument overload is the no-bundle case");
+
+    Map<String, String> withBundle =
+        CiSlotSpecs.compose(
+                SlotFixtures.shippedSettings().settings(),
+                SlotFixtures.plane(),
+                SlotFixtures.sampleRun(),
+                SlotFixtures.token(),
+                java.util.Optional.of(Map.entry("QITS_TRUST_ANCHORS", "the-pem-bundle")))
+            .env();
+    assertEquals("the-pem-bundle", withBundle.get("QITS_TRUST_ANCHORS"));
+  }
+
+  /**
+   * The no-roll rule, at the pure-function level: {@link CiSlotSpecs#runEnv}/{@link
+   * CiSlotSpecs#continueEnv} are what a {@code Continue} carries to a held slot's daemon for its
+   * NEXT run, over the socket of a container already running — and they carry no entry for the
+   * anchors, so nothing a later run sends can ever add, change or remove what the container's own
+   * env started with. A changed bundle only ever reaches the next lease {@link CiSlotSpecs#compose}
+   * composes, which is the one spec a brand-new {@code POST /system/api/leases} ever sends.
+   */
+  @Test
+  void theRunScopedEnvironmentNeverCarriesTheTrustAnchors() {
+    CiSlotSpecs.LeaseRun run = SlotFixtures.sampleRun();
+    assertFalse(
+        CiSlotSpecs.runEnv(SlotFixtures.plane(), run.runId(), run.branch(), run.sha(), SlotFixtures.token())
+            .containsKey("QITS_TRUST_ANCHORS"));
+    assertFalse(
+        CiSlotSpecs.continueEnv(
+                SlotFixtures.plane(),
+                run.runId(),
+                run.branch(),
+                run.sha(),
+                SlotFixtures.token(),
+                run.env())
+            .containsKey("QITS_TRUST_ANCHORS"));
+  }
+
   @Test
   void theTokenReachesTheLeaseInExactlyTheFormsItIsSpentIn() {
     SystemLeases.LeaseSpec spec = SlotFixtures.compose();

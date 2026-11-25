@@ -100,6 +100,13 @@
              metrics reach qits-observability at its edge host. Published by
              qits-integrations-quarkus, like qits-http-core above. -->
         <qits.telemetry-core.version>2026.1106.507</qits.telemetry-core.version>
+        <!-- qits-trust-core (epic qits-2524, "anchor delivery"): TrustAnchors.envEntry() answers
+             QITS_TRUST_ANCHORS when a bundle is held, empty until then — CiSlotSpecs.compose adds it
+             to a lease's env only when present, never on the strength of the library being wired up.
+             A first adoption, so no maintenance bump will move this line until the next one.
+             Published by qits-integrations-quarkus, like qits-http-core/qits-telemetry-core above;
+             it depends on qits-http-core at the SAME version, already pinned here. -->
+        <qits.trust-core.version>2026.1125.110206</qits.trust-core.version>
         <!-- The platform's datasource resilience, released out of libs/qits-integrations-quarkus
              together with the two above, which is why the strings match: qits-db-core carries
              PatientPgDriver — the pool opens its connections through it, and a request is HELD
@@ -336,6 +343,13 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-telemetry-core</artifactId>
                 <version>${qits.telemetry-core.version}</version>
+            </dependency>
+            <dependency>
+                <!-- TrustAnchors.envEntry() -> QITS_TRUST_ANCHORS, read by CiSlotSpecs.compose
+                     (targethost/) and added to a lease's env only when a bundle is held. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-trust-core</artifactId>
+                <version>${qits.trust-core.version}</version>
             </dependency>
             <dependency>
                 <!-- The platform's shared ArchUnit rules, test scope wherever entities live. -->

@@ -86,6 +86,9 @@ class CiLeasesTest {
     leases.addresses = CiSlotAddresses.forDomain(SlotFixtures.DOMAIN);
     // Holding nothing: a hold is CiSlotHoldTest's (epic qits-732).
     leases.holds = new CiSlotHolds();
+    // No trust bundle held, the shipped "disabled or not yet polled" case — anchorsOf's own test
+    // overrides this per case.
+    leases.trustAnchors = SlotFixtures.noTrustAnchors();
 
     steps = new LeaseStepRunner();
     steps.daemons = registry;
@@ -160,6 +163,74 @@ class CiLeasesTest {
     assertEquals(request.spec().env().get("QITS_CI_DAEMON_ID"), launch.daemonId());
     assertEquals(request.spec().env().get("QITS_TOKEN_SUBJECT"), launch.tokenSubject());
     assertEquals(CiDaemonRegistry.Phase.LAUNCHED, registry.phaseOf(launch.daemonId()));
+  }
+
+  // --- the platform's trust bundle (epic qits-2524, "anchor delivery") --------------------------
+
+  /** No bundle held: the env this run's lease is asked with carries no QITS_TRUST_ANCHORS at all. */
+  @Test
+  void theLeaseEnvCarriesNoTrustAnchorsWhenNoBundleIsHeld() {
+    leases.requestNow(RUN);
+
+    assertEquals(1, created.size());
+    assertFalse(
+        created.get(0).spec().env().containsKey("QITS_TRUST_ANCHORS"),
+        created.get(0).spec().env().toString());
+  }
+
+  /** A bundle held when the lease is asked rides in its env, under the key the library names. */
+  @Test
+  void theLeaseEnvCarriesTrustAnchorsWhenABundleIsHeld() {
+    ((SlotFixtures.FakeTrustAnchors) leases.trustAnchors).held = "-----BEGIN CERTIFICATE-----\nX\n";
+
+    leases.requestNow(RUN);
+
+    assertEquals(1, created.size());
+    assertEquals(
+        "-----BEGIN CERTIFICATE-----\nX\n",
+        created.get(0).spec().env().get("QITS_TRUST_ANCHORS"));
+  }
+
+  /**
+   * <b>The no-roll rule</b> (epic qits-2524): a lease's spec is composed exactly once, when {@link
+   * CiLeases#ask} creates it, and {@link SystemLeases} has no door that updates one in place — only
+   * {@code create}, {@code get}, {@code list} and {@code end}. So a bundle that changes after the
+   * lease was asked can never reach that lease: this run's lease is asked with no bundle held, the
+   * bundle then arrives, and every way the lease is subsequently touched — a RUNNING report, a
+   * second RUNNING report, the reconcile's own pass — still asks qits-system to CREATE a lease
+   * exactly once. The run's container, once started, never finds out a bundle it did not ask with
+   * exists; the next run's lease is where a changed bundle shows up.
+   */
+  @Test
+  void aBundleThatArrivesAfterTheLeaseWasAskedNeverResendsOrReplacesItsSpec() {
+    leases.requestNow(RUN);
+    assertEquals(1, created.size(), "asked once, with no bundle");
+    assertFalse(created.get(0).spec().env().containsKey("QITS_TRUST_ANCHORS"));
+
+    // The bundle arrives — this is the library's poll landing, not anything this run did.
+    ((SlotFixtures.FakeTrustAnchors) leases.trustAnchors).held = "-----BEGIN CERTIFICATE-----\nY\n";
+
+    // Every way a live lease is observed afterwards: GRANTED, then RUNNING twice, then a full
+    // reconcile pass. None of them composes a second spec or asks qits-system to create anything.
+    leases.observe(
+        new SystemLeases.LeaseView(LEASE, RUN, "GRANTED", TARGET, null, null, Instant.now()));
+    leases.observe(
+        new SystemLeases.LeaseView(LEASE, RUN, "RUNNING", TARGET, null, null, Instant.now()));
+    leases.observe(
+        new SystemLeases.LeaseView(LEASE, RUN, "RUNNING", TARGET, null, null, Instant.now()));
+    ((RecordingSystem) leases.system).read =
+        Optional.of(
+            new SystemLeases.LeaseView(LEASE, RUN, "RUNNING", TARGET, null, null, Instant.now()));
+    leases.reconcile();
+
+    assertEquals(
+        1,
+        created.size(),
+        "the bundle's arrival must never cause a second lease to be created: " + created);
+    assertFalse(
+        created.get(0).spec().env().containsKey("QITS_TRUST_ANCHORS"),
+        "the lease's own spec, as it was really sent, still carries no anchors: "
+            + created.get(0).spec().env());
   }
 
   /**
