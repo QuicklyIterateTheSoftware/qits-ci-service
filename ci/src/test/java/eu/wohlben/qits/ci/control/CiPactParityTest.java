@@ -137,7 +137,12 @@ public class CiPactParityTest {
             "qits-idp-service token: made by qits-platform-access-monorepo, not by qits-landing-app"
                 + " and not excluded",
             "qits-system-service listTargets: made by qits-landing-app, not by"
-                + " qits-platform-access-monorepo and not excluded"),
+                + " qits-platform-access-monorepo and not excluded",
+            // qits-2604: where the counterpart was looked for; this side lists no open requests.
+            "qits-platform-access-monorepo was read at release 2026.1123.1 only, as this qits-ci"
+                + " has no qits-projects to list its open release requests; release"
+                + " qits-platform-access-monorepo with the operation and retry this run with qits"
+                + " ci retry"),
         verdict.refusal());
   }
 
@@ -281,5 +286,129 @@ public class CiPactParityTest {
         CiPactParity.check(plain, CiPactParity.Side.unavailable(CLI, "never read"));
     assertNull(verdict.refusal());
     assertNull(verdict.note());
+  }
+
+  // --- qits-2604: the counterpart offers its open release requests' folds too -----------------
+
+  /** The CLI at its release, plus open folds, each a {@code label -> provider -> operationIds}. */
+  private CiPactParity.Side cliWithFolds(
+      Map<String, List<String>> released, Map<String, Map<String, List<String>>> folds) {
+    CiPactParity.Side release = cli(mirrorOf(LANDING, "pact-jvm", null), released);
+    List<CiPactParity.OpenFold> open =
+        folds.entrySet().stream()
+            .map(
+                fold -> {
+                  Map<String, String> pacts = new LinkedHashMap<>();
+                  fold.getValue()
+                      .forEach(
+                          (provider, ids) ->
+                              pacts.put(
+                                  CiContracts.pactPath(CLI, provider),
+                                  pact(provider, ids.toArray(String[]::new))));
+                  return new CiPactParity.OpenFold(fold.getKey(), pacts);
+                })
+            .toList();
+    return CiPactParity.Side.read(
+        release.repository(), release.at(), release.contracts(), release.pacts(), open);
+  }
+
+  @Test
+  public void anOperationAnOpenFoldOfTheCounterpartMakesIsNotRefused() {
+    // qits-2490's deadlock: both gain listArtifactVersions, neither has released it.
+    CiPactParity.Verdict verdict =
+        CiPactParity.check(
+            landing(null, Map.of("qits-ci-service", List.of("listRuns", "listArtifactVersions"))),
+            cliWithFolds(
+                Map.of("qits-ci-service", List.of("listRuns")),
+                Map.of(
+                    "qits-platform-access-monorepo-rr-12",
+                    Map.of("qits-ci-service", List.of("listRuns", "listArtifactVersions")))));
+    assertNull(verdict.refusal(), verdict.refusal());
+    assertNull(verdict.note());
+  }
+
+  @Test
+  public void anOpenFoldsOwnNewOperationIsNotDemandedOfTheGatedSide() {
+    // The CLI's unreleased work is no promise: the landing app's release is not refused for it.
+    CiPactParity.Verdict verdict =
+        CiPactParity.check(
+            landing(null, Map.of("qits-ci-service", List.of("listRuns"))),
+            cliWithFolds(
+                Map.of("qits-ci-service", List.of("listRuns")),
+                Map.of(
+                    "qits-platform-access-monorepo-rr-12",
+                    Map.of(
+                        "qits-ci-service", List.of("listRuns", "retryRun"),
+                        "qits-idp-service", List.of("token")))));
+    assertNull(verdict.refusal(), verdict.refusal());
+  }
+
+  @Test
+  public void anOperationNeitherMakesIsRefusedNamingWhereTheCounterpartWasRead() {
+    // In the order the listing answered them, which the line keeps.
+    Map<String, Map<String, List<String>>> folds = new LinkedHashMap<>();
+    folds.put("qits-platform-access-monorepo-rr-12", Map.of("qits-ci-service", List.of("listRuns")));
+    folds.put("qits-platform-access-monorepo-rr-13", Map.of());
+    CiPactParity.Verdict verdict =
+        CiPactParity.check(
+            landing(null, Map.of("qits-ci-service", List.of("listRuns", "getRun"))),
+            cliWithFolds(Map.of("qits-ci-service", List.of("listRuns")), folds));
+    assertEquals(
+        String.join(
+            "\n",
+            "pact parity between qits-landing-app and qits-platform-access-monorepo fails"
+                + " (contracts.mirror):",
+            "qits-ci-service getRun: made by qits-landing-app, not by qits-platform-access-monorepo"
+                + " and not excluded",
+            "qits-platform-access-monorepo was read at release 2026.1123.1 and open release"
+                + " requests qits-platform-access-monorepo-rr-12, qits-platform-access-monorepo-rr-13;"
+                + " open a release request on qits-platform-access-monorepo that makes the operation"
+                + " and retry this run with qits ci retry"),
+        verdict.refusal());
+
+    CiPactParity.Verdict none =
+        CiPactParity.check(
+            landing(null, Map.of("qits-ci-service", List.of("getRun"))),
+            cliWithFolds(Map.of("qits-ci-service", List.of("listRuns")), Map.of()));
+    assertTrue(
+        none.refusal().endsWith(" and open release requests none; open a release request on " + CLI
+            + " that makes the operation and retry this run with qits ci retry"),
+        none.refusal());
+  }
+
+  @Test
+  public void anOpenFoldThatDoesNotParseOffersNothingAndFailsNothing() {
+    CiPactParity.Side release =
+        cli(mirrorOf(LANDING, "pact-jvm", null), Map.of("qits-ci-service", List.of("listRuns")));
+    CiPactParity.Side counterpart =
+        CiPactParity.Side.read(
+            release.repository(),
+            release.at(),
+            release.contracts(),
+            release.pacts(),
+            List.of(
+                new CiPactParity.OpenFold(
+                    "qits-platform-access-monorepo-rr-12",
+                    Map.of(CiContracts.pactPath(CLI, "qits-ci-service"), "{not json"))));
+    CiPactParity.Verdict parity =
+        CiPactParity.check(
+            landing(null, Map.of("qits-ci-service", List.of("listRuns"))), counterpart);
+    assertNull(parity.refusal(), parity.refusal());
+
+    CiPactParity.Verdict missing =
+        CiPactParity.check(
+            landing(null, Map.of("qits-ci-service", List.of("listRuns", "getRun"))), counterpart);
+    assertEquals(3, missing.refusal().split("\n").length, missing.refusal());
+    assertTrue(missing.refusal().contains("getRun: made by"), missing.refusal());
+  }
+
+  @Test
+  public void aMissingOperationOfTheGatedSideNamesNoReleaseRequests() {
+    // B's own operation missing from A is A's to fix: no line sends anybody to B.
+    CiPactParity.Verdict verdict =
+        CiPactParity.check(
+            landing(null, Map.of("qits-ci-service", List.of("listRuns"))),
+            cliWithFolds(Map.of("qits-ci-service", List.of("listRuns", "retryRun")), Map.of()));
+    assertEquals(2, verdict.refusal().split("\n").length, verdict.refusal());
   }
 }

@@ -129,6 +129,7 @@ rest of qits it reaches over a URL it is configured with:
 | in | `wss://ci.qits.<domain>/ci/daemon` — the socket each step container's daemon dials **out** to, through the platform edge | `@RolesAllowed(qits:ci-run)` at the **upgrade** — one credential, the run's `ci-run` token as the edge forwards it — then one admission. The daemon presents that token as `Authorization: Bearer $QITS_TOKEN`; the edge introspects it and forwards a JWT with the token's subject as `sub` and `qits:ci-run` as its role. That opens the upgrade with the connection bound to no launch; any other role, `qits:system` included, is refused 403 at the handshake (qits-516), and no identity at all 401. The daemon names its launch in its first frame (`Hello.daemonId`), and `CiDaemonRegistry.admitByToken` checks that launch is recorded against the subject the connection arrived as, closing 1008 `WRONG_RUN` (a launch that is not this token's run's) or `UNKNOWN_DAEMON` (no such launch, or a first frame that is not `Hello`) otherwise. A dial of the launch's own run while its previous connection still reads open is the daemon re-dialling past a drop the host did not see, and supersedes that connection, which is closed 1001 `SUPERSEDED` (qits-1728); a bound connection silent past `qits.ci.daemon.silence-limit-seconds` is closed 1001 `SILENT` and waits out the reconnect grace. There is no per-container secret and no `X-Qits-Ci-Daemon-Id`/`-Secret` header (deleted in qits-515). |
 | out | where the git host answers: ci reads a commit's pipeline config off its content routes — `<base>/git/<projectId>/<repoName>/blob/<rev>/<path>` and `…/tree/<rev>[/<path>]` for a run whose push carried the public pair, `<base>/git/<repoId>/…` for one that did not — and, with no `qits.ci.projects-url` set, its candidate listing off `GET <base>/git` → `{"repositories": [...]}` | `qits.ci.git-host-url` |
 | out | `GET <base>/projects/api/repositories` → `{"repositories": [{id, projectId, name, mainBranch}]}` — the candidate list an arriving event is evaluated against, and the only place the public `(projectId, name)` pair can be read. **Unset by default**: with no value ci falls back to the git host's storage listing, which is what a pre-cutover platform and a clone-alone build need | `qits.ci.projects-url` |
+| out | `GET <base>/projects/api/repositories/{repoId}/release-requests` → `{"requests": [{id, qualifiedId, state, mergedSha, …}]}` — a `contracts.mirror` counterpart's release requests, whose open folds the pact parity check reads (qits-2604). Unset, the counterpart is read at its release alone | `qits.ci.projects-url` |
 | out | the git host **as a step container clones from it**: `https://githost.qits.<domain>/git/<projectId>/<repoName>`, the public name | composed from `qits.ci.domain` (`QITS_DOMAIN`); no key of its own |
 | out | where a step container downloads the daemon binary from: `https://registry.qits.<domain>/artifacts/daemons/qits-ci-daemon/<version>`, presenting the run's token | `qits.ci.domain` + the version of the pinned `qits-ci-daemon-protocol` dependency (or `qits.ci.daemon-version-override`, the emergency hatch) |
 | out | `PUT /events/api/events/{uuid}` — one `BuildSuccessful` per **green** run, idempotent (the `RunAnnouncer` seam), and the **only** thing a green run announces | `qits.events.url`, `qits.eventstream.enabled` |
@@ -1393,18 +1394,29 @@ naming the supported frameworks, since a parse error records no run at all. With
 nothing is checked. When a release request's QA half is composed, the repository's pacts at the
 fold (`pacts/<repository>_<provider>.json` for every `contracts.pacts` key, read by the declared
 framework's adapter from each interaction's `comments.references.qits-call.operationId`) are
-compared with the counterpart's at its **newest release** (`refs/tags/<version>`). "X's operations
-must be made by Y" is checked only when Y declares `mirror.repository: X`: the counterpart's
-operations must always be made here, while this repository's need be made by the counterpart only
-when the counterpart's released `release.yml` mirrors it back — otherwise that direction is skipped
-and the output says so. Every operationId one side records against a provider must be recorded by
+compared with the counterpart's at its **newest release** (`refs/tags/<version>`) and, for what
+the counterpart offers, at the folds of its **open release requests** too (qits-2604). "X's
+operations must be made by Y" is checked only when Y declares `mirror.repository: X`: the
+counterpart's operations must always be made here — its release's alone, so its unreleased work
+never refuses this repository — while this repository's need be made by the counterpart only when
+the counterpart's released `release.yml` mirrors it back — otherwise that direction is skipped
+and the output says so. There an operation counts as made when the counterpart's release or the
+fold of any of its open release requests (`PENDING`, `READY`, `REJECTED`, `CONFLICTED`,
+`RELEASED`, read from qits-projects' `listRepositoryReleaseRequests` by the release's repository id)
+records it, so two mirrors can gain an operation together: open the counterpart's request, then
+`qits ci retry` this one. The fold is read at the pact paths the release declares; a file the fold
+lacks or cannot parse adds nothing and fails nothing. The counterpart's `mirror` and exclusions stay
+read at the release. Without `qits.ci.projects-url` the open requests are not read. Every operationId one side records against a provider must be recorded by
 the other or excluded in the other's `mirror.excluded`. A failure is refused exactly like the
 qits-1400 consistency check — the first QA step prints it and exits 1 — as a heading line, then one
 line per missing operation, sorted:
-`<provider> <operationId>: made by <X>, not by <Y> and not excluded`. An interaction without an
+`<provider> <operationId>: made by <X>, not by <Y> and not excluded`, then — when the counterpart
+lacks one of this repository's — one line naming the release and the open release requests it was
+read at and what to do. An interaction without an
 operationId, a declared pact file that is missing, and a counterpart with no recorded release (or
 no readable `release.yml` at it) fail too, naming what is missing; a read the git host could not
-answer keeps the release-request event owed instead.
+answer, or open release requests qits-projects could not list, keeps the release-request event owed
+instead.
 
 **Every release publishes a changelog** (qits-893). The last release step's publish block always
 ends with `qits artifacts publish changelog --version "$QITS_VERSION"` and the provenance `--meta`

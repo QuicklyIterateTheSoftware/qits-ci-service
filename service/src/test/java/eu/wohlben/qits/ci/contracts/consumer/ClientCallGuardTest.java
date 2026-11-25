@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.ci.contracts.GoldenFiles;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
+import eu.wohlben.qits.ci.projects.HttpProjectsReleaseRequestListing;
 import eu.wohlben.qits.ci.projects.HttpProjectsRepoListing;
 import java.io.IOException;
 import java.io.InputStream;
@@ -56,6 +57,8 @@ class ClientCallGuardTest {
       Map.of(
           // reads whether qits.ci.projects-url is set
           HttpProjectsRepoListing.class, Set.of("configured"),
+          // the same key, for the release requests the pact parity check reads (qits-2604)
+          HttpProjectsReleaseRequestListing.class, Set.of("configured"),
           // reads whether the qits oidc client and its credential are configured
           IdpCommissioner.class, Set.of("enabled"));
 

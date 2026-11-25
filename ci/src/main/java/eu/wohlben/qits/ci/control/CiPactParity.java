@@ -31,13 +31,27 @@ import java.util.TreeSet;
  *       {@link Verdict#note} says so.
  * </ul>
  *
- * <p>B is read at its newest release rather than its {@code main} because a release is the estate
- * somebody approved: a counterpart's unreleased work is not yet a promise to compare against.
+ * <h2>Where B is read, and why it is two places</h2>
+ *
+ * <p><b>What B demands</b> — "B's operations must be made by A" — is read at B's newest release
+ * alone, never at its {@code main}: a release is the estate somebody approved, and a counterpart's
+ * unreleased work is not yet a promise A could be refused for missing. Were B's open release
+ * requests counted here, B's work in flight would refuse every unrelated release of A.
+ *
+ * <p><b>What B offers</b> — the set A's operations are looked up in — is B's newest release
+ * <em>and</em> the folds of its open release requests ({@link Side#openFolds}, qits-2604). Without
+ * them two mirrors could never gain an operation: A's request making it is refused because B's
+ * release lacks it, B's request making it is refused because A's release lacks it, and neither
+ * release ever comes (seen live on qits-2490 with {@code listArtifactVersions}). An open fold is
+ * extra evidence, not a promise: a fold file that does not parse, or that the fold does not carry,
+ * adds nothing and fails nothing. B's {@code mirror} declaration and its exclusions stay read at
+ * the release, so whether the direction is checked at all is still B's approved word.
  *
  * <h2>What it fails on</h2>
  *
  * <p>A missing operation is one line, {@code <provider> <operationId>: made by <X>, not by <Y> and
- * not excluded}, sorted. Besides those: A's {@code framework} naming no {@link
+ * not excluded}, sorted, and then one line naming where B was looked for — the release and the open
+ * release requests read — and what to do about it. Besides those: A's {@code framework} naming no {@link
  * PactParityAdapter#ADAPTERS adapter} (named with the supported list — a check-time failure, not a
  * parse error, because a parse error records no run at all), a declared pact file the read rev does
  * not carry, an interaction with no operationId, and a counterpart that cannot be compared at all —
@@ -61,29 +75,58 @@ public final class CiPactParity {
    * @param pacts every pact file its {@code contracts.pacts} declares, by path, in declared order;
    *     a null content is a file the rev does not carry
    * @param unavailable why this side cannot be compared at all, or null when it can
+   * @param openFolds the counterpart's open release requests, each read at its fold — what it
+   *     offers beyond its release (qits-2604). Null when they were not read at all: the gated side,
+   *     and a counterpart on a deployment with no qits-projects to list them
    */
   public record Side(
       String repository,
       String at,
       CiContracts contracts,
       Map<String, String> pacts,
-      String unavailable) {
+      String unavailable,
+      List<OpenFold> openFolds) {
 
     public Side {
       pacts = Collections.unmodifiableMap(new LinkedHashMap<>(pacts));
+      openFolds = openFolds == null ? null : List.copyOf(openFolds);
     }
 
     public static Side read(
         String repository, String at, CiContracts contracts, Map<String, String> pacts) {
-      return new Side(repository, at, contracts, pacts, null);
+      return new Side(repository, at, contracts, pacts, null, null);
+    }
+
+    /** A counterpart read at its release and at the folds of its open release requests. */
+    public static Side read(
+        String repository,
+        String at,
+        CiContracts contracts,
+        Map<String, String> pacts,
+        List<OpenFold> openFolds) {
+      return new Side(repository, at, contracts, pacts, null, openFolds);
     }
 
     public static Side unavailable(String repository, String why) {
-      return new Side(repository, null, null, Map.of(), why);
+      return new Side(repository, null, null, Map.of(), why, null);
     }
 
     Mirror mirror() {
       return contracts == null ? null : contracts.mirror();
+    }
+  }
+
+  /**
+   * One open release request of the counterpart, read at its fold (qits-2604).
+   *
+   * @param label what a person calls the request — its qualified id
+   * @param pacts the pact files the counterpart's release declares, as the fold carries them, by
+   *     path; a file the fold does not carry is simply absent
+   */
+  public record OpenFold(String label, Map<String, String> pacts) {
+
+    public OpenFold {
+      pacts = Collections.unmodifiableMap(new LinkedHashMap<>(pacts));
     }
   }
 
@@ -115,7 +158,8 @@ public final class CiPactParity {
    *
    * @param gated the repository the fold is of, read at the fold; nothing is checked unless it
    *     declares {@code contracts.mirror}
-   * @param counterpart its {@code mirror.repository}, read at that repository's newest release
+   * @param counterpart its {@code mirror.repository}, read at that repository's newest release and,
+   *     when they could be listed, at the folds of its open release requests
    */
   public static Verdict check(Side gated, Side counterpart) {
     Mirror mine = gated.mirror();
@@ -142,6 +186,7 @@ public final class CiPactParity {
     Map<String, Set<String>> made = operations(gated, adapter, failures);
     List<String> missing = new ArrayList<>();
     String note = null;
+    String lookedFor = null;
     if (counterpart.unavailable() != null) {
       failures.add(counterpart.unavailable());
     } else {
@@ -150,10 +195,16 @@ public final class CiPactParity {
           theirs == null || theirs.framework() == null
               ? null
               : PactParityAdapter.ADAPTERS.get(theirs.framework());
-      Map<String, Set<String>> theyMake = operations(counterpart, theirAdapter, failures);
-      missing(theyMake, b, made, a, mine, missing);
+      // What B demands is its release alone; what it offers is its release and its open folds.
+      Map<String, Set<String>> theyDemand = operations(counterpart, theirAdapter, failures);
+      missing(theyDemand, b, made, a, mine, missing);
       if (theirs != null && a.equals(theirs.repository())) {
-        missing(made, a, theyMake, b, theirs, missing);
+        List<String> notOffered = new ArrayList<>();
+        missing(made, a, offered(counterpart, theirAdapter, theyDemand), b, theirs, notOffered);
+        missing.addAll(notOffered);
+        if (!notOffered.isEmpty()) {
+          lookedFor = lookedFor(counterpart);
+        }
       } else {
         note =
             b
@@ -175,6 +226,9 @@ public final class CiPactParity {
     lines.add(heading);
     lines.addAll(failures);
     lines.addAll(new TreeSet<>(missing));
+    if (lookedFor != null) {
+      lines.add(lookedFor);
+    }
     if (note != null) {
       lines.add(note);
     }
@@ -212,6 +266,67 @@ public final class CiPactParity {
       }
     }
     return byProvider;
+  }
+
+  /**
+   * What the counterpart offers: its release's operations and every open fold's, by provider. A
+   * fold file the adapter cannot read whole still contributes what it could read, and its failures
+   * are dropped — an open fold is evidence, never a reason to refuse.
+   */
+  private static Map<String, Set<String>> offered(
+      Side counterpart, PactParityAdapter adapter, Map<String, Set<String>> released) {
+    Map<String, Set<String>> byProvider = new TreeMap<>();
+    released.forEach((provider, ids) -> byProvider.put(provider, new TreeSet<>(ids)));
+    if (counterpart.openFolds() == null) {
+      return byProvider;
+    }
+    for (OpenFold fold : counterpart.openFolds()) {
+      for (Map.Entry<String, String> pact : fold.pacts().entrySet()) {
+        if (pact.getValue() == null) {
+          continue;
+        }
+        // Its failures are not collected: an adapter answers a bad file as failures, never throws.
+        PactParityAdapter.PactFile file =
+            adapter == null
+                ? PactParityAdapter.readPactV4(pact.getKey(), pact.getValue())
+                : adapter.read(pact.getKey(), pact.getValue());
+        if (file.provider() != null) {
+          byProvider
+              .computeIfAbsent(file.provider(), p -> new TreeSet<>())
+              .addAll(file.operationIds());
+        }
+      }
+    }
+    return byProvider;
+  }
+
+  /**
+   * The line after a refusal's missing operations that the counterpart was asked to make: where it
+   * was looked for, and the way out — an open request making the operation, then a retry.
+   */
+  private static String lookedFor(Side counterpart) {
+    String b = counterpart.repository();
+    if (counterpart.openFolds() == null) {
+      return b
+          + " was read at "
+          + counterpart.at()
+          + " only, as this qits-ci has no qits-projects to list its open release requests; release"
+          + " "
+          + b
+          + " with the operation and retry this run with qits ci retry";
+    }
+    String requests =
+        counterpart.openFolds().isEmpty()
+            ? "none"
+            : String.join(", ", counterpart.openFolds().stream().map(OpenFold::label).toList());
+    return b
+        + " was read at "
+        + counterpart.at()
+        + " and open release requests "
+        + requests
+        + "; open a release request on "
+        + b
+        + " that makes the operation and retry this run with qits ci retry";
   }
 
   /** Every operation {@code x} makes that {@code y} neither makes nor excludes, as one line each. */

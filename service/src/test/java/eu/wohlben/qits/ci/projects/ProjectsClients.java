@@ -6,8 +6,9 @@ import io.opentelemetry.api.OpenTelemetry;
 import java.util.Optional;
 
 /**
- * {@link HttpProjectsRepoListing} wired by hand against one base url, for tests outside this
- * package — the consumer pacts (qits-1149) point it at a pact mock server.
+ * {@link HttpProjectsRepoListing} and {@link HttpProjectsReleaseRequestListing} wired by hand
+ * against one base url, for tests outside this package — the consumer pacts (qits-1149) point them
+ * at a pact mock server.
  */
 public final class ProjectsClients {
 
@@ -26,5 +27,21 @@ public final class ProjectsClients {
   /** {@link #repoListing(String, String)} with a bearer every pact row may present. */
   public static HttpProjectsRepoListing repoListing(String projectsUrl) {
     return repoListing(projectsUrl, "machine-token");
+  }
+
+  public static HttpProjectsReleaseRequestListing releaseRequestListing(
+      String projectsUrl, String bearer) {
+    HttpProjectsReleaseRequestListing listing = new HttpProjectsReleaseRequestListing();
+    listing.projectsUrl = Optional.ofNullable(projectsUrl);
+    listing.objectMapper = new ObjectMapper();
+    listing.gitHostBearer = () -> Optional.ofNullable(bearer);
+    listing.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    listing.buildClient();
+    return listing;
+  }
+
+  /** {@link #releaseRequestListing(String, String)} with a bearer every pact row may present. */
+  public static HttpProjectsReleaseRequestListing releaseRequestListing(String projectsUrl) {
+    return releaseRequestListing(projectsUrl, "machine-token");
   }
 }

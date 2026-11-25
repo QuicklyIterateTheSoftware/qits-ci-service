@@ -4,16 +4,20 @@ import eu.wohlben.qits.ci.entity.CiScmRelease;
 import eu.wohlben.qits.ci.persistence.CiScmReleaseRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 /**
  * The reads behind {@link CiPactParity} (qits-2465): the gated repository's pact files at the fold,
  * and its {@code mirror.repository}'s {@code release.yml} and pact files at that repository's newest
- * release. All IO, no decision — the decision is {@link CiPactParity}'s, which stays pure.
+ * release — and, since qits-2604, those same pact files at the fold of each of the counterpart's open
+ * release requests. All IO, no decision — the decision is {@link CiPactParity}'s, which stays pure.
  *
  * <p><b>The counterpart's newest release</b> is its newest {@link CiScmRelease} by {@link
  * VersionSort}, matched by name or id as {@link CiReportBaselines} matches a run's own repository,
@@ -28,6 +32,19 @@ import java.util.Optional;
  * no {@code release.yml} at it, or one that does not parse is committed fact and becomes {@link
  * CiPactParity.Side#unavailable}, which the check fails on; a declared pact file the rev does not
  * carry is a null content, which it fails on too.
+ *
+ * <p><b>The counterpart's open release requests</b> (qits-2604) are what it offers beyond its
+ * release: {@link CiPactParity} looks the gated repository's operations up in them, and never makes
+ * the gated repository answer for them. They are listed through {@link CiReleaseRequestListing} by
+ * the release row's storage id, and only once the release itself was read whole. A request counts
+ * when its state is one of {@link CiReleaseRequestListing#OPEN_STATES} and it carries a fold sha
+ * {@link CiIdentifiers} accepts; at that sha the pact paths the <em>release</em> declares are read,
+ * since the release's {@code contracts} are what the check compares against. A listing that could
+ * not be read, or a fold file the git host could not answer, is {@link Inputs#unreachable} like any
+ * other read; a fold that does not carry a file adds nothing and fails nothing — an open fold is
+ * evidence, not a promise. A deployment with no qits-projects ({@link
+ * CiReleaseRequestListing#configured()} false, or no implementation at all) reads the release alone,
+ * as before qits-2604, and the counterpart's {@link CiPactParity.Side#openFolds} is null.
  */
 @ApplicationScoped
 public class CiPactParityInputs {
@@ -43,10 +60,17 @@ public class CiPactParityInputs {
   @Inject CiScmReleaseRepository scmReleases;
 
   /**
+   * An {@code Instance} rather than a direct injection point for the reason {@code
+   * ListedAndKnownCiRepos} holds its listings so: the HTTP implementation lives in {@code
+   * service/…/projects/}, and a build or a suite without it reads the release alone.
+   */
+  @Inject Instance<CiReleaseRequestListing> releaseRequests;
+
+  /**
    * Both sides, or why they could not be read.
    *
    * @param gated the gated repository at the fold
-   * @param counterpart its {@code mirror.repository} at its newest release
+   * @param counterpart its {@code mirror.repository} at its newest release, with its open folds
    * @param unreachable what could not be read, or null when everything could
    */
   public record Inputs(CiPactParity.Side gated, CiPactParity.Side counterpart, String unreachable) {
@@ -143,8 +167,62 @@ public class CiPactParityInputs {
       }
       theirPacts.put(path, found(pact));
     }
+    if (!releaseRequests.isResolvable() || !releaseRequests.get().configured()) {
+      return new Inputs(
+          gated, CiPactParity.Side.read(counterpartName, at, theirs, theirPacts), null);
+    }
+    CiReleaseRequestListing.Listing listing =
+        releaseRequests.get().releaseRequests(release.get().repoId);
+    if (listing.unreachable() != null) {
+      return Inputs.unreachable(
+          counterpartName + "'s open release requests could not be read: " + listing.unreachable());
+    }
+    List<CiPactParity.OpenFold> folds = new ArrayList<>();
+    for (CiReleaseRequestListing.Request request : listing.requests()) {
+      String sha = openFold(request);
+      if (sha == null) {
+        continue;
+      }
+      Map<String, String> foldPacts = new LinkedHashMap<>();
+      for (String path : theirPacts.keySet()) {
+        CiConfigSource.FileLookup pact =
+            configSource.readFile(counterpart, sha, path, MAX_PACT_BYTES);
+        if (pact.status() == CiConfigSource.FileLookup.Status.UNREACHABLE) {
+          return Inputs.unreachable(
+              counterpartName
+                  + "'s "
+                  + path
+                  + " could not be read at "
+                  + sha
+                  + ", the fold of "
+                  + request.label());
+        }
+        if (pact.status() == CiConfigSource.FileLookup.Status.FOUND) {
+          foldPacts.put(path, pact.content());
+        }
+      }
+      folds.add(new CiPactParity.OpenFold(request.label(), foldPacts));
+    }
     return new Inputs(
-        gated, CiPactParity.Side.read(counterpartName, at, theirs, theirPacts), null);
+        gated, CiPactParity.Side.read(counterpartName, at, theirs, theirPacts, folds), null);
+  }
+
+  /**
+   * The fold to read an open request at, or null when it offers none: a state outside {@link
+   * CiReleaseRequestListing#OPEN_STATES}, no fold yet, or a sha {@link CiIdentifiers} refuses — it
+   * reaches a URL.
+   */
+  private static String openFold(CiReleaseRequestListing.Request request) {
+    if (request.state() == null
+        || !CiReleaseRequestListing.OPEN_STATES.contains(request.state())
+        || request.mergedSha() == null) {
+      return null;
+    }
+    try {
+      return CiIdentifiers.requireSha(request.mergedSha());
+    } catch (RuntimeException malformed) {
+      return null;
+    }
   }
 
   private static String found(CiConfigSource.FileLookup lookup) {

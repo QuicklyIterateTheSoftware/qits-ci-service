@@ -1475,4 +1475,117 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
     assertTrue(
         output.contains("qits-mirror-app has no release this qits-ci recorded"), output);
   }
+
+  // --- qits-2604: what the mirror offers includes its open release requests' folds ------------
+
+  private static final String OPEN_FOLD = "1".repeat(40);
+  private static final String WITHDRAWN_FOLD = "2".repeat(40);
+
+  private static CiReleaseRequestListing.Request request(
+      String qualifiedId, String state, String mergedSha) {
+    return new CiReleaseRequestListing.Request(
+        UUID.randomUUID().toString(), qualifiedId, state, mergedSha);
+  }
+
+  @Test
+  public void anOperationTheMirrorMakesOnAnOpenReleaseRequestIsNotRefused() throws Exception {
+    // The deadlock qits-2490 hit: both mirrors gain getRun at once, neither has released it.
+    String mirrorId = seedMirror(new String[] {"listRuns", "getRun"}, new String[] {"listRuns"});
+    fakeConfig.putFile(
+        mirrorId,
+        OPEN_FOLD,
+        CiContracts.pactPath(MIRROR, "qits-ci-service"),
+        pact("listRuns", "getRun", "retryRun"));
+    fakeReleaseRequests.set(request("qits-mirror-app-rr-7", "PENDING", OPEN_FOLD));
+
+    deliver(releaseRequest());
+
+    CiRun run = runService.runsFor(repoId).get(0);
+    assertEquals(CiRunStatus.SUCCESS, run.status);
+    assertFalse(run.triggerConfig.contains("this fold is refused"), run.triggerConfig);
+    assertEquals(List.of(mirrorId), fakeReleaseRequests.asked(), "asked by the release's repo id");
+    assertTrue(
+        fakeConfig
+            .fileReads()
+            .contains(
+                mirrorId + "@" + OPEN_FOLD + "/" + CiContracts.pactPath(MIRROR, "qits-ci-service")),
+        "the fold's pact is read at the fold: " + fakeConfig.fileReads());
+  }
+
+  @Test
+  public void aRequestNotOpenOrWithoutAFoldOffersNothingAndTheRefusalNamesWhereItLooked()
+      throws Exception {
+    String mirrorId = seedMirror(new String[] {"listRuns", "getRun"}, new String[] {"listRuns"});
+    fakeConfig.putFile(
+        mirrorId,
+        WITHDRAWN_FOLD,
+        CiContracts.pactPath(MIRROR, "qits-ci-service"),
+        pact("listRuns", "getRun"));
+    fakeReleaseRequests.set(
+        request("qits-mirror-app-rr-5", "WITHDRAWN", WITHDRAWN_FOLD),
+        request("qits-mirror-app-rr-6", "PENDING", null));
+    runTheScripts();
+
+    deliver(releaseRequest());
+
+    CiRun run = runService.runsFor(repoId).get(0);
+    assertEquals(CiRunStatus.FAILED, run.status);
+    String output = runService.stepsFor(run.id).get(0).output;
+    assertTrue(
+        output.contains(
+            "qits-ci-service getRun: made by qits-target, not by qits-mirror-app and not excluded\n"
+                + "qits-mirror-app was read at release "
+                + MIRROR_VERSION
+                + " and open release requests none; open a release request on qits-mirror-app"
+                + " that makes the operation and retry this run with qits ci retry"),
+        output);
+    assertFalse(
+        fakeConfig.fileReads().stream().anyMatch(read -> read.contains(WITHDRAWN_FOLD)),
+        "a withdrawn request's fold is never read: " + fakeConfig.fileReads());
+  }
+
+  @Test
+  public void unlistableReleaseRequestsRecordNoQaRunAndLeaveTheEventOwed() throws Exception {
+    seedMirror(new String[] {"listRuns"}, new String[] {"listRuns"});
+    fakeReleaseRequests.unreachable("HTTP 503");
+
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(List.of(), runService.runsFor(repoId), "nothing was learned, so nothing ran");
+    assertTrue(stillOwed(arrival.eventId()), "owed, so a sweep asks qits-projects again");
+  }
+
+  @Test
+  public void anUnreadableOpenFoldRecordsNoQaRunAndLeavesTheEventOwed() throws Exception {
+    String mirrorId = seedMirror(new String[] {"listRuns"}, new String[] {"listRuns"});
+    fakeConfig.putFileUnreachable(
+        mirrorId, OPEN_FOLD, CiContracts.pactPath(MIRROR, "qits-ci-service"));
+    fakeReleaseRequests.set(request("qits-mirror-app-rr-7", "READY", OPEN_FOLD));
+
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(List.of(), runService.runsFor(repoId));
+    assertTrue(stillOwed(arrival.eventId()));
+  }
+
+  @Test
+  public void withNoQitsProjectsTheMirrorIsReadAtItsReleaseAlone() throws Exception {
+    seedMirror(new String[] {"listRuns", "getRun"}, new String[] {"listRuns"});
+    runTheScripts();
+
+    deliver(releaseRequest());
+
+    CiRun run = runService.runsFor(repoId).get(0);
+    assertEquals(CiRunStatus.FAILED, run.status);
+    assertEquals(List.of(), fakeReleaseRequests.asked(), "an unset listing is never asked");
+    String output = runService.stepsFor(run.id).get(0).output;
+    assertTrue(
+        output.contains(
+            "qits-mirror-app was read at release "
+                + MIRROR_VERSION
+                + " only, as this qits-ci has no qits-projects to list its open release requests"),
+        output);
+  }
 }

@@ -34,6 +34,7 @@ public abstract class CiTestSupport {
   @Inject protected FakeCiConfigSource fakeConfig;
   @Inject protected FakeCandidateRepos fakeCandidates;
   @Inject protected FakeStepImagePins fakeImagePins;
+  @Inject protected FakeReleaseRequestListing fakeReleaseRequests;
   @Inject protected CiRunService runService;
   @Inject protected CiEventTriggerParser triggerParser;
 
@@ -153,6 +154,8 @@ public abstract class CiTestSupport {
     // Nothing staged means every reference answers FOREIGN, which is the truth about the alpine:3
     // this suite runs on: an image this platform does not publish and holds no pin for.
     fakeImagePins.reset();
+    // Unset: no qits-projects, so the pact parity check reads a counterpart at its release alone.
+    fakeReleaseRequests.unset();
     // A fresh runner row per test: no infra streak, no quarantine.
     suiteRunner.reset();
   }

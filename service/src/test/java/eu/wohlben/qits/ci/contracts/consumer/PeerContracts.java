@@ -12,6 +12,7 @@ import eu.wohlben.qits.ci.control.CiArtifactPresence.Verdict;
 import eu.wohlben.qits.ci.control.CiConfigSource.CommitHeld;
 import eu.wohlben.qits.ci.control.CiConfigSource.EventTriggerLookup;
 import eu.wohlben.qits.ci.control.CiConfigSource.FileLookup;
+import eu.wohlben.qits.ci.control.CiReleaseRequestListing;
 import eu.wohlben.qits.ci.control.CiRepoRef;
 import eu.wohlben.qits.ci.control.CiStepImagePins;
 import eu.wohlben.qits.ci.control.CiTriggerScope;
@@ -23,6 +24,7 @@ import eu.wohlben.qits.ci.idp.IdpClients;
 import eu.wohlben.qits.ci.idp.IdpCommissioner;
 import eu.wohlben.qits.ci.targethost.SystemLeases;
 import eu.wohlben.qits.ci.targethost.SystemLeasesClients;
+import eu.wohlben.qits.ci.projects.HttpProjectsReleaseRequestListing;
 import eu.wohlben.qits.ci.projects.HttpProjectsRepoListing;
 import eu.wohlben.qits.ci.projects.ProjectsClients;
 import eu.wohlben.qits.ci.registry.HttpArtifactPresence;
@@ -55,7 +57,10 @@ import org.jose4j.jwk.RsaJsonWebKey;
  *
  * <ul>
  *   <li><b>qits-projects</b>: the repository catalogue, {@code GET /projects/api/repositories}
- *       ({@code projects/HttpProjectsRepoListing}).
+ *       ({@code projects/HttpProjectsRepoListing}); and a repository's release requests, {@code GET
+ *       /projects/api/repositories/{repoId}/release-requests} ({@code
+ *       projects/HttpProjectsReleaseRequestListing}), which the pact parity check reads for its
+ *       counterpart's open folds (qits-2604).
  *   <li><b>qits-githost</b>: the storage listing {@code GET /git} ({@code
  *       githost/HttpGitHostRepoListing}, read only while qits-projects is not configured), and the
  *       content reads of {@code githost/HttpGitConfigSource}: a commit's root tree (is the commit
@@ -229,6 +234,38 @@ final class PeerContracts {
                 refs.forEach(ref -> assertTrue(ref.named(), ref + " carries its public name"));
               }));
     }
+
+    // The pact parity check's counterpart: its open release requests, each read at its fold
+    // (qits-2604). Only the four fields the parity inputs read are consumed.
+    rows.add(
+        new Bound(
+            PROJECTS,
+            GoldenInteraction.of(
+                    Trigger.event(
+                        "ReleaseRequestChanged (CiPactParityInputs: the mirror's open release"
+                            + " requests)"),
+                    "a release request awaiting approval",
+                    "listRepositoryReleaseRequests")
+                .consumes(
+                    "requests[].id",
+                    "requests[].qualifiedId",
+                    "requests[].state",
+                    "requests[].mergedSha"),
+            HttpProjectsReleaseRequestListing.class,
+            "releaseRequests",
+            (url, recorded) -> {
+              CiReleaseRequestListing.Listing listing =
+                  ProjectsClients.releaseRequestListing(url)
+                      .releaseRequests(recorded.params().get("repositoryId"));
+              assertEquals(null, listing.unreachable(), "the requests were read");
+              assertFalse(listing.requests().isEmpty(), "the awaiting request is listed");
+              CiReleaseRequestListing.Request request = listing.requests().get(0);
+              assertNotNull(request.id());
+              assertNotNull(request.label());
+              assertTrue(
+                  CiReleaseRequestListing.OPEN_STATES.contains(request.state()), request.state());
+              assertEquals(recorded.params().get("mergedSha"), request.mergedSha());
+            }));
 
     // --- qits-githost -------------------------------------------------------------------------
     rows.add(

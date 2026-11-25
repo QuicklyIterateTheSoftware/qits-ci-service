@@ -2337,6 +2337,19 @@ phase.
   QA run is red and the request REJECTED before any tag; a `CiConfigException` would have recorded
   no run and hung the gate. An `UNREACHABLE` read is `ComposeOutcome.DEPLOYMENTS_UNREADABLE`: no
   run, the event stays owed. The release half and the release-phase door never read the file.
+- **QA refuses a fold whose pacts drift from its mirror's** (qits-2465), and the counterpart is
+  read in two places (qits-2604). `CiPactParityInputs` reads the gated repository's pacts at the
+  fold and its `contracts.mirror.repository` at that repository's newest release, then — through
+  the `CiReleaseRequestListing` port (`service/…/projects/HttpProjectsReleaseRequestListing`, the
+  same `qits.ci.projects-url` and bearer as the catalogue) — the release's pact paths at the fold
+  of each open release request. `CiPactParity` stays pure and keeps the two apart: what the
+  counterpart DEMANDS of the gated side is its release alone, so its unreleased work never refuses
+  anybody; what it OFFERS is the release plus the open folds, which is what lets two mirrors gain
+  one operation without each refusing the other forever (qits-2490, `listArtifactVersions`). An
+  unlistable request set or an unreadable fold file is `PACTS_UNREADABLE`, the event owed; a fold
+  file that is absent or does not parse adds nothing and fails nothing; with the url unset the
+  release alone is read, as before. The per-operation refusal lines are unchanged; one line after
+  them names where the counterpart was read and says to open its request and `qits ci retry`.
 - **The heredoc is the security-shaped part.** A repository's script is data: quoted heredoc to
   `/tmp/qits-slot.sh`, run as a child shell under `-eu`. The only way out of a quoted heredoc is a line
   carrying the delimiter, so a script containing `QITS_SLOT_EOF` is a `CiConfigException` naming the
