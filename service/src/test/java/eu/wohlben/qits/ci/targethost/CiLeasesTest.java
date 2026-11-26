@@ -152,6 +152,7 @@ class CiLeasesTest {
     assertEquals(RUN, request.ownerRef());
     assertEquals(0, request.priority(), "an ordinary run asks what every other slot asks");
     assertNull(request.avoidTargetId(), "a first run names no predecessor to avoid (qits-2382)");
+    assertNull(request.builds(), "a run whose pipeline builds no image says nothing (qits-2568)");
     assertEquals("qits_tok_stub-1", request.spec().env().get("QITS_TOKEN"));
     assertEquals("1001", request.spec().user());
     assertTrue(
@@ -386,6 +387,90 @@ class CiLeasesTest {
     assertEquals(2, bodies.size());
     assertFalse(bodies.get(0).contains("avoidTargetId"), bodies.get(0));
     assertTrue(bodies.get(1).contains("\"avoidTargetId\":\"" + TARGET + "\""), bodies.get(1));
+  }
+
+  /**
+   * qits-2568: a run whose pipeline has a {@code build: true} step asks for its lease with {@code
+   * builds: true}; any other asks with no {@code builds} at all, and {@code false} is never sent.
+   */
+  @Test
+  void aRunWithABuildStepAsksForALeaseThatBuilds() {
+    eu.wohlben.qits.ci.control.CiPipeline.CiStepDecl test =
+        new eu.wohlben.qits.ci.control.CiPipeline.CiStepDecl(
+            "qits/build-images/maven-base:latest", "mvn verify", null, false, false, "");
+    eu.wohlben.qits.ci.control.CiPipeline.CiStepDecl image =
+        new eu.wohlben.qits.ci.control.CiPipeline.CiStepDecl(
+            "qits/build-images/node-docker-base:latest", "buildctl build", null, false, true, "");
+    assertTrue(CiLeases.buildsImages(run(List.of(test, image))));
+    assertFalse(CiLeases.buildsImages(run(List.of(test))));
+    assertFalse(CiLeases.buildsImages(run(List.of())));
+    assertFalse(CiLeases.buildsImages(null));
+    SystemLeases.LeaseSpec spec = new SystemLeases.LeaseSpec("image", java.util.Map.of(), "1001", null);
+    assertEquals(
+        Boolean.TRUE,
+        new SystemLeases.CreateLease(SystemLeases.SLOT_TYPE, "r", 0, spec, null, true).builds());
+    assertNull(
+        new SystemLeases.CreateLease(SystemLeases.SLOT_TYPE, "r", 0, spec, null, false).builds());
+  }
+
+  /** {@code builds} on the wire: {@code "builds":true} when set, the key absent otherwise. */
+  @Test
+  void theCreateBodyCarriesBuildsOnlyWhenTheRunBuilds() throws Exception {
+    List<String> bodies = Collections.synchronizedList(new ArrayList<>());
+    com.sun.net.httpserver.HttpServer server =
+        com.sun.net.httpserver.HttpServer.create(
+            new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext(
+        "/",
+        exchange -> {
+          bodies.add(
+              new String(
+                  exchange.getRequestBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+          byte[] response =
+              ("{\"id\":\"" + LEASE + "\",\"ownerRef\":\"run-1\",\"state\":\"QUEUED\"}")
+                  .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().add("Content-Type", "application/json");
+          exchange.sendResponseHeaders(201, response.length);
+          exchange.getResponseBody().write(response);
+          exchange.close();
+        });
+    server.start();
+    try {
+      SystemLeases client =
+          SystemLeasesClients.against(
+              "http://127.0.0.1:" + server.getAddress().getPort(), Optional.empty());
+      SystemLeases.LeaseSpec spec =
+          new SystemLeases.LeaseSpec("image", java.util.Map.of(), "1001", null);
+      client.create(
+          new SystemLeases.CreateLease(SystemLeases.SLOT_TYPE, "run-1", 0, spec, null, true));
+      client.create(new SystemLeases.CreateLease(SystemLeases.SLOT_TYPE, "run-2", 0, spec));
+    } finally {
+      server.stop(0);
+    }
+    assertEquals(2, bodies.size());
+    assertTrue(bodies.get(0).contains("\"builds\":true"), bodies.get(0));
+    assertFalse(bodies.get(1).contains("builds"), bodies.get(1));
+  }
+
+  private static CiRunService.EventRun run(
+      List<eu.wohlben.qits.ci.control.CiPipeline.CiStepDecl> steps) {
+    return new CiRunService.EventRun(
+        null,
+        "main",
+        "sha",
+        new eu.wohlben.qits.ci.control.CiEventTrigger(
+            ".config/qits/release.yml",
+            "ReleaseRequestChanged",
+            null,
+            new eu.wohlben.qits.ci.control.CiPipeline(steps),
+            List.of(),
+            null),
+        "event",
+        "ReleaseRequestChanged",
+        Instant.parse("2026-11-22T07:17:31Z"),
+        "{}",
+        "",
+        null);
   }
 
   @Test

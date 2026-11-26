@@ -132,11 +132,29 @@ public class SystemLeases {
    * qits-system's {@code CreateLeaseRequest}. Absent members are left out of the body. {@code
    * avoidTargetId} (qits-2382) is the one hint a retry's create carries: the target its predecessor
    * ran and never dialled back from, so qits-system prefers any other target over granting the same
-   * one a second time. Null — no hint — for every first run.
+   * one a second time. Null — no hint — for every first run. {@code builds} (qits-2568) says the
+   * run sends image builds to the target's shared builder — its pipeline has a {@code build: true}
+   * step — so qits-system caps such leases per target at the builder gate's width plus one; it is
+   * sent as {@code true} or left out, never as {@code false}.
    */
   @JsonInclude(JsonInclude.Include.NON_NULL)
   public record CreateLease(
-      String slotType, String ownerRef, Integer priority, LeaseSpec spec, UUID avoidTargetId) {
+      String slotType,
+      String ownerRef,
+      Integer priority,
+      LeaseSpec spec,
+      UUID avoidTargetId,
+      Boolean builds) {
+
+    public CreateLease {
+      builds = Boolean.TRUE.equals(builds) ? Boolean.TRUE : null;
+    }
+
+    /** A create for a run that builds no image. */
+    public CreateLease(
+        String slotType, String ownerRef, Integer priority, LeaseSpec spec, UUID avoidTargetId) {
+      this(slotType, ownerRef, priority, spec, avoidTargetId, null);
+    }
 
     /** A create with no target to avoid — every first run's. */
     public CreateLease(String slotType, String ownerRef, Integer priority, LeaseSpec spec) {

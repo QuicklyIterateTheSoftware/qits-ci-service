@@ -50,7 +50,8 @@ import org.jboss.logging.Logger;
  *   <li>the spec is composed ({@link CiSlotSpecs}): the ci-slot image as the run pinned it at accept,
  *       the run's environment, user {@value CiSlot#USER} and the {@code qits.ci.slot.*} limits;
  *   <li>{@code POST /system/api/leases} with {@code slotType CI}, {@code ownerRef <runId>} and the
- *       priority {@link CiRunOrdering#leasePriority} gives the run;
+ *       priority {@link CiRunOrdering#leasePriority} gives the run, and {@code builds: true} when
+ *       a step of its pipeline declares {@code build: true} ({@link #buildsImages}, qits-2568);
  *   <li>the lease and the launch are recorded on the run's row, and a lease that cannot be recorded
  *       is ended again at once.
  * </ol>
@@ -250,7 +251,8 @@ public class CiLeases {
                   runId,
                   CiRunOrdering.leasePriority(row),
                   spec,
-                  avoidTargetIdFor(row)));
+                  avoidTargetIdFor(row),
+                  buildsImages(candidate.get().request())));
     } catch (SystemLeases.SystemUnavailable unavailable) {
       daemons.reap(daemonId);
       if (unavailable.status() == 409) {
@@ -281,6 +283,21 @@ public class CiLeases {
         "CI run %s asked lease %s (priority %d, %s)",
         runId, lease.id(), CiRunOrdering.leasePriority(row), spec.image());
     observe(lease);
+  }
+
+  /**
+   * Whether the run sends image builds to its target's shared builder (qits-2568): a step of its
+   * pipeline declares {@code build: true}. qits-system caps the leases that do at the builder gate's
+   * width plus one per target, so the memory a lease waiting at the gate would hold goes to the runs
+   * that build nothing. A step that calls {@code buildctl} without declaring it is not counted; the
+   * gate still queues its build.
+   */
+  static boolean buildsImages(CiRunService.EventRun request) {
+    if (request == null || request.trigger() == null || request.trigger().pipeline() == null) {
+      return false;
+    }
+    return request.trigger().pipeline().steps().stream()
+        .anyMatch(eu.wohlben.qits.ci.control.CiPipeline.CiStepDecl::build);
   }
 
   /**
