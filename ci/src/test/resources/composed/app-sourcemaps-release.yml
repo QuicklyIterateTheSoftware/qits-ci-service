@@ -1,0 +1,377 @@
+# Composed by qits-ci from .config/qits/release.yml and ci/src/main/resources/release-archetypes/app.yml.
+# Generated: this text is never committed. Edit the slot file or the archetype recipe.
+event: SCMRelease
+when:
+  - repository: { exact: 'qits-landing-app' }
+checkout:
+  branch: version
+  sha: commitSha
+artifacts:
+  - { type: 'docker', name: 'qits/qits-landing' }
+  - { type: 'docs', name: '@sourcemaps/qits-landing' }
+steps:
+  - name: 'publish image'
+    timeout-seconds: 3600
+    build: true
+    script: |
+      set -eu
+      # --- platform prelude ---------------------------------------------------------
+      : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so it has no platform address}"
+      qits_caches=
+      for qits_cache in m2 pnpm; do
+        if [ -d "/caches/$qits_cache" ]; then
+          qits_cache_size=$(du -sh "/caches/$qits_cache" 2>/dev/null | cut -f1) || qits_cache_size=
+          qits_cache_size=${qits_cache_size:-unknown}
+        else
+          qits_cache_size=absent
+        fi
+        qits_caches="$qits_caches $qits_cache=$qits_cache_size"
+      done
+      echo "qits-ci: caches$qits_caches" >&2 || true
+      : "${QITS_VERSION:?the triggering release event carried no version}"
+      git fetch "$QITS_CI_REPOSITORY_URL" "refs/tags/$QITS_VERSION:refs/tags/$QITS_VERSION"
+      git checkout --detach "$QITS_VERSION"
+      cat > /tmp/qits-lockfile-origins.sh <<'QITS_LOCKFILE_EOF'
+      # qits-ci: every npm lockfile here resolves from the platform's two registries (qits-731).
+      set -eu
+      : "${QITS_DOMAIN:?this step was told no QITS_DOMAIN, so no lockfile origin can be checked}"
+      registry="https://registry.qits.$QITS_DOMAIN/"
+      mirror="https://mirror.qits.$QITS_DOMAIN/"
+      find . \( -name target -o -name node_modules -o -name .git \) -prune -o -name package-lock.json -print | {
+        refused=0
+        while IFS= read -r lock; do
+          foreign=$(grep -o '"resolved": *"[^"]*"' "$lock" \
+            | sed -e 's/^"resolved": *"//' -e 's/"$//' \
+            | awk -v r="$registry" -v m="$mirror" \
+              'index($0, "://") && index($0, r) != 1 && index($0, m) != 1')
+          if [ -n "$foreign" ]; then
+            count=$(printf '%s\n' "$foreign" | wc -l | tr -d ' ')
+            echo "qits-ci: $lock resolves $count package(s) outside $registry and $mirror:" >&2
+            printf '%s\n' "$foreign" | head -n 5 | sed 's/^/  /' >&2
+            refused=1
+          fi
+        done
+        if [ "$refused" -ne 0 ]; then
+          echo "qits-ci: no lockfile is rewritten on this platform. Regenerate it against the" \
+            "public registries (npm_config_registry=${mirror}npm/npmjs/," \
+            "npm_config_@qits:registry=${registry}artifacts/npm/npm/) and commit it." >&2
+          exit 1
+        fi
+      }
+      QITS_LOCKFILE_EOF
+      sh /tmp/qits-lockfile-origins.sh
+      cat > /tmp/qits-migration-versions.sh <<'QITS_MIGRATION_EOF'
+      # qits-ci: every migration lineage here holds each version once, none behind main's (qits-1669).
+      set -eu
+      pattern='(^|/)src/main/resources/(.*/)?db/(.*/)?V[0-9]+__[^/]*\.sql$'
+      # One row per migration, `<dir>|<version>|<file>`, the version without its leading zeros so V057
+      # and V57 are the same number, sorted by directory and then numerically by version.
+      rows() {
+        grep -E "$pattern" | sed -E 's#^(.*)/V0*([0-9]+)__[^/]*$#\1|\2|&#' | sort -t '|' -k1,1 -k2,2n
+      }
+      # The highest version $2's rows hold in directory $1, into $top; empty when they hold none.
+      highest() {
+        top=
+        while IFS='|' read -r hd hv hf; do
+          if [ "$hd" = "$1" ]; then top=$hv; fi
+        done <<EOF
+      $2
+      EOF
+      }
+      here=$(find . \( -name target -o -name node_modules -o -name .git \) -prune \
+        -o -type f -name 'V*__*.sql' -print | sed 's#^\./##' | rows)
+      if [ -z "$here" ]; then
+        echo "qits-ci: no migrations here" >&2
+        exit 0
+      fi
+      refused=0
+      lineages=0
+      pd=
+      pv=
+      pf=
+      while IFS='|' read -r d v f; do
+        if [ "$d" != "$pd" ]; then
+          lineages=$((lineages + 1))
+        elif [ "$v" = "$pv" ]; then
+          highest "$d" "$here"
+          echo "qits-ci: $d has more than one migration with version $v: $pf $f" >&2
+          echo "qits-ci: rename one of them to V$((top + 1))__..." >&2
+          refused=1
+        fi
+        pd=$d
+        pv=$v
+        pf=$f
+      done <<EOF
+      $here
+      EOF
+      if [ -n "${QITS_VERSION:-}" ] && git rev-parse --git-dir >/dev/null 2>&1; then
+        git fetch -q "${QITS_CI_REPOSITORY_URL:?this step was told no QITS_CI_REPOSITORY_URL}" \
+          '+refs/heads/main:refs/qits/migration-check-main'
+        main=$(git ls-tree -r --name-only refs/qits/migration-check-main | rows)
+        nl='
+      '
+        while IFS='|' read -r d v f; do
+          case "$nl$main$nl" in
+            *"|$f$nl"*) continue ;;
+          esac
+          highest "$d" "$main"
+          if [ -n "$top" ] && [ "$v" -le "$top" ]; then
+            echo "qits-ci: $f is version $v, but main already has V$top in $d;" \
+              "production would refuse it as out of order" >&2
+            highest "$d" "$here"
+            echo "qits-ci: rename it to V$((top + 1))__..." >&2
+            refused=1
+          fi
+        done <<EOF
+      $here
+      EOF
+      fi
+      if [ "$refused" -ne 0 ]; then
+        exit 1
+      fi
+      echo "qits-ci: migration versions checked ($lineages lineages)" >&2
+      QITS_MIGRATION_EOF
+      sh /tmp/qits-migration-versions.sh
+      if [ -n "${QITS_ARTIFACTS_CLI_PACKAGE:-}" ]; then
+        : "${QITS_ARTIFACTS_CLI_VERSION:?the qits CLI package is configured but no version was injected; the qits-ci that launched this step predates the CLI pin}"
+        mkdir -p /tmp/qits-bin
+        set --
+        if [ -n "${QITS_TOKEN:-}" ]; then
+          set -- --header "Authorization: Bearer $QITS_TOKEN"
+        fi
+        qits_cli_cache=
+        qits_cli_part=
+        qits_cli_out=/tmp/qits-bin/qits
+        if [ -d /caches/ci-daemon ] && [ -w /caches/ci-daemon ]; then
+          case "$QITS_ARTIFACTS_CLI_VERSION" in
+            .*|*[!A-Za-z0-9._-]*) ;;
+            *) qits_cli_cache="/caches/ci-daemon/qits-cli-$QITS_ARTIFACTS_CLI_VERSION" ;;
+          esac
+          find /caches/ci-daemon -maxdepth 1 -name 'qits-cli-*' -mtime +14 -delete 2>/dev/null || true
+        fi
+        if [ -n "$qits_cli_cache" ] && [ -s "$qits_cli_cache" ]; then
+          touch "$qits_cli_cache" 2>/dev/null || true
+          if cp "$qits_cli_cache" /tmp/qits-bin/qits 2>/dev/null; then
+            echo "qits-ci: using cached qits CLI $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+            qits_cli_out=
+          fi
+        fi
+        if [ -n "$qits_cli_out" ] && [ -n "$qits_cli_cache" ]; then
+          qits_cli_part=$(mktemp "$qits_cli_cache.part.XXXXXX" 2>/dev/null) || qits_cli_part=
+          if [ -n "$qits_cli_part" ]; then
+            qits_cli_out=$qits_cli_part
+          fi
+        fi
+        qits_cli_attempt=1
+        while [ -n "$qits_cli_out" ]; do
+          if command -v curl > /dev/null 2>&1; then
+            if curl -fsSL --connect-timeout 10 --speed-limit 10240 --speed-time 30 "$@" -o "$qits_cli_out" "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"; then
+              break
+            fi
+          elif command -v wget > /dev/null 2>&1; then
+            if wget -q -T 20 "$@" -O "$qits_cli_out" "https://registry.qits.$QITS_DOMAIN/artifacts/daemons/$QITS_ARTIFACTS_CLI_PACKAGE/$QITS_ARTIFACTS_CLI_VERSION"; then
+              break
+            fi
+          else
+            echo 'qits-ci: the image for this step (qits/build-images/ci-slot) has neither curl nor wget, so the qits CLI cannot be fetched into it — add one to the image, or take the qits calls out of this step' >&2
+            exit 1
+          fi
+          if [ -n "$qits_cli_part" ]; then
+            rm -f "$qits_cli_part" 2>/dev/null || true
+            qits_cli_part=
+            qits_cli_out=/tmp/qits-bin/qits
+          fi
+          if [ "$qits_cli_attempt" -ge 5 ]; then
+            echo "qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+            exit 1
+          fi
+          echo "qits-ci: could not fetch the qits CLI (attempt $qits_cli_attempt), retrying" >&2
+          qits_cli_attempt=$((qits_cli_attempt + 1))
+          sleep 3
+        done
+        if [ -n "$qits_cli_part" ]; then
+          if mv -f "$qits_cli_part" "$qits_cli_cache" 2>/dev/null; then
+            qits_cli_part=$qits_cli_cache
+          fi
+          qits_cli_copied=
+          if cp "$qits_cli_part" /tmp/qits-bin/qits 2>/dev/null; then
+            qits_cli_copied=1
+          fi
+          if [ "$qits_cli_part" != "$qits_cli_cache" ]; then
+            rm -f "$qits_cli_part" 2>/dev/null || true
+          fi
+          if [ -z "$qits_cli_copied" ]; then
+            echo "qits-ci: could not fetch $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+            exit 1
+          fi
+        fi
+        chmod +x /tmp/qits-bin/qits
+        ln -sf /tmp/qits-bin/qits /tmp/qits-bin/qits-publish
+        echo "qits-ci: fetched $QITS_ARTIFACTS_CLI_PACKAGE $QITS_ARTIFACTS_CLI_VERSION" >&2
+        PATH="/tmp/qits-bin:$PATH"
+        export PATH
+      fi
+      : "${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only through it}"
+      (
+        umask 077
+        if [ -n "${QITS_TOKEN:-}" ]; then
+          printf '%s' "${QITS_TOKEN_SUBJECT:-qits-ci-run}" > /tmp/qits-client-id
+          printf '%s' "$QITS_TOKEN" > /tmp/qits-client-secret
+        else
+          printf '' > /tmp/qits-client-id
+          printf '' > /tmp/qits-client-secret
+        fi
+      )
+      # --- the declared step, run as data -------------------------------------------
+      cat > /tmp/qits-slot.sh <<'QITS_SLOT_EOF'
+      # THE COORDINATE, OUT OF THE DECLARATION THAT ANNOUNCES IT — java-service.yml's block verbatim,
+      # and see its header for why this is read rather than derived from $QITS_CI_REPO_NAME: the
+      # repository name is not the application name, and no rule maps one onto the other. One
+      # spelling means the coordinate pushed and the coordinate announced cannot drift.
+      declared=$(sed -n \
+        's/^[[:space:]]*-[[:space:]]*{[[:space:]]*type:[[:space:]]*docker[[:space:]]*,[[:space:]]*name:[[:space:]]*\([^,}[:space:]]*\).*/\1/p' \
+        .config/qits/release.yml)
+      count=$(printf '%s' "$declared" | grep -c . || true)
+      if [ "$count" != 1 ]; then
+        echo "release.yml declares $count docker artifacts and app pushes exactly one." >&2
+        echo "Spell it as one flow line — '- { type: docker, name: qits/x, sbom: .sbom/sbom.json }'" >&2
+        echo "— or declare this repository's own 'release:' steps." >&2
+        exit 1
+      fi
+      case "$declared" in
+        *[!A-Za-z0-9._:/@+-]*)
+          echo "release.yml's docker artifact name is not a coordinate: $declared" >&2
+          exit 1 ;;
+      esac
+      # The first segment is the platform namespace and is re-supplied from the environment, which
+      # is how every hand-written file spelled it: a deployment may re-point the namespace and the
+      # declaration may not have to move.
+      image=${declared#*/}
+      # The addresses are code under the platform's public domain (qits-731), which the composed
+      # prelude has already demanded; the `:?` says so again here.
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+      ref="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/$image:$QITS_VERSION"
+      echo "releasing $ref"
+
+      # --- the @qits CREDENTIAL, ON ITS WAY TO THE BUILDER ------------------------------------------
+      # `npm ci` runs inside the image build now (see the header's Dockerfile contract), and the
+      # builder has none of this container's environment — so the credential has to be handed over
+      # explicitly, and a SECRET is the only form that does not end up in a layer.
+      #
+      # MINTED AT THE CALL SITE, NOT READ FROM $QITS_PUBLISH_TOKEN. qits-ci hands a step both: the
+      # variable, minted when the container started, and $QITS_PUBLISH_TOKEN_COMMAND, which prints a
+      # FRESH raw token — no `Bearer ` prefix — on every call. A mint's TTL and this step's timeout
+      # are the same number (3600s), so the variable can already be expired by the time the builder
+      # dials the registry; the command cannot be.
+      #
+      # IT DEGRADES TO ANONYMOUS, NEVER TO A BROKEN HEADER, and the FILE IS ALWAYS WRITTEN. This
+      # file is read at main and runs against a tag on whatever qits-ci the estate is running, so the
+      # command may be absent entirely and a mint may fail — and `--secret src=` on a path that does
+      # not exist is a refusal, so the empty file is what keeps a commission-less run building at
+      # all. An empty secret means the Dockerfile writes no `_authToken` line, which is the
+      # anonymous read qits-artifacts still accepts.
+      #
+      # /tmp, beside the two files the composer wrote, and NEVER a path in the clone: anything under
+      # the checkout is inside the `--local context=.` the builder uploads.
+      npm_publish_token=""
+      if [ -n "${QITS_PUBLISH_TOKEN_COMMAND:-}" ] \
+        && command -v "$QITS_PUBLISH_TOKEN_COMMAND" >/dev/null 2>&1; then
+        npm_publish_token=$("$QITS_PUBLISH_TOKEN_COMMAND" 2>/dev/null) || npm_publish_token=""
+      fi
+      ( umask 077
+        printf '%s' "$npm_publish_token" > /tmp/qits-npm-token )
+
+      # --- the image --------------------------------------------------------------------------------
+      # `push=true` IS THE PUBLISH: the image goes from the builder straight to the registry and
+      # never enters any local image store, at registry.qits.<domain> — the registry's public name,
+      # which the builder resolves like everything else here.
+      #
+      # NO --network host, AND NOTHING REPLACES IT. Every `RUN` executes in the builder's own
+      # namespace — the runner's buildkitd — so the two npm addresses below are the RUN's, the
+      # platform's public names, which the builder reaches exactly as the step does.
+      #
+      # THE DOMAIN IS A BUILD ARG AND THE TOKEN IS A SECRET, and that split is the contract the
+      # header states: an origin is not a credential and the build needs it in an `ARG`; a credential
+      # in a build arg is written into the image history, where anyone who pulls the image reads it.
+      # The two npm urls ride beside the domain for the Dockerfiles that still read them.
+      #
+      # The Maven pair java-service passes is DROPPED — there is no Maven in an `-app` — and so is
+      # the .gitmodules walk and the per-webui npm build: an `-app` has no webui submodule and builds
+      # its own tree, inside the Dockerfile.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=docker \
+        --opt build-arg:QITS_DOMAIN="$qits_domain" \
+        --opt build-arg:QITS_NPM_REGISTRY_URL="https://registry.qits.$qits_domain/artifacts/npm/npm/" \
+        --opt build-arg:QITS_NPM_PROXY_URL="https://mirror.qits.$qits_domain/npm/npmjs/" \
+        --secret id=qits-npm-token,src=/tmp/qits-npm-token \
+        --output "type=image,name=$ref,push=true"
+
+      # --- the SBOM ---------------------------------------------------------------------------------
+      # GENERATED HERE, SUBMITTED BY THE COMPOSED POSTLUDE: it PUTs `.sbom/sbom.json` for the docker
+      # artifact that declares `sbom: .sbom/sbom.json`, after this script and before the step's exit
+      # code. AFTER the image build on purpose: `.sbom/` is inside the `--local context=.` the
+      # builder uploads, and a document written before it would be a file in the image's context.
+      #
+      # cdxgen at npm-library.yml's pin, through the mirror, `--registry` explicitly for the reason
+      # given there (`npm exec` resolves the tool itself). NO `-t pnpm`, unlike npm-library: an `-app`
+      # commits `package-lock.json`, and cdxgen detects the project type from the lockfile it finds.
+      # It reads the lockfile rather than an installed tree, which is why the step needs no `npm ci`
+      # — the install happens inside the Dockerfile.
+      mkdir -p .sbom
+      npm exec --yes --registry "https://mirror.qits.$qits_domain/npm/npmjs/" -- \
+        @cyclonedx/cdxgen@11.2.7 --spec-version 1.6 -o .sbom/sbom.json .
+
+      # --- the source maps (qits-2765) ----------------------------------------------------------------
+      # ONLY WHEN DECLARED: `- { type: docs, name: "@sourcemaps/<application>" }` in the repository's
+      # own release.yml says the Dockerfile has a `sourcemaps` stage holding the browser bundle's
+      # hidden maps, and the composed postlude publishes `.qits-sourcemaps/` as that docs site at
+      # $QITS_VERSION. Read out of the declaration with the docker coordinate's sed, for the same
+      # reason: one spelling. Nothing declared, nothing exported, and the step is what it was.
+      #
+      # THE SAME BUILD, A SECOND TARGET. The image push above solved every stage up to the runtime
+      # one; this call asks the same builder for the `sourcemaps` stage of the same context and
+      # Dockerfile, so the build stage is a cache hit and the maps are the pushed bundle's. Should the
+      # cache be gone, the Angular build is deterministic for one lockfile and one tree, so the
+      # content-hashed chunk names — which is what a map is looked up by — come out the same.
+      #
+      # AFTER the SBOM on purpose: `.qits-sourcemaps/` sits in the checkout, and nothing written into
+      # it should be a file cdxgen or the image's `--local context=.` ever saw. `type=local` writes
+      # the stage's filesystem, the maps flat at its root, into the directory.
+      sourcemaps=$(sed -n \
+        's/^[[:space:]]*-[[:space:]]*{[[:space:]]*type:[[:space:]]*docs[[:space:]]*,[[:space:]]*name:[[:space:]]*["'"'"']\{0,1\}\(@sourcemaps\/[^,}"'"'"'[:space:]]*\).*/\1/p' \
+        .config/qits/release.yml)
+      if [ -n "$sourcemaps" ]; then
+        echo "exporting the sourcemaps stage for $sourcemaps"
+        rm -rf .qits-sourcemaps
+        buildctl build --frontend dockerfile.v0 \
+          --local context=. --local dockerfile=docker \
+          --opt target=sourcemaps \
+          --opt build-arg:QITS_DOMAIN="$qits_domain" \
+          --opt build-arg:QITS_NPM_REGISTRY_URL="https://registry.qits.$qits_domain/artifacts/npm/npm/" \
+          --opt build-arg:QITS_NPM_PROXY_URL="https://mirror.qits.$qits_domain/npm/npmjs/" \
+          --secret id=qits-npm-token,src=/tmp/qits-npm-token \
+          --output type=local,dest=.qits-sourcemaps
+        if ! find .qits-sourcemaps -type f -name '*.map' | grep -q .; then
+          echo "release.yml declares $sourcemaps, but the Dockerfile's sourcemaps stage holds no .map file." >&2
+          echo "Build hidden source maps and copy them into a 'FROM scratch AS sourcemaps' stage." >&2
+          exit 1
+        fi
+      fi
+      QITS_SLOT_EOF
+      if command -v bash > /dev/null 2>&1; then
+        bash -eu /tmp/qits-slot.sh
+      else
+        sh -eu /tmp/qits-slot.sh
+      fi
+      # --- platform postlude --------------------------------------------------------
+      : "${QITS_ARTIFACTS_CLI_PACKAGE:?this release publishes or submits an SBOM, and the qits CLI is not configured on this deployment}"
+      [ -d '.qits-sourcemaps' ] || { echo "qits-ci: release.yml declares @sourcemaps/qits-landing but this step exported no .qits-sourcemaps/ (the app recipe exports the sourcemaps stage of the Dockerfile)" >&2; exit 1; }
+      qits artifacts publish docs submit --site '@sourcemaps/qits-landing' --dir '.qits-sourcemaps' --version "$QITS_VERSION" --meta git.commit.hash="$QITS_CI_SHA" --meta git.repository.name="$QITS_CI_REPO_NAME"
+      command -v qits > /dev/null 2>&1 || { echo "qits-ci: the changelog cannot be published: this release step has no qits CLI (QITS_ARTIFACTS_CLI_PACKAGE unset or the fetch was skipped)" >&2; exit 1; }
+      qits artifacts publish changelog --version "$QITS_VERSION" --meta git.commit.hash="$QITS_CI_SHA" --meta git.repository.name="$QITS_CI_REPO_NAME"
+      if [ -f '.sbom/sbom.json' ]; then
+        qits artifacts publish sbom submit --type 'docker' --name 'qits/qits-landing' \
+          --version "$QITS_VERSION" --file '.sbom/sbom.json'
+      fi
+      qits artifacts publish exists sbom 'docker/qits/qits-landing' "$QITS_VERSION" \
+        || { echo '.config/qits/release.yml declares sbom: .sbom/sbom.json for docker qits/qits-landing, and no release step produced it' >&2; exit 1; }

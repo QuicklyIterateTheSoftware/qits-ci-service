@@ -349,6 +349,7 @@ public class CiReleaseSlotParser {
     }
     // Last, because a link names ANOTHER entry: whether it resolves is a fact about the whole list.
     requireLinksResolve(artifacts, configPath);
+    requireOneSourcemapsSite(artifacts, configPath);
     return List.copyOf(artifacts);
   }
 
@@ -387,6 +388,12 @@ public class CiReleaseSlotParser {
                 name,
                 configPath,
                 index));
+    if (type == CiArtifact.Type.DOCS && name.equals(SlotArtifact.SOURCEMAPS_SCOPE)) {
+      throw new CiConfigException(
+          CiArtifact.entry(configPath, index, type, name)
+              + " names no application — a source-map site is @sourcemaps/<application>, the"
+              + " application whose browser telemetry it maps");
+    }
     String sbomPath = parseSbomPath(map.get(SBOM_KEY), configPath, index);
     // Only a DECLARED if-changed gets this message; a defaulted one is the generic rule below.
     if (map.get(CiArtifact.PUBLISH_KEY) != null && artifact.publishIfChanged() && sbomPath.isEmpty()) {
@@ -509,6 +516,15 @@ public class CiReleaseSlotParser {
       }
       return path;
     }
+    if (type == CiArtifact.Type.DOCS && name.startsWith(SlotArtifact.SOURCEMAPS_SCOPE)) {
+      throw new CiConfigException(
+          CiArtifact.entry(configPath, index, type, name)
+              + " declares "
+              + PATH_KEY
+              + " — a @sourcemaps site is always published from "
+              + SlotArtifact.SOURCEMAPS_DIR
+              + ", which the app recipe exports from the Dockerfile's sourcemaps stage");
+    }
     if (type != CiArtifact.Type.MAVEN && type != CiArtifact.Type.NPM) {
       throw new CiConfigException(
           CiArtifact.entry(configPath, index, type, name)
@@ -566,6 +582,30 @@ public class CiReleaseSlotParser {
    * target that is not published here would be a pom dependency on nothing, and a cycle would be an
    * order that does not exist.
    */
+  /**
+   * At most one {@code @sourcemaps} entry (qits-2765): the {@code app} recipe exports one {@code
+   * sourcemaps} stage into one {@link SlotArtifact#SOURCEMAPS_DIR}, so a second site would publish
+   * the same maps under another name.
+   */
+  private static void requireOneSourcemapsSite(List<SlotArtifact> artifacts, String configPath) {
+    List<String> sites =
+        artifacts.stream()
+            .filter(SlotArtifact::publishesSourcemaps)
+            .map(a -> a.artifact().name())
+            .toList();
+    if (sites.size() > 1) {
+      throw new CiConfigException(
+          configPath
+              + ": 'artifacts' declares "
+              + sites.size()
+              + " "
+              + SlotArtifact.SOURCEMAPS_SCOPE
+              + " sites ("
+              + String.join(", ", sites)
+              + ") — a release exports one sourcemaps stage, so it publishes one site");
+    }
+  }
+
   private static void requireLinksResolve(List<SlotArtifact> artifacts, String configPath) {
     Map<String, Integer> byArtifactId = new HashMap<>();
     Set<String> ambiguous = new HashSet<>();

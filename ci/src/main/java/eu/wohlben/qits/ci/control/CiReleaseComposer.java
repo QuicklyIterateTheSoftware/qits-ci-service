@@ -162,7 +162,9 @@ import java.util.Set;
  * package, then {@code contract-docs} when golden masters are declared, then one {@code docs submit
  * --dir --if-changed} for the {@code @routes/<application>} site when {@code contracts.routes:} is
  * declared (qits-1948; no announcement row, see {@link CiContracts}), then one {@code docs submit
- * --openapi} per {@code @apidocs} entry naming its file. Each call fails the step on a non-zero
+ * --dir .qits-sourcemaps} for a {@code @sourcemaps/<application>} entry (qits-2765, every version,
+ * never {@code --if-changed}), then one {@code docs submit --openapi} per {@code @apidocs} entry
+ * naming its file. Each call fails the step on a non-zero
  * exit.
  *
  * <h2>The changelog (qits-893)</h2>
@@ -2105,7 +2107,10 @@ public final class CiReleaseComposer {
     return call.toString();
   }
 
-  /** The contract packages, the golden-master docs and the {@code @apidocs} documents. */
+  /**
+   * The contract packages, the golden-master docs, the {@code @sourcemaps} site and the {@code
+   * @apidocs} documents.
+   */
   private static void publishContractsAndDocs(StringBuilder out, Postlude postlude) {
     List<SlotArtifact> artifacts = postlude.artifacts();
     CiContracts contracts = postlude.contracts();
@@ -2157,6 +2162,29 @@ public final class CiReleaseComposer {
       }
     }
     for (SlotArtifact artifact : artifacts) {
+      // THE SOURCE-MAP SITE (qits-2765): the directory the app recipe's image step exported from the
+      // Dockerfile's `sourcemaps` stage, published at EVERY version — no --if-changed — because
+      // qits-observability looks a browser error's map up by the release it reports, and a skipped
+      // version would be a lookup that can never resolve. Unchanged chunks are identical blobs, so
+      // the store keeps them once. A declaration with nothing exported is a red release, named.
+      if (artifact.publishesSourcemaps()) {
+        String site = quote(artifact.artifact().name());
+        String dir = quote(SlotArtifact.SOURCEMAPS_DIR);
+        out.append("[ -d ")
+            .append(dir)
+            .append(" ] || { echo \"qits-ci: release.yml declares ")
+            .append(artifact.artifact().name())
+            .append(" but this step exported no ")
+            .append(SlotArtifact.SOURCEMAPS_DIR)
+            .append("/ (the app recipe exports the sourcemaps stage of the Dockerfile)\" >&2; exit 1; }\n");
+        out.append("qits artifacts publish docs submit --site ")
+            .append(site)
+            .append(" --dir ")
+            .append(dir)
+            .append(" --version \"$QITS_VERSION\"")
+            .append(META)
+            .append('\n');
+      }
       if (artifact.publishesApidocs()) {
         out.append("qits artifacts publish docs submit --site ")
             .append(quote(artifact.artifact().name()))

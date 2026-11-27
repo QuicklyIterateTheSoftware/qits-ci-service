@@ -478,6 +478,55 @@ public class CiReleaseSlotParserTest {
     assertFalse(slots.artifacts().get(3).publishesApidocs());
   }
 
+  /** qits-2765: a @sourcemaps site names no path — the platform publishes its own directory. */
+  @Test
+  public void aSourcemapsEntryIsAcceptedWithoutAPath() {
+    CiReleaseSlots slots =
+        parser.parse(
+            PATH,
+            """
+            artifacts:
+              - { type: docker, name: qits/qits-landing, sbom: .sbom/sbom.json }
+              - { type: docs, name: "@sourcemaps/qits-landing" }
+              - { type: docs, name: "@apidocs/qits-landing", path: docs/openapi.yml }
+            """);
+    assertTrue(slots.artifacts().get(1).publishesSourcemaps());
+    assertEquals("", slots.artifacts().get(1).path());
+    assertFalse(slots.artifacts().get(1).publishesApidocs());
+    assertFalse(slots.artifacts().get(0).publishesSourcemaps());
+    assertFalse(slots.artifacts().get(2).publishesSourcemaps());
+  }
+
+  @Test
+  public void aSourcemapsEntryWithAPathIsRefused() {
+    String message =
+        refused(
+                "artifacts:\n  - { type: docs, name: \"@sourcemaps/qits-landing\", path: dist/ }\n")
+            .getMessage();
+    assertTrue(
+        message.startsWith(PATH + ": artifact 0 ({ type: docs, name: @sourcemaps/qits-landing })"),
+        message);
+    assertTrue(message.contains("always published from .qits-sourcemaps"), message);
+  }
+
+  @Test
+  public void aSourcemapsEntryNamingNoApplicationIsRefused() {
+    String message =
+        refused("artifacts:\n  - { type: docs, name: \"@sourcemaps/\" }\n").getMessage();
+    assertTrue(message.contains("names no application"), message);
+  }
+
+  @Test
+  public void aSecondSourcemapsSiteIsRefused() {
+    String message =
+        refused(
+                "artifacts:\n"
+                    + "  - { type: docs, name: \"@sourcemaps/a\" }\n"
+                    + "  - { type: docs, name: \"@sourcemaps/b\" }\n")
+            .getMessage();
+    assertTrue(message.contains("declares 2 @sourcemaps/ sites (@sourcemaps/a, @sourcemaps/b)"), message);
+  }
+
   @Test
   public void aDocsPathOutsideApidocsOrNotAnOpenApiDocumentIsRefused() {
     String outside =

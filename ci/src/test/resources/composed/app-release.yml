@@ -319,6 +319,43 @@ steps:
       mkdir -p .sbom
       npm exec --yes --registry "https://mirror.qits.$qits_domain/npm/npmjs/" -- \
         @cyclonedx/cdxgen@11.2.7 --spec-version 1.6 -o .sbom/sbom.json .
+
+      # --- the source maps (qits-2765) ----------------------------------------------------------------
+      # ONLY WHEN DECLARED: `- { type: docs, name: "@sourcemaps/<application>" }` in the repository's
+      # own release.yml says the Dockerfile has a `sourcemaps` stage holding the browser bundle's
+      # hidden maps, and the composed postlude publishes `.qits-sourcemaps/` as that docs site at
+      # $QITS_VERSION. Read out of the declaration with the docker coordinate's sed, for the same
+      # reason: one spelling. Nothing declared, nothing exported, and the step is what it was.
+      #
+      # THE SAME BUILD, A SECOND TARGET. The image push above solved every stage up to the runtime
+      # one; this call asks the same builder for the `sourcemaps` stage of the same context and
+      # Dockerfile, so the build stage is a cache hit and the maps are the pushed bundle's. Should the
+      # cache be gone, the Angular build is deterministic for one lockfile and one tree, so the
+      # content-hashed chunk names — which is what a map is looked up by — come out the same.
+      #
+      # AFTER the SBOM on purpose: `.qits-sourcemaps/` sits in the checkout, and nothing written into
+      # it should be a file cdxgen or the image's `--local context=.` ever saw. `type=local` writes
+      # the stage's filesystem, the maps flat at its root, into the directory.
+      sourcemaps=$(sed -n \
+        's/^[[:space:]]*-[[:space:]]*{[[:space:]]*type:[[:space:]]*docs[[:space:]]*,[[:space:]]*name:[[:space:]]*["'"'"']\{0,1\}\(@sourcemaps\/[^,}"'"'"'[:space:]]*\).*/\1/p' \
+        .config/qits/release.yml)
+      if [ -n "$sourcemaps" ]; then
+        echo "exporting the sourcemaps stage for $sourcemaps"
+        rm -rf .qits-sourcemaps
+        buildctl build --frontend dockerfile.v0 \
+          --local context=. --local dockerfile=docker \
+          --opt target=sourcemaps \
+          --opt build-arg:QITS_DOMAIN="$qits_domain" \
+          --opt build-arg:QITS_NPM_REGISTRY_URL="https://registry.qits.$qits_domain/artifacts/npm/npm/" \
+          --opt build-arg:QITS_NPM_PROXY_URL="https://mirror.qits.$qits_domain/npm/npmjs/" \
+          --secret id=qits-npm-token,src=/tmp/qits-npm-token \
+          --output type=local,dest=.qits-sourcemaps
+        if ! find .qits-sourcemaps -type f -name '*.map' | grep -q .; then
+          echo "release.yml declares $sourcemaps, but the Dockerfile's sourcemaps stage holds no .map file." >&2
+          echo "Build hidden source maps and copy them into a 'FROM scratch AS sourcemaps' stage." >&2
+          exit 1
+        fi
+      fi
       QITS_SLOT_EOF
       if command -v bash > /dev/null 2>&1; then
         bash -eu /tmp/qits-slot.sh
