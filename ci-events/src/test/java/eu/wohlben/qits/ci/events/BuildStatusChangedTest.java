@@ -10,8 +10,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import eu.wohlben.qits.eventstream.control.CanonicalJson;
 import eu.wohlben.qits.eventstream.control.EventEnvelope;
 import java.time.Instant;
-import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -70,9 +68,8 @@ class BuildStatusChangedTest {
     EventEnvelope envelope = EventEnvelope.of(anEvent());
     JsonNode json = CanonicalJson.parse(CanonicalJson.envelope(envelope));
 
-    assertEquals(
-        List.of("description", "environment", "name", "occurredAt", "parentId", "payload", "publisher"),
-        json.properties().stream().map(Map.Entry::getKey).toList());
+    // Exactly the old key set, or it plus onBehalfOf and originTraceId (qits-2701, qits-2730).
+    EnvelopeKeys.assertThePlansKeys(json);
     assertEquals("BuildStatusChanged", json.get("name").asText());
     // The envelope is where the instant lives, and — see the payload assertion below — the only
     // place it lives.

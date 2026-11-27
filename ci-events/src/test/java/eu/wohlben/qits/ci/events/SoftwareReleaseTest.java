@@ -11,8 +11,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import eu.wohlben.qits.eventstream.control.CanonicalJson;
 import eu.wohlben.qits.eventstream.control.EventEnvelope;
 import java.time.Instant;
-import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -73,13 +71,12 @@ class SoftwareReleaseTest {
   }
 
   @Test
-  void theEnvelopeCarriesTheSixFieldsAndNothingElse() {
+  void theEnvelopeCarriesThePlansFieldsAndNothingElse() {
     EventEnvelope envelope = EventEnvelope.of(anEvent());
     JsonNode json = CanonicalJson.parse(CanonicalJson.envelope(envelope));
 
-    assertEquals(
-        List.of("description", "environment", "name", "occurredAt", "parentId", "payload", "publisher"),
-        json.properties().stream().map(Map.Entry::getKey).toList());
+    // Exactly the old key set, or it plus onBehalfOf and originTraceId (qits-2701, qits-2730).
+    EnvelopeKeys.assertThePlansKeys(json);
     assertEquals("SoftwareRelease", json.get("name").asText());
     assertEquals("2026-08-01T09:14:22Z", json.get("occurredAt").asText());
     assertEquals(
