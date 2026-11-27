@@ -175,8 +175,8 @@
         <!-- The frontends' pacts of what @qits/ui-components asks qits-ci for them (qits-1284): one
              jar per frontend, `pacts/<frontend>_qits-ui-components-jslib_qits-ci-service.json`,
              bumped like the rows above when the frontend releases a changed pact. -->
-        <qits.ci-frontend-pacts-qits-ci-service.version>2026.1126.62254</qits.ci-frontend-pacts-qits-ci-service.version>
-        <qits.projects-frontend-pacts-qits-ci-service.version>2026.1126.62735</qits.projects-frontend-pacts-qits-ci-service.version>
+        <qits.ci-frontend-pacts-qits-ci-service.version>2026.1127.90946</qits.ci-frontend-pacts-qits-ci-service.version>
+        <qits.projects-frontend-pacts-qits-ci-service.version>2026.1127.90927</qits.projects-frontend-pacts-qits-ci-service.version>
         <qits.docs-frontend-pacts-qits-ci-service.version>2026.1125.190004</qits.docs-frontend-pacts-qits-ci-service.version>
         <qits.events-frontend-pacts-qits-ci-service.version>2026.1123.93309</qits.events-frontend-pacts-qits-ci-service.version>
         <qits.githost-frontend-pacts-qits-ci-service.version>2026.1123.103628</qits.githost-frontend-pacts-qits-ci-service.version>
