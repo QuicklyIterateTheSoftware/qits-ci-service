@@ -9,9 +9,11 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * The reads behind {@link CiPactParity} (qits-2465): the gated repository's pact files at the fold,
@@ -38,8 +40,11 @@ import java.util.Optional;
  * the gated repository answer for them. They are listed through {@link CiReleaseRequestListing} by
  * the release row's storage id, and only once the release itself was read whole. A request counts
  * when its state is one of {@link CiReleaseRequestListing#OPEN_STATES} and it carries a fold sha
- * {@link CiIdentifiers} accepts; at that sha the pact paths the <em>release</em> declares are read,
- * since the release's {@code contracts} are what the check compares against. A listing that could
+ * {@link CiIdentifiers} accepts; at that sha the pact paths the fold's own {@code release.yml}
+ * declares are read together with the release's (qits-2732) — a request adding a new provider
+ * declares a path no release lists yet. A fold {@code release.yml} that is missing or does not parse
+ * falls back to the release's paths; one the git host could not answer is unreachable. The fold's
+ * {@code mirror} and exclusions are never read: they stay the release's word. A listing that could
  * not be read, or a fold file the git host could not answer, is {@link Inputs#unreachable} like any
  * other read; a fold that does not carry a file adds nothing and fails nothing — an open fold is
  * evidence, not a promise. A deployment with no qits-projects ({@link
@@ -183,8 +188,13 @@ public class CiPactParityInputs {
       if (sha == null) {
         continue;
       }
+      FoldPaths paths =
+          foldPactPaths(counterpart, counterpartName, sha, request, theirPacts.keySet());
+      if (paths.unreachable() != null) {
+        return Inputs.unreachable(paths.unreachable());
+      }
       Map<String, String> foldPacts = new LinkedHashMap<>();
-      for (String path : theirPacts.keySet()) {
+      for (String path : paths.paths()) {
         CiConfigSource.FileLookup pact =
             configSource.readFile(counterpart, sha, path, MAX_PACT_BYTES);
         if (pact.status() == CiConfigSource.FileLookup.Status.UNREACHABLE) {
@@ -205,6 +215,56 @@ public class CiPactParityInputs {
     }
     return new Inputs(
         gated, CiPactParity.Side.read(counterpartName, at, theirs, theirPacts, folds), null);
+  }
+
+  /**
+   * The pact paths an open fold is read at, or why they could not be learned.
+   *
+   * @param paths the fold's own declared paths, then the release's, without repeats
+   * @param unreachable what could not be read, or null
+   */
+  private record FoldPaths(Set<String> paths, String unreachable) {}
+
+  /**
+   * Where an open fold's pacts are (qits-2732): the paths its <em>own</em> {@code release.yml}
+   * declares under {@code contracts.pacts}, together with the release's. A request that adds a new
+   * provider declares a pact path no release lists yet, and reading the release's paths alone never
+   * saw it, so two mirrors adding the same new provider waited on each other forever (qits-2542's
+   * toggles). A fold that carries no {@code release.yml}, or one that does not parse, is read at the
+   * release's paths alone: an open fold is evidence, never a reason to refuse. Only its paths are
+   * taken from it — its {@code mirror} and exclusions are not approved and are never read.
+   */
+  private FoldPaths foldPactPaths(
+      CiRepoRef counterpart,
+      String counterpartName,
+      String sha,
+      CiReleaseRequestListing.Request request,
+      Set<String> released) {
+    Set<String> paths = new LinkedHashSet<>();
+    CiConfigSource.FileLookup slotFile =
+        configSource.readFile(counterpart, sha, CiReleaseSlotParser.CONFIG_PATH);
+    if (slotFile.status() == CiConfigSource.FileLookup.Status.UNREACHABLE) {
+      return new FoldPaths(
+          null,
+          counterpartName
+              + "'s "
+              + CiReleaseSlotParser.CONFIG_PATH
+              + " could not be read at "
+              + sha
+              + ", the fold of "
+              + request.label());
+    }
+    if (slotFile.status() == CiConfigSource.FileLookup.Status.FOUND) {
+      try {
+        CiContracts declared =
+            slotParser.parse(CiReleaseSlotParser.CONFIG_PATH, slotFile.content()).contracts();
+        paths.addAll(CiPactParity.pactPaths(counterpartName, declared));
+      } catch (CiConfigException e) {
+        // Evidence, not a promise: an unparseable fold falls back to the release's paths.
+      }
+    }
+    paths.addAll(released);
+    return new FoldPaths(paths, null);
   }
 
   /**

@@ -1588,4 +1588,332 @@ public class CiReleaseSlotTriggerTest extends CiTestSupport {
                 + " only, as this qits-ci has no qits-projects to list its open release requests"),
         output);
   }
+
+  // --- qits-2732: an open fold is read at the pact paths its own release.yml declares ----------
+
+  @Inject CiPactParityInputs pactParityInputs;
+
+  private static final String LANDING_APP = "qits-landing-app";
+  private static final String ACCESS = "qits-platform-access-monorepo";
+  private static final String TOGGLES = "qits-toggles-service";
+  private static final List<String> TOGGLE_OPS = List.of("getToggle", "getToggles", "putToggleRules");
+  private static final String GATED_FOLD = "c".repeat(40);
+  private static final String UNPARSEABLE = "contracts: [not, closed";
+
+  /** The landing app pacts with pact-js, the CLI with pact-jvm — as on the estate. */
+  private static String framework(String repository) {
+    return LANDING_APP.equals(repository) ? "pact-js" : "pact-jvm";
+  }
+
+  /**
+   * A mirrored consumer's release.yml: pacting with qits-ci-service and, when {@code toggles},
+   * qits-toggles-service, mirroring {@code other}, with {@code excluded} under the mirror or none.
+   */
+  private static String mirroredSlots(
+      String self, String other, boolean toggles, String excluded) {
+    return "release-request:\n"
+        + "  - image: qits/build-images/ci-base:latest\n"
+        + "    script: echo qa-ran\n"
+        + "release:\n"
+        + "  - image: qits/build-images/ci-base:latest\n"
+        + "    script: echo released\n"
+        + "contracts:\n"
+        + "  application: "
+        + self
+        + "\n  pacts:\n"
+        + "    qits-ci-service: { packages: [maven] }\n"
+        + (toggles ? "    " + TOGGLES + ": { packages: [maven] }\n" : "")
+        + "  mirror:\n"
+        + "    repository: "
+        + other
+        + "\n    framework: "
+        + framework(self)
+        + "\n"
+        + (excluded == null ? "" : "    excluded:\n" + excluded);
+  }
+
+  private static String pactOf(String provider, List<String> operationIds) {
+    StringBuilder interactions = new StringBuilder();
+    for (String id : operationIds) {
+      interactions
+          .append(interactions.isEmpty() ? "" : ",")
+          .append("{\"description\":\"")
+          .append(id)
+          .append("\",\"comments\":{\"references\":{\"qits-call\":{\"operationId\":\"")
+          .append(id)
+          .append("\"}}}}");
+    }
+    return "{\"provider\":{\"name\":\"" + provider + "\"},\"interactions\":[" + interactions + "]}";
+  }
+
+  /**
+   * One open release request of the counterpart.
+   *
+   * @param releaseYml its fold's release.yml, or null when the fold carries none
+   * @param toggles the toggles operations its fold's pact makes, or null when it carries no such pact
+   */
+  private record Fold(String label, String state, String releaseYml, List<String> toggles) {}
+
+  /**
+   * One row of the toggles deadlock.
+   *
+   * @param gatedToggles what the gated fold makes against qits-toggles-service; empty declares none
+   * @param refused the toggles operations the verdict refuses, or null when parity holds
+   * @param lookedFor a fragment the refusal's looked-for line carries, or null
+   */
+  private record Row(
+      String name,
+      String gated,
+      List<String> gatedToggles,
+      String counterpart,
+      String version,
+      List<Fold> folds,
+      List<String> refused,
+      String lookedFor) {}
+
+  private record Outcome(CiPactParity.Verdict verdict, String mirrorId, List<String> foldShas) {}
+
+  /** Seeds one row afresh — its own repo ids and its own counterpart release — and checks it. */
+  private Outcome check(Row row) {
+    String gatedId = "gated-" + UUID.randomUUID().toString().substring(0, 8);
+    String mirrorId = "mirror-" + UUID.randomUUID().toString().substring(0, 8);
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              scmReleases.deleteAll();
+              eu.wohlben.qits.ci.entity.CiScmRelease release =
+                  new eu.wohlben.qits.ci.entity.CiScmRelease();
+              release.id = UUID.randomUUID().toString();
+              release.repoId = mirrorId;
+              release.repoName = row.counterpart();
+              release.version = row.version();
+              release.eventId = UUID.randomUUID().toString();
+              release.occurredAt = Instant.now();
+              release.seenAt = Instant.now();
+              scmReleases.persist(release);
+            });
+    String tag = "refs/tags/" + row.version();
+    fakeConfig.putFile(
+        mirrorId,
+        tag,
+        CiReleaseSlotParser.CONFIG_PATH,
+        mirroredSlots(row.counterpart(), row.gated(), false, null));
+    fakeConfig.putFile(
+        mirrorId,
+        tag,
+        CiContracts.pactPath(row.counterpart(), "qits-ci-service"),
+        pactOf("qits-ci-service", List.of("listRuns")));
+    List<CiReleaseRequestListing.Request> requests = new java.util.ArrayList<>();
+    List<String> shas = new java.util.ArrayList<>();
+    for (int i = 0; i < row.folds().size(); i++) {
+      Fold fold = row.folds().get(i);
+      String sha = Integer.toHexString(3 + i).repeat(40);
+      shas.add(sha);
+      if (fold.releaseYml() != null) {
+        fakeConfig.putFile(mirrorId, sha, CiReleaseSlotParser.CONFIG_PATH, fold.releaseYml());
+      }
+      fakeConfig.putFile(
+          mirrorId,
+          sha,
+          CiContracts.pactPath(row.counterpart(), "qits-ci-service"),
+          pactOf("qits-ci-service", List.of("listRuns")));
+      if (fold.toggles() != null) {
+        fakeConfig.putFile(
+            mirrorId,
+            sha,
+            CiContracts.pactPath(row.counterpart(), TOGGLES),
+            pactOf(TOGGLES, fold.toggles()));
+      }
+      requests.add(request(fold.label(), fold.state(), sha));
+    }
+    fakeReleaseRequests.set(requests.toArray(CiReleaseRequestListing.Request[]::new));
+    boolean gatedToggles = !row.gatedToggles().isEmpty();
+    CiContracts contracts =
+        new CiReleaseSlotParser()
+            .parse(
+                CiReleaseSlotParser.CONFIG_PATH,
+                mirroredSlots(row.gated(), row.counterpart(), gatedToggles, null))
+            .contracts();
+    fakeConfig.putFile(
+        gatedId,
+        GATED_FOLD,
+        CiContracts.pactPath(row.gated(), "qits-ci-service"),
+        pactOf("qits-ci-service", List.of("listRuns")));
+    if (gatedToggles) {
+      fakeConfig.putFile(
+          gatedId,
+          GATED_FOLD,
+          CiContracts.pactPath(row.gated(), TOGGLES),
+          pactOf(TOGGLES, row.gatedToggles()));
+    }
+    CiPactParityInputs.Inputs inputs =
+        pactParityInputs.load(CiRepoRef.of(gatedId, "qits", row.gated()), GATED_FOLD, contracts);
+    assertNull(inputs.unreachable(), row.name() + ": " + inputs.unreachable());
+    return new Outcome(
+        CiPactParity.check(inputs.gated(), inputs.counterpart()), mirrorId, shas);
+  }
+
+  @Test
+  public void theToggleDeadlockOfQits2732IsReadFromEachOpenFoldsOwnReleaseYml() {
+    String accessDeclaresToggles = mirroredSlots(ACCESS, LANDING_APP, true, null);
+    String landingDeclaresToggles = mirroredSlots(LANDING_APP, ACCESS, true, null);
+    List<Row> table =
+        List.of(
+            new Row(
+                "1 landing rr-310 against the CLI's REJECTED rr-265, which adds the provider",
+                LANDING_APP,
+                TOGGLE_OPS,
+                ACCESS,
+                "2026.1126.180400",
+                List.of(
+                    new Fold(
+                        "qits-platform-access-monorepo-rr-265",
+                        "REJECTED",
+                        accessDeclaresToggles,
+                        TOGGLE_OPS)),
+                null,
+                null),
+            new Row(
+                "2 the mirror image: the CLI rr-265 against landing rr-309 and rr-310",
+                ACCESS,
+                TOGGLE_OPS,
+                LANDING_APP,
+                "2026.1127.94826",
+                List.of(
+                    new Fold(
+                        "qits-landing-app-rr-309",
+                        "PENDING",
+                        mirroredSlots(LANDING_APP, ACCESS, false, null),
+                        null),
+                    new Fold(
+                        "qits-landing-app-rr-310", "REJECTED", landingDeclaresToggles, TOGGLE_OPS)),
+                null,
+                null),
+            new Row(
+                "3 the open fold makes two of the three",
+                LANDING_APP,
+                TOGGLE_OPS,
+                ACCESS,
+                "2026.1126.180400",
+                List.of(
+                    new Fold(
+                        "qits-platform-access-monorepo-rr-265",
+                        "REJECTED",
+                        accessDeclaresToggles,
+                        List.of("getToggle", "getToggles"))),
+                List.of("putToggleRules"),
+                "open release requests qits-platform-access-monorepo-rr-265;"),
+            new Row(
+                "4 a withdrawn request offers nothing",
+                LANDING_APP,
+                TOGGLE_OPS,
+                ACCESS,
+                "2026.1126.180400",
+                List.of(
+                    new Fold(
+                        "qits-platform-access-monorepo-rr-265",
+                        "WITHDRAWN",
+                        accessDeclaresToggles,
+                        TOGGLE_OPS)),
+                TOGGLE_OPS,
+                "open release requests none;"),
+            new Row(
+                "5 an open fold whose release.yml does not parse is read at the release's paths",
+                LANDING_APP,
+                TOGGLE_OPS,
+                ACCESS,
+                "2026.1126.180400",
+                List.of(
+                    new Fold(
+                        "qits-platform-access-monorepo-rr-265", "PENDING", UNPARSEABLE, TOGGLE_OPS)),
+                TOGGLE_OPS,
+                "open release requests qits-platform-access-monorepo-rr-265;"),
+            new Row(
+                "6 an open fold's exclusion admits nothing",
+                LANDING_APP,
+                TOGGLE_OPS,
+                ACCESS,
+                "2026.1126.180400",
+                List.of(
+                    new Fold(
+                        "qits-platform-access-monorepo-rr-265",
+                        "PENDING",
+                        mirroredSlots(
+                            ACCESS,
+                            LANDING_APP,
+                            false,
+                            "      " + TOGGLES + ": \"the CLI has no toggles\"\n"),
+                        null)),
+                TOGGLE_OPS,
+                null),
+            new Row(
+                "7 the counterpart's unreleased operations are never demanded",
+                LANDING_APP,
+                List.of(),
+                ACCESS,
+                "2026.1126.180400",
+                List.of(
+                    new Fold(
+                        "qits-platform-access-monorepo-rr-265",
+                        "PENDING",
+                        accessDeclaresToggles,
+                        TOGGLE_OPS)),
+                null,
+                null));
+
+    for (Row row : table) {
+      Outcome outcome = check(row);
+      String refusal = outcome.verdict().refusal();
+      if (row.refused() == null) {
+        assertNull(refusal, row.name() + ": " + refusal);
+      } else {
+        assertNotNull(refusal, row.name());
+        for (String operationId : TOGGLE_OPS) {
+          String line =
+              TOGGLES
+                  + " "
+                  + operationId
+                  + ": made by "
+                  + row.gated()
+                  + ", not by "
+                  + row.counterpart()
+                  + " and not excluded";
+          assertEquals(
+              row.refused().contains(operationId), refusal.contains(line), row.name() + ": " + refusal);
+        }
+        assertFalse(refusal.contains("does not parse"), row.name() + ": " + refusal);
+        if (row.lookedFor() != null) {
+          assertTrue(refusal.contains(row.lookedFor()), row.name() + ": " + refusal);
+        }
+      }
+      List<String> reads = fakeConfig.fileReads();
+      String fold = outcome.mirrorId() + "@" + outcome.foldShas().get(outcome.foldShas().size() - 1);
+      if (row.name().startsWith("1 ")) {
+        assertTrue(
+            reads.contains(fold + "/" + CiReleaseSlotParser.CONFIG_PATH),
+            "the fold's own release.yml is read: " + reads);
+        assertTrue(
+            reads.contains(fold + "/" + CiContracts.pactPath(ACCESS, TOGGLES)),
+            "the fold's new pact is read at the fold: " + reads);
+      }
+      if (row.name().startsWith("4 ")) {
+        assertFalse(
+            reads.stream().anyMatch(read -> read.startsWith(fold)),
+            "a withdrawn request's fold is never read: " + reads);
+      }
+    }
+  }
+
+  @Test
+  public void anUnreadableOpenFoldReleaseYmlRecordsNoQaRunAndLeavesTheEventOwed() throws Exception {
+    String mirrorId = seedMirror(new String[] {"listRuns"}, new String[] {"listRuns"});
+    fakeConfig.putFileUnreachable(mirrorId, OPEN_FOLD, CiReleaseSlotParser.CONFIG_PATH);
+    fakeReleaseRequests.set(request("qits-mirror-app-rr-7", "READY", OPEN_FOLD));
+
+    CiEventTriggerService.Arrival arrival = releaseRequest();
+    deliverThroughTheLedger(arrival);
+
+    assertEquals(List.of(), runService.runsFor(repoId), "nothing was learned, so nothing ran");
+    assertTrue(stillOwed(arrival.eventId()), "owed, so a sweep asks qits-projects again");
+  }
 }

@@ -44,8 +44,11 @@ import java.util.TreeSet;
  * release lacks it, B's request making it is refused because A's release lacks it, and neither
  * release ever comes (seen live on qits-2490 with {@code listArtifactVersions}). An open fold is
  * extra evidence, not a promise: a fold file that does not parse, or that the fold does not carry,
- * adds nothing and fails nothing. B's {@code mirror} declaration and its exclusions stay read at
- * the release, so whether the direction is checked at all is still B's approved word.
+ * adds nothing and fails nothing. A fold is read at the pact paths its own {@code release.yml}
+ * declares as well as the release's (qits-2732), so a request that adds a provider no release
+ * declares yet is seen too. B's {@code mirror} declaration and its exclusions stay read at the
+ * release, so whether the direction is checked at all, and what is excused, is still B's approved
+ * word.
  *
  * <h2>What it fails on</h2>
  *
@@ -120,8 +123,9 @@ public final class CiPactParity {
    * One open release request of the counterpart, read at its fold (qits-2604).
    *
    * @param label what a person calls the request — its qualified id
-   * @param pacts the pact files the counterpart's release declares, as the fold carries them, by
-   *     path; a file the fold does not carry is simply absent
+   * @param pacts the pact files the fold's own {@code release.yml} declares, together with the
+   *     release's (qits-2732), as the fold carries them, by path; a file the fold does not carry is
+   *     simply absent
    */
   public record OpenFold(String label, Map<String, String> pacts) {
 
