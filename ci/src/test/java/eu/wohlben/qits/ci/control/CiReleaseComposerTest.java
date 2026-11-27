@@ -2026,6 +2026,82 @@ public class CiReleaseComposerTest {
   }
 
   /**
+   * qits-2765: an app declaring {@code @sourcemaps/<application>} gets the recipe's sourcemaps-stage
+   * export (inside the declared script, after the image push and the SBOM) and one postlude publish
+   * of {@code .qits-sourcemaps} at the release version — every version, never {@code --if-changed}
+   * — guarded so a missing export fails the release by name. The QA slot publishes nothing.
+   */
+  @Test
+  public void anAppDeclaringSourcemapsExportsTheStageAndPublishesTheSiteEveryRelease()
+      throws Exception {
+    CiReleaseComposer.Composed composed =
+        CiReleaseComposer.compose(
+            CiRepoRef.of("66666666-7777-8888-9999-000000000000", "qits", "qits-landing-app"),
+            slots(
+                """
+                archetype: app
+                artifacts:
+                  - { type: docker, name: qits/qits-landing, sbom: .sbom/sbom.json }
+                  - { type: docs, name: "@sourcemaps/qits-landing" }
+                """),
+            packaged("app"));
+
+    String document = composed.releaseDocument();
+    golden("app-sourcemaps-release.yml", document);
+    String publish =
+        "qits artifacts publish docs submit --site '@sourcemaps/qits-landing' --dir"
+            + " '.qits-sourcemaps' --version \"$QITS_VERSION\" --meta"
+            + " git.commit.hash=\"$QITS_CI_SHA\" --meta git.repository.name=\"$QITS_CI_REPO_NAME\"\n";
+    int at = document.indexOf(publish);
+    assertTrue(at >= 0, document);
+    assertEquals(at, document.lastIndexOf(publish), "published once");
+    int push = document.indexOf("--output \"type=image,name=$ref,push=true\"");
+    int sbom = document.indexOf("@cyclonedx/cdxgen@11.2.7");
+    int export = document.indexOf("--output type=local,dest=.qits-sourcemaps");
+    int built = document.indexOf("bash -eu /tmp/qits-slot.sh");
+    int guard = document.indexOf("[ -d '.qits-sourcemaps' ] || {");
+    int changelog = document.indexOf("qits artifacts publish changelog");
+    assertTrue(
+        push > 0
+            && sbom > push
+            && export > sbom
+            && built > export
+            && guard > built
+            && at > guard
+            && changelog > at,
+        document);
+    assertTrue(document.contains("--opt target=sourcemaps"), document);
+    assertFalse(document.substring(at, document.indexOf('\n', at)).contains("--if-changed"));
+    assertNotNull(composed.releaseRequestDocument());
+    assertFalse(composed.releaseRequestDocument().contains("docs submit"), "never in the QA slot");
+
+    // The join reads the entry back as an ordinary always docs row.
+    CiEventTrigger release =
+        new CiEventTriggerParser().parse(CiReleaseSlotParser.CONFIG_PATH, document);
+    assertEquals(2, release.artifacts().size());
+    assertEquals("@sourcemaps/qits-landing", release.artifacts().get(1).name());
+    assertEquals(CiArtifact.Publish.ALWAYS, release.artifacts().get(1).publish());
+  }
+
+  /** qits-2765: without the declaration the postlude publishes no source-map site. */
+  @Test
+  public void anAppWithoutSourcemapsPublishesNoSourcemapsSite() throws Exception {
+    String document =
+        CiReleaseComposer.compose(
+                CiRepoRef.of("66666666-7777-8888-9999-000000000000", "qits", "qits-landing-app"),
+                slots(
+                    """
+                    archetype: app
+                    artifacts:
+                      - { type: docker, name: qits/qits-landing, sbom: .sbom/sbom.json }
+                    """),
+                packaged("app"))
+            .releaseDocument();
+    assertFalse(document.contains("--site '@sourcemaps/"), document);
+    assertFalse(document.contains("[ -d '.qits-sourcemaps' ]"), document);
+  }
+
+  /**
    * qits-bootstrap-cli (qits-1149): the packaged cli archetype declares no release slot, so its
    * consumer pacts are published from the release half qits-ci synthesises — the repository declares
    * {@code contracts:} and no {@code release:} slot of its own.

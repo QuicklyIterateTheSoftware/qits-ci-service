@@ -88,6 +88,16 @@ public record CiReleaseSlots(
     /** The docs scope whose entries may name an OpenAPI file the platform publishes. */
     public static final String APIDOCS_SCOPE = "@apidocs/";
 
+    /**
+     * The docs scope of a browser bundle's hidden source maps (qits-2765): {@code
+     * @sourcemaps/<application>}, published by the platform from {@link #SOURCEMAPS_DIR}, which the
+     * {@code app} recipe's image step exports from the Dockerfile's {@code sourcemaps} stage.
+     */
+    public static final String SOURCEMAPS_SCOPE = "@sourcemaps/";
+
+    /** The directory a {@code @sourcemaps} site is published from, in the release step's checkout. */
+    public static final String SOURCEMAPS_DIR = ".qits-sourcemaps";
+
     public SlotArtifact {
       link = List.copyOf(link);
       include = List.copyOf(include);
@@ -106,6 +116,15 @@ public record CiReleaseSlots(
     /** Whether this is an {@code @apidocs} docs entry naming the OpenAPI file the platform publishes. */
     public boolean publishesApidocs() {
       return artifact.type() == CiArtifact.Type.DOCS && !path.isEmpty();
+    }
+
+    /**
+     * Whether this is a {@code @sourcemaps} docs entry, whose {@link #SOURCEMAPS_DIR} the platform
+     * publishes at the release version.
+     */
+    public boolean publishesSourcemaps() {
+      return artifact.type() == CiArtifact.Type.DOCS
+          && artifact.name().startsWith(SOURCEMAPS_SCOPE);
     }
 
     /** {@link #DEFAULT_PATH} for the two types the platform uploads, {@code ""} for the rest. */
